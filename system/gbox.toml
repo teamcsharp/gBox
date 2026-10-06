@@ -1,0 +1,41 @@
+# G-Box deployment: control plane + worker on the DGX Spark (lilspark, 10.89.1.246), Windows node as extra worker.
+# One file for both nodes: every path is given per-OS; data_dir resolves next to this file
+# (Spark: /home/ehm_eckx/gBox/gbox-data, Windows: \\10.89.1.246\ehm_eckx\gBox\gbox-data).
+data_dir = "gbox-data"
+api_host = "0.0.0.0"              # LAN only; every API call needs the token in gbox-data/api_token
+api_port = 8765
+public_url = "http://10.89.1.246:8765"
+cache_limit_gb = 200
+stage_min_mb = 32                 # disc images above this are copied to the node's local cache before launch
+cache_dirs = { linux = "/home/ehm_eckx/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified)
+cache_limits_gb = { linux = 150, windows = 250 }
+runtime_dirs = { windows = "D:/gBox/runtime" }   # emulators/cores on the local SSD, not the share
+
+smb_credentials = "/etc/exbox.cred"   # existing NAS credentials file on the Spark (not stored here)
+# memory_write: the operator asked for in-game edits from the inspector (every write is audited with rollback bytes)
+granted_permissions = ["read", "execute", "stage", "network", "install", "memory_write"]
+blender_search = ["C:/Users/maste/Desktop/Blender Builds/Builds"]
+ghidra_home = "/home/ehm_eckx/reverse/ghidra_12.1.4_PUBLIC"   # the operator's own Ghidra on the Spark (JDK 21 pinned per run)
+
+[retroarch_bios]
+linux = "/mnt/gbox/hyperspin/Arcade/emulators/RetroArch/system"
+windows = "//10.89.1.125/HyperSpin Attraction/Arcade/emulators/RetroArch/system"
+
+[[libraries]]
+id = "hyperspin"
+kind = "attract"
+mount = "//10.89.1.125/HyperSpin Attraction"
+mount_root = "/mnt/gbox/hyperspin"
+paths = { linux = "/mnt/gbox/hyperspin/Arcade", windows = "//10.89.1.125/HyperSpin Attraction/Arcade" }
+
+[[libraries]]
+id = "gc-iso"
+kind = "files"
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/GC ISO", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/GC ISO" }
+
+[[llm_endpoints]]
+name = "spark-ollama"
+url = "http://10.89.1.246:11434/v1"
+model = "huihui_ai/gemma-4-abliterated:e2b"

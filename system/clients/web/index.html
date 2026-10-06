@@ -1,0 +1,902 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>G-Box</title>
+<link rel="icon" href="/brand/gbox-logo.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico">
+<style>
+  :root { --bg:#fff; --fg:#1b1b1f; --mut:#6b6b76; --line:#e3e3e8; --card:#f6f6f8; --acc:#3355dd; --ok:#1a7f37; --bad:#c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16161a; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:25; }
+  header b { font-size:16px; } .brand { display:flex; align-items:center; gap:8px; } .brand img { height:28px; width:auto; } nav button { background:none; border:0; color:var(--mut); padding:6px 8px; cursor:pointer; font:inherit; }
+  nav button.on { color:var(--fg); border-bottom:2px solid var(--acc); }
+  main { padding:16px; max-width:1400px; margin:0 auto; }
+  input,select,button.act { font:inherit; padding:5px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:4px; }
+  button.act { cursor:pointer; } button.pri { background:var(--acc); color:#fff; border-color:var(--acc); }
+  table { border-collapse:collapse; width:100%; } td,th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mut); font-weight:500; } .ok{color:var(--ok)} .bad{color:var(--bad)} .mut{color:var(--mut)} code{font-size:12px}
+  .wrap { overflow-x:auto; } .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:6px; overflow:hidden; display:flex; flex-direction:column; }
+  .card .art { aspect-ratio:4/3; background:#0003; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .card .art img { width:100%; height:100%; object-fit:contain; } .card .art span { color:var(--mut); font-size:12px; padding:8px; text-align:center; }
+  #pip { position:fixed; right:16px; bottom:16px; width:320px; height:240px; min-width:160px; min-height:120px; z-index:10; background:#000;
+         border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 30px #0008; overflow:hidden; display:none; cursor:grab;
+         user-select:none; touch-action:none; }
+  #pip img { width:100%; height:100%; object-fit:contain; display:block; pointer-events:none; }
+  #pip .grip { position:absolute; right:0; bottom:0; width:18px; height:18px; cursor:nwse-resize;
+               background:linear-gradient(135deg,#0000 50%,#fff8 50%,#fff8 60%,#0000 60%,#0000 70%,#fff8 70%,#fff8 80%,#0000 80%); }
+  #pip .bar { position:absolute; top:0; left:0; right:0; display:flex; gap:6px; align-items:center; padding:4px 8px; margin:0;
+              background:linear-gradient(#000c,#0000); color:#fff; font-size:12px; }
+  #pip .bar span { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #pip button { background:#0008; color:#fff; border:0; border-radius:4px; cursor:pointer; padding:2px 7px; font:inherit; }
+  .padrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px; border:1px solid var(--line); border-radius:6px; margin-bottom:10px; }
+  .pill { font-size:12px; padding:2px 8px; border-radius:10px; background:var(--card); border:1px solid var(--line); }
+  .pill.on { background:var(--acc); color:#fff; border-color:var(--acc); }
+  .card .meta { padding:8px; flex:1; display:flex; flex-direction:column; gap:4px; }
+  .card .t { font-weight:600; line-height:1.25; } .card .s { font-size:12px; color:var(--mut); }
+  .card .row { display:flex; gap:6px; margin-top:auto; padding-top:6px; }
+  .play { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:16px; }
+  @media (max-width:800px) { .play { grid-template-columns:1fr; } }
+  .screen { background:#000; border-radius:6px; width:100%; outline:none; min-height:200px; display:block; }
+  .screen:focus { box-shadow:0 0 0 2px var(--acc); }
+  .pad { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; user-select:none; }
+  .pad button { padding:12px 0; }
+  .inspect { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); gap:16px; }
+  @media (max-width:1100px) { .inspect { grid-template-columns:1fr; } }
+  .panel { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; }
+  .panel h4 { margin:0 0 8px; font-size:13px; }
+  .hex { font:12px/1.5 ui-monospace,Consolas,monospace; margin:0; overflow-x:auto; white-space:pre; }
+  .hex .hb { cursor:pointer; border-radius:2px; } .hex .hb:hover { background:var(--acc); color:#fff; }
+  .tiles { image-rendering:pixelated; background:#000; border:1px solid var(--line); cursor:crosshair; touch-action:none; max-width:100%; }
+  .tabs2 { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .tabs2 button { border:0; border-radius:0; } .tabs2 button.pri { color:#fff; }
+
+  /* --- loading screen: particle ribbon + pulsing logo + logo-shaped progress + console ticker --- */
+  #loader { position:fixed; inset:0; z-index:40; display:none; overflow:hidden;
+            background:radial-gradient(ellipse at 50% 55%, #4a2326 0%, #2a1416 45%, #120909 100%); }
+  #loader.on { display:block; animation:ldin .35s ease; } @keyframes ldin { from { opacity:0 } }
+  #loader.out { opacity:0; transition:opacity .6s; }
+  #loader canvas { position:absolute; inset:0; width:100%; height:100%; }
+  #loader .logo { position:absolute; left:50%; top:44%; width:min(26vh,220px); aspect-ratio:668/783; transform:translate(-50%,-50%); }
+  #loader .logo .ghost { position:absolute; inset:0; background:url(/brand/gbox-logo.svg) center/contain no-repeat; opacity:.16;
+                         animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.34; transform:scale(1.04); filter:drop-shadow(0 0 18px #ffd9c840); } }
+  #loader .logo .fill { position:absolute; inset:0; -webkit-mask:url(/brand/gbox-logo.svg) center/contain no-repeat;
+                        mask:url(/brand/gbox-logo.svg) center/contain no-repeat; }
+  #loader .logo .fill i { position:absolute; left:0; right:0; bottom:0; height:0%; transition:height .5s ease;
+                          background:linear-gradient(0deg,#ffb38a,#fff3ea); box-shadow:0 0 30px #ffd2b0; }
+  #loader .ttl { position:absolute; left:0; right:0; top:calc(44% + min(15vh,128px)); text-align:center; color:#f3e3dc;
+                 font-weight:300; letter-spacing:.04em; font-size:22px; text-shadow:0 2px 20px #000; }
+  #loader .sub { position:absolute; left:0; right:0; top:calc(44% + min(15vh,128px) + 34px); text-align:center; color:#cdb3aa; font-size:13px; }
+  #loader .con { position:absolute; left:0; right:0; bottom:0; height:30px; overflow:hidden; background:#0008; border-top:1px solid #ffffff14;
+                 font:12px/30px ui-monospace,Consolas,monospace; color:#e9d3c9; padding:0 14px; }
+  #loader .con div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; animation:tick .25s ease; }
+  @keyframes tick { from { transform:translateY(100%); opacity:0 } }
+  #loader .err { color:#ff8a80; }
+  #loader .back { position:absolute; right:14px; bottom:40px; display:none; }
+  #loader .ldbtns { position:absolute; left:0; right:0; top:calc(44% + min(15vh,128px) + 64px); display:flex; gap:10px; justify-content:center; }
+  #loader .ldbtns button { background:#0006; color:#f3e3dc; border-color:#ffffff30; }
+  #gsearch { flex:1; max-width:420px; min-width:160px; margin-left:12px; font:inherit; padding:5px 12px; border-radius:16px;
+             border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  #gsearch:focus { outline:none; border-color:var(--acc); }
+  .where { display:inline-flex; border:1px solid var(--line); border-radius:16px; overflow:hidden; margin-left:8px; }
+  .where button { border:0; background:none; color:var(--mut); padding:4px 12px; cursor:pointer; font:inherit; font-size:12px; }
+  .where button.on { background:var(--acc); color:#fff; }
+
+  /* --- console carousel + sort/filter bar --- */
+  .carousel { position:relative; margin:0 -4px 12px; }
+  .car-track { display:flex; gap:10px; overflow-x:auto; scroll-behavior:smooth; padding:4px 36px 10px; scrollbar-width:thin; }
+  .car-item { flex:0 0 150px; height:92px; border:1px solid var(--line); border-radius:10px; background:var(--card); cursor:pointer;
+              display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:8px; position:relative;
+              transition:transform .12s, border-color .12s; user-select:none; }
+  .car-item:hover { transform:translateY(-2px); border-color:var(--acc); }
+  .car-item.on { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc) inset; background:color-mix(in srgb, var(--acc) 14%, var(--card)); }
+  .car-item img { max-width:130px; max-height:52px; object-fit:contain; }
+  .car-item .nm { font-size:12px; font-weight:600; text-align:center; line-height:1.15; }
+  .car-item .ct { font-size:11px; color:var(--mut); }
+  .car-btn { position:absolute; top:30px; width:30px; height:40px; border:1px solid var(--line); border-radius:8px; background:var(--bg);
+             color:var(--fg); cursor:pointer; z-index:2; font-size:16px; }
+  .car-btn.l { left:2px; } .car-btn.r { right:2px; }
+  .filters { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+  .fchip { border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:14px; padding:3px 10px; cursor:pointer; font:inherit; font-size:12px; }
+  .fchip.on { background:var(--acc); border-color:var(--acc); color:#fff; }
+  .alpha { display:flex; gap:2px; flex-wrap:wrap; margin-bottom:10px; }
+  .alpha button { border:0; background:none; color:var(--mut); cursor:pointer; font:12px ui-monospace,monospace; padding:2px 5px; border-radius:4px; }
+  .alpha button.on, .alpha button:hover { background:var(--acc); color:#fff; }
+  .card { position:relative; } .card .fav { position:absolute; top:6px; right:6px; z-index:1; border:0; background:#0009; color:#ffd166;
+          border-radius:50%; width:28px; height:28px; cursor:pointer; font-size:15px; line-height:28px; }
+
+  /* --- A-Z scrubber + single scrollbar --- */
+  html { scrollbar-width:thin; } html::-webkit-scrollbar { width:8px; } html::-webkit-scrollbar-thumb { background:#ffffff22; border-radius:4px; }
+  #scrub { position:fixed; right:4px; top:110px; bottom:16px; width:22px; z-index:30; display:flex; flex-direction:column; justify-content:space-between;
+           align-items:center; user-select:none; touch-action:none; cursor:ns-resize; border-radius:11px; padding:4px 0; }
+  #scrub:hover, #scrub.drag { background:#ffffff10; }
+  #scrub span { font:600 10px/1 ui-monospace,Consolas,monospace; color:var(--mut); flex:1; display:flex; align-items:center; }
+  #scrub span.on { color:var(--acc); transform:scale(1.5); }
+  #scrubtip { position:fixed; right:36px; z-index:31; display:none; background:var(--acc); color:#fff; font:700 28px system-ui; width:52px; height:52px;
+              border-radius:12px; align-items:center; justify-content:center; box-shadow:0 6px 24px #0008; }
+  main { padding-right:34px !important; }
+
+  /* library controls stay pinned under the header while the grid scrolls */
+  .libtop { position:sticky; top:var(--hdr, 52px); z-index:20; background:var(--bg); margin:0 -16px; padding:10px 16px 2px;
+            border-bottom:1px solid var(--line); box-shadow:0 8px 16px -12px #000c; }
+  .car-track { scrollbar-width:none; } .car-track::-webkit-scrollbar { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand"><img src="/brand/gbox-logo.svg" alt=""><b>G-Box</b></span>
+  <nav id="tabs"></nav>
+  <input id="gsearch" type="search" placeholder="Search games…" aria-label="Search games" autocomplete="off">
+  <span class="where" id="where" title="Where games run: natively on this PC (full FPS) or on the DGX Spark (streamed)">
+    <button data-w="local">This PC</button><button data-w="spark">Spark</button></span>
+  <span style="flex:1"></span>
+  <input id="tok" type="password" placeholder="API token" size="22" aria-label="API token">
+</header>
+<main id="view"></main>
+<div id="scrub" aria-label="Jump to letter" style="display:none"></div><div id="scrubtip"></div>
+<div id="loader" aria-live="polite">
+  <canvas id="ldcv"></canvas>
+  <div class="logo"><div class="ghost"></div><div class="fill"><i id="ldbar"></i></div></div>
+  <div class="ttl" id="ldtitle"></div><div class="sub" id="ldsub"></div>
+  <div class="con" id="ldcon"><div>…</div></div>
+  <div class="ldbtns" id="ldbtns"><button class="act" id="ldcancel" title="Esc">Cancel (Esc)</button>
+    <button class="act" id="ldlocal" style="display:none">Play on this PC instead</button></div>
+  <button class="act back" id="ldback" onclick="loader.hide();show('Library')">Back to library</button>
+</div>
+
+<div id="pip" title="Double-click to return to the game · drag to move">
+  <img id="pipimg" alt="Game picture-in-picture">
+  <div class="bar"><span id="piptitle"></span><button id="pipclose" title="Hide (the game keeps running)">✕</button></div>
+  <div class="grip" id="pipgrip" title="Drag to resize"></div>
+</div>
+<script>
+const tabs = { Library: library, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
+const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+let tok = ""; try { tok = localStorage.getItem("gbox_tok") || ""; } catch {}
+const tq = () => "token=" + encodeURIComponent(tok);
+$("#tok").value = tok;
+$("#tok").onchange = e => { tok = e.target.value; try { localStorage.setItem("gbox_tok", tok); } catch {} show(cur); };
+async function api(path, body, method) {
+  const r = await fetch(path, { method: method || (body ? "POST" : "GET"), headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: body && JSON.stringify(body) });
+  if (!r.ok) throw new Error(r.status + " " + (await r.text())); return r.json();
+}
+let cur = "Library", timer = null;
+$("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
+$("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
+async function show(t, ...args) {
+  cur = t; const sc = document.getElementById("scrub"); if (sc && t !== "Library") sc.style.display = "none"; clearInterval(timer); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  playing = t === "Sessions" && args[0] ? args[0] : null;          // the session shown full-size, if any
+  pip();                                                         // leaving a game -> picture-in-picture
+  try { $("#view").innerHTML = await tabs[t](...args); tabs[t].after && tabs[t].after(...args); }
+  catch (e) { $("#view").innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+}
+
+
+// ---------------- loading screen (three.js particle ribbon, logo-shaped progress bar, console ticker) ----------------
+const loader = {
+  three: null, raf: 0,
+  async scene() {
+    if (this.three) return this.three;
+    try {
+      const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js");
+      const cv = $("#ldcv"), r = new THREE.WebGLRenderer({ canvas: cv, alpha: true, antialias: true });
+      const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(50, 1, 0.1, 100); cam.position.set(0, 0.6, 9);
+      const ribbons = [];
+      for (const [nx, nz, size, op, yoff, speed] of [[320, 40, 0.035, 0.55, 0, 1], [220, 14, 0.05, 0.35, -0.5, 1.3], [160, 8, 0.02, 0.6, 0.6, 0.8]]) {
+        const pos = new Float32Array(nx * nz * 3);
+        const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        const m = new THREE.PointsMaterial({ size, color: 0xffe2d6, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending });
+        const pts = new THREE.Points(g, m); scene.add(pts); ribbons.push({ nx, nz, pos, g, yoff, speed, pts });
+      }
+      const fit = () => { const w = cv.clientWidth, h = cv.clientHeight; r.setSize(w, h, false); r.setPixelRatio(Math.min(devicePixelRatio, 2)); cam.aspect = w / h; cam.updateProjectionMatrix(); };
+      addEventListener("resize", fit); fit();
+      this.three = { r, scene, cam, ribbons, fit, t0: performance.now() };
+    } catch (e) { this.three = { failed: e }; }                 // offline: the logo + bar + console still work
+    return this.three;
+  },
+  frame() {
+    const T = this.three; if (!T || T.failed) return;
+    const t = (performance.now() - T.t0) / 1000;
+    for (const R of T.ribbons) {                                // undulating, swirling ribbon of particles (XMB-style)
+      let k = 0;
+      for (let i = 0; i < R.nx; i++) for (let j = 0; j < R.nz; j++) {
+        const x = (i / (R.nx - 1) - 0.5) * 22, z = (j / (R.nz - 1) - 0.5) * 2.4, tt = t * R.speed;
+        const y = Math.sin(x * 0.32 + tt * 0.55) * 0.9 + Math.sin(x * 0.85 - tt * 0.37 + z * 1.7) * 0.32 + Math.sin(z * 2.2 + tt) * 0.12 + R.yoff;
+        const tw = Math.sin(x * 0.18 + tt * 0.3) * 0.9;           // ribbon twist
+        R.pos[k++] = x; R.pos[k++] = y + z * Math.sin(tw) * 0.5; R.pos[k++] = z * Math.cos(tw);
+      }
+      R.g.attributes.position.needsUpdate = true;
+      R.pts.rotation.x = -0.18 + Math.sin(t * 0.07) * 0.05; R.pts.rotation.z = Math.sin(t * 0.05) * 0.04;
+    }
+    T.r.render(T.scene, T.cam);
+    this.raf = requestAnimationFrame(() => this.frame());
+  },
+  async show(title, sub) {
+    $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
+    $("#ldbar").style.height = "0%"; $("#ldcon").innerHTML = "<div>Preparing…</div>"; $("#ldback").style.display = "none";
+    const el = $("#loader"); el.classList.remove("out"); el.classList.add("on");
+    await this.scene(); this.three.fit && this.three.fit(); cancelAnimationFrame(this.raf); this.frame();
+  },
+  progress(pct, msg) {
+    $("#ldbar").style.height = Math.max(0, Math.min(100, pct)) + "%";
+    if (msg && $("#ldcon").firstChild?.textContent !== msg) $("#ldcon").innerHTML = `<div>${esc(msg)}</div>`;
+  },
+  fail(msg) { $("#ldcon").innerHTML = `<div class="err">${esc(msg)}</div>`; $("#ldback").style.display = "block"; },
+  hide() { const el = $("#loader"); el.classList.add("out"); setTimeout(() => { el.classList.remove("on", "out"); cancelAnimationFrame(this.raf); }, 600); },
+};
+
+const STT = async buf => { const r = await fetch("/api/stt", { method: "POST", body: buf, headers: { authorization: "Bearer " + tok, "content-type": "audio/webm" } });
+  if (!r.ok) throw new Error(await r.text()); return (await r.json()).text; };
+const SPARK_OK = async () => { try { return (await fetch("/api/health")).ok; } catch { return false; } };
+// ---------------- dictation: 🎤 on every text box, transcribed by the Spark's faster-whisper ----------------
+(() => {
+  const MIC = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>`;
+  const css = document.createElement("style");
+  css.textContent = `.micwrap{position:relative;display:inline-flex;align-items:center;min-width:0}
+    .micwrap>input,.micwrap>textarea{width:100%;padding-right:30px!important;box-sizing:border-box}
+    .micbtn{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--mut,#999);cursor:pointer;padding:2px;border-radius:50%;line-height:0;z-index:2}
+    .micwrap>textarea+.micbtn{top:14px;transform:none}
+    .micbtn:hover{color:var(--fg,#eee)} .micbtn.rec{color:#fff;background:#e53935;animation:micp 1s infinite} .micbtn.busy{opacity:.5}
+    @keyframes micp{50%{box-shadow:0 0 0 6px #e5393540}}`;
+  document.head.append(css);
+  let rec = null;
+  async function toggle(btn, field) {
+    if (rec) { rec.stop(); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
+    const chunks = [], mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+    mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+    mr.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop()); rec = null; btn.classList.remove("rec"); btn.classList.add("busy");
+      try {
+        const text = await STT(await new Blob(chunks, { type: "audio/webm" }).arrayBuffer());
+        if (text) {
+          const s = field.selectionStart ?? field.value.length, e = field.selectionEnd ?? field.value.length;
+          const pre = field.value.slice(0, s), sep = pre && !/\s$/.test(pre) ? " " : "";
+          field.value = pre + sep + text + field.value.slice(e);
+          field.focus(); field.setSelectionRange(pre.length + sep.length + text.length, pre.length + sep.length + text.length);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      } catch (err) { alert("Dictation failed: " + err.message); }
+      btn.classList.remove("busy");
+    };
+    mr.start(); rec = mr; btn.classList.add("rec"); btn.title = "Recording… click to stop";
+  }
+  const skip = el => el.type === "password" || el.closest(".micwrap") || el.dataset.nomic !== undefined || el.offsetParent === null && el.type === "hidden";
+  function decorate(root) {
+    root.querySelectorAll?.('input[type="text"], input[type="search"], input:not([type]), textarea').forEach(el => {
+      if (skip(el)) return;
+      const cs = getComputedStyle(el), w = document.createElement("span");
+      w.className = "micwrap";
+      w.style.flex = cs.flex; w.style.minWidth = el.style.minWidth || cs.minWidth; w.style.maxWidth = cs.maxWidth;
+      if (cs.display === "block" || el.tagName === "TEXTAREA") w.style.display = "flex";
+      if (el.style.width) w.style.width = el.style.width;
+      if (cs.marginLeft !== "0px") { w.style.marginLeft = cs.marginLeft; el.style.marginLeft = "0"; }
+      el.parentNode.insertBefore(w, el); w.append(el);
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "micbtn"; b.title = "Dictate (Spark speech-to-text)"; b.innerHTML = MIC; b.tabIndex = -1;
+      b.onmousedown = e => e.preventDefault(); b.onclick = () => toggle(b, el);
+      w.append(b);
+    });
+  }
+  window.__micDecorate = decorate;
+  // only when the Spark (with its speech service) is reachable
+  SPARK_OK().then(ok => { if (!ok) return; decorate(document); new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && decorate(n.parentNode || n))))
+    .observe(document.body, { childList: true, subtree: true }); });
+})();
+
+// ---------------- picture-in-picture ----------------
+// active = the game controllers/PiP are attached to; playing = the game currently shown full-size.
+let active = null, playing = null;
+function pip() {
+  const el = $("#pip"), show_ = active && !active.local && !(cur === "Sessions" && playing);   // never over the game itself
+  if (show_ && $("#pipimg").dataset.sid !== active.sid) {
+    $("#pipimg").src = `/api/sessions/${encodeURIComponent(active.sid)}/mjpeg?${tq()}`; $("#pipimg").dataset.sid = active.sid;
+  }
+  if (!show_) { $("#pipimg").removeAttribute("src"); delete $("#pipimg").dataset.sid; }   // close the stream when hidden
+  $("#piptitle").textContent = active ? active.title : "";
+  el.style.display = show_ ? "block" : "none";
+}
+$("#pip").ondblclick = () => active && show("Sessions", active.sid);
+$("#pipclose").onclick = e => { e.stopPropagation(); active = null; pip(); };
+(() => {   // PiP: drag body to move, drag corner grip to resize freely, mouse wheel to scale; geometry remembered
+  const el = $("#pip"), clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const place = g => { el.style.left = g.l + "px"; el.style.top = g.t + "px"; el.style.width = g.w + "px"; el.style.height = g.h + "px"; el.style.right = el.style.bottom = "auto"; };
+  const save = () => { const r = el.getBoundingClientRect(); try { localStorage.setItem("gbox_pip", JSON.stringify({ l: r.left, t: r.top, w: r.width, h: r.height })); } catch {} };
+  try { const g = JSON.parse(localStorage.getItem("gbox_pip")); if (g) place({ ...g, l: clamp(g.l, 0, innerWidth - 80), t: clamp(g.t, 0, innerHeight - 60) }); } catch {}
+  let d = null;
+  el.onpointerdown = e => {
+    if (e.target.tagName === "BUTTON") return;
+    d = { mode: e.target.id === "pipgrip" ? "size" : "move", x: e.clientX, y: e.clientY, r: el.getBoundingClientRect() };
+    el.setPointerCapture(e.pointerId);
+  };
+  el.onpointermove = e => {
+    if (!d) return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y, r = d.r;
+    place(d.mode === "move"
+      ? { l: clamp(r.left + dx, 0, innerWidth - 60), t: clamp(r.top + dy, 0, innerHeight - 40), w: r.width, h: r.height }
+      : { l: r.left, t: r.top, w: clamp(r.width + dx, 160, innerWidth - r.left), h: clamp(r.height + dy, 120, innerHeight - r.top) });
+  };
+  el.onpointerup = () => { if (d) save(); d = null; };
+  el.onwheel = e => {                                         // scale around the window's centre, aspect kept
+    e.preventDefault();
+    const r = el.getBoundingClientRect(), k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const w = clamp(r.width * k, 160, innerWidth), h = w * r.height / r.width;
+    place({ l: clamp(r.left - (w - r.width) / 2, 0, innerWidth - 60), t: clamp(r.top - (h - r.height) / 2, 0, innerHeight - 40), w, h });
+    save();
+  };
+})();
+const table = (cols, rows) => `<div class="wrap"><table><tr>${cols.map(c => `<th>${c}</th>`).join("")}</tr>${rows.join("")}</table></div>`;
+const state = s => `<span class="${s === "succeeded" ? "ok" : /failed|invalid|rejected/.test(s) ? "bad" : "mut"}">${s}</span>`;
+
+// ---------------- Library ----------------
+const L = { q: "", platform: "", system: "", offset: 0, limit: 60, facets: null, plats: new Set(), sort: "name",
+            fav: false, recent: false, local: false, letter: "", carousel: null };
+try { const s = JSON.parse(localStorage.getItem("gbox_lib") || "{}"); Object.assign(L, s, { plats: new Set(s.plats || []) }); } catch {}
+const saveLib = () => { try { localStorage.setItem("gbox_lib", JSON.stringify({ sort: L.sort, fav: L.fav, recent: L.recent, local: L.local, letter: L.letter, plats: [...L.plats] })); } catch {} };
+const PNAMES = { arcade: "Arcade (MAME)", arcade_fbneo: "Arcade (FBNeo)", arcade_hbmame: "Arcade (HBMAME)", nes: "NES / Famicom", snes: "Super Nintendo",
+  n64: "Nintendo 64", gamecube: "GameCube", wii: "Wii", gb: "Game Boy", gbc: "Game Boy Color", gba: "Game Boy Advance", nds: "Nintendo DS", "3ds": "Nintendo 3DS",
+  genesis: "Genesis / Mega Drive", sms: "Master System", gamegear: "Game Gear", segacd: "Sega CD", sega32x: "Sega 32X", saturn: "Saturn", dreamcast: "Dreamcast",
+  naomi: "NAOMI / Atomiswave", psx: "PlayStation", ps2: "PlayStation 2", psp: "PSP", pce: "PC Engine", pcecd: "PC Engine CD", windows_native: "PC / Windows",
+  computer_misc: "Other computers", unknown: "Unsorted" };
+const queryParams = (offset) => new URLSearchParams({ q: L.q, platform: L.plats.size ? [...L.plats].join(",") + "," : L.platform, system: L.system,
+  offset, limit: L.limit, sort: L.sort, favorites: L.fav, recent: L.recent, local: L.local ? (window.GBOX_LOCAL?.worker || "") : "", letter: L.letter });
+async function library() {
+  L.facets = L.facets || await api("/api/catalog/facets");
+  L.offset = 0; L.done = false; L.start = 0;
+  L.carousel = L.carousel || await api("/api/catalog/platforms");
+  const r = await api("/api/catalog?" + queryParams(0));
+  L.total = r.total; L.shown = r.items.length; L.done = r.items.length >= r.total;
+  const opt = (obj, sel) => Object.entries(obj).filter(([k]) => k && k !== "null").map(([k, n]) => `<option value="${esc(k)}" ${k === sel ? "selected" : ""}>${esc(k)} (${n})</option>`).join("");
+  const total = Object.values(L.facets.platforms).reduce((a, b) => a + b, 0);
+  return `<div class="libtop"><div class="bar">
+      <span class="mut" style="flex:1">${total.toLocaleString()} games${L.q ? ` · searching “${esc(L.q)}”` : ""}</span>
+      <select id="plat"><option value="">all platforms</option>${opt(L.facets.platforms, L.platform)}</select>
+      <select id="sys"><option value="">all systems</option>${opt(L.facets.systems, L.system)}</select>
+      <button class="act" onclick="scan()">Rescan libraries</button>
+    </div>
+    <div class="carousel"><button class="car-btn l" onclick="carScroll(-1)" aria-label="scroll consoles left">‹</button>
+      <div class="car-track" id="car">${carouselItems()}</div>
+      <button class="car-btn r" onclick="carScroll(1)" aria-label="scroll consoles right">›</button></div>
+    <div class="filters"><span class="mut">Sort</span>
+      <select id="sort">${[["name", "Name A–Z"], ["name_desc", "Name Z–A"], ["year", "Year (newest)"], ["year_asc", "Year (oldest)"], ["console", "Console"],
+        ["recent", "Recently played"], ["size", "File size (largest)"], ["size_asc", "File size (smallest)"]].map(([v, t]) => `<option value="${v}" ${L.sort === v ? "selected" : ""}>${t}</option>`).join("")}</select>
+      <button class="fchip ${L.fav ? "on" : ""}" data-f="fav">★ Favorites</button>
+      <button class="fchip ${L.recent ? "on" : ""}" data-f="recent">Recently played</button>
+      ${window.GBOX_LOCAL?.worker ? `<button class="fchip ${L.local ? "on" : ""}" data-f="local" title="Already cached on this PC's fast disk">Local</button>` : ""}
+      ${L.plats.size || L.fav || L.recent || L.local || L.letter ? `<button class="fchip" data-f="clear">Clear filters</button>` : ""}</div></div>
+    <div id="less" class="mut" style="display:none;padding:12px;text-align:center">Loading earlier…</div>
+    <p class="mut" id="count">${r.total.toLocaleString()} matches · showing ${L.shown.toLocaleString()}</p>
+    <div class="grid" id="grid">${r.items.map(card).join("")}</div>
+    <div id="more" class="mut" style="padding:24px;text-align:center">${L.done ? "" : "Loading more…"}</div>`;
+}
+function carouselItems() {
+  const all = (L.carousel || []).reduce((a, p) => a + p.count, 0);
+  return `<div class="car-item ${L.plats.size ? "" : "on"}" data-p=""><div class="nm" style="font-size:20px">All</div><div class="ct">${all.toLocaleString()} games</div></div>` +
+    (L.carousel || []).map(p => { const sys = p.systems[0]?.name || p.platform;
+      return `<div class="car-item ${L.plats.has(p.platform) ? "on" : ""}" data-p="${esc(p.platform)}" title="${esc(p.systems.slice(0, 6).map(s => s.name + " (" + s.count + ")").join(" · "))}">
+        <img alt="" loading="lazy" src="/api/systemart/${encodeURIComponent(sys)}?${tq()}" onerror="this.remove()">
+        <div class="nm">${esc(PNAMES[p.platform] || sys)}</div><div class="ct">${p.count.toLocaleString()} games</div></div>`; }).join("");
+}
+function carScroll(d) { const t = $("#car"); t.scrollBy({ left: d * t.clientWidth * 0.8, behavior: "smooth" }); }
+// ---- A-Z scrubber: jump the continuous list to a letter; earlier pages load when scrolling back up ----
+const LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
+function setupScrub() {
+  const sc = $("#scrub"), tip = $("#scrubtip");
+  sc.style.display = cur === "Library" ? "flex" : "none";
+  sc.innerHTML = LETTERS.map(c => `<span data-l="${c}">${c}</span>`).join("");
+  let dragging = false, pending = null, timer = null;
+  const pick = e => {
+    const r = sc.getBoundingClientRect(), i = Math.max(0, Math.min(LETTERS.length - 1, Math.floor((e.clientY - r.top) / r.height * LETTERS.length)));
+    const c = LETTERS[i];
+    sc.querySelectorAll("span").forEach(s => s.classList.toggle("on", s.dataset.l === c));
+    tip.textContent = c; tip.style.display = "flex"; tip.style.top = Math.max(60, e.clientY - 26) + "px";
+    if (c !== pending) { pending = c; clearTimeout(timer); timer = setTimeout(() => jumpTo(c), dragging ? 120 : 0); }
+  };
+  sc.onpointerdown = e => { dragging = true; sc.classList.add("drag"); sc.setPointerCapture(e.pointerId); pick(e); };
+  sc.onpointermove = e => { if (dragging) pick(e); };
+  sc.onpointerup = () => { dragging = false; sc.classList.remove("drag"); setTimeout(() => tip.style.display = "none", 500); };
+}
+async function jumpTo(letter) {
+  if (L.sort !== "name") { L.sort = "name"; saveLib(); }               // the index follows the A-Z order
+  const p = queryParams(0); p.delete("offset"); p.delete("limit"); p.delete("sort"); p.delete("letter");
+  const { offset } = await api(`/api/catalog/letter_offset?letter=${encodeURIComponent(letter)}&` + p);
+  const r = await api("/api/catalog?" + queryParams(offset));
+  L.start = offset; L.shown = offset + r.items.length; L.done = L.shown >= r.total; L.total = r.total;
+  $("#grid").innerHTML = r.items.map(card).join("");
+  $("#less").style.display = L.start > 0 ? "block" : "none";
+  $("#count").textContent = `${r.total.toLocaleString()} matches · from “${letter}” (#${(offset + 1).toLocaleString()})`;
+  scrollTo({ top: $("#grid").offsetTop - 150 });
+}
+async function loadLess() {                                             // scrolling up past the jump point
+  if (L.loadingLess || !L.start || cur !== "Library") return;
+  L.loadingLess = true;
+  try {
+    const off = Math.max(0, L.start - L.limit), r = await api("/api/catalog?" + queryParams(off));
+    const items = r.items.slice(0, L.start - off), before = document.documentElement.scrollHeight;
+    $("#grid").insertAdjacentHTML("afterbegin", items.map(card).join(""));
+    scrollBy(0, document.documentElement.scrollHeight - before);       // keep the view steady
+    L.start = off; $("#less").style.display = L.start > 0 ? "block" : "none";
+  } finally { L.loadingLess = false; }
+}
+async function loadMore() {
+  if (L.loading || L.done || cur !== "Library") return;
+  L.loading = true;
+  try {
+    const r = await api("/api/catalog?" + queryParams(L.shown));
+    $("#grid")?.insertAdjacentHTML("beforeend", r.items.map(card).join(""));
+    L.shown += r.items.length; L.done = !r.items.length || L.shown >= r.total;
+    const c = $("#count"); if (c) c.textContent = `${r.total.toLocaleString()} matches · showing ${L.shown.toLocaleString()}`;
+    const m = $("#more"); if (m) m.textContent = L.done ? "That's everything." : "Loading more…";
+  } finally { L.loading = false; }
+  const m = $("#more");                                   // still visible (tall screen)? keep filling
+  if (m && !L.done && m.getBoundingClientRect().top < innerHeight + 800) loadMore();
+}
+async function toggleFav(id, btn) {
+  const on = btn.textContent !== "★";
+  await api(`/api/catalog/${id}/favorite?on=${on}`, {});
+  btn.textContent = on ? "★" : "☆"; btn.title = on ? "Remove from favorites" : "Add to favorites";
+}
+library.after = () => {
+  const rerender = () => { saveLib(); L.offset = 0; const x = $("#car")?.scrollLeft || 0; show("Library").then(() => { const t = $("#car"); if (t) t.scrollLeft = x; }); };
+  $("#car").onclick = e => { const it = e.target.closest(".car-item"); if (!it) return; const p = it.dataset.p;
+    if (!p) L.plats.clear(); else L.plats.has(p) ? L.plats.delete(p) : L.plats.add(p); rerender(); };
+  $("#car").onwheel = e => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { e.preventDefault(); $("#car").scrollLeft += e.deltaY; } };
+  $("#sort").onchange = e => { L.sort = e.target.value; rerender(); };
+  document.querySelectorAll(".fchip").forEach(b => b.onclick = () => { const f = b.dataset.f;
+    if (f === "clear") Object.assign(L, { fav: false, recent: false, local: false, letter: "" }, L.plats.clear() || {}); else L[f] = !L[f]; rerender(); });
+  setupScrub();
+  const m = $("#more");
+  if (m) new IntersectionObserver(es => es.some(e => e.isIntersecting) && loadMore(), { rootMargin: "800px" }).observe(m);
+  const ls = $("#less");
+  if (ls) new IntersectionObserver(es => es.some(e => e.isIntersecting) && loadLess(), { rootMargin: "400px" }).observe(ls);
+
+  $("#plat").onchange = e => { L.platform = e.target.value; L.offset = 0; show("Library"); };
+  $("#sys").onchange = e => { L.system = e.target.value; L.offset = 0; show("Library"); };
+};
+function card(g) {
+  // best available art from the drive: box art, else snap, else wheel logo, else cart art (resolved server-side)
+  const art = g.media && Object.keys(g.media).length ? `<img loading="lazy" alt="" src="/api/media/${g.game_id}/best?w=360&${tq()}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'no artwork'}))">` : `<span>no artwork</span>`;
+  const where = g.core ? `Spark · ${g.core}` : (g.launch && g.launch.kind === "attract" ? "Windows node" : "no runtime");
+  return `<div class="card"><button class="fav" title="${g.favorite ? "Remove from favorites" : "Add to favorites"}" onclick='toggleFav(${JSON.stringify(g.game_id)}, this)'>${g.favorite ? "★" : "☆"}</button><div class="art">${art}</div><div class="meta">
+    <div class="t">${esc(g.title)}</div>
+    <div class="s">${esc(g.system || g.platform)}${g.year ? " · " + esc(g.year) : ""}${g.manufacturer ? " · " + esc(g.manufacturer) : ""}</div>
+    <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span></div>
+    <div class="row"><button class="act pri" title="${window.GBOX_LOCAL?.worker && g.core ? "Play natively on this PC (full FPS)" : "Play"}" onclick='play(${JSON.stringify(g.game_id)})'>Play</button>
+      ${g.core && window.GBOX_LOCAL?.worker ? (WHERE === "local"
+          ? `<button class="act" title="Run on the DGX Spark GPU and stream it here" onclick='play(${JSON.stringify(g.game_id)},"linux")'>Spark</button>`
+          : `<button class="act" title="Run natively on this PC (full FPS)" onclick='play(${JSON.stringify(g.game_id)},window.GBOX_LOCAL.worker)'>This PC</button>`) : ""}
+      <button class="act" onclick='details(${JSON.stringify(g.game_id)})'>Info</button></div></div></div>`;
+}
+async function scan() { await api("/api/jobs", { tool: "scan_library", input: {}, require_os: "linux" }); show("Jobs"); }
+// header search: always available; typing jumps to the Library and filters live
+(() => {
+  const gs = $("#gsearch"); let t;
+  gs.value = L.q || "";
+  gs.placeholder = "Search games…  (title, system, maker, genre, year)";
+  gs.oninput = () => { clearTimeout(t); t = setTimeout(() => { L.q = gs.value; L.offset = 0;
+    show("Library").then(() => { gs.focus(); gs.setSelectionRange(gs.value.length, gs.value.length); }); }, 250); };
+  gs.onkeydown = e => { if (e.key === "Escape") { gs.value = ""; gs.oninput(); } };
+  addEventListener("keydown", e => { if ((e.ctrlKey && e.key === "f") || (e.key === "/" && document.activeElement === document.body)) { e.preventDefault(); gs.focus(); gs.select(); } });
+})();
+let WHERE = "local"; try { WHERE = localStorage.getItem("gbox_where") || "local"; } catch {}
+function paintWhere() {
+  const w = $("#where"); if (!w) return;
+  w.style.display = window.GBOX_LOCAL?.worker ? "inline-flex" : "none";
+  w.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.w === WHERE));
+}
+$("#where").onclick = e => { const b = e.target.closest("button"); if (!b) return; WHERE = b.dataset.w;
+  try { localStorage.setItem("gbox_where", WHERE); } catch {} paintWhere(); if (cur === "Library") show("Library"); };
+setTimeout(paintWhere, 300); setInterval(paintWhere, 3000);
+const fitHdr = () => document.documentElement.style.setProperty("--hdr", document.querySelector("header").offsetHeight + "px");
+addEventListener("resize", fitHdr); setTimeout(fitHdr, 100);
+let LOADING = null;                                           // { job, id } while the loader is up
+addEventListener("keydown", e => { if (e.key === "Escape" && LOADING) cancelLoad(); });
+async function cancelLoad() {
+  const L0 = LOADING; if (!L0) return; LOADING = null;
+  if (L0.job) await api(`/api/jobs/${L0.job}/cancel`, {}).catch(() => {});
+  loader.hide(); show("Library");
+}
+async function play(id, node) {
+  const g = await api("/api/catalog/" + id).catch(() => ({ title: "Game" }));
+  // default from the toggle: THIS PC (native, full FPS, zero input lag) when the system has a core, else the Spark
+  if (!node && WHERE === "local" && window.GBOX_LOCAL?.worker && g.core) node = window.GBOX_LOCAL.worker;
+  if (!node && WHERE === "spark" && g.core) node = "linux";
+  LOADING = { id, job: null };
+  const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";
+  await loader.show(g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
+  $("#ldcancel").onclick = cancelLoad;
+  const canLocal = node === "linux" && window.GBOX_LOCAL?.worker && g.core;
+  $("#ldlocal").style.display = canLocal ? "inline-block" : "none";
+  $("#ldlocal").onclick = async () => { await cancelLoad(); play(id, window.GBOX_LOCAL.worker); };
+  const job = await api(`/api/games/${id}/launch?node=${node || "auto"}`, {});
+  if (!LOADING) { await api(`/api/jobs/${job.id}/cancel`, {}).catch(() => {}); return; }   // Esc before the job existed
+  LOADING.job = job.id;
+  loader.progress(1, `Job ${job.id} queued for ${where}`);
+  for (let i = 0; i < 1800; i++) {
+    if (!LOADING || LOADING.job !== job.id) return;            // cancelled
+    const j = await api("/api/jobs/" + job.id);
+    if (j.progress) loader.progress(j.progress.pct, j.progress.msg);
+    else if (j.state === "running") loader.progress(3, "Worker picked up the launch");
+    if (j.state === "succeeded") { LOADING = null; loader.progress(100, "Running — opening the stream"); setTimeout(() => loader.hide(), 500); return show("Sessions", j.output.session_id); }
+    if (!/queued|running/.test(j.state)) { LOADING = null; return loader.fail(`Launch ${j.state}: ${j.error || "unknown error"}`); }
+    await new Promise(r => setTimeout(r, 400));
+  }
+  loader.fail("Timed out waiting for the launch");
+}
+async function details(id) {
+  const p = await api("/api/profiles/" + id);
+  $("#view").innerHTML = `<p><button class="act" onclick="show('Library')">Back</button></p><h2>${esc(p.title)}</h2><pre class="mut" style="white-space:pre-wrap">${esc(JSON.stringify(p, null, 1))}</pre>`;
+}
+
+// ---------------- Sessions / play view ----------------
+const KEYMAP = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Enter: "Return", " ": "space", Backspace: "BackSpace", Tab: "Tab" };
+const keysym = e => e.code === "ShiftRight" ? "Shift_R" : e.code === "ShiftLeft" ? "Shift_L" : KEYMAP[e.key] || (/^[a-z0-9]$/i.test(e.key) ? e.key.toLowerCase() : /^F\d+$/.test(e.key) ? e.key : null);
+async function sessionsView(sid, mode) {
+  const ss = await api("/api/sessions");
+  if (!sid) return `<p class="mut">Open a running game to watch and control it, or reopen any game from your history (relaunches its ROM).</p>` +
+    table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => `<tr>
+      <td><a href="#" onclick='${s.state === "running" ? `show("Sessions",${JSON.stringify(s.session_id)})` : `play(${JSON.stringify(s.game_id)})`};return false'><b>${esc(s.title)}</b></a></td>
+      <td>${s.state === "running" ? '<span class="ok">running</span>' : '<span class="mut">ended</span>'}</td><td>${esc(s.adapter)}</td><td>${s.last_frame_age ?? "–"}s</td>
+      <td>${s.state === "running" ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>Open</button>` : ""}
+          ${s.game_id ? `<button class="act" onclick='play(${JSON.stringify(s.game_id)})'>Reopen</button>` : ""}</td>
+      <td><code class="mut">${esc(s.session_id)}</code></td></tr>`));
+  const s = ss.find(x => x.session_id === sid) || {};
+  const local = !!(s.detail && s.detail.local_window);
+  const btn = k => `<button class="act" data-k="${k}">${k}</button>`;
+  const head = `<div class="bar"><button class="act" onclick="show('Sessions')">All sessions</button><b>${esc(s.title)}</b>
+    <span class="tabs2"><button class="act ${mode !== "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button></span>
+    <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span></div>`;
+  if (mode === "inspect") return head + await inspectView(sid);
+  return head + `
+    <div class="play"><div>
+      ${local ? (s.detail.worker_name === window.GBOX_LOCAL?.worker
+        ? `<div id="nativeslot" data-sid="${esc(sid)}" class="screen" style="height:calc(100vh - 200px);min-height:300px;background:#000"></div>`
+        : `<div class="screen" style="display:flex;align-items:center;justify-content:center;min-height:300px;padding:20px;text-align:center">
+        <div><h3>Running natively on ${esc(s.detail.worker_name || "another PC")}</h3><p class="mut">This game is playing on that PC's screen. Inspect, memory edits and Blender copy still work from here.</p></div></div>`)
+      : `<img id="scr" class="screen" tabindex="0" alt="Live game view — click, then use the keyboard" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">`}
+      <p class="mut">Controllers (Xbox by default) drive this game — assign players and remap in <a href="#" onclick="show('Controllers');return false">Controllers</a>.
+        Keyboard: click the picture, then arrows, X=A, Z=B, S=X, A=Y, Q/W=L/R, Enter=Start, Right Shift=Select.
+        Leaving this view keeps the game in a picture-in-picture window (double-click it to come back).</p>
+      <p id="padstat" class="mut"></p></div>
+      <div><div class="pad" id="pad">${["l", "up", "r", "left", "start", "right", "y", "down", "x", "b", "select", "a"].map(btn).join("")}</div>
+      <div class="bar" style="margin-top:12px">
+        <button class="act" onclick='sop(${JSON.stringify(sid)},"pause")'>Pause</button><button class="act" onclick='sop(${JSON.stringify(sid)},"resume")'>Resume</button>
+        <button class="act" title="Jump back 5 seconds (keypad −)" onclick='sop(${JSON.stringify(sid)},"rewind")'>⏪ 5s</button>
+        <button class="act" title="Toggle fast-forward (hold R2 on supported systems)" onclick='sop(${JSON.stringify(sid)},"fast_forward")'>⏩</button>
+        <button class="act" onclick='sop(${JSON.stringify(sid)},"save_state")'>Save state</button><button class="act" onclick='sop(${JSON.stringify(sid)},"load_state")'>Load state</button>
+        <button class="act" onclick='snap(${JSON.stringify(sid)})'>Snapshot → artifact</button>
+        <button class="act" style="color:var(--bad)" onclick='sop(${JSON.stringify(sid)},"stop_game").then(()=>show("Sessions"))'>Stop</button></div>
+      <p id="sopres" class="mut"></p></div></div>`;
+}
+sessionsView.after = (sid, mode) => {
+  if (!sid) return;
+  const title = document.querySelector(".bar b")?.textContent || sid;
+  active = { sid, title, local: !$("#scr") && mode !== "inspect" }; pip();   // controllers + PiP follow this game from now on
+  if (mode === "inspect") return inspectView.after(sid);
+  if (!$("#scr")) return;                                      // native local window: input goes straight to RetroArch
+  padStatus();
+  const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
+  const scr = $("#scr"), held = new Set();
+  scr.addEventListener("keydown", e => { if (e.code === "NumpadSubtract") { e.preventDefault(); e.stopImmediatePropagation(); sop(sid, "rewind"); } }, true);
+  scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (!held.has(k)) { held.add(k); send(k, true); } };
+  scr.onkeyup = e => { const k = keysym(e); if (!k) return; e.preventDefault(); held.delete(k); send(k, false); };
+  scr.onblur = () => { held.forEach(k => send(k, false)); held.clear(); };
+  $("#pad").querySelectorAll("button").forEach(b => { b.onpointerdown = () => send(b.dataset.k, true); b.onpointerup = b.onpointerleave = () => send(b.dataset.k, false); });
+  scr.focus();
+};
+async function runJob(body) {
+  let j = await api("/api/jobs", body);
+  while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id); }
+  return j;
+}
+async function sop(sid, op) {
+  const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });
+  if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }
+  const el = $("#sopres"); if (el) el.textContent = `${op}: ${j.state} ${j.error || JSON.stringify(j.output?.result || "")}`;
+}
+
+// ---------------- controllers (Gamepad API; Xbox / XInput "standard" layout by default) ----------------
+// RetroPad is positional (SNES layout): Xbox A (bottom) = RetroPad B, Xbox B (right) = A, X (left) = Y, Y (top) = X,
+// exactly like RetroArch's own XInput autoconfig.
+const RETRO = ["a", "b", "x", "y", "l", "r", "l2", "r2", "l3", "r3", "start", "select", "up", "down", "left", "right"];
+const XBOX_DEFAULT = { 0: "b", 1: "a", 2: "y", 3: "x", 4: "l", 5: "r", 6: "l2", 7: "r2", 8: "select", 9: "start",
+                       10: "l3", 11: "r3", 12: "up", 13: "down", 14: "left", 15: "right" };
+const XBOX_NAMES = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "View", "Menu", "LS", "RS", "D-Up", "D-Down", "D-Left", "D-Right", "Guide"];
+let padCfg = {}; try { padCfg = JSON.parse(localStorage.getItem("gbox_pads") || "{}"); } catch {}
+const savePads = () => { try { localStorage.setItem("gbox_pads", JSON.stringify(padCfg)); } catch {} };
+const pads = () => [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean);
+function cfgFor(gp) {        // per controller model+slot: player assignment + button map (defaults: Xbox layout, P1/P2 by order)
+  const key = `${gp.id}#${gp.index}`;
+  return padCfg[key] ||= { player: gp.index < 2 ? gp.index + 1 : 0, map: { ...XBOX_DEFAULT }, stick: true };
+}
+function pressed(gp, c) {    // set of RetroPad buttons currently held on this controller
+  const out = new Set();
+  gp.buttons.forEach((b, i) => { if ((b.pressed || b.value > 0.5) && c.map[i]) out.add(c.map[i]); });
+  if (c.stick && gp.axes.length >= 2) {                  // left stick doubles as the d-pad (digital, 0.5 deadzone)
+    if (gp.axes[0] < -0.5) out.add("left"); if (gp.axes[0] > 0.5) out.add("right");
+    if (gp.axes[1] < -0.5) out.add("up"); if (gp.axes[1] > 0.5) out.add("down");
+  }
+  return out;
+}
+const held = {};             // controller key -> Set of buttons last sent
+let remap = null;            // {key, step, base} while a guided remap is running
+function padLoop() {
+  for (const gp of pads()) {
+    const c = cfgFor(gp), key = `${gp.id}#${gp.index}`;
+    if (remap && remap.key === key) { remapStep(gp); continue; }
+    const now = c.player ? pressed(gp, c) : new Set(), prev = held[key] || new Set(), events = [];
+    now.forEach(b => !prev.has(b) && events.push({ key: b, down: true, player: c.player }));
+    prev.forEach(b => !now.has(b) && events.push({ key: b, down: false, player: c.player }));
+    held[key] = now;
+    if (events.length && active) api(`/api/sessions/${encodeURIComponent(active.sid)}/input`, { events }).catch(() => {});
+  }
+  requestAnimationFrame(padLoop);
+}
+requestAnimationFrame(padLoop);
+addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
+addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
+function padStatus() {
+  const el = $("#padstat"); if (!el) return;
+  const ps = pads();
+  el.innerHTML = ps.length ? "🎮 " + ps.map(gp => `${esc(gp.id.split("(")[0].trim())} → ${cfgFor(gp).player ? "Player " + cfgFor(gp).player : "off"}`).join(" · ")
+                           : "No controller detected — press any button on it (browsers only expose a controller after a button press).";
+}
+function remapStep(gp) {
+  const pressedNow = gp.buttons.map((b, i) => b.pressed ? i : -1).filter(i => i >= 0);
+  if (remap.wait) { if (!pressedNow.length) remap.wait = false; return; }     // wait for release between prompts
+  if (!pressedNow.length) return;
+  remap.map[pressedNow[0]] = RETRO[remap.step];
+  remap.step++; remap.wait = true;
+  if (remap.step >= RETRO.length) { padCfg[remap.key].map = remap.map; savePads(); remap = null; show("Controllers"); return; }
+  const el = $("#remapmsg"); if (el) el.innerHTML = remapPrompt();
+}
+const remapPrompt = () => `Press the button for RetroPad <b>${RETRO[remap.step].toUpperCase()}</b> (${remap.step + 1}/${RETRO.length})
+  <button class="act" onclick="remap.step++; if (remap.step >= RETRO.length) { padCfg[remap.key].map = remap.map; savePads(); remap = null; show('Controllers'); } else $('#remapmsg').innerHTML = remapPrompt()">Skip</button>
+  <button class="act" onclick="remap = null; show('Controllers')">Cancel</button>`;
+function startRemap(key) { remap = { key, step: 0, map: {}, wait: true }; show("Controllers"); }
+function setPlayer(key, p) { padCfg[key].player = +p; savePads(); show("Controllers"); }
+function resetPad(key) { padCfg[key].map = { ...XBOX_DEFAULT }; savePads(); show("Controllers"); }
+function toggleStick(key) { padCfg[key].stick = !padCfg[key].stick; savePads(); show("Controllers"); }
+async function controllersView() {
+  const ps = pads();
+  timer = setInterval(() => { if (cur === "Controllers" && !remap) document.querySelectorAll("[data-live]").forEach(el => {
+    const gp = pads().find(g => `${g.id}#${g.index}` === el.dataset.live); el.innerHTML = gp ? [...pressed(gp, cfgFor(gp))].map(b => `<span class="pill on">${b}</span>`).join(" ") || '<span class="mut">press buttons to test</span>' : ""; }); }, 100);
+  const body = ps.length ? ps.map(gp => {
+    const c = cfgFor(gp), key = `${gp.id}#${gp.index}`, k = JSON.stringify(key);
+    const mapping = Object.entries(c.map).map(([i, r]) => `<span class="pill">${XBOX_NAMES[i] || "btn " + i} → ${r}</span>`).join(" ");
+    return `<div class="padrow" style="display:block">
+      <div class="bar"><b>🎮 ${esc(gp.id)}</b><span class="mut">slot ${gp.index} · ${gp.mapping === "standard" ? "standard (XInput) layout" : "non-standard layout — remap recommended"}</span></div>
+      <div class="bar">Player:
+        ${[0, 1, 2].map(p => `<button class="act ${c.player === p ? "pri" : ""}" onclick='setPlayer(${k},${p})'>${p ? "Player " + p : "Off"}</button>`).join("")}
+        <button class="act" onclick='startRemap(${k})'>Remap buttons</button><button class="act" onclick='resetPad(${k})'>Reset to Xbox default</button>
+        <button class="act" onclick='toggleStick(${k})'>Left stick as d-pad: ${c.stick ? "on" : "off"}</button></div>
+      ${remap && remap.key === key ? `<p id="remapmsg">${remapPrompt()}</p>` : ""}
+      <div data-live="${esc(key)}" style="min-height:24px"></div>
+      <details><summary class="mut">Button map</summary><p>${mapping}</p></details></div>`;
+  }).join("") : `<p class="mut">No controller detected. Connect an Xbox (or any XInput/standard) controller and press a button — browsers only report a controller after it is used.</p>`;
+  return `<h3>Controllers</h3><p class="mut">Controllers drive whichever game is open or in picture-in-picture${active ? `: <b>${esc(active.title)}</b>` : " (none right now)"}.
+    Xbox layout works out of the box; mappings are saved on this computer.</p>` + body;
+}
+async function snap(sid) { const j = await runJob({ tool: "get_frame", input: { session_id: sid } }); const el = $("#sopres"); if (el) el.innerHTML = j.receipt_id ? `snapshot ${state(j.state)} — receipt <code>${j.receipt_id}</code>` : esc(j.error); }
+
+
+// ---------------- Inspect view: live game + memory (hex, edit, search) + tile/sprite viewer + copy to Blender ----------------
+const I = { src: "ram", addr: 0, len: 256, auto: true, bytes: null, tsrc: "rom", toff: 0, fmt: "nes", cols: 16, rows: 16, zoom: 3,
+            sel: null, snap: null, cands: null, base: 0, span: 65536, info: null };
+const rpc = (sid, op, args) => api(`/api/sessions/${encodeURIComponent(sid)}/rpc`, { op, args });
+const hex = (n, w = 8) => n.toString(16).toUpperCase().padStart(w, "0");
+const fromHex = s => new Uint8Array((s.match(/../g) || []).map(h => parseInt(h, 16)));
+async function readRange(sid, src, addr, len) {                 // RAM: 4 KB rpc chunks; ROM: one read
+  if (src === "rom") return fromHex((await rpc(sid, "read_rom", { offset: addr, length: len })).hex);
+  const out = new Uint8Array(len);
+  for (let o = 0; o < len; o += 4096) out.set(fromHex(await rpc(sid, "read_memory", { address: addr + o, length: Math.min(4096, len - o) })), o);
+  return out;
+}
+// tile formats: [bytes per 8x8 tile, colours, decoder(bytes, offset) -> 64 palette indices]
+const FMT = {
+  nes: ["NES/Famicom 2bpp planar", 16, 4, (b, o) => { const p = []; for (let y = 0; y < 8; y++) for (let x = 7; x >= 0; x--) p.push(((b[o + y] >> x) & 1) | (((b[o + y + 8] >> x) & 1) << 1)); return p; }],
+  gb: ["Game Boy 2bpp", 16, 4, (b, o) => { const p = []; for (let y = 0; y < 8; y++) for (let x = 7; x >= 0; x--) p.push(((b[o + 2 * y] >> x) & 1) | (((b[o + 2 * y + 1] >> x) & 1) << 1)); return p; }],
+  snes: ["SNES 4bpp planar", 32, 16, (b, o) => { const p = []; for (let y = 0; y < 8; y++) for (let x = 7; x >= 0; x--) p.push(((b[o + 2 * y] >> x) & 1) | (((b[o + 2 * y + 1] >> x) & 1) << 1) | (((b[o + 16 + 2 * y] >> x) & 1) << 2) | (((b[o + 17 + 2 * y] >> x) & 1) << 3)); return p; }],
+  md: ["Genesis/Mega Drive 4bpp packed", 32, 16, (b, o) => { const p = []; for (let i = 0; i < 32; i++) p.push(b[o + i] >> 4, b[o + i] & 15); return p; }],
+  lin8: ["8bpp linear", 64, 256, (b, o) => Array.from(b.subarray(o, o + 64))],
+  one: ["1bpp", 8, 2, (b, o) => { const p = []; for (let y = 0; y < 8; y++) for (let x = 7; x >= 0; x--) p.push((b[o + y] >> x) & 1); return p; }],
+};
+const gray = n => i => { const v = n === 256 ? i : Math.round(i * 255 / (n - 1)); return [v, v, v, 255]; };
+
+async function inspectView(sid) {
+  I.info = await rpc(sid, "info").catch(e => ({ error: e.message }));
+  const caps = I.info.capabilities || {};
+  const no = ["set_breakpoint", "trace_execution", "query_memory_map"].filter(c => caps[c] !== "supported");
+  if (!I.info.rom) I.tsrc = "ram";
+  return `<div class="inspect">
+    <div><img id="scr" class="screen" tabindex="0" alt="Live game" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">
+      <div class="bar" style="margin-top:8px"><button class="act" id="copyframe">Copy frame → Blender</button>
+        <span class="mut">${esc(I.info.title || "")} · ${esc(I.info.platform || "")} · ${esc(I.info.core || "")}${I.info.rom ? " · " + esc(I.info.rom) : ""}</span></div>
+      <p class="mut">${no.length ? `Not exposed by this core over RetroArch's control interface: CPU registers, breakpoints, disassembly, VRAM (${no.join(", ")}).` : ""}</p>
+      <div class="panel"><h4>Search memory</h4>
+        <div class="bar">base 0x<input id="sbase" size="9" value="${hex(I.base)}"> span <input id="sspan" size="7" value="${I.span}">
+          <button class="act" id="snap">New snapshot</button></div>
+        <div class="bar">keep bytes that are <select id="sop"><option value="eq">= value</option><option value="chg">changed</option><option value="same">unchanged</option><option value="inc">increased</option><option value="dec">decreased</option></select>
+          <input id="sval" size="4" placeholder="hex"> <button class="act" id="sfilter">Filter</button></div>
+        <div id="sres" class="mut"></div></div></div>
+    <div>
+      <div class="panel"><h4>Memory</h4>
+        <div class="bar"><select id="msrc"><option value="ram">RAM</option>${I.info.rom ? '<option value="rom">ROM file</option>' : ""}</select>
+          0x<input id="maddr" size="9" value="${hex(I.addr)}"><button class="act" id="mprev">−</button><button class="act" id="mnext">+</button>
+          <label><input type="checkbox" id="mauto" ${I.auto ? "checked" : ""}> live</label>
+          <button class="act" id="mcopy">Copy hex</button></div>
+        <pre id="hexv" class="hex">loading…</pre><div id="mmsg" class="mut"></div></div>
+      <div class="panel"><h4>Tiles / sprite sheet</h4>
+        <div class="bar"><select id="tsrc">${I.info.rom ? '<option value="rom">ROM file</option>' : ""}<option value="ram">RAM</option></select>
+          0x<input id="toff" size="9" value="${hex(I.toff)}"><button class="act" id="tprev">◀</button><button class="act" id="tnext">▶</button>
+          <select id="tfmt">${Object.entries(FMT).map(([k, f]) => `<option value="${k}">${f[0]}</option>`).join("")}</select>
+          zoom <input id="tzoom" type="number" min="1" max="8" value="${I.zoom}" style="width:46px"></div>
+        <canvas id="tiles" class="tiles"></canvas>
+        <div class="bar"><span class="mut">Drag to select tiles.</span><button class="act" id="tcopy">Copy selection → clipboard + Blender</button></div>
+        <div id="tmsg" class="mut"></div></div>
+    </div></div>`;
+}
+
+async function hexRefresh(sid) {
+  try {
+    I.bytes = await readRange(sid, I.src, I.addr, I.len);
+    const rows = [];
+    for (let r = 0; r < I.len; r += 16) {
+      const row = I.bytes.subarray(r, r + 16);
+      rows.push(`<span class="mut">${hex(I.addr + r)}</span>  ` +
+        Array.from(row).map((b, i) => `<span class="hb" data-a="${I.addr + r + i}">${hex(b, 2)}</span>`).join(" ") +
+        "  " + esc(Array.from(row).map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : ".").join("")));
+    }
+    const el = $("#hexv"); if (el) el.innerHTML = rows.join("\n");
+  } catch (e) { const el = $("#hexv"); if (el) el.textContent = e.message; }
+}
+
+async function tilesRender(sid) {
+  const [, per, ncol, dec] = FMT[I.fmt], n = I.cols * I.rows;
+  const msg = $("#tmsg");
+  try {
+    const b = await readRange(sid, I.tsrc, I.toff, per * n);
+    const cv = $("#tiles"); if (!cv) return;
+    cv.width = I.cols * 8; cv.height = I.rows * 8;
+    cv.style.width = cv.width * I.zoom + "px"; cv.style.height = cv.height * I.zoom + "px";
+    const ctx = cv.getContext("2d"), img = ctx.createImageData(cv.width, cv.height), pal = gray(ncol);
+    for (let t = 0; t < n && (t + 1) * per <= b.length; t++) {
+      const px = dec(b, t * per), tx = (t % I.cols) * 8, ty = Math.floor(t / I.cols) * 8;
+      px.forEach((v, i) => { const [r, g, bl, a] = pal(v), o = ((ty + (i >> 3)) * cv.width + tx + (i & 7)) * 4; img.data.set([r, g, bl, a], o); });
+    }
+    ctx.putImageData(img, 0, 0);
+    if (I.sel) { ctx.strokeStyle = "#7c96ff"; ctx.lineWidth = 1; ctx.strokeRect(I.sel.x0 * 8 + .5, I.sel.y0 * 8 + .5, (I.sel.x1 - I.sel.x0 + 1) * 8 - 1, (I.sel.y1 - I.sel.y0 + 1) * 8 - 1); }
+    if (msg) msg.textContent = `${n} tiles @ 0x${hex(I.toff)} (${FMT[I.fmt][0]}, ${per} bytes/tile) · next page 0x${hex(I.toff + per * n)}`;
+  } catch (e) { if (msg) msg.textContent = e.message; }
+}
+
+async function toClipboards(canvas, name, meta) {   // OS clipboard (PNG) + G-Box clipboard (Blender add-on pastes it)
+  const blob = await new Promise(r => canvas.toBlob(r, "image/png"));
+  try { await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); } catch {}
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(await blob.arrayBuffer())));
+  const item = await api("/api/clipboard", { kind: "image", name, b64, meta });
+  return `Copied ${canvas.width}×${canvas.height} px → Windows clipboard + G-Box clipboard #${item.seq}. In Blender: Ctrl+Shift+V (or Auto-paste in the G-Box sidebar).`;
+}
+
+inspectView.after = sid => {
+  const v = id => $(id).value;
+  $("#msrc").value = I.src; $("#tsrc").value = I.tsrc; $("#tfmt").value = I.fmt;
+  $("#msrc").onchange = () => { I.src = v("#msrc"); hexRefresh(sid); };
+  $("#maddr").onchange = () => { I.addr = parseInt(v("#maddr"), 16) || 0; hexRefresh(sid); };
+  $("#mprev").onclick = () => { I.addr = Math.max(0, I.addr - I.len); $("#maddr").value = hex(I.addr); hexRefresh(sid); };
+  $("#mnext").onclick = () => { I.addr += I.len; $("#maddr").value = hex(I.addr); hexRefresh(sid); };
+  $("#mauto").onchange = e => I.auto = e.target.checked;
+  $("#mcopy").onclick = async () => {
+    const t = Array.from(I.bytes || []).map(b => hex(b, 2)).join(" ");
+    try { await navigator.clipboard.writeText(t); } catch {}
+    await api("/api/clipboard", { kind: "text", name: `mem_${hex(I.addr)}`, b64: btoa(t), meta: { session: sid, source: I.src, address: I.addr } });
+    $("#mmsg").textContent = `Copied ${I.len} bytes from 0x${hex(I.addr)}.`;
+  };
+  $("#hexv").onclick = async e => {                            // edit a byte (RAM): audited write_memory job with rollback
+    const a = e.target.dataset?.a; if (a === undefined) return;
+    if (I.src !== "ram") { $("#mmsg").textContent = "ROM bytes are read-only here (the original file is never modified)."; return; }
+    const nv = prompt(`New value for 0x${hex(+a)} (hex byte)`, e.target.textContent); if (!nv || !/^[0-9a-f]{1,2}$/i.test(nv)) return;
+    const j = await runJob({ tool: "write_memory", input: { session_id: sid, address: +a, hex_bytes: nv.padStart(2, "0") } });
+    $("#mmsg").textContent = j.state === "succeeded" ? `0x${hex(+a)} ← ${nv.toUpperCase()} (receipt ${j.receipt_id}; previous value kept for rollback)` : `write ${j.state}: ${j.error}`;
+    hexRefresh(sid);
+  };
+  $("#snap").onclick = async () => {
+    I.base = parseInt(v("#sbase"), 16) || 0; I.span = Math.min(+v("#sspan") || 65536, 1 << 20);
+    $("#sres").textContent = "reading…"; I.snap = await readRange(sid, "ram", I.base, I.span); I.cands = null;
+    $("#sres").textContent = `snapshot: ${I.span.toLocaleString()} bytes from 0x${hex(I.base)}. Change something in-game, then Filter.`;
+  };
+  $("#sfilter").onclick = async () => {
+    if (!I.snap) return $("#sres").textContent = "take a snapshot first";
+    const now = await readRange(sid, "ram", I.base, I.span), op = v("#sop"), val = parseInt(v("#sval"), 16);
+    const test = { eq: (a, b) => b === val, chg: (a, b) => a !== b, same: (a, b) => a === b, inc: (a, b) => b > a, dec: (a, b) => b < a }[op];
+    const pool = I.cands || Array.from({ length: I.span }, (_, i) => i);
+    I.cands = pool.filter(i => test(I.snap[i], now[i])); I.snap = now;
+    $("#sres").innerHTML = `${I.cands.length.toLocaleString()} candidates` + (I.cands.length <= 64 ? ": " + I.cands.map(i =>
+      `<a href="#" data-j="${I.base + i}">0x${hex(I.base + i)}=${hex(now[i], 2)}</a>`).join(" ") : " (keep filtering)");
+  };
+  $("#sres").onclick = e => { const j = e.target.dataset?.j; if (j === undefined) return; e.preventDefault(); I.src = "ram"; $("#msrc").value = "ram"; I.addr = (+j) & ~15; $("#maddr").value = hex(I.addr); hexRefresh(sid); };
+  const tre = () => tilesRender(sid), page = () => FMT[I.fmt][1] * I.cols * I.rows;
+  $("#tsrc").onchange = () => { I.tsrc = v("#tsrc"); I.sel = null; tre(); };
+  $("#toff").onchange = () => { I.toff = parseInt(v("#toff"), 16) || 0; tre(); };
+  $("#tprev").onclick = () => { I.toff = Math.max(0, I.toff - page()); $("#toff").value = hex(I.toff); I.sel = null; tre(); };
+  $("#tnext").onclick = () => { I.toff += page(); $("#toff").value = hex(I.toff); I.sel = null; tre(); };
+  $("#tfmt").onchange = () => { I.fmt = v("#tfmt"); I.sel = null; tre(); };
+  $("#tzoom").onchange = () => { I.zoom = Math.max(1, Math.min(8, +v("#tzoom"))); tre(); };
+  const cv = $("#tiles"), cell = e => { const r = cv.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / (8 * I.zoom)), Math.floor((e.clientY - r.top) / (8 * I.zoom))]; };
+  let d0 = null;
+  cv.onpointerdown = e => { d0 = cell(e); cv.setPointerCapture(e.pointerId); };
+  cv.onpointermove = e => { if (!d0) return; const [x, y] = cell(e); I.sel = { x0: Math.min(d0[0], x), y0: Math.min(d0[1], y), x1: Math.max(d0[0], x), y1: Math.max(d0[1], y) }; tre(); };
+  cv.onpointerup = () => d0 = null;
+  $("#tcopy").onclick = async () => {
+    const s = I.sel || { x0: 0, y0: 0, x1: I.cols - 1, y1: I.rows - 1 };
+    const out = document.createElement("canvas"); out.width = (s.x1 - s.x0 + 1) * 8; out.height = (s.y1 - s.y0 + 1) * 8;
+    out.getContext("2d").drawImage(cv, s.x0 * 8, s.y0 * 8, out.width, out.height, 0, 0, out.width, out.height);
+    const first = I.toff + (s.y0 * I.cols + s.x0) * FMT[I.fmt][1];
+    $("#tmsg").textContent = await toClipboards(out, `tiles_${I.tsrc}_${hex(first)}`, { session: sid, game: I.info.title, source: I.tsrc, offset: first, format: I.fmt, tiles: s });
+  };
+  $("#copyframe").onclick = async () => {
+    const blob = await (await fetch(`/api/sessions/${encodeURIComponent(sid)}/frame.jpg?${tq()}`)).blob(), bm = await createImageBitmap(blob);
+    const c = document.createElement("canvas"); c.width = bm.width; c.height = bm.height; c.getContext("2d").drawImage(bm, 0, 0);
+    $("#tmsg").textContent = await toClipboards(c, `frame_${Date.now()}`, { session: sid, game: I.info.title, kind: "frame" });
+  };
+  hexRefresh(sid); tilesRender(sid);
+  timer = setInterval(() => { if (I.auto && cur === "Sessions" && $("#hexv")) hexRefresh(sid); }, 500);
+};
+
+// ---------------- Ops views ----------------
+async function jobs() {
+  const js = await api("/api/jobs");
+  timer = setInterval(() => cur === "Jobs" && show("Jobs"), 4000);
+  return table(["Job", "Tool", "State", "Worker", "Error / output", "Receipt"], js.map(j => `<tr>
+    <td><code>${j.id}</code><br><span class="mut">${new Date(j.created * 1000).toLocaleTimeString()}</span></td><td>${esc(j.tool)}</td><td>${state(j.state)}</td>
+    <td><code>${esc(j.worker_id)}</code></td><td><code>${esc(j.error || JSON.stringify(j.output || "").slice(0, 200))}</code></td>
+    <td>${j.receipt_id ? `<a href="#" onclick='receipt(${JSON.stringify(j.receipt_id)});return false'>${j.receipt_id}</a>` : ""}</td></tr>`));
+}
+async function receipt(id) {
+  clearInterval(timer);
+  const r = await api("/api/receipts/" + id);
+  $("#view").innerHTML = `<p><button class="act" onclick="show('Jobs')">Back</button></p><h3>Receipt ${esc(id)}</h3>
+    <p>Validation: ${r.validation_ok ? '<span class="ok">passed</span>' : '<span class="bad">failed</span>'} ${esc(r.validation_problems.join("; "))}</p>` +
+    table(["Artifact", "Type", "Size", "sha256", ""], r.artifacts.map(a => `<tr><td><a href="/api/artifacts/${a.sha256}?${tq()}" target="_blank">${esc(a.name)}</a></td><td>${esc(a.media_type)}</td><td>${a.size}</td><td><code>${a.sha256}</code></td>
+      <td>${/gltf|image\/png/.test(a.media_type) ? `<button class="act" onclick='toBlender(${JSON.stringify(a)}, this)'>→ Blender</button>` : ""}</td></tr>`)) +
+    `<pre class="mut" style="white-space:pre-wrap">${esc(JSON.stringify(r, null, 1))}</pre>`;
+}
+async function toBlender(a, btn) {         // put an existing artifact on the G-Box clipboard; Blender add-on pastes it
+  const item = await api("/api/clipboard", { kind: /gltf/.test(a.media_type) ? "gltf" : "image", name: a.name, artifact: a.sha256, meta: a.provenance || {} });
+  btn.textContent = `copied #${item.seq} — Ctrl+Shift+V in Blender`;
+}
+async function toolsView() {
+  const ts = await api("/api/tools");
+  return table(["Tool", "Permissions", "Available on", "Unavailable", "Validation"], ts.map(t => `<tr>
+    <td><b>${esc(t.name)}</b> <span class="mut">v${t.version}</span><br><span class="mut">${esc(t.description)}</span></td>
+    <td>${t.permissions.join(", ")} ${t.granted ? "" : '<span class="bad">(not granted)</span>'}</td>
+    <td>${t.workers.length ? esc(t.workers.join(", ")) : '<span class="bad">no online worker</span>'}</td>
+    <td class="mut">${Object.entries(t.unavailable).map(([w, r]) => esc(w + ": " + r)).join("<br>")}</td><td class="mut">${esc(t.validation)}</td></tr>`));
+}
+async function workersView() {
+  const ws = await api("/api/workers");
+  return table(["Worker", "OS", "Status", "Tools", ""], ws.map(w => `<tr><td>${esc(w.name)}<br><code class="mut">${w.id}</code></td><td>${w.os}</td>
+    <td>${w.online ? '<span class="ok">online</span>' : '<span class="mut">offline</span>'}</td><td>${esc(w.tools.join(", "))}</td>
+    <td>${w.online ? `<button class="act" onclick='provision(${JSON.stringify(w.id)})'>Install / verify deps</button>` : ""}</td></tr>`));
+}
+async function provision(wid) { await api("/api/jobs", { tool: "provision_node", input: {}, require_worker: wid }); show("Jobs"); }
+async function audit() {
+  const [v, log] = await Promise.all([api("/api/audit/verify"), api("/api/audit?limit=500")]);
+  return `<p>Hash chain: ${v.ok ? `<span class="ok">intact</span> (${v.entries} entries)` : `<span class="bad">BROKEN at seq ${v.first_bad_seq}</span>`}</p>` +
+    table(["#", "Time", "Actor", "Action", "Subject", "Data"], log.reverse().map(e => `<tr><td>${e.seq}</td><td>${new Date(e.ts * 1000).toLocaleString()}</td>
+      <td>${esc(e.actor)}</td><td>${esc(e.action)}</td><td><code>${esc(e.subject)}</code></td><td><code class="mut">${esc(JSON.stringify(e.data).slice(0, 200))}</code></td></tr>`));
+}
+async function metrics() {
+  const m = await api("/api/metrics");
+  return table(["Metric", "Value"], Object.entries(m).map(([k, v]) => `<tr><td>${k}</td><td><code>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</code></td></tr>`));
+}
+show(cur);
+</script>
+</body>
+</html>

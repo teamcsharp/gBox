@@ -1,0 +1,60 @@
+{
+ "description": "Plan \u00a720: every fact carries confidence + provenance; 'validated' requires evidence artifacts.",
+ "properties": {
+  "id": {
+   "title": "Id",
+   "type": "string"
+  },
+  "game_id": {
+   "title": "Game Id",
+   "type": "string"
+  },
+  "src": {
+   "title": "Src",
+   "type": "string"
+  },
+  "rel": {
+   "title": "Rel",
+   "type": "string"
+  },
+  "dst": {
+   "title": "Dst",
+   "type": "string"
+  },
+  "confidence": {
+   "default": 0.5,
+   "title": "Confidence",
+   "type": "number"
+  },
+  "status": {
+   "default": "hypothesis",
+   "title": "Status",
+   "type": "string"
+  },
+  "evidence": {
+   "default": [],
+   "items": {
+    "type": "string"
+   },
+   "title": "Evidence",
+   "type": "array"
+  },
+  "source": {
+   "title": "Source",
+   "type": "string"
+  },
+  "created": {
+   "title": "Created",
+   "type": "number"
+  }
+ },
+ "required": [
+  "game_id",
+  "src",
+  "rel",
+  "dst",
+  "source"
+ ],
+ "title": "KnowledgeEdge",
+ "type": "object"
+}

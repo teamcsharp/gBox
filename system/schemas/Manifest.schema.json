@@ -1,0 +1,500 @@
+{
+ "$defs": {
+  "Bone": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "parent": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Parent"
+    },
+    "translation": {
+     "default": [
+      0,
+      0,
+      0
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Translation",
+     "type": "array"
+    },
+    "rotation": {
+     "default": [
+      0,
+      0,
+      0,
+      1
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Rotation",
+     "type": "array"
+    },
+    "scale": {
+     "default": [
+      1,
+      1,
+      1
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Scale",
+     "type": "array"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "Bone",
+   "type": "object"
+  },
+  "Channel": {
+   "properties": {
+    "bone": {
+     "title": "Bone",
+     "type": "integer"
+    },
+    "path": {
+     "enum": [
+      "translation",
+      "rotation",
+      "scale"
+     ],
+     "title": "Path",
+     "type": "string"
+    },
+    "times": {
+     "items": {
+      "type": "number"
+     },
+     "title": "Times",
+     "type": "array"
+    },
+    "values": {
+     "items": {
+      "items": {
+       "type": "number"
+      },
+      "type": "array"
+     },
+     "title": "Values",
+     "type": "array"
+    },
+    "interpolation": {
+     "default": "LINEAR",
+     "enum": [
+      "LINEAR",
+      "STEP"
+     ],
+     "title": "Interpolation",
+     "type": "string"
+    }
+   },
+   "required": [
+    "bone",
+    "path",
+    "times",
+    "values"
+   ],
+   "title": "Channel",
+   "type": "object"
+  },
+  "Clip": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "channels": {
+     "items": {
+      "$ref": "#/$defs/Channel"
+     },
+     "title": "Channels",
+     "type": "array"
+    },
+    "events": {
+     "default": [],
+     "items": {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     "title": "Events",
+     "type": "array"
+    }
+   },
+   "required": [
+    "name",
+    "channels"
+   ],
+   "title": "Clip",
+   "type": "object"
+  },
+  "Material": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "base_color": {
+     "default": [
+      1,
+      1,
+      1,
+      1
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Base Color",
+     "type": "array"
+    },
+    "texture": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Texture"
+    },
+    "source": {
+     "additionalProperties": true,
+     "default": {},
+     "title": "Source",
+     "type": "object"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "Material",
+   "type": "object"
+  },
+  "Mesh": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "positions": {
+     "items": {
+      "items": {
+       "type": "number"
+      },
+      "type": "array"
+     },
+     "title": "Positions",
+     "type": "array"
+    },
+    "normals": {
+     "anyOf": [
+      {
+       "items": {
+        "items": {
+         "type": "number"
+        },
+        "type": "array"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Normals"
+    },
+    "uvs": {
+     "anyOf": [
+      {
+       "items": {
+        "items": {
+         "type": "number"
+        },
+        "type": "array"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Uvs"
+    },
+    "indices": {
+     "items": {
+      "type": "integer"
+     },
+     "title": "Indices",
+     "type": "array"
+    },
+    "material": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Material"
+    },
+    "joints": {
+     "anyOf": [
+      {
+       "items": {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Joints"
+    },
+    "weights": {
+     "anyOf": [
+      {
+       "items": {
+        "items": {
+         "type": "number"
+        },
+        "type": "array"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Weights"
+    }
+   },
+   "required": [
+    "name",
+    "positions",
+    "indices"
+   ],
+   "title": "Mesh",
+   "type": "object"
+  },
+  "Node": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "mesh": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Mesh"
+    },
+    "skinned": {
+     "default": false,
+     "title": "Skinned",
+     "type": "boolean"
+    },
+    "translation": {
+     "default": [
+      0,
+      0,
+      0
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Translation",
+     "type": "array"
+    },
+    "rotation": {
+     "default": [
+      0,
+      0,
+      0,
+      1
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Rotation",
+     "type": "array"
+    },
+    "scale": {
+     "default": [
+      1,
+      1,
+      1
+     ],
+     "items": {
+      "type": "number"
+     },
+     "title": "Scale",
+     "type": "array"
+    },
+    "children": {
+     "default": [],
+     "items": {
+      "type": "integer"
+     },
+     "title": "Children",
+     "type": "array"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "Node",
+   "type": "object"
+  }
+ },
+ "properties": {
+  "uap_version": {
+   "default": "0.1",
+   "title": "Uap Version",
+   "type": "string"
+  },
+  "name": {
+   "title": "Name",
+   "type": "string"
+  },
+  "source": {
+   "additionalProperties": true,
+   "title": "Source",
+   "type": "object"
+  },
+  "coordinate_system": {
+   "additionalProperties": true,
+   "default": {
+    "up": "Y",
+    "forward": "-Z",
+    "handedness": "right"
+   },
+   "title": "Coordinate System",
+   "type": "object"
+  },
+  "unit_scale_m": {
+   "default": 1.0,
+   "title": "Unit Scale M",
+   "type": "number"
+  },
+  "meshes": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Mesh"
+   },
+   "title": "Meshes",
+   "type": "array"
+  },
+  "materials": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Material"
+   },
+   "title": "Materials",
+   "type": "array"
+  },
+  "skeleton": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Bone"
+   },
+   "title": "Skeleton",
+   "type": "array"
+  },
+  "animations": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Clip"
+   },
+   "title": "Animations",
+   "type": "array"
+  },
+  "collision": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Mesh"
+   },
+   "title": "Collision",
+   "type": "array"
+  },
+  "nodes": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Node"
+   },
+   "title": "Nodes",
+   "type": "array"
+  },
+  "roots": {
+   "default": [],
+   "items": {
+    "type": "integer"
+   },
+   "title": "Roots",
+   "type": "array"
+  },
+  "confidence": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "default": {},
+   "title": "Confidence",
+   "type": "object"
+  },
+  "provenance": {
+   "default": [],
+   "items": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "title": "Provenance",
+   "type": "array"
+  },
+  "dependencies": {
+   "default": [],
+   "items": {
+    "type": "string"
+   },
+   "title": "Dependencies",
+   "type": "array"
+  }
+ },
+ "required": [
+  "name",
+  "source"
+ ],
+ "title": "Manifest",
+ "type": "object"
+}

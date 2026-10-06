@@ -1,0 +1,135 @@
+{
+ "description": "Plan \u00a721 experiment record.",
+ "properties": {
+  "id": {
+   "title": "Id",
+   "type": "string"
+  },
+  "game_id": {
+   "title": "Game Id",
+   "type": "string"
+  },
+  "build_hash": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Build Hash"
+  },
+  "objective": {
+   "title": "Objective",
+   "type": "string"
+  },
+  "initial_state": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Initial State"
+  },
+  "policy_version": {
+   "title": "Policy Version",
+   "type": "string"
+  },
+  "proposer": {
+   "title": "Proposer",
+   "type": "string"
+  },
+  "observations": {
+   "default": [],
+   "items": {
+    "type": "string"
+   },
+   "title": "Observations",
+   "type": "array"
+  },
+  "outcome": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Outcome"
+  },
+  "metrics": {
+   "additionalProperties": {
+    "type": "number"
+   },
+   "default": {},
+   "title": "Metrics",
+   "type": "object"
+  },
+  "artifacts": {
+   "default": [],
+   "items": {
+    "type": "string"
+   },
+   "title": "Artifacts",
+   "type": "array"
+  },
+  "cost_s": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Cost S"
+  },
+  "evaluation": {
+   "anyOf": [
+    {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Evaluation"
+  },
+  "knowledge_changes": {
+   "default": [],
+   "items": {
+    "type": "string"
+   },
+   "title": "Knowledge Changes",
+   "type": "array"
+  },
+  "retention": {
+   "default": "keep",
+   "title": "Retention",
+   "type": "string"
+  },
+  "created": {
+   "title": "Created",
+   "type": "number"
+  }
+ },
+ "required": [
+  "game_id",
+  "objective",
+  "policy_version",
+  "proposer"
+ ],
+ "title": "RunRecord",
+ "type": "object"
+}

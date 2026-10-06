@@ -1,0 +1,114 @@
+{
+ "$defs": {
+  "Permission": {
+   "enum": [
+    "read",
+    "execute",
+    "stage",
+    "network",
+    "memory_write",
+    "file_mutation",
+    "binary_patch"
+   ],
+   "title": "Permission",
+   "type": "string"
+  }
+ },
+ "description": "Plan \u00a719 tool schema.",
+ "properties": {
+  "name": {
+   "title": "Name",
+   "type": "string"
+  },
+  "version": {
+   "title": "Version",
+   "type": "string"
+  },
+  "description": {
+   "title": "Description",
+   "type": "string"
+  },
+  "capabilities": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Capabilities",
+   "type": "array"
+  },
+  "input_schema": {
+   "additionalProperties": true,
+   "title": "Input Schema",
+   "type": "object"
+  },
+  "output_schema": {
+   "additionalProperties": true,
+   "title": "Output Schema",
+   "type": "object"
+  },
+  "platforms": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Platforms",
+   "type": "array"
+  },
+  "engines": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Engines",
+   "type": "array"
+  },
+  "permissions": {
+   "items": {
+    "$ref": "#/$defs/Permission"
+   },
+   "title": "Permissions",
+   "type": "array"
+  },
+  "side_effects": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Side Effects",
+   "type": "array"
+  },
+  "artifacts": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Artifacts",
+   "type": "array"
+  },
+  "timeout_s": {
+   "title": "Timeout S",
+   "type": "number"
+  },
+  "retries": {
+   "title": "Retries",
+   "type": "integer"
+  },
+  "validation": {
+   "title": "Validation",
+   "type": "string"
+  }
+ },
+ "required": [
+  "name",
+  "version",
+  "description",
+  "capabilities",
+  "input_schema",
+  "output_schema",
+  "platforms",
+  "engines",
+  "permissions",
+  "side_effects",
+  "artifacts",
+  "timeout_s",
+  "retries",
+  "validation"
+ ],
+ "title": "ToolInfo",
+ "type": "object"
+}

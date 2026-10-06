@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 668 783" role="img" aria-label="G-Box">
+  <title>G-Box</title>
+  <!-- G-Box mark: hexagonal cube outline, three cube edges meeting behind a bold G. Transparent background. -->
+  <defs>
+    <mask id="g-cut" maskUnits="userSpaceOnUse">
+      <rect width="668" height="783" fill="#fff"/>
+      <!-- keep-out zone around the G so the cube edges stop short of it -->
+      <rect x="194" y="189" width="272" height="459" rx="96" fill="#000"/>
+      <rect x="350" y="334" width="130" height="78" fill="#fff"/>
+    </mask>
+    <mask id="g-shape" maskUnits="userSpaceOnUse">
+      <rect x="210" y="205" width="240" height="427" rx="84" fill="#fff"/>
+      <rect x="295" y="282" width="70" height="278" rx="35" fill="#000"/>   <!-- counter -->
+      <rect x="365" y="350" width="90" height="50" fill="#000"/>            <!-- mouth of the G -->
+      <rect x="330" y="400" width="40" height="70" rx="6" fill="#fff"/>     <!-- crossbar spur -->
+    </mask>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="28" stroke-linejoin="miter" color="#e6e6e6">
+    <polygon points="330,56 608,253 608,532 330,727 52,532 52,253"/>
+    <g mask="url(#g-cut)">
+      <line x1="52" y1="253" x2="330" y2="430"/>
+      <line x1="608" y1="253" x2="330" y2="430"/>
+      <line x1="330" y1="430" x2="330" y2="727"/>
+    </g>
+  </g>
+  <rect width="668" height="783" fill="#e6e6e6" mask="url(#g-shape)"/>
+</svg>

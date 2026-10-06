@@ -1,0 +1,14 @@
+{
+  "name": "gbox-desktop",
+  "productName": "G-Box",
+  "version": "0.1.0",
+  "description": "G-Box desktop manager: runs the DGX Spark control plane, the Windows node, and the G-Box UI",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}

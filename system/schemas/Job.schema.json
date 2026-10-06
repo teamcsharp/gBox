@@ -1,0 +1,142 @@
+{
+ "$defs": {
+  "JobState": {
+   "enum": [
+    "queued",
+    "running",
+    "succeeded",
+    "invalid",
+    "failed",
+    "rejected"
+   ],
+   "title": "JobState",
+   "type": "string"
+  }
+ },
+ "properties": {
+  "id": {
+   "title": "Id",
+   "type": "string"
+  },
+  "tool": {
+   "title": "Tool",
+   "type": "string"
+  },
+  "input": {
+   "additionalProperties": true,
+   "default": {},
+   "title": "Input",
+   "type": "object"
+  },
+  "require_os": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Require Os"
+  },
+  "require_worker": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Require Worker"
+  },
+  "state": {
+   "$ref": "#/$defs/JobState",
+   "default": "queued"
+  },
+  "worker_id": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Worker Id"
+  },
+  "created": {
+   "title": "Created",
+   "type": "number"
+  },
+  "started": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Started"
+  },
+  "finished": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Finished"
+  },
+  "output": {
+   "anyOf": [
+    {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Output"
+  },
+  "error": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Error"
+  },
+  "receipt_id": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Receipt Id"
+  }
+ },
+ "required": [
+  "tool"
+ ],
+ "title": "Job",
+ "type": "object"
+}

@@ -1,0 +1,9 @@
+# runtime state, secrets (api_token), DB, artifacts, downloaded cores/ghidra
+gbox-data/
+.venv*/
+node_modules/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/

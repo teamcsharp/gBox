@@ -1,0 +1,1029 @@
+[
+ {
+  "name": "echo_artifact",
+  "version": "1.0",
+  "description": "Contract test: writes the message as an artifact and reports its hash.",
+  "capabilities": [
+   "contract-test"
+  ],
+  "input_schema": {
+   "properties": {
+    "message": {
+     "title": "Message",
+     "type": "string"
+    }
+   },
+   "required": [
+    "message"
+   ],
+   "title": "EchoIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "sha256": {
+     "title": "Sha256",
+     "type": "string"
+    },
+    "length": {
+     "title": "Length",
+     "type": "integer"
+    },
+    "host_os": {
+     "title": "Host Os",
+     "type": "string"
+    }
+   },
+   "required": [
+    "sha256",
+    "length",
+    "host_os"
+   ],
+   "title": "EchoOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [],
+  "artifacts": [
+   "echo.txt"
+  ],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "artifact hash and length match output"
+ },
+ {
+  "name": "scan_library",
+  "version": "1.0",
+  "description": "Index the game library (read-only) and optionally the local Steam library.",
+  "capabilities": [
+   "catalog"
+  ],
+  "input_schema": {
+   "properties": {
+    "roots": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Roots"
+    },
+    "include_steam": {
+     "default": true,
+     "title": "Include Steam",
+     "type": "boolean"
+    }
+   },
+   "title": "ScanIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "$defs": {
+    "CatalogEntry": {
+     "description": "Plan \u00a75 catalog fields.",
+     "properties": {
+      "game_id": {
+       "title": "Game Id",
+       "type": "string"
+      },
+      "title": {
+       "title": "Title",
+       "type": "string"
+      },
+      "platform": {
+       "title": "Platform",
+       "type": "string"
+      },
+      "platform_confidence": {
+       "default": "extension",
+       "title": "Platform Confidence",
+       "type": "string"
+      },
+      "region": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Region"
+      },
+      "serial": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Serial"
+      },
+      "source_paths": {
+       "items": {
+        "type": "string"
+       },
+       "title": "Source Paths",
+       "type": "array"
+      },
+      "hashes": {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "default": {},
+       "title": "Hashes",
+       "type": "object"
+      },
+      "size": {
+       "default": 0,
+       "title": "Size",
+       "type": "integer"
+      },
+      "format": {
+       "title": "Format",
+       "type": "string"
+      },
+      "runtimes": {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "default": {},
+       "title": "Runtimes",
+       "type": "object"
+      },
+      "playable": {
+       "default": "untested",
+       "title": "Playable",
+       "type": "string"
+      },
+      "analysis": {
+       "default": "none",
+       "title": "Analysis",
+       "type": "string"
+      },
+      "asset_mapping": {
+       "default": "none",
+       "title": "Asset Mapping",
+       "type": "string"
+      },
+      "autoplay": {
+       "default": "none",
+       "title": "Autoplay",
+       "type": "string"
+      },
+      "modding": {
+       "default": "none",
+       "title": "Modding",
+       "type": "string"
+      },
+      "launch": {
+       "additionalProperties": true,
+       "default": {},
+       "title": "Launch",
+       "type": "object"
+      },
+      "profile_id": {
+       "title": "Profile Id",
+       "type": "string"
+      }
+     },
+     "required": [
+      "game_id",
+      "title",
+      "platform",
+      "source_paths",
+      "format",
+      "profile_id"
+     ],
+     "title": "CatalogEntry",
+     "type": "object"
+    }
+   },
+   "properties": {
+    "entries": {
+     "items": {
+      "$ref": "#/$defs/CatalogEntry"
+     },
+     "title": "Entries",
+     "type": "array"
+    },
+    "problems": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Problems",
+     "type": "array"
+    }
+   },
+   "required": [
+    "entries",
+    "problems"
+   ],
+   "title": "ScanOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [
+   "writes hash cache in data_dir"
+  ],
+  "artifacts": [],
+  "timeout_s": 3600.0,
+  "retries": 0,
+  "validation": "unique game ids"
+ },
+ {
+  "name": "launch_game",
+  "version": "1.0",
+  "description": "Launch a cataloged game through its configured adapter.",
+  "capabilities": [
+   "runtime"
+  ],
+  "input_schema": {
+   "$defs": {
+    "CatalogEntry": {
+     "description": "Plan \u00a75 catalog fields.",
+     "properties": {
+      "game_id": {
+       "title": "Game Id",
+       "type": "string"
+      },
+      "title": {
+       "title": "Title",
+       "type": "string"
+      },
+      "platform": {
+       "title": "Platform",
+       "type": "string"
+      },
+      "platform_confidence": {
+       "default": "extension",
+       "title": "Platform Confidence",
+       "type": "string"
+      },
+      "region": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Region"
+      },
+      "serial": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Serial"
+      },
+      "source_paths": {
+       "items": {
+        "type": "string"
+       },
+       "title": "Source Paths",
+       "type": "array"
+      },
+      "hashes": {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "default": {},
+       "title": "Hashes",
+       "type": "object"
+      },
+      "size": {
+       "default": 0,
+       "title": "Size",
+       "type": "integer"
+      },
+      "format": {
+       "title": "Format",
+       "type": "string"
+      },
+      "runtimes": {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "default": {},
+       "title": "Runtimes",
+       "type": "object"
+      },
+      "playable": {
+       "default": "untested",
+       "title": "Playable",
+       "type": "string"
+      },
+      "analysis": {
+       "default": "none",
+       "title": "Analysis",
+       "type": "string"
+      },
+      "asset_mapping": {
+       "default": "none",
+       "title": "Asset Mapping",
+       "type": "string"
+      },
+      "autoplay": {
+       "default": "none",
+       "title": "Autoplay",
+       "type": "string"
+      },
+      "modding": {
+       "default": "none",
+       "title": "Modding",
+       "type": "string"
+      },
+      "launch": {
+       "additionalProperties": true,
+       "default": {},
+       "title": "Launch",
+       "type": "object"
+      },
+      "profile_id": {
+       "title": "Profile Id",
+       "type": "string"
+      }
+     },
+     "required": [
+      "game_id",
+      "title",
+      "platform",
+      "source_paths",
+      "format",
+      "profile_id"
+     ],
+     "title": "CatalogEntry",
+     "type": "object"
+    }
+   },
+   "properties": {
+    "game": {
+     "$ref": "#/$defs/CatalogEntry"
+    }
+   },
+   "required": [
+    "game"
+   ],
+   "title": "LaunchIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "session_id": {
+     "title": "Session Id",
+     "type": "string"
+    },
+    "adapter": {
+     "title": "Adapter",
+     "type": "string"
+    },
+    "capabilities": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "title": "Capabilities",
+     "type": "object"
+    },
+    "detail": {
+     "additionalProperties": true,
+     "title": "Detail",
+     "type": "object"
+    }
+   },
+   "required": [
+    "session_id",
+    "adapter",
+    "capabilities",
+    "detail"
+   ],
+   "title": "LaunchOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "execute"
+  ],
+  "side_effects": [
+   "starts emulator/game process",
+   "may stage a copy into cache"
+  ],
+  "artifacts": [],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "output schema"
+ },
+ {
+  "name": "session_op",
+  "version": "1.0",
+  "description": "Call a runtime op (pause/resume/stop_game/save_state/query_runtime/step_frames...) on a live session.",
+  "capabilities": [
+   "runtime"
+  ],
+  "input_schema": {
+   "properties": {
+    "session_id": {
+     "title": "Session Id",
+     "type": "string"
+    },
+    "op": {
+     "title": "Op",
+     "type": "string"
+    },
+    "args": {
+     "additionalProperties": true,
+     "default": {},
+     "title": "Args",
+     "type": "object"
+    }
+   },
+   "required": [
+    "session_id",
+    "op"
+   ],
+   "title": "SessionIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "result": {
+     "additionalProperties": true,
+     "title": "Result",
+     "type": "object"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "SessionOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "execute"
+  ],
+  "side_effects": [],
+  "artifacts": [],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "output schema"
+ },
+ {
+  "name": "read_memory",
+  "version": "1.0",
+  "description": "Read emulated memory from a live session into an artifact.",
+  "capabilities": [
+   "runtime",
+   "memory"
+  ],
+  "input_schema": {
+   "properties": {
+    "session_id": {
+     "title": "Session Id",
+     "type": "string"
+    },
+    "address": {
+     "title": "Address",
+     "type": "integer"
+    },
+    "length": {
+     "title": "Length",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "session_id",
+    "address",
+    "length"
+   ],
+   "title": "ReadMemIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "address": {
+     "title": "Address",
+     "type": "integer"
+    },
+    "length": {
+     "title": "Length",
+     "type": "integer"
+    },
+    "sha256": {
+     "title": "Sha256",
+     "type": "string"
+    }
+   },
+   "required": [
+    "address",
+    "length",
+    "sha256"
+   ],
+   "title": "ReadMemOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [],
+  "artifacts": [
+   "memory.bin"
+  ],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "artifact length/hash match"
+ },
+ {
+  "name": "write_memory",
+  "version": "1.0",
+  "description": "Write emulated memory. Requires explicit memory_write permission.",
+  "capabilities": [
+   "runtime",
+   "memory"
+  ],
+  "input_schema": {
+   "properties": {
+    "session_id": {
+     "title": "Session Id",
+     "type": "string"
+    },
+    "address": {
+     "title": "Address",
+     "type": "integer"
+    },
+    "hex_bytes": {
+     "title": "Hex Bytes",
+     "type": "string"
+    }
+   },
+   "required": [
+    "session_id",
+    "address",
+    "hex_bytes"
+   ],
+   "title": "WriteMemIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "result": {
+     "additionalProperties": true,
+     "title": "Result",
+     "type": "object"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "SessionOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "memory_write"
+  ],
+  "side_effects": [
+   "mutates live emulated memory"
+  ],
+  "artifacts": [],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "output schema"
+ },
+ {
+  "name": "get_frame",
+  "version": "1.0",
+  "description": "Capture one frame of the host display via ffmpeg (gdigrab on Windows, x11grab on Linux).",
+  "capabilities": [
+   "video"
+  ],
+  "input_schema": {
+   "properties": {
+    "region": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Region"
+    }
+   },
+   "title": "FrameIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "width": {
+     "title": "Width",
+     "type": "integer"
+    },
+    "height": {
+     "title": "Height",
+     "type": "integer"
+    },
+    "sha256": {
+     "title": "Sha256",
+     "type": "string"
+    }
+   },
+   "required": [
+    "width",
+    "height",
+    "sha256"
+   ],
+   "title": "FrameOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [],
+  "artifacts": [
+   "frame.png"
+  ],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "PNG signature + IHDR size + hash"
+ },
+ {
+  "name": "export_asset",
+  "version": "1.0",
+  "description": "Validate a UAP package and export it to glTF 2.0 / OBJ.",
+  "capabilities": [
+   "asset",
+   "convert"
+  ],
+  "input_schema": {
+   "properties": {
+    "package_dir": {
+     "title": "Package Dir",
+     "type": "string"
+    },
+    "formats": {
+     "default": [
+      "gltf",
+      "obj"
+     ],
+     "items": {
+      "type": "string"
+     },
+     "title": "Formats",
+     "type": "array"
+    }
+   },
+   "required": [
+    "package_dir"
+   ],
+   "title": "UapIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "problems": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Problems",
+     "type": "array"
+    },
+    "stats": {
+     "additionalProperties": true,
+     "title": "Stats",
+     "type": "object"
+    },
+    "exported": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "title": "Exported",
+     "type": "object"
+    }
+   },
+   "required": [
+    "problems",
+    "stats",
+    "exported"
+   ],
+   "title": "UapOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [],
+  "artifacts": [
+   "model.gltf",
+   "model.obj"
+  ],
+  "timeout_s": 60.0,
+  "retries": 0,
+  "validation": "UAP validator + glTF round-trip vertex count"
+ },
+ {
+  "name": "open_in_blender",
+  "version": "1.0",
+  "description": "Reconstruct a UAP package in Blender (headless) and save a .blend with an object report.",
+  "capabilities": [
+   "asset",
+   "blender"
+  ],
+  "input_schema": {
+   "properties": {
+    "package_dir": {
+     "title": "Package Dir",
+     "type": "string"
+    }
+   },
+   "required": [
+    "package_dir"
+   ],
+   "title": "BlenderIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "objects": {
+     "items": {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     "title": "Objects",
+     "type": "array"
+    },
+    "expected": {
+     "additionalProperties": true,
+     "title": "Expected",
+     "type": "object"
+    }
+   },
+   "required": [
+    "objects",
+    "expected"
+   ],
+   "title": "BlenderOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [
+   "writes a .blend file artifact"
+  ],
+  "artifacts": [
+   "scene.blend",
+   "blender_report.json"
+  ],
+  "timeout_s": 600.0,
+  "retries": 0,
+  "validation": "vertex/bone counts match UAP"
+ },
+ {
+  "name": "analyze_binary",
+  "version": "1.0",
+  "description": "Headless Ghidra import+analysis; exports functions and defined strings as an artifact.",
+  "capabilities": [
+   "analysis",
+   "ghidra"
+  ],
+  "input_schema": {
+   "properties": {
+    "binary_path": {
+     "title": "Binary Path",
+     "type": "string"
+    },
+    "processor": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Processor"
+    }
+   },
+   "required": [
+    "binary_path"
+   ],
+   "title": "GhidraIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "functions": {
+     "title": "Functions",
+     "type": "integer"
+    },
+    "strings": {
+     "title": "Strings",
+     "type": "integer"
+    },
+    "program": {
+     "additionalProperties": true,
+     "title": "Program",
+     "type": "object"
+    }
+   },
+   "required": [
+    "functions",
+    "strings",
+    "program"
+   ],
+   "title": "GhidraOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "read"
+  ],
+  "side_effects": [],
+  "artifacts": [
+   "analysis.json"
+  ],
+  "timeout_s": 3600.0,
+  "retries": 0,
+  "validation": "artifact counts"
+ },
+ {
+  "name": "llm_complete",
+  "version": "1.0",
+  "description": "Route a completion to a configured OpenAI-compatible endpoint (local Ollama/LM Studio or online).",
+  "capabilities": [
+   "llm"
+  ],
+  "input_schema": {
+   "properties": {
+    "prompt": {
+     "title": "Prompt",
+     "type": "string"
+    },
+    "system": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "System"
+    },
+    "endpoint": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Endpoint"
+    }
+   },
+   "required": [
+    "prompt"
+   ],
+   "title": "LLMIn",
+   "type": "object"
+  },
+  "output_schema": {
+   "properties": {
+    "text": {
+     "title": "Text",
+     "type": "string"
+    },
+    "endpoint": {
+     "title": "Endpoint",
+     "type": "string"
+    },
+    "model": {
+     "title": "Model",
+     "type": "string"
+    }
+   },
+   "required": [
+    "text",
+    "endpoint",
+    "model"
+   ],
+   "title": "LLMOut",
+   "type": "object"
+  },
+  "platforms": [
+   "windows",
+   "linux"
+  ],
+  "engines": [
+   "*"
+  ],
+  "permissions": [
+   "network"
+  ],
+  "side_effects": [],
+  "artifacts": [
+   "llm_transcript.json"
+  ],
+  "timeout_s": 300.0,
+  "retries": 0,
+  "validation": "non-empty text; LLM output is a hypothesis artifact, never evidence of success"
+ }
+]

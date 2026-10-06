@@ -1,0 +1,123 @@
+{
+ "description": "Plan \u00a75 catalog fields.",
+ "properties": {
+  "game_id": {
+   "title": "Game Id",
+   "type": "string"
+  },
+  "title": {
+   "title": "Title",
+   "type": "string"
+  },
+  "platform": {
+   "title": "Platform",
+   "type": "string"
+  },
+  "platform_confidence": {
+   "default": "extension",
+   "title": "Platform Confidence",
+   "type": "string"
+  },
+  "region": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Region"
+  },
+  "serial": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Serial"
+  },
+  "source_paths": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Source Paths",
+   "type": "array"
+  },
+  "hashes": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "default": {},
+   "title": "Hashes",
+   "type": "object"
+  },
+  "size": {
+   "default": 0,
+   "title": "Size",
+   "type": "integer"
+  },
+  "format": {
+   "title": "Format",
+   "type": "string"
+  },
+  "runtimes": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "default": {},
+   "title": "Runtimes",
+   "type": "object"
+  },
+  "playable": {
+   "default": "untested",
+   "title": "Playable",
+   "type": "string"
+  },
+  "analysis": {
+   "default": "none",
+   "title": "Analysis",
+   "type": "string"
+  },
+  "asset_mapping": {
+   "default": "none",
+   "title": "Asset Mapping",
+   "type": "string"
+  },
+  "autoplay": {
+   "default": "none",
+   "title": "Autoplay",
+   "type": "string"
+  },
+  "modding": {
+   "default": "none",
+   "title": "Modding",
+   "type": "string"
+  },
+  "launch": {
+   "additionalProperties": true,
+   "default": {},
+   "title": "Launch",
+   "type": "object"
+  },
+  "profile_id": {
+   "title": "Profile Id",
+   "type": "string"
+  }
+ },
+ "required": [
+  "game_id",
+  "title",
+  "platform",
+  "source_paths",
+  "format",
+  "profile_id"
+ ],
+ "title": "CatalogEntry",
+ "type": "object"
+}

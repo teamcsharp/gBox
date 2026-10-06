@@ -1,0 +1,992 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>G-Box</title>
+<link rel="icon" href="../../assets/brand/gbox-logo.svg">
+<style>
+  :root { --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341; }
+  @media (prefers-color-scheme: light) { :root { --bg:#fff; --side:#f3f3f6; --fg:#1b1b1f; --mut:#6b6b76; --line:#e3e3e8; --card:#f6f6f8; --acc:#3355dd; --ok:#1a7f37; --bad:#c62828; --warn:#a36b00; } }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif; }
+  .app { display:grid; grid-template-columns:200px 1fr; height:100vh; }
+  aside { background:var(--side); border-right:1px solid var(--line); padding:14px 10px; display:flex; flex-direction:column; gap:4px; }
+  aside h1 { font-size:18px; margin:0 4px 12px; display:flex; align-items:center; gap:10px; cursor:pointer; border-radius:8px; padding:6px; }
+  aside h1:hover { background:var(--card); } aside h1 img { height:34px; width:auto; }
+  aside h1 small { display:block; font-size:10px; font-weight:400; color:var(--mut); }
+  aside button { text-align:left; background:none; border:0; color:var(--mut); padding:8px 10px; border-radius:6px; font:inherit; cursor:pointer; }
+  aside button.on { background:var(--card); color:var(--fg); }
+  aside .st { margin-top:auto; font-size:12px; color:var(--mut); padding:8px; display:grid; gap:4px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--mut); }
+  .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); } .dot.warn { background:var(--warn); }
+  section { display:none; height:100vh; overflow:auto; } section.on { display:block; }
+  #play { padding:0; } #play webview { width:100%; height:100vh; border:0; }
+  .pane { padding:20px; max-width:1200px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  .kv { display:grid; grid-template-columns:110px 1fr; gap:4px 10px; font-size:13px; } .kv span:nth-child(odd) { color:var(--mut); }
+  .btns { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+  button.act { font:inherit; padding:6px 10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; cursor:pointer; }
+  button.pri { background:var(--acc); border-color:var(--acc); color:#fff; } button.danger { color:var(--bad); }
+  pre#con { background:#0b0b0d; color:#d6d6de; border:1px solid var(--line); border-radius:8px; padding:10px; height:340px; overflow:auto; font:12px/1.4 ui-monospace,Consolas,monospace; white-space:pre-wrap; margin-top:14px; }
+  label { display:grid; gap:4px; margin-bottom:10px; font-size:13px; color:var(--mut); }
+  input[type=text], input[type=password] { font:inherit; padding:6px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; }
+  .mut { color:var(--mut); }
+
+  /* --- custom title bar --- */
+  #titlebar { position:fixed; top:0; left:0; right:0; height:36px; display:flex; align-items:center; gap:10px; padding:0 10px;
+              background:#111114; border-bottom:1px solid var(--line); -webkit-app-region:drag; z-index:50; user-select:none; }
+  #titlebar img { height:20px; } #titlebar .ttl { font-size:12px; color:var(--mut); }
+  #titlebar .tools { position:absolute; left:50%; transform:translateX(-50%); display:flex; gap:6px; -webkit-app-region:no-drag; }
+  #titlebar .tools button { background:none; border:1px solid transparent; color:#e8e8ee; border-radius:6px; padding:3px 8px; cursor:pointer;
+                            display:flex; align-items:center; gap:6px; font:12px system-ui; }
+  #titlebar .tools button:hover { background:#ffffff14; border-color:var(--line); }
+  #titlebar .tools svg { width:18px; height:18px; }
+  #titlebar .tools button { font-size:0; gap:0; padding:5px 8px; }                    /* icon-only */
+  #titlebar .tools button .badge { font-size:11px; margin-left:4px; }
+  #titlebar .tools button.recording #tb-rec-t { font-size:12px; margin-left:6px; }
+  #titlebar .tools button.recording { background:#ff3b3b22; border-color:#ff3b3b; }
+  #titlebar .tools button.recording #tb-rec-dot { animation:recblink 1s steps(2) infinite; }
+  @keyframes recblink { 50% { opacity:.2; } }
+  #titlebar .badge { background:var(--acc); color:#fff; border-radius:9px; padding:0 6px; font-size:11px; }
+  .app { margin-top:36px; height:calc(100vh - 36px) !important; } section { height:calc(100vh - 36px) !important; }
+  #play webview { height:calc(100vh - 36px) !important; }
+  /* --- report editor --- */
+  #report { position:fixed; inset:36px 0 0 0; background:#000c; z-index:60; display:none; }
+  #report.on { display:grid; grid-template-columns:minmax(0,1fr) 340px; }
+  #report .stage { overflow:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  #report canvas { max-width:100%; border:1px solid var(--line); cursor:crosshair; touch-action:none; background:#000; }
+  #report aside { background:var(--side); border-left:1px solid var(--line); padding:14px; overflow:auto; }
+  #report textarea, #report input[type=text] { width:100%; font:inherit; padding:6px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; }
+  #report textarea { min-height:140px; resize:vertical; }
+  .eltag { font:12px ui-monospace,Consolas,monospace; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:8px; white-space:pre-wrap; word-break:break-all; max-height:180px; overflow:auto; }
+  .pickhint { position:fixed; top:44px; left:50%; transform:translateX(-50%); z-index:70; background:var(--acc); color:#fff; padding:6px 12px; border-radius:6px; font-size:12px; display:none; }
+  /* --- requests --- */
+  .req { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px; background:var(--card); }
+  .req .h { display:flex; gap:8px; align-items:center; flex-wrap:wrap; cursor:pointer; }
+  .chip { font-size:11px; padding:1px 8px; border-radius:10px; border:1px solid var(--line); }
+  .chip.open { color:var(--warn); } .chip.in_progress { color:var(--acc); } .chip.done { color:var(--ok); } .chip.blocked { color:var(--bad); }
+  .req .m { font-size:12px; color:var(--mut); margin-top:4px; }
+  .req .thread { margin-top:8px; display:none; } .req.open-thread .thread { display:block; }
+  .msg { padding:6px 8px; border-radius:6px; margin:4px 0; background:var(--bg); font-size:13px; white-space:pre-wrap; }
+  .msg.agent { border-left:3px solid var(--acc); } .msg.operator { border-left:3px solid var(--ok); }
+  .att { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; } .att figure { margin:0; position:relative; }
+  .att img { height:64px; border:1px solid var(--line); border-radius:6px; } .att button { position:absolute; top:-6px; right:-6px; border-radius:50%;
+             width:20px; height:20px; border:0; background:var(--bad); color:#fff; cursor:pointer; font-size:11px; line-height:20px; padding:0; }
+  .dropping { outline:2px dashed var(--acc); outline-offset:2px; }
+  .req img.att-img { max-height:180px; border:1px solid var(--line); border-radius:6px; margin:4px 4px 0 0; }
+  .req img.shot { max-width:100%; border:1px solid var(--line); border-radius:6px; margin-top:6px; }
+
+  /* --- tools registry --- */
+  table.reg { width:100%; border-collapse:collapse; font-size:13px; }
+  table.reg th { text-align:left; color:var(--mut); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); }
+  table.reg td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.reg tr.row { cursor:pointer; } table.reg tr.row:hover td { background:var(--card); }
+  table.reg tr.det td { background:var(--card); } table.reg tr.det pre { margin:0; white-space:pre-wrap; font:12px ui-monospace,Consolas,monospace; max-height:420px; overflow:auto; }
+  .k { font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); white-space:nowrap; }
+  .k.tool { color:var(--acc); } .k.agent { color:var(--ok); } .k.ghidra { color:var(--warn); }
+
+  /* --- G-Box chat (agent) --- */
+  #chatbar { position:fixed; top:36px; left:0; right:0; height:44px; z-index:45; display:flex; gap:8px; align-items:center; padding:0 12px;
+             background:var(--side); border-bottom:1px solid var(--line); }
+  #chatbar input { flex:1; font:inherit; padding:7px 12px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:18px; }
+  #chatbar input:focus { outline:none; border-color:var(--acc); }
+  #chatbar select, #chatbar button { font:inherit; font-size:12px; padding:5px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:6px; cursor:pointer; }
+  #chatbar .busy { color:var(--acc); font-size:12px; white-space:nowrap; }
+  #chatpanel { position:fixed; top:80px; left:0; right:0; height:min(56vh,600px); z-index:44; display:none; grid-template-columns:270px minmax(0,1fr);
+               background:var(--bg); border-bottom:1px solid var(--line); box-shadow:0 12px 40px #000a; resize:vertical; overflow:hidden; }
+  #chatpanel.on { display:grid; }
+  #chathist { border-right:1px solid var(--line); overflow:auto; padding:8px; }
+  #chathist .ci { padding:8px; border-radius:6px; cursor:pointer; margin-bottom:4px; }
+  #chathist .ci:hover, #chathist .ci.on { background:var(--card); }
+  #chathist .ci .t { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #chathist .ci .m { font-size:11px; color:var(--mut); }
+  .gchip { display:inline-flex; gap:4px; align-items:center; font-size:11px; border:1px solid var(--line); border-radius:10px; padding:1px 7px; margin:3px 3px 0 0; }
+  .gchip button { border:0; background:none; color:var(--acc); cursor:pointer; padding:0; font:inherit; }
+  #chatlog { overflow:auto; padding:12px 16px; display:flex; flex-direction:column; gap:8px; }
+  .cm { max-width:860px; padding:8px 12px; border-radius:10px; white-space:pre-wrap; font-size:14px; line-height:1.45; }
+  .cm.user { align-self:flex-end; background:var(--acc); color:#fff; }
+  .cm.assistant { align-self:flex-start; background:var(--card); border:1px solid var(--line); }
+  .cm.error { align-self:flex-start; color:var(--bad); border:1px solid var(--bad); }
+  .cm.tool { align-self:flex-start; font:12px ui-monospace,Consolas,monospace; color:var(--mut); background:none; padding:2px 12px; border-left:2px solid var(--line); border-radius:0; }
+  .cm.tool details summary { cursor:pointer; color:var(--fg); }
+  #chatmain { display:flex; flex-direction:column; min-height:0; }
+  #chatlog { flex:1; min-height:0; }
+  #chatcomp { display:flex; gap:8px; align-items:center; padding:8px 16px 10px; border-top:1px solid var(--line); }
+  #chatcomp input { flex:1; font:inherit; font-size:14px; padding:8px 12px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:8px; }
+  #chatcomp button { font:inherit; font-size:13px; padding:7px 10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:8px; cursor:pointer; line-height:0; }
+  #chatcomp button.on { background:#e53935; border-color:#e53935; color:#fff; }
+  .cm.choices { align-self:flex-start; background:var(--card); border:1px solid var(--acc); }
+  .cm.choices .opts { display:flex; flex-direction:column; gap:6px; margin-top:8px; white-space:normal; }
+  .cm.choices .opts button { text-align:left; font:inherit; font-size:13px; padding:7px 12px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:8px; cursor:pointer; }
+  .cm.choices .opts button:hover { border-color:var(--acc); background:var(--acc); color:#fff; }
+  .cm.choices.done .opts button { opacity:.45; pointer-events:none; } .cm.choices.done .opts button.picked { opacity:1; border-color:var(--acc); }
+  .app { margin-top:80px !important; height:calc(100vh - 80px) !important; } section { height:calc(100vh - 80px) !important; }
+  #play webview { height:calc(100vh - 80px) !important; } #play { overflow:hidden !important; }
+  #chatsug { position:fixed; top:78px; left:44px; z-index:46; min-width:420px; max-width:min(760px,70vw); background:var(--bg); border:1px solid var(--line);
+             border-radius:8px; box-shadow:0 10px 30px #000a; display:none; overflow:hidden; }
+  #chatsug div { padding:7px 12px; cursor:pointer; font-size:13px; display:flex; gap:8px; align-items:center; }
+  #chatsug div.on, #chatsug div:hover { background:var(--card); }
+  #chatsug .k { font-size:10px; color:var(--mut); border:1px solid var(--line); border-radius:8px; padding:0 6px; white-space:nowrap; } #report { inset:80px 0 0 0 !important; }
+
+  /* --- voice conversation: live sidebar --- */
+  #talkbtn.on { background:#e53935; color:#fff; border-color:#e53935; }
+  #live { position:fixed; top:80px; right:0; bottom:0; width:380px; z-index:43; display:none; flex-direction:column;
+          background:var(--side); border-left:1px solid var(--line); box-shadow:-10px 0 30px #0008; }
+  #live.on { display:flex; }
+  #live .hd { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line); }
+  #live .hd b { flex:1; } #live select { font:inherit; font-size:12px; max-width:150px; }
+  #livestate { font-size:12px; padding:6px 12px; color:var(--acc); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+  #livemeter { height:6px; flex:1; background:#ffffff14; border-radius:3px; overflow:hidden; }
+  #livemeter i { display:block; height:100%; width:0; background:var(--ok); transition:width .08s; }
+  #livefeed { flex:1; overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+  .lv { font-size:13px; line-height:1.4; } .lv.you { color:var(--ok); } .lv.ai { color:var(--fg); }
+  .lvcard { border:1px solid var(--line); border-radius:8px; padding:8px; background:var(--card); font-size:12px; }
+  .lvcard img { max-width:100%; border-radius:6px; image-rendering:pixelated; display:block; margin-top:4px; }
+  .lvcard .hex { font:11px ui-monospace,Consolas,monospace; white-space:pre-wrap; word-break:break-all; color:var(--mut); }
+  .lvcard a { color:var(--acc); }
+</style>
+</head>
+<body>
+<div id="titlebar">
+  <img src="../../assets/brand/gbox-logo.svg" alt=""><span class="ttl">G-Box</span>
+  <div class="tools">
+    <button id="tb-capture" title="Capture the app, sketch on it and file a report to the inbox">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>Capture</button>
+    <button id="tb-pick" title="System eyedropper: pick any element (window, panel, button, row…) and report on it">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>Eyedropper</button>
+    <button id="tb-rec" title="Record the app to an MP4 on disk (click again to stop)">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle id="tb-rec-dot" cx="12" cy="12" r="4.5" fill="#ff3b3b"/></svg><span id="tb-rec-t"></span></button>
+    <button id="tb-mini" title="Mini mode: shrink G-Box to a resizable game window (keeps the game's aspect ratio)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor"/></svg>Mini</button>
+    <button id="tb-inbox" title="Requests inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Inbox <span class="badge" id="tb-count">0</span></button>
+  </div>
+</div>
+<div id="chatbar">
+  <img src="../../assets/brand/gbox-logo.svg" alt="" style="height:22px">
+  <input id="chatin" placeholder="Ask G-Box… e.g. “give me infinite lives”, “extract Mario's sprites to Blender”, “what does this function do?”" autocomplete="off">
+  <span class="busy" id="chatbusy"></span>
+  <select id="chatmodel" title="Model for this conversation"></select>
+  <button id="talkbtn" title="Talk: voice conversation with G-Box (Spark speech-to-text + XTTS v2 voices)">🗣 Talk</button>
+  <button id="chathistbtn" title="Conversation history">History</button>
+  <button id="chatnew" title="New conversation">+ New</button>
+  <button id="chattoggle" title="Show / hide the conversation">▾</button>
+</div>
+<aside id="live" aria-label="Voice conversation">
+  <div class="hd"><b>🗣 Talk to G-Box</b><select id="livevoice" title="Reply voice (Pine Box XTTS v2 clones)"></select>
+    <button class="act" id="livestop">End</button></div>
+  <div id="livestate"><span id="livestatus">Idle</span><div id="livemeter"><i></i></div></div>
+  <div id="livefeed"></div>
+</aside>
+<div id="chatsug" role="listbox"></div>
+<div id="chatpanel"><div id="chathist"></div><div id="chatmain"><div id="chatlog"></div>
+  <div id="chatcomp"><input id="chatin2" placeholder="Reply to G-Box…" autocomplete="off">
+    <button id="chatvoice" title="Voice mode: talk with G-Box hands-free (click again to end)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
+    <button id="chatsend" title="Send (Enter)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></button></div></div></div>
+<div class="pickhint" id="pickhint">Eyedropper: hover any element · ↑/↓ = parent/child · click to select · Esc to cancel</div>
+<div id="report"><div class="stage">
+    <div class="bar"><b id="rp-mode">Report</b>
+      <span class="mut">Sketch:</span><input type="color" id="rp-color" value="#ff3b3b">
+      <select id="rp-tool"><option value="pen">Pen</option><option value="hi">Highlighter</option><option value="box">Box</option><option value="arrow">Arrow</option></select>
+      <input type="range" id="rp-size" min="2" max="24" value="4"><button class="act" id="rp-undo">Undo</button><button class="act" id="rp-clear">Clear sketch</button></div>
+    <canvas id="rp-canvas"></canvas></div>
+  <aside><h3 style="margin-top:0">New report</h3>
+    <label>Title<input type="text" id="rp-title" placeholder="What should change?"></label>
+    <label>Details<textarea id="rp-body" placeholder="Describe the request. Sketch on the screenshot to point at things. Paste (Ctrl+V) or drop images here too."></textarea></label>
+    <div id="rp-att" class="att"></div>
+    <div id="rp-el"></div>
+    <div class="btns"><button class="act pri" id="rp-send">Save to inbox</button><button class="act" id="rp-cancel">Cancel</button></div>
+    <p class="mut" id="rp-msg"></p></aside></div>
+<div class="app">
+  <aside>
+    <h1 id="brand" title="Update & relaunch: pull the latest code, restart the Spark service and this PC's worker, reload the app"><img src="../../assets/brand/gbox-logo.svg" alt=""><span>G-Box<small>click to update &amp; relaunch</small></span></h1>
+    <button data-s="play" class="on">Play &amp; Library</button>
+    <button data-s="control">Control</button>
+    <button data-s="requests">Requests</button>
+    <button data-s="settings">Settings</button>
+    <button data-s="tools">Tools</button>
+    <div class="st">
+      <div><span id="d-api" class="dot"></span>Spark API</div>
+      <div><span id="d-svc" class="dot"></span>Spark service</div>
+      <div><span id="d-win" class="dot"></span>Windows worker</div>
+    </div>
+  </aside>
+  <main>
+    <section id="play" class="on"><div id="playhost" class="pane mut">Connecting to the Spark…</div></section>
+    <section id="control"><div class="pane">
+      <div class="cards">
+        <div class="card"><h2>DGX Spark — control plane</h2>
+          <div class="kv" id="spark-kv"><span>status</span><span>checking…</span></div>
+          <div class="btns">
+            <button class="act pri" data-a="install" title="venv, Python deps, apt packages, NAS mounts, cores, BIOS, Ghidra, systemd service">Install / update</button>
+            <button class="act" data-a="update" title="git pull on the Spark, then re-run install">Update (git pull)</button>
+            <button class="act" data-a="start">Start</button><button class="act" data-a="restart">Restart</button>
+            <button class="act danger" data-a="stop">Stop</button>
+            <button class="act" data-a="setup">Verify deps</button><button class="act" data-a="test">Run tests</button>
+            <button class="act" data-a="logs">Live logs</button>
+          </div></div>
+        <div class="card"><h2>This PC — Windows node</h2>
+          <div class="kv" id="win-kv"><span>worker</span><span>…</span></div>
+          <div class="btns">
+            <button class="act pri" id="win-setup">Install / update Windows node</button>
+            <button class="act" id="win-start">Start worker</button><button class="act danger" id="win-stop">Stop worker</button>
+          </div></div>
+        <div class="card"><h2>Cluster</h2>
+          <div class="kv" id="cl-kv"><span>workers</span><span>…</span></div>
+          <div class="btns"><button class="act" id="scan">Rescan game libraries</button><button class="act" id="openweb">Open in browser</button></div></div>
+      </div>
+      <div class="btns"><span class="mut" id="con-title">Console</span><button class="act" id="con-stop">Stop task</button><button class="act" id="con-clear">Clear</button></div>
+      <pre id="con"></pre>
+    </div></section>
+    <section id="requests"><div class="pane" style="max-width:1100px">
+      <div class="bar"><h2 style="margin:0">Requests</h2><span class="mut" id="reqsum"></span></div>
+      <p class="mut">Every request you make (here, by screenshot, by eyedropper, or in chat with Claude) is logged with its thread,
+        status, time to complete, files changed, tokens in/out and tools used.</p>
+      <div id="reqlist"></div></div></section>
+    <section id="tools"><div class="pane" style="max-width:1400px">
+      <div class="bar"><h2 style="margin:0">Tools</h2><span class="mut" id="tl-sum">loading…</span></div>
+      <p class="mut">Everything an LLM orchestrator can dispatch. Click a row for its full definition (schemas, permissions, availability).</p>
+      <div class="bar"><input type="text" id="tl-q" placeholder="Search name, category, description" style="flex:1;font:inherit;padding:6px 8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:5px">
+        <select id="tl-kind" style="font:inherit;padding:6px"><option value="">all kinds</option><option value="tool">typed tools</option><option value="agent">agents</option><option value="ghidra">Ghidra scripts</option></select>
+        <button class="act" onclick="TL.data=null;loadTools()">Refresh</button></div>
+      <table class="reg"><thead><tr><th></th><th>Name</th><th>Kind</th><th>Category</th><th>Status</th><th>Description</th></tr></thead><tbody id="tl-body"></tbody></table>
+    </div></section>
+    <section id="settings"><div class="pane" style="max-width:640px">
+      <form id="sform"></form>
+      <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+    </div></section>
+  </main>
+</div>
+<script>
+const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+let S, current = null, playLoaded = false;
+document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("aside button[data-s]").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
+  if (b.dataset.s === "control") refresh();
+});
+
+// console
+const con = $("#con");
+gbox.onTask((id, text) => { if (current && id !== current && id !== "win-worker") return; con.textContent += text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ""); con.scrollTop = con.scrollHeight; });
+gbox.onTaskEnd((id, code) => { con.textContent += `\n[${id} finished: exit ${code}]\n`; if (id === current) current = null; refresh(); });
+gbox.onWorker(() => refresh());
+const runTask = (id, title) => { current = id; $("#con-title").textContent = title; con.textContent += `\n$ ${title}\n`; };
+$("#con-stop").onclick = () => current && gbox.cancel(current);
+$("#con-clear").onclick = () => con.textContent = "";
+
+document.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => runTask(await gbox.sparkAction(b.dataset.a), `spark: ${b.dataset.a}`));
+$("#win-setup").onclick = async () => runTask(await gbox.winSetup(), "windows node: install/update");
+$("#win-start").onclick = async () => { current = "win-worker"; const r = await gbox.winWorker("start"); if (r.error) con.textContent += r.error + "\n"; refresh(); };
+$("#win-stop").onclick = async () => { await gbox.winWorker("stop"); refresh(); };
+$("#scan").onclick = async () => { const r = await gbox.api("/api/jobs", { tool: "scan_library", input: {}, require_os: "linux" }); con.textContent += r.ok ? `scan job ${r.data.id} queued\n` : r.error + "\n"; };
+$("#openweb").onclick = () => gbox.openExternal(S.apiUrl);
+$("#brand").onclick = async () => {
+  if (!confirm("Update & relaunch G-Box?\n\nPulls the latest code, rebuilds and restarts the Spark service, restarts this PC's worker and reloads the app. Running games on the Spark will be stopped.")) return;
+  document.querySelector('aside button[data-s="control"]').click();
+  runTask("relaunch", "update & relaunch");
+  await gbox.relaunch();
+};
+
+const kv = (el, rows) => el.innerHTML = rows.map(([k, v]) => `<span>${esc(k)}</span><span>${v}</span>`).join("");
+const dot = (id, cls) => $(id).className = "dot " + cls;
+async function refresh() {
+  const st = await gbox.sparkStatus();
+  dot("#d-api", st.api ? "ok" : "bad"); dot("#d-svc", st.service === "active" ? "ok" : st.ssh ? "warn" : "bad");
+  kv($("#spark-kv"), [["ssh", st.ssh ? "connected" : `<span style="color:var(--bad)">${esc(st.error || "unreachable")}</span>`],
+    ["service", esc(st.service || "–")], ["API", st.api ? `up · ${esc(S.apiUrl)}` : "down"], ["NAS mount", esc(st.mount || "–")],
+    ["uptime", esc(st.uptime || "–")], ["free disk", esc(st.free || "–")], ["GPU util/temp", esc(st.gpu || "–")]]);
+  const w = await gbox.winWorker("status");
+  dot("#d-win", w.running ? "ok" : "warn");
+  kv($("#win-kv"), [["worker", w.running ? "running" : "stopped"], ["name", esc(S.workerName)], ["code", esc(S.repoShare)]]);
+  const ws = await gbox.api("/api/workers"), fc = await gbox.api("/api/catalog/facets");
+  const games = fc.ok ? Object.values(fc.data.platforms).reduce((a, b) => a + b, 0) : 0;
+  kv($("#cl-kv"), [["workers", ws.ok ? ws.data.map(x => `${x.online ? "●" : "○"} ${esc(x.name)} (${x.os}, ${x.tools.length} tools)`).join("<br>") || "none" : esc(ws.error)],
+    ["games", games.toLocaleString()], ["platforms", fc.ok ? Object.keys(fc.data.platforms).length : "–"]]);
+  if (st.api && !playLoaded) loadPlay();
+}
+
+// embedded G-Box UI with the token injected (no manual token entry)
+async function loadPlay() {
+  const tok = await gbox.token();
+  if (!tok) { $("#playhost").textContent = "No API token: paste it in Settings (it is in ~/gBox/gbox-data/api_token on the Spark), or make the share/SSH reachable."; return; }
+  playLoaded = true;
+  $("#play").innerHTML = `<webview id="wv" src="${esc(S.apiUrl)}/" allowpopups></webview>`;
+  const wv = $("#wv");
+  let injected = false;
+  wv.addEventListener("dom-ready", () => {
+    wv.executeJavaScript(`window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName })};`);   // "Play" runs on this PC
+    if (injected) return;
+    injected = true;
+    wv.executeJavaScript(`localStorage.setItem("gbox_tok", ${JSON.stringify(tok)}); location.reload();`);
+  });
+}
+
+// settings
+const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API token (only if the share/SSH below are unreachable)", "password"],
+  ["sshHost", "SSH host for Spark management (alias from ~/.ssh/config)"], ["repoRemote", "Repo path on the Spark"],
+  ["repoShare", "Spark repo over SMB (optional, used to read the token)"], ["repoLocal", "This PC's G-Box checkout (runs the Windows worker)"],
+  ["workerName", "This PC's worker name (unique per PC)"]];
+async function loadSettings() {
+  S = await gbox.settings();
+  $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
+    `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>`;
+}
+$("#ssave").onclick = async () => {
+  const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
+  s.autoStartWorker = !!f.get("autoStartWorker");
+  S = await gbox.saveSettings(s); $("#ssaved").textContent = "saved"; playLoaded = false; refresh();
+};
+
+// ---------------- system eyedropper (runs in the shell AND inside the embedded G-Box view) ----------------
+const PICKER_SRC = `(() => new Promise(resolve => {
+  if (window.__gboxPick) window.__gboxPick.cancel();
+  const box = document.createElement("div"), tag = document.createElement("div");
+  box.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #ff3b3b;background:#ff3b3b22;border-radius:2px;transition:all .05s";
+  tag.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;background:#ff3b3b;color:#fff;font:11px ui-monospace,monospace;padding:1px 5px;border-radius:3px;max-width:60vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+  document.documentElement.append(box, tag);
+  let hover = null, depth = 0;
+  const target = () => { let e = hover; for (let i = 0; i < depth && e && e.parentElement; i++) e = e.parentElement; return e; };
+  const sel = e => {                                     // unique CSS selector
+    if (!e || e === document.documentElement) return "html";
+    if (e.id && document.querySelectorAll("#" + CSS.escape(e.id)).length === 1) return "#" + CSS.escape(e.id);
+    const parts = [];
+    for (let n = e; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
+      if (n.id && document.querySelectorAll("#" + CSS.escape(n.id)).length === 1) { parts.unshift("#" + CSS.escape(n.id)); break; }
+      let p = n.tagName.toLowerCase(), sib = n.parentElement ? [...n.parentElement.children].filter(c => c.tagName === n.tagName) : [];
+      if (sib.length > 1) p += ":nth-of-type(" + (sib.indexOf(n) + 1) + ")";
+      parts.unshift(p);
+    }
+    return parts.join(" > ");
+  };
+  const label = e => e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + [...e.classList].slice(0, 3).map(c => "." + c).join("");
+  const draw = () => { const e = target(); if (!e) return; const r = e.getBoundingClientRect();
+    Object.assign(box.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    tag.textContent = label(e) + "  " + Math.round(r.width) + "×" + Math.round(r.height) + (depth ? "  (↑" + depth + ")" : "");
+    Object.assign(tag.style, { left: Math.max(0, r.left) + "px", top: Math.max(0, r.top - 18) + "px" }); };
+  const move = ev => { hover = document.elementFromPoint(ev.clientX, ev.clientY); depth = 0; draw(); };
+  const key = ev => { if (ev.key === "Escape") finish(null);
+    if (ev.key === "ArrowUp") { depth++; draw(); ev.preventDefault(); } if (ev.key === "ArrowDown") { depth = Math.max(0, depth - 1); draw(); ev.preventDefault(); } };
+  const click = ev => { ev.preventDefault(); ev.stopPropagation(); const e = target(); if (!e) return;
+    const r = e.getBoundingClientRect(), path = [];
+    for (let n = e; n && n.nodeType === 1; n = n.parentElement) path.unshift(label(n));
+    finish({ selector: sel(e), tag: e.tagName.toLowerCase(), id: e.id || null, classes: [...e.classList],
+      text: (e.innerText || e.value || e.alt || e.title || "").trim().slice(0, 300), role: e.getAttribute("role"), aria: e.getAttribute("aria-label"),
+      rect: { x: r.left, y: r.top, w: r.width, h: r.height }, html: e.outerHTML.slice(0, 600), path: path.join(" > "),
+      url: location.href, title: document.title }); };
+  const stop = ev => { ev.preventDefault(); ev.stopPropagation(); };
+  const finish = v => { removeEventListener("mousemove", move, true); removeEventListener("keydown", key, true);
+    removeEventListener("click", click, true); removeEventListener("mousedown", stop, true); removeEventListener("mouseup", stop, true);
+    box.remove(); tag.remove(); window.__gboxPick = null; resolve(v); };
+  addEventListener("mousemove", move, true); addEventListener("keydown", key, true);
+  addEventListener("click", click, true); addEventListener("mousedown", stop, true); addEventListener("mouseup", stop, true);
+  window.__gboxPick = { cancel: () => finish(null) };
+}))()`;
+
+async function gboxState() {                             // what the embedded G-Box UI is showing
+  const wv = document.querySelector("#wv");
+  if (!wv) return {};
+  try { return await wv.executeJavaScript(`({ tab: typeof cur !== "undefined" ? cur : null, session: typeof active !== "undefined" && active ? active.sid : null, playing: typeof playing !== "undefined" ? playing : null, hash: location.hash })`); }
+  catch { return {}; }
+}
+function appContext(extra = {}) {
+  return { shell_section: document.querySelector("aside button.on")?.dataset.s, window: { w: innerWidth, h: innerHeight },
+           at: new Date().toISOString(), ...extra };
+}
+
+let picking = false;
+async function pickElement() {
+  if (picking) return; picking = true;
+  $("#pickhint").style.display = "block";
+  const wv = document.querySelector("section.on #wv");
+  const shellPick = eval(PICKER_SRC).then(r => r && { ...r, doc: "shell", view: "desktop shell" });
+  const guestPick = wv ? wv.executeJavaScript(PICKER_SRC).then(async r => {
+      if (!r) return null;
+      const o = wv.getBoundingClientRect(), st = await gboxState();
+      return { ...r, doc: "gbox-ui", view: "G-Box UI › " + (st.tab || "?"), rect: { x: r.rect.x + o.left, y: r.rect.y + o.top, w: r.rect.w, h: r.rect.h }, gbox: st };
+    }).catch(() => null) : Promise.resolve(null);
+  const first = await Promise.race([shellPick, guestPick].map(p => p.then(v => v || new Promise(() => {}))).concat(
+    Promise.all([shellPick, guestPick]).then(() => null)));
+  try { window.__gboxPick && window.__gboxPick.cancel(); } catch {}
+  try { wv && wv.executeJavaScript("window.__gboxPick && window.__gboxPick.cancel()"); } catch {}
+  $("#pickhint").style.display = "none"; picking = false;
+  if (first) openReport("element", first);
+}
+
+// ---------------- capture + sketch report editor ----------------
+const RP = { strokes: [], cur: null, img: null, el: null, kind: "screenshot" };
+async function openReport(kind, el = null) {
+  const shot = await gbox.capture();
+  if (!shot) return alert("Screen capture failed");
+  RP.kind = kind; RP.el = el; RP.strokes = [];
+  RP.img = new Image(); RP.img.src = shot; await RP.img.decode();
+  const cv = $("#rp-canvas"); cv.width = RP.img.width; cv.height = RP.img.height;
+  const scale = RP.img.width / innerWidth;                  // device pixels per CSS pixel
+  if (el) RP.strokes.push({ tool: "box", color: "#ff3b3b", size: 3 * scale, pts: [[el.rect.x * scale, el.rect.y * scale], [(el.rect.x + el.rect.w) * scale, (el.rect.y + el.rect.h) * scale]] });
+  RP.attachments = []; renderAttach();
+  $("#rp-mode").textContent = el ? "Eyedropper report" : "Screenshot report";
+  $("#rp-el").innerHTML = el ? `<p class="mut" style="margin:6px 0">Selected element (${esc(el.view)})</p><div class="eltag">${esc(el.selector)}\n&lt;${esc(el.tag)}&gt; ${esc(el.text)}\n${esc(el.path)}</div>` : "";
+  $("#rp-title").value = el ? `${el.view}: ${el.tag}${el.text ? " \"" + el.text.slice(0, 40) + "\"" : ""}` : "";
+  $("#rp-body").value = ""; $("#rp-msg").textContent = "";
+  $("#report").classList.add("on"); redraw(); $("#rp-body").focus();
+}
+function redraw() {
+  const cv = $("#rp-canvas"), c = cv.getContext("2d");
+  c.drawImage(RP.img, 0, 0);
+  for (const s of RP.strokes.concat(RP.cur ? [RP.cur] : [])) {
+    c.strokeStyle = s.color; c.lineWidth = s.size; c.lineCap = c.lineJoin = "round"; c.globalAlpha = s.tool === "hi" ? 0.35 : 1;
+    const p = s.pts;
+    if (s.tool === "box" && p.length > 1) c.strokeRect(p[0][0], p[0][1], p.at(-1)[0] - p[0][0], p.at(-1)[1] - p[0][1]);
+    else if (s.tool === "arrow" && p.length > 1) {
+      const [x0, y0] = p[0], [x1, y1] = p.at(-1), a = Math.atan2(y1 - y0, x1 - x0), h = 6 * s.size;
+      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.lineTo(x1 - h * Math.cos(a - .5), y1 - h * Math.sin(a - .5));
+      c.moveTo(x1, y1); c.lineTo(x1 - h * Math.cos(a + .5), y1 - h * Math.sin(a + .5)); c.stroke();
+    } else { c.beginPath(); p.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); c.stroke(); }
+    c.globalAlpha = 1;
+  }
+}
+(() => {
+  const cv = $("#rp-canvas"), pt = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); const t = $("#rp-tool").value;
+    RP.cur = { tool: t, color: $("#rp-color").value, size: +$("#rp-size").value * (t === "hi" ? 4 : 1) * (cv.width / cv.getBoundingClientRect().width), pts: [pt(e)] }; };
+  cv.onpointermove = e => { if (!RP.cur) return; RP.cur.pts.push(pt(e)); redraw(); };
+  cv.onpointerup = () => { if (RP.cur) RP.strokes.push(RP.cur); RP.cur = null; redraw(); };
+  $("#rp-undo").onclick = () => { RP.strokes.pop(); redraw(); };
+  $("#rp-clear").onclick = () => { RP.strokes = RP.el ? RP.strokes.slice(0, 1) : []; redraw(); };
+  $("#rp-cancel").onclick = () => $("#report").classList.remove("on");
+  $("#rp-send").onclick = async () => {
+    const title = $("#rp-title").value.trim(); if (!title) return $("#rp-msg").textContent = "Give the report a title.";
+    $("#rp-msg").textContent = "Saving…";
+    const b64 = $("#rp-canvas").toDataURL("image/png").split(",")[1];
+    const r = await gbox.api("/api/requests", { title, body: $("#rp-body").value, source: "app", kind: RP.el ? "element" : "screenshot",
+      image_b64: b64, element: RP.el, context: appContext({ gbox: await gboxState() }), attachments: RP.attachments });
+    if (!r.ok) return $("#rp-msg").textContent = r.error;
+    $("#report").classList.remove("on"); refreshInbox();
+    document.querySelector('aside button[data-s="requests"]').click();
+  };
+  $("#tb-capture").onclick = () => openReport("screenshot");
+  $("#tb-pick").onclick = pickElement;
+  $("#tb-inbox").onclick = () => document.querySelector('aside button[data-s="requests"]').click();
+  addEventListener("keydown", e => { if (e.key === "Escape") $("#report").classList.remove("on"); });
+})();
+
+// ---------------- requests inbox (operator <-> agent) ----------------
+const fmtDur = s => s == null ? "–" : s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+const fmtTok = n => !n ? "0" : n > 1e6 ? (n / 1e6).toFixed(2) + "M" : n > 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
+const openThreads = new Set();
+async function refreshInbox() {
+  const r = await gbox.api("/api/requests"); if (!r.ok) return;
+  const all = r.data, pending = all.filter(x => x.status !== "done").length;
+  $("#tb-count").textContent = pending;
+  const host = $("#reqlist"); if (!host) return;
+  const tok = await gbox.token();
+  const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; all.forEach(x => t[x.status]++);
+  const tot = all.reduce((a, x) => ({ in: a.in + (x.metrics.tokens_in || 0), out: a.out + (x.metrics.tokens_out || 0) }), { in: 0, out: 0 });
+  $("#reqsum").textContent = `${all.length} requests · ${t.open} open · ${t.in_progress} in progress · ${t.done} done · tokens ${fmtTok(tot.in)} in / ${fmtTok(tot.out)} out`;
+  host.innerHTML = all.map(x => {
+    const m = x.metrics, tools = Object.entries(m.tools || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join(", ");
+    return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
+      <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span><span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
+      <div class="m">${new Date(x.created * 1000).toLocaleString()} · took ${fmtDur(m.duration_s ?? (x.status === "done" ? null : (Date.now() / 1000 - (x.started || x.created))))}
+        · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
+      <div class="thread">
+        ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
+        ${x.image ? `<img class="shot" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Claude" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`).join("")}</div>`).join("")}
+        ${m.files_changed.length ? `<details><summary class="mut">${m.files_changed.length} files changed</summary><div class="eltag">${esc(m.files_changed.join("\n"))}</div></details>` : ""}
+        <div class="att reply-att"></div>
+        <div class="btns"><input type="text" class="reply" placeholder="Reply / follow-up… (Ctrl+V or drop images)" style="flex:1;min-width:200px">
+          <button class="act send">Send</button>${x.status !== "done" ? `<button class="act markdone">Mark done</button>` : ""}</div></div></div>`;
+  }).join("") || `<p class="mut">No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat.</p>`;
+}
+document.addEventListener("click", async e => {
+  const card = e.target.closest(".req"); if (!card) return;
+  const id = card.dataset.id;
+  if (e.target.closest(".h")) { openThreads.has(id) ? openThreads.delete(id) : openThreads.add(id); card.classList.toggle("open-thread"); }
+  if (e.target.classList.contains("send")) {
+    const t = card.querySelector(".reply").value.trim(), atts = replyAtt[id] || [];
+    if (!t && !atts.length) return;
+    await gbox.api(`/api/requests/${id}/messages`, { author: "operator", text: t, attachments: atts }); delete replyAtt[id]; refreshInbox();
+  }
+  if (e.target.classList.contains("markdone")) { await gbox.api(`/api/requests/${id}/status`, { status: "done", note: "Closed by operator." }); refreshInbox(); }
+});
+setInterval(refreshInbox, 5000);
+
+// ---------------- native game window inside G-Box ----------------
+const EMB = { sid: null, pid: null, last: "" };
+async function embedTick() {
+  try {
+    const r = await gbox.api("/api/sessions");
+    const mine = r.ok && r.data.find(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName);
+    if (!mine) { if (EMB.pid) { EMB.pid = null; await gbox.embedSync(null); } return; }
+    if (mine.session_id !== EMB.sid) {
+      const wv0 = document.querySelector("#wv");
+      if (wv0) wv0.executeJavaScript(`(typeof playing !== "undefined" && playing === ${JSON.stringify(mine.session_id)}) || (typeof LOADING !== "undefined" && LOADING) || show("Sessions", ${JSON.stringify(mine.session_id)})`).catch(() => {});
+    }
+    EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
+    const overlay = $("#report").classList.contains("on") || $("#chatpanel").classList.contains("on") || $("#chatsug").style.display === "block";
+    const onPlay = document.querySelector("section.on")?.id === "play";
+    let rect = null;
+    const wv = document.querySelector("#wv");
+    if (onPlay && wv) {
+      const slot = await wv.executeJavaScript(`(() => { const e = document.getElementById("nativeslot"); if (!e) return null;
+        const r = e.getBoundingClientRect(); return r.width > 20 ? { x: r.left, y: r.top, w: r.width, h: r.height, sid: e.dataset.sid } : null; })()`).catch(() => null);
+      const o = wv.getBoundingClientRect();
+      if (slot && slot.sid === EMB.sid) {
+        const top = Math.max(slot.y, 0), bottom = Math.min(slot.y + slot.h, o.height);
+        rect = { x: o.left + slot.x, y: o.top + top, w: slot.w, h: Math.max(0, bottom - top) };
+      } else {                                                 // elsewhere in the app: in-app picture-in-picture corner
+        rect = { x: innerWidth - 400, y: innerHeight - 300, w: 384, h: 288 };
+      }
+    }
+    if (rect && $("#live").classList.contains("on")) rect.w = Math.min(rect.w, innerWidth - 384 - rect.x);
+    const st = { pid: EMB.pid, rect, visible: !!rect && !overlay && rect.h > 40 };
+    const key = JSON.stringify(st);
+    if (key !== EMB.last) { EMB.last = key; await gbox.embedSync(st); }
+  } catch {}
+}
+setInterval(embedTick, 250);
+addEventListener("resize", () => { EMB.last = ""; });
+
+
+// ---------------- voice conversation: listen -> Spark STT -> agent -> XTTS clone voice; live sidebar ----------------
+const TALK = { on: false, stream: null, ctx: null, audio: null, seen: 0 };
+const live = (h) => { $("#livefeed").insertAdjacentHTML("beforeend", h); $("#livefeed").scrollTop = $("#livefeed").scrollHeight; };
+const liveStatus = t => $("#livestatus").textContent = t;
+async function liveVoices() {
+  const r = await gbox.api("/api/voice/voices"); if (!r.ok) return;
+  let pref = ""; try { pref = localStorage.getItem("gbox_voice") || ""; } catch {}
+  if (pref && !pref.includes(":")) pref = "xtts:" + pref;      // older saved choice
+  $("#livevoice").innerHTML = r.data.groups.map(g => `<optgroup label="${esc(g.label)}">` +
+    g.voices.map(v => `<option value="${esc(v.id)}" ${v.id === pref ? "selected" : ""}>${esc(v.name)}</option>`).join("") + "</optgroup>").join("");
+}
+$("#livevoice").onchange = e => { try { localStorage.setItem("gbox_voice", e.target.value); } catch {} };
+async function liveCard(e) {                                     // tool results -> visual cards
+  const tok = await gbox.token();
+  if (e.type === "media") return live(`<div class="lvcard">${esc(e.caption)}<img alt="" src="${S.apiUrl}/api/artifacts/${e.sha}?token=${encodeURIComponent(tok)}"></div>`);
+  if (e.type !== "tool_result") return;
+  let d; try { d = JSON.parse(e.text); } catch { return; }
+  if (e.name === "web_search" && Array.isArray(d)) return live(`<div class="lvcard">🔎 sources<br>${d.slice(0, 5).map(x => `<a href="#" onclick='gbox.openExternal(${JSON.stringify(x.url)});return false'>${esc(x.title)}</a>`).join("<br>")}</div>`);
+  if (e.name === "read_memory" && d.hex) return live(`<div class="lvcard">🧠 memory @ ${esc(d.address)}<div class="hex">${esc(d.hex)}</div></div>`);
+  if (e.name === "memory_filter" && d.candidates !== undefined) return live(`<div class="lvcard">🔍 ${d.candidates} candidates<div class="hex">${esc((d.first || []).map(x => x.address + "=" + x.value).join("  "))}</div></div>`);
+  if (e.name === "search_games" && d.games) return live(`<div class="lvcard">🎮 ${d.total} games<br>${d.games.slice(0, 5).map(g => esc(g.title + " · " + (g.system || ""))).join("<br>")}</div>`);
+  if ((e.name === "freeze_memory" || e.name === "write_memory") && d.state) return live(`<div class="lvcard">✏️ ${esc(e.name)}: ${esc(d.state)} ${esc(JSON.stringify(d.result || d.error || "").slice(0, 160))}</div>`);
+  if (e.name === "look_at_screen" && d.description) live(`<div class="lvcard">👁 ${esc(d.description.slice(0, 400))}</div>`);
+}
+function recordUtterance() {                                     // simple VAD: start on voice, stop after 1.2 s of silence
+  return new Promise(async (resolve) => {
+    const src = TALK.ctx.createMediaStreamSource(TALK.stream), an = TALK.ctx.createAnalyser(); an.fftSize = 1024; src.connect(an);
+    const buf = new Float32Array(an.fftSize), mr = new MediaRecorder(TALK.stream, { mimeType: "audio/webm;codecs=opus" }), chunks = [];
+    mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+    mr.onstop = () => { src.disconnect(); resolve(chunks.length ? new Blob(chunks, { type: "audio/webm" }) : null); };
+    let speaking = false, silentSince = 0, started = Date.now(), noise = 0.01;
+    mr.start(250);
+    const tick = () => {
+      if (!TALK.on) { mr.state !== "inactive" && mr.stop(); return; }
+      an.getFloatTimeDomainData(buf); const rms = Math.sqrt(buf.reduce((a, v) => a + v * v, 0) / buf.length);
+      $("#livemeter i").style.width = Math.min(100, rms * 900) + "%";
+      if (!speaking) { noise = noise * 0.95 + rms * 0.05; if (rms > Math.max(0.02, noise * 3)) { speaking = true; liveStatus("Listening…"); } }
+      else if (rms < Math.max(0.012, noise * 1.8)) { silentSince ||= Date.now(); if (Date.now() - silentSince > 1200) return mr.stop(); }
+      else silentSince = 0;
+      if (!speaking && Date.now() - started > 15000) { started = Date.now(); }       // keep waiting, quietly
+      if (speaking && Date.now() - started > 30000) return mr.stop();                 // max utterance
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+async function talkLoop() {
+  while (TALK.on) {
+    liveStatus("Waiting for you to speak…");
+    const blob = await recordUtterance(); if (!TALK.on || !blob) break;
+    liveStatus("Transcribing (Spark faster-whisper)…");
+    let text = ""; try { text = (await gbox.stt(await blob.arrayBuffer())).trim(); } catch (e) { live(`<div class="lv">⚠ ${esc(e.message)}</div>`); continue; }
+    if (!text || text.length < 2) continue;
+    live(`<div class="lv you"><b>You:</b> ${esc(text)}</div>`);
+    const quick = await instantCommand(text).catch(() => null);
+    if (quick) {                                                   // instant command: act, confirm out loud, keep listening
+      live(`<div class="lv ai"><b>G-Box:</b> ${esc(quick.say)}</div>`);
+      if (quick.alternatives?.length) live(`<div class="lvcard">🎮 also matched:<br>${quick.alternatives.map(g => esc(g.title + " · " + (g.system || ""))).join("<br>")}</div>`);
+      try { const wav = await gbox.tts(quick.say, $("#livevoice").value);
+        TALK.audio = new Audio(URL.createObjectURL(new Blob([wav], { type: "audio/wav" })));
+        await new Promise(res => { TALK.audio.onended = res; TALK.audio.onerror = res; TALK.audio.play().catch(res); }); } catch {}
+      continue;
+    }
+    if (!CH.cid) { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; }
+    liveStatus("Thinking…");
+    const ctx = Object.assign(await chatContext(), { voice: true });
+    const before = (await gbox.api(`/api/chat/${CH.cid}`)).data.count;
+    const p = await gbox.api(`/api/chat/${CH.cid}/messages`, { text, model: $("#chatmodel").value, context: ctx });
+    if (!p.ok) { live(`<div class="lv">⚠ ${esc(p.error)}</div>`); continue; }
+    let reply = "", n = before;
+    for (;;) {                                                     // stream tool steps into the sidebar while it works
+      await new Promise(r => setTimeout(r, 800));
+      const r = await gbox.api(`/api/chat/${CH.cid}?after=${n}`); if (!r.ok) break;
+      for (const e of r.data.events) {
+        if (e.type === "tool_call") liveStatus(`Working: ${e.name}…`);
+        await liveCard(e);
+        if (e.type === "assistant") reply = e.text;
+        if (e.type === "error") reply = "Sorry, that failed: " + e.text;
+      }
+      n += r.data.events.length;
+      if (!r.data.busy) break;
+      if (!TALK.on) return;
+    }
+    if (!reply) continue;
+    live(`<div class="lv ai"><b>G-Box:</b> ${esc(reply)}</div>`);
+    liveStatus(`Speaking (${($("#livevoice").value || "xtts").split(":")[0]})…`);
+    try {
+      const wav = await gbox.tts(reply.replace(/[*_#`>|]/g, "").slice(0, 900), $("#livevoice").value);
+      TALK.audio = new Audio(URL.createObjectURL(new Blob([wav], { type: "audio/wav" })));
+      await new Promise(res => { TALK.audio.onended = res; TALK.audio.onerror = res; TALK.audio.play().catch(res); });
+    } catch (e) { live(`<div class="lv">⚠ voice: ${esc(e.message)}</div>`); }
+  }
+}
+async function talkStart() {
+  try { TALK.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { return alert("Microphone unavailable: " + e.message); }
+  TALK.ctx = new AudioContext(); TALK.on = true;
+  $("#talkbtn").classList.add("on"); $("#live").classList.add("on"); EMB.last = "";
+  if (!$("#livevoice").options.length) await liveVoices();
+  live(`<div class="lv mut">Voice mode on — just talk. Replies use ${esc($("#livevoice").selectedOptions[0]?.text || "XTTS")}.</div>`);
+  talkLoop();
+}
+function talkStop() {
+  TALK.on = false; TALK.audio && TALK.audio.pause();
+  TALK.stream && TALK.stream.getTracks().forEach(t => t.stop()); TALK.ctx && TALK.ctx.close();
+  $("#talkbtn").classList.remove("on"); $("#live").classList.remove("on"); liveStatus("Idle"); EMB.last = "";
+}
+$("#talkbtn").onclick = () => TALK.on ? talkStop() : talkStart();
+$("#livestop").onclick = talkStop;
+
+const STT = async buf => await gbox.stt(buf);
+const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() => ({ ok: false })); return !!(r && r.ok); };
+// ---------------- dictation: 🎤 on every text box, transcribed by the Spark's faster-whisper ----------------
+(() => {
+  const MIC = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>`;
+  const css = document.createElement("style");
+  css.textContent = `.micwrap{position:relative;display:inline-flex;align-items:center;min-width:0}
+    .micwrap>input,.micwrap>textarea{width:100%;padding-right:30px!important;box-sizing:border-box}
+    .micbtn{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--mut,#999);cursor:pointer;padding:2px;border-radius:50%;line-height:0;z-index:2}
+    .micwrap>textarea+.micbtn{top:14px;transform:none}
+    .micbtn:hover{color:var(--fg,#eee)} .micbtn.rec{color:#fff;background:#e53935;animation:micp 1s infinite} .micbtn.busy{opacity:.5}
+    @keyframes micp{50%{box-shadow:0 0 0 6px #e5393540}}`;
+  document.head.append(css);
+  let rec = null;
+  async function toggle(btn, field) {
+    if (rec) { rec.stop(); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
+    const chunks = [], mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+    mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+    mr.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop()); rec = null; btn.classList.remove("rec"); btn.classList.add("busy");
+      try {
+        const text = await STT(await new Blob(chunks, { type: "audio/webm" }).arrayBuffer());
+        if (text) {
+          const s = field.selectionStart ?? field.value.length, e = field.selectionEnd ?? field.value.length;
+          const pre = field.value.slice(0, s), sep = pre && !/\s$/.test(pre) ? " " : "";
+          field.value = pre + sep + text + field.value.slice(e);
+          field.focus(); field.setSelectionRange(pre.length + sep.length + text.length, pre.length + sep.length + text.length);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      } catch (err) { alert("Dictation failed: " + err.message); }
+      btn.classList.remove("busy");
+    };
+    mr.start(); rec = mr; btn.classList.add("rec"); btn.title = "Recording… click to stop";
+  }
+  const skip = el => el.type === "password" || el.closest(".micwrap") || el.dataset.nomic !== undefined || el.offsetParent === null && el.type === "hidden";
+  function decorate(root) {
+    root.querySelectorAll?.('input[type="text"], input[type="search"], input:not([type]), textarea').forEach(el => {
+      if (skip(el)) return;
+      const cs = getComputedStyle(el), w = document.createElement("span");
+      w.className = "micwrap";
+      w.style.flex = cs.flex; w.style.minWidth = el.style.minWidth || cs.minWidth; w.style.maxWidth = cs.maxWidth;
+      if (cs.display === "block" || el.tagName === "TEXTAREA") w.style.display = "flex";
+      if (el.style.width) w.style.width = el.style.width;
+      if (cs.marginLeft !== "0px") { w.style.marginLeft = cs.marginLeft; el.style.marginLeft = "0"; }
+      el.parentNode.insertBefore(w, el); w.append(el);
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "micbtn"; b.title = "Dictate (Spark speech-to-text)"; b.innerHTML = MIC; b.tabIndex = -1;
+      b.onmousedown = e => e.preventDefault(); b.onclick = () => toggle(b, el);
+      w.append(b);
+    });
+  }
+  window.__micDecorate = decorate;
+  // only when the Spark (with its speech service) is reachable
+  SPARK_OK().then(ok => { if (!ok) return; decorate(document); new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && decorate(n.parentNode || n))))
+    .observe(document.body, { childList: true, subtree: true }); });
+})();
+
+// ---------------- G-Box chat: local LLM agent with tools (G-Box API, memory, Ghidra, SearXNG) ----------------
+const CH = { cid: null, n: 0, busy: false, poll: null, models: null };
+try { CH.cid = localStorage.getItem("gbox_chat") || null; } catch {}
+async function chatModels() {
+  const r = await gbox.api("/api/llm/models"); if (!r.ok) return;
+  CH.models = r.data;
+  let pref = null; try { pref = localStorage.getItem("gbox_model"); } catch {}
+  const icon = m => `${m.capabilities.includes("tools") ? "🔧" : "  "}${m.capabilities.includes("vision") ? "👁" : "  "}${m.capabilities.includes("audio") ? "🎤" : ""}${m.capabilities.includes("thinking") ? "🧠" : ""}`;
+  const groups = {}; r.data.models.forEach(m => (groups[m.group] ||= []).push(m));
+  $("#chatmodel").innerHTML = Object.entries(groups).map(([g, ms]) => `<optgroup label="${esc(g)}">` + ms.map(m =>
+    `<option value="${esc(m.name)}" ${m.name === (pref || r.data.default) ? "selected" : ""} title="${esc(m.capabilities.join(", "))}">${icon(m)} ${esc(m.name)} · ${m.size_gb} GB</option>`).join("") + "</optgroup>").join("");
+  $("#chatmodel").title = "🔧 tools · 👁 vision · 🎤 audio · 🧠 thinking. The agent needs 🔧 to operate G-Box.";
+}
+$("#chatmodel").onchange = e => { try { localStorage.setItem("gbox_model", e.target.value); } catch {} };
+async function chatContext() {
+  const st = await gboxState(), ctx = { local_worker: S.workerName, tab: st.tab };
+  if (st.session) {
+    const r = await gbox.api("/api/sessions"), s = r.ok && r.data.find(x => x.session_id === st.session);
+    Object.assign(ctx, { session_id: st.session, game_id: s?.game_id, game_title: s?.title, native_window: !!s?.detail?.local_window });
+  }
+  return ctx;
+}
+function choicesHtml(q, opts) {
+  return `<div class="cm choices">${esc(q)}<div class="opts">${opts.map(o => `<button data-pick="${esc(o)}">${esc(o)}</button>`).join("")}</div></div>`;
+}
+function renderEvent(e) {
+  if (e.type === "user") return `<div class="cm user">${esc(e.text)}</div>`;
+  if (e.type === "choices") return choicesHtml(e.question, e.options);
+  if (e.type === "assistant") {
+    const m = /[?:]\s*((?:\n\s*(?:\d+[.)]|[-*•])\s+.+){2,8})\s*$/.exec(e.text || "");   // trailing "1. … 2. …" after a question
+    if (m) return choicesHtml(e.text.slice(0, m.index + 1), m[1].trim().split("\n").map(l => l.replace(/^\s*(?:\d+[.)]|[-*•])\s+/, "").replace(/\*\*/g, "")));
+    return `<div class="cm assistant">${esc(e.text || "(no text)")}</div>`;
+  }
+  if (e.type === "error") return `<div class="cm error">${esc(e.text)}</div>`;
+  if (e.type === "tool_call") return `<div class="cm tool">🔧 ${esc(e.name)}(${esc(JSON.stringify(e.args).slice(0, 220))})</div>`;
+  if (e.type === "tool_result") return `<div class="cm tool"><details><summary>↳ ${esc(e.name)} result</summary>${esc(e.text)}</details></div>`;
+  return "";
+}
+async function chatLoad(cid, full = true) {
+  if (!cid) return;
+  const r = await gbox.api(`/api/chat/${cid}?after=${full ? 0 : CH.n}`); if (!r.ok) { CH.cid = null; return; }
+  const c = r.data;
+  if (full) { $("#chatlog").innerHTML = ""; CH.n = 0; }
+  $("#chatlog").insertAdjacentHTML("beforeend", c.events.map(renderEvent).join(""));
+  CH.n = (full ? 0 : CH.n) + c.events.length;
+  const cs = [...$("#chatlog").querySelectorAll(".cm")]; cs.forEach((el, i) => { if (el.classList.contains("choices") && cs.slice(i + 1).some(x => x.classList.contains("user"))) el.classList.add("done"); });
+  if (c.events.length) $("#chatlog").scrollTop = $("#chatlog").scrollHeight;
+  CH.busy = c.busy; $("#chatbusy").textContent = c.busy ? "● working…" : "";
+  if (c.model && full) { const o = [...$("#chatmodel").options].find(o => o.value === c.model); if (o) $("#chatmodel").value = c.model; }
+  clearInterval(CH.poll);
+  if (c.busy) CH.poll = setInterval(async () => { await chatLoad(CH.cid, false); if (!CH.busy) { clearInterval(CH.poll); chatHistory(); } }, 900);
+}
+async function chatHistory() {
+  const r = await gbox.api("/api/chat"); if (!r.ok) return;
+  $("#chathist").innerHTML = `<div class="mut" style="padding:4px 8px 8px">Conversations</div>` + (r.data.map(c => `<div class="ci ${c.id === CH.cid ? "on" : ""}" data-c="${c.id}">
+      <div class="t">${esc(c.title || "(new conversation)")}</div>
+      <div class="m">${new Date((c.updated || c.created) * 1000).toLocaleString()} · ${c.turns} msgs${c.model ? " · " + esc(c.model) : ""}${c.busy ? " · working" : ""}</div>
+      ${(c.games || []).map(g => `<span class="gchip">🎮 ${esc(g.title)} <button title="Load this game" data-g="${g.game_id}">▶</button></span>`).join("")}</div>`).join("")
+    || `<p class="mut" style="padding:8px">No conversations yet.</p>`);
+}
+$("#chathist").onclick = async e => {
+  const g = e.target.dataset?.g;
+  if (g) {                                                     // load the game associated with that conversation
+    document.querySelector('aside button[data-s="play"]').click();
+    const wv = document.querySelector("#wv"); if (wv) wv.executeJavaScript(`play(${JSON.stringify(g)})`);
+    return;
+  }
+  const ci = e.target.closest(".ci"); if (!ci) return;
+  CH.cid = ci.dataset.c; try { localStorage.setItem("gbox_chat", CH.cid); } catch {}
+  chatHistory(); chatLoad(CH.cid);
+};
+
+// ---------------- instant commands: "G-Box, load <game>" / "search for <game>" (typed or spoken) ----------------
+async function instantCommand(text) {
+  const r = await gbox.api("/api/intent?text=" + encodeURIComponent(text)); if (!r.ok) return null;
+  const it = r.data, wv = document.querySelector("#wv");
+  if (it.action === "load") {
+    if (!it.game) return { say: `I couldn't find ${it.query} in the library.` };
+    document.querySelector('aside button[data-s="play"]').click();
+    if (wv) wv.executeJavaScript(`play(${JSON.stringify(it.game.game_id)})`);
+    return { say: `Loading ${it.game.title.replace(/\s*[\(\[].*?[\)\]]/g, "")}.`, game: it.game, alternatives: it.alternatives };
+  }
+  if (it.action === "search") {
+    document.querySelector('aside button[data-s="play"]').click();
+    if (wv) wv.executeJavaScript(`(() => { const g = document.getElementById("gsearch"); g.value = ${JSON.stringify(it.query)}; g.oninput(); })()`);
+    return { say: `Found ${it.total.toLocaleString()} games for ${it.query}.`, search: it.query };
+  }
+  return null;
+}
+async function chatSend(given) {
+  const text = (given ?? $("#chatin").value).trim(); if (!text) return;
+  const quick = await instantCommand(text).catch(() => null);
+  if (quick) { $("#chatin").value = ""; $("#chatbusy").textContent = "✓ " + quick.say; setTimeout(() => $("#chatbusy").textContent = CH.busy ? "● working…" : "", 4000); return; }
+  if (CH.busy) return alert("G-Box is still working on the previous request.");
+  if (!CH.cid) { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; try { localStorage.setItem("gbox_chat", CH.cid); } catch {} }
+  $("#chatpanel").classList.add("on"); $("#chatin").value = "";
+  const r = await gbox.api(`/api/chat/${CH.cid}/messages`, { text, model: $("#chatmodel").value, context: await chatContext() });
+  if (!r.ok) { $("#chatlog").insertAdjacentHTML("beforeend", `<div class="cm error">${esc(r.error)}</div>`); return; }
+  await chatLoad(CH.cid, false); chatHistory();
+}
+// history (↑/↓) + live suggestions while typing
+const SUG = { items: [], i: -1, hist: [], hi: -1, t: null };
+async function suggest() {
+  const ctx = await chatContext().catch(() => ({}));
+  const p = new URLSearchParams({ q: $("#chatin").value, game: ctx.game_title || "", platform: "", limit: 10 });
+  const r = await gbox.api("/api/chat/suggest?" + p); if (!r.ok) return;
+  SUG.items = r.data; SUG.i = -1;
+  const box = $("#chatsug");
+  if (!SUG.items.length || document.activeElement !== $("#chatin")) { box.style.display = "none"; return; }
+  box.innerHTML = SUG.items.map((x, i) => `<div data-i="${i}"><span class="k">${x.kind === "history" ? "used " + x.uses + "×" : "try"}</span>${esc(x.text)}</div>`).join("");
+  box.style.display = "block";
+}
+async function loadHistory() { const r = await gbox.api("/api/chat/suggest?limit=30"); if (r.ok) SUG.hist = r.data.filter(x => x.kind === "history").map(x => x.text); }
+$("#chatsug").onmousedown = e => { const d = e.target.closest("[data-i]"); if (!d) return; e.preventDefault();
+  $("#chatin").value = SUG.items[+d.dataset.i].text; $("#chatsug").style.display = "none"; $("#chatin").focus(); };
+$("#chatin").oninput = () => { clearTimeout(SUG.t); SUG.t = setTimeout(suggest, 150); };
+$("#chatin").addEventListener("focus", () => { loadHistory(); if (!CH.n) suggest(); });   // suggest on focus only for a fresh chat
+$("#chatin").addEventListener("blur", () => setTimeout(() => $("#chatsug").style.display = "none", 150));
+$("#chatin").onkeydown = e => {
+  const open = $("#chatsug").style.display === "block" && SUG.items.length;
+  if (e.key === "ArrowDown" && open) { e.preventDefault(); SUG.i = (SUG.i + 1) % SUG.items.length; }
+  else if (e.key === "ArrowUp" && open && SUG.i > 0) { e.preventDefault(); SUG.i--; }
+  else if (e.key === "ArrowUp" && !$("#chatin").value.trim() && SUG.hist.length) {      // recall past commands
+    e.preventDefault(); SUG.hi = Math.min(SUG.hist.length - 1, SUG.hi + 1); $("#chatin").value = SUG.hist[SUG.hi]; return; }
+  else if (e.key === "Tab" && open) { e.preventDefault(); $("#chatin").value = SUG.items[Math.max(0, SUG.i)].text; suggest(); return; }
+  else if (e.key === "Escape") { $("#chatsug").style.display = "none"; return; }
+  else if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    if (open && SUG.i >= 0) { $("#chatin").value = SUG.items[SUG.i].text; $("#chatsug").style.display = "none"; return; }
+    $("#chatsug").style.display = "none"; SUG.hi = -1; chatSend(); return;
+  } else return;
+  $("#chatsug").querySelectorAll("div").forEach((d, i) => d.classList.toggle("on", i === SUG.i));
+};
+$("#chatin").onfocus = () => { if (CH.cid) $("#chatpanel").classList.add("on"); };
+$("#chattoggle").onclick = () => { $("#chatpanel").classList.toggle("on"); if ($("#chatpanel").classList.contains("on")) { chatHistory(); chatLoad(CH.cid); } };
+$("#chathistbtn").onclick = () => { $("#chatpanel").classList.add("on"); chatHistory(); chatLoad(CH.cid); };
+$("#chatnew").onclick = async () => { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; try { localStorage.setItem("gbox_chat", CH.cid); } catch {}
+  $("#chatlog").innerHTML = `<div class="mut">New conversation. Ask anything about the game you're playing, or what to find, launch, edit or extract.</div>`; CH.n = 0;
+  $("#chatpanel").classList.add("on"); chatHistory(); $("#chatin").focus(); };
+// conversation composer + clickable options + voice-mode mic
+$("#chatlog").addEventListener("click", e => {
+  const b = e.target.closest("button[data-pick]"); if (!b) return;
+  const box = b.closest(".cm.choices"); if (box.classList.contains("done")) return;
+  box.classList.add("done"); b.classList.add("picked"); chatSend(b.dataset.pick);
+});
+const compSend = () => { const v = $("#chatin2").value; $("#chatin2").value = ""; chatSend(v); };
+$("#chatin2").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); compSend(); } };
+$("#chatsend").onclick = compSend;
+$("#chatvoice").onclick = () => TALK.on ? talkStop() : talkStart();
+setInterval(() => $("#chatvoice").classList.toggle("on", TALK.on), 500);
+new MutationObserver(() => { if ($("#chatpanel").classList.contains("on")) { window.__micDecorate?.($("#chatcomp")); } })
+  .observe($("#chatpanel"), { attributes: true, attributeFilter: ["class"] });
+addEventListener("keydown", e => { if (e.key === "Escape" && $("#chatpanel").classList.contains("on") && !$("#report").classList.contains("on")) $("#chatpanel").classList.remove("on"); });
+chatModels();
+
+
+// ---------------- paste / drop images into reports and replies ----------------
+const replyAtt = {};
+async function filesToAtt(files) {
+  const out = [];
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) continue;
+    const b64 = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(",")[1]); fr.readAsDataURL(f); });
+    out.push({ name: f.name || `pasted-${Date.now()}.png`, type: f.type, b64 });
+  }
+  return out;
+}
+const imgFiles = dt => [...(dt?.files || [])].concat([...(dt?.items || [])].filter(i => i.kind === "file").map(i => i.getAsFile()).filter(Boolean))
+  .filter((f, i, a) => f && a.indexOf(f) === i);
+function renderAttach() {
+  $("#rp-att").innerHTML = (RP.attachments || []).map((a, i) => `<figure><img alt="" src="data:${a.type};base64,${a.b64}"><button data-i="${i}" title="remove">✕</button></figure>`).join("");
+}
+$("#rp-att").onclick = e => { const i = e.target.dataset?.i; if (i !== undefined) { RP.attachments.splice(+i, 1); renderAttach(); } };
+for (const el of [$("#rp-body"), $("#report aside")]) {
+  el.addEventListener("paste", async e => { const a = await filesToAtt(imgFiles(e.clipboardData)); if (a.length) { e.preventDefault(); RP.attachments = (RP.attachments || []).concat(a); renderAttach(); } });
+  el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("dropping"); });
+  el.addEventListener("dragleave", () => el.classList.remove("dropping"));
+  el.addEventListener("drop", async e => { e.preventDefault(); el.classList.remove("dropping"); RP.attachments = (RP.attachments || []).concat(await filesToAtt(imgFiles(e.dataTransfer))); renderAttach(); });
+}
+document.addEventListener("paste", async e => {                 // replies in the Requests list
+  const card = e.target.closest?.(".req"); if (!card) return;
+  const a = await filesToAtt(imgFiles(e.clipboardData)); if (!a.length) return;
+  e.preventDefault(); (replyAtt[card.dataset.id] ||= []).push(...a);
+  card.querySelector(".reply-att").innerHTML = replyAtt[card.dataset.id].map(x => `<figure><img alt="" src="data:${x.type};base64,${x.b64}"></figure>`).join("");
+});
+document.addEventListener("dragover", e => { if (e.target.closest?.(".req")) e.preventDefault(); });
+document.addEventListener("drop", async e => {
+  const card = e.target.closest?.(".req"); if (!card) return;
+  e.preventDefault(); (replyAtt[card.dataset.id] ||= []).push(...await filesToAtt(imgFiles(e.dataTransfer)));
+  card.querySelector(".reply-att").innerHTML = replyAtt[card.dataset.id].map(x => `<figure><img alt="" src="data:${x.type};base64,${x.b64}"></figure>`).join("");
+});
+
+// ---------------- mini mode ----------------
+$("#tb-mini").onclick = async () => {
+  const st = await gboxState();
+  let sid = st.session, title = "";
+  if (!sid) {                                                     // no game open: use the most recent running streamed session
+    const r = await gbox.api("/api/sessions");
+    const s = r.ok && r.data.find(x => x.state === "running" && !(x.detail && x.detail.local_window));
+    if (!s) return alert("Mini mode shows a streamed game. Start one (or use the Spark button), then click Mini.");
+    sid = s.session_id; title = s.title;
+  } else {
+    const r = await gbox.api("/api/sessions"); const s = r.ok && r.data.find(x => x.session_id === sid);
+    if (s && s.detail && s.detail.local_window) return alert("This game runs natively in its own RetroArch window — resize that window directly.");
+    title = s ? s.title : "";
+  }
+  gbox.miniOpen(sid, title);
+};
+// ---------------- Tools: everything dispatchable by an LLM (typed tools, agent roles, Ghidra scripts) ----------------
+const TL = { data: null, open: new Set(), q: "", kind: "" };
+async function loadTools() {
+  const r = await gbox.api("/api/registry"); if (!r.ok) { $("#tl-body").innerHTML = `<tr><td colspan="6" class="bad">${esc(r.error)}</td></tr>`; return; }
+  const d = r.data, rows = [];
+  d.tools.forEach(t => rows.push({ id: "t:" + t.name, kind: "tool", name: t.name, cat: t.capabilities.join(", "),
+    status: t.workers.length ? "available on " + t.workers.join(", ") : "unavailable", ok: t.workers.length > 0,
+    perms: t.permissions.join(", ") + (t.granted ? "" : " (not granted)"), desc: t.description, detail: t }));
+  d.agents.forEach(a => rows.push({ id: "a:" + a.name, kind: "agent", name: a.name, cat: "role", status: a.status, ok: a.status === "active",
+    perms: a.tools.join(", "), desc: a.role, detail: a }));
+  (d.ghidra.scripts || []).forEach(s => rows.push({ id: "g:" + s.path, kind: "ghidra", name: s.name, cat: s.category || s.module,
+    status: "dispatch via ghidra_script", ok: true, perms: s.language, desc: s.description, detail: s }));
+  TL.data = rows;
+  $("#tl-sum").textContent = `${d.tools.length} typed tools · ${d.agents.length} agent roles · ${(d.ghidra.scripts || []).length} Ghidra scripts (${d.ghidra.version || "Ghidra not installed"})`;
+  renderTools();
+}
+function renderTools() {
+  if (!TL.data) return;
+  const q = TL.q.toLowerCase(), rows = TL.data.filter(r => (!TL.kind || r.kind === TL.kind) && (!q || (r.name + " " + r.cat + " " + r.desc).toLowerCase().includes(q)));
+  $("#tl-body").innerHTML = rows.slice(0, 1500).map(r => `<tr class="row" data-id="${esc(r.id)}"><td>${TL.open.has(r.id) ? "▾" : "▸"}</td>
+      <td><b>${esc(r.name)}</b></td><td><span class="k ${r.kind}">${r.kind}</span></td><td>${esc(r.cat)}</td>
+      <td class="${r.ok ? "ok" : "mut"}">${esc(r.status)}</td><td class="mut">${esc((r.desc || "").slice(0, 140))}</td></tr>` +
+    (TL.open.has(r.id) ? `<tr class="det"><td></td><td colspan="5"><pre>${esc(JSON.stringify(r.detail, null, 2))}</pre></td></tr>` : "")).join("")
+    + (rows.length > 1500 ? `<tr><td colspan="6" class="mut">${rows.length - 1500} more — refine the search</td></tr>` : "");
+}
+$("#tl-body").onclick = e => { const tr = e.target.closest("tr.row"); if (!tr) return; const id = tr.dataset.id; TL.open.has(id) ? TL.open.delete(id) : TL.open.add(id); renderTools(); };
+$("#tl-q").oninput = e => { TL.q = e.target.value; renderTools(); };
+$("#tl-kind").onchange = e => { TL.kind = e.target.value; renderTools(); };
+document.querySelector('aside button[data-s="tools"]').addEventListener("click", () => TL.data || loadTools());
+
+
+// ---------------- screen recording (MP4 streamed to disk) ----------------
+const REC = { mr: null, t0: 0, timer: null, file: null };
+async function toggleRecording() {
+  const btn = $("#tb-rec");
+  if (REC.mr) { REC.mr.stop(); return; }
+  const mp4 = ["video/mp4;codecs=avc1.640028", "video/mp4;codecs=avc1", "video/mp4"].find(t => MediaRecorder.isTypeSupported(t));
+  const mime = mp4 || "video/webm;codecs=vp9";
+  const { sourceId, file } = await gbox.recStart(mp4 ? "mp4" : "webm");
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
+    chromeMediaSource: "desktop", chromeMediaSourceId: sourceId, maxFrameRate: 60, minWidth: 640 } } });
+  const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+  mr.ondataavailable = async e => { if (e.data.size) await gbox.recChunk(await e.data.arrayBuffer()); };
+  mr.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop()); clearInterval(REC.timer);
+    await new Promise(r => setTimeout(r, 300));                  // let the last chunk land
+    const res = await gbox.recStop();
+    REC.mr = null; btn.classList.remove("recording"); $("#tb-rec-t").textContent = "";
+    if (res) { con.textContent += `\nrecording saved: ${res.file} (${(res.bytes / 2 ** 20).toFixed(1)} MB)\n`; gbox.recOpen(res.file); }
+  };
+  mr.start(1000);                                                // 1 s chunks streamed to disk
+  Object.assign(REC, { mr, t0: Date.now(), file });
+  btn.classList.add("recording");
+  REC.timer = setInterval(() => { const s = Math.floor((Date.now() - REC.t0) / 1000);
+    $("#tb-rec-t").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; }, 250);
+}
+$("#tb-rec").onclick = () => toggleRecording().catch(e => { alert("Recording failed: " + e.message); });
+
+loadSettings().then(() => { refresh(); refreshInbox(); });
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

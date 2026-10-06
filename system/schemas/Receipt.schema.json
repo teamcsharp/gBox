@@ -1,0 +1,135 @@
+{
+ "$defs": {
+  "ArtifactRef": {
+   "properties": {
+    "sha256": {
+     "title": "Sha256",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "size": {
+     "title": "Size",
+     "type": "integer"
+    },
+    "media_type": {
+     "title": "Media Type",
+     "type": "string"
+    },
+    "provenance": {
+     "additionalProperties": true,
+     "default": {},
+     "title": "Provenance",
+     "type": "object"
+    }
+   },
+   "required": [
+    "sha256",
+    "name",
+    "size",
+    "media_type"
+   ],
+   "title": "ArtifactRef",
+   "type": "object"
+  }
+ },
+ "properties": {
+  "id": {
+   "title": "Id",
+   "type": "string"
+  },
+  "job_id": {
+   "title": "Job Id",
+   "type": "string"
+  },
+  "tool": {
+   "title": "Tool",
+   "type": "string"
+  },
+  "tool_version": {
+   "title": "Tool Version",
+   "type": "string"
+  },
+  "worker_id": {
+   "title": "Worker Id",
+   "type": "string"
+  },
+  "input_sha256": {
+   "title": "Input Sha256",
+   "type": "string"
+  },
+  "output_sha256": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "title": "Output Sha256"
+  },
+  "artifacts": {
+   "items": {
+    "$ref": "#/$defs/ArtifactRef"
+   },
+   "title": "Artifacts",
+   "type": "array"
+  },
+  "started": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "title": "Started"
+  },
+  "finished": {
+   "title": "Finished",
+   "type": "number"
+  },
+  "validation_ok": {
+   "title": "Validation Ok",
+   "type": "boolean"
+  },
+  "validation_problems": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Validation Problems",
+   "type": "array"
+  },
+  "audit_seq": {
+   "anyOf": [
+    {
+     "type": "integer"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Audit Seq"
+  }
+ },
+ "required": [
+  "job_id",
+  "tool",
+  "tool_version",
+  "worker_id",
+  "input_sha256",
+  "output_sha256",
+  "artifacts",
+  "started",
+  "finished",
+  "validation_ok",
+  "validation_problems"
+ ],
+ "title": "Receipt",
+ "type": "object"
+}

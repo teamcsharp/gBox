@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>G-Box mini</title>
+<style>
+  html,body { margin:0; height:100%; background:#000; overflow:hidden; font:12px system-ui; color:#e8e8ee; }
+  img { width:100%; height:100%; object-fit:contain; display:block; -webkit-app-region:drag; }
+  .bar { position:fixed; top:0; left:0; right:0; display:flex; gap:6px; align-items:center; padding:4px 8px; background:linear-gradient(#000c,#0000);
+         opacity:0; transition:opacity .2s; -webkit-app-region:drag; }
+  body:hover .bar { opacity:1; }
+  .bar span { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  button { -webkit-app-region:no-drag; background:#0009; color:#fff; border:1px solid #ffffff30; border-radius:4px; cursor:pointer; padding:2px 8px; font:inherit; }
+</style></head>
+<body>
+<img id="v" alt="game">
+<div class="bar"><img src="../../assets/brand/gbox-logo.svg" style="height:16px;width:auto" alt=""><span id="t"></span>
+  <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
+<script>
+  const q = new URLSearchParams(location.search), v = document.getElementById("v");
+  document.getElementById("t").textContent = q.get("title");
+  v.onload = () => { if (!v.dataset.sized && v.naturalWidth) { v.dataset.sized = 1; gbox.miniAspect(v.naturalWidth, v.naturalHeight); } };
+  v.src = q.get("src");
+  document.getElementById("full").onclick = () => gbox.miniRestore();
+  addEventListener("dblclick", () => gbox.miniRestore());
+  addEventListener("keydown", e => { if (e.key === "Escape") gbox.miniRestore(); });
+</script></body></html>

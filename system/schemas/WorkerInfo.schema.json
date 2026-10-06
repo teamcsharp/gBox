@@ -1,0 +1,42 @@
+{
+ "properties": {
+  "id": {
+   "title": "Id",
+   "type": "string"
+  },
+  "name": {
+   "title": "Name",
+   "type": "string"
+  },
+  "os": {
+   "title": "Os",
+   "type": "string"
+  },
+  "tools": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Tools",
+   "type": "array"
+  },
+  "unavailable": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "default": {},
+   "title": "Unavailable",
+   "type": "object"
+  },
+  "last_seen": {
+   "title": "Last Seen",
+   "type": "number"
+  }
+ },
+ "required": [
+  "name",
+  "os",
+  "tools"
+ ],
+ "title": "WorkerInfo",
+ "type": "object"
+}
