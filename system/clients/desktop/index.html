@@ -289,6 +289,31 @@
   #it-list .itc img, #it-list .itc > i { width:64px; height:64px; object-fit:contain; display:grid; place-items:center; font-style:normal; font-size:28px; }
   #it-list .itc b { font-size:11px; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
   #it-list .itc span { font-size:10px; color:var(--mut); } #it-msg { font-size:11.5px; padding:6px 10px; border-top:1px solid var(--line); }
+  #reinv { position:fixed; right:16px; top:90px; width:430px; height:min(700px, calc(100vh - 140px)); z-index:61; display:none; flex-direction:column;
+           background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 40px #000a; }
+  #reinv.on { display:flex; } #reinv .ah { display:flex; gap:8px; align-items:center; padding:6px 10px; border-bottom:1px solid var(--line); }
+  #reinv .ah .mut { flex:1; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #reinv .itabs { display:flex; gap:4px; padding:6px 8px; } #reinv .itabs button { font-size:12px; padding:2px 8px; border-radius:10px; }
+  #reinv .itabs button.on { background:var(--acc); color:#fff; } #reinv .itabs .hp { margin-left:auto; font-size:12px; color:var(--mut); align-self:center; }
+  #ri-top { max-height:42%; overflow:auto; scrollbar-width:thin; flex:none; }
+  #ri-slots { display:grid; grid-template-columns:repeat(auto-fill, minmax(92px, 1fr)); gap:6px; padding:2px 8px 8px; }
+  #ri-slots .sl { border:1px solid var(--line); border-radius:8px; padding:5px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:2px;
+                  text-align:center; min-width:0; } #ri-slots .sl:hover { border-color:var(--acc); }
+  #ri-slots .sl.on { border-color:var(--acc); box-shadow:inset 0 0 0 1px var(--acc); } #ri-slots .sl.out { border-style:dashed; opacity:.7; }
+  #ri-slots .sl i { font-style:normal; font-size:22px; height:34px; display:grid; place-items:center; } #ri-slots .sl img { width:34px; height:34px; object-fit:contain; }
+  #ri-slots .sl b { font-size:11px; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+  #ri-slots .sl span { font-size:10.5px; color:var(--mut); } #ri-slots .sl.empty { color:var(--mut); border-style:dashed; cursor:default; }
+  #ri-bar { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px 8px; border-top:1px solid var(--line); font-size:12px; }
+  #ri-bar .t { flex:1; min-width:150px; } #ri-bar input[type=number] { width:68px; } #ri-bar label { display:inline-flex; gap:5px; align-items:center; }
+  #reinv input, #reinv select { font:inherit; font-size:12px; padding:4px 6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; }
+  #ri-find { display:flex; gap:6px; padding:0 8px 6px; } #ri-find input { flex:1; min-width:0; }
+  #ri-list { flex:1; overflow:auto; padding:0 8px 6px; scrollbar-width:thin; }
+  #ri-list .it { display:flex; gap:8px; align-items:center; padding:4px 6px; border-radius:6px; cursor:pointer; font-size:12.5px; }
+  #ri-list .it:hover { background:var(--card); } #ri-list .it .k { width:20px; text-align:center; flex:none; } #ri-list .it .n { flex:1; min-width:0; }
+  #ri-list .it .m { color:var(--mut); font-size:11px; white-space:nowrap; } #ri-list .it.na { opacity:.45; cursor:default; } #ri-list .it img { width:20px; height:20px; object-fit:contain; }
+  #ri-lo { padding:2px 8px 8px; display:flex; flex-direction:column; gap:6px; font-size:12px; } #ri-lo .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  #ri-lo .chip { background:var(--card); border-radius:10px; padding:2px 8px; cursor:pointer; } #ri-lo .chip:hover { text-decoration:line-through; }
+  #ri-msg { font-size:11.5px; padding:6px 10px; border-top:1px solid var(--line); min-height:1.4em; }
   #pipmenu { max-height:calc(100vh - 60px); overflow:auto; min-width:250px; }
   #strip { position:fixed; left:50%; bottom:40px; transform:translateX(-50%); width:min(900px, calc(100vw - 32px)); height:210px; z-index:60; display:none;
            flex-direction:column; background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 40px #000a; }
@@ -531,6 +556,8 @@ window.assetView = async (box, glbUrl) => {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor"/></svg>Mini</button>
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
+    <button id="tb-reinv" hidden title="Inventory: change the weapons and items of the character you're playing (Resident Evil), live">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 12h16"/></svg>Inventory</button>
     <button id="tb-inbox" title="Requests inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Inbox <span class="badge" id="tb-count">0</span></button>
   </div>
 </div>
@@ -1186,7 +1213,7 @@ async function embedTick() {
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #ovbar.on, #ovchars.on, #busysteps.on")]
+    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on")]
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).filter(b => b.width > 0 && b.height > 0)
       .map(b => ({ x: Math.max(0, b.left - rect.x), y: Math.max(0, b.top - rect.y), x2: Math.min(rect.w, b.right - rect.x), y2: Math.min(rect.h, b.bottom - rect.y) }))
@@ -1281,7 +1308,8 @@ function pipMenu(x, y) {
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["save", "💾 Save state"], ["load", "📂 Load state"], ["slot+", `Save slot: ${GM.slot}  ▸ next`], ["slot-", "Save slot ◂ previous"],
-                 ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []), ["-"],
+                 ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
+                 ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []), ["-"],
                  ["prefs", "⚙ Preferences"], ["perf", "⏱ Performance options"], ["display", "🖥 Display settings"], ["aa", "✨ Anti-aliasing"],
                  ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], ["full", "⛶ Full screen"],
@@ -1330,6 +1358,7 @@ async function gameAction(a) {
     else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
     else if (a === "strip") stripShow();
     else if (a === "items") itemsShow();
+    else if (a === "reinv") reinvShow();
     else if (a === "prefs" || a === "perf" || a === "display" || a === "aa") gameSettings("gfx");
     else if (a === "mapping") { viewAction("main"); document.querySelector("#wv")?.executeJavaScript(`show("Controllers")`).catch(() => {}); }
     else if (a === "trouble") troubleShow();
@@ -1355,7 +1384,7 @@ gbox.onAppFocus?.(gameFocus);
 // only a click on the game itself hands it the keyboard (clicks in the library, sidebars, search boxes keep it in gBox)
 document.addEventListener("pointerup", e => { const r = EMB.rect;
   if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
-      && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatpanel, #items, #pipmenu, #strip, #trouble")) gameFocus(); });
+      && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble")) gameFocus(); });
 // ---------------- hold ~ : push-to-talk to the active conversation, the reply is spoken ----------------
 const PTT = { rec: null, chunks: [], down: false };
 async function pttDown() {
@@ -1742,6 +1771,134 @@ function itemsRender() {
   $("#it-list").innerHTML = rows.filter(i => !IT.q || i.name.toLowerCase().includes(IT.q)).map(i => `<div class="itc ${eq.has(i.code) ? "eq" : have.has(i.code) ? "have" : ""}"
       data-code="${i.code}" data-name="${esc(i.name)}" title="${esc(i.name)} · ${i.code}"><img loading="lazy" alt="" src="${thumb(i.name)}" onerror="this.replaceWith(Object.assign(document.createElement('i'),{textContent:'${i.code.startsWith("00") ? "⚔" : i.code.startsWith("01") ? "🛡" : i.code.startsWith("02") ? "✨" : "🧪"}'}))">
       <b>${esc(i.name)}</b><span>${esc(i.kind || "")}${eq.has(i.code) ? " · equipped" : ""}</span></div>`).join("") || '<p class="mut">nothing here</p>';
+}
+
+// ---------------- Resident Evil inventory helper: the selected character's slots, live; click a slot to change / remove it,
+// give any item (this game's list or "any RE": the same name maps to each game's own item), Mercenaries loadouts ----------------
+const RI = { cur: null, cats: {}, inv: null, t: null, busy: false, tab: "inv", sel: null, scope: "game", q: "", lo: [], key: "" };
+const riIcon = (x, cls = "") => x.icon ? `<img alt="" src="${S.apiUrl}${x.icon}?token=${encodeURIComponent(S.tok || "")}" onerror="this.replaceWith(Object.assign(document.createElement('i'),{textContent:'${riKind(x.kind)}'}))">`
+  : `<i class="${cls}">${riKind(x.kind)}</i>`;
+function riKind(k) { return { weapon: "🔫", ammo: "🧰", heal: "✚", key: "🔑" }[k] || "◆"; }
+async function riFind() {                                   // the RE session the helper works on: the docked game, else the open one
+  const ctx = EMB.sid ? { session_id: EMB.sid } : await chatContext().catch(() => ({}));
+  if (!ctx.session_id) return null;
+  let gid = ctx.game_id;
+  if (!gid) { const r = await gbox.api("/api/sessions"); gid = r.ok && r.data.find(x => x.session_id === ctx.session_id)?.game_id; }
+  if (!gid) return null;
+  if (!(gid in RI.cats)) { const r = await gbox.api("/api/re/catalog?game_id=" + encodeURIComponent(gid)); RI.cats[gid] = r.ok ? r.data : null; }
+  return RI.cats[gid] ? { sid: ctx.session_id, gid, cat: RI.cats[gid] } : null;
+}
+async function riWatch() {                                  // toolbar button only while a Resident Evil game is the current one
+  try { const c = await riFind(); RI.cur = c; $("#tb-reinv").hidden = !c;
+    if (!c && $("#reinv")?.classList.contains("on")) { $("#reinv").classList.remove("on"); riStop(); } } catch {}
+}
+setInterval(riWatch, 5000); setTimeout(riWatch, 1500);
+$("#tb-reinv").onclick = () => $("#reinv")?.classList.contains("on") ? ($("#reinv").classList.remove("on"), riStop()) : reinvShow();
+function riStop() { clearInterval(RI.t); RI.t = null; EMB.last = ""; }
+async function reinvShow() {
+  RI.cur = RI.cur || await riFind();
+  if (!RI.cur) return toast("⚠ No Resident Evil game running");
+  let p = $("#reinv");
+  if (!p) {
+    document.body.insertAdjacentHTML("beforeend", `<div id="reinv"><div class="ah"><b>🎒 Inventory</b><span class="mut" id="ri-who"></span>
+      <button class="act" id="ri-close" title="Close (Esc)">✕</button></div>
+      <div class="itabs"><button data-t="inv">Inventory</button><button data-t="lo" id="ri-lotab">Loadout</button><span class="hp" id="ri-hp"></span></div>
+      <div id="ri-top"></div>
+      <div id="ri-bar"></div>
+      <div id="ri-find"><input id="ri-q" placeholder="search items…" autocomplete="off" data-nomic>
+        <select id="ri-scope" title="This game's items, or the same item across every Resident Evil"><option value="game">This game</option><option value="any">Any RE</option></select></div>
+      <div id="ri-list"></div><div id="ri-msg" class="mut"></div></div>`);
+    p = $("#reinv"); floating(p, p.querySelector(".ah"), "reinv");
+    $("#ri-close").onclick = () => { p.classList.remove("on"); riStop(); };
+    p.querySelector(".itabs").onclick = e => { const t = e.target.dataset?.t; if (t) { RI.tab = t; RI.sel = null; riRender(true); } };
+    $("#ri-q").oninput = e => { RI.q = e.target.value.toLowerCase(); riList(); };
+    $("#ri-q").onkeydown = e => { if (e.key === "Enter") { const one = $("#ri-list").querySelector(".it:not(.na)"); if (one) one.click(); }
+                                  if (e.key === "Escape") { e.stopPropagation(); if (RI.sel != null) { RI.sel = null; riRender(true); } else { p.classList.remove("on"); riStop(); } } };
+    $("#ri-scope").onchange = e => { RI.scope = e.target.value; riList(); };
+    $("#ri-top").onclick = e => {
+      const sl = e.target.closest("[data-slot]"), ch = e.target.closest("[data-chip]");
+      if (sl) { RI.sel = RI.sel === +sl.dataset.slot ? null : +sl.dataset.slot; riRender(true); }
+      if (ch) { RI.lo.splice(+ch.dataset.chip, 1); riRender(true); }
+    };
+    $("#ri-bar").onclick = async e => {
+      const b = e.target.closest("[data-a]"); if (!b) return;
+      const amt = +($("#ri-amt")?.value || 0);
+      if (b.dataset.a === "unsel") { RI.sel = null; riRender(true); }
+      else if (b.dataset.a === "remove") { const s = RI.sel; RI.sel = null; await riOp({ op: "remove", slot: s }); }
+      else if (b.dataset.a === "amount") await riOp({ op: "set", slot: RI.sel, amount: amt });
+      else if (b.dataset.a === "lo") await riOp({ op: "loadout", character: $("#ri-char").value, items: RI.lo.map(x => x.name), amount: amt });
+      else if (b.dataset.a === "heal") await riOp({ op: "health", amount: amt || RI.inv?.health?.max || 0 });
+    };
+    $("#ri-list").onclick = async e => {
+      const it = e.target.closest("[data-item]"); if (!it || it.classList.contains("na")) return;
+      const name = it.dataset.item, amt = +($("#ri-amt")?.value || 0);
+      if (RI.tab === "lo") { RI.lo.push({ name, label: it.dataset.label }); riRender(true); }
+      else if (RI.sel != null) await riOp({ op: "set", slot: RI.sel, item: name, amount: amt });
+      else await riOp({ op: "give", item: name, amount: amt });
+    };
+    addEventListener("keydown", e => { if (e.key === "Escape" && p.classList.contains("on") && p.contains(document.activeElement)) { p.classList.remove("on"); riStop(); } });
+  }
+  if (RI.key !== RI.cur.gid + RI.cur.sid) { RI.key = RI.cur.gid + RI.cur.sid; RI.inv = null; RI.sel = null; RI.lo = []; RI.tab = "inv"; }
+  p.classList.add("on"); EMB.last = "";
+  riRender(true); riList();
+  $("#ri-q").focus();                                       // the operator opened it to type; the game gets the keys back on a click
+  clearInterval(RI.t); riLoad(); RI.t = setInterval(riLoad, 1000);
+}
+async function riLoad() {
+  if (RI.busy || !RI.cur || !$("#reinv")?.classList.contains("on")) return;
+  RI.busy = true;
+  try { const r = await gbox.api("/api/re/inventory?session_id=" + encodeURIComponent(RI.cur.sid));
+    if (r.ok) { const was = JSON.stringify([RI.inv?.slots, RI.inv?.health, RI.inv?.error]); RI.inv = r.data;
+      if (was !== JSON.stringify([r.data.slots, r.data.health, r.data.error])) riRender(false); } }
+  finally { RI.busy = false; }
+}
+async function riOp(body) {
+  const m = $("#ri-msg"); m.textContent = "…";
+  const r = await gbox.api("/api/re/inventory", { session_id: RI.cur.sid, ...body });
+  if (!r.ok) { m.textContent = "⚠ " + r.error; return; }
+  m.textContent = (r.data.ok === false ? "⚠ " : "✓ ") + (r.data.message || "done");
+  if (r.data.inventory && !r.data.inventory.error) { RI.inv = Object.assign({}, RI.inv, r.data.inventory); riRender(false); }
+}
+function riRender(bar) {                                    // slots / loadout + the action bar; never touches the search box
+  const c = RI.cur?.cat || {}, inv = RI.inv || {};
+  $("#ri-who").textContent = [c.game || inv.game, inv.character].filter(Boolean).join(" · ");
+  $("#ri-lotab").hidden = !c.loadout; if (!c.loadout && RI.tab === "lo") RI.tab = "inv";
+  document.querySelectorAll("#reinv .itabs button").forEach(b => b.classList.toggle("on", b.dataset.t === RI.tab));
+  const h = inv.health; $("#ri-hp").textContent = h && h.hp != null ? `HP ${h.hp}${h.max ? " / " + h.max : ""}` : "";
+  if (RI.tab === "lo") {
+    if (!bar) return;                                       // a refresh never rebuilds the loadout form (open select, choices)
+    $("#ri-top").innerHTML = `<div id="ri-lo"><div class="mut">${esc(c.loadout.mode)}</div>
+      <div class="row">Character <select id="ri-char">${c.loadout.characters.map(x => `<option>${esc(x)}</option>`).join("")}</select></div>
+      <div class="row">${RI.lo.map((x, i) => `<span class="chip" data-chip="${i}" title="click to remove">${esc(x.label)} ✕</span>`).join("") || '<span class="mut">pick weapons and items below (first gun = equipped)</span>'}</div></div>`;
+  } else {
+    const slots = inv.slots || [];
+    if (RI.sel != null && !slots.some(x => x.slot === RI.sel)) RI.sel = null;
+    $("#ri-top").innerHTML = (inv.error ? `<p class="mut" style="padding:4px 10px">⚠ ${esc(inv.error)}</p>` : "") +
+      `<div id="ri-slots">${slots.map(x => `<div class="sl${x.slot === RI.sel ? " on" : ""}${x.in_case === false ? " out" : ""}" data-slot="${x.slot}"
+        title="${esc(x.name)} · id ${x.item_id}${x.amount_is ? " · amount = " + x.amount_is : ""}${x.in_case === false ? " · not in the case" : ""} · click to change or remove">
+        ${riIcon(x)}<b>${esc(x.name)}</b><span>${x.amount}${x.max ? " / " + x.max : ""}</span></div>`).join("")
+        || (inv.error ? "" : `<p class="mut" style="padding:4px 2px">${RI.inv ? "nothing carried" : "reading the game…"}</p>`)}</div>`;
+  }
+  if (!bar && $("#ri-bar").dataset.mode === `${RI.tab}:${RI.sel}`) return;
+  $("#ri-bar").dataset.mode = `${RI.tab}:${RI.sel}`;
+  const amt = `<label title="count / ammo (0 = the game's default)">amount <input id="ri-amt" type="number" min="0" value="${esc($("#ri-amt")?.value || "0")}"></label>`;
+  const sel = (inv.slots || []).find(x => x.slot === RI.sel);
+  $("#ri-bar").innerHTML = RI.tab === "lo"
+    ? `<span class="t">Click items to add them, then</span>${amt}<button class="act" data-a="lo">Apply loadout</button>`
+    : sel ? `<span class="t">Slot: <b>${esc(sel.name)}</b> ×${sel.amount} — click an item below to put it here</span>${amt}
+        <button class="act" data-a="amount" title="keep the item, set its amount">Set amount</button><button class="act" data-a="remove">Remove</button><button class="act" data-a="unsel">✕</button>`
+    : `<span class="t">+ Give: click an item below</span>${amt}${(c.ops || []).includes("health") ? '<button class="act" data-a="heal" title="HP = amount (0 = full)">Heal</button>' : ""}`;
+}
+function riList() {
+  const c = RI.cur?.cat; if (!c) return;
+  const q = RI.q, hit = s => !q || s.toLowerCase().includes(q);
+  const rows = RI.scope === "any"
+    ? c.cross.filter(x => hit(x.name) || hit(x.game_name || "")).map(x => x.id == null
+        ? `<div class="it na" title="not in ${esc(c.game || "this game")}"><span class="k">${riKind(x.kind)}</span><span class="n">${esc(x.name)}</span><span class="m">not in this game</span></div>`
+        : `<div class="it" data-item="${esc(x.name)}" data-label="${esc(x.game_name)}"><span class="k">${riKind(x.kind)}</span><span class="n">${esc(x.name)}</span><span class="m">${esc(x.game_name)}</span></div>`)
+    : c.items.filter(x => !x.special && hit(x.name)).map(x => `<div class="it" data-item="${esc(String(x.id))}" data-label="${esc(x.name)}" title="id ${x.id}">
+        <span class="k">${x.icon ? riIcon(x) : riKind(x.kind)}</span><span class="n">${esc(x.name)}</span><span class="m">${esc(x.kind)}${x.max ? " · max " + x.max : ""}</span></div>`);
+  $("#ri-list").innerHTML = rows.join("") || '<p class="mut">no match</p>';
 }
 
 // conversation orb: undulating particle sphere that follows the mic (you) and the voice (gBox); scales out when closed
@@ -2900,13 +3057,14 @@ $("#recmenu").onchange = () => { try { localStorage.setItem("gbox_rec", JSON.str
 document.addEventListener("mousedown", e => { if (!e.target.closest("#recmenu, #tb-recopt")) $("#recmenu").classList.remove("on"); });
 // clicking anywhere outside a pop-up closes it (its own opener toggles it instead, so it isn't closed-then-reopened)
 const POPS = [["#busysteps", "#chatbusy"], ["#taskpanel", "#tb-tasks"], ["#auditpanel", "#sb-audit"], ["#svcpanel", "#statusbar"], ["#whipmenu", null],
-              ["#chatpanel", "#chatbar, #sb-chat, #chatsug, #live, #orb"], ["#ctlpop", null], ["#items", null]];
+              ["#chatpanel", "#chatbar, #sb-chat, #chatsug, #live, #orb"], ["#ctlpop", null], ["#items", null], ["#reinv", "#tb-reinv, #pipmenu"]];
 function closePops(target) {                                 // target null = a click on the game itself: close everything
   for (const [pop, opener] of POPS) {
     const el = document.querySelector(pop + ".on");
     if (!el || (target && (el.contains(target) || (opener && target.closest(opener))))) continue;
     el.classList.remove("on");
     if (pop === "#taskpanel") clearInterval(TK.t);
+    if (pop === "#reinv") riStop();
   }
   const pm = $("#pipmenu");                                  // the game's right-click menu
   if (pm && pm.style.display === "block" && !(target && target.closest("#pipmenu"))) { pm.style.display = "none"; GM.menu = false; EMB.last = ""; }

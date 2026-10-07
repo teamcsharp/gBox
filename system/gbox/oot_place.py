@@ -84,7 +84,7 @@ def statue_parts(model: Path, height: float, props=(), blender: str | None = Non
     mats, key_ix, part = [], {}, []
     for p in prims:
         tex = p["tex"]
-        key = (id(tex) if tex is not None else None, tuple(p["color"][:3]))
+        key = (hash(np.ascontiguousarray(tex).tobytes()) if tex is not None else None, tuple(p["color"][:3]))   # same image = one material
         if key not in key_ix:
             col = np.array(p["color"][:3], float) / 255
             if tex is not None:

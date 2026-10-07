@@ -753,6 +753,11 @@ def create_app(config: Config) -> FastAPI:
         if job.require_worker:
             job.require_worker = _wid(job.require_worker)
         missing = [p for p in t.permissions if p not in config.granted_permissions]
+        w = store.get("worker", job.require_worker) if job.require_worker else None
+        if w and t.name not in (w.get("tools") or []) and time.time() - w.get("last_seen", 0) < 60:
+            why = (w.get("unavailable") or {}).get(t.name) or "; ".join(f"{k}: {v}" for k, v in (w.get("unavailable") or {}).items()
+                                                                     if k.startswith("module ")) or "not installed there"
+            job.state, job.error = JobState.REJECTED, f"{w.get('name')} can't run {t.name}: {why}"
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
@@ -1631,6 +1636,10 @@ def create_app(config: Config) -> FastAPI:
             rpc_results[rid] = res
             lv["cond"].notify_all()
         return {"ok": True}
+
+    from . import re_inventory_api                # Resident Evil inventory helper (any RE): /api/re/inventory, /api/re/catalog
+    re_inventory_api.routes(app, store, config, auth, submit=submit, JobRequest=JobRequest,
+                            peek=lambda sid, a, n, actor: session_rpc(sid, Rpc(op="read_memory", args={"address": a, "length": n}), actor))
 
     @app.post("/api/sessions/{sid}/detail")
     def session_detail(sid: str, info: dict, actor=Depends(auth)):

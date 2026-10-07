@@ -165,7 +165,7 @@ class Mod:
         else:
             w0 = v["w0"].astype(float) / 32767
             w12 = v["w12"].astype(float)
-            J[:] = v["b"].astype(int) + sb
+            J[:] = v["b"][:, ::-1].astype(int) + sb     # the u8 bones are stored last-to-first: b[3] goes with w0
             W[:, 0], W[:, 1:3] = w0, w12
             W[:, 3] = np.clip(1 - W[:, :3].sum(1), 0, 1)
         idx = self.ib[p["istart"]:p["istart"] + p["icount"]].astype(int) - p["vstart"]
@@ -376,7 +376,9 @@ def export_character(base: Path, char: str, out: Path, costume: str | None = Non
                             texcache[bm] = _texture_image(base, bm, texarcs + [stem])
                         tex = texcache[bm]
             # part skeletons share bone ids with the body: map this part's bone indices to body bone indices by id
-            prims.append({**g, "tex": tex, "name": f"{stem}_{len(prims)}", "_ids": [b[0] for b in m.bones],
+            # no colour map (Leon's earpiece...): dark grey, not glTF's default white
+            prims.append({**g, "tex": tex, "color": (255, 255, 255, 255) if tex is not None else (48, 48, 52, 255),
+                          "name": f"{stem}_{len(prims)}", "_ids": [b[0] for b in m.bones],
                           "_root": (m.bones[0][0], m.world()[0])})
             stats["triangles"] += len(g["tris"])
         stats["parts"].append(stem)

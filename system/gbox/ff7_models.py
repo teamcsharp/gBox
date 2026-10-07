@@ -286,14 +286,14 @@ class _Atlas:
 
 def to_gltf(model: dict, path: Path, anim: int = 0, rest_frame: int = 0, names: dict | None = None,
             weapon: int | None = None, weapon_bone: int = 13, weapon_xform: list | None = None,
-            scale: float = 1.0, animate: bool = True, fill_transparent: bool = True) -> dict:
-    """Rigid-per-bone glTF. Bind pose = frame `rest_frame` of animation `anim`. Y is flipped (FF7 / PSX is Y-down) so
-    the glTF is +Y up; FF7 +Z (bone axis) stays +Z."""
+            scale: float = 1.0, animate: bool = True, fill_transparent: bool = True, world: list | None = None) -> dict:
+    """Rigid-per-bone glTF. Bind pose = frame `rest_frame` of animation `anim` (or `world`: the bones' world matrices,
+    e.g. a field model's pose). Y is flipped (FF7 / PSX is Y-down) so the glTF is +Y up; FF7 +Z (bone axis) stays +Z."""
     u, bones, tim = model["raw"], model["bones"], model["tim"]
     names = names or {}
     nb = len(bones) - 1
     frames = read_animation(u, model["anims"][anim], nb) if anim is not None else []
-    W = pose(bones, frames[rest_frame] if frames else None)
+    W = world if world is not None else pose(bones, frames[rest_frame] if frames else None)
     flip = np.diag([1.0, -1.0, -1.0, 1.0])              # PSX (x right, y down, z fwd) -> glTF (x, y up, z back): 180 deg about X
     Wg = [flip @ w for w in W]
     atlas = _Atlas(128)
@@ -447,3 +447,129 @@ def _quat(R: np.ndarray) -> list:
 def from_disc(path: str | Path, name: str = "ENEMY6/CLOUD.LZS") -> dict:
     from gbox.psxdisc import PSXDisc
     return read_battle_model(PSXDisc(str(path)).read(name))
+
+
+# ---------------------------------------------------------------- field models (PSX FIELD/*.BCX)
+#
+# Reverse-engineered from FIELD/CLOUD.BCX (LZS, same codec as the battle files). Decompressed:
+#   u32 size, u32 header offset H.  H: u16 0xFF01, u8 bones, u8 parts, u8 animations, 17 x 0, u16 scale (512),
+#   u16 parts offset, u16 animations offset (both relative to the skeleton), u32 skeleton offset | 0x80000000.
+#   bone (4 B)      s16 length, u8 parent (255 = none), u8 has mesh.  Bone i sits at its parent's origin + (0, 0, length)
+#                   in the parent's frame (own length, like Parasite Eve), then rotates: M_i = M_p T(0,0,len_i) Ry Rx Rz.
+#   part (32 B)     u8 1, u8 bone, u8 vertices, u8 texcoords, u8 counts x 8 (quad col+tex, tri col+tex, quad mono+tex,
+#                   tri mono+tex, tri mono, quad mono, tri col, quad col), u8 flags, u8 controls, u16 poly offset,
+#                   u16 texcoord offset, u16 flags offset, u16 control offset, u16 GPU buffer bytes (G3 28, G4 36,
+#                   GT3 40, GT4 52 per poly), u32 vertex block offset | 0x80000000, u32 0.
+#   vertex block    u32 0, vertices (s16 x, y, z, 0), then (poly offset, from the block) polygons in count order:
+#                   col+tex quad 24 B (4 x u8 vertex, 4 x RGBn, 4 x u8 texcoord), col+tex tri 20 B, col tri 16 B
+#                   (3 x u8 vertex + pad, 3 x RGBn), col quad 20 B. n = the vertex's lighting normal index (per vertex).
+#   animation (16)  u16 frames, u8 channels, u8 per-frame translation tracks, u8 static translations, u8 per-frame
+#                   rotation tracks, u16 x 3 offsets (per-frame translations s16, static translations s16, per-frame
+#                   rotations u8) from the data, u32 data | 0x80000000.  data: u32, then per channel (= bone) 8 B:
+#                   u8 flags (bit 0..2 rotation x/y/z per frame, bit 4..6 translation x/y/z per frame), rx, ry, rz
+#                   (static value or track index; rotations in 1/256 turn), tx, ty, tz (track / static index, 255 =
+#                   none), pad.
+FIELD_BCX = {"CLOUD": "Cloud Strife (field)", "TIFA": "Tifa Lockhart (field)", "EARITH": "Aerith Gainsborough (field)",
+             "RED": "Red XIII (field)", "CID": "Cid Highwind (field)", "YUFI": "Yuffie Kisaragi (field)",
+             "KETCY": "Cait Sith (field)", "VINCENT": "Vincent Valentine (field)", "BALLET": "Barret Wallace (field)"}
+FIELD_POLYS = (("qct", 24, 4, True), ("tct", 20, 3, True), ("qmt", 0, 4, True), ("tmt", 0, 3, True),
+               ("tm", 0, 3, False), ("qm", 0, 4, False), ("tc", 16, 3, False), ("qc", 20, 4, False))
+FIELD_PACKET = {"qct": 52, "tct": 40, "tc": 28, "qc": 36}
+
+
+def read_field_model(bcx: bytes, compressed: bool = True) -> dict:
+    u = lzs(bcx) if compressed else bytes(bcx)
+    h = struct.unpack_from("<I", u, 4)[0]
+    nb, npart, nanim = u[h + 2], u[h + 3], u[h + 4]
+    scale, op, oa = struct.unpack_from("<HHH", u, h + 0x16)
+    osk = struct.unpack_from("<I", u, h + 0x1C)[0] & 0x7FFFFFFF
+    bones = []
+    for i in range(nb):
+        ln, par, mesh = struct.unpack_from("<hBB", u, osk + 4 * i)
+        bones.append({"length": ln, "parent": None if par == 255 else par, "has_mesh": mesh})
+    parts = []
+    for p in range(npart):
+        q = osk + op + 32 * p
+        f = struct.unpack_from("<12B2B5H2I", u, q)
+        cnt = dict(zip([k for k, *_ in FIELD_POLYS], f[4:12]))
+        ovx = f[19] & 0x7FFFFFFF
+        part = {"raw": u[q:q + 32], "bone": f[1], "nv": f[2], "ntc": f[3], "counts": cnt, "flags": f[12],
+                "controls": f[13], "opoly": f[14], "otc": f[15], "ofl": f[16], "octl": f[17], "buffer": f[18], "ovx": ovx}
+        part["verts"] = np.frombuffer(u, "<i2", 4 * f[2], ovx + 4).reshape(-1, 4)[:, :3].astype(float)
+        polys, o = [], ovx + f[14]
+        for key, size, n, tex in FIELD_POLYS:
+            for _ in range(cnt[key]):
+                if not size:
+                    raise NotImplementedError(f"field polygon type {key} (no sample yet)")
+                polys.append({"kind": key, "idx": list(u[o:o + n]),
+                              "cols": [tuple(u[o + 4 + 4 * j:o + 7 + 4 * j]) for j in range(n)],
+                              "nrm": [u[o + 7 + 4 * j] for j in range(n)],
+                              "tc": list(u[o + 4 + 4 * n:o + 4 + 4 * n + n]) if tex else None})
+                o += size
+        part["polys"] = polys
+        parts.append(part)
+    anims = [field_anim(u, osk + oa + 16 * k) for k in range(nanim)]
+    return {"raw": u, "header": h, "skeleton": osk, "parts_off": op, "anims_off": oa, "scale": scale, "bones": bones,
+            "parts": parts, "anims": anims}
+
+
+def field_anim(u: bytes, off: int) -> list[dict]:
+    """-> frames [{"pos": root (x, y, z), "rot": [(rx, ry, rz) in 4096 units] per bone}]."""
+    nf, nch, _nft, _nst, _nfr, oft, ost, ofr, data = struct.unpack_from("<HBBBBHHHI", u, off)
+    data &= 0x7FFFFFFF
+    ch = [u[data + 4 + 8 * c:data + 12 + 8 * c] for c in range(nch)]
+    out = []
+    for f in range(nf):
+        rot, pos = [], [0, 0, 0]
+        for c, e in enumerate(ch):
+            fl = e[0]
+            rot.append(tuple((u[data + ofr + e[1 + a] * nf + f] if fl >> a & 1 else e[1 + a]) * 16 for a in range(3)))
+            for a in range(3):
+                i = e[4 + a]
+                if i == 255:
+                    continue
+                pos[a] = (struct.unpack_from("<h", u, data + oft + 2 * (i * nf + f))[0] if fl >> (4 + a) & 1
+                          else struct.unpack_from("<h", u, data + ost + 2 * i)[0])
+        out.append({"pos": tuple(pos), "rot": rot})
+    return out
+
+
+def field_pose(bones: list[dict], frame: dict | None) -> list[np.ndarray]:
+    """World matrices (column vectors) of the field skeleton for one frame (None = zero rotations)."""
+    W = []
+    for i, b in enumerate(bones):
+        L = np.eye(4)
+        if frame:
+            L[:3, :3] = _rot(*(v * 360 / 4096 for v in frame["rot"][i]))
+        T = np.eye(4)
+        T[2, 3] = b["length"]
+        if b["parent"] is None:
+            if frame:
+                T[:3, 3] += frame["pos"]
+            W.append(T @ L)
+        else:
+            W.append(W[b["parent"]] @ T @ L)
+    return W
+
+
+def field_to_battle_dict(fm: dict) -> dict:
+    """The field model in read_battle_model()'s shape (bones with meshes, colour polygons only), for to_gltf."""
+    bones = [{"parent": b["parent"], "length": 0, "mesh": None} for b in fm["bones"]]
+    for p in fm["parts"]:
+        m = {"verts": p["verts"], "tt": [], "tq": [], "ct": [], "cq": [], "tt_page": 0, "tq_page": 0}
+        for pl in p["polys"]:
+            (m["cq"] if len(pl["idx"]) == 4 else m["ct"]).append((pl["idx"], pl["cols"]))
+        bones[p["bone"]]["mesh"] = m
+    return {"raw": fm["raw"], "bones": bones, "anims": [], "tim": None, "weapons": []}
+
+
+def field_to_gltf(fm: dict, path: Path, anim: int = 0, frame: int = 0, scale: float = 1.0) -> dict:
+    """Rigid glTF of a field model, bind pose = frame `frame` of animation `anim` (no glTF animation)."""
+    W = field_pose(fm["bones"], fm["anims"][anim][frame] if fm["anims"] else None)
+    return to_gltf(field_to_battle_dict(fm), path, anim=None, names={i: f"j{i:02d}" for i in range(len(fm["bones"]))},
+                   scale=scale, animate=False, world=W)
+
+
+def field_from_disc(path: str | Path, name: str = "CLOUD") -> dict:
+    from gbox.psxdisc import PSXDisc
+    return read_field_model(PSXDisc(str(path)).read(f"FIELD/{name}.BCX"))

@@ -656,7 +656,7 @@ def build_re4(ctx, meta: dict, game: dict, progress) -> dict:
         how = "numpy rigid retarget (body roles)"
     drs = work / "drs"
     bl, srcs, rep, last = _blender(cfg), [rigged], None, None
-    for k in range(3):                                     # a pack must not grow: smaller textures, then decimate
+    for k in range(4):                                     # a pack must not grow: smaller textures, then decimate
         for mt in (128, 64, 32):
             try:
                 progress(40 + k * 10, f"Writing Leon's packs (textures {mt}px{', decimated' if k else ''})")
@@ -664,7 +664,7 @@ def build_re4(ctx, meta: dict, game: dict, progress) -> dict:
                 break
             except ValueError as e:
                 last = e
-        if rep or not bl:
+        if rep or not bl or k == 3:                        # k == 3: the last decimation has been tried too
             break
         srcs.append(E.decimate(rigged, work / f"dec{k}.glb", (0.5, 0.3, 0.2)[k], bl))
     if not rep:
@@ -1590,6 +1590,12 @@ def characters_tool(inp: CharIn, ctx):
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
+    from . import pe_swap
+    if gid in pe_swap.GAME_IDS and inp.slot == "player":         # Parasite Eve (PS1): Aya, all 5 outfits -> pe_<slug>
+        return {"result": out | pe_swap.use(ctx, meta, game, inp)}
+    from . import ff7_swap
+    if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
+        return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
     from . import filemods
     here = {m["name"] for m in filemods.list_mods(ctx.config, gid)}
     built = [t for t in meta.get("targets", {}).get(gid, []) if t.get("mod") and t.get("slot", "player") == inp.slot

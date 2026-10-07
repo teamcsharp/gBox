@@ -7,6 +7,8 @@ import math
 import struct
 import zlib
 
+import numpy as np
+
 from . import uap
 
 
@@ -401,6 +403,291 @@ def to_manifest(nj: NJ, name: str, source: dict, textures: list[str] | None = No
                                     "source_identity": "verified"})
 
 
+# ---------------------------------------------------------------- writing (gBox character swaps: gbox.sa2_chars, gbox.pso_player)
+def prs_compress(data: bytes) -> bytes:
+    """PRS encoder (the exact inverse of prs_decompress): literals, short refs (2..5 bytes, 256 back), long refs
+    (3..9 bytes inline or 1..256 with a count byte, 8191 back). Greedy with one-step lazy matching, hash chains."""
+    n, out = len(data), bytearray()
+    st = {"pos": None, "n": 8}
+
+    def bit(b):
+        if st["n"] == 8:                                     # the decoder fetches a control byte when it needs a bit
+            st["pos"], st["n"] = len(out), 0
+            out.append(0)
+        out[st["pos"]] |= (b & 1) << st["n"]
+        st["n"] += 1
+
+    head, prev = {}, [0] * n
+
+    def find(i):
+        if i + 2 >= n:
+            return 0, 0
+        best_len, best_off, j, tries = 0, 0, head.get(data[i:i + 3], -1), 0
+        lim = min(256, n - i)
+        while j >= 0 and i - j <= 8191 and tries < 64:
+            if data[j + best_len:j + best_len + 1] == data[i + best_len:i + best_len + 1]:
+                k = 0
+                while k < lim and data[j + k] == data[i + k]:
+                    k += 1
+                if k > best_len:
+                    best_len, best_off = k, i - j
+                    if k == lim:
+                        break
+            j, tries = prev[j], tries + 1
+        if best_len == 2 and best_off > 255:
+            return 0, 0
+        return best_len, best_off
+
+    def insert(i):
+        if i + 2 < n:
+            key = data[i:i + 3]
+            prev[i] = head.get(key, -1)
+            head[key] = i
+
+    i = 0
+    while i < n:
+        ln, off = find(i)
+        insert(i)
+        if 2 <= ln < 256:                                    # lazy: a longer match one byte later wins
+            ln2, off2 = find(i + 1)
+            if ln2 > ln + 1:
+                bit(1)
+                out.append(data[i])
+                i += 1
+                ln, off = ln2, off2
+                insert(i)
+        if ln >= 2 and off <= 255 and ln <= 5:
+            bit(0), bit(0)
+            c = ln - 2
+            bit(c >> 1), bit(c & 1)
+            out.append((-off) & 0xFF)
+        elif ln >= 3:
+            bit(0), bit(1)
+            o = (-off) & 0x1FFF
+            if ln <= 9:
+                a = (o << 3) | (ln - 2)
+                out += bytes((a & 0xFF, a >> 8))
+            else:
+                a = o << 3
+                out += bytes((a & 0xFF, a >> 8, ln - 1))
+        else:
+            bit(1)
+            out.append(data[i])
+            ln = 1
+        for k in range(i + 1, i + ln):
+            insert(k)
+        i += ln
+    bit(0), bit(1)
+    out += b"\0\0"
+    return bytes(out)
+
+
+def _rgb565(c) -> int:
+    c = np.clip(np.asarray(c, float), 0, 255)
+    return (int(c[0]) >> 3) << 11 | (int(c[1]) >> 2) << 5 | int(c[2]) >> 3
+
+
+def pvr_vq(rgba, gbix: int | None = None, iters: int = 12) -> bytes:
+    """Square power-of-two image -> [GBIX] + PVRT VQ (data format 3, RGB565): a 256-entry codebook of 2x2 blocks
+    (k-means) + one twiddled index byte per block. 256x256 = 18 KB."""
+    img = np.asarray(rgba, float)[..., :3]
+    h, w = img.shape[:2]
+    if h != w or w & (w - 1) or w < 8:
+        raise ValueError(f"VQ needs a square power-of-two texture, got {w}x{h}")
+    bw = w // 2
+    # block k: (x, y), (x, y + 1), (x + 1, y), (x + 1, y + 1) = pvr_decode's order
+    blocks = np.stack([img[0::2, 0::2], img[1::2, 0::2], img[0::2, 1::2], img[1::2, 1::2]], 2).reshape(-1, 12)
+    rng = np.random.default_rng(0)
+    k = min(256, len(blocks))
+    cb = blocks[rng.choice(len(blocks), k, replace=False)].copy()
+    for _ in range(iters):
+        d = ((blocks[:, None, :] - cb[None, :, :]) ** 2).sum(2) if len(blocks) * k < 4_000_000 else None
+        if d is None:                                        # big images: chunked distance
+            lab = np.concatenate([((blocks[s:s + 4096, None, :] - cb[None]) ** 2).sum(2).argmin(1)
+                                  for s in range(0, len(blocks), 4096)])
+        else:
+            lab = d.argmin(1)
+        for c in range(k):
+            m = lab == c
+            cb[c] = blocks[m].mean(0) if m.any() else blocks[rng.integers(len(blocks))]
+    lab = np.concatenate([((blocks[s:s + 4096, None, :] - cb[None]) ** 2).sum(2).argmin(1) for s in range(0, len(blocks), 4096)])
+    book = b"".join(struct.pack("<4H", *[_rgb565(cb[c, 3 * q:3 * q + 3]) for q in range(4)]) for c in range(k))
+    book += bytes(8 * (256 - k))
+    idx = bytearray(bw * bw)
+    lab = lab.reshape(bw, bw)                                # [by, bx]
+    for by in range(bw):
+        for bx in range(bw):
+            idx[_twiddle(bx, by)] = lab[by, bx]
+    body = book + bytes(idx)
+    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), 1, 3, 0, w, h) + body
+    return (b"GBIX" + struct.pack("<II", 8, gbix) + bytes(4) if gbix is not None else b"") + pvrt
+
+
+def pvm_entry_gbix(chunk: bytes) -> int | None:
+    return struct.unpack_from("<I", chunk, 8)[0] if chunk[:4] == b"GBIX" else None
+
+
+def pvm_replace(data: bytes, index: int, chunk: bytes) -> bytes:
+    """A PVM with entry `index` (GBIX + PVRT) swapped for `chunk`; the header and the other entries stay."""
+    hsize = struct.unpack_from("<I", data, 4)[0]
+    o, k = 8 + hsize, 0
+    while o + 8 <= len(data):
+        if data[o:o + 4] not in (b"GBIX", b"PVRT"):
+            o = (o + 8 + struct.unpack_from("<I", data, o + 4)[0] + 3) & ~3
+            continue
+        g = o
+        if data[o:o + 4] == b"GBIX":
+            o += 8 + struct.unpack_from("<I", data, o + 4)[0]
+        end = (o + 8 + struct.unpack_from("<I", data, o + 4)[0] + 3) & ~3
+        if k == index:
+            return data[:g] + chunk + bytes((-len(chunk)) % 4) + data[end:]
+        o, k = end, k + 1
+    raise IndexError(f"PVM has no entry {index}")
+
+
+def chunk_list_len(d: bytes, off: int, kind: str, e: str = "<") -> int:
+    """Byte length of a chunk vertex list ("v") or polygon list ("p"), its end chunk included."""
+    o = off
+    if kind == "v":
+        while True:
+            h = struct.unpack_from(e + "I", d, o)[0]
+            o += 4
+            if h & 0xFF == 0xFF:
+                return o - off
+            o += (h >> 16) * 4
+    while True:
+        h = struct.unpack_from(e + "H", d, o)[0]
+        t = h & 0xFF
+        if t == 0xFF:
+            return o + 2 - off
+        if t in (8, 9):
+            o += 4
+        elif 0x10 <= t <= 0x4B:
+            o += 4 + struct.unpack_from(e + "H", d, o + 2)[0] * 2
+        else:
+            o += 2
+
+
+def tree_nodes(d: bytes, off: int, e: str = "<") -> list[dict]:
+    """An NJS_OBJECT tree in depth-first order: {off, flags, model, pos/ang/scl raw bytes, child, sibling (indices)}."""
+    out = []
+
+    def walk(o, parent):
+        first = None
+        prev = None
+        while o:
+            flags, model = struct.unpack_from(e + "II", d, o)
+            child, sib = struct.unpack_from(e + "II", d, o + 44)
+            i = len(out)
+            out.append({"off": o, "flags": flags, "model": model, "trs": d[o + 8:o + 44], "parent": parent,
+                        "child": None, "sibling": None})
+            if first is None:
+                first = i
+            if prev is not None:
+                out[prev]["sibling"] = i
+            if child:
+                out[i]["child"] = walk(child, i)
+            prev, o = i, sib
+        return first
+    walk(off, None)
+    return out
+
+
+def tree_ranges(d: bytes, off: int, e: str = "<") -> list[tuple[int, int]]:
+    """Every byte range an object tree uses (node structs, NJS_CNK_MODELs, vertex and polygon lists)."""
+    rs = []
+    for nd in tree_nodes(d, off, e):
+        rs.append((nd["off"], nd["off"] + 52))
+        if nd["model"]:
+            vl, pl = struct.unpack_from(e + "II", d, nd["model"])
+            rs.append((nd["model"], nd["model"] + 24))
+            if vl:
+                rs.append((vl, vl + chunk_list_len(d, vl, "v", e)))
+            if pl:
+                rs.append((pl, pl + chunk_list_len(d, pl, "p", e)))
+    return rs
+
+
+def cnk_model_lists(pos, nrm, tris, texid: int, mat: bytes, tiny_flags: int = 0x34, tex_flags: int = 0x4000,
+                    strip_flags: int = 0x12, e: str = "<") -> tuple[bytes, bytes, list, float]:
+    """One rigid node's geometry -> (vertex list, polygon list, bound centre, radius). pos/nrm: (n, 3) node-local;
+    tris: [((i0, i1, i2), ((u0, v0), (u1, v1), (u2, v2)))]. Vertex chunk 0x29 (position + normal), one strip
+    chunk 0x41 (UVs, 1.0 = 255) of 3-vertex strips; strip_flags 0x10 = double sided."""
+    pos, nrm = np.asarray(pos, np.float32), np.asarray(nrm, np.float32)
+    n = len(pos)
+    vb = np.concatenate([pos, nrm], 1).astype(e + "f4").tobytes()
+    vl = struct.pack(e + "IHH", 0x29 | ((1 + 6 * n) << 16), 0, n) + vb + struct.pack(e + "I", 0xFF)
+    pl = bytearray()
+    if mat:
+        pl += mat
+    pl += struct.pack(e + "HH", 8 | (tiny_flags << 8), (texid & 0x1FFF) | tex_flags)
+    body = bytearray(struct.pack(e + "H", len(tris)))
+    for (a, b, c), uvs in tris:
+        body += struct.pack(e + "h", 3)
+        for i, (u, v) in zip((a, b, c), uvs):
+            body += struct.pack(e + "Hhh", i, int(np.clip(round(u * 255), -32768, 32767)), int(np.clip(round(v * 255), -32768, 32767)))
+    if len(body) % 4:                                        # size counts shorts; keep the list 4-aligned
+        body += bytes(2)
+    pl += struct.pack(e + "HH", 0x41 | (strip_flags << 8), len(body) // 2) + body
+    pl += struct.pack(e + "H", 0xFF) + bytes(2)
+    c = (pos.min(0) + pos.max(0)) / 2 if n else np.zeros(3)
+    r = float(np.linalg.norm(pos - c, axis=1).max()) if n else 0.0
+    return bytes(vl), bytes(pl), [float(x) for x in c], r
+
+
+def write_tree(nodes: list[dict], models: dict, base: int, e: str = "<") -> tuple[bytes, int, list[int]]:
+    """Serialize a node tree (tree_nodes layout; flags / trs may be edited) with new chunk models at file offset
+    `base`. models: {node index: (vlist, plist, centre, radius)}. -> (bytes, root offset, pointer field offsets
+    (absolute, for a POF0 table))."""
+    out = bytearray()
+    ptrs = []
+    node_off = [base + 52 * i for i in range(len(nodes))]
+    out += bytes(52 * len(nodes))
+    model_off = {}
+    for i in sorted(models):
+        vl, pl, c, r = models[i]
+        mo = base + len(out)
+        out += bytes(24)
+        vo = base + len(out)
+        out += vl
+        po = base + len(out)
+        out += pl
+        out += bytes((-len(out)) % 4)
+        out[mo - base:mo - base + 24] = struct.pack(e + "II4f", vo if vl else 0, po if pl else 0, *c, r)
+        if vl:
+            ptrs.append(mo)
+        if pl:
+            ptrs.append(mo + 4)
+        model_off[i] = mo
+    for i, nd in enumerate(nodes):
+        o = node_off[i] - base
+        mo = model_off.get(i, 0)
+        ch = node_off[nd["child"]] if nd["child"] is not None else 0
+        sb = node_off[nd["sibling"]] if nd["sibling"] is not None else 0
+        out[o:o + 52] = struct.pack(e + "II", nd["flags"], mo) + nd["trs"] + struct.pack(e + "II", ch, sb)
+        for k, v in ((4, mo), (44, ch), (48, sb)):
+            if v:
+                ptrs.append(node_off[i] + k)
+    return bytes(out), node_off[0], ptrs
+
+
+def pof0(ptrs: list[int], base: int = 0) -> bytes:
+    """POF0 relocation chunk for pointer field offsets (relative to the data start): 2-bit size class + distance
+    in 4-byte units (0x40 | d: 6 bits, 0x80 | d: 14 bits, 0xC0 | d: 30 bits)."""
+    body, last = bytearray(), base
+    for p in sorted(ptrs):
+        d = (p - last) // 4
+        last = p
+        if d < 0x40:
+            body.append(0x40 | d)
+        elif d < 0x4000:
+            body += struct.pack(">H", 0x8000 | d)
+        else:
+            body += struct.pack(">I", 0xC0000000 | d)
+    body += bytes((-len(body)) % 4)
+    return b"POF0" + struct.pack("<I", len(body)) + bytes(body)
+
+
 def _selftest():
     raw = b"ABCDEFGHIJKL"
     def lit_only(b):                                          # literals, then the stop code (bits 0,1 + zero offset)
@@ -423,6 +710,8 @@ def _selftest():
         out[cpos] = ctrl
         return bytes(out + b"\0\0")
     assert prs_decompress(lit_only(raw)) == raw
+    for blob in (raw, b"abcabcabcabcabcabcabcabcabc" * 50, bytes(range(256)) * 40, b""):
+        assert prs_decompress(prs_compress(blob)) == blob
     assert _twiddle(1, 0) == 2 and _twiddle(0, 1) == 1 and _twiddle(1, 1) == 3
     m = _node_matrix([1, 2, 3], [0, 16384, 0], [1, 1, 1], False)          # 90 deg about Y
     v = _xf(m, [1, 0, 0])

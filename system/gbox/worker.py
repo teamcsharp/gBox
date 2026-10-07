@@ -20,6 +20,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
     for t in REGISTRY.values():
         reason = t.unavailable_reason(config)
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
+    bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad)
     if wid:
         info.id = wid

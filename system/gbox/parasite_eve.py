@@ -62,8 +62,8 @@ class PEData:
             exe = (src / "SLUS_006.62").read_bytes()
             self._disc = None
         else:
-            from .psxdisc import PSXDisc
-            self._disc = PSXDisc(str(src))
+            from .psxdisc import PSXDisc, RawBin
+            self._disc = RawBin(src, writable=False) if src.suffix.lower() == ".bin" else PSXDisc(str(src))
             self._img_lba = self._disc.files["PE.IMG"][0]
             exe = self._disc.read(next(n for n in ("SLUS_006.62", "SLUS_006.68") if n in self._disc.files))
             # disc 2 (SLUS_006.68) carries a byte-identical EXE and PE.IMG

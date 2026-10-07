@@ -89,3 +89,148 @@ class PSXDisc:
                 else:
                     self.files[f"{prefix}{n}"] = (elba, esize)
             o += ln
+
+
+# ---------------------------------------------------------------- writing: raw MODE2/2352 .bin images (mods)
+#
+# A modded PSX disc is a copy of the raw single-track image with files rewritten sector by sector. Every touched
+# Mode 2 Form 1 sector gets its EDC (CRC over subheader + data) and Reed-Solomon P/Q ECC recomputed (address bytes
+# zeroed for Mode 2), so the image is valid for real drives and for emulators that check sectors.
+
+def _luts():
+    f, b, e = [0] * 256, [0] * 256, [0] * 256
+    for i in range(256):
+        j = ((i << 1) ^ (0x11D if i & 0x80 else 0)) & 0xFF
+        f[i] = j
+        b[i ^ j] = i
+        c = i
+        for _ in range(8):
+            c = (c >> 1) ^ (0xD8018001 if c & 1 else 0)
+        e[i] = c
+    return f, b, e
+
+
+_ECC_F, _ECC_B, _EDC = _luts()
+
+
+def edc(data: bytes) -> int:
+    c = 0
+    for x in data:
+        c = (c >> 8) ^ _EDC[(c ^ x) & 0xFF]
+    return c
+
+
+def _ecc_block(src: bytearray, major_count: int, minor_count: int, major_mult: int, minor_inc: int, dst: int):
+    size = major_count * minor_count
+    for major in range(major_count):
+        index = (major >> 1) * major_mult + (major & 1)
+        a = b = 0
+        for _ in range(minor_count):
+            t = src[0xC + index]
+            index += minor_inc
+            if index >= size:
+                index -= size
+            a ^= t
+            b ^= t
+            a = _ECC_F[a]
+        a = _ECC_B[_ECC_F[a] ^ b]
+        src[dst + major] = a
+        src[dst + major + major_count] = a ^ b
+
+
+def fix_sector(s: bytearray) -> bytearray:
+    """Recompute EDC + ECC of a raw 2352-byte Mode 2 Form 1 sector in place (Form 2 sectors: EDC only)."""
+    if s[0x12] & 0x20:                                     # Form 2 (XA audio/video): EDC over 0x10..0x92C, no ECC
+        struct.pack_into("<I", s, 0x92C, edc(s[0x10:0x92C]))
+        return s
+    struct.pack_into("<I", s, 0x818, edc(s[0x10:0x818]))
+    addr = bytes(s[12:16])
+    s[12:16] = b"\0\0\0\0"
+    _ecc_block(s, 86, 24, 2, 86, 0x81C)
+    _ecc_block(s, 52, 43, 86, 88, 0x8C8)
+    s[12:16] = addr
+    return s
+
+
+class RawBin:
+    """A single-track MODE2/2352 .bin opened for writing: ISO9660 listing + sector-exact file rewrites."""
+
+    def __init__(self, path, writable: bool = True):
+        self.f = open(path, "r+b" if writable else "rb")
+        self.files: dict[str, tuple[int, int]] = {}
+        pvd = self.data(16)
+        assert pvd[1:6] == b"CD001", "no ISO9660 PVD"
+        self._walk(struct.unpack_from("<I", pvd, 158)[0], struct.unpack_from("<I", pvd, 166)[0], "")
+
+    _walk = PSXDisc._walk
+
+    def raw(self, lba: int) -> bytearray:
+        self.f.seek(lba * 2352)
+        return bytearray(self.f.read(2352))
+
+    def data(self, lba: int) -> bytes:
+        s = self.raw(lba)
+        return bytes(s[24:24 + 2048] if s[15] == 2 else s[16:16 + 2048])
+
+    def read(self, name: str) -> bytes:
+        lba, size = self.files[name]
+        return b"".join(self.data(lba + i) for i in range((size + 2047) // 2048))[:size]
+
+    def write_data(self, lba: int, data: bytes) -> int:
+        """Overwrite the user data of consecutive Form 1 sectors from `lba` (data padded to whole sectors with the
+        sectors' old bytes). Returns the number of sectors rewritten."""
+        n = (len(data) + 2047) // 2048
+        for i in range(n):
+            s = self.raw(lba + i)
+            if s[15] != 2 or s[0x12] & 0x20:
+                raise ValueError(f"sector {lba + i} is not Mode 2 Form 1: refusing to write file data there")
+            chunk = data[i * 2048:(i + 1) * 2048]
+            s[24:24 + len(chunk)] = chunk
+            fix_sector(s)
+            self.f.seek((lba + i) * 2352)
+            self.f.write(s)
+        return n
+
+    def write_file(self, name: str, offset: int, data: bytes) -> int:
+        """Rewrite part of an existing file in place (offset must be sector-aligned; the file size never changes)."""
+        lba, size = self.files[name]
+        if offset % 2048:
+            raise ValueError("offset must be a multiple of 2048")
+        if offset + len(data) > (size + 2047) // 2048 * 2048:
+            raise ValueError(f"{name}: {len(data)} bytes at {offset} run past the file's sectors")
+        return self.write_data(lba + offset // 2048, data)
+
+    def close(self):
+        self.f.close()
+
+
+def chd_to_bin(chd, out_bin, progress=None):
+    """CHD (v4/v5, single data track) -> raw .bin + .cue: chdman when installed, else gbox.frame_rip's reader (v4)."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+    out_bin = Path(out_bin)
+    out_bin.parent.mkdir(parents=True, exist_ok=True)
+    cue = out_bin.with_suffix(".cue")
+    if shutil.which("chdman"):
+        tmp = out_bin.with_name(out_bin.stem + ".part.cue")
+        subprocess.run(["chdman", "extractcd", "-f", "-i", str(chd), "-o", str(tmp), "-ob", str(out_bin)],
+                       check=True, capture_output=True, timeout=3600)
+        cue.write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+        tmp.unlink(missing_ok=True)
+        return cue
+    from .frame_rip import psx_chd_to_bin
+    return psx_chd_to_bin(Path(chd), out_bin)
+
+
+def _selftest_ecc(path):
+    """Recompute EDC/ECC of a few sectors of a real image: must match the mastered bytes."""
+    d = PSXDisc(path)
+    for lba in (16, 17, 24, 1000):
+        s = bytearray(d.chd.sector(lba))
+        if s[15] != 2:
+            continue
+        want = bytes(s)
+        fix_sector(s)
+        assert bytes(s) == want, f"EDC/ECC mismatch at sector {lba}"
+    return True

@@ -237,6 +237,8 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
     head_y = S[ri["head"]][1] if "head" in ri else float(body[:, 1].max())
     th = T[MARIO.get("head", chestj)]
     s = (th[1] - tgt["ground"]) / max(head_y - ground_s, 1e-9)
+    if tgt.get("fit_height"):                              # tall targets (gbox.pe_swap): whole figure height, not head joint
+        s = tgt["fit_height"] / max(float(allp[~isprop][:, 1].max() if (~isprop).any() else allp[:, 1].max()) - ground_s, 1e-9)
     sy_up = float(np.clip((th[1] - T[hipj][1]) / max(head_y - hip[1], 1e-9), 0.6 * s, 1.8 * s))
     sy_dn = float(np.clip((T[hipj][1] - tgt["ground"]) / max(hip[1] - ground_s, 1e-9), 0.6 * s, 1.8 * s))
     if "head" not in ri:                                   # round bodies (Kirby, Jigglypuff): no torso stretch at all
@@ -402,7 +404,7 @@ def to_writer(prims: list[dict], tgt: dict) -> tuple[dict, list, list]:
     mats, key_ix, parts, uses = [], {}, {}, []
     for p in prims:
         tex = p["tex"]
-        key = (id(tex) if tex is not None else None, tuple(p["color"][:3]))
+        key = (hash(np.ascontiguousarray(tex).tobytes()) if tex is not None else None, tuple(p["color"][:3]))   # same image = one material
         if key not in key_ix:
             col = np.array(p["color"][:3], float) / 255
             if tex is not None:

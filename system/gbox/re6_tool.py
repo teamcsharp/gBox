@@ -632,8 +632,13 @@ def _inject_stub() -> bytes:
     return struct.pack(f">{len(words)}I", *words)
 
 
+def _s32(v: int) -> int:
+    v = int(v) & 0xFFFFFFFF
+    return v - (1 << 32) if v & 0x80000000 else v
+
+
 def call_on_player(ad, p, func: int, args=(0, 0, 0, 0, 0), timeout=3.0) -> int:
-    """func(player, *args) on the game thread (next frame). Returns its r3."""
+    """func(player, *args) on the game thread (next frame). Returns its r3 (args may be addresses: packed as s32)."""
     with _LIVE["inj"]:
         vt = _u32(ad, p)
         if vt == INJ_VT:
@@ -643,49 +648,153 @@ def call_on_player(ad, p, func: int, args=(0, 0, 0, 0, 0), timeout=3.0) -> int:
         if ad.read_memory(INJ_STUB, len(stub)) != stub:
             ad.write_memory(INJ_STUB, stub)
         slot_fn = struct.unpack_from(">I", ents, 4 * INJ_SLOT)[0]
-        ad.write_memory(INJ_DATA, struct.pack(">IIIiiiiii", vt, slot_fn, func, *[int(a) for a in args], -0x7FFF))
+        ad.write_memory(INJ_DATA, struct.pack(">IIIiiiiii", vt, slot_fn, func, *[_s32(a) for a in args], -0x7FFF))
         ad.write_memory(INJ_VT, ents[:4 * INJ_SLOT] + struct.pack(">I", INJ_STUB) + ents[4 * INJ_SLOT + 4:])
         ad.write_memory(p, struct.pack(">I", INJ_VT))
         t = time.time()
         while time.time() - t < timeout:
             if _u32(ad, p) == vt:
-                return struct.unpack(">i", ad.read_memory(INJ_DATA + 32, 4))[0]
+                # the stub puts the real vtable back *before* the call: wait for the result word (sentinel -0x7FFF)
+                while time.time() - t < timeout + 5:
+                    r = struct.unpack(">i", ad.read_memory(INJ_DATA + 32, 4))[0]
+                    if r != -0x7FFF:
+                        return r
+                    time.sleep(0.01)
+                return r
             time.sleep(0.03)
         ad.write_memory(p, struct.pack(">I", vt))
         raise RuntimeError("the game didn't run the call (paused, in a menu or a cutscene?)")
 
 
+# Item id -> weapon unit class (uWpNNNN; its resources are nativeXenon/arc/X360/uWpNNNN.arc). Read from the game's own class
+# registry (every uWp DTI carries key 7 << 24 | item code << 8 at +0x1C), dumped once from the running game.
+WP_CLASS = {1: 1010, 2: 1011, 3: 1012, 4: 1020, 5: 1021, 6: 1022, 7: 1030, 8: 1031, 9: 1040, 10: 1041, 11: 1050, 12: 1060,
+            13: 1061, 14: 1062, 15: 1070, 16: 1071, 17: 1072, 18: 1080, 19: 1090, 20: 1092, 21: 1094, 22: 1096, 23: 1100,
+            24: 1110, 25: 1111, 26: 1112, 27: 1120, 28: 1150, 29: 1160, 30: 1151, 31: 1161, 32: 1173, 34: 1350, 35: 1352,
+            36: 1359, 37: 1357, 38: 1051, 39: 1130, 40: 1063}
+
+
 def weapon_class(ad, code: int) -> str | None:
-    """Item code -> weapon class name via the game's class hash table (key 7 << 24 | code << 8), e.g. 0x108 -> uWp1031."""
-    k = (7 << 24) | (code << 8)
-    d = _u32(ad, 0x83CE3B70 + 4 * (k & 0xFF))
-    for _ in range(64):
-        if not d:
-            return None
-        if _u32(ad, d + 0x1C) == k:
-            nm = ad.read_memory(_u32(ad, d + 4), 32)
-            return nm.split(b"\0")[0].decode("latin-1")
-        d = _u32(ad, d + 0x14)
-    return None
+    """Item code (0x1nn) -> weapon class name, e.g. 0x108 -> uWp1031."""
+    n = WP_CLASS.get(code - 0x100) if code >> 8 == 1 else None
+    return f"uWp{n}" if n else None
 
 
-def give_now(ad, cfg, iid: int, amount: int = 0, all_players=False) -> dict:
+# Preloading a weapon (the fix for "a gun the stage didn't load froze the game"): the gun's model/motion/effect resources
+# are the unit archive arc/X360/uWpNNNN.arc. A Mercenaries stage only loads the archives of the chosen loadout, so setItem
+# of another gun creates a weapon whose resources never arrive. gBox first asks the game's resource manager for that
+# archive on the game thread - sResource ([0x83D3E9EC]) vtable+0x30 = getResource(this, DTI rArchive (0x83D41424),
+# "arc\\X360\\uWpNNNN", 1) - the same call the game uses for its own movies; it loads synchronously (~0.05 s for one gun)
+# and returns the archive, which gBox keeps referenced (never released) so the weapon's resources stay resident.
+# The trampoline VCALL is constant code in the .text padding: r3 = *[D2+0]; ctr = (*r3)[D2+4]; bctr (r4.. from the stub).
+SRESOURCE, RARCHIVE_DTI = 0x83D3E9EC, 0x83D41424
+VCALL, VCALL_D, VCALL_PATH = 0x83C17C40, 0x83D6FD00, 0x83D6FD40
+VCALL_CODE = [0x3D6083D7, 0x396BFD00, 0x806B0000, 0x80630000, 0x81830000, 0x800B0004, 0x7D8C002E, 0x7D8903A6, 0x4E800420]
+
+
+def preload_weapon(ad, p, iid: int) -> dict:
+    """Load the gun's unit archive through the game's resource manager (game thread). {'class', 'resource'}."""
+    cls = weapon_class(ad, 0x100 | iid)
+    if not cls:
+        raise ValueError(f"item {iid} has no weapon unit class")
+    code = struct.pack(f">{len(VCALL_CODE)}I", *VCALL_CODE)
+    if ad.read_memory(VCALL, len(code)) != code:
+        ad.write_memory(VCALL, code)
+    ad.write_memory(VCALL_PATH, ("arc\\X360\\" + cls).encode().ljust(64, b"\0"))
+    ad.write_memory(VCALL_D, struct.pack(">II", SRESOURCE, 0x30))
+    r = call_on_player(ad, p, VCALL, (RARCHIVE_DTI, VCALL_PATH, 1, 0, 0), timeout=20) & 0xFFFFFFFF
+    _LIVE.setdefault("preloaded", {})[cls] = r
+    return {"class": cls, "resource": r}
+
+
+def is_gun(iid: int) -> bool:
+    return 0 < iid < 100 and iid not in GRENADES | RECOVERY
+
+
+def give_now(ad, cfg, iid: int, amount: int = 0, all_players=False, slot: int = -1) -> dict:
     ps = players(ad)
     if not ps:
         raise Unsupported("no player in the game right now (start a match / load the chapter first)")
     code = item_code(iid)
     names = _names(cfg)
-    if iid < 100 and iid not in GRENADES | RECOVERY:
-        # a gun: only live when its model is already loaded (the player holds that gun class)
+    pre = None
+    if is_gun(iid):
+        # a gun the stage didn't load: preload its unit archive first (see preload_weapon), else the game waits forever
         have = {code_item(struct.unpack_from(">H", ad.read_memory(ps[0] + INV + SLOT_SZ * k, 8), 6)[0]) for k in range(7)}
-        if iid not in have:
-            return {"live": False, "reason": f"{names.get(iid, iid)}'s model isn't loaded in this stage (the game only loads "
-                    "the guns of the chosen loadout); it was added to the Mercenaries loadout instead"}
+        if iid not in have and weapon_class(ad, code):
+            pre = preload_weapon(ad, ps[0], iid)
+            if not pre["resource"]:
+                return {"live": False, "reason": f"the game couldn't load {names.get(iid, iid)}'s resources "
+                        f"({pre['class']}.arc); it was added to the Mercenaries loadout instead"}
     res = []
     for p in (ps if all_players else ps[:1]):
-        r = call_on_player(ad, p, SETITEM, (-1, code, amount if amount > 0 else -1, 0, 0))
+        r = call_on_player(ad, p, SETITEM, (slot, code, amount if amount > 0 else -1, 0, 0))
         res.append(r)
-    return {"live": True, "slots": res, "item": iid, "name": names.get(iid, iid)}
+    return {"live": True, "slots": res, "item": iid, "name": names.get(iid, iid),
+            "preloaded": pre["class"] if pre else None}
+
+
+def _slot_addr(ad, p, slot: int) -> int:
+    """Address of the cItem whose slot number (+5) is `slot` (the 24 entries aren't always in slot order)."""
+    inv = ad.read_memory(p + INV, SLOT_SZ * 24)
+    for k in range(24):
+        if inv[k * SLOT_SZ + 5] == slot:
+            return p + INV + k * SLOT_SZ
+    raise ValueError(f"no inventory slot {slot} (0-6 weapons, 7-12 grenade/recovery selectors, 15-23 case)")
+
+
+def remove_item(ad, cfg, slot: int) -> dict:
+    """Empty one slot. Case/ammo/herb/grenade slots go through the game's own setItem (count -2 = clear); a gun slot is
+    marked not-owned (active 0, the way the game itself keeps guns it isn't carrying); the gun in hand is refused."""
+    ps = players(ad)
+    if not ps:
+        raise Unsupported("no player in the game right now")
+    p = ps[0]
+    a = _slot_addr(ad, p, slot)
+    s = ad.read_memory(a, SLOT_SZ)
+    if not s[4]:
+        return {"slot": slot, "removed": None, "message": f"Slot {slot} is already empty."}
+    code = struct.unpack_from(">H", s, 6)[0]
+    iid = code_item(code)
+    nm = _names(cfg).get(iid, hex(code))
+    if code >> 8 == 1 and slot < 7:
+        if _u32(ad, p + 0x3EE8) == slot:
+            raise ValueError(f"{nm} is the gun in the player's hands right now: switch to another weapon first")
+        ad.write_memory(a + 4, b"\0")
+    else:
+        call_on_player(ad, p, SETITEM, (slot, code, -2, 0, 0))
+    return {"slot": slot, "removed": {"id": iid, "name": nm}, "message": f"{nm} removed from slot {slot}."}
+
+
+def set_slot(ad, cfg, slot: int, iid: int | None, amount: int = 0) -> dict:
+    """Change one inventory slot live: a different item (gun slots 0-6 take guns, case slots ammo/herbs/grenades/sprays),
+    or only the count (amount = loaded rounds / stack size)."""
+    ps = players(ad)
+    if not ps:
+        raise Unsupported("no player in the game right now")
+    p = ps[0]
+    a = _slot_addr(ad, p, slot)
+    s = ad.read_memory(a, SLOT_SZ)
+    cur = code_item(struct.unpack_from(">H", s, 6)[0]) if s[4] else None
+    names = _names(cfg)
+    if iid is not None and iid != cur:
+        if is_gun(iid) != (slot < 7):
+            raise ValueError("slots 0-6 hold guns, 15-23 the case (ammo, herbs, grenades, sprays)")
+        if s[4]:
+            remove_item(ad, cfg, slot)
+        if is_gun(iid):
+            r = give_now(ad, cfg, iid, amount)              # the game picks the gun slot (reuses its own record)
+        else:
+            r = give_now(ad, cfg, iid, amount, slot=slot)
+        return r | {"slot": slot, "replaced": names.get(cur) if cur is not None else None,
+                    "message": f"Slot {slot}: {names.get(iid, iid)}" + (f" (was {names.get(cur, cur)})" if cur is not None else "")}
+    if not s[4]:
+        raise ValueError(f"slot {slot} is empty: give an item")
+    n = max(0, min(0xFFFE, int(amount)))
+    mode = s[8] if s[8] < 3 else 0
+    ad.write_memory(a + 0xA + 2 * mode, struct.pack(">H", n))
+    return {"slot": slot, "id": cur, "name": names.get(cur, cur), "count": n,
+            "message": f"{names.get(cur, cur)} in slot {slot}: {n}."}
 
 
 def _hold_loop(sid: str, kind: str, stop: threading.Event):

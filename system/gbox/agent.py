@@ -339,6 +339,17 @@ def tool_specs() -> list[dict]:
            "Mercenaries stage/character/costume unlocks beyond 'unlock', faster movement for a swapped character.",
            {"session_id": s, "op": s, "item": s, "amount": i, "items": {"type": "array", "items": {}}, "character": s,
             "replace": b, "on": b, "target": s, "costume": s}, ["op"]),
+        fn("re_inventory", "ANY Resident Evil running live (RE4 GameCube, RE6 Xbox 360, classic REs whose slot layout gBox "
+           "knows): the selected character's inventory. FIRST CHOICE for 'give me a rocket launcher', 'put a first aid spray in "
+           "my inventory', 'remove the knife', 'change my shotgun to a magnum', 'set my handgun ammo to 99', 'what do I have'. "
+           "op=get (slots: slot, item, amount, max; HP) | give item=<name> [amount] | remove slot=N | set slot=N [item=<name>] "
+           "[amount=N] | loadout character=<name> items=[names] (Mercenaries start loadout: RE4 leon|ada|hunk|krauser|wesker, "
+           "RE6 leon|helena|chris|piers|jake|sherry|ada|agent) | health amount=N | catalog (every item + the cross-game list). "
+           "Item names work across games: 'rocket launcher', 'handgun', 'magnum', 'shotgun shells', 'first aid spray', "
+           "'green herb' map to each game's own item; game-specific names and ids work too. Slot numbers come from op=get. "
+           "Relay the tool's message; if it says an op isn't available for that game, say so plainly.",
+           {"session_id": s, "op": s, "item": s, "amount": i, "slot": i, "character": s, "items": {"type": "array", "items": {}}},
+           ["session_id", "op"]),
         fn("re4r", "Resident Evil 4 (2023 remake, Steam, PC) on the Windows PC, through REFramework (praydog) + gBox's Lua "
            "bridge (live game objects by type path; no raw addresses, no debugger on the Denuvo-protected exe). No session_id: "
            "it acts on the game installed on the PC. Offline single-player only. "
@@ -788,6 +799,12 @@ class Agent:
         j = self._job("re_mods", inp, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def re_inventory(self, session_id, op="get", item="", amount=0, slot=-1, character="", items=None):
+        inp = {"session_id": session_id, "op": op, "item": str(item or ""), "amount": int(amount or 0),
+               "slot": int(slot if slot is not None else -1), "character": character or "", "items": items or []}
+        j = self._job("re_inventory", inp, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def re6(self, op="status", session_id="", **kw):
         inp = {"op": op, "session_id": session_id, **{k: v for k, v in kw.items() if v not in (None, "", [])}}
         j = self._job("re6", inp, worker=session_id.rsplit("-", 1)[0] if session_id else None, limit=1800) if session_id \
@@ -1190,11 +1207,11 @@ class Agent:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay"}
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay"}
 
 
 class ChatHub:

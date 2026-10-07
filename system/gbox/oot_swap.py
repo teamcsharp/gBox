@@ -275,7 +275,7 @@ def to_parts(prims: list[dict], tgt: dict) -> tuple[dict, list, list]:
     mats, key_ix, parts, uses = [], {}, {}, []
     for p in prims:
         tex = p["tex"]
-        key = (id(tex) if tex is not None else None, tuple(p["color"][:3]))
+        key = (hash(np.ascontiguousarray(tex).tobytes()) if tex is not None else None, tuple(p["color"][:3]))   # same image = one material
         if key not in key_ix:
             col = np.array(p["color"][:3], float) / 255
             if tex is not None:

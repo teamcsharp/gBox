@@ -2690,13 +2690,33 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
+                              "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
                               "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
     import importlib
+    import subprocess
+    import sys
+    pip = {"numpy": "numpy", "PIL": "pillow", "psutil": "psutil"}   # ponytail: declared deps only; extend as modules need more
     for n in names:
-        try:
-            importlib.import_module(f".{n}", __package__)
-        except Exception as e:                       # noqa: BLE001
-            print(f"gBox: tool module {n} not loaded on this machine: {type(e).__name__}: {e}", flush=True)
+        for attempt in (0, 1):
+            try:
+                importlib.import_module(f".{n}", __package__)
+                LOAD_ERRORS.pop(n, None)
+                break
+            except ModuleNotFoundError as e:
+                LOAD_ERRORS[n] = f"{type(e).__name__}: {e}"
+                if attempt or e.name not in pip:
+                    break
+                print(f"gBox: tool module {n} needs {e.name}; installing {pip[e.name]} into this venv", flush=True)
+                if subprocess.run([sys.executable, "-m", "pip", "install", "-q", pip[e.name]], timeout=600).returncode:
+                    break
+            except Exception as e:                   # noqa: BLE001
+                LOAD_ERRORS[n] = f"{type(e).__name__}: {e}"
+                break
+        if n in LOAD_ERRORS:
+            print(f"gBox: tool module {n} not loaded on this machine: {LOAD_ERRORS[n]}", flush=True)
+
+
+LOAD_ERRORS: dict[str, str] = {}   # tool module -> why it didn't load here (shown in the worker's "unavailable")
 
 
 _load_tool_modules()
