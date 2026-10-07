@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 170" data-glyph="arcade" data-name="Arcade stick"><title>Arcade stick controller</title>
+<style id="standalone">
+svg{color:#e8e8ee;background:#16161a;font-family:system-ui,sans-serif}
+.pg-body{fill:#ffffff0d;stroke:#ffffff6b;stroke-width:1.3;stroke-linejoin:round}
+.pg-d *{fill:none;stroke:#ffffff33}
+.pg-s{fill:#ffffff0a;stroke:#ffffff94;stroke-width:1.2}
+.pg-t,.pg-c{fill:#ffffffb8;font-weight:600;text-anchor:middle;dominant-baseline:central}
+.pg-cr{fill:#e0453a}
+.pg-y{fill:none;stroke:#ffffffb8;stroke-width:1.3}.pg-a{fill:#ffffff99}
+.pg-arm .pg-s{fill:none;stroke:none}.pg-dpo{fill:none;stroke:#ffffff94}.pg-dpc,.pg-kd{fill:none;stroke:#ffffff44}
+.pg-gate{fill:none;stroke:#ffffff55;stroke-dasharray:2 2}
+</style>
+<path class="pg-body" d="M18 34H242Q252 34 252 44V146Q252 156 242 156H18Q8 156 8 146V44Q8 34 18 34Z"/><g class="pg-d"><rect x="16" y="42" width="228" height="106" rx="5"/></g><g id="arcade-stick" data-btn="stick" data-stick="s" data-travel="16" data-c="#e0453a" data-dirs="1"><circle class="pg-gate" cx="60" cy="98" r="28"/><g class="pg-knob"><circle class="pg-s" cx="60" cy="98" r="12"/><circle class="pg-kd" cx="60" cy="98" r="6.6"/></g></g><g id="arcade-coin" data-btn="coin"><rect class="pg-s" x="188" y="44.5" width="16" height="7" rx="3.5"/></g><g id="arcade-start" data-btn="start"><rect class="pg-s" x="216" y="44.5" width="16" height="7" rx="3.5"/></g><text class="pg-c" x="196" y="57" font-size="4.2">COIN</text><text class="pg-c" x="224" y="57" font-size="4.2">START</text><g id="arcade-b1" data-btn="b1"><circle class="pg-s" cx="124" cy="86" r="11.5"/><text class="pg-t" x="124" y="86.3" font-size="12.08">1</text></g><g id="arcade-b2" data-btn="b2"><circle class="pg-s" cx="152" cy="78" r="11.5"/><text class="pg-t" x="152" y="78.3" font-size="12.08">2</text></g><g id="arcade-b3" data-btn="b3"><circle class="pg-s" cx="181" cy="78" r="11.5"/><text class="pg-t" x="181" y="78.3" font-size="12.08">3</text></g><g id="arcade-b4" data-btn="b4"><circle class="pg-s" cx="120" cy="114" r="11.5"/><text class="pg-t" x="120" y="114.3" font-size="12.08">4</text></g><g id="arcade-b5" data-btn="b5"><circle class="pg-s" cx="148" cy="106" r="11.5"/><text class="pg-t" x="148" y="106.3" font-size="12.08">5</text></g><g id="arcade-b6" data-btn="b6"><circle class="pg-s" cx="177" cy="106" r="11.5"/><text class="pg-t" x="177" y="106.3" font-size="12.08">6</text></g><g id="arcade-b7" data-btn="b7"><circle class="pg-s" cx="210" cy="82" r="11.5"/></g><g id="arcade-b8" data-btn="b8"><circle class="pg-s" cx="206" cy="110" r="11.5"/></g>
+</svg>

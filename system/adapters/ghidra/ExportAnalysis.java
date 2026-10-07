@@ -1,7 +1,7 @@
-// G-Box headless post-script: exports functions and defined strings to JSON.
+// gBox headless post-script: exports functions and defined strings to JSON.
 // Usage: analyzeHeadless <proj> gbox -import <bin> -postScript ExportAnalysis.java <out.json>
 // Status: written against the Ghidra 11.x API; not yet run (Ghidra not installed on the build host).
-// @category G-Box
+// @category gBox
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.data.StringDataInstance;

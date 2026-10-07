@@ -1,0 +1,23 @@
+{
+ "_about": "PSO Ver.2 DC HUcast (gbox.pso_player, Ninja nodes node###) -> SM64 Mario (gbox.sm64_mario joints j00..j19, exported with --anim 197 = standing idle). Both face +Z with the left side at +X. 1 PSO unit = 30 SM64 model units (before Mario's 0.25 geo scale); torso squashed to Mario's short trunk, limbs squashed to his short legs/arms (chibi HUcast).",
+ "scale": 30.0,
+ "anchor": ["node002", "j01"],
+ "parts": {
+  "node002": {"bone": "j01"},
+  "node025": {"bone": "j02", "at": "j02", "scale_mul": [1.0, 1.0, 0.6]},
+  "node056": {"bone": "j03", "at": "j03", "scale_mul": 1.25},
+  "node059": {"bone": "j03", "at": "j03", "pivot": "node056", "scale_mul": 1.25},
+  "node028": {"bone": "j05", "from": ["node028", "node029"], "to": ["j05", "j06"]},
+  "node029": {"bone": "j06", "from": ["node029", "node034"], "to": ["j06", "j07"]},
+  "node034": {"bone": "j07", "follow": "node029", "at": "j07"},
+  "node041": {"bone": "j09", "from": ["node041", "node042"], "to": ["j09", "j10"]},
+  "node042": {"bone": "j10", "from": ["node042", "node047"], "to": ["j10", "j11"]},
+  "node047": {"bone": "j11", "follow": "node042", "at": "j11"},
+  "node004": {"bone": "j13", "from": ["node004", "node005"], "to": ["j13", "j14"]},
+  "node005": {"bone": "j14", "from": ["node005", "node008"], "to": ["j14", "j15"]},
+  "node008": {"bone": "j15", "follow": "node005", "at": "j15", "scale_mul": 0.85},
+  "node013": {"bone": "j17", "from": ["node013", "node014"], "to": ["j17", "j18"]},
+  "node014": {"bone": "j18", "from": ["node014", "node017"], "to": ["j18", "j19"]},
+  "node017": {"bone": "j19", "follow": "node014", "at": "j19", "scale_mul": 0.85}
+ }
+}

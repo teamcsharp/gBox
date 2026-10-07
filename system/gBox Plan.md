@@ -1,8 +1,8 @@
-# G-Box — Master Implementation Plan
+# gBox — Master Implementation Plan
 
 ## 0. Execution Directive
 
-You are the lead systems architect and implementation agent for **G-Box**. Your job is to build the system described in this document from top to bottom as a working, testable, auditable platform. Do not substitute demos, mock success, placeholder data, or unverified claims for implementation.
+You are the lead systems architect and implementation agent for **gBox**. Your job is to build the system described in this document from top to bottom as a working, testable, auditable platform. Do not substitute demos, mock success, placeholder data, or unverified claims for implementation.
 
 Work incrementally. Every capability must have acceptance tests, artifacts, logs, and a rollback path. When a third-party tool cannot support a requested capability, record the limitation and implement the cleanest adapter/fallback rather than silently claiming success.
 
@@ -14,7 +14,7 @@ Only operate on games/assets the operator is authorized to use. Preserve provena
 
 ## 1. Product Definition
 
-G-Box is a **universal game laboratory** combining:
+gBox is a **universal game laboratory** combining:
 
 - Multi-platform game launching/emulation behind a common interface.
 - PC/Steam game integration where practical.
@@ -38,7 +38,7 @@ The user-facing concept is **one application**, even though execution is delegat
 
 ## 2. Non-Negotiable Design Principles
 
-### 2.1 G-Box is the harness, not a monolithic emulator
+### 2.1 gBox is the harness, not a monolithic emulator
 
 Do not merge every emulator into one codebase. Existing mature emulators are execution engines behind adapters.
 
@@ -62,7 +62,7 @@ LLMs handle semantic interpretation, planning, hypothesis generation and strateg
 
 ### 2.6 Preserve source truth
 
-The NAS/game library is the source of truth. G-Box indexes it rather than duplicating the full collection. Local copies are bounded cache/staging artifacts only when required.
+The NAS/game library is the source of truth. gBox indexes it rather than duplicating the full collection. Local copies are bounded cache/staging artifacts only when required.
 
 ### 2.7 Every game gets a growing Game Profile
 
@@ -116,7 +116,7 @@ Knowledge learned about a title persists across sessions and can be reused by au
 
 ### 4.1 Linux / DGX Spark deployment
 
-Run the main G-Box control plane as services on Linux. It should support:
+Run the main gBox control plane as services on Linux. It should support:
 
 - Remote web/API access.
 - Headless emulator workers where supported.
@@ -133,7 +133,7 @@ Containerize stateless services where sensible. Hardware-sensitive emulator/GPU/
 Provide a Windows build capable of:
 
 - Running locally without the Linux host for basic functions.
-- Registering with the larger G-Box control plane when available.
+- Registering with the larger gBox control plane when available.
 - Hosting Windows-only tools/emulators/debuggers.
 - Running the same emulator adapter protocol.
 - Providing the overlay/eyedropper and local Blender bridge.
@@ -384,7 +384,7 @@ Use these to build pathfinding and strategy optimization rather than relying sol
 
 ## 12. Universal Live Asset Eyedropper
 
-This is a flagship G-Box interaction.
+This is a flagship gBox interaction.
 
 ### User experience
 
@@ -404,7 +404,7 @@ While a supported game is running:
    - Extract room/environment.
    - Send to Blender.
    - Open in internal 3D viewer.
-   - Add to G-Box asset library.
+   - Add to gBox asset library.
    - Export supported exchange formats.
 
 ### Resolution pipeline
@@ -531,7 +531,7 @@ Build a Blender addon/service bridge.
 
 Required operations:
 
-- Receive UAP packages from G-Box.
+- Receive UAP packages from gBox.
 - Create meshes.
 - Reconstruct materials/textures as faithfully as practical.
 - Create armatures.
@@ -543,7 +543,7 @@ Required operations:
 - Select/highlight imported source entity.
 - Update/reimport an asset without unnecessary duplication.
 - Import entire environment/room.
-- Return Blender object IDs and validation information to G-Box.
+- Return Blender object IDs and validation information to gBox.
 
 Target experience:
 
@@ -843,7 +843,7 @@ Do not use “number of episodes” as the primary success metric.
 
 ## 23. UI Requirements
 
-Provide one coherent G-Box interface with at least:
+Provide one coherent gBox interface with at least:
 
 - Game Library.
 - Search/filter by platform/title/status.
@@ -1106,7 +1106,7 @@ Do not start by integrating every emulator or every extraction utility. Prove th
 
 ## 29. First-Run Configuration
 
-On first launch, G-Box should request/configure:
+On first launch, gBox should request/configure:
 
 - Game library network path(s).
 - Local cache path and size limit.
@@ -1173,6 +1173,6 @@ Never report planned work as completed work.
 
 ## 31. Final Product Vision
 
-G-Box should eventually allow the operator to browse a network game collection, launch a title through the appropriate runtime, manually play or enable autonomous play, inspect the game's semantic state, click a visible object to identify and extract it, reconstruct characters or environments in Blender, convert assets through a canonical representation, build controlled modifications, test those modifications, and reuse knowledge learned about the game in future sessions.
+gBox should eventually allow the operator to browse a network game collection, launch a title through the appropriate runtime, manually play or enable autonomous play, inspect the game's semantic state, click a visible object to identify and extract it, reconstruct characters or environments in Blender, convert assets through a canonical representation, build controlled modifications, test those modifications, and reuse knowledge learned about the game in future sessions.
 
-The complexity is intentionally hidden behind one interface, but the implementation remains modular: **specialized execution engines and analysis tools below, G-Box contracts and orchestration above, persistent evidence and knowledge underneath everything.**
+The complexity is intentionally hidden behind one interface, but the implementation remains modular: **specialized execution engines and analysis tools below, gBox contracts and orchestration above, persistent evidence and knowledge underneath everything.**

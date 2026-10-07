@@ -1,0 +1,171 @@
+{
+ "_source": "gbox.ff7_models: FF7 PS1 ENEMY6/CLOUD.LZS (battle model), rest pose = animation 16 frame 0, joints jNN = FF7 bone order (1 pelvis, 2 torso, 3 head, 6-8 L arm, 11-13 R arm + Buster Sword, 15-18 L leg, 20-23 R leg)",
+ "scale": 0.00185,
+ "anchor": [
+  "j01",
+  "b017"
+ ],
+ "parts": {
+  "j01": {
+   "bone": "b017"
+  },
+  "j02": {
+   "bone": "b002",
+   "from": [
+    "j01",
+    "j03"
+   ],
+   "to": [
+    "b017",
+    "b004"
+   ]
+  },
+  "j03": {
+   "bone": "b004",
+   "follow": "j02",
+   "at": "b004",
+   "scale_mul": 0.7,
+   "pivot": "j03"
+  },
+  "j06": {
+   "bone": "b013",
+   "from": [
+    "j06",
+    "j07"
+   ],
+   "to": [
+    "b013",
+    "b014"
+   ]
+  },
+  "j07": {
+   "bone": "b014",
+   "from": [
+    "j07",
+    "j08"
+   ],
+   "to": [
+    "b014",
+    "b016"
+   ]
+  },
+  "j08": {
+   "bone": "b016",
+   "follow": "j07",
+   "at": "b016"
+  },
+  "j11": {
+   "bone": "b007",
+   "from": [
+    "j11",
+    "j12"
+   ],
+   "to": [
+    "b007",
+    "b008"
+   ]
+  },
+  "j12": {
+   "bone": "b008",
+   "from": [
+    "j12",
+    "j13"
+   ],
+   "to": [
+    "b008",
+    "b010"
+   ]
+  },
+  "j13": {
+   "bone": "b010",
+   "follow": "j12",
+   "at": "b010"
+  },
+  "j15": {
+   "bone": "b022",
+   "from": [
+    "j15",
+    "j16"
+   ],
+   "to": [
+    "b022",
+    "b023"
+   ],
+   "to_offset": [
+    0,
+    0,
+    0.11
+   ]
+  },
+  "j16": {
+   "bone": "b023",
+   "from": [
+    "j16",
+    "j17"
+   ],
+   "to": [
+    "b023",
+    "b024"
+   ]
+  },
+  "j17": {
+   "bone": "b024",
+   "from": [
+    "j17",
+    "j18"
+   ],
+   "to": [
+    "b024",
+    "b025"
+   ],
+   "no_stretch": true
+  },
+  "j18": {
+   "bone": "b025",
+   "follow": "j17"
+  },
+  "j20": {
+   "bone": "b018",
+   "from": [
+    "j20",
+    "j21"
+   ],
+   "to": [
+    "b018",
+    "b019"
+   ],
+   "to_offset": [
+    0,
+    0,
+    0.11
+   ]
+  },
+  "j21": {
+   "bone": "b019",
+   "from": [
+    "j21",
+    "j22"
+   ],
+   "to": [
+    "b019",
+    "b020"
+   ]
+  },
+  "j22": {
+   "bone": "b020",
+   "from": [
+    "j22",
+    "j23"
+   ],
+   "to": [
+    "b020",
+    "b021"
+   ],
+   "no_stretch": true
+  },
+  "j23": {
+   "bone": "b021",
+   "follow": "j22"
+  }
+ }
+}

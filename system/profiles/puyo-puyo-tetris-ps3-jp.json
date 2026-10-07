@@ -1,0 +1,8 @@
+{
+  "id": "puyo-puyo-tetris-ps3-jp",
+  "title": "Puyo Puyo Tetris (PS3, BLJM61097)",
+  "match": {"platform": "ps3", "serial": ["BLJM61097"]},
+  "notes": "Versus match parked in a save state (BLJM61097_1_0.SAVESTAT). overlay_rects = the parts of the picture shown over another game (fractions x, y, w, h of the 16:9 picture), measured on the result screen of the 1P Tetris vs CPU Puyo match: 1P Tetris field with NEXT queue and score, CPU field with score. Result-flag address: pending (memory snapshots won / start / lost).",
+  "overlay_rects": [[0.16, 0.10, 0.28, 0.80], [0.64, 0.10, 0.23, 0.80]],
+  "result": {"win": null, "lose": null}
+}

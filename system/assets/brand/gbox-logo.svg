@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 668 783" role="img" aria-label="G-Box">
-  <title>G-Box</title>
-  <!-- G-Box mark: hexagonal cube outline, three cube edges meeting behind a bold G. Transparent background. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 668 783" role="img" aria-label="gBox">
+  <title>gBox</title>
+  <!-- gBox mark: hexagonal cube outline, three cube edges meeting behind a bold G. Transparent background. -->
   <defs>
     <mask id="g-cut" maskUnits="userSpaceOnUse">
       <rect width="668" height="783" fill="#fff"/>

@@ -1,0 +1,37 @@
+{
+  "id": "stranglehold-ps3-us",
+  "title": "John Woo Presents Stranglehold (PS3, BLUS30081)",
+  "match": {"platform": "ps3", "serial": ["BLUS30081"]},
+  "engine": "Unreal Engine 3 (v375, licensee 25 / Midway)",
+  "notes": "Precision Aim (the bullet-cam shot) found by static analysis of CookedPS3/StrangleholdGame.xxx with gbox.ue3. The shot is a StrangleholdProjectile_Bullet_PrecisionAim (damage class StrangleholdDamageType_Bullet_PrecisionAim). On impact the native projectile calls the script event ResolvePrecisionAim(InImpactedActor), which picks the hit cinema (target is a StrangleholdPawn) or PrecisionAimMissTrigger; damage then goes through StrangleholdPawn.ServerResolveDamage, whose precision-aim branch sets DamageScale=1000 (lethal) for non-boss targets before CauseDamageToSelf. Edits are same-length bytecode rewrites (JumpIfNot -> Jump) applied in live RAM and reverted after the shot.",
+  "systems": [
+    {"role": "shot type", "symbol": "StrangleholdProjectile_Bullet_PrecisionAim", "evidence": "class export in StrangleholdGame.xxx; overrides ResolvePrecisionAim/ApplyProjectileStats", "confidence": "high"},
+    {"role": "suspend point", "symbol": "process-level pause (RPCS3Adapter.pause)", "evidence": "freezes every PPU/SPU thread; the bullet's flight and impact cannot advance", "confidence": "high"},
+    {"role": "presentation verdict", "symbol": "StrangleholdProjectile_Bullet_PrecisionAim.ResolvePrecisionAim", "evidence": "script event (flags 0x20802); disassembly: IsA('StrangleholdPawn') ? SetTrigger(PrecisionAimEnterCinemaTrigger) : SetTrigger(PrecisionAimMissTrigger)", "confidence": "high"},
+    {"role": "damage verdict", "symbol": "StrangleholdPawn.ServerResolveDamage", "evidence": "script; branch @01e1 on DamageClass == StrangleholdDamageType_Bullet_PrecisionAim -> PrecisionAimHitMapAsset.HandleCriticalHits -> @02a6 DamageScale = 1000 -> @03ff CauseDamageToSelf", "confidence": "high"},
+    {"role": "slow motion", "symbol": "WorldInfo.TimeDilation via StrangleholdInventory_TequilaTime.SetWorldTimeDilation / StrangleholdGameReplicationInfo.SetTequilaTimeActive", "evidence": "script disassembly", "confidence": "high"},
+    {"role": "aim state", "symbol": "StrangleholdPlayerPawn.IsPrecisionAiming (native)", "evidence": "used by PlayerController.ResolveDamage/UpdateHUD to suppress damage UI while aiming", "confidence": "medium"}
+  ],
+  "script_patches": {
+    "package": "StrangleholdGame",
+    "functions": {
+      "rpa": "StrangleholdProjectile_Bullet_PrecisionAim.ResolvePrecisionAim",
+      "srd": "StrangleholdPawn.ServerResolveDamage",
+      "prd": "StrangleholdPlayerPawn.ServerResolveDamage"
+    },
+    "presets": {
+      "god":      [{"fn": "prd", "offset": "0x0", "hex": "040b", "why": "infinite life: the player ignores all damage (player-only function returns at once)"}],
+      "god_hit":  [{"fn": "prd", "offset": "0x0", "hex": "040b", "why": "infinite life"},
+                   {"fn": "rpa", "offset": "0x3b", "hex": "06005f", "why": "precision-aim shots always hit"},
+                   {"fn": "srd", "offset": "0x265", "hex": "0602a6", "why": "precision-aim shots always lethal"}],
+      "god_miss": [{"fn": "prd", "offset": "0x0", "hex": "040b", "why": "infinite life"},
+                   {"fn": "rpa", "offset": "0x3b", "hex": "060083", "why": "precision-aim shots always miss"},
+                   {"fn": "srd", "offset": "0x1e1", "hex": "060709", "why": "player bullets deal no damage"}],
+      "hit":  [{"fn": "rpa", "offset": "0x3b",  "hex": "06005f", "why": "always play the hit cinema"},
+               {"fn": "srd", "offset": "0x265", "hex": "0602a6", "why": "always DamageScale = 1000 (lethal, bosses too)"}],
+      "miss": [{"fn": "rpa", "offset": "0x3b",  "hex": "060083", "why": "always play the miss cinema"},
+               {"fn": "srd", "offset": "0x1e1", "hex": "060709", "why": "player bullets deal no damage while active"}],
+      "off":  []
+    }
+  }
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 170" data-glyph="gbc" data-name="Game Boy Color"><title>Game Boy Color controller</title>
+<style id="standalone">
+svg{color:#e8e8ee;background:#16161a;font-family:system-ui,sans-serif}
+.pg-body{fill:#ffffff0d;stroke:#ffffff6b;stroke-width:1.3;stroke-linejoin:round}
+.pg-d *{fill:none;stroke:#ffffff33}
+.pg-s{fill:#ffffff0a;stroke:#ffffff94;stroke-width:1.2}
+.pg-t,.pg-c{fill:#ffffffb8;font-weight:600;text-anchor:middle;dominant-baseline:central}
+.pg-cr{fill:#e0453a}
+.pg-y{fill:none;stroke:#ffffffb8;stroke-width:1.3}.pg-a{fill:#ffffff99}
+.pg-arm .pg-s{fill:none;stroke:none}.pg-dpo{fill:none;stroke:#ffffff94}.pg-dpc,.pg-kd{fill:none;stroke:#ffffff44}
+.pg-gate{fill:none;stroke:#ffffff55;stroke-dasharray:2 2}
+</style>
+<path class="pg-body" d="M96 4H164Q172 4 172 12V124Q172 160 130 166Q88 160 88 124V12Q88 4 96 4Z"/><g class="pg-d"><rect x="94" y="12" width="72" height="66" rx="4"/><rect x="106" y="20" width="48" height="44"/><path d="M150 150L162 138M154 155L166 143"/></g><text class="pg-c" x="130" y="86" font-size="4.6">GAME BOY COLOR</text><g id="gbc-up" data-btn="up" class="pg-arm"><rect class="pg-s" x="101.75" y="95.25" width="8.5" height="8.5"/><path class="pg-a" transform="rotate(0 106 98.48)" d="M106 96.61L107.68 99.6L104.32 99.6Z"/></g><g id="gbc-down" data-btn="down" class="pg-arm"><rect class="pg-s" x="101.75" y="112.25" width="8.5" height="8.5"/><path class="pg-a" transform="rotate(180 106 117.52)" d="M106 115.65L107.68 118.64L104.32 118.64Z"/></g><g id="gbc-left" data-btn="left" class="pg-arm"><rect class="pg-s" x="93.25" y="103.75" width="8.5" height="8.5"/><path class="pg-a" transform="rotate(270 96.48 108)" d="M96.48 106.13L98.16 109.12L94.8 109.12Z"/></g><g id="gbc-right" data-btn="right" class="pg-arm"><rect class="pg-s" x="110.25" y="103.75" width="8.5" height="8.5"/><path class="pg-a" transform="rotate(90 115.52 108)" d="M115.52 106.13L117.2 109.12L113.84 109.12Z"/></g><path class="pg-dpo" d="M101.75 95.25H110.25V103.75H118.75V112.25H110.25V120.75H101.75V112.25H93.25V103.75H101.75Z"/><circle class="pg-dpc" cx="106" cy="108" r="1.87"/><g id="gbc-b" data-btn="b" data-c="#c23a7e"><circle class="pg-s" cx="144" cy="114" r="7.5"/></g><g id="gbc-a" data-btn="a" data-c="#c23a7e"><circle class="pg-s" cx="161" cy="103" r="7.5"/></g><text class="pg-c" x="144" y="125" font-size="5">B</text><text class="pg-c" x="161" y="114" font-size="5">A</text><g id="gbc-select" data-btn="select"><rect class="pg-s" x="115.5" y="133.5" width="11" height="5" rx="2.5"/></g><g id="gbc-start" data-btn="start"><rect class="pg-s" x="133.5" y="133.5" width="11" height="5" rx="2.5"/></g><text class="pg-c" x="121" y="144" font-size="3.8">SELECT</text><text class="pg-c" x="139" y="144" font-size="3.8">START</text>
+</svg>

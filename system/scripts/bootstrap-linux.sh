@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install / update G-Box on a Linux node (DGX Spark): venv, Python deps, system deps (gbox setup), systemd service.
+# Install / update gBox on a Linux node (DGX Spark): venv, Python deps, system deps (gbox setup), systemd service.
 # Idempotent: safe to re-run after every update. Needs passwordless sudo for apt/mount/systemd steps.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,7 +17,7 @@ echo "== system dependencies (gbox setup)"
 echo "== systemd service"
 sudo -n tee /etc/systemd/system/gbox.service >/dev/null <<UNIT
 [Unit]
-Description=G-Box control plane + worker
+Description=gBox control plane + worker
 After=network-online.target remote-fs.target
 Wants=network-online.target
 
@@ -37,4 +37,4 @@ sudo -n systemctl daemon-reload
 sudo -n systemctl enable gbox.service >/dev/null
 sudo -n systemctl restart gbox.service
 sleep 3
-systemctl is-active gbox.service && curl -sf "http://127.0.0.1:8765/api/health" && echo && echo "== G-Box running on http://$(hostname -I | awk '{print $1}'):8765"
+systemctl is-active gbox.service && curl -sf "http://127.0.0.1:8765/api/health" && echo && echo "== gBox running on http://$(hostname -I | awk '{print $1}'):8765"

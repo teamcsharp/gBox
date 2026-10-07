@@ -1,0 +1,13 @@
+{
+  "_default":        { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.0, "smoothing": 0.3, "bloom": 0.8, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "smooth-wave":     { "intensity": 1.0, "speed": 0.85, "audioSensitivity": 0.9, "smoothing": 0.6, "bloom": 0.9, "opacity": 1.0, "complexity": 1.0, "motionAmount": 0.9 },
+  "particle-flow":   { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.0, "smoothing": 0.35, "bloom": 0.9, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "line-spectrum":   { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.1, "smoothing": 0.25, "bloom": 1.0, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "geometric-space": { "intensity": 1.0, "speed": 0.9, "audioSensitivity": 1.0, "smoothing": 0.4, "bloom": 0.8, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "speed-lines":     { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.0, "smoothing": 0.3, "bloom": 1.0, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "anime-ink":       { "intensity": 1.0, "speed": 0.9, "audioSensitivity": 0.9, "smoothing": 0.5, "bloom": 0.25, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "audio-bars":      { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.0, "smoothing": 0.05, "bloom": 0.7, "opacity": 0.85, "complexity": 1.0, "motionAmount": 1.0 },
+  "liquid-glass":    { "intensity": 1.0, "speed": 0.8, "audioSensitivity": 0.9, "smoothing": 0.55, "bloom": 0.6, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "retro-grid":      { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.0, "smoothing": 0.35, "bloom": 1.0, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 },
+  "shape-burst":     { "intensity": 1.0, "speed": 1.0, "audioSensitivity": 1.0, "smoothing": 0.3, "bloom": 0.85, "opacity": 1.0, "complexity": 1.0, "motionAmount": 1.0 }
+}

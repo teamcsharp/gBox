@@ -1,0 +1,682 @@
+{
+ "game": "Resident Evil 6 (Xbox 360)",
+ "game_id": "0871eee3b68cdea3",
+ "source": "mes_item_eng + itemicon atlas on the operator's disc (gbox/re6_items.py)",
+ "items": [
+  {
+   "name": "Hand-To-Hand",
+   "id": 0,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/0",
+   "owner": "Jake"
+  },
+  {
+   "name": "Nine-Oh-Nine (909)",
+   "id": 1,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/1"
+  },
+  {
+   "name": "Picador",
+   "id": 2,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/2"
+  },
+  {
+   "name": "Wing Shooter",
+   "id": 3,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/3",
+   "owner": "Leon"
+  },
+  {
+   "name": "Shotgun",
+   "id": 4,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/4"
+  },
+  {
+   "name": "Assault Shotgun",
+   "id": 5,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/5"
+  },
+  {
+   "name": "Hydra",
+   "id": 6,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/6",
+   "owner": "Helena"
+  },
+  {
+   "name": "Lightning Hawk",
+   "id": 7,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/7"
+  },
+  {
+   "name": "Elephant Killer",
+   "id": 8,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/8"
+  },
+  {
+   "name": "Sniper Rifle",
+   "id": 9,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/9"
+  },
+  {
+   "name": "Semi-Auto Sniper Rifle",
+   "id": 10,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/10"
+  },
+  {
+   "name": "Anti-Materiel Rifle",
+   "id": 11,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/11",
+   "owner": "Piers"
+  },
+  {
+   "name": "Ammo Box 50",
+   "id": 12,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/12"
+  },
+  {
+   "name": "Triple Shot",
+   "id": 13,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/13",
+   "owner": "Sherry"
+  },
+  {
+   "name": "MP-AF",
+   "id": 14,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/14"
+  },
+  {
+   "name": "Assault Rifle for Special Tactics",
+   "id": 15,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/15"
+  },
+  {
+   "name": "Bear Commander",
+   "id": 16,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/16"
+  },
+  {
+   "name": "Assault Rifle RN",
+   "id": 17,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/17"
+  },
+  {
+   "name": "Grenade Launcher",
+   "id": 18,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/18"
+  },
+  {
+   "name": "Hand Grenade",
+   "id": 19,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/19"
+  },
+  {
+   "name": "Incendiary Grenade",
+   "id": 20,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/20"
+  },
+  {
+   "name": "Flash Grenade",
+   "id": 21,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/21"
+  },
+  {
+   "name": "Remote Bomb",
+   "id": 22,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/22"
+  },
+  {
+   "name": "Crossbow",
+   "id": 23,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/23",
+   "owner": "Ada"
+  },
+  {
+   "name": "Survival Knife",
+   "id": 24,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/24"
+  },
+  {
+   "name": "Combat Knife",
+   "id": 25,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/25",
+   "owner": "Chris"
+  },
+  {
+   "name": "Stun Rod",
+   "id": 26,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/26",
+   "owner": "Sherry"
+  },
+  {
+   "name": "Rocket Launcher",
+   "id": 27,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/27"
+  },
+  {
+   "name": "Gun Turret",
+   "id": 28,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Health Tablet",
+   "id": 29,
+   "kind": "healing"
+  },
+  {
+   "name": "Gun Turret",
+   "id": 30,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Gadget",
+   "id": 31,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/31"
+  },
+  {
+   "name": "First Aid Spray",
+   "id": 32,
+   "kind": "healing",
+   "icon": "/api/re6/icon/32"
+  },
+  {
+   "name": "Turret",
+   "id": 33,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "VTOL Missile",
+   "id": 34,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "VTOL Machine Gun",
+   "id": 35,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Ada's Helicopter Missiles",
+   "id": 36,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Ada's Helicopter Machine Gun",
+   "id": 37,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Mutated Hand",
+   "id": 38,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Deborah",
+   "id": 39,
+   "kind": "weapon",
+   "special": true
+  },
+  {
+   "name": "Triple Shot",
+   "id": 40,
+   "kind": "weapon",
+   "icon": "/api/re6/icon/40"
+  },
+  {
+   "name": "9mm Ammo",
+   "id": 101,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/101"
+  },
+  {
+   "name": "12-Gauge Shells",
+   "id": 102,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/102"
+  },
+  {
+   "name": "7.62mm NATO Ammo",
+   "id": 103,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/103"
+  },
+  {
+   "name": "5.56mm NATO Ammo",
+   "id": 104,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/104"
+  },
+  {
+   "name": "12.7mm Ammo",
+   "id": 105,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/105"
+  },
+  {
+   "name": ".50 Action-Express Magnum Ammo",
+   "id": 106,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/106"
+  },
+  {
+   "name": ".500 S&W Magnum Ammo",
+   "id": 107,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/107"
+  },
+  {
+   "name": "40mm Explosive Rounds",
+   "id": 108,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/108"
+  },
+  {
+   "name": "40mm Acid Rounds",
+   "id": 109,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/109"
+  },
+  {
+   "name": "40mm Nitrogen Rounds",
+   "id": 110,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/110"
+  },
+  {
+   "name": "73mm Explosive Rocket",
+   "id": 111,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/111"
+  },
+  {
+   "name": "Arrows (Normal)",
+   "id": 112,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/112"
+  },
+  {
+   "name": "Arrows (Pipe Bomb)",
+   "id": 113,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/113"
+  },
+  {
+   "name": "10-Gauge Shells",
+   "id": 114,
+   "kind": "ammo",
+   "icon": "/api/re6/icon/114"
+  },
+  {
+   "name": "Herb (Green)",
+   "id": 201,
+   "kind": "healing",
+   "icon": "/api/re6/icon/201"
+  },
+  {
+   "name": "Herb (Red)",
+   "id": 202,
+   "kind": "healing",
+   "icon": "/api/re6/icon/202"
+  },
+  {
+   "name": "Herb (Green)",
+   "id": 203,
+   "kind": "healing",
+   "icon": "/api/re6/icon/203"
+  },
+  {
+   "name": "Herb (Red)",
+   "id": 204,
+   "kind": "healing",
+   "icon": "/api/re6/icon/204"
+  },
+  {
+   "name": "Herb (G+G)",
+   "id": 205,
+   "kind": "healing",
+   "icon": "/api/re6/icon/205"
+  },
+  {
+   "name": "Herb (G+R)",
+   "id": 206,
+   "kind": "healing",
+   "icon": "/api/re6/icon/206"
+  },
+  {
+   "name": "Herb (G+G+G)",
+   "id": 207,
+   "kind": "healing",
+   "icon": "/api/re6/icon/207"
+  },
+  {
+   "name": "Skill Points (50)",
+   "id": 300,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/300"
+  },
+  {
+   "name": "Skill Points (100)",
+   "id": 301,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/301"
+  },
+  {
+   "name": "Skill Points (300)",
+   "id": 302,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/302"
+  },
+  {
+   "name": "Skill Points (500)",
+   "id": 303,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/303"
+  },
+  {
+   "name": "Skill Points (1,500)",
+   "id": 304,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/304"
+  },
+  {
+   "name": "Skill Points (3,000)",
+   "id": 305,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/305"
+  },
+  {
+   "name": "Skill Points (1,000)",
+   "id": 306,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/306"
+  },
+  {
+   "name": "Skill Points (2,500)",
+   "id": 307,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/307"
+  },
+  {
+   "name": "Skill Points (5,000)",
+   "id": 308,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/308"
+  },
+  {
+   "name": "Skill Points (2,000)",
+   "id": 309,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/309"
+  },
+  {
+   "name": "Skill Points (4,000)",
+   "id": 310,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/310"
+  },
+  {
+   "name": "Skill Points (10,000)",
+   "id": 311,
+   "kind": "treasure",
+   "icon": "/api/re6/icon/311"
+  },
+  {
+   "name": "Cemetery Key",
+   "id": 400,
+   "kind": "key",
+   "icon": "/api/re6/icon/400"
+  },
+  {
+   "name": "Madonna of Happiness",
+   "id": 401,
+   "kind": "key",
+   "icon": "/api/re6/icon/401"
+  },
+  {
+   "name": "Madonna of Charity",
+   "id": 402,
+   "kind": "key",
+   "icon": "/api/re6/icon/402"
+  },
+  {
+   "name": "Madonna of Sorrow",
+   "id": 403,
+   "kind": "key",
+   "icon": "/api/re6/icon/403"
+  },
+  {
+   "name": "Madonna of Grief",
+   "id": 404,
+   "kind": "key",
+   "icon": "/api/re6/icon/404"
+  },
+  {
+   "name": "Underground Keycard",
+   "id": 405,
+   "kind": "key",
+   "icon": "/api/re6/icon/405"
+  },
+  {
+   "name": "Back Street Key",
+   "id": 406,
+   "kind": "key",
+   "icon": "/api/re6/icon/406"
+  },
+  {
+   "name": "Storage Key A",
+   "id": 407,
+   "kind": "key",
+   "icon": "/api/re6/icon/407"
+  },
+  {
+   "name": "Storage Key B",
+   "id": 408,
+   "kind": "key",
+   "icon": "/api/re6/icon/408"
+  },
+  {
+   "name": "Storage Key C",
+   "id": 409,
+   "kind": "key",
+   "icon": "/api/re6/icon/409"
+  },
+  {
+   "name": "Passcode A",
+   "id": 410,
+   "kind": "key",
+   "icon": "/api/re6/icon/410"
+  },
+  {
+   "name": "Passcode B",
+   "id": 411,
+   "kind": "key",
+   "icon": "/api/re6/icon/411"
+  },
+  {
+   "name": "Passcode C",
+   "id": 412,
+   "kind": "key",
+   "icon": "/api/re6/icon/412"
+  },
+  {
+   "name": "Amber Key",
+   "id": 413,
+   "kind": "key",
+   "icon": "/api/re6/icon/413"
+  },
+  {
+   "name": "Marco's C4 Explosive",
+   "id": 414,
+   "kind": "key",
+   "icon": "/api/re6/icon/414"
+  },
+  {
+   "name": "Extra (dummy) 3",
+   "id": 415,
+   "kind": "key"
+  },
+  {
+   "name": "Extra (dummy) 4",
+   "id": 416,
+   "kind": "key"
+  },
+  {
+   "name": "Extra (dummy) 5",
+   "id": 417,
+   "kind": "key"
+  },
+  {
+   "name": "Extra (dummy) 6",
+   "id": 418,
+   "kind": "key"
+  },
+  {
+   "name": "Simmons Family Ring",
+   "id": 419,
+   "kind": "key",
+   "icon": "/api/re6/icon/419"
+  },
+  {
+   "name": "Old Crank",
+   "id": 420,
+   "kind": "key",
+   "icon": "/api/re6/icon/420"
+  },
+  {
+   "name": "FOS Memory Device A",
+   "id": 421,
+   "kind": "key",
+   "icon": "/api/re6/icon/421"
+  },
+  {
+   "name": "FOS Memory Device B",
+   "id": 422,
+   "kind": "key",
+   "icon": "/api/re6/icon/422"
+  },
+  {
+   "name": "FOS Memory Device C",
+   "id": 423,
+   "kind": "key",
+   "icon": "/api/re6/icon/423"
+  },
+  {
+   "name": "Mine Keycard",
+   "id": 424,
+   "kind": "key",
+   "icon": "/api/re6/icon/424"
+  },
+  {
+   "name": "C-Virus Syringe",
+   "id": 425,
+   "kind": "key",
+   "icon": "/api/re6/icon/425"
+  },
+  {
+   "name": "Switchboard Key",
+   "id": 426,
+   "kind": "key",
+   "icon": "/api/re6/icon/426"
+  },
+  {
+   "name": "Small Campus Key",
+   "id": 427,
+   "kind": "key",
+   "icon": "/api/re6/icon/427"
+  },
+  {
+   "name": "Small Cemetery Key",
+   "id": 428,
+   "kind": "key",
+   "icon": "/api/re6/icon/428"
+  },
+  {
+   "name": "Laboratory Key",
+   "id": 429,
+   "kind": "key",
+   "icon": "/api/re6/icon/429"
+  },
+  {
+   "name": "ID Medal",
+   "id": 430,
+   "kind": "key",
+   "icon": "/api/re6/icon/430"
+  },
+  {
+   "name": "Simmons Family Crest Piece A",
+   "id": 431,
+   "kind": "key",
+   "icon": "/api/re6/icon/431"
+  },
+  {
+   "name": "Simmons Family Crest Piece B",
+   "id": 432,
+   "kind": "key",
+   "icon": "/api/re6/icon/432"
+  },
+  {
+   "name": "Simmons Family Crest Piece C",
+   "id": 433,
+   "kind": "key",
+   "icon": "/api/re6/icon/433"
+  },
+  {
+   "name": "Skull's Red Eye",
+   "id": 434,
+   "kind": "key",
+   "icon": "/api/re6/icon/434"
+  },
+  {
+   "name": "Skull's Gold Tooth",
+   "id": 435,
+   "kind": "key",
+   "icon": "/api/re6/icon/435"
+  },
+  {
+   "name": "Backdoor Key",
+   "id": 436,
+   "kind": "key",
+   "icon": "/api/re6/icon/436"
+  },
+  {
+   "name": "Campus Keycard",
+   "id": 437,
+   "kind": "key",
+   "icon": "/api/re6/icon/437"
+  }
+ ]
+}

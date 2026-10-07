@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gBox Visualizer</title>
+<style>
+  :root { --fg: #d6e8ff; --dim: #7fa3cc; --acc: #2fd2ff; --panel: rgba(6, 14, 38, .72); --line: rgba(80, 170, 255, .3); }
+  html, body { margin: 0; height: 100%; background: #020516; color: var(--fg); overflow: hidden; font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #gbviz-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  .modes { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; flex-wrap: wrap; justify-content: center;
+    max-width: calc(100vw - 32px); padding: 5px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(8px);
+    opacity: .35; transition: opacity .3s; }
+  .modes:hover, .modes:focus-within { opacity: 1; }
+  .modes button { min-width: 30px; height: 26px; padding: 0 8px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--fg);
+    font: inherit; font-size: 12px; cursor: pointer; }
+  .modes button:hover { background: rgba(47, 210, 255, .15); }
+  .modes button[aria-pressed="true"] { border-color: var(--acc); color: #fff; background: rgba(31, 86, 232, .45); }
+  .hint { position: fixed; left: 16px; bottom: 16px; color: var(--dim); font-size: 11px; opacity: .7; pointer-events: none; transition: opacity 1s; }
+  .err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 16px; color: var(--dim); }
+  /* radio overlay */
+  .radio { position: fixed; top: 16px; right: 16px; width: min(330px, calc(100vw - 32px)); padding: 14px 16px; border-radius: 14px; background: var(--panel);
+    border: 1px solid var(--line); backdrop-filter: blur(10px); box-shadow: 0 10px 40px rgba(0, 0, 0, .45); display: none; }
+  .radio.on { display: block; }
+  .radio .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .radio .brand { font-weight: 800; letter-spacing: .12em; font-size: 15px; color: #fff; }
+  .radio .air { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .14em; color: #ff5a6a; }
+  .radio .air i { width: 9px; height: 9px; border-radius: 50%; background: #ff3b4e; box-shadow: 0 0 10px #ff3b4e; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .radio dl { display: grid; grid-template-columns: 92px 1fr; gap: 5px 10px; margin: 0; }
+  .radio dt { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; padding-top: 1px; }
+  .radio dd { margin: 0; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .radio .meter { height: 6px; margin-top: 4px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+  .radio .meter b { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #1f56e8, #2fd2ff); }
+  @media (max-width: 560px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="gbviz-canvas" aria-label="Visualizer (right-click to choose a mode)"></canvas>
+<div class="modes" id="modes" role="toolbar" aria-label="Visualizer modes"></div>
+<div class="hint" id="hint">Right-click: modes &amp; palettes &middot; 1-0: modes &middot; H: HUD &middot; O: radio overlay &middot; M: mic &middot; D: demo</div>
+<div class="err" id="err">The visualizer needs WebGL, which is not available in this browser.</div>
+
+<section class="radio" id="radio" aria-label="Radio overlay">
+  <div class="top"><span class="brand">PINE BOX FM</span><span class="air"><i></i>ON AIR</span></div>
+  <dl>
+    <dt>Program</dt><dd id="r-program">Late Night Signals</dd>
+    <dt>Host</dt><dd id="r-host">Mara Quill</dd>
+    <dt>Now playing</dt><dd id="r-track">Blue Hour Drift</dd>
+    <dt>Artist</dt><dd id="r-artist">The Static Orchard</dd>
+    <dt>Caller</dt><dd id="r-caller">Line 2 &middot; Dez from Eastfield</dd>
+    <dt>Time</dt><dd id="r-time">--:--</dd>
+    <dt>Activity</dt><dd><span id="r-act">idle</span><div class="meter"><b id="r-meter"></b></div></dd>
+  </dl>
+</section>
+
+<script type="module">
+  import { createViz, attachPicker, readVizPref, MODES } from "./viz.js";
+
+  const canvas = document.getElementById("gbviz-canvas");
+  const bar = document.getElementById("modes");
+  let viz = null;
+
+  function markButtons() {
+    const cur = viz && viz.getMode(), req = viz && viz.requestedMode;
+    for (const b of bar.children) b.setAttribute("aria-pressed", String(b.dataset.id === "random" ? req === "random" : b.dataset.id === cur && req !== "random"));
+  }
+  function addBtn(id, label, title) {
+    const b = document.createElement("button");
+    b.dataset.id = id; b.textContent = label; b.title = title;
+    b.addEventListener("click", async () => {
+      try { localStorage.setItem("gbox_viz_mode", id); } catch (e) {}
+      await viz.setMode(id, { transition: "crossfade" }); markButtons();
+    });
+    bar.appendChild(b);
+  }
+  addBtn("random", "Random", "Random (each title)");
+  for (const m of MODES) addBtn(m.id, String(m.n), `${m.n} ${m.name}`);
+
+  try {
+    const pref = readVizPref();
+    viz = await createViz(canvas, { mode: pref, hud: /[?&]hud\b/.test(location.search), keys: true });
+    attachPicker(canvas, viz);
+    window.viz = viz;
+  } catch (e) {
+    console.error(e);
+    document.getElementById("err").style.display = "grid";
+    bar.style.display = "none";
+  }
+  markButtons();
+  setInterval(markButtons, 500);
+  setTimeout(() => (document.getElementById("hint").style.opacity = "0"), 9000);
+
+  // radio overlay (O)
+  const radio = document.getElementById("radio");
+  const $ = (id) => document.getElementById(id);
+  window.addEventListener("keydown", (e) => {
+    if ((e.key === "o" || e.key === "O") && !e.ctrlKey && !e.metaKey && !e.altKey) radio.classList.toggle("on");
+  });
+  setInterval(() => {
+    if (!radio.classList.contains("on")) return;
+    $("r-time").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const s = viz && viz.state;
+    if (!s) return;
+    const a = Math.max(s.speechActivity, s.stationActivity * 0.8, s.rms);
+    $("r-meter").style.width = (a * 100).toFixed(0) + "%";
+    $("r-act").textContent = s.speechActivity > 0.45 ? "talking" : s.stationActivity > 0.6 ? "music" : a > 0.15 ? "ambience" : "quiet";
+  }, 250);
+</script>
+</body>
+</html>

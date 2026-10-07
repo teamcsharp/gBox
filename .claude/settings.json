@@ -4,7 +4,8 @@
       { "hooks": [ { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/system/scripts/agent_ledger.py\" prompt || true", "timeout": 15 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/system/scripts/agent_ledger.py\" stop || true", "timeout": 30 } ] }
+      { "hooks": [ { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/system/scripts/agent_ledger.py\" stop || true", "timeout": 30 },
+                  { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/system/scripts/prompt_history.py\" -q || true", "timeout": 90 } ] }
     ]
   }
 }

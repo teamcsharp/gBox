@@ -1,12 +1,14 @@
 [project]
 name = "gbox"
 version = "0.1.0"
-description = "G-Box universal game laboratory: control plane, workers, catalog, adapters, UAP"
+description = "gBox universal game laboratory: control plane, workers, catalog, adapters, UAP"
 requires-python = ">=3.11"
-dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6", "httpx>=0.27"]
+dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6", "httpx>=0.27", "capstone>=5.0", "yt-dlp>=2026.1", "numpy>=1.26", "pillow>=10"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+mcp = ["mcp>=2.3"]                # gbox mcp: Claude Desktop / Claude Code / other agents
+overlay = ["opencv-contrib-python-headless>=4.8"]   # PC venv: overlay swap tracker (clients/desktop/overlay_track.py, CSRT)
 
 [project.scripts]
 gbox = "gbox.__main__:main"

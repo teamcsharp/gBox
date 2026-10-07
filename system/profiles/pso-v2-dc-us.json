@@ -1,0 +1,186 @@
+{
+  "id": "pso-v2-dc-us",
+  "title": "Phantasy Star Online Ver. 2 (USA) - Dreamcast (2OEF)",
+  "match": {
+    "platform": "dreamcast",
+    "title_contains": "Phantasy Star Online Ver. 2",
+    "memory": {
+      "address": "0x8C2F3014",
+      "equals": "TObjPlayer"
+    }
+  },
+  "endian": "little",
+  "entities": {
+    "table": "0x8C477D40",
+    "max": 256,
+    "null_terminated": true,
+    "struct_size": "0x340",
+    "pointer_range": [
+      "0x8C000000",
+      "0x8D000000"
+    ],
+    "fields": {
+      "class": [
+        "ptrstr",
+        "0x0"
+      ],
+      "entity_id": [
+        "u16",
+        "0x20"
+      ],
+      "room": [
+        "u16",
+        "0x2C"
+      ],
+      "x": [
+        "f32",
+        "0x3C"
+      ],
+      "y": [
+        "f32",
+        "0x40"
+      ],
+      "z": [
+        "f32",
+        "0x44"
+      ],
+      "angle": [
+        "i32",
+        "0x64"
+      ]
+    },
+    "kinds": [
+      {
+        "name": "player",
+        "name_prefix": [
+          "TObjPlayer"
+        ],
+        "entity_id": [
+          0,
+          11
+        ],
+        "fields": {
+          "hp": [
+            "u16",
+            "0x330"
+          ],
+          "tp": [
+            "u16",
+            "0x332"
+          ],
+          "hp_max": [
+            "u16",
+            "0x198"
+          ],
+          "tp_max": [
+            "u16",
+            "0x19A"
+          ]
+        }
+      },
+      {
+        "name": "enemy",
+        "name_prefix": [
+          "TObjEne",
+          "TBoss",
+          "TObjBoss"
+        ],
+        "fields": {
+          "hp": [
+            "u16",
+            "0x330"
+          ],
+          "hp_max": [
+            "u16",
+            "0x198"
+          ]
+        }
+      },
+      {
+        "name": "gate",
+        "name_prefix": [
+          "TObjDoor",
+          "TObjLazerFence",
+          "TLazerFenceSw",
+          "TOBarrier",
+          "TObjCityDoor"
+        ]
+      },
+      {
+        "name": "npc",
+        "entity_id": [
+          4096,
+          16383
+        ]
+      },
+      {
+        "name": "object",
+        "entity_id": [
+          16384,
+          65535
+        ]
+      }
+    ]
+  },
+  "globals": {
+    "player_class_name": [
+      "str10",
+      "0x8C2F3014"
+    ]
+  },
+  "players_table": "0x8C42D92C",
+  "evidence": {
+    "entities.table": "RAM dump 2026-10-05 (Flycast via RetroArch READ_CORE_RAM, 16 KB requests): 0x8C477D40 = TObjPlayer, 20 TObjNpc*, 4 TObjCityDoor*, null-terminated",
+    "players_table": "0x8C42D92C holds the TObjPlayer pointer; the same address appears in the PSO V2 US CodeBreaker 'Unlimited HP' code",
+    "class": "u32 at +0x00 points to the class-name string (same TObject layout as GameCube, little-endian)",
+    "entity_id/room": "u16 +0x20: player 0, NPCs 0x1000.. consecutive; u16 +0x2C: room (player 0x29 in the Principal's office, NPCs 10/20 = same rooms as GameCube)",
+    "x/y/z": "f32 +0x3C/+0x40/+0x44: player (0,0,-2015) at the office start and NPCs (179,0,342),(168,0,84),(156,0,-50), identical to the verified GameCube values",
+    "hp/tp": "HUD HP 40/40 TP 29/29: u16 40/29 at +0x330/+0x332 (GameCube +0x32C shifted by the same 4 bytes as position) and +0x198/+0x19A. Which pair is current vs max: hypothesis until a damage test",
+    "angle": "int32 at +0x64 tracks the movement heading (65536 = 360 deg): 275 vs 279 measured moving down, 236 vs 208 mid-turn (GameCube +0x60 shifted 4 bytes)"
+  },
+  "drop_tables": {
+    "itemrt_afs": "57591915246c6b60fd5cb2348091ce57b7bbeee4aaf05b2529fc24e4b60132da",
+    "itempt_afs": "7843a5302f55547d8b2327ba947b43d376e961d344e9dbea21049bf5fbded477",
+    "rt_entry": 640,
+    "monster_slots": 101,
+    "box_areas_at": 404,
+    "box_slots": 30,
+    "box_rares_at": 434,
+    "order": "difficulty * 10 + section_id",
+    "why": "ItemRT.afs from the disc (40 raw tables). Each slot = probability byte + 3-byte item code; rate = (2 << max(0, ((p >> 3) & 31) - 4)) * ((p & 7) + 7) / 2^32 (newserv expand_rate). The game copies the tables into RAM; gBox finds those copies by content and rewrites the probability bytes."
+  },
+  "camera": {
+    "eye": "0x8CFA5EB8",
+    "target": "0x8CFA5EC4",
+    "fov": 45,
+    "aspect": "4:3",
+    "why": "found 2026-10-06: float triples that follow the player (eye ~41 back / 26 up, target = player + ~20 up); projection checked on a paused frame (fence centre, Booma, player feet)"
+  },
+  "models": {
+    "TObjEneBeast": [
+      "PSO/BM_ENE_RE8_B_BEAST_A.BML",
+      "re8_b_beast_wala_body.nj"
+    ],
+    "TObjEneBm5Wolf": [
+      "PSO/BM_ENE_BM5_WOLF_A.BML",
+      "bm5_s_kem_body.nj"
+    ],
+    "TObjEneRe2Flower": [
+      "PSO/BM_ENE_RE2_FLOWER_A.BML",
+      "flower_root.nj"
+    ],
+    "TObjEneRe1Grass": [
+      "PSO/BM_ENE_GRASS_A.BML",
+      "grass_base.nj"
+    ],
+    "TObjEneBm3Fly": [
+      "PSO/BM_ENE_BM3_FLY_A.BML",
+      null
+    ],
+    "TObjEneBm1Shark": [
+      "PSO/BM_ENE_BM1_SHARK_A.BML",
+      null
+    ]
+  },
+  "disc": "/home/ehm_eckx/gbox-cache/dc/psov2.gdi"
+}

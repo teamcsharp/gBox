@@ -1,0 +1,32 @@
+{
+ "_about": "SA2 DC Sonic (gbox.sa2_chars model 0, turned to face +Z) -> RE4 GC Leon. Before retargeting merge the split parts: python -m gbox.char_swap merge-joints src.glb out.glb node014=node013 node024=node023 node042=node039 node061=node058. Scale 0.3 m/unit fits the torso (pelvis->shoulder); head, hands and shoes are scaled down about their joints (SA2 proportions would give a 1 m head and 1 m shoes). Shoes/hands ride on the shin/forearm rotation with their joint on Leon's ankle/wrist.",
+ "scale": 0.3,
+ "anchor": ["node002", "b017"],
+ "parts": {
+  "node002": {"bone": "b017"},
+  "node004": {"bone": "b017"},
+  "node027": {"bone": "b017"},
+  "node028": {"bone": "b017"},
+  "node029": {"bone": "b017"},
+  "node032": {"bone": "b017"},
+  "node033": {"bone": "b002"},
+  "node047": {"bone": "b004", "scale_mul": 0.4, "pivot": "node044"},
+  "node049": {"bone": "b004", "scale_mul": 0.4, "pivot": "node044"},
+  "node051": {"bone": "b004", "scale_mul": 0.4, "pivot": "node044"},
+  "node053": {"bone": "b004", "scale_mul": 0.4, "pivot": "node044"},
+  "node037": {"bone": "b013", "from": ["node037", "node038"], "to": ["b013", "b014"]},
+  "node038": {"bone": "b014", "from": ["node038", "node039"], "to": ["b014", "b016"]},
+  "node039": {"bone": "b016", "follow": "node038", "at": "b016", "scale_mul": 0.45, "pivot": "node039"},
+  "node056": {"bone": "b007", "from": ["node056", "node057"], "to": ["b007", "b008"]},
+  "node057": {"bone": "b008", "from": ["node057", "node058"], "to": ["b008", "b010"]},
+  "node058": {"bone": "b010", "follow": "node057", "at": "b010", "scale_mul": 0.45, "pivot": "node058"},
+  "node007": {"bone": "b018", "from": ["node007", "node009"], "to": ["b018", "b019"]},
+  "node008": {"bone": "b018", "from": ["node007", "node009"], "to": ["b018", "b019"]},
+  "node009": {"bone": "b019", "from": ["node009", "node013"], "to": ["b019", "b020"]},
+  "node013": {"bone": "b020", "follow": "node009", "at": "b020", "scale_mul": 0.33, "pivot": "node013"},
+  "node017": {"bone": "b022", "from": ["node017", "node019"], "to": ["b022", "b023"]},
+  "node018": {"bone": "b022", "from": ["node017", "node019"], "to": ["b022", "b023"]},
+  "node019": {"bone": "b023", "from": ["node019", "node023"], "to": ["b023", "b024"]},
+  "node023": {"bone": "b024", "follow": "node019", "at": "b024", "scale_mul": 0.33, "pivot": "node023"}
+ }
+}

@@ -6,5 +6,5 @@
 - **Originals:** the scanner opens library files read-only (tested via mtimes). Launches can stage copies into the bounded cache. `write_memory` saves the prior bytes as a rollback artifact.
 - **Audit:** append-only (SQLite triggers) with a hash chain that `/api/audit/verify` recomputes.
 - **Untrusted files:** header sniffing reads fixed offsets only. Heavy third-party parsers (Ghidra, Blender, future extractors) run as separate processes. ponytail: there's no OS-level sandbox yet; run workers as an unprivileged user and add containers/AppContainer when real extractors land.
-- **Scope:** G-Box contains no DRM or access-control circumvention. Use it only on games and assets you are authorized to use.
+- **Scope:** gBox contains no DRM or access-control circumvention. Use it only on games and assets you are authorized to use.
 - **Known gap:** there's a single shared token, so actors are self-declared (`x-gbox-actor`). Per-principal tokens are needed before the proposer/evaluator separation can be enforced cryptographically.

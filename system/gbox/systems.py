@@ -1,4 +1,4 @@
-"""HyperSpin/Attract-Mode system names -> G-Box platform id + default libretro core (+ BIOS needs).
+"""HyperSpin/Attract-Mode system names -> gBox platform id + default libretro core (+ BIOS needs).
 
 Matching is by case-insensitive substring on the emulator's `system` name, emulator name, then rompath, first rule wins.
 `core=None` means no Linux/arm64 libretro path: those games launch on a Windows node via the drive's RocketLauncher.
@@ -10,7 +10,7 @@ import re
 RULES: list[tuple[str, str, str | None, list[str]]] = [
     # --- Sega ---
     (r"dreamcast", "dreamcast", "flycast", ["dc"]),
-    (r"naomi|atomiswave", "naomi", "flycast", ["dc"]),
+    (r"naomi|atomiswave", "naomi", "flycast", ["dc", "../../Flycast/data/naomi.zip->dc/naomi.zip"]),   # naomi.zip sits with Flycast on the drive
     (r"hikaru|model 2|model 3|ringedge|ringwide|triforce|lindbergh|chihiro", "sega_arcade_pc", None, []),
     (r"saturn", "saturn", "yabasanshiro", ["saturn_bios.bin", "sega_101.bin", "mpr-17933.bin"]),
     (r"32x", "sega32x", "picodrive", []),
@@ -42,10 +42,11 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     (r"msu-1", "snes", "bsnes", []),
     (r"famicom|nintendo entertainment|\bnes\b|nintendo classic mini|technos nintendo|nintendo prototypes", "nes", "mesen", []),
     # --- Sony ---
-    (r"pocketstation", "pocketstation", "pokketstation", []),
+    (r"pocketstation", "pocketstation", "pokketstation", ["pocketstation.bin"]),   # BIOS required (not on the drive yet)
     (r"playstation portable|playstation minis|\bpsp\b", "psp", "ppsspp", []),
-    (r"playstation 2|\bps2\b", "ps2", "pcsx2", ["pcsx2/bios"]),
-    (r"playstation 3|playstation 4|playstation 5", "ps_modern", None, []),
+    (r"playstation 2|\bps2\b", "ps2", "pcsx2", ["pcsx2/bios", "ps2->pcsx2/bios"]),   # HyperSpin keeps PS2 BIOS in system/ps2
+    (r"playstation 3|ps3", "ps3", None, []),                    # RPCS3 on Windows nodes (no libretro core)
+    (r"playstation 4|playstation 5", "ps_modern", None, []),
     (r"playstation", "psx", "pcsx_rearmed", ["scph5500.bin", "scph5501.bin", "scph5502.bin", "scph1001.bin"]),
     # --- NEC / SNK / others ---
     (r"pc-fx", "pcfx", "mednafen_pcfx", ["pcfx.rom"]),
@@ -55,7 +56,7 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     (r"neo geo cd", "neocd", "neocd", ["neocd"]),
     (r"neo geo pocket", "ngp", "mednafen_ngp", []),
     (r"3do", "3do", "opera", ["panafz10.bin"]),
-    (r"cd-i", "cdi", "same_cdi", ["cdimono1.zip"]),
+    (r"cd-i", "cdi", "same_cdi", ["same_cdi"]),          # full MAME set incl. the servo MCU ROM lives in same_cdi/bios
     (r"jaguar", "jaguar", "virtualjaguar", []),
     (r"lynx", "lynx", "handy", ["lynxboot.img"]),
     (r"atari st", "atarist", "hatari", ["tos.img"]),
@@ -81,7 +82,7 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     (r"apple ii", "apple2", "applewin", []),
     (r"ms-dos", "dos", "dosbox_pure", []),
     (r"scummvm", "scummvm", "scummvm", []),
-    (r"doom", "doom", "prboom", []),
+    (r"doom", "doom", None, []),     # HyperSpin Doom = GZDoom mods launched by .bat files: run them on Windows via RocketLauncher
     (r"chailove", "chailove", "chailove", []),
     (r"bbc micro", "bbcmicro", "b2", []),
     (r"arcadia 2001", "arcadia2001", "amiarcadia", []),
@@ -94,6 +95,7 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     (r"acorn electron|vector-06c|mikrosha|mz-2500|sam coupe|astrocade|hector|creativision|pv-1000|sord m5|"
      r"exidy sorcerer|super acan|game pocket|adventure vision|touhou|namco system es3", "computer_misc", None, []),
     # --- Windows-only (PC launchers, modern consoles, special hardware) ---
+    (r"xbox 360|xbox360", "xbox360", None, []),          # Xenia on Windows nodes (gbox/xenia.py)
     (r"xbox|teknoparrot|taito type x|nesicaxlive|examu|pc games|arcadepc|future pinball|pinball|flash games|"
      r"java games|mugen|openbor|ouya|popcap|laserdisc|daphne|american laser|mfme|locomalito|angry birds|darksiders|"
      r"settings|magazines|wow action|jukebox|ledblinky", "windows_native", None, []),
@@ -114,7 +116,10 @@ def classify(system: str, emulator: str = "", rompath: str = "") -> tuple[str, s
         return ARCADE
     folder = re.match(r"collections[/\\]([^/\\]+)", rompath or "", re.I)
     # franchise collections ("Crash Bandicoot Collection") point into a real system folder: the folder decides
-    for text in (system, emulator, folder.group(1) if folder else ""):
+    order = (system, emulator, folder.group(1) if folder else "")
+    if folder and re.search(r"collection", f"{system} {emulator}", re.I):
+        order = (folder.group(1), system, emulator)
+    for text in order:
         for rx, plat, core, bios in _compiled:
             if text and rx.search(text):
                 return plat, core, bios

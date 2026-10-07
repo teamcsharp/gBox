@@ -15,7 +15,7 @@ from .models import CatalogEntry
 EXT_PLATFORM = {
     ".nes": "nes", ".fds": "nes", ".sfc": "snes", ".smc": "snes", ".gb": "gb", ".gbc": "gbc", ".gba": "gba",
     ".n64": "n64", ".z64": "n64", ".v64": "n64", ".md": "genesis", ".gen": "genesis", ".sms": "sms",
-    ".gg": "gamegear", ".pce": "pce", ".gdi": "dreamcast", ".cdi": "dreamcast", ".gcm": "gamecube",
+    ".gg": "gamegear", ".pce": "pce", ".gdi": "dreamcast", ".cdi": "dreamcast", ".gcm": "gamecube", ".gcz": "gamecube",
     ".rvz": "gamecube_wii", ".wbfs": "wii", ".wua": "wiiu", ".pbp": "psp", ".cso": "psp", ".nds": "nds",
     ".3ds": "3ds", ".xci": "switch", ".nsp": "switch",
 }
@@ -27,6 +27,21 @@ def _read(path: Path, offset: int, n: int) -> bytes:
     with open(path, "rb") as f:
         f.seek(offset)
         return f.read(n)
+
+
+def param_sfo(b: bytes) -> dict:
+    """PS3/PSP PARAM.SFO -> {key: value} (TITLE, TITLE_ID, ...)."""
+    import struct
+    if b[:4] != b"\x00PSF":
+        return {}
+    kt, dt, n = struct.unpack("<III", b[8:20])
+    out = {}
+    for i in range(n):
+        ko, fmt, ln, _, do = struct.unpack("<HHIII", b[20 + 16 * i:36 + 16 * i])
+        key = b[kt + ko:b.index(b"\x00", kt + ko)].decode()
+        v = b[dt + do:dt + do + ln]
+        out[key] = struct.unpack("<I", v[:4])[0] if fmt == 0x0404 else v.rstrip(b"\x00").decode("utf-8", "replace")
+    return out
 
 
 def sniff(path: Path) -> tuple[str | None, dict]:
@@ -60,6 +75,20 @@ def sniff(path: Path) -> tuple[str | None, dict]:
                 return "psp", {"volume": volume}
             return None, {"iso_system": system, "volume": volume}
     return None, {}
+
+
+def zip_platform(path: Path) -> str | None:
+    """A zipped cartridge ROM (No-Intro sets come zipped; RetroArch loads them as they are): the platform of the ROM
+    inside, read from the zip's directory only."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            for n in z.namelist():
+                if p := EXT_PLATFORM.get(os.path.splitext(n)[1].lower()):
+                    return p
+    except (OSError, zipfile.BadZipFile, ValueError):
+        pass
+    return None
 
 
 def title_from_name(name: str) -> tuple[str, str | None]:
@@ -112,12 +141,34 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
     tracks = set().union(*(_referenced_tracks(s) for s in sheets)) if sheets else set()
 
     by_hash: dict[str, CatalogEntry] = {}
+    ps3 = {f.parents[2] for f in files if f.name.upper() == "EBOOT.BIN" and f.parent.name.upper() == "USRDIR"
+           and f.parents[1].name.upper() == "PS3_GAME"}           # extracted PS3 disc folders (JB format)
     for f in files:
         ext = f.suffix.lower()
-        if f.resolve() in tracks or (ext not in EXT_PLATFORM and ext not in SNIFF_EXT):
+        disc = next((d for d in ps3 if f.is_relative_to(d)), None)
+        if disc and not (f.name.upper() == "EBOOT.BIN" and f.parents[1].name.upper() == "PS3_GAME"):
+            continue                                       # a PS3 game's own data files are not games
+        if disc:
+            try:
+                sfo = param_sfo((disc / "PS3_GAME" / "PARAM.SFO").read_bytes())
+                root = next(Path(r) for r in roots if f.is_relative_to(r))
+                rel = f.relative_to(root).as_posix()
+                title, region = title_from_name(disc.name)
+                gid = hashlib.sha1(f"{lib_id}:{rel}".encode()).hexdigest()[:16]
+                by_hash[gid] = CatalogEntry(
+                    game_id=gid, title=title, alt_title=sfo.get("TITLE") if sfo.get("TITLE", "").lower() != title.lower() else None,
+                    platform="ps3", platform_confidence="header", region=region, serial=sfo.get("TITLE_ID"),
+                    source_paths=[str(f)], library=lib_id, rel_path=rel, system="ps3", collections=[lib_id] if lib_id else [],
+                    core=None, hashes={}, size=f.stat().st_size, format="ps3_folder", runtimes={"ps3": "rpcs3"},
+                    launch={"kind": "emulator", "platform": "ps3", "path": str(f)}, profile_id=gid)
+            except OSError as e:
+                problems.append(f"{f}: {e}")
+            continue
+        zplat = zip_platform(f) if ext == ".zip" else None
+        if f.resolve() in tracks or (ext not in EXT_PLATFORM and ext not in SNIFF_EXT and not zplat):
             continue
         try:
-            platform_, conf, meta = EXT_PLATFORM.get(ext), "extension", {}
+            platform_, conf, meta = EXT_PLATFORM.get(ext) or zplat, "extension" if not zplat else "zip contents", {}
             candidates, hash_target = [f], f
             if ext in (".cue", ".gdi"):
                 candidates = [r for r in sorted(_referenced_tracks(f)) if r.exists()]
@@ -245,7 +296,8 @@ def scan_attract(root: Path, lib_id: str, cache: dict | None = None,
         stats["emulators"] += 1
         progress(f"{emu}")
         system = cfg.get("system") or emu
-        plat, core, _ = systems.classify(system, emu, rompaths[0])
+        # each ROM folder decides its own platform (a "Crash Bandicoot Collection" spans PS1, GBA, ... folders)
+        cls = {rp: systems.classify(system, emu, rp)[:2] for rp in rompaths}
         exts, dirs = _exts(cfg.get("romext", ""))
         files: dict[str, tuple[str, str]] = {}
         listed_dirs: dict[str, tuple[str, str]] = {}   # romlist names that are folders (MAME CHD sets, PC/TeknoParrot games)
@@ -255,7 +307,10 @@ def scan_attract(root: Path, lib_id: str, cache: dict | None = None,
                 if (is_dir and dirs) or (not is_dir and ext.lower() in exts):
                     files.setdefault(stem.lower(), (rp, name))
                     sizes[f"{rp}/{name}"] = size
-                    folder_owner.setdefault(f"{rp}/{name}", (emu, system, plat, core, cfg["artwork"]))
+                    k, own = f"{rp}/{name}", (emu, system, *cls[rp], cfg["artwork"])
+                    # unlisted files belong to the folder's real system, not a franchise collection that also scans it
+                    if k not in folder_owner or ("collection" in folder_owner[k][1].lower() and "collection" not in system.lower()):
+                        folder_owner[k] = own
                 elif is_dir:
                     listed_dirs.setdefault(name.lower(), (rp, name))
         rl = root / "romlists" / f"{emu}.txt"
@@ -267,7 +322,7 @@ def scan_attract(root: Path, lib_id: str, cache: dict | None = None,
             if not hit:
                 stats["listed_missing"] += 1
                 continue
-            _add(games, lib_id, hit, emu, system, plat, core, cfg["artwork"], row)
+            _add(games, lib_id, hit, emu, system, *cls[hit[0]], cfg["artwork"], row)
     for key, (emu, system, plat, core, art) in folder_owner.items():
         rp, name = key.rsplit("/", 1)
         gid = _gid(lib_id, key)
@@ -381,6 +436,15 @@ def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
     """Copy a source file into the LRU cache (never touching the original). Returns a staging receipt.
     progress(done_bytes, total_bytes) is called while copying."""
     cache = config.cache
+    try:
+        inside = Path(src).resolve().is_relative_to(Path(cache).resolve())
+    except OSError:
+        inside = False
+    if inside:              # a built file mod (or anything already on the local disk): use it in place. Copying it to
+        os.utime(src)       # <cache>/<game>/<name> made every mod of a game collide with the plain game's staged copy.
+        return {"src": str(src), "dst": str(src), "size": Path(src).stat().st_size, "copied": False,
+                "sha1": file_hashes(Path(src), {})["sha1"],
+                "staged_at": time.time(), "evicted": [], "in_cache": True}
     dst = cache / game_id / src.name
     copied = not dst.exists() or dst.stat().st_size != src.stat().st_size
     if copied:
@@ -401,7 +465,8 @@ def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
 
 
 def evict(cache: Path, limit: int, keep: Path | None = None) -> list[str]:
-    files = sorted((p for p in cache.rglob("*") if p.is_file()), key=lambda p: p.stat().st_mtime)
+    mods = (cache / "mods").resolve()                     # built mods are not a cache of anything: never evict them
+    files = sorted((p for p in cache.rglob("*") if p.is_file() and not p.resolve().is_relative_to(mods)), key=lambda p: p.stat().st_mtime)
     total, evicted = sum(p.stat().st_size for p in files), []
     for p in files:
         if total <= limit:

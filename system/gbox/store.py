@@ -214,6 +214,11 @@ class Store:
             self.db.commit()
             return cur.lastrowid
 
+    def audit_log_last_seq(self) -> int:
+        with self.lock:
+            r = self.db.execute("SELECT MAX(seq) FROM audit").fetchone()
+        return r[0] or 0
+
     def audit_log(self, after: int = 0, limit: int = 200) -> list[dict]:
         with self.lock:
             rows = self.db.execute("SELECT seq,ts,actor,action,subject,data,hash FROM audit WHERE seq>? ORDER BY seq LIMIT ?",

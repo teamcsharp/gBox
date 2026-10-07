@@ -1,7 +1,7 @@
 """Runs inside Blender: blender --background --python gbox_bridge.py -- model.gltf out.blend report.json unit_scale_m
 
-Imports a G-Box UAP (already converted to glTF by the worker), applies game-unit scale, tags objects with
-G-Box provenance, saves a .blend and writes a JSON report of created objects back for validation.
+Imports a gBox UAP (already converted to glTF by the worker), applies game-unit scale, tags objects with
+gBox provenance, saves a .blend and writes a JSON report of created objects back for validation.
 Status: written against the bpy 4.x API; not yet run (Blender not installed on the build host).
 """
 import json

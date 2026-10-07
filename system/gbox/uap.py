@@ -289,6 +289,26 @@ def to_gltf(m: Manifest) -> dict:
     return g
 
 
+def to_glb(m: Manifest, pkg: Path) -> bytes:
+    """Self-contained binary glTF: geometry + every texture embedded (viewer, Blender paste, downloads)."""
+    g = to_gltf(m)
+    blob = bytearray(base64.b64decode(g["buffers"][0]["uri"].split(",", 1)[1]))
+    for im in g.get("images", []):
+        data = (pkg / im.pop("uri")).read_bytes()
+        while len(blob) % 4:
+            blob.append(0)
+        g["bufferViews"].append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(data)})
+        blob.extend(data)
+        im.update(bufferView=len(g["bufferViews"]) - 1, mimeType="image/png" if data[:4] == b"\x89PNG" else "image/jpeg")
+    while len(blob) % 4:
+        blob.append(0)
+    g["buffers"] = [{"byteLength": len(blob)}]
+    js = json.dumps(g, separators=(",", ":")).encode()
+    js += b" " * (-len(js) % 4)
+    return (struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(blob)) + struct.pack("<II", len(js), 0x4E4F534A) + js
+            + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob))
+
+
 def read_accessor(g: dict, idx: int) -> list:
     """Decode an accessor back to Python values (used for round-trip validation)."""
     acc = g["accessors"][idx]

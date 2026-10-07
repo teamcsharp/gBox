@@ -19,10 +19,11 @@ import httpx
 
 from . import systems
 from .config import HOST_OS, Config
+from .registry import ToolUnavailable
 
 ARCH = {"aarch64": "aarch64", "arm64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64"}[platform.machine().lower()]
 APT = ["retroarch", "xvfb", "xdotool", "x11-utils", "p7zip-full", "unzip", "cifs-utils", "ffmpeg", "openjdk-21-jdk-headless",
-       "mesa-utils", "libgl1-mesa-dri"]
+       "mesa-utils", "libgl1-mesa-dri", "flatpak", "mame", "mgba-qt"]
 BUILDBOT = "https://buildbot.libretro.com/nightly"
 BUILDBOT_ASSETS = "https://buildbot.libretro.com/assets/system"   # core support files (Dolphin Sys, PPSSPP assets...)
 CORE_ASSETS = {"dolphin": ("dolphin-emu", "Dolphin.zip"), "ppsspp": ("PPSSPP", "PPSSPP.zip")}
@@ -162,12 +163,22 @@ def ensure_bios(cfg: Config, names: list[str]) -> list[str]:
     dest.mkdir(parents=True, exist_ok=True)
     if not src:
         return copied
-    for n in names:
-        s, d = src / n, dest / n
-        if d.exists() or not s.exists():
+    for n in names:                                        # "drive/path->core/path" when the drive layout differs
+        sname, dname = n.split("->") if "->" in n else (n, n)
+        s, d = src / sname, dest / dname
+        if not s.exists():
             continue
-        shutil.copytree(s, d) if s.is_dir() else shutil.copy2(s, d)
-        copied.append(n)
+        if s.is_dir():                                     # fill in missing files (an empty dir is not "installed")
+            for f in s.rglob("*"):
+                t = d / f.relative_to(s)
+                if f.is_file() and not t.exists():
+                    t.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, t)
+                    copied.append(f"{dname}/{f.relative_to(s).as_posix()}")
+        elif not d.exists():
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(s, d)
+            copied.append(dname)
     return copied
 
 
@@ -251,6 +262,23 @@ def _seven_zip() -> str:
     return c
 
 
+def flatpak_ok(app: str) -> bool:
+    return shutil.which("flatpak") is not None and subprocess.run(["flatpak", "info", app], capture_output=True).returncode == 0
+
+
+def ensure_flatpak(app: str):
+    """Standalone emulators (Dolphin, PPSSPP, DuckStation) come from Flathub as prebuilt, sandboxed apps."""
+    if flatpak_ok(app):
+        return
+    if not shutil.which("flatpak"):
+        apt_packages(["flatpak"])
+    subprocess.run(["sudo", "-n", "flatpak", "remote-add", "--if-not-exists", "flathub",
+                    "https://dl.flathub.org/repo/flathub.flatpakrepo"], capture_output=True)
+    r = subprocess.run(["sudo", "-n", "flatpak", "install", "-y", "--noninteractive", "flathub", app], capture_output=True, text=True)
+    if r.returncode != 0 or not flatpak_ok(app):
+        raise ToolUnavailable(f"could not install {app}: {r.stderr[-400:]}")
+
+
 BRAND_ICO = Path(__file__).resolve().parent.parent / "assets" / "brand" / "gbox.ico"
 
 
@@ -269,18 +297,18 @@ def brand_exe(cfg: Config, exe: Path, description: str):
     # executables without a version resource (RetroArch) need the version block created before strings can be set
     _run([rcedit(cfg), str(exe), "--set-file-version", "1.0.0.0", "--set-product-version", "1.0.0.0",
           "--set-icon", str(BRAND_ICO), "--set-version-string", "FileDescription", description,
-          "--set-version-string", "ProductName", "G-Box", "--set-version-string", "CompanyName", "G-Box",
+          "--set-version-string", "ProductName", "gBox", "--set-version-string", "CompanyName", "gBox",
           "--set-version-string", "InternalName", exe.stem, "--set-version-string", "OriginalFilename", exe.name], 120)
 
 
 def _retroarch_windows(cfg: Config) -> str:
-    """Branded copy of RetroArch for local play: shows as "G-Box Game" in Task Manager and the volume mixer."""
+    """Branded copy of RetroArch for local play: shows as "gBox Game" in Task Manager and the volume mixer."""
     raw = _retroarch_windows_raw(cfg)
-    branded = Path(raw).with_name("G-Box Game.exe")
+    branded = Path(raw).with_name("gBox Game.exe")
     if not branded.exists() or branded.stat().st_mtime < Path(raw).stat().st_mtime:
         shutil.copy2(raw, branded)
         try:
-            brand_exe(cfg, branded, "G-Box Game")
+            brand_exe(cfg, branded, "gBox Game")
         except Exception:
             return raw                                       # unbranded still works
     return str(branded)
@@ -312,13 +340,129 @@ def _retroarch_windows_raw(cfg: Config) -> str:
 # --- ghidra / blender -----------------------------------------------------------------------
 
 def ghidra_home(cfg: Config) -> Path | None:
-    if cfg.ghidra_home:
+    """The operator's own Ghidra when it exists on this node (the Spark), else the one gBox installed into runtime."""
+    if cfg.ghidra_home and Path(cfg.ghidra_home).exists():
         return Path(cfg.ghidra_home)
     found = sorted((cfg.runtime).glob("ghidra_*_PUBLIC"))
     return found[-1] if found else None
 
 
+def jdk21(cfg: Config) -> Path | None:
+    """A JDK 21 for Ghidra: apt's on Linux; on Windows a Temurin 21 zip unpacked into runtime (no admin, no PATH change)."""
+    for p in ("/usr/lib/jvm/java-21-openjdk-arm64", "/usr/lib/jvm/java-21-openjdk-amd64"):
+        if Path(p).exists():
+            return Path(p)
+    found = sorted(cfg.runtime.glob("jdk-21*"))
+    return found[-1] if found else None
+
+
+def ensure_jdk21(cfg: Config) -> dict:
+    if jdk21(cfg):
+        return _receipt("jdk21", "ok", str(jdk21(cfg)))
+    if HOST_OS != "windows":
+        apt_packages(["openjdk-21-jdk-headless"])
+        return _receipt("jdk21", "installed", str(jdk21(cfg)))
+    r = httpx.get("https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse",
+                  timeout=1800, follow_redirects=True)
+    r.raise_for_status()
+    cfg.runtime.mkdir(parents=True, exist_ok=True)
+    zipfile.ZipFile(io.BytesIO(r.content)).extractall(cfg.runtime)
+    return _receipt("jdk21", "installed", str(jdk21(cfg)))
+
+
+def rpcs3_home(cfg: Config) -> Path:
+    return cfg.runtime / "rpcs3"
+
+
+def _rpcs3_busy(home: Path) -> bool:
+    """RPCS3 allows one running copy per folder ("Another instance ... RPCS3.buf still exists"): busy = an rpcs3.exe
+    is running from this folder (its RPCS3.buf can be deleted while in use, so the file alone proves nothing)."""
+    import ctypes
+    import ctypes.wintypes as w
+    k = ctypes.windll.kernel32
+    target = str((home / "rpcs3.exe").resolve()).lower()
+    ids, got = (w.DWORD * 4096)(), w.DWORD()
+    ctypes.windll.psapi.EnumProcesses(ids, ctypes.sizeof(ids), ctypes.byref(got))
+    for pid in ids[:got.value // 4]:
+        h = k.OpenProcess(0x1000, False, pid)             # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        buf, n = ctypes.create_unicode_buffer(1024), w.DWORD(1024)
+        try:
+            if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)) and buf.value.lower() == target:
+                return True
+        finally:
+            k.CloseHandle(h)
+    return False
+
+
+def rpcs3_free_home(cfg: Config) -> Path:
+    """A folder RPCS3 can start from right now. Extra instances (rpcs3-2, -3...) share the firmware, games, caches and
+    save states with the main one through junctions + hard links; only the lock and the log are their own."""
+    main = rpcs3_home(cfg)
+    if not _rpcs3_busy(main):
+        return main
+    for n in range(2, 6):
+        home = cfg.runtime / f"rpcs3-{n}"
+        if not home.exists():
+            home.mkdir(parents=True)
+            for f in main.iterdir():
+                t = home / f.name
+                if f.name in ("log",) or f.name.startswith("RPCS3.buf") or f.name.startswith("RPCS3.log"):
+                    continue
+                if f.is_dir():
+                    subprocess.run(["cmd", "/c", "mklink", "/J", str(t), str(f)], check=True, capture_output=True)
+                else:
+                    os.link(f, t)
+        if not _rpcs3_busy(home):
+            return home
+    raise RuntimeError("five RPCS3 games are already running on this PC")
+
+
+def ensure_rpcs3(cfg: Config, progress=None) -> dict:
+    """PS3: RPCS3 (official Windows build, sha256-checked) + Sony's PS3 system software, installed into the runtime."""
+    if HOST_OS != "windows":
+        raise ToolUnavailable("PS3 (RPCS3) runs on Windows nodes")
+    home = rpcs3_home(cfg)
+    exe = home / "rpcs3.exe"
+    if not exe.exists():
+        rel = httpx.get("https://api.github.com/repos/RPCS3/rpcs3-binaries-win/releases/latest", timeout=60).json()
+        a = next(x for x in rel["assets"] if x["name"].endswith(".7z"))
+        want = httpx.get(a["browser_download_url"] + ".sha256", timeout=60, follow_redirects=True).text.split()[0].lower()
+        progress and progress(10, f"Downloading RPCS3 {a['name']}")
+        data = httpx.get(a["browser_download_url"], timeout=1800, follow_redirects=True).content
+        import hashlib
+        if hashlib.sha256(data).hexdigest() != want:
+            raise RuntimeError("RPCS3 download failed its sha256 check")
+        home.mkdir(parents=True, exist_ok=True)
+        arc = home / a["name"]
+        arc.write_bytes(data)
+        z = shutil.which("7z") or r"C:\Program Files\7-Zip\7z.exe"
+        subprocess.run([z, "x", "-y", f"-o{home}", str(arc)], check=True, capture_output=True)
+        arc.unlink()
+    if not (home / "dev_flash" / "vsh" / "module" / "vsh.self").exists():
+        lst = httpx.get("http://fus01.ps3.update.playstation.net/update/ps3/list/us/ps3-updatelist.txt", timeout=60).text
+        url = re.search(r"CDN=(\S+?PS3UPDAT\.PUP)", lst)[1]
+        progress and progress(30, "Downloading PS3 system software from Sony")
+        pup = home / "PS3UPDAT.PUP"
+        with httpx.stream("GET", url, timeout=1800) as r, open(pup, "wb") as f:
+            for chunk in r.iter_bytes(1 << 20):
+                f.write(chunk)
+        progress and progress(50, "Installing PS3 system software into RPCS3")
+        p = subprocess.Popen([str(exe), "--installfw", str(pup)], cwd=home)
+        t = time.time()
+        while time.time() - t < 900 and not (home / "dev_flash" / "vsh" / "module" / "vsh.self").exists():
+            time.sleep(2)
+        time.sleep(5)                                      # let the installer finish writing the last modules
+        p.kill()
+        if not (home / "dev_flash" / "vsh" / "module" / "vsh.self").exists():
+            raise RuntimeError("PS3 firmware install did not complete")
+        pup.unlink()
+    return _receipt("rpcs3", "ok", str(exe))
+
+
 def ensure_ghidra(cfg: Config) -> dict:
+    ensure_jdk21(cfg)
     if (h := ghidra_home(cfg)) and (h / "support").exists():
         return _receipt("ghidra", "ok", str(h))
     rel = httpx.get("https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest", timeout=60).json()
@@ -365,7 +509,7 @@ def check_blender(cfg: Config) -> dict:
 
 
 def install_blender_addon(cfg: Config) -> dict:
-    """Install + enable the G-Box Blender add-on (paste from G-Box) for the Blender this node uses."""
+    """Install + enable the gBox Blender add-on (paste from gBox) for the Blender this node uses."""
     b = find_blender(cfg)
     if not b:
         return _receipt("blender-addon", "missing", "no blender on this node")
@@ -423,6 +567,8 @@ def setup(cfg: Config, with_ghidra: bool = True, log=print) -> list[dict]:
             p = lib.root("windows")
             steps.append((f"library:{lib.id}", lambda p=p, lib=lib: _receipt(
                 f"library:{lib.id}", "ok" if p and p.exists() else "missing", str(p))))
+        if with_ghidra:                    # x86_64 Windows has Ghidra's native decompiler (the arm64 Spark build lacks it)
+            steps.append(("ghidra", lambda: ensure_ghidra(cfg)))
     receipts = []
     for name, fn in steps:
         try:

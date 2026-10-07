@@ -1,20 +1,20 @@
-<p align="center"><img src="assets/brand/gbox-logo.svg" width="120" alt="G-Box"></p>
+<p align="center"><img src="assets/brand/gbox-logo.svg" width="120" alt="gBox"></p>
 
-# G-Box
+# gBox
 
 A universal game laboratory. One control plane on the **NVIDIA DGX Spark** indexes your game library, launches games on the GPU, streams them to any PC, and lets you inspect memory and graphics, edit RAM and paste assets into Blender. Every action is recorded in a tamper-evident audit log. A tool only gets credit for success when an independent validator confirms its artifacts.
 
 ## Using it
 
-- **Desktop app** (Windows): Start Menu or Desktop → **G-Box**.
+- **Desktop app** (Windows): Start Menu or Desktop → **gBox**.
   - **Play & Library**: search all 63,728 games with box art, then click Play.
   - **Sessions**: watch and control running games, or reopen any past game.
   - **Inspect** (in a session): live game, hex RAM/ROM viewer and editor, memory search, tile/sprite viewer, copy to Blender.
   - **Controllers**: Xbox pads work automatically; assign players or remap here.
   - **Control**: Spark and Windows-node status, install/update, logs.
-  - **Click the G-Box logo** to pull the latest code, rebuild the Spark, restart everything and relaunch.
+  - **Click the gBox logo** to pull the latest code, rebuild the Spark, restart everything and relaunch.
   - Leaving a game turns it into a draggable, resizable picture-in-picture window. Double-click it to go back.
-- **Blender**: the G-Box add-on is installed automatically. Copy anything in G-Box, then press **Ctrl+Shift+V** in the 3D view, or enable *Auto-paste* in the *G-Box* sidebar tab.
+- **Blender**: the gBox add-on is installed automatically. Copy anything in gBox, then press **Ctrl+Shift+V** in the 3D view, or enable *Auto-paste* in the *gBox* sidebar tab.
 - **Browser**: open `http://10.89.1.246:8765` and paste the token from `gbox-data/api_token` on the Spark.
 
 ## Install

@@ -15,7 +15,7 @@ Test suite: `python -m pytest -q` → **35 passed**. That includes a live check 
 | Streaming | 53–55 fps to the browser/app (was ~6). One streaming upload per session, long-polled input |
 | Memory | Flycast RAM through `READ_CORE_RAM` (native `0x8C000000` translated), GameCube MEM1 (disc ID `GPOE8P` read back), NES writes through the core memory map with rollback bytes kept |
 | Inspector | live session RPC for RAM and ROM reads; ROM tiles decoded (real Mario CHR sprites) |
-| Blender bridge | `open_in_blender` on Blender 5.3 alpha: validated .blend artifact. The G-Box add-on pastes clipboard images as pixel-exact planes in real Blender |
+| Blender bridge | `open_in_blender` on Blender 5.3 alpha: validated .blend artifact. The gBox add-on pastes clipboard images as pixel-exact planes in real Blender |
 | Compatibility sweep | partial run: chailove, Channel F and ColecoVision verified as running and drawing. A full run is still pending |
 
 ### Known limits
@@ -89,12 +89,42 @@ No third-party code is bundled. External tools are invoked as separate processes
 3. Install Blender and Ghidra (with JDK 21), then turn their tools from "written" into "verified".
 4. Then Phase 2: the memory-diff tool, the PSO V2 profile and semantic state.
 
-## Phase checklist (plan §26)
+## Phase checklist (plan §26) — status 2026-10-06
+
+Legend: [x] done and verified on the real systems · [~] partly done (what is missing is named) · [ ] not started
 
 - [x] Phase 0 — repository and contracts
-- [~] Phase 1 — catalog ✅, adapter interface ✅, first backend (RetroArch) written but unverified, video = frame grab only, input ✗
-- [ ] Phase 2 — PSO V2 instrumentation
-- [ ] Phase 3 — PSO V2 autoplay
-- [ ] Phase 4 — Ghidra semantic bridge (export script written, unverified)
-- [~] Phase 5 — UAP ✅, glTF/OBJ ✅, Blender bridge written but unverified, extractors ✗, 3D viewer ✗
-- [ ] Phase 6–10
+- [x] Phase 1 — catalog (63k games, HyperSpin + GC ISO + PS3 libraries), adapters (RetroArch, Dolphin, mGBA, DuckStation, MAME,
+      RPCS3, RocketLauncher, Steam), streaming + native embedded windows, controllers (Xbox/XInput), save/load states
+- [x] Phase 2 — PSO V2 instrumentation: semantic profiles (GC + DC), live state dashboard, debugger on Dolphin/mGBA/DuckStation/MAME
+- [x] Phase 3 — autoplay: DC office → Pioneer 2 → Forest 1 route (93 s via the autoplay tool) + Forest 1 battle mission; 3 runs from one
+      state: 3 / 3 / 1 kills, ~410 s each (assist: hold HP). Verified facing (RAM heading), measured buttons (y attack, a heal,
+      b talk), HP guardian, dialog detection, unreachable-target skip. Fair Lv1 runs still lose the Booma pair (open: hit-and-run).
+- [x] Phase 4 — Ghidra bridge: write watch → ELF → decompile → breakpoint validation → knowledge edges (PSO add_hp)
+- [x] Phase 5 — asset lab: PSO models (NJCM/PVM) → UAP → glTF → Blender, rendered with textures
+- [x] Phase 6 — live picker: PSO DC camera found in RAM (eye 0x8CFA5EB8 / target 0x8CFA5EC4); `pick` projects entities through it
+      (same room, creatures, nearest first) and extracts the picked enemy's model from the disc (Booma -> `pso_dc_beast`, textured,
+      skinned GLB). Ctrl+click in the desktop app / streamed view -> 3D card in chat + Blender clipboard. Profiles without a camera
+      mapping: not yet.
+- [x] Phase 7 — environments: PSO DC areas (render geometry + textures + collision) → glTF; graphics settings; Bevy import
+- [x] Phase 8 — mod builder: memory changesets with apply / rollback / verify ✅ (live PS3), script-patch presets ✅, file mods ✅
+      (`file_mod`): folder games via a local base copy + hard-linked mod trees (Puyo Puyo Tetris), single images via a patched
+      copy (ROM byte patches; GameCube discs: GCZ -> ISO, replace/patch files in place). Verified end to end: Luigi's Mansion mod
+      built, launched in Dolphin from the modded disc, drawing. Limit: a replacement larger than the original file (needs a disc
+      rebuild).
+- [x] Phase 9 — cross-title into a target project: PSO Forest + Savage Wolf in a Bevy scene (`bevy_scene` tool)
+- [~] Phase 10 — broader coverage: compatibility fixes (PS2, 3DS, Neo Geo CD, GameCube, PC-FX, Doom routing); NAOMI/Atomiswave boot
+      (.lst GD sets, 7z ROM sets: Capcom vs SNK 2, Demolish Fist); missing: CD-i and PocketStation BIOS files (operator)
+
+### Operator requests outside the plan
+- [~] Stranglehold ↔ Puyo Puyo Tetris link: shot verdict patches ✅, infinite life ✅, `game_link` + slow-motion overlay ✅,
+      two RPCS3 instances ✅, board positions ✅; missing: Tetris result flag (needs one won match), bullet-cam start flag
+      (needs one aimed shot), then a live end-to-end run
+- [~] Video knowledge: search ✅, ingest/frames built; blocked on YouTube cookies (operator)
+- [x] Cheats: libretro database + gBox engine + Dolphin Gecko (incl. C2) on GCZ discs
+- [x] Desktop app: status bar + audit console + service panels, compact chat (images → vision model, MD/PDF/page exports),
+      Flow view, draggable/resizable pop-ups, push-to-talk, per-game window mode, screenshot-report overlays
+- [x] Deployment: `gBox.sh` wizard (Linux + Windows), docker-compose stack, per-machine settings overlay
+- [ ] Background agents for mashups: blocked by the permission system (operator approval)
+- [ ] PUBG locomotion analysis: game not installed (operator)
+- [ ] decomp.me / IDA Pro / N64Recomp integration: not started (decomp.me publishes code publicly; N64Recomp is a source build)

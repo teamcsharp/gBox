@@ -1,0 +1,141 @@
+{
+  "id": "pso-gc-plus-us",
+  "title": "Phantasy Star Online Episode I & II Plus (USA) - GameCube (3OE2)",
+  "match": {
+    "platform": "gamecube",
+    "title_contains": "Phantasy Star Online Episode I & II Plus",
+    "memory": {
+      "address": "0x80000000",
+      "equals": "GPOE8P"
+    }
+  },
+  "endian": "big",
+  "entities": {
+    "table": "0x8050D460",
+    "max": 256,
+    "null_terminated": true,
+    "struct_size": "0x340",
+    "pointer_range": [
+      "0x80000000",
+      "0x81800000"
+    ],
+    "fields": {
+      "entity_id": [
+        "u16",
+        "0x1C"
+      ],
+      "room": [
+        "u16",
+        "0x28"
+      ],
+      "x": [
+        "f32",
+        "0x38"
+      ],
+      "y": [
+        "f32",
+        "0x3C"
+      ],
+      "z": [
+        "f32",
+        "0x40"
+      ],
+      "angle": [
+        "i32",
+        "0x60"
+      ],
+      "class": [
+        "ptrstr",
+        "0x0"
+      ]
+    },
+    "kinds": [
+      {
+        "name": "player",
+        "name_prefix": [
+          "TObjPlayer"
+        ],
+        "entity_id": [
+          0,
+          11
+        ],
+        "fields": {
+          "hp": [
+            "u16",
+            "0x32C"
+          ],
+          "tp": [
+            "u16",
+            "0x32E"
+          ],
+          "hp_max": [
+            "u16",
+            "0x2B8"
+          ],
+          "tp_max": [
+            "u16",
+            "0x2BA"
+          ]
+        }
+      },
+      {
+        "name": "enemy",
+        "name_prefix": [
+          "TObjEne",
+          "TBoss",
+          "TObjBoss"
+        ],
+        "fields": {
+          "hp": [
+            "u16",
+            "0x32C"
+          ],
+          "hp_max": [
+            "u16",
+            "0x2B8"
+          ]
+        }
+      },
+      {
+        "name": "gate",
+        "name_prefix": [
+          "TObjDoor",
+          "TObjLazerFence",
+          "TLazerFenceSw",
+          "TOBarrier"
+        ]
+      },
+      {
+        "name": "npc",
+        "entity_id": [
+          4096,
+          16383
+        ]
+      },
+      {
+        "name": "object",
+        "entity_id": [
+          16384,
+          65535
+        ]
+      }
+    ]
+  },
+  "globals": {
+    "disc_id": [
+      "str6",
+      "0x80000000"
+    ]
+  },
+  "players_table": "0x8050EA10",
+  "evidence": {
+    "players_table": "newserv notes/ar-codes.txt (3OE2 inventory debugging code: TObjPlayer_objs[0] at lis 0x8051 / -0x15F0); read back 0x80DA62A0 = GBOX's object",
+    "entities.table": "RAM pointer search 2026-10-05: 0x8050D460 holds the player object, then 30 NPC/object pointers, null-terminated",
+    "hp/tp/hp_max/tp_max": "HUD showed HP 40/40 TP 29/29; u16 40/29 found at +0x2B8/+0x2BA and +0x32C/+0x32E of the player object",
+    "x/y/z": "holding Down 1.5 s moved z -2015 -> -1964 and x 0 -> 9 (Dolphin GDB reads, 2026-10-05)",
+    "angle": "int32 at +0x60 tracks movement heading (atan2(dx,dz)): -12527 -> 291 deg vs 290 measured; 13334 -> 73 vs 73",
+    "entity_id/room": "u16 at +0x1C: player 0, NPCs 0x1001.., map objects 0x4000..; u16 at +0x28 = room (player 0x29 in the Principal's office)",
+    "class": "u32 at +0x00 points to the C++ class name (newserv PSOGCObjectGraph TObject.type_name_addr): TObjPlayer, TObjEneBeast, TObjDoor...",
+    "enemy hp": "TObjEneBeast (wolf, Forest 1) u16 60 at +0x2B8 (max) and +0x32C (current): same layout as TObjPlayer"
+  }
+}

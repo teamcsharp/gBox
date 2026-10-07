@@ -1,0 +1,28 @@
+# gBox containerized stack for a machine without the DGX Spark: control plane + local LLM + web search.
+# Emulators, GPU capture and debuggers still run on the host as a worker:  python -m gbox worker --server http://127.0.0.1:8765
+#   docker compose up -d --build        (or the wizard's Install > "Containerized stack")
+services:
+  gbox:
+    build: .
+    ports: ["8765:8765"]
+    volumes:
+      - ./gbox.toml:/config/gbox.toml:ro
+      - ./gbox-data:/config/gbox-data          # data_dir resolves next to the config file
+    environment:
+      GBOX_CONFIG: /config/gbox.toml
+    restart: unless-stopped
+  ollama:
+    image: ollama/ollama
+    ports: ["11434:11434"]
+    volumes: [ollama:/root/.ollama]
+    restart: unless-stopped
+    # GPU: uncomment on hosts with the NVIDIA container toolkit
+    # deploy: { resources: { reservations: { devices: [{ driver: nvidia, count: all, capabilities: [gpu] }] } } }
+  searxng:
+    image: searxng/searxng
+    ports: ["8081:8080"]
+    environment:
+      SEARXNG_BASE_URL: http://127.0.0.1:8081/
+    restart: unless-stopped
+volumes:
+  ollama:

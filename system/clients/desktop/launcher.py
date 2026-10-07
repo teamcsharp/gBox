@@ -1,4 +1,4 @@
-"""gBox.exe: start the G-Box desktop app from <root>/system (root = gBox.exe + system/).
+"""gBox.exe: start the gBox desktop app from <root>/system (root = gBox.exe + system/).
 
 First run on a PC installs the pieces (Electron runtime, Windows worker venv) by running the repo's own installers,
 then launches. Works from the Spark share or from a GitHub clone.
@@ -14,7 +14,7 @@ if not (ROOT / "system").exists():                      # running the .py from s
 SYSTEM = ROOT / "system"
 APP = SYSTEM / "clients" / "desktop"
 LOCAL = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "gbox"
-ELECTRON = LOCAL / "app" / "gBox.exe"                 # branded Electron runtime (icon + "G-Box" everywhere)
+ELECTRON = LOCAL / "app" / "gBox.exe"                 # branded Electron runtime (icon + "gBox" everywhere)
 VENV_PY = LOCAL / "venv" / "Scripts" / "python.exe"
 NEW_CONSOLE = 0x00000010
 
@@ -26,7 +26,7 @@ def ps(script: Path):
 
 def main():
     if not APP.exists():
-        subprocess.run(["msg", "*", f"G-Box: system folder not found next to gBox.exe ({SYSTEM})"])
+        subprocess.run(["msg", "*", f"gBox: system folder not found next to gBox.exe ({SYSTEM})"])
         return 1
     if not ELECTRON.exists():                           # first run on this PC
         ps(APP / "install.ps1")

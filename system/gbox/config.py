@@ -63,6 +63,7 @@ class Config(BaseModel):
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
+    examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -98,18 +99,28 @@ class Config(BaseModel):
         return p.read_text().strip()
 
 
+def local_overlay(path: Path) -> Path:
+    """Per-machine settings written by the setup wizard (gBox.sh): gbox.local-<host>.toml next to gbox.toml."""
+    return path.with_name(f"gbox.local-{platform.node().lower()}.toml")
+
+
 def load(path: str | Path | None = None) -> Config:
     path = Path(path or os.environ.get("GBOX_CONFIG", "gbox.toml"))
-    if not path.exists():
+    data = tomllib.loads(path.read_text()) if path.exists() else {}
+    over = local_overlay(path)
+    if over.exists():                                      # wizard choices win; tables merge one level deep
+        for k, v in tomllib.loads(over.read_text()).items():
+            data[k] = data.get(k, {}) | v if isinstance(v, dict) and isinstance(data.get(k), dict) else v
+    if not data:
         return Config()
-    cfg = Config(**tomllib.loads(path.read_text()))
+    cfg = Config(**data)
     if not cfg.data_dir.is_absolute():
         cfg.data_dir = path.parent / cfg.data_dir
     return cfg
 
 
 TEMPLATE = """\
-# G-Box configuration.
+# gBox configuration.
 data_dir = "gbox-data"            # artifacts, DB, audit ledger, api_token, runtimes
 api_host = "127.0.0.1"            # bind 0.0.0.0 only on a trusted LAN; token auth is always on
 api_port = 8765

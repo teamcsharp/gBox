@@ -1,4 +1,4 @@
-"""gbox CLI: init | serve [--worker] | worker | submit | schemas"""
+"""gbox CLI: init | serve [--worker] | worker | submit | schemas | mcp"""
 import argparse
 import json
 import os
@@ -26,7 +26,19 @@ def main():
     sub.add_parser("schemas", help="export JSON Schemas to schemas/")
     su = sub.add_parser("setup", help="install/verify this node's dependencies (apt, mounts, cores, BIOS, ghidra, blender)")
     su.add_argument("--no-ghidra", action="store_true")
+    wz = sub.add_parser("wizard", help="setup / deploy / troubleshoot wizard in the browser (what gBox.sh opens)")
+    wz.add_argument("--port", type=int, default=8770)
+    wz.add_argument("--no-browser", action="store_true")
+    m = sub.add_parser("mcp", help="MCP server (stdio) so Claude / other agents can drive gBox; --http for streamable HTTP")
+    m.add_argument("--server", default=None, help="control plane URL (default: public_url from the config)")
+    m.add_argument("--http", type=int, nargs="?", const=0, default=None, metavar="PORT",
+                   help="serve streamable HTTP at /mcp instead of stdio (default port: api_port + 1)")
     a = ap.parse_args()
+
+    if a.cmd == "wizard":
+        from . import wizard
+        wizard.serve(Path(a.config), a.port, not a.no_browser)
+        return
 
     if a.cmd == "init":
         p = Path(a.config)
@@ -37,6 +49,16 @@ def main():
         return
 
     cfg = cfgmod.load(a.config)
+    if a.cmd == "mcp":
+        from . import mcp_server
+        if not os.environ.get("GBOX_TOKEN") and not (cfg.data_dir / "api_token").exists():   # never mint a new token here
+            raise SystemExit(f"no token: set GBOX_TOKEN or use the deployment's gbox.toml ({cfg.data_dir / 'api_token'} missing)")
+        server = a.server or cfg.public_url or f"http://127.0.0.1:{cfg.api_port}"
+        if a.http is None:
+            mcp_server.serve_stdio(server, cfg.token())
+        else:
+            mcp_server.serve_http(server, cfg.token(), cfg.api_host, a.http or cfg.api_port + 1)
+        return
     if a.cmd == "serve":
         import uvicorn
         from .server import create_app
@@ -45,7 +67,7 @@ def main():
             from . import worker
             url = f"http://127.0.0.1:{cfg.api_port}"
             threading.Thread(target=lambda: (time.sleep(1.5), worker.run(url, cfg.token(), cfg)), daemon=True).start()
-        print(f"G-Box on http://{cfg.api_host}:{cfg.api_port}  token file: {cfg.data_dir / 'api_token'}")
+        print(f"gBox on http://{cfg.api_host}:{cfg.api_port}  token file: {cfg.data_dir / 'api_token'}")
         uvicorn.run(app, host=cfg.api_host, port=cfg.api_port, log_level="warning")
     elif a.cmd == "worker":
         from . import worker
@@ -63,7 +85,7 @@ def main():
         print(json.dumps(job, indent=2))
     elif a.cmd == "setup":
         from . import provision
-        print(f"G-Box setup on {provision.HOST_OS}/{provision.ARCH}")
+        print(f"gBox setup on {provision.HOST_OS}/{provision.ARCH}")
         r = provision.setup(cfg, with_ghidra=not a.no_ghidra)
         bad = [x["step"] for x in r if x["status"] in ("failed", "missing")]
         print("all steps ok" if not bad else f"FAILED: {bad}")

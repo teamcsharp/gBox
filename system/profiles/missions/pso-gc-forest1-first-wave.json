@@ -1,0 +1,51 @@
+{
+ "name": "pso-gc-forest1-first-wave",
+ "game_id": "436e0bb84d5337d1",
+ "objective": "From the Forest 1 arrival point: open two door panels, reach room 11 and defeat the first wave",
+ "initial_state": "Dolphin state slot 1: GBOX HUmar Lv1 at Forest 1 arrival",
+ "policy": "autoplay-v3-inputfix",
+ "map": {
+  "rel_artifact": "0e7bc121a41e483e2c4d03bb031226461fecafb6c14ebfbeaab8ffe76ecfd2f5",
+  "be": true,
+  "size": 10
+ },
+ "steps": [
+  {
+   "op": "interact",
+   "at": [
+    -95,
+    214
+   ]
+  },
+  {
+   "op": "navigate",
+   "to": [
+    -140,
+    330
+   ]
+  },
+  {
+   "op": "interact",
+   "at": [
+    7,
+    362
+   ]
+  },
+  {
+   "op": "navigate",
+   "to": [
+    90,
+    300
+   ]
+  },
+  {
+   "op": "fight",
+   "radius": 350,
+   "timeout": 150,
+   "wave_wait": 0,
+   "heal_key": "b",
+   "heal_below": 0.5,
+   "heals": 4
+  }
+ ]
+}

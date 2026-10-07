@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pad glyphs</title>
+<style>
+  :root { --bg:#16161a; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; }
+  :root[data-theme="light"] { --bg:#fff; --fg:#1b1b1f; --mut:#6b6b76; --line:#e3e3e8; --card:#f6f6f8; --acc:#3355dd; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui,sans-serif; }
+  .bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+  .bar a { color:var(--acc); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--cellw,230px),1fr)); gap:12px; }
+  .cell { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .cell .k { color:var(--mut); font-size:11px; margin-bottom:4px; font-family:ui-monospace,monospace; }
+</style></head>
+<body>
+<div class="bar"><b>Pad glyphs</b><span class="k" style="color:var(--mut)">modes:</span>
+  <a href="?mode=anim">animate</a><a href="?mode=idle">idle</a><a href="?mode=all">all lit (player)</a>
+  <a href="?mode=gbox">all lit (gBox)</a><a href="?mode=mix">mixed</a><a href="?mode=mix&theme=light">light theme</a>
+  <span class="k" style="color:var(--mut)">one pad at sidebar size: ?only=dreamcast&amp;w=280 (platform[:adapter],…)</span></div>
+<div class="grid" id="grid"></div>
+<script src="padglyph.js"></script>
+<script>
+const Q = new URLSearchParams(location.search), MODE = Q.get("mode") || "anim";
+if (Q.get("theme") === "light") document.documentElement.dataset.theme = "light";
+PadGlyph.local = () => null;            // test page: no physical pad
+// every SVG glyph (see glyphs/) + the built-in drawings still used for DS / 3DS / unknown platforms
+const CASES = (Q.get("only") ? Q.get("only").split(",").map(p => p.split(":")) : [
+  ["dreamcast"], ["n64"], ["gamecube"], ["gamecube", "dolphin"], ["wii"], ["snes"], ["nes"], ["gb"], ["gbc"], ["gba"],
+  ["genesis"], ["md3"], ["sms"], ["saturn"], ["psxdigital"], ["psx"], ["ps2"], ["ps2", "duckstation"], ["ps3"], ["psp"],
+  ["xbox"], ["xbox360"], ["pc"], ["naomi"], ["arcade", "mame"], ["Sega Dreamcast"], ["nds"], ["3ds"], ["pce"]]);
+if (Q.get("w")) document.documentElement.style.setProperty("--cellw", Q.get("w") + "px");
+if (Q.get("only")) document.querySelector(".bar").style.display = "none";      // preview / screenshot of a few pads
+const ALL = ["a", "b", "x", "y", "l", "r", "l2", "r2", "l3", "r3", "start", "select", "up", "down", "left", "right", "z", "home"];
+const g = CASES.map(([plat, adapter]) => {
+  const cell = document.createElement("div"); cell.className = "cell";
+  cell.innerHTML = `<div class="k">${plat}${adapter ? " · " + adapter : ""} → ${PadGlyph.glyph(plat) || "built-in " + PadGlyph.family(plat)}</div><div class="pad"></div>`;
+  document.getElementById("grid").appendChild(cell);
+  return PadGlyph.mount(cell.querySelector(".pad"), plat, { adapter });
+});
+if (MODE === "all" || MODE === "gbox")
+  g.forEach(x => x.update({ held: ALL.filter(k => !(x.fam.endsWith("n64") && k === "r2")), stick: { x: .7, y: -.7 }, rstick: { x: -.7, y: .7 }, source: MODE === "gbox" ? "agent" : "player" }));
+if (MODE === "mix") g.forEach((x, i) => {
+  const sets = [["b", "up", "l"], ["a", "x", "right", "start"], ["y", "down", "r2"], ["x", "l2", "select", "left"]];
+  x.update({ held: sets[i % 4], stick: { x: Math.cos(i), y: Math.sin(i) }, source: i % 2 ? "autoplay" : "player" });
+  // gBox layer on top via a fake remote snapshot (what /pad would return)
+  x.onRemote({ held: ["b", "r"], sources: { b: "agent", r: "agent" }, source: "agent" });
+});
+if (MODE === "anim") {
+  let t = 0;
+  setInterval(() => {
+    t++;
+    g.forEach((x, i) => {
+      const k = ALL[(t + i * 3) % 12], d = ["up", "right", "down", "left"][(t >> 1) % 4], a = t / 4 + i;
+      x.update({ held: [k, d], stick: { x: Math.cos(a), y: Math.sin(a) }, rstick: { x: Math.sin(a), y: Math.cos(a) },
+                 source: (t >> 3) % 2 ? "autoplay" : "player" });
+    });
+  }, 220);
+}
+</script>
+</body></html>

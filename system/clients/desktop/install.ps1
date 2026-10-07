@@ -1,4 +1,4 @@
-# Install the G-Box desktop app on this PC.
+# Install the gBox desktop app on this PC.
 # Electron is installed locally (%LOCALAPPDATA%\gbox\desktop); the app code runs from this checkout
 # (the Spark share or a GitHub clone), so `git pull` updates are live on next launch.
 # Creates Desktop + Start Menu shortcuts.
@@ -19,8 +19,8 @@ Pop-Location
 $Dist = Join-Path $Home_ "node_modules\electron\dist"
 if (-not (Test-Path (Join-Path $Dist "electron.exe"))) { throw "electron install failed: $Dist\electron.exe missing" }
 
-# Branded runtime: a copy of Electron named gBox.exe with the G-Box icon + version strings, so Task Manager,
-# the volume mixer, the taskbar and its right-click menu all say "G-Box" (not "Electron").
+# Branded runtime: a copy of Electron named gBox.exe with the gBox icon + version strings, so Task Manager,
+# the volume mixer, the taskbar and its right-click menu all say "gBox" (not "Electron").
 $AppDir = Join-Path $env:LOCALAPPDATA "gbox\app"
 New-Item -ItemType Directory -Force $AppDir | Out-Null
 robocopy $Dist $AppDir /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -29,18 +29,18 @@ $Rcedit = Join-Path $env:LOCALAPPDATA "gbox\tools\rcedit-x64.exe"
 if (-not (Test-Path $Rcedit)) { New-Item -ItemType Directory -Force (Split-Path $Rcedit) | Out-Null
   Invoke-WebRequest "https://github.com/electron/rcedit/releases/latest/download/rcedit-x64.exe" -OutFile $Rcedit }
 $Ico = Join-Path $Repo "assets\brand\gbox.ico"
-& $Rcedit (Join-Path $AppDir "gBox.exe") --set-icon $Ico --set-version-string FileDescription "G-Box" --set-version-string ProductName "G-Box" `
-  --set-version-string CompanyName "G-Box" --set-version-string InternalName "gBox" --set-version-string OriginalFilename "gBox.exe"
+& $Rcedit (Join-Path $AppDir "gBox.exe") --set-icon $Ico --set-version-string FileDescription "gBox" --set-version-string ProductName "gBox" `
+  --set-version-string CompanyName "gBox" --set-version-string InternalName "gBox" --set-version-string OriginalFilename "gBox.exe"
 $Electron = Join-Path $AppDir "gBox.exe"
 
 $App = Join-Path $Repo "clients\desktop"
 $Exe = Join-Path (Split-Path $Repo -Parent) "gBox.exe"                 # root launcher (root = gBox.exe + system\)
 $Shell = New-Object -ComObject WScript.Shell
 foreach ($dir in @([Environment]::GetFolderPath("Desktop"), (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"))) {
-    $lnk = $Shell.CreateShortcut((Join-Path $dir "G-Box.lnk"))
+    $lnk = $Shell.CreateShortcut((Join-Path $dir "gBox.lnk"))
     if (Test-Path $Exe) { $lnk.TargetPath = $Exe; $lnk.Arguments = "" } else { $lnk.TargetPath = $Electron; $lnk.Arguments = "`"$App`"" }
     $lnk.WorkingDirectory = $Home_
-    $lnk.Description = "G-Box"
+    $lnk.Description = "gBox"
     $lnk.IconLocation = (Join-Path $Repo "assets\brand\gbox.ico")
     $lnk.Save()
 }

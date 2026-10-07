@@ -1,0 +1,2068 @@
+{
+ "game": "Armored Core (USA)",
+ "key": "ac1",
+ "platform": "psx",
+ "source": "parts table read from the game's RAM (garage, 0x800B91F4); names exactly as the game shows them",
+ "slots": [
+  "head",
+  "core",
+  "arms",
+  "legs",
+  "arm_weapon_r",
+  "arm_weapon_l",
+  "back_weapon_l",
+  "back_weapon_r",
+  "booster",
+  "fcs",
+  "generator",
+  "option"
+ ],
+ "slot_notes": {
+  "arms": "ids 8-15 are weapon arms (AW-*): pair them with arm_weapon_r 0 (NO WEAPON)",
+  "arm_weapon_r": "0 = NO WEAPON (used with weapon arms); 255 = nothing equipped",
+  "arm_weapon_l": "laser blades; 255 = nothing",
+  "back_weapon_l": "shares the back_weapon list with back_weapon_r; 255 = nothing",
+  "option": "optional parts are a bitmask (bit = id); limited by the core's extension slots"
+ },
+ "parts": [
+  {
+   "id": 0,
+   "code": "head:0",
+   "name": "HD-01-SRVT",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 26500,
+    "weight": 122,
+    "energy_drain": 350,
+    "armor_point": 816,
+    "def_shell": 154,
+    "def_energy": 149
+   }
+  },
+  {
+   "id": 1,
+   "code": "head:1",
+   "name": "HD-2002",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 29000,
+    "weight": 156,
+    "energy_drain": 457,
+    "armor_point": 787,
+    "def_shell": 140,
+    "def_energy": 154
+   }
+  },
+  {
+   "id": 2,
+   "code": "head:2",
+   "name": "HD-X1487",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 19000,
+    "weight": 166,
+    "energy_drain": 420,
+    "armor_point": 975,
+    "def_shell": 160,
+    "def_energy": 185
+   }
+  },
+  {
+   "id": 3,
+   "code": "head:3",
+   "name": "HD-REDEYE",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 41100,
+    "weight": 146,
+    "energy_drain": 538,
+    "armor_point": 840,
+    "def_shell": 148,
+    "def_energy": 151
+   }
+  },
+  {
+   "id": 4,
+   "code": "head:4",
+   "name": "HD-D-9066",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 43200,
+    "weight": 138,
+    "energy_drain": 657,
+    "armor_point": 885,
+    "def_shell": 165,
+    "def_energy": 232
+   }
+  },
+  {
+   "id": 5,
+   "code": "head:5",
+   "name": "HD-GRY-NX",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 14700,
+    "weight": 232,
+    "energy_drain": 218,
+    "armor_point": 1004,
+    "def_shell": 194,
+    "def_energy": 134
+   }
+  },
+  {
+   "id": 6,
+   "code": "head:6",
+   "name": "HD-06-RADAR",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 51800,
+    "weight": 145,
+    "energy_drain": 875,
+    "armor_point": 741,
+    "def_shell": 109,
+    "def_energy": 194
+   }
+  },
+  {
+   "id": 7,
+   "code": "head:7",
+   "name": "HD-ONE",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 68100,
+    "weight": 161,
+    "energy_drain": 304,
+    "armor_point": 800,
+    "def_shell": 132,
+    "def_energy": 129
+   }
+  },
+  {
+   "id": 8,
+   "code": "head:8",
+   "name": "HD-08-DISH",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 33200,
+    "weight": 133,
+    "energy_drain": 716,
+    "armor_point": 870,
+    "def_shell": 205,
+    "def_energy": 162
+   }
+  },
+  {
+   "id": 9,
+   "code": "head:9",
+   "name": "HD-ZERO",
+   "slot": "head",
+   "type": "Head Unit",
+   "stats": {
+    "price": 22500,
+    "weight": 185,
+    "energy_drain": 431,
+    "armor_point": 925,
+    "def_shell": 221,
+    "def_energy": 149
+   }
+  },
+  {
+   "id": 0,
+   "code": "core:0",
+   "name": "XCA-00",
+   "slot": "core",
+   "type": "Core Unit",
+   "stats": {
+    "price": 61500,
+    "weight": 1103,
+    "energy_drain": 1046,
+    "armor_point": 2710,
+    "def_shell": 530,
+    "def_energy": 505,
+    "max_weight_arms": 2770
+   }
+  },
+  {
+   "id": 1,
+   "code": "core:1",
+   "name": "XCL-01",
+   "slot": "core",
+   "type": "Core Unit",
+   "stats": {
+    "price": 88000,
+    "weight": 885,
+    "energy_drain": 1380,
+    "armor_point": 2380,
+    "def_shell": 492,
+    "def_energy": 610,
+    "max_weight_arms": 2450
+   }
+  },
+  {
+   "id": 2,
+   "code": "core:2",
+   "name": "XCH-01",
+   "slot": "core",
+   "type": "Core Unit",
+   "stats": {
+    "price": 72000,
+    "weight": 1384,
+    "energy_drain": 873,
+    "armor_point": 3015,
+    "def_shell": 615,
+    "def_energy": 543,
+    "max_weight_arms": 3600
+   }
+  },
+  {
+   "id": 0,
+   "code": "legs:0",
+   "name": "LN-1001",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 28500,
+    "weight": 1966,
+    "energy_drain": 1725,
+    "armor_point": 3235,
+    "def_shell": 556,
+    "def_energy": 531,
+    "max_weight": 4470,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 1,
+   "code": "legs:1",
+   "name": "LN-SSVT",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 44000,
+    "weight": 1528,
+    "energy_drain": 2338,
+    "armor_point": 2795,
+    "def_shell": 482,
+    "def_energy": 507,
+    "max_weight": 3560,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 2,
+   "code": "legs:2",
+   "name": "LN-3001",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 52200,
+    "weight": 3137,
+    "energy_drain": 2206,
+    "armor_point": 3703,
+    "def_shell": 870,
+    "def_energy": 594,
+    "max_weight": 6600,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 3,
+   "code": "legs:3",
+   "name": "LN-1001-PX-0",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 25000,
+    "weight": 1892,
+    "energy_drain": 1844,
+    "armor_point": 3035,
+    "def_shell": 528,
+    "def_energy": 508,
+    "max_weight": 4100,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 4,
+   "code": "legs:4",
+   "name": "LN-501",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 71800,
+    "weight": 1675,
+    "energy_drain": 2910,
+    "armor_point": 2947,
+    "def_shell": 508,
+    "def_energy": 535,
+    "max_weight": 3990,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 5,
+   "code": "legs:5",
+   "name": "LN-SSVR",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 32400,
+    "weight": 2750,
+    "energy_drain": 2013,
+    "armor_point": 3606,
+    "def_shell": 805,
+    "def_energy": 532,
+    "max_weight": 5400,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 6,
+   "code": "legs:6",
+   "name": "LN-1001B",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 45200,
+    "weight": 2305,
+    "energy_drain": 1889,
+    "armor_point": 3383,
+    "def_shell": 585,
+    "def_energy": 543,
+    "max_weight": 4630,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 8,
+   "code": "legs:8",
+   "name": "LN-3001C",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 64100,
+    "weight": 3528,
+    "energy_drain": 2418,
+    "armor_point": 3977,
+    "def_shell": 889,
+    "def_energy": 602,
+    "max_weight": 7100,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 10,
+   "code": "legs:10",
+   "name": "LN-502",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 35800,
+    "weight": 1790,
+    "energy_drain": 2466,
+    "armor_point": 3343,
+    "def_shell": 538,
+    "def_energy": 592,
+    "max_weight": 3800,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 11,
+   "code": "legs:11",
+   "name": "LN-D-8000R",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 49000,
+    "weight": 2426,
+    "energy_drain": 2350,
+    "armor_point": 3532,
+    "def_shell": 510,
+    "def_energy": 656,
+    "max_weight": 4720,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 13,
+   "code": "legs:13",
+   "name": "LNKS-1B46J",
+   "slot": "legs",
+   "type": "Humanoid Legs",
+   "stats": {
+    "price": 48000,
+    "weight": 3065,
+    "energy_drain": 2304,
+    "armor_point": 3788,
+    "def_shell": 822,
+    "def_energy": 618,
+    "max_weight": 6100,
+    "leg_type": "humanoid legs"
+   }
+  },
+  {
+   "id": 14,
+   "code": "legs:14",
+   "name": "LB-4400",
+   "slot": "legs",
+   "type": "Reverse Joint",
+   "stats": {
+    "price": 17300,
+    "weight": 2520,
+    "energy_drain": 1400,
+    "armor_point": 3560,
+    "def_shell": 617,
+    "def_energy": 451,
+    "max_weight": 4020,
+    "leg_type": "reverse joint"
+   }
+  },
+  {
+   "id": 16,
+   "code": "legs:16",
+   "name": "LB-4401",
+   "slot": "legs",
+   "type": "Reverse Joint",
+   "stats": {
+    "price": 31800,
+    "weight": 2910,
+    "energy_drain": 1456,
+    "armor_point": 3810,
+    "def_shell": 672,
+    "def_energy": 468,
+    "max_weight": 4510,
+    "leg_type": "reverse joint"
+   }
+  },
+  {
+   "id": 17,
+   "code": "legs:17",
+   "name": "LB-4303",
+   "slot": "legs",
+   "type": "Reverse Joint",
+   "stats": {
+    "price": 24000,
+    "weight": 2647,
+    "energy_drain": 1585,
+    "armor_point": 3575,
+    "def_shell": 643,
+    "def_energy": 488,
+    "max_weight": 4180,
+    "leg_type": "reverse joint"
+   }
+  },
+  {
+   "id": 18,
+   "code": "legs:18",
+   "name": "LB-1000-P",
+   "slot": "legs",
+   "type": "Reverse Joint",
+   "stats": {
+    "price": 20500,
+    "weight": 2095,
+    "energy_drain": 1228,
+    "armor_point": 3514,
+    "def_shell": 609,
+    "def_energy": 444,
+    "max_weight": 3775,
+    "leg_type": "reverse joint"
+   }
+  },
+  {
+   "id": 19,
+   "code": "legs:19",
+   "name": "LBKS-2B45A",
+   "slot": "legs",
+   "type": "Reverse Joint",
+   "stats": {
+    "price": 27000,
+    "weight": 2480,
+    "energy_drain": 1703,
+    "armor_point": 3731,
+    "def_shell": 584,
+    "def_energy": 515,
+    "max_weight": 3990,
+    "leg_type": "reverse joint"
+   }
+  },
+  {
+   "id": 21,
+   "code": "legs:21",
+   "name": "LF-205-SF",
+   "slot": "legs",
+   "type": "Four Legs Type",
+   "stats": {
+    "price": 42600,
+    "weight": 2137,
+    "energy_drain": 2810,
+    "armor_point": 2841,
+    "def_shell": 446,
+    "def_energy": 654,
+    "max_weight": 3450,
+    "leg_type": "four legs type"
+   }
+  },
+  {
+   "id": 22,
+   "code": "legs:22",
+   "name": "LFH-X3",
+   "slot": "legs",
+   "type": "Four Legs Type",
+   "stats": {
+    "price": 56000,
+    "weight": 2400,
+    "energy_drain": 2988,
+    "armor_point": 3100,
+    "def_shell": 468,
+    "def_energy": 610,
+    "max_weight": 3810,
+    "leg_type": "four legs type"
+   }
+  },
+  {
+   "id": 23,
+   "code": "legs:23",
+   "name": "LF-DEX-1",
+   "slot": "legs",
+   "type": "Four Legs Type",
+   "stats": {
+    "price": 69000,
+    "weight": 2650,
+    "energy_drain": 4016,
+    "armor_point": 3179,
+    "def_shell": 557,
+    "def_energy": 553,
+    "max_weight": 4450,
+    "leg_type": "four legs type"
+   }
+  },
+  {
+   "id": 26,
+   "code": "legs:26",
+   "name": "LFH-X5X",
+   "slot": "legs",
+   "type": "Four Legs Type",
+   "stats": {
+    "price": 82000,
+    "weight": 2880,
+    "energy_drain": 3584,
+    "armor_point": 3328,
+    "def_shell": 497,
+    "def_energy": 700,
+    "max_weight": 5000,
+    "leg_type": "four legs type"
+   }
+  },
+  {
+   "id": 27,
+   "code": "legs:27",
+   "name": "LC-MOS18",
+   "slot": "legs",
+   "type": "Caterpillar",
+   "stats": {
+    "price": 16000,
+    "weight": 4182,
+    "energy_drain": 978,
+    "armor_point": 3928,
+    "def_shell": 858,
+    "def_energy": 572,
+    "max_weight": 8000,
+    "leg_type": "caterpillar"
+   }
+  },
+  {
+   "id": 28,
+   "code": "legs:28",
+   "name": "LC-UKI60",
+   "slot": "legs",
+   "type": "Caterpillar",
+   "stats": {
+    "price": 25500,
+    "weight": 3860,
+    "energy_drain": 1104,
+    "armor_point": 3822,
+    "def_shell": 812,
+    "def_energy": 589,
+    "max_weight": 6950,
+    "leg_type": "caterpillar"
+   }
+  },
+  {
+   "id": 30,
+   "code": "legs:30",
+   "name": "LC-HTP-AAA",
+   "slot": "legs",
+   "type": "Caterpillar",
+   "stats": {
+    "price": 38500,
+    "weight": 2915,
+    "energy_drain": 2877,
+    "armor_point": 3688,
+    "def_shell": 728,
+    "def_energy": 694,
+    "max_weight": 4130,
+    "leg_type": "caterpillar"
+   }
+  },
+  {
+   "id": 31,
+   "code": "legs:31",
+   "name": "LC-MOS4545",
+   "slot": "legs",
+   "type": "Caterpillar",
+   "stats": {
+    "price": 59000,
+    "weight": 3610,
+    "energy_drain": 2609,
+    "armor_point": 3990,
+    "def_shell": 905,
+    "def_energy": 753,
+    "max_weight": 7400,
+    "leg_type": "caterpillar"
+   }
+  },
+  {
+   "id": 0,
+   "code": "arms:0",
+   "name": "AN-101",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 19000,
+    "weight": 1228,
+    "energy_drain": 1006,
+    "armor_point": 1670,
+    "def_shell": 384,
+    "def_energy": 374
+   }
+  },
+  {
+   "id": 1,
+   "code": "arms:1",
+   "name": "AN-201",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 15300,
+    "weight": 1054,
+    "energy_drain": 877,
+    "armor_point": 1635,
+    "def_shell": 352,
+    "def_energy": 334
+   }
+  },
+  {
+   "id": 2,
+   "code": "arms:2",
+   "name": "AN-K1",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 49000,
+    "weight": 905,
+    "energy_drain": 930,
+    "armor_point": 1790,
+    "def_shell": 339,
+    "def_energy": 402
+   }
+  },
+  {
+   "id": 3,
+   "code": "arms:3",
+   "name": "AN-D-7001",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 23000,
+    "weight": 1445,
+    "energy_drain": 1512,
+    "armor_point": 1743,
+    "def_shell": 306,
+    "def_energy": 453
+   }
+  },
+  {
+   "id": 4,
+   "code": "arms:4",
+   "name": "AN-3001",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 39500,
+    "weight": 1612,
+    "energy_drain": 1258,
+    "armor_point": 1935,
+    "def_shell": 487,
+    "def_energy": 353
+   }
+  },
+  {
+   "id": 5,
+   "code": "arms:5",
+   "name": "ANKS-1A46J",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 42100,
+    "weight": 2120,
+    "energy_drain": 1415,
+    "armor_point": 1990,
+    "def_shell": 679,
+    "def_energy": 496
+   }
+  },
+  {
+   "id": 6,
+   "code": "arms:6",
+   "name": "AN-863-B",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 34000,
+    "weight": 1726,
+    "energy_drain": 1394,
+    "armor_point": 1880,
+    "def_shell": 517,
+    "def_energy": 406
+   }
+  },
+  {
+   "id": 7,
+   "code": "arms:7",
+   "name": "AN-25",
+   "slot": "arms",
+   "type": "Arm Unit",
+   "stats": {
+    "price": 28400,
+    "weight": 853,
+    "energy_drain": 682,
+    "armor_point": 1826,
+    "def_shell": 344,
+    "def_energy": 284
+   }
+  },
+  {
+   "id": 8,
+   "code": "arms:8",
+   "name": "AW-MG25/2",
+   "slot": "arms",
+   "type": "Machine Gun",
+   "stats": {
+    "price": 54500,
+    "weight": 1193,
+    "energy_drain": 78
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 9,
+   "code": "arms:9",
+   "name": "AW-GT2000",
+   "slot": "arms",
+   "type": "Gatling Gun",
+   "stats": {
+    "price": 48600,
+    "weight": 1415,
+    "energy_drain": 92
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 10,
+   "code": "arms:10",
+   "name": "AW-RF105",
+   "slot": "arms",
+   "type": "Cannon",
+   "stats": {
+    "price": 77600,
+    "weight": 1530,
+    "energy_drain": 106
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 11,
+   "code": "arms:11",
+   "name": "AW-30/3",
+   "slot": "arms",
+   "type": "Dual Missile",
+   "stats": {
+    "price": 56400,
+    "weight": 480,
+    "energy_drain": 377
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 12,
+   "code": "arms:12",
+   "name": "AW-RF120",
+   "slot": "arms",
+   "type": "Cannon",
+   "stats": {
+    "price": 67200,
+    "weight": 1827,
+    "energy_drain": 137
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 13,
+   "code": "arms:13",
+   "name": "AW-S60/2",
+   "slot": "arms",
+   "type": "Dual Missile",
+   "stats": {
+    "price": 66600,
+    "weight": 762,
+    "energy_drain": 420
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 14,
+   "code": "arms:14",
+   "name": "AW-XC5500",
+   "slot": "arms",
+   "type": "Plasma Cannon",
+   "stats": {
+    "price": 83600,
+    "weight": 1688,
+    "energy_drain": 547
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 15,
+   "code": "arms:15",
+   "name": "AW-XC65",
+   "slot": "arms",
+   "type": "Laser Cannon",
+   "stats": {
+    "price": 98500,
+    "weight": 1905,
+    "energy_drain": 625
+   },
+   "weapon_arm": true
+  },
+  {
+   "id": 0,
+   "code": "arm_weapon_r:0",
+   "name": "NO WEAPON",
+   "slot": "arm_weapon_r",
+   "type": "--------",
+   "stats": {
+    "price": 0,
+    "weight": 0,
+    "energy_drain": 0
+   }
+  },
+  {
+   "id": 1,
+   "code": "arm_weapon_r:1",
+   "name": "WG-RF35",
+   "slot": "arm_weapon_r",
+   "type": "Rifle",
+   "stats": {
+    "price": 11400,
+    "weight": 415,
+    "energy_drain": 6
+   }
+  },
+  {
+   "id": 2,
+   "code": "arm_weapon_r:2",
+   "name": "WG-MGA1",
+   "slot": "arm_weapon_r",
+   "type": "Machine Gun",
+   "stats": {
+    "price": 14000,
+    "weight": 370,
+    "energy_drain": 4
+   }
+  },
+  {
+   "id": 3,
+   "code": "arm_weapon_r:3",
+   "name": "WG-MG500",
+   "slot": "arm_weapon_r",
+   "type": "Machine Gun",
+   "stats": {
+    "price": 28400,
+    "weight": 458,
+    "energy_drain": 4
+   }
+  },
+  {
+   "id": 4,
+   "code": "arm_weapon_r:4",
+   "name": "WG-AR1000",
+   "slot": "arm_weapon_r",
+   "type": "Machine Gun",
+   "stats": {
+    "price": 42300,
+    "weight": 516,
+    "energy_drain": 8
+   }
+  },
+  {
+   "id": 5,
+   "code": "arm_weapon_r:5",
+   "name": "WG-HG235",
+   "slot": "arm_weapon_r",
+   "type": "Hand Gun",
+   "stats": {
+    "price": 19000,
+    "weight": 170,
+    "energy_drain": 22
+   }
+  },
+  {
+   "id": 6,
+   "code": "arm_weapon_r:6",
+   "name": "WG-RF/5",
+   "slot": "arm_weapon_r",
+   "type": "Sniper Rifle",
+   "stats": {
+    "price": 41500,
+    "weight": 295,
+    "energy_drain": 5
+   }
+  },
+  {
+   "id": 7,
+   "code": "arm_weapon_r:7",
+   "name": "WG-RF/P",
+   "slot": "arm_weapon_r",
+   "type": "Sniper Rifle",
+   "stats": {
+    "price": 33100,
+    "weight": 308,
+    "energy_drain": 4
+   }
+  },
+  {
+   "id": 8,
+   "code": "arm_weapon_r:8",
+   "name": "WG-HG512",
+   "slot": "arm_weapon_r",
+   "type": "Hand Gun",
+   "stats": {
+    "price": 26200,
+    "weight": 324,
+    "energy_drain": 10
+   }
+  },
+  {
+   "id": 9,
+   "code": "arm_weapon_r:9",
+   "name": "WG-FG99",
+   "slot": "arm_weapon_r",
+   "type": "Flamethrower",
+   "stats": {
+    "price": 58300,
+    "weight": 352,
+    "energy_drain": 9
+   }
+  },
+  {
+   "id": 10,
+   "code": "arm_weapon_r:10",
+   "name": "WG-B2120",
+   "slot": "arm_weapon_r",
+   "type": "Bazooka",
+   "stats": {
+    "price": 59740,
+    "weight": 778,
+    "energy_drain": 13
+   }
+  },
+  {
+   "id": 11,
+   "code": "arm_weapon_r:11",
+   "name": "WG-B2180",
+   "slot": "arm_weapon_r",
+   "type": "Bazooka",
+   "stats": {
+    "price": 75900,
+    "weight": 905,
+    "energy_drain": 16
+   }
+  },
+  {
+   "id": 12,
+   "code": "arm_weapon_r:12",
+   "name": "WG-XP1000",
+   "slot": "arm_weapon_r",
+   "type": "Pulse Rifle",
+   "stats": {
+    "price": 46000,
+    "weight": 188,
+    "energy_drain": 246
+   }
+  },
+  {
+   "id": 13,
+   "code": "arm_weapon_r:13",
+   "name": "WG-XP2000",
+   "slot": "arm_weapon_r",
+   "type": "Pulse Rifle",
+   "stats": {
+    "price": 61500,
+    "weight": 265,
+    "energy_drain": 285
+   }
+  },
+  {
+   "id": 14,
+   "code": "arm_weapon_r:14",
+   "name": "WG-XC4",
+   "slot": "arm_weapon_r",
+   "type": "Laser  Rifle",
+   "stats": {
+    "price": 51000,
+    "weight": 686,
+    "energy_drain": 308
+   }
+  },
+  {
+   "id": 15,
+   "code": "arm_weapon_r:15",
+   "name": "WG-1-KARASAWA",
+   "slot": "arm_weapon_r",
+   "type": "Laser  Rifle",
+   "stats": {
+    "price": 75000,
+    "weight": 1000,
+    "energy_drain": 422
+   }
+  },
+  {
+   "id": 0,
+   "code": "back_weapon:0",
+   "name": "WM-S40/1",
+   "slot": "back_weapon",
+   "type": "Small Missile",
+   "stats": {
+    "price": 18700,
+    "weight": 245,
+    "energy_drain": 245
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 1,
+   "code": "back_weapon:1",
+   "name": "WM-S40/2",
+   "slot": "back_weapon",
+   "type": "Small Missile",
+   "stats": {
+    "price": 23000,
+    "weight": 337,
+    "energy_drain": 320
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 2,
+   "code": "back_weapon:2",
+   "name": "WM-S60/4",
+   "slot": "back_weapon",
+   "type": "Small Missile",
+   "stats": {
+    "price": 28800,
+    "weight": 520,
+    "energy_drain": 349
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 3,
+   "code": "back_weapon:3",
+   "name": "WM-S60/6",
+   "slot": "back_weapon",
+   "type": "Small Missile",
+   "stats": {
+    "price": 38100,
+    "weight": 583,
+    "energy_drain": 353
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 4,
+   "code": "back_weapon:4",
+   "name": "WM-MVG404",
+   "slot": "back_weapon",
+   "type": "Missile",
+   "stats": {
+    "price": 31000,
+    "weight": 620,
+    "energy_drain": 280
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 5,
+   "code": "back_weapon:5",
+   "name": "WM-MVG802",
+   "slot": "back_weapon",
+   "type": "Missile",
+   "stats": {
+    "price": 44000,
+    "weight": 718,
+    "energy_drain": 220
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 6,
+   "code": "back_weapon:6",
+   "name": "WM-L201",
+   "slot": "back_weapon",
+   "type": "Large Missile",
+   "stats": {
+    "price": 46200,
+    "weight": 835,
+    "energy_drain": 180
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 7,
+   "code": "back_weapon:7",
+   "name": "WM-X201",
+   "slot": "back_weapon",
+   "type": "Multi Missile",
+   "stats": {
+    "price": 62250,
+    "weight": 720,
+    "energy_drain": 250
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 8,
+   "code": "back_weapon:8",
+   "name": "WM-X5-AA",
+   "slot": "back_weapon",
+   "type": "Bomb Dispenser",
+   "stats": {
+    "price": 19300,
+    "weight": 616,
+    "energy_drain": 85
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 9,
+   "code": "back_weapon:9",
+   "name": "WM-X10",
+   "slot": "back_weapon",
+   "type": "Bomb Dispenser",
+   "stats": {
+    "price": 24800,
+    "weight": 939,
+    "energy_drain": 105
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 10,
+   "code": "back_weapon:10",
+   "name": "WM-P4001",
+   "slot": "back_weapon",
+   "type": "Dual Missile",
+   "stats": {
+    "price": 43800,
+    "weight": 755,
+    "energy_drain": 320
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 11,
+   "code": "back_weapon:11",
+   "name": "WM-PS-2",
+   "slot": "back_weapon",
+   "type": "Triple Missile",
+   "stats": {
+    "price": 66700,
+    "weight": 1125,
+    "energy_drain": 360
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 12,
+   "code": "back_weapon:12",
+   "name": "WR-S50",
+   "slot": "back_weapon",
+   "type": "Small Rocket",
+   "stats": {
+    "price": 15900,
+    "weight": 218,
+    "energy_drain": 8
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 13,
+   "code": "back_weapon:13",
+   "name": "WR-S100",
+   "slot": "back_weapon",
+   "type": "Small Rocket",
+   "stats": {
+    "price": 32400,
+    "weight": 846,
+    "energy_drain": 15
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 14,
+   "code": "back_weapon:14",
+   "name": "WR-M50",
+   "slot": "back_weapon",
+   "type": "Rocket",
+   "stats": {
+    "price": 27600,
+    "weight": 677,
+    "energy_drain": 13
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 15,
+   "code": "back_weapon:15",
+   "name": "WR-M70",
+   "slot": "back_weapon",
+   "type": "Rocket",
+   "stats": {
+    "price": 36500,
+    "weight": 718,
+    "energy_drain": 24
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 16,
+   "code": "back_weapon:16",
+   "name": "WR-L24",
+   "slot": "back_weapon",
+   "type": "Large Rocket",
+   "stats": {
+    "price": 29460,
+    "weight": 805,
+    "energy_drain": 18
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 17,
+   "code": "back_weapon:17",
+   "name": "WC-CN35",
+   "slot": "back_weapon",
+   "type": "Chain Gun",
+   "stats": {
+    "price": 32750,
+    "weight": 593,
+    "energy_drain": 11
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 18,
+   "code": "back_weapon:18",
+   "name": "WC-ST120",
+   "slot": "back_weapon",
+   "type": "Slug Gun",
+   "stats": {
+    "price": 56000,
+    "weight": 827,
+    "energy_drain": 6
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 19,
+   "code": "back_weapon:19",
+   "name": "WC-LN350",
+   "slot": "back_weapon",
+   "type": "Linear Gun",
+   "stats": {
+    "price": 41800,
+    "weight": 425,
+    "energy_drain": 8
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 20,
+   "code": "back_weapon:20",
+   "name": "WC-GN230",
+   "slot": "back_weapon",
+   "type": "Grenade Launcher",
+   "stats": {
+    "price": 75200,
+    "weight": 1230,
+    "energy_drain": 8
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 21,
+   "code": "back_weapon:21",
+   "name": "WC-XP4000",
+   "slot": "back_weapon",
+   "type": "Pulse Cannon",
+   "stats": {
+    "price": 61000,
+    "weight": 318,
+    "energy_drain": 364
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 22,
+   "code": "back_weapon:22",
+   "name": "WC-XC8000",
+   "slot": "back_weapon",
+   "type": "Laser Cannon",
+   "stats": {
+    "price": 78700,
+    "weight": 1110,
+    "energy_drain": 455
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 23,
+   "code": "back_weapon:23",
+   "name": "WC-01QL",
+   "slot": "back_weapon",
+   "type": "Plasma Cannon",
+   "stats": {
+    "price": 69500,
+    "weight": 273,
+    "energy_drain": 618
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 24,
+   "code": "back_weapon:24",
+   "name": "RXA-01WE",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 12100,
+    "weight": 210,
+    "energy_drain": 243,
+    "radar_range": 8650
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 25,
+   "code": "back_weapon:25",
+   "name": "RZ-A0",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 17900,
+    "weight": 480,
+    "energy_drain": 387,
+    "radar_range": 11500
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 26,
+   "code": "back_weapon:26",
+   "name": "RXA-99",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 14500,
+    "weight": 160,
+    "energy_drain": 267,
+    "radar_range": 8800
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 27,
+   "code": "back_weapon:27",
+   "name": "RXA-77",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 23000,
+    "weight": 125,
+    "energy_drain": 274,
+    "radar_range": 8700
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 28,
+   "code": "back_weapon:28",
+   "name": "RZ-A1",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 33000,
+    "weight": 433,
+    "energy_drain": 403,
+    "radar_range": 15700
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 29,
+   "code": "back_weapon:29",
+   "name": "RZT-333",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 27700,
+    "weight": 343,
+    "energy_drain": 451,
+    "radar_range": 11700
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 30,
+   "code": "back_weapon:30",
+   "name": "RZ-BBP",
+   "slot": "back_weapon",
+   "type": "Radar",
+   "stats": {
+    "price": 40900,
+    "weight": 454,
+    "energy_drain": 566,
+    "radar_range": 16300
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 31,
+   "code": "back_weapon:31",
+   "name": "WX-S800/2",
+   "slot": "back_weapon",
+   "type": "Dual Missile",
+   "stats": {
+    "price": 69400,
+    "weight": 1650,
+    "energy_drain": 415
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 32,
+   "code": "back_weapon:32",
+   "name": "WX-S800-GF",
+   "slot": "back_weapon",
+   "type": "Dual Missile",
+   "stats": {
+    "price": 90900,
+    "weight": 1110,
+    "energy_drain": 656
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 33,
+   "code": "back_weapon:33",
+   "name": "XCS-9900",
+   "slot": "back_weapon",
+   "type": "Multi Missile",
+   "stats": {
+    "price": 94500,
+    "weight": 1480,
+    "energy_drain": 310
+   },
+   "slots": [
+    "back_weapon_l",
+    "back_weapon_r"
+   ]
+  },
+  {
+   "id": 0,
+   "code": "arm_weapon_l:0",
+   "name": "LS-2001",
+   "slot": "arm_weapon_l",
+   "type": "Laserblade",
+   "stats": {
+    "price": 11500,
+    "weight": 123,
+    "energy_drain": 28
+   }
+  },
+  {
+   "id": 1,
+   "code": "arm_weapon_l:1",
+   "name": "LS-200G",
+   "slot": "arm_weapon_l",
+   "type": "Laserblade",
+   "stats": {
+    "price": 29000,
+    "weight": 181,
+    "energy_drain": 45
+   }
+  },
+  {
+   "id": 2,
+   "code": "arm_weapon_l:2",
+   "name": "LS-3303",
+   "slot": "arm_weapon_l",
+   "type": "Laserblade",
+   "stats": {
+    "price": 37200,
+    "weight": 224,
+    "energy_drain": 43
+   }
+  },
+  {
+   "id": 3,
+   "code": "arm_weapon_l:3",
+   "name": "LS-99-MOONLIGHT",
+   "slot": "arm_weapon_l",
+   "type": "Laserblade",
+   "stats": {
+    "price": 54000,
+    "weight": 336,
+    "energy_drain": 93
+   }
+  },
+  {
+   "id": 0,
+   "code": "booster:0",
+   "name": "B-P320",
+   "slot": "booster",
+   "type": "Boost Unit",
+   "stats": {
+    "price": 10800,
+    "weight": 208,
+    "energy_drain": 28,
+    "boost_power": 9800,
+    "charge_drain": 4360
+   }
+  },
+  {
+   "id": 1,
+   "code": "booster:1",
+   "name": "B-P350",
+   "slot": "booster",
+   "type": "Boost Unit",
+   "stats": {
+    "price": 13700,
+    "weight": 162,
+    "energy_drain": 33,
+    "boost_power": 12800,
+    "charge_drain": 4410
+   }
+  },
+  {
+   "id": 2,
+   "code": "booster:2",
+   "name": "B-T001",
+   "slot": "booster",
+   "type": "Boost Unit",
+   "stats": {
+    "price": 34000,
+    "weight": 149,
+    "energy_drain": 30,
+    "boost_power": 17300,
+    "charge_drain": 4600
+   }
+  },
+  {
+   "id": 3,
+   "code": "booster:3",
+   "name": "B-T2",
+   "slot": "booster",
+   "type": "Boost Unit",
+   "stats": {
+    "price": 31500,
+    "weight": 235,
+    "energy_drain": 38,
+    "boost_power": 14800,
+    "charge_drain": 3850
+   }
+  },
+  {
+   "id": 4,
+   "code": "booster:4",
+   "name": "B-P351",
+   "slot": "booster",
+   "type": "Boost Unit",
+   "stats": {
+    "price": 25500,
+    "weight": 288,
+    "energy_drain": 41,
+    "boost_power": 21000,
+    "charge_drain": 6980
+   }
+  },
+  {
+   "id": 5,
+   "code": "booster:5",
+   "name": "B-VR-33",
+   "slot": "booster",
+   "type": "Boost Unit",
+   "stats": {
+    "price": 48500,
+    "weight": 255,
+    "energy_drain": 35,
+    "boost_power": 19000,
+    "charge_drain": 5070
+   }
+  },
+  {
+   "id": 0,
+   "code": "fcs:0",
+   "name": "COMDEX-C7",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 11100,
+    "weight": 14,
+    "energy_drain": 24,
+    "maximum_lock": 4
+   }
+  },
+  {
+   "id": 1,
+   "code": "fcs:1",
+   "name": "COMDEX-G0",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 22500,
+    "weight": 14,
+    "energy_drain": 24,
+    "maximum_lock": 4
+   }
+  },
+  {
+   "id": 2,
+   "code": "fcs:2",
+   "name": "COMDEX-G8",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 16400,
+    "weight": 14,
+    "energy_drain": 24,
+    "maximum_lock": 6
+   }
+  },
+  {
+   "id": 3,
+   "code": "fcs:3",
+   "name": "QX-21",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 20300,
+    "weight": 8,
+    "energy_drain": 12,
+    "maximum_lock": 769
+   }
+  },
+  {
+   "id": 4,
+   "code": "fcs:4",
+   "name": "QX-AF",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 35700,
+    "weight": 10,
+    "energy_drain": 16,
+    "maximum_lock": 770
+   }
+  },
+  {
+   "id": 5,
+   "code": "fcs:5",
+   "name": "TRYX-BOXER",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 48100,
+    "weight": 10,
+    "energy_drain": 19,
+    "maximum_lock": 515
+   }
+  },
+  {
+   "id": 6,
+   "code": "fcs:6",
+   "name": "TRYX-QUAD",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 63000,
+    "weight": 18,
+    "energy_drain": 38,
+    "maximum_lock": 262
+   }
+  },
+  {
+   "id": 7,
+   "code": "fcs:7",
+   "name": "QX-9009",
+   "slot": "fcs",
+   "type": "Fcs",
+   "stats": {
+    "price": 96000,
+    "weight": 24,
+    "energy_drain": 55,
+    "maximum_lock": 1030
+   }
+  },
+  {
+   "id": 0,
+   "code": "generator:0",
+   "name": "GPS-VVA",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 19500,
+    "weight": 308,
+    "energy_output": 4728,
+    "maximum_charge": 28000,
+    "charge_redzone": 7800
+   }
+  },
+  {
+   "id": 1,
+   "code": "generator:1",
+   "name": "GPS-V6",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 32000,
+    "weight": 363,
+    "energy_output": 4728,
+    "maximum_charge": 43000,
+    "charge_redzone": 5000
+   }
+  },
+  {
+   "id": 2,
+   "code": "generator:2",
+   "name": "GRD-RX5",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 23300,
+    "weight": 225,
+    "energy_output": 5300,
+    "maximum_charge": 38000,
+    "charge_redzone": 4000
+   }
+  },
+  {
+   "id": 3,
+   "code": "generator:3",
+   "name": "GRD-RX6",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 27800,
+    "weight": 286,
+    "energy_output": 6000,
+    "maximum_charge": 33000,
+    "charge_redzone": 4000
+   }
+  },
+  {
+   "id": 4,
+   "code": "generator:4",
+   "name": "GRD-RX7",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 38700,
+    "weight": 348,
+    "energy_output": 6810,
+    "maximum_charge": 31500,
+    "charge_redzone": 5000
+   }
+  },
+  {
+   "id": 5,
+   "code": "generator:5",
+   "name": "GBG-10000",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 43500,
+    "weight": 398,
+    "energy_output": 9988,
+    "maximum_charge": 34000,
+    "charge_redzone": 2980
+   }
+  },
+  {
+   "id": 6,
+   "code": "generator:6",
+   "name": "GBG-XR",
+   "slot": "generator",
+   "type": "Pulse Generator",
+   "stats": {
+    "price": 56000,
+    "weight": 452,
+    "energy_output": 8207,
+    "maximum_charge": 48000,
+    "charge_redzone": 3250
+   }
+  },
+  {
+   "id": 0,
+   "code": "option:0",
+   "name": "SP-MAW",
+   "slot": "option",
+   "type": "Radar Option",
+   "stats": {
+    "price": 14200,
+    "slots_required": 1
+   },
+   "bit": 0
+  },
+  {
+   "id": 1,
+   "code": "option:1",
+   "name": "SP-JAM",
+   "slot": "option",
+   "type": "Missile Jammer",
+   "stats": {
+    "price": 26000,
+    "slots_required": 3
+   },
+   "bit": 1
+  },
+  {
+   "id": 2,
+   "code": "option:2",
+   "name": "SP-M/AUTO",
+   "slot": "option",
+   "type": "Auto Launcher",
+   "stats": {
+    "price": 12900,
+    "slots_required": 1
+   },
+   "bit": 2
+  },
+  {
+   "id": 3,
+   "code": "option:3",
+   "name": "SP-ABS",
+   "slot": "option",
+   "type": "Balancer Option",
+   "stats": {
+    "price": 29600,
+    "slots_required": 1
+   },
+   "bit": 3
+  },
+  {
+   "id": 4,
+   "code": "option:4",
+   "name": "SP-SAP",
+   "slot": "option",
+   "type": "Absorber Option",
+   "stats": {
+    "price": 31800,
+    "slots_required": 1
+   },
+   "bit": 4
+  },
+  {
+   "id": 5,
+   "code": "option:5",
+   "name": "SP-CND-K",
+   "slot": "option",
+   "type": "Charge Expander",
+   "stats": {
+    "price": 21000,
+    "slots_required": 4
+   },
+   "bit": 5
+  },
+  {
+   "id": 6,
+   "code": "option:6",
+   "name": "SP-AXL",
+   "slot": "option",
+   "type": "Fcs Accelerator",
+   "stats": {
+    "price": 24000,
+    "slots_required": 2
+   },
+   "bit": 6
+  },
+  {
+   "id": 7,
+   "code": "option:7",
+   "name": "SP-S/SCR",
+   "slot": "option",
+   "type": "Shell Screen",
+   "stats": {
+    "price": 33000,
+    "slots_required": 2
+   },
+   "bit": 7
+  },
+  {
+   "id": 8,
+   "code": "option:8",
+   "name": "SP-E/SCR",
+   "slot": "option",
+   "type": "Energy Screen",
+   "stats": {
+    "price": 38500,
+    "slots_required": 1
+   },
+   "bit": 8
+  },
+  {
+   "id": 9,
+   "code": "option:9",
+   "name": "SP-EH",
+   "slot": "option",
+   "type": "Rapid Charge",
+   "stats": {
+    "price": 45000,
+    "slots_required": 1
+   },
+   "bit": 9
+  },
+  {
+   "id": 10,
+   "code": "option:10",
+   "name": "SP-E+",
+   "slot": "option",
+   "type": "Energy Amplifier",
+   "stats": {
+    "price": 45000,
+    "slots_required": 1
+   },
+   "bit": 10
+  }
+ ]
+}

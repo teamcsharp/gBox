@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>gBox Setup</title>
+<link rel="icon" href="/brand/gbox-logo.svg">
+<!-- the visualizer imports three.js by its CDN URL: served from the package when bundled (offline installs), else the CDN -->
+<script type="importmap">{"imports": {"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js": "/viz/vendor/three.module.js"}}</script>
+<style>
+  :root { --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341;
+          --glass:rgba(17,17,22,.72); --glass2:rgba(31,31,37,.78); --trace:#3a3f5c; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:#0d0e14; color:var(--fg); font:14px/1.45 system-ui,"Segoe UI",sans-serif; overflow:hidden; }
+  #bg { position:fixed; inset:0; background:radial-gradient(ellipse at 50% 40%, #1d2340 0%, #11131f 50%, #08090d 100%); }
+  #viz { position:fixed; inset:0; width:100%; height:100%; opacity:.85; }
+  #shade { position:fixed; inset:0; background:linear-gradient(180deg, #0d0e14cc 0%, #0d0e1455 22%, #0d0e1433 50%, #0d0e14dd 100%); pointer-events:none; }
+  #app { position:fixed; inset:0; display:flex; flex-direction:column; }
+  /* --- title bar, like the desktop app's --- */
+  #top { height:44px; flex:none; display:flex; align-items:center; gap:12px; padding:0 16px; background:#111114cc; border-bottom:1px solid var(--line); backdrop-filter:blur(8px); }
+  #top img { height:24px; } #top b { font-weight:600; letter-spacing:.02em; } #top .mut { color:var(--mut); font-size:12px; }
+  #top .sp { flex:1; }
+  .chip { font:12px system-ui; color:var(--mut); border:1px solid var(--line); border-radius:14px; padding:3px 10px; background:#0006; cursor:pointer; white-space:nowrap; }
+  .chip:hover { color:var(--fg); border-color:#4a4a58; } .chip.off { color:var(--warn); border-color:#e0b34166; }
+  a.chip { text-decoration:none; }
+  /* --- flow chart --- */
+  #flow { position:relative; flex:none; margin:18px auto 0; width:min(1280px, calc(100vw - 32px)); }
+  #traces { position:absolute; inset:0; overflow:visible; pointer-events:none; }
+  #traces path { fill:none; stroke:var(--trace); stroke-width:2; }
+  #traces path.done { stroke:#4cc26b88; } #traces path.live { stroke:#7c96ffaa; }
+  #traces path.pk { stroke:#bfcaff; stroke-width:3; stroke-linecap:round; stroke-dasharray:2 22; animation:pk 0.9s linear infinite; filter:drop-shadow(0 0 4px #7c96ff); }
+  #traces path.pk.done { stroke:#9ff0b4; stroke-dasharray:1 40; animation-duration:2.6s; filter:drop-shadow(0 0 3px #4cc26b); opacity:.7; }
+  #traces circle { fill:var(--trace); } #traces circle.done { fill:#4cc26b; } #traces circle.live { fill:#7c96ff; }
+  @keyframes pk { to { stroke-dashoffset:-24; } }
+  #nodes { position:relative; display:grid; gap:34px 26px; }
+  .node { position:relative; background:var(--glass); border:1px solid var(--line); border-radius:10px; padding:10px 12px 12px; cursor:pointer; min-height:92px;
+          backdrop-filter:blur(6px); transition:border-color .2s, transform .15s, box-shadow .2s; user-select:none; }
+  .node:hover { transform:translateY(-2px); border-color:#4a4f6e; }
+  .node::before, .node::after { content:""; position:absolute; top:50%; width:6px; height:14px; margin-top:-7px; background:var(--line); border-radius:2px; }
+  .node::before { left:-4px; } .node::after { right:-4px; }
+  .node .hd { display:flex; align-items:center; gap:8px; }
+  .node .num { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; font:600 11px ui-monospace,Consolas,monospace; background:#ffffff10; color:var(--mut); flex:none; }
+  .node svg.ic { width:18px; height:18px; color:var(--mut); flex:none; }
+  .node .t { font-weight:600; font-size:13px; line-height:1.2; }
+  .node .s { margin-top:7px; font-size:11.5px; color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:16px; }
+  .node .bar { position:absolute; left:10px; right:10px; bottom:6px; height:3px; border-radius:2px; background:#ffffff0d; overflow:hidden; }
+  .node .bar i { display:block; height:100%; width:0; background:var(--acc); transition:width .4s; }
+  .node.sel { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc), 0 10px 30px #0008; }
+  .node.ok .num { background:#4cc26b26; color:var(--ok); } .node.ok .bar i { background:var(--ok); }
+  .node.ok svg.ic { color:var(--ok); }
+  .node.running { border-color:#7c96ffaa; box-shadow:0 0 22px #7c96ff44; } .node.running .num { background:#7c96ff33; color:#c8d3ff; animation:np 1.2s ease-in-out infinite; }
+  @keyframes np { 50% { box-shadow:0 0 0 4px #7c96ff33; } }
+  .node.failed { border-color:#ff6b6b88; } .node.failed .num { background:#ff6b6b26; color:var(--bad); } .node.failed .s { color:#ffb0b0; }
+  .node.waiting { border-color:#e0b34188; } .node.waiting .num { background:#e0b34122; color:var(--warn); }
+  .node.skipped { opacity:.6; } .node.skipped .t { text-decoration:line-through; text-decoration-color:#fff4; }
+  /* --- detail panel --- */
+  #panel { flex:1; min-height:0; margin:22px auto 16px; width:min(1280px, calc(100vw - 32px)); display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:14px; }
+  @media (max-width:900px) { #panel { grid-template-columns:1fr; overflow:auto; } }
+  .glass { background:var(--glass2); border:1px solid var(--line); border-radius:12px; backdrop-filter:blur(10px); min-height:0; }
+  #detail { padding:16px 18px; overflow:auto; position:relative; }
+  #detail h2 { margin:0; font-size:19px; display:flex; align-items:center; gap:10px; }
+  .pill { font:600 11px system-ui; letter-spacing:.04em; text-transform:uppercase; padding:2px 8px; border-radius:10px; background:#ffffff12; color:var(--mut); }
+  .pill.ok { background:#4cc26b22; color:var(--ok); } .pill.running { background:#7c96ff26; color:#c8d3ff; } .pill.failed { background:#ff6b6b22; color:var(--bad); }
+  .pill.waiting { background:#e0b34122; color:var(--warn); }
+  #detail .lead { color:var(--mut); margin:6px 0 14px; }
+  .pbar { height:6px; border-radius:4px; background:#ffffff12; overflow:hidden; margin:0 0 14px; }
+  .pbar i { display:block; height:100%; width:0; background:linear-gradient(90deg,#5b8cff,#7ee0ff,#5b8cff); background-size:200% 100%; animation:shim 1.4s linear infinite; transition:width .4s; }
+  @keyframes shim { from { background-position:200% 0; } to { background-position:0 0; } }
+  .errbox { border:1px solid #ff6b6b66; background:#ff6b6b14; border-radius:8px; padding:10px 12px; margin:0 0 14px; color:#ffc4c4; display:flex; gap:10px; align-items:flex-start; }
+  .errbox div { flex:1; white-space:pre-wrap; word-break:break-word; }
+  .btn { font:inherit; font-size:13px; padding:7px 12px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:6px; cursor:pointer; white-space:nowrap; text-decoration:none; }
+  .btn:hover { border-color:#4a4a58; } .btn:disabled { opacity:.45; cursor:default; }
+  .btn.pri { background:var(--acc); border-color:var(--acc); color:#fff; } .btn.sm { padding:3px 8px; font-size:12px; }
+  .btn.ghost { background:none; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  input[type=text], select { font:inherit; font-size:13px; padding:7px 9px; border:1px solid var(--line); background:#0d0e14; color:var(--fg); border-radius:6px; min-width:0; }
+  input[type=text] { flex:1; }
+  table { border-collapse:collapse; width:100%; font-size:13px; } td, th { padding:6px 6px; border-bottom:1px solid #ffffff0f; text-align:left; vertical-align:top; }
+  th { color:var(--mut); font-weight:500; font-size:12px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); } .mut { color:var(--mut); }
+  .kv { display:grid; grid-template-columns:120px 1fr; gap:5px 12px; font-size:13px; } .kv > span:nth-child(odd) { color:var(--mut); }
+  .tags { display:flex; flex-wrap:wrap; gap:6px; } .tag { font-size:12px; border:1px solid var(--line); border-radius:12px; padding:2px 9px; color:var(--mut); }
+  .tag b { color:var(--fg); font-weight:600; }
+  h3 { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--mut); margin:18px 0 8px; font-weight:600; }
+  .note { font-size:12px; color:var(--mut); }
+  code { font:12px ui-monospace,Consolas,monospace; color:#cfd6ff; }
+  /* --- live console --- */
+  #con { display:flex; flex-direction:column; overflow:hidden; }
+  #con .hd { padding:10px 14px; border-bottom:1px solid var(--line); font-size:12px; color:var(--mut); display:flex; gap:8px; align-items:center; }
+  #con .hd .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); } #con .hd .dot.on { background:var(--acc); box-shadow:0 0 8px var(--acc); animation:np 1s infinite; }
+  #lines { flex:1; overflow:auto; padding:10px 14px; font:12.5px/1.55 ui-monospace,Consolas,monospace; color:#d6dbf5; white-space:pre-wrap; word-break:break-word; }
+  #lines div { min-height:1.55em; } #lines .cmd { color:#8f9bd6; } #lines .ok { color:#8be0a4; } #lines .bad { color:#ff9b9b; } #lines .sec { color:#fff; margin-top:6px; }
+  #lines .cur::after { content:"▋"; color:var(--acc); animation:blink 1s steps(2) infinite; } @keyframes blink { 50% { opacity:0; } }
+  /* --- consent dialog --- */
+  #ask { position:fixed; inset:0; display:none; place-items:center; background:#0008; backdrop-filter:blur(3px); z-index:20; }
+  #ask.on { display:grid; } #ask .glass { width:min(480px,92vw); padding:18px 20px; } #ask h3 { margin:0 0 8px; color:var(--fg); text-transform:none; letter-spacing:0; font-size:16px; }
+  #ask p { color:var(--mut); margin:0 0 14px; }
+  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:#1f1f25ee; border:1px solid var(--line); border-radius:8px; padding:8px 14px; font-size:13px; display:none; z-index:30; }
+</style>
+</head>
+<body>
+<div id="bg"></div><canvas id="viz"></canvas><div id="shade"></div>
+<div id="app">
+  <div id="top"><img src="/brand/gbox-logo.svg" alt=""><b>gBox Setup</b><span class="mut" id="where"></span><span class="sp"></span>
+    <a class="chip" id="mf" href="/manifest" target="_blank" style="display:none" title="What this package contains and what it leaves out">Manifest</a>
+    <span class="chip" id="net" title="Offline: every step uses files you already have instead of downloading">online</span>
+  </div>
+  <div id="flow"><svg id="traces"></svg><div id="nodes"></div></div>
+  <div id="panel"><div id="detail" class="glass"></div>
+    <div id="con" class="glass"><div class="hd"><span class="dot" id="cdot"></span><span id="ctitle">Console</span></div><div id="lines"></div></div></div>
+</div>
+<div id="ask"><div class="glass"><h3 id="askt"></h3><p id="askp"></p><div class="row" style="justify-content:flex-end">
+  <button class="btn" id="askno">Not now</button><button class="btn pri" id="askyes">Download</button></div></div></div>
+<div id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const get = p => fetch(p, { cache: "no-store" }).then(r => r.json());
+const post = (p, b) => fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) }).then(r => r.json());
+const mb = n => n == null ? "" : n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n > 0 ? Math.max(1, Math.round(n / 1e3)) + " kB" : "";
+const ICON = {
+  machine: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+  folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  runtime: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14"/>',
+  roms: '<rect x="2" y="7" width="20" height="11" rx="4"/><path d="M7 11v3M5.5 12.5h3"/><circle cx="16" cy="12" r="1"/><circle cx="18" cy="14" r="1"/>',
+  emulators: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v4h6V3M8 12h8M8 16h5"/>',
+  toolkits: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
+  llm: '<path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-2zM15 3a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/>',
+  mods: '<path d="M10 3h4v3a2 2 0 1 0 4 0h3v5h-3a2 2 0 1 0 0 4h3v6H3V15h3a2 2 0 1 0 0-4H3V6h7z"/>',
+  start: '<circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/>',
+};
+const LEAD = {
+  machine: "What this PC has: Windows version, GPU and its memory (it sizes the local LLM), free disk, and whether there is a network.",
+  folder: "Where gBox lives. The unzipped folder works; pick another and gBox is copied there (the unzipped one can be deleted afterwards).",
+  runtime: "A private Python environment inside the install folder with gBox's packages. Nothing is installed system-wide.",
+  roms: "Point gBox at the folders with your own game files. It scans them read-only and matches the games the mod recipes were written for.",
+  emulators: "RetroArch and the cores your games need, from the official libretro buildbot. Each big download asks first. gBox never downloads BIOS: point it at your own.",
+  toolkits: "RenderDoc (frame capture), Ghidra + JDK 21 (reverse engineering), and optionally Blender with the gBox bridge, from their official sources.",
+  llm: "gBox's assistant runs on this PC with Ollama: a tools model and a vision model, sized to your GPU's memory.",
+  mods: "Starts gBox on this PC, catalogs your games, then rebuilds the mods from recipes: characters extracted from YOUR copies, swaps built, mod cards added.",
+  start: "Open gBox: the desktop app on this PC's control plane, or the browser.",
+};
+let ROMS = [], F = null, sel = null, shown = {}, typing = [], viz = null, lastBeat = 0, layoutKey = "";
+
+// ---------------- visualizer (the game loader's), with a plain gradient if WebGL / three.js are unavailable
+(async () => {
+  try {
+    const V = await import("/viz/viz.js");
+    viz = await V.createViz($("#viz"), { mode: V.readVizPref(), quality: "auto" });
+    V.attachPicker(document.body, viz);
+    viz.start(); viz.push({ stationActivity: 0.25, beat: 1 });
+  } catch (e) { $("#viz").style.display = "none"; console.warn("visualizer unavailable:", e); }
+})();
+const pulse = (act, pct) => { if (!viz) return; const now = performance.now();
+  viz.push({ stationActivity: act, loadProgress: (pct || 0) / 100, ...(now - lastBeat > 350 ? { beat: 1 } : {}) }); lastBeat = now; };
+
+// ---------------- flow chart: nodes snake across rows like a circuit, traces drawn pin to pin
+function cols() {                                               // as many per row as fit, rows balanced (9 -> 5 + 4, 3 + 3 + 3)
+  const n = F.steps.length, fit = Math.max(3, Math.min(n, Math.floor(($("#flow").clientWidth + 26) / 180))), rows = Math.ceil(n / fit);
+  return Math.ceil(n / rows);
+}
+function place() {
+  const c = cols(), g = $("#nodes");
+  g.style.gridTemplateColumns = `repeat(${c}, minmax(0,1fr))`;
+  F.steps.forEach((s, i) => { const r = Math.floor(i / c), k = i % c, col = r % 2 ? c - 1 - k : k;
+    const el = document.getElementById("n-" + s.id); el.style.gridRow = r + 1; el.style.gridColumn = col + 1; });
+  layoutKey = c + ":" + $("#flow").clientWidth;
+  requestAnimationFrame(drawTraces);
+}
+function drawTraces() {
+  const svg = $("#traces"), fb = $("#flow").getBoundingClientRect();
+  svg.setAttribute("width", fb.width); svg.setAttribute("height", fb.height);
+  let out = "";
+  F.steps.forEach((s, i) => {
+    if (i === F.steps.length - 1) return;
+    const a = document.getElementById("n-" + s.id).getBoundingClientRect(), b = document.getElementById("n-" + F.steps[i + 1].id).getBoundingClientRect();
+    const ax = a.left - fb.left, ay = a.top - fb.top, bx = b.left - fb.left, by = b.top - fb.top;
+    let d;
+    if (Math.abs(ay - by) < 4) {                                 // same row: straight across
+      const y = ay + a.height / 2;
+      d = bx > ax ? `M${ax + a.width} ${y} H${bx}` : `M${ax} ${y} H${bx + b.width}`;
+    } else {                                                     // next row: out of the side, down, back in
+      const right = ax + a.width / 2 > fb.width / 2, x = right ? ax + a.width + 13 : ax - 13;
+      const y1 = ay + a.height / 2, y2 = by + b.height / 2;
+      d = right ? `M${ax + a.width} ${y1} H${x} V${y2} H${bx + b.width}` : `M${ax} ${y1} H${x} V${y2} H${bx}`;
+    }
+    const nxt = F.steps[i + 1].status, past = ["ok", "skipped"].includes(s.status);
+    const c = past && nxt === "running" ? "live" : past ? "done" : "";
+    out += `<path d="${d}" class="${c}"/>` + (c ? `<path d="${d}" class="pk ${c}"/>` : "");
+    const m = d.match(/M([\d.]+) ([\d.]+)/); if (m) out += `<circle cx="${m[1]}" cy="${m[2]}" r="3" class="${c}"/>`;
+  });
+  svg.innerHTML = out;
+}
+function statusLine(s) {
+  const d = s.data || {};
+  if (s.status === "running") return d.dl ? `${mb(d.dl.got)} / ${mb(d.dl.total)}` : (s.lines.filter(l => l && !l.startsWith("──")).slice(-1)[0] || "working…");
+  if (s.status === "failed") return "failed: " + (s.error || "").split("\n")[0];
+  if (s.status === "skipped") return "skipped";
+  if (s.status === "idle") return "not done yet";
+  switch (s.id) {
+    case "machine": return d.gpu?.name ? `${d.gpu.name} · ${d.gpu.vram_gb} GB` : "no GPU found";
+    case "folder": return d.path || F.install_dir;
+    case "runtime": return d.python ? `Python ${d.python} · venv ready` : "ready";
+    case "roms": return d.scanned != null ? `${d.scanned} games · ${d.games_owned}/${d.games_needed} recipe games` : "";
+    case "emulators": case "toolkits": { const it = d.items || [], have = it.filter(x => x.have).length; return `${have} of ${it.length} ready`; }
+    case "llm": return d.ready ? (d.want || []).join(" + ") : d.running ? "Ollama running · models missing" : d.installed ? "Ollama not running" : "Ollama not installed";
+    case "mods": { const c = (d.cards || []).filter(x => x.status === "added").length; return d.cards ? `${c} mod cards · ${(d.characters || []).filter(x => /extracted|in_collection/.test(x.status)).length} characters` : ""; }
+    case "start": return d.running ? "gBox is running" : "ready to start";
+  }
+  return s.status;
+}
+function renderNodes() {
+  const g = $("#nodes");
+  if (!g.children.length) g.innerHTML = F.steps.map((s, i) => `<div class="node" id="n-${s.id}" tabindex="0" role="button" aria-label="Step ${i + 1}: ${esc(s.title)}">
+      <div class="hd"><span class="num">${i + 1}</span><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[s.id]}</svg>
+      <span class="t">${esc(s.title)}</span></div><div class="s"></div><div class="bar"><i></i></div></div>`).join("");
+  F.steps.forEach((s, i) => {
+    const el = document.getElementById("n-" + s.id);
+    el.className = `node ${s.status}${sel === s.id ? " sel" : ""}`;
+    el.querySelector(".s").textContent = statusLine(s);
+    el.querySelector(".bar i").style.width = (s.status === "ok" ? 100 : s.progress || 0) + "%";
+    el.onclick = () => select(s.id);
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(s.id); } };
+    el.querySelector(".num").textContent = s.status === "ok" ? "✓" : s.status === "failed" ? "!" : i + 1;
+  });
+  if (layoutKey !== cols() + ":" + $("#flow").clientWidth) place(); else drawTraces();
+}
+addEventListener("resize", () => F && place());
+
+// ---------------- live console: text types in as it arrives
+function lineCls(l) { return l.startsWith("$ ") ? "cmd" : l.startsWith("──") ? "sec" : /^\s*✓|: ok\b/.test(l) ? "ok" : /^\s*(✗|!)|failed|error/i.test(l) ? "bad" : ""; }
+function renderLines(s, instant) {
+  const box = $("#lines"), atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const have = shown[s.id] ?? 0;
+  if (instant || have > s.lines.length) {
+    box.innerHTML = ""; typing = [];
+    const keep = instant ? Math.max(0, s.lines.length - 2) : s.lines.length;
+    s.lines.slice(0, keep).forEach(l => { const d = document.createElement("div"); d.className = lineCls(l); d.textContent = l; box.appendChild(d); });
+    s.lines.slice(keep).forEach(l => typing.push(l));
+  } else s.lines.slice(have).forEach(l => typing.push(l));
+  shown[s.id] = s.lines.length;
+  if (!s.lines.length) box.innerHTML = `<div class="mut ph">Nothing yet: run this step and its work appears here as it happens.</div>`;
+  if (atEnd || instant) box.scrollTop = box.scrollHeight;
+  $("#ctitle").textContent = s.title; $("#cdot").className = "dot" + (s.status === "running" ? " on" : "");
+}
+function typeTick() {
+  const box = $("#lines");
+  if (!typing.length) return;
+  box.querySelector(".ph")?.remove();
+  let cur = box.querySelector(".cur");
+  if (!cur) { cur = document.createElement("div"); cur.className = "cur " + lineCls(typing[0]); cur.dataset.full = typing[0]; box.appendChild(cur); }
+  const full = cur.dataset.full, step = Math.max(3, Math.ceil(typing.length * 6));
+  cur.textContent = full.slice(0, cur.textContent.length + step);
+  if (cur.textContent.length >= full.length) { cur.classList.remove("cur"); typing.shift(); }
+  box.scrollTop = box.scrollHeight;
+}
+setInterval(typeTick, 16);
+
+// ---------------- actions
+const step = id => F.steps.find(s => s.id === id);
+async function run(id, params) {
+  const r = await post("/api/flow/" + id, params || {});
+  if (r.error) return toast(r.error);
+  pulse(0.8, 0); refresh();
+}
+function ask(title, text, yes = "Download") {
+  return new Promise(res => { $("#askt").textContent = title; $("#askp").textContent = text; $("#askyes").textContent = yes; $("#ask").classList.add("on");
+    $("#askyes").onclick = () => { $("#ask").classList.remove("on"); res(true); }; $("#askno").onclick = () => { $("#ask").classList.remove("on"); res(false); }; });
+}
+function toast(t) { const el = $("#toast"); el.textContent = t; el.style.display = "block"; clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", 4500); }
+async function pick(input, title) {
+  const r = await post("/api/pick-folder", { title, initial: input && $(input) ? $(input).value : "" });
+  if (r.error) { toast(r.error); input && $(input)?.focus(); return ""; }
+  if (r.path && input && $(input)) $(input).value = r.path;
+  return r.path || "";
+}
+const host = u => { try { return new URL(u).host; } catch { return u || "its official site"; } };
+async function getItem(stepId, it) {
+  if (F.offline) return toast("Offline: use “I have it” and point at a file or folder you already have");
+  const big = !it.size || it.size > 50e6;
+  if (big && !await ask(`Download ${it.name}?`, `${mb(it.size) || "Size unknown"} from ${host(it.url)}. ${it.note || ""}`)) return;
+  run(stepId, { action: "get", item: it.id });
+}
+async function useItem(stepId, it) {
+  const p = await pick(null, `Folder with ${it.name}`) || prompt(`Path to ${it.name} (an archive or a folder you already have):`);
+  if (p) run(stepId, { action: "use", item: it.id, path: p });
+}
+async function smallOnes(stepId) {
+  const it = (step(stepId).data.items || []).filter(x => !x.have && !x.manual && x.size && x.size <= 50e6);
+  if (!it.length) return toast("Nothing small left to get");
+  for (const x of it) {
+    await post("/api/flow/" + stepId, { action: "get", item: x.id });
+    do { await new Promise(r => setTimeout(r, 800)); } while ((await get("/api/flow")).steps.find(s => s.id === stepId).status === "running");
+  }
+  refresh();
+}
+function itemsTable(items) {
+  if (!items?.length) return `<p class="mut">Run the check to see what this PC needs.</p>`;
+  return `<table><tr><th>Component</th><th>Status</th><th></th></tr>${items.map(it => `<tr>
+    <td><b>${esc(it.name)}</b>${it.optional ? ` <span class="tag">optional</span>` : ""}<div class="note">${esc(it.note || "")}${it.manual ? `<br><span class="warn">${esc(it.manual)}</span>` : ""}</div></td>
+    <td>${it.have ? `<span class="ok">✓ ready</span><div class="note" style="word-break:break-all">${esc(it.where)}</div>` : `<span class="${it.optional ? "mut" : "warn"}">missing</span>`}</td>
+    <td style="text-align:right;white-space:nowrap">${it.have ? "" : it.manual ? `<a class="btn sm" href="${esc(it.url)}" target="_blank">Official page</a>` :
+      `<button class="btn sm pri" data-get="${esc(it.id)}" ${F.offline ? "disabled" : ""}>Download ${mb(it.size)}</button> <button class="btn sm" data-use="${esc(it.id)}">I have it…</button>`}</td></tr>`).join("")}</table>`;
+}
+
+// ---------------- the selected step's panel
+function detail(s) {
+  const d = s.data || {}, busy = s.status === "running";
+  const head = `<h2>${esc(s.title)} <span class="pill ${s.status}">${s.status === "idle" ? "to do" : s.status}</span></h2><p class="lead">${LEAD[s.id]}</p>
+    ${busy || s.progress ? `<div class="pbar"><i style="width:${s.status === "ok" ? 100 : Math.max(3, s.progress || 0)}%"></i></div>` : ""}
+    ${s.status === "failed" ? `<div class="errbox"><div><b>This step failed.</b>\n${esc(s.error)}</div><button class="btn pri" id="retry">Retry</button></div>` : ""}`;
+  const idx = F.steps.findIndex(x => x.id === s.id);
+  const nextBtn = idx < F.steps.length - 1 ? `<button class="btn ghost" id="next">Next: ${esc(F.steps[idx + 1].title)} →</button>` : "";
+  const skip = !["ok", "skipped", "running"].includes(s.status) && !["machine", "runtime"].includes(s.id) ? `<button class="btn ghost" id="skip">Skip</button>` : "";
+  let body = "";
+  switch (s.id) {
+    case "machine": {
+      const g = d.gpu || {};
+      body = d.windows ? `<div class="kv"><span>Windows</span><span>${esc(d.windows.release)} · build ${esc(d.build || d.windows.version)} · ${esc(d.windows.arch)}</span>
+        <span>GPU</span><span>${g.name ? `${esc(g.name)} · <b>${g.vram_gb} GB</b> VRAM${g.driver ? " · driver " + esc(g.driver) : ""}` : '<span class="warn">none found</span>'}</span>
+        <span>Memory</span><span>${d.ram_gb} GB · ${d.cpu} threads</span><span>Disk</span><span>${d.free_gb} GB free</span>
+        <span>Network</span><span>${d.online ? '<span class="ok">online</span>' : '<span class="warn">offline: the no-network path uses files you have</span>'}</span>
+        <span>LLM sizing</span><span>${esc(d.models?.why || "")}</span></div>
+        ${(d.warnings || []).map(w => `<div class="row warn">! ${esc(w)}</div>`).join("")}` : "";
+      body += `<div class="row"><button class="btn pri" id="go" ${busy ? "disabled" : ""}>${d.windows ? "Check again" : "Check this PC"}</button>${nextBtn}</div>`;
+      break;
+    }
+    case "folder":
+      body = `<div class="row"><input type="text" id="path" value="${esc(d.path || F.install_dir)}" spellcheck="false"><button class="btn" id="browse">Browse…</button></div>
+        <p class="note">Package: <code>${esc(F.package)}</code>. A folder on a fast local disk is best (about 20 GB once emulators and models are in).</p>
+        <div class="row"><button class="btn pri" id="go" ${busy ? "disabled" : ""}>Use this folder</button>${nextBtn}</div>`;
+      break;
+    case "runtime":
+      body = `<div class="kv"><span>Environment</span><span><code>${esc(F.install_dir)}\\.venv</code></span><span>Packages</span><span>fastapi, uvicorn, pydantic, httpx, capstone, yt-dlp, numpy, pillow</span>
+        <span>Control plane</span><span>127.0.0.1:${F.api_port} (this PC only)</span></div>
+        <p class="note">${F.offline ? "Offline: packages come from a <code>wheels</code> folder next to Install gBox.cmd." : "Packages come from PyPI (about 60 MB)."}</p>
+        <div class="row"><button class="btn pri" id="go" ${busy ? "disabled" : ""}>${s.status === "ok" ? "Reinstall" : "Install"}</button>${nextBtn}</div>`;
+      break;
+    case "roms":
+      body = `<div id="romlist">${ROMS.map((r, i) => `<div class="row"><input type="text" class="rom" value="${esc(r)}"><button class="btn sm" data-del="${i}" title="Remove">✕</button></div>`).join("")}</div>
+        <div class="row"><input type="text" id="addrom" placeholder="D:\\Games\\GameCube  (a folder with your own game files, Enter to add)"><button class="btn" id="browse">Add folder…</button></div>
+        <div class="row"><button class="btn pri" id="go" ${busy ? "disabled" : ""}>Scan & match</button>${skip}${nextBtn}</div>`;
+      if (d.scanned != null)
+        body += `<h3>Found</h3><div class="tags">${Object.entries(d.platforms || {}).map(([p, n]) => `<span class="tag"><b>${n}</b> ${esc(p)}</span>`).join("") || '<span class="mut">no games</span>'}</div>
+          <h3>Games the recipes need: ${d.games_owned} of ${d.games_needed} here</h3>
+          <table>${(d.owned || []).map(o => `<tr><td class="ok">✓</td><td>${esc(o.recipe_title)}</td><td class="note">${esc(o.title)} · ${esc(o.how)}</td></tr>`).join("")}
+          ${(d.missing || []).map(m => `<tr><td class="mut">–</td><td class="mut">${esc(m)}</td><td class="note">not found: its mods show as unavailable</td></tr>`).join("")}</table>`;
+      break;
+    case "emulators": case "toolkits":
+      body = itemsTable(d.items) + `<div class="row"><button class="btn" id="go" ${busy ? "disabled" : ""}>${d.items ? "Check again" : "See what this PC needs"}</button>
+        ${(d.items || []).some(x => !x.have && x.size && x.size <= 50e6 && !x.manual) && !F.offline ? `<button class="btn" id="small">Get the small ones (under 50 MB)</button>` : ""}${skip}${nextBtn}</div>`;
+      if (s.id === "emulators") body += `<h3>BIOS (never downloaded)</h3>
+        ${(d.bios || []).length ? `<table>${d.bios.map(b => `<tr><td>${esc(b.platform)} <span class="note">(${b.games} games)</span></td><td class="note">${b.files.map(f => `<span class="${b.found.includes(f) ? "ok" : ""}">${esc(f)}</span>`).join(", ")}</td></tr>`).join("")}</table>` : '<p class="mut">None of your systems needs a BIOS (or the scan hasn\'t run).</p>'}
+        <div class="row"><input type="text" id="bios" placeholder="Your BIOS folder (laid out like RetroArch's system folder)"><button class="btn" id="biosb">Browse…</button><button class="btn" id="bioss">Use</button></div>`;
+      if (s.id === "toolkits") body += `<h3>Blender you already have</h3><div class="row"><input type="text" id="blender" placeholder="blender.exe, or the folder with your Blender builds"><button class="btn" id="bl">Use</button></div>`;
+      break;
+    case "llm": {
+      const r = d.recommend || {}, sz = d.sizes || {}, want = d.want || [r.tools, r.vision];
+      const opt = (v, list) => [...new Set([v, ...list])].filter(Boolean).map(x => `<option ${x === v ? "selected" : ""}>${esc(x)}</option>`).join("");
+      body = `<div class="kv"><span>Ollama</span><span>${d.running ? '<span class="ok">running</span>' : d.installed ? '<span class="warn">installed, not running</span>' : '<span class="warn">not installed</span>'}</span>
+          <span>Models here</span><span>${(d.models || []).map(esc).join(", ") || "none"}</span><span>For this GPU</span><span>${esc(r.why || "run step 1 first")}</span></div>
+        ${!d.installed && d.running === false ? `<div class="row"><button class="btn pri" id="oll" ${F.offline ? "disabled" : ""}>Install Ollama (ollama.com, about 1 GB)</button><button class="btn" id="ollh">I have OllamaSetup.exe…</button></div>`
+          : d.installed && !d.running ? `<div class="row"><button class="btn pri" id="olls">Start Ollama</button></div>` : ""}
+        <h3>Models</h3>
+        <div class="row"><span class="mut">Tools</span><select id="mt">${opt(want[0] || r.tools, ["gpt-oss:20b", "qwen3:8b", "qwen3:4b"])}</select>
+          <span class="mut" style="margin-left:10px">Vision</span><select id="mv">${opt(want[1] || r.vision, ["qwen2.5vl:7b", "qwen2.5vl:3b"])}</select>
+          <button class="btn" id="use">Use these</button></div>
+        <table>${want.filter(Boolean).map(m => { const have = (d.models || []).some(x => x === m || x === m + ":latest");
+          return `<tr><td>${esc(m)}</td><td>${have ? '<span class="ok">✓ here</span>' : `<span class="warn">not pulled</span> <span class="note">${esc(sz[m] || "")}</span>`}</td>
+          <td style="text-align:right">${have || !d.running ? "" : `<button class="btn sm pri" data-pull="${esc(m)}" ${F.offline ? "disabled" : ""}>Pull ${esc(sz[m] || "")}</button>`}</td></tr>`; }).join("")}</table>
+        <p class="note">Recommended: gpt-oss:20b for tools and qwen2.5vl:7b for vision (a 16 GB GPU runs both). Offline: copy <code>%USERPROFILE%\\.ollama\\models</code> from a PC that has them.</p>
+        <div class="row"><button class="btn" id="go" ${busy ? "disabled" : ""}>${d.recommend ? "Check again" : "Check Ollama"}</button>${skip}${nextBtn}</div>`;
+      break;
+    }
+    case "mods": {
+      const st = step("roms").data || {}, cards = st.cards || [], chars = st.characters || [];
+      body = `<div class="tags"><span class="tag"><b>${cards.filter(c => c.available).length}</b> of ${cards.length} mod cards for your games</span>
+          <span class="tag"><b>${chars.filter(c => c.available).length}</b> of ${chars.length} characters from your games</span></div>
+        <div class="row"><button class="btn pri" id="go" ${busy ? "disabled" : ""}>${s.status === "ok" ? "Rebuild again" : "Rebuild mods"}</button>${skip}${nextBtn}</div>
+        <p class="note">gBox starts on this PC (127.0.0.1:${F.api_port}), catalogs your games and rebuilds. No game is launched; extraction can take minutes per game.</p>`;
+      const icon = v => /added|extracted|in_collection|built|ready/.test(v) ? '<span class="ok">✓</span>' : v === "unavailable" ? '<span class="mut">–</span>' : v === "manual" ? '<span class="warn">•</span>' : '<span class="bad">✕</span>';
+      if (d.cards) body += `<h3>Characters</h3><table>${(d.characters || []).map(c => `<tr><td>${icon(c.status)}</td><td>${esc(c.name)}</td><td class="note">${esc(c.source)}</td><td class="note">${esc(c.status)}${c.why ? ": " + esc(c.why) : ""}</td></tr>`).join("")}</table>
+        <h3>Swaps</h3><table>${(d.swaps || []).map(c => `<tr><td>${icon(c.status)}</td><td>${esc(c.character)} → ${esc(c.game)}</td><td class="note">${esc(c.status)}${c.why ? ": " + esc(c.why) : ""}</td></tr>`).join("")}</table>
+        <h3>Mod cards</h3><table>${(d.cards || []).map(c => `<tr><td>${icon(c.status)}</td><td>${esc(c.title)}</td><td class="note">${esc(c.game)}${c.why ? " · " + esc(c.why) : ""}</td></tr>`).join("")}</table>`;
+      else if (cards.length) body += `<h3>Unavailable without the game</h3><table>${cards.filter(c => !c.available).slice(0, 80).map(c => `<tr><td class="mut">–</td><td class="mut">${esc(c.title)}</td><td class="note">${esc(c.game)}</td></tr>`).join("")}</table>`;
+      break;
+    }
+    case "start":
+      body = `<div class="kv"><span>Install folder</span><span><code>${esc(F.install_dir)}</code></span><span>Control plane</span><span>${esc(d.url || "127.0.0.1:" + F.api_port)} ${d.running ? '<span class="ok">running</span>' : ""}</span>
+          <span>Desktop app</span><span>${d.electron ? '<span class="ok">ready</span>' : '<span class="mut">not installed (Electron, about 110 MB from GitHub)</span>'}</span></div>
+        <div class="row">${d.electron ? `<button class="btn pri" id="app">Start the gBox app</button>` : `<button class="btn pri" id="el" ${F.offline ? "disabled" : ""}>Get the desktop app</button><button class="btn" id="elh">I have Electron…</button>`}
+          <button class="btn" id="br">Open in the browser</button><button class="btn" id="sc">Desktop + Start menu shortcuts</button></div>
+        <p class="note">Next time: <code>Start gBox.cmd</code> in the install folder.</p>`;
+      break;
+  }
+  $("#detail").innerHTML = head + body;
+  const on = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
+  on("#retry", () => run(s.id, s.id === "roms" ? { folders: romsNow() } : s.id === "folder" ? { path: $("#path")?.value } : {}));
+  on("#next", () => select(F.steps[idx + 1].id));
+  on("#skip", () => run(s.id, { action: "skip" }));
+  on("#go", () => s.id === "folder" ? run("folder", { path: $("#path").value }) : s.id === "roms" ? run("roms", { folders: romsNow() }) : run(s.id, {}));
+  if (s.id === "folder") on("#browse", () => pick("#path", "Install gBox in…"));
+  if (s.id === "roms") {
+    const add = p => { if (p) { ROMS = [...romsNow(), p]; detail(s); } };
+    on("#browse", async () => add($("#addrom").value.trim() || await pick(null, "A folder with your game files")));
+    $("#addrom").onkeydown = e => { if (e.key === "Enter") add(e.target.value.trim()); };
+    document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { const r = romsNow(); r.splice(+b.dataset.del, 1); ROMS = r; detail(s); });
+  }
+  if (s.id === "emulators" || s.id === "toolkits") {
+    const items = d.items || [];
+    document.querySelectorAll("[data-get]").forEach(b => b.onclick = () => getItem(s.id, items.find(x => x.id === b.dataset.get)));
+    document.querySelectorAll("[data-use]").forEach(b => b.onclick = () => useItem(s.id, items.find(x => x.id === b.dataset.use)));
+    on("#small", () => smallOnes(s.id));
+  }
+  if (s.id === "emulators") { on("#biosb", () => pick("#bios", "Your BIOS folder")); on("#bioss", () => run("emulators", { action: "bios", path: $("#bios").value })); }
+  if (s.id === "toolkits") on("#bl", () => run("toolkits", { action: "blender", path: $("#blender").value }));
+  if (s.id === "llm") {
+    on("#oll", async () => { if (await ask("Install Ollama?", "OllamaSetup.exe (about 1 GB) from ollama.com, installed for this Windows user.", "Install")) run("llm", { action: "install" }); });
+    on("#ollh", () => { const p = prompt("Path to OllamaSetup.exe:"); if (p) run("llm", { action: "install", path: p }); });
+    on("#olls", () => run("llm", { action: "start" }));
+    on("#use", () => run("llm", { action: "use", tools: $("#mt").value, vision: $("#mv").value }));
+    document.querySelectorAll("[data-pull]").forEach(b => b.onclick = async () => { const m = b.dataset.pull;
+      if (await ask(`Pull ${m}?`, `${(d.sizes || {})[m] || "Several GB"} from the Ollama library (registry.ollama.ai).`, "Pull")) run("llm", { action: "pull", model: m }); });
+  }
+  if (s.id === "start") {
+    on("#el", async () => { if (await ask("Get the desktop app?", "Electron v38 for Windows (about 110 MB) from github.com/electron/electron releases.")) run("start", { action: "electron" }); });
+    on("#elh", async () => { const p = await pick(null, "Electron folder") || prompt("Electron zip or folder:"); if (p) run("start", { action: "electron", path: p }); });
+    on("#app", () => run("start", { action: "app" }));
+    on("#br", () => run("start", { action: "browser" }));
+    on("#sc", () => run("start", { action: "shortcut" }));
+  }
+}
+const romsNow = () => document.querySelector(".rom") ? (ROMS = [...document.querySelectorAll(".rom")].map(i => i.value.trim()).filter(Boolean)) : ROMS;
+
+function select(id) {
+  sel = id; renderNodes();
+  const s = step(id); prevSig = ""; detail(s); renderLines(s, true);
+  try { localStorage.setItem("gbox_setup_sel", id); } catch {}
+}
+
+// ---------------- polling
+let prevSig = "";
+async function refresh() {
+  let f; try { f = await get("/api/flow"); } catch { return; }
+  const first = !F;
+  if (first || (F && step("roms")?.status === "running" && f.steps.find(x => x.id === "roms").status === "ok")) ROMS = f.roms;
+  F = f;
+  if (first) {
+    if (f.manifest) $("#mf").style.display = "";
+    let want = null; try { want = localStorage.getItem("gbox_setup_sel"); } catch {}
+    sel = f.steps.some(s => s.id === want) ? want : (f.steps.find(s => !["ok", "skipped"].includes(s.status)) || f.steps[0]).id;
+    if (f.steps[0].status === "idle") post("/api/flow/machine", {});
+  }
+  $("#net").textContent = f.offline ? "offline" : "online"; $("#net").classList.toggle("off", !!f.offline);
+  $("#where").textContent = `${f.host} · ${f.install_dir}`;
+  renderNodes();
+  const s = step(sel), sig = `${sel}:${s.status}:${s.error}:${JSON.stringify(s.data).length}:${f.offline}`;
+  if (first || sig !== prevSig) { if (!document.activeElement?.matches("input, select")) { detail(s); prevSig = sig; } }
+  else if (s.status === "running") { const b = document.querySelector("#detail .pbar i"); if (b) b.style.width = Math.max(3, s.progress) + "%"; }
+  if (first) renderLines(s, true); else if (s.lines.length !== (shown[s.id] ?? 0)) { renderLines(s); pulse(0.6, s.progress); }
+  if (viz) viz.push({ stationActivity: f.steps.some(x => x.status === "running") ? 0.55 : 0.2 });
+}
+$("#net").onclick = async () => { const r = await post("/api/offline", { offline: !F.offline }); F.offline = r.offline; refresh(); };
+refresh(); setInterval(refresh, 700);
+</script>
+</body></html>

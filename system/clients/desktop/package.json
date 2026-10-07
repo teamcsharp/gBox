@@ -1,8 +1,8 @@
 {
   "name": "gbox-desktop",
-  "productName": "G-Box",
+  "productName": "gBox",
   "version": "0.1.0",
-  "description": "G-Box desktop manager: runs the DGX Spark control plane, the Windows node, and the G-Box UI",
+  "description": "gBox desktop manager: runs the DGX Spark control plane, the Windows node, and the gBox UI",
   "main": "main.js",
   "private": true,
   "scripts": {

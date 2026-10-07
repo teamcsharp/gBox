@@ -18,7 +18,7 @@ The validator (`uap.validate`) checks:
 
 Exports:
 
-- **glTF 2.0:** embedded buffer, skin with computed inverse bind matrices, animations, and G-Box metadata in `extras.gbox`.
+- **glTF 2.0:** embedded buffer, skin with computed inverse bind matrices, animations, and gBox metadata in `extras.gbox`.
 - **OBJ:** static geometry only.
 - **Not yet:** FBX, Alembic, Godot and Unreal recipes.
 - ponytail: geometry is stored as inline JSON. Switch to binary buffers once packages grow past a few MB.

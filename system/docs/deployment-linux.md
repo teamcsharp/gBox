@@ -17,7 +17,7 @@ systemd unit (`/etc/systemd/system/gbox.service`):
 
 ```ini
 [Unit]
-Description=G-Box control plane
+Description=gBox control plane
 After=network-online.target remote-fs.target
 [Service]
 User=gbox

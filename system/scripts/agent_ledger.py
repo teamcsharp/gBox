@@ -1,7 +1,7 @@
-"""G-Box request ledger + inbox CLI for the coding agent (Claude Code).
+"""gBox request ledger + inbox CLI for the coding agent (Claude Code).
 
 Hooks (configured in .claude/settings.json):
-  prompt   UserPromptSubmit: logs every chat request to the G-Box inbox, and prints new operator reports
+  prompt   UserPromptSubmit: logs every chat request to the gBox inbox, and prints new operator reports
            (screenshots / eyedropper picks, with local image paths) so the agent sees them in context.
   stop     Stop: reads this session's transcript and adds the turn's real usage to the active request:
            tokens in/out (incl. cache), tools used, files changed, agent time.
@@ -114,9 +114,9 @@ def hook_prompt(ev: dict):
         sess.update(chat_request=r["id"], since=time.time(), claimed=[])
     # surface operator reports filed in the app (screenshots / eyedropper) that the agent hasn't seen yet
     seen = set(st.get("seen", []))
-    fresh = [r for r in api("/api/requests?status=open,in_progress&source=app") if r["id"] not in seen]
+    fresh = [r for src in ("app", "gap") for r in api(f"/api/requests?status=open,in_progress&source={src}") if r["id"] not in seen]
     if fresh:
-        print("G-Box inbox: new operator reports (handle them with scripts/agent_ledger.py show/claim/reply/done):")
+        print("gBox inbox: new operator reports (handle them with scripts/agent_ledger.py show/claim/reply/done):")
         for r in reversed(fresh):
             print(describe(r))
             seen.add(r["id"])

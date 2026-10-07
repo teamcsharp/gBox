@@ -1,0 +1,30 @@
+{
+ "_about": "Shenmue DC Ryo Hazuki (gbox.shenmue_mt5 YKB_M, turned to face +Z, metres) -> RE4 GC Leon. Ryo's skeleton is almost Leon's (hips +-0.092, knees, ankles within 3 cm), so scale 1.0. Before retargeting merge the fingers and toes: python -m gbox.char_swap merge-joints src.glb out.glb node007=node006 node008=node006 node009=node006 node010=node006 node011=node006 node016=node015 node017=node015 node018=node015 node019=node015 node020=node015 node029=node028 node033=node032",
+ "scale": 1.0,
+ "anchor": ["node002", "b017"],
+ "parts": {
+  "node002": {"bone": "b002"},
+  "node021": {"bone": "b002"},
+  "node022": {"bone": "b002"},
+  "node023": {"bone": "b002"},
+  "node024": {"bone": "b002"},
+  "node025": {"bone": "b017"},
+  "node034": {"bone": "b004"},
+  "node035": {"bone": "b004"},
+  "node036": {"bone": "b004"},
+  "node003": {"bone": "b005"},
+  "node012": {"bone": "b011"},
+  "node004": {"bone": "b007", "from": ["node004", "node005"], "to": ["b007", "b008"]},
+  "node005": {"bone": "b008", "from": ["node005", "node006"], "to": ["b008", "b010"]},
+  "node006": {"bone": "b010", "follow": "node005", "at": "b010"},
+  "node013": {"bone": "b013", "from": ["node013", "node014"], "to": ["b013", "b014"]},
+  "node014": {"bone": "b014", "from": ["node014", "node015"], "to": ["b014", "b016"]},
+  "node015": {"bone": "b016", "follow": "node014", "at": "b016"},
+  "node026": {"bone": "b018", "from": ["node026", "node027"], "to": ["b018", "b019"]},
+  "node027": {"bone": "b019", "from": ["node027", "node028"], "to": ["b019", "b020"]},
+  "node028": {"bone": "b020", "from": ["node028", "node029"], "to": ["b020", "b021"], "no_stretch": true},
+  "node030": {"bone": "b022", "from": ["node030", "node031"], "to": ["b022", "b023"]},
+  "node031": {"bone": "b023", "from": ["node031", "node032"], "to": ["b023", "b024"]},
+  "node032": {"bone": "b024", "from": ["node032", "node033"], "to": ["b024", "b025"], "no_stretch": true}
+ }
+}

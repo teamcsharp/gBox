@@ -1,0 +1,101 @@
+"""Per-game graphics settings (internal resolution, MSAA, anisotropic filtering, upscaler/sharpening, post-process AA,
+vsync), stored in data_dir/graphics.json and turned into each emulator's own settings at launch.
+
+Not every emulator has every knob: RPCS3 = resolution scale, MSAA, AF, FSR + CAS sharpening; RetroArch (GL driver) =
+post-process shader (FXAA / advanced AA / FSR) + vsync. Temporal AA does not exist in these emulators: it needs motion
+vectors the original games never produce.
+"""
+import json
+from pathlib import Path
+
+FIELDS = {
+    "res_scale": [100, 150, 200, 250, 300, 400],          # % of native internal resolution
+    "msaa": ["off", "auto"],
+    "aniso": [0, 2, 4, 8, 16],
+    "upscaler": ["bilinear", "nearest", "fsr"],
+    "sharpen": list(range(0, 101, 10)),
+    "post_aa": ["none", "fxaa", "advanced"],
+    "vsync": [True, False],
+}
+DEFAULT = {"res_scale": 100, "msaa": "auto", "aniso": 0, "upscaler": "bilinear", "sharpen": 50, "post_aa": "none", "vsync": True}
+
+
+def best_for_gpu(vram_mb: int) -> dict:
+    """A strong preset for the installed GPU (8 GB class: ~4K internal from 720p, 4x MSAA, 16x AF, FSR)."""
+    scale = 400 if vram_mb >= 12000 else 300 if vram_mb >= 7000 else 200 if vram_mb >= 4000 else 150
+    return {"res_scale": scale, "msaa": "auto", "aniso": 16, "upscaler": "fsr", "sharpen": 50, "post_aa": "fxaa", "vsync": True}
+
+
+def gpu() -> dict:
+    import subprocess
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout.strip().splitlines()[0]
+        name, mb = [x.strip() for x in out.split(",")]
+        return {"name": name, "vram_mb": int(float(mb))}
+    except Exception:
+        return {"name": "unknown", "vram_mb": 4000}
+
+
+def _file(cfg) -> Path:
+    return Path(cfg.data_dir) / "graphics.json"
+
+
+def get(cfg, game_id: str | None) -> dict:
+    try:
+        allp = json.loads(_file(cfg).read_text())
+    except (OSError, ValueError):
+        allp = {}
+    return DEFAULT | allp.get(game_id or "", {})
+
+
+def save(cfg, game_id: str, prefs: dict) -> dict:
+    bad = {k: v for k, v in prefs.items() if k not in FIELDS or v not in FIELDS[k]}
+    if bad:
+        raise ValueError(f"unsupported values {bad}; choices: {FIELDS}")
+    f = _file(cfg)
+    try:
+        allp = json.loads(f.read_text())
+    except (OSError, ValueError):
+        allp = {}
+    allp[game_id] = get(cfg, game_id) | prefs
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(allp, indent=1))
+    return allp[game_id]
+
+
+def rpcs3_yaml(p: dict) -> str:
+    """Per-game RPCS3 override (config/custom_configs/config_<SERIAL>.yml; RPCS3 layers it over the global config)."""
+    mode = {"bilinear": "Bilinear", "nearest": "Nearest", "fsr": "FidelityFX Super Resolution"}[p["upscaler"]]
+    return ("Video:\n"
+            f"  Resolution Scale: {p['res_scale']}\n"
+            f"  MSAA: {'Auto' if p['msaa'] == 'auto' else 'Disabled'}\n"
+            f"  Anisotropic Filter Override: {p['aniso']}\n"
+            f"  Output Scaling Mode: {mode}\n"
+            f"  FidelityFX CAS Sharpening Intensity: {p['sharpen']}\n")
+
+
+def retroarch_opts(p: dict, ra_dir: Path) -> dict:
+    """RetroArch (GL driver) settings: one post-process shader preset + vsync."""
+    sh = ra_dir / "shaders" / "shaders_glsl"
+    preset = {"fxaa": sh / "anti-aliasing" / "fxaa.glslp", "advanced": sh / "anti-aliasing" / "advanced-aa.glslp"}.get(p["post_aa"])
+    if not preset and p["upscaler"] == "fsr":
+        preset = next(iter(sorted((sh / "fsr").glob("*.glslp"))), None)
+    out = {"video_vsync": "true" if p["vsync"] else "false", "video_smooth": "false" if p["upscaler"] == "nearest" else "true"}
+    if preset and preset.exists():
+        out |= {"video_shader_enable": "true", "video_shader": str(preset)}
+    else:
+        out |= {"video_shader_enable": "false"}
+    return out
+
+
+def _selftest():
+    y = rpcs3_yaml(best_for_gpu(8192))
+    assert "Resolution Scale: 300" in y and "MSAA: Auto" in y and "FidelityFX Super Resolution" in y
+    o = retroarch_opts(DEFAULT | {"post_aa": "fxaa"}, Path("/nonexistent"))
+    assert o["video_shader_enable"] == "false" and o["video_vsync"] == "true"
+    print("graphics selftest ok")
+
+
+if __name__ == "__main__":
+    _selftest()

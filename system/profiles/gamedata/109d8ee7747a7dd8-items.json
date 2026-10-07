@@ -1,0 +1,407 @@
+{
+ "game": "Resident Evil 4",
+ "platform": "ps2",
+ "items": [
+  {
+   "name": "Magnum Ammo",
+   "id": "0x00",
+   "kind": "ammo"
+  },
+  {
+   "name": "Hand Grenade",
+   "id": "0x01",
+   "kind": "grenade"
+  },
+  {
+   "name": "Incendiary Grenade",
+   "id": "0x02",
+   "kind": "grenade"
+  },
+  {
+   "name": "Matilda",
+   "id": "0x03",
+   "kind": "weapon"
+  },
+  {
+   "name": "Handgun Ammo",
+   "id": "0x04",
+   "kind": "ammo"
+  },
+  {
+   "name": "First Aid Spray",
+   "id": "0x05",
+   "kind": "healing"
+  },
+  {
+   "name": "Green Herb",
+   "id": "0x06",
+   "kind": "healing"
+  },
+  {
+   "name": "Rifle Ammo",
+   "id": "0x07",
+   "kind": "ammo"
+  },
+  {
+   "name": "Chicken Egg",
+   "id": "0x08",
+   "kind": "healing"
+  },
+  {
+   "name": "Brown Chicken Egg",
+   "id": "0x09",
+   "kind": "healing"
+  },
+  {
+   "name": "Gold Chicken Egg",
+   "id": "0x0A",
+   "kind": "healing"
+  },
+  {
+   "name": "Plaga Sample",
+   "id": "0x0C",
+   "kind": "key"
+  },
+  {
+   "name": "Krauser's Knife",
+   "id": "0x0D",
+   "kind": "weapon"
+  },
+  {
+   "name": "Flash Grenade",
+   "id": "0x0E",
+   "kind": "grenade"
+  },
+  {
+   "name": "Green Herb (X2)",
+   "id": "0x12",
+   "kind": "healing"
+  },
+  {
+   "name": "Green Herb (X3)",
+   "id": "0x13",
+   "kind": "healing"
+  },
+  {
+   "name": "Mixed Herbs (G+R)",
+   "id": "0x14",
+   "kind": "healing"
+  },
+  {
+   "name": "Mixed Herbs (G+R+Y)",
+   "id": "0x15",
+   "kind": "healing"
+  },
+  {
+   "name": "Mixed Herbs (G+Y)",
+   "id": "0x16",
+   "kind": "healing"
+  },
+  {
+   "name": "Rocket Launcher (Special)",
+   "id": "0x17",
+   "kind": "weapon"
+  },
+  {
+   "name": "Shotgun Shells",
+   "id": "0x18",
+   "kind": "ammo"
+  },
+  {
+   "name": "Red Herb",
+   "id": "0x19",
+   "kind": "healing"
+  },
+  {
+   "name": "Handcannon Ammo",
+   "id": "0x1A",
+   "kind": "ammo"
+  },
+  {
+   "name": "Yellow Herb",
+   "id": "0x1C",
+   "kind": "healing"
+  },
+  {
+   "name": "TMP Ammo",
+   "id": "0x20",
+   "kind": "ammo"
+  },
+  {
+   "name": "Punisher",
+   "id": "0x21",
+   "kind": "weapon"
+  },
+  {
+   "name": "Punisher w/ Silencer",
+   "id": "0x22",
+   "kind": "other"
+  },
+  {
+   "name": "Handgun",
+   "id": "0x23",
+   "kind": "weapon"
+  },
+  {
+   "name": "Handgun w/ Silencer",
+   "id": "0x24",
+   "kind": "other"
+  },
+  {
+   "name": "Red9",
+   "id": "0x25",
+   "kind": "weapon"
+  },
+  {
+   "name": "Red9 w/ Stock",
+   "id": "0x26",
+   "kind": "other"
+  },
+  {
+   "name": "Blacktail",
+   "id": "0x27",
+   "kind": "weapon"
+  },
+  {
+   "name": "Blacktail w/ Silencer",
+   "id": "0x28",
+   "kind": "other"
+  },
+  {
+   "name": "Broken Butterfly",
+   "id": "0x29",
+   "kind": "weapon"
+  },
+  {
+   "name": "Killer7",
+   "id": "0x2A",
+   "kind": "weapon"
+  },
+  {
+   "name": "Killer7 w/ Silencer",
+   "id": "0x2B",
+   "kind": "other"
+  },
+  {
+   "name": "Shotgun",
+   "id": "0x2C",
+   "kind": "weapon"
+  },
+  {
+   "name": "Striker",
+   "id": "0x2D",
+   "kind": "weapon"
+  },
+  {
+   "name": "Rifle",
+   "id": "0x2E",
+   "kind": "weapon"
+  },
+  {
+   "name": "Rifle (semi-auto)",
+   "id": "0x2F",
+   "kind": "weapon"
+  },
+  {
+   "name": "TMP",
+   "id": "0x30",
+   "kind": "weapon"
+  },
+  {
+   "name": "TMP (variant 1)",
+   "id": "0x31",
+   "kind": "weapon"
+  },
+  {
+   "name": "TMP w/ Stock",
+   "id": "0x32",
+   "kind": "other"
+  },
+  {
+   "name": "TMP (variant 3)",
+   "id": "0x33",
+   "kind": "weapon"
+  },
+  {
+   "name": "Chicago Typewriter",
+   "id": "0x34",
+   "kind": "weapon"
+  },
+  {
+   "name": "Rocket Launcher",
+   "id": "0x35",
+   "kind": "weapon"
+  },
+  {
+   "name": "Mine Thrower",
+   "id": "0x36",
+   "kind": "weapon"
+  },
+  {
+   "name": "Handcannon",
+   "id": "0x37",
+   "kind": "weapon"
+  },
+  {
+   "name": "Combat Knife",
+   "id": "0x38",
+   "kind": "weapon"
+  },
+  {
+   "name": "Custom TMP",
+   "id": "0x3E",
+   "kind": "weapon"
+  },
+  {
+   "name": "Silencer (Handgun)",
+   "id": "0x3F",
+   "kind": "other"
+  },
+  {
+   "name": "Punisher (variant)",
+   "id": "0x40",
+   "kind": "weapon"
+  },
+  {
+   "name": "P.R.L. 412",
+   "id": "0x41",
+   "kind": "weapon"
+  },
+  {
+   "name": "Stock (Red9)",
+   "id": "0x42",
+   "kind": "other"
+  },
+  {
+   "name": "Stock (TMP)",
+   "id": "0x43",
+   "kind": "other"
+  },
+  {
+   "name": "Scope (Rifle)",
+   "id": "0x44",
+   "kind": "other"
+  },
+  {
+   "name": "Scope (semi-auto)",
+   "id": "0x45",
+   "kind": "other"
+  },
+  {
+   "name": "Mine-Darts",
+   "id": "0x46",
+   "kind": "ammo"
+  },
+  {
+   "name": "Rifle (semi-auto) w/ Infrared Scope",
+   "id": "0x51",
+   "kind": "other"
+  },
+  {
+   "name": "Krauser's Bow",
+   "id": "0x52",
+   "kind": "weapon"
+  },
+  {
+   "name": "Chicago Typewriter (Ada)",
+   "id": "0x53",
+   "kind": "weapon"
+  },
+  {
+   "name": "Chicago Typewriter Ammo",
+   "id": "0x6A",
+   "kind": "ammo"
+  },
+  {
+   "name": "Rifle + Scope",
+   "id": "0x6B",
+   "kind": "other"
+  },
+  {
+   "name": "Rifle (semi-auto) + Scope",
+   "id": "0x6C",
+   "kind": "other"
+  },
+  {
+   "name": "Infinite Launcher",
+   "id": "0x6D",
+   "kind": "weapon"
+  },
+  {
+   "name": "Arrows",
+   "id": "0x72",
+   "kind": "ammo"
+  },
+  {
+   "name": "Attache Case S",
+   "id": "0x7C",
+   "kind": "other"
+  },
+  {
+   "name": "Attache Case M",
+   "id": "0x7D",
+   "kind": "other"
+  },
+  {
+   "name": "Attache Case L",
+   "id": "0x7E",
+   "kind": "other"
+  },
+  {
+   "name": "Attache Case XL",
+   "id": "0x7F",
+   "kind": "other"
+  },
+  {
+   "name": "Riot Gun",
+   "id": "0x94",
+   "kind": "weapon"
+  },
+  {
+   "name": "Rifle w/ Infrared Scope",
+   "id": "0x99",
+   "kind": "other"
+  },
+  {
+   "name": "Rifle Ammo (Infrared)",
+   "id": "0xA0",
+   "kind": "ammo"
+  },
+  {
+   "name": "Mixed Herbs (R+Y)",
+   "id": "0xA8",
+   "kind": "healing"
+  },
+  {
+   "name": "Scope (Mine-thrower)",
+   "id": "0xAA",
+   "kind": "other"
+  },
+  {
+   "name": "Mine-thrower + Scope",
+   "id": "0xAB",
+   "kind": "other"
+  },
+  {
+   "name": "Playing Manual 1",
+   "id": "0xAC",
+   "kind": "key"
+  },
+  {
+   "name": "Info on Ashley",
+   "id": "0xAD",
+   "kind": "key"
+  },
+  {
+   "name": "Infrared Scope",
+   "id": "0xC5",
+   "kind": "other"
+  },
+  {
+   "name": "Tactical Vest",
+   "id": "0xFE",
+   "kind": "other"
+  }
+ ],
+ "note": "ids are RE4's ITEM_ID values (same on GC/Wii/PS2/PC; re_mods give/replace/merc_loadout take names or ids)"
+}

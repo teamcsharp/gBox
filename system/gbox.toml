@@ -1,4 +1,4 @@
-# G-Box deployment: control plane + worker on the DGX Spark (lilspark, 10.89.1.246), Windows node as extra worker.
+# gBox deployment: control plane + worker on the DGX Spark (lilspark, 10.89.1.246), Windows node as extra worker.
 # One file for both nodes: every path is given per-OS; data_dir resolves next to this file
 # (Spark: /home/ehm_eckx/gBox/gbox-data, Windows: \\10.89.1.246\ehm_eckx\gBox\gbox-data).
 data_dir = "gbox-data"
@@ -39,3 +39,10 @@ paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/GC ISO", windows = 
 name = "spark-ollama"
 url = "http://10.89.1.246:11434/v1"
 model = "huihui_ai/gemma-4-abliterated:e2b"
+
+[[libraries]]
+id = "ps3"
+kind = "files"
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/PS3", windows = "//10.89.1.125/QuickSwap2/Emulation/PS3" }

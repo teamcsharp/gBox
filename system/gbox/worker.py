@@ -50,6 +50,22 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     h = {"authorization": f"Bearer {token}"}
     name = name or platform.node()
     info = describe(config, name)
+    def _push():                                    # mods built on this machine join the central collection on the Spark
+        try:
+            from . import filemods
+            sent = filemods.push_missing(config, server, h)
+            if sent:
+                print(f"uploaded {len(sent)} mod(s) to the central collection: {sent}", flush=True)
+        except Exception as e:
+            print(f"mod upload skipped: {e}", flush=True)
+    threading.Thread(target=_push, daemon=True).start()
+    try:                                            # close games a previous run of this worker left running in the background
+        from .tools import reap_orphans
+        gone = reap_orphans(config)
+        if gone:
+            print(f"closed {len(gone)} leftover emulator(s) from the previous worker run: {gone}", flush=True)
+    except Exception as e:
+        print(f"orphan cleanup skipped: {e}", flush=True)
     active: set[str] = set()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
