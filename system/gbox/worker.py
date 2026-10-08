@@ -6,6 +6,7 @@ import time
 
 import httpx
 
+from . import deps
 from . import tools as _builtin  # noqa: F401  (registers tools)
 from .config import Config
 from .models import WorkerInfo
@@ -31,10 +32,24 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.server, ctx.headers = server, h
     res = {"job_id": job["id"], "ok": True}
-    try:
-        res["output"] = execute(job["tool"], job["input"], ctx)
-    except Exception as e:
-        res.update(ok=False, error=f"{type(e).__name__}: {e}")
+    for attempt in (0, 1):
+        try:
+            res["output"] = execute(job["tool"], job["input"], ctx)
+            res["ok"] = True
+            res.pop("error", None)
+            break
+        except Exception as e:
+            res.update(ok=False, error=f"{type(e).__name__}: {e}")
+            # a package this node doesn't have yet (Pillow, OpenCV...): install it into this environment and run the job again
+            mod = deps.missing_module(e)
+            if attempt or not mod:
+                break
+            ctx.progress(1, f"Installing the Python package for '{mod}' on this machine (one time)")
+            if not deps.install_for(mod):
+                res["error"] += f" (gBox tried to install the package for '{mod}' here and couldn't)"
+                break
+            ctx.artifacts.clear()                          # the retry starts clean (its log keeps the install line)
+            ctx._pct = 0.0
     # ponytail: artifacts inline as base64; switch to streamed upload when artifacts exceed ~100MB
     res["artifacts"] = [{"name": n, "media_type": mt, "provenance": p, "b64": base64.b64encode(d).decode()}
                         for n, d, mt, p in ctx.artifacts]

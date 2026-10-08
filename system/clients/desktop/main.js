@@ -278,14 +278,14 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
   if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
-  else if (toggle) { const on = !win.isFullScreen(); win.setFullScreen(on); win.webContents.send("fullscreen", on); ev.preventDefault(); }
+  else if (toggle) { win.webContents.send("hotkey", "fullscreen"); ev.preventDefault(); }   // the page's view mode follows
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
   else if (GAME_KEYS[input.key] && !input.control && !input.alt && !input.shift) { win.webContents.send("hotkey", GAME_KEYS[input.key]); ev.preventDefault(); }
 }));
 // Universal game hotkeys, the same for every emulator: F2 save state, F4 load state, F3 autoplay on/off.
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
 // through global shortcuts (registered only while a game is docked, see f3()).
-const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load" };
+const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "reset" };   // F5 = the console's reset switch
 ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
 ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : shell.openPath(REC_DIR));
@@ -346,7 +346,10 @@ const OV = require("./overlay")({ app, ipcMain, BrowserWindow, getWin: () => win
 // F3 = autoplay while a game is docked: the game window owns the keyboard, so it has to be a global shortcut.
 // ponytail: F3 is taken system-wide only while a game is docked in gBox; scope it to foreground if that ever bites.
 function f3(on) {
-  const keys = { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper" };   // F2 save · Shift/Ctrl+F2 slot ± · F4 load
+  // F2 save · Shift/Ctrl+F2 slot ± · F4 load · Alt+Enter / F11 = full screen on/off (the docked game owns the keyboard, so
+  // without these there is no way out of full screen from inside the game; Esc stays the game's own key)
+  const keys = { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper",
+                 "Alt+Enter": "fullscreen", "F11": "fullscreen" };
   try { if (on && !globalShortcut.isRegistered("F3")) Object.entries(keys).forEach(([k, a]) => globalShortcut.register(k, () => win && win.webContents.send("hotkey", a)));
         else if (!on && globalShortcut.isRegistered("F3")) Object.keys(keys).forEach(k => globalShortcut.unregister(k)); } catch {}
 }

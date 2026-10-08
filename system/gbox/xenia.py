@@ -302,9 +302,11 @@ class XeniaAdapter:
         self._p(6, "Checking Xenia")
         self.info = ensure_xenia(self.config, getattr(self, "progress", None))
         self._p(60, f"Xenia {self.info.get('version')} ready · GPU {self.info['gpu']}")
-        self.proc = subprocess.Popen(self.argv(rom), cwd=Path(self.info["exe"]).parent,
+        __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(self.info["exe"])     # the discrete GPU
+        from .adapters import _pid_window, hidden_start, keep_offscreen
+        self.proc = subprocess.Popen(self.argv(rom), cwd=Path(self.info["exe"]).parent, startupinfo=hidden_start(),
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        from .adapters import _pid_window
+        keep_offscreen(self.proc.pid)                         # minimized / off-screen until gBox docks it
         for _ in range(120):                                  # window up within 60 s, process alive
             if self.proc.poll() is not None:
                 raise RuntimeError(f"xenia exited {self.proc.returncode}: {self.log_tail()}")

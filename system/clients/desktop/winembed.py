@@ -108,7 +108,9 @@ def attach(pid: int, parent: int):
         return {"ok": False, "error": f"no window for pid {pid}"}
     if u32.IsIconic(h):
         u32.ShowWindow(h, 4)                                 # SW_SHOWNOACTIVATE: un-minimize before docking
-    state.update(hwnd=h, pid=pid, parent=parent, holes=None, style=u32.GetWindowLongPtrW(h, GWL_STYLE), exstyle=u32.GetWindowLongPtrW(h, GWL_EXSTYLE))
+    # the emulator starts fully transparent (gBox launches it that way so it never flashes on the desktop): opaque from here
+    state.update(hwnd=h, pid=pid, parent=parent, holes=None, style=u32.GetWindowLongPtrW(h, GWL_STYLE),
+                 exstyle=u32.GetWindowLongPtrW(h, GWL_EXSTYLE) & ~0x00080000)   # WS_EX_LAYERED
     style = (state["style"] & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINMAX)) | WS_CHILD | WS_VISIBLE | 0x04000000   # WS_CLIPSIBLINGS
     u32.SetWindowLongPtrW(h, GWL_STYLE, style)
     u32.SetWindowLongPtrW(h, GWL_EXSTYLE, state["exstyle"] & ~WS_EX_APPWINDOW)   # no separate taskbar button

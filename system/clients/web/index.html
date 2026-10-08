@@ -79,6 +79,11 @@
   #gmenu h4 { margin:0 0 6px; font-size:14px; } #gmenu .gms { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:6px 0; }
   #gmenu .gms > b { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); margin-bottom:4px; }
   #gmenu label { display:flex; gap:8px; align-items:center; padding:3px 0; cursor:pointer; } #gmenu select { flex:1; }
+  #gmenu .gmch { display:grid; grid-template-columns:repeat(4, 1fr); gap:5px; margin:4px 0 6px }
+  #gmenu .gmch label { flex-direction:column; gap:2px; padding:3px; border:1px solid var(--line); border-radius:6px; font-size:10px; text-align:center; line-height:1.15 }
+  #gmenu .gmch label:has(input:checked) { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 15%, transparent) }
+  #gmenu .gmch input { display:none } #gmenu .gmch img, #gmenu .gmch .nf { width:100%; aspect-ratio:1; object-fit:contain; background:#26282f; border-radius:4px; display:grid; place-items:center; font-size:18px }
+  .card .bootmod { position:absolute; left:6px; top:6px; z-index:2; font-size:10px; padding:1px 6px; border-radius:9px; background:var(--acc); color:#000; font-weight:600 }
   #gmenu .gmb { display:flex; gap:6px; margin-top:8px; }
   #traypop { position:fixed; top:48px; right:12px; width:320px; max-height:60vh; overflow:auto; display:none; z-index:80; background:var(--bg);
     border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 40px #000a; } #traypop.on { display:block; }
@@ -422,7 +427,14 @@ document.addEventListener("click", async e => {
 trayTick(); setInterval(trayTick, 5000);
 $("#tok").onchange = e => { tok = e.target.value; try { localStorage.setItem("gbox_tok", tok); } catch {} show(cur); };
 async function api(path, body, method) {
-  const r = await fetch(path, { method: method || (body ? "POST" : "GET"), headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: body && JSON.stringify(body) });
+  const m = method || (body ? "POST" : "GET");
+  let r;
+  for (let i = 0; ; i++) {                                 // reads ride out a Spark restart / Wi-Fi blip (~30 s) instead of failing a job
+    try { r = await fetch(path, { method: m, headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: body && JSON.stringify(body) }); }
+    catch (e) { if (m !== "GET" || i >= 20) throw new Error("gBox server unreachable: " + e.message); await new Promise(z => setTimeout(z, 1500)); continue; }
+    if (m === "GET" && r.status >= 502 && r.status <= 504 && i < 20) { await new Promise(z => setTimeout(z, 1500)); continue; }
+    break;
+  }
   if (!r.ok) throw new Error(r.status + " " + (await r.text())); return r.json();
 }
 let cur = "Library", timer = null;
@@ -749,7 +761,7 @@ function card(g) {
   // best available art from the drive: box art, else snap, else wheel logo, else cart art (resolved server-side)
   const art = g.media && Object.keys(g.media).length ? `<img loading="lazy" alt="" src="/api/media/${g.game_id}/best?w=360&${tq()}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'no artwork'}))">` : `<span>no artwork</span>`;
   const where = g.core ? `Spark · ${g.core}` : (g.launch && g.launch.kind === "attract" ? "Windows node" : "no runtime");
-  return `<div class="card" data-gid="${esc(g.game_id)}" data-title="${esc(g.title)}"><button class="fav" title="${g.favorite ? "Remove from favorites" : "Add to favorites"}" onclick='toggleFav(${JSON.stringify(g.game_id)}, this)'>${g.favorite ? "★" : "☆"}</button><div class="art">${art}</div><div class="meta">
+  return `<div class="card" data-gid="${esc(g.game_id)}" data-title="${esc(g.title)}">${bootBadgeHTML(g.game_id)}<button class="fav" title="${g.favorite ? "Remove from favorites" : "Add to favorites"}" onclick='toggleFav(${JSON.stringify(g.game_id)}, this)'>${g.favorite ? "★" : "☆"}</button><div class="art">${art}</div><div class="meta">
     <div class="t">${esc(g.title)}</div>
     <div class="s">${esc(g.system || g.platform)}${g.year ? " · " + esc(g.year) : ""}${g.manufacturer ? " · " + esc(g.manufacturer) : ""}</div>
     <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span></div>
@@ -854,7 +866,7 @@ async function sessionsView(sid, mode) {
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
     ${s.state === "running" ? `<button class="act" id="resetbtn" style="margin-left:auto;padding:5px 7px;line-height:0" title="Reset: restart the game (console reset; emulators without one relaunch the same game + mod)"
-      aria-label="Reset" onclick='resetGame(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
+      aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
       aria-label="Stop" onclick='hardStop(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg></button>` : ""}</div>`;
   if (mode === "inspect") return head + await inspectView(sid);
@@ -864,14 +876,17 @@ async function sessionsView(sid, mode) {
       ${local ? (s.detail.worker_name === window.GBOX_LOCAL?.worker
         ? `<div id="nativeslot" data-sid="${esc(sid)}" class="screen" style="background:#000"></div>`
         : `<div class="screen" style="display:flex;align-items:center;justify-content:center;min-height:300px;padding:20px;text-align:center">
-        <div><h3>Running natively on ${esc(s.detail.worker_name || "another PC")}</h3><p class="mut">This game is playing on that PC's screen. Inspect, memory edits and Blender copy still work from here.</p></div></div>`)
+        <div><h3>Running natively on ${esc(s.detail.worker_name || "another PC")}</h3><p class="mut">This game is playing on that PC's screen. Inspect, memory edits and Blender copy still work from here.</p>
+        ${window.GBOX_LOCAL?.worker && s.state === "running" ? `<button class="act pri" title="Save state there, start the same game (and mod) on this PC, load it, close the other copy" onclick='moveHere(${JSON.stringify(sid)}, this)'>Pull it to this PC</button>` : ""}</div></div>`)
       : `<img id="scr" data-sid="${esc(sid)}" title="Ctrl+click: pick the object under the cursor (3D model)" class="screen" tabindex="0" alt="Live game view — click, then use the keyboard" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">`}
       ${s.game_id ? `<div id="wb" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading your controls…</p></div>` : ""}
       <div id="dock-main" class="dock" data-zone="main"></div></div>
-      <div class="sidecol"><div id="dock-top" class="dock" data-zone="top">
+      <div class="sidecol">${smartSearchHTML()}<div id="dock-top" class="dock" data-zone="top">
         <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press</span></summary>
           <div id="padglyph" title="Your controller live · click a button to press it"></div>
           <button id="padstat" class="act" style="width:100%;text-align:left;white-space:normal;font-size:11px;margin-top:4px" aria-expanded="false" aria-controls="padpicker" onclick="togglePadPicker()"></button>
+          <button class="act" style="width:100%;margin-top:4px;font-size:11px" title="Opens the emulator's own menu over the game (RetroArch: Quick Menu → Controls → Port 1 Controls for binds, analog sensitivity, deadzone, turbo). Press it again to close."
+            onclick='api("/api/sessions/" + encodeURIComponent(${JSON.stringify(sid)}) + "/rpc", { op: "menu", args: {} }).then(() => { this.textContent = "🎮 Emulator controller settings (open — press again to close)"; }).catch(e => { this.textContent = "🎮 not available: " + e.message.slice(0, 80); })'>🎮 Emulator controller settings</button>
           <div id="padpicker" hidden style="margin-top:8px"></div></details>
         <details open data-dock="session" class="sect"><summary draggable="true">Session</summary>
       <div class="bar" style="margin-top:12px">
@@ -881,11 +896,119 @@ async function sessionsView(sid, mode) {
         <button class="act" onclick='sop(${JSON.stringify(sid)},"save_state")'>Save state</button><button class="act" onclick='sop(${JSON.stringify(sid)},"load_state")'>Load state</button>
         <button class="act" onclick='snap(${JSON.stringify(sid)})'>Snapshot → artifact</button>
         <button class="act" style="color:var(--bad)" onclick='sop(${JSON.stringify(sid)},"stop_game").then(()=>show("Sessions"))'>Stop</button>
-        ${!local ? `<button class="act pri" title="Save state here, start the same game (and mod) on this PC, load it, close the Spark copy: native speed and controls" onclick='moveHere(${JSON.stringify(sid)}, this)'>Move to this PC</button>` : ""}</div>
+        ${s.state === "running" && window.GBOX_LOCAL?.worker && s.detail?.worker_name !== window.GBOX_LOCAL.worker ? `<button class="act pri" title="Save state there, start the same game (and mod) on this PC, load it, close the other copy: native speed, your GPU, your controller" onclick='moveHere(${JSON.stringify(sid)}, this)'>Move to this PC</button>` : ""}</div>
       <p id="sopres" class="mut"></p></details></div>
       ${s.game_id ? `<details data-dock="gfx" class="panel gfxbox sect" ${localStorage.getItem("gbox_gfx_open") === "1" ? "open" : ""} ontoggle='try{localStorage.setItem("gbox_gfx_open", this.open ? "1" : "0")}catch{}'>
         <summary draggable="true">Graphics settings</summary><div id="gfx" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>` : ""}
       <div id="dock-side" class="dock" data-zone="side"></div></div></div>`;
+}
+// ---- smart search (top of the game's sidebar): this game's characters, mods, sliders, panels + gBox tools and games.
+// ▾ = history of past searches (with the thumbnail of what was picked); picking a past item jumps straight to it.
+const SS = { hist: (() => { try { return JSON.parse(localStorage.getItem("gbox_ss_hist") || "[]"); } catch { return []; } })(), items: [], sid: null };
+const ssSave = () => { try { localStorage.setItem("gbox_ss_hist", JSON.stringify(SS.hist.slice(0, 50))); } catch {} };
+function ssRemember(q, it) {
+  q = (q || "").trim(); if (!q && !it) return;
+  const pick = it ? { key: it.key, kind: it.kind, label: it.label, thumb: it.thumb || "" } : null;
+  SS.hist = [{ q, pick, ts: Date.now() }, ...SS.hist.filter(h => !(h.q.toLowerCase() === q.toLowerCase() && (h.pick?.key || "") === (pick?.key || "")))];
+  ssSave();
+}
+function smartSearchHTML() {
+  if (!document.getElementById("ss-css")) document.head.insertAdjacentHTML("beforeend", `<style id="ss-css">
+    #ss { position:relative; margin-bottom:8px } #ss .row1 { display:flex; gap:4px } #ssq { flex:1; min-width:0 }
+    #ssres { position:absolute; z-index:50; left:0; right:0; top:100%; margin-top:4px; max-height:60vh; overflow:auto; background:var(--panel,#1b1d23);
+      border:1px solid var(--line,#333); border-radius:8px; box-shadow:0 8px 24px #0008; padding:4px }
+    #ssres .it { display:flex; gap:8px; align-items:center; padding:5px 6px; border-radius:6px; cursor:pointer }
+    #ssres .it:hover, #ssres .it.sel { background:var(--line,#2a2d36) }
+    #ssres .th { width:36px; height:36px; flex:none; border-radius:4px; background:#26282f center/contain no-repeat; display:grid; place-items:center; font-size:16px }
+    #ssres .tx { min-width:0 } #ssres .tx b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px }
+    #ssres .tx span { font-size:11px; color:var(--mut,#999) } #ssres .hd { font-size:11px; color:var(--mut,#999); padding:4px 6px 2px }
+    .ssflash { outline:2px solid var(--acc,#6cf) !important; outline-offset:2px; transition:outline-color .6s }</style>`);
+  return `<div id="ss"><div class="row1"><input id="ssq" type="search" autocomplete="off" placeholder="Search characters, mods, controls, tools, games…" aria-label="Smart search">
+    <button class="act" id="sshist" title="Search history" aria-label="Search history" style="padding:4px 8px">▾</button></div><div id="ssres" hidden></div></div>`;
+}
+const ssIcon = { character: "🧍", mod: "🧩", control: "🎚", section: "▤", tool: "🛠", game: "🎮", search: "🔍" };
+function ssReveal(sel, dock) {                               // open the section, scroll the thing into view, flash it
+  const d = dock && document.querySelector(`details[data-dock="${dock}"]`); if (d) d.open = true;
+  const el = typeof sel === "string" ? document.querySelector(sel) : sel; if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("ssflash"); setTimeout(() => el.classList.remove("ssflash"), 1800);
+  return true;
+}
+async function smartSearchInit(sid) {
+  SS.sid = sid;
+  const gid = $("#wb")?.dataset.gid || "", q = $("#ssq"), res = $("#ssres"); let sel = -1, shown = [];
+  const tq_ = tq();
+  const [chars, wb, reg] = await Promise.all([gid ? api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => []) : [],
+    gid ? api(`/api/games/${gid}/workbench`).catch(() => ({})) : {}, api("/api/registry").catch(() => ({ tools: [] }))]);
+  SS.items = [
+    ...chars.map(c => ({ kind: "character", key: "c:" + c.slug, label: c.name, sub: c.source?.game_title || "character", thumb: c.preview_url,
+      hay: [c.name, c.slug, c.source?.game_title, ...(c.aliases || []), c.kind].join(" "),
+      go: () => ssReveal(`.chc[data-slug="${CSS.escape(c.slug)}"]`, "chars") })),
+    ...(wb.mods || []).map((m, i) => ({ kind: "mod", key: "m:" + m.id, label: m.title, sub: (m.verified ? "verified mod" : "mod") + (m.desc ? " · " + m.desc : ""),
+      thumb: m.thumb ? `/api/artifacts/${m.thumb}` : "", hay: [m.title, m.desc, ...m.calls.map(c => c.tool + " " + JSON.stringify(c.input))].join(" "),
+      go: () => ssReveal(`.wbm[data-m="${i}"]`, "mods") })),
+    ...(wb.controls || []).map((c, i) => ({ kind: "control", key: "k:" + c.label, label: c.label, sub: "slider / switch · " + (c.tool || ""), hay: [c.label, c.tool].join(" "),
+      go: () => ssReveal(`.wbc[data-i="${i}"]`, "controls") })),
+    ...[...document.querySelectorAll("details[data-dock] > summary")].map(sm => ({ kind: "section", key: "s:" + sm.parentElement.dataset.dock,
+      label: (sm.childNodes[0]?.textContent || sm.textContent).trim(), sub: "panel", hay: sm.textContent,
+      go: () => ssReveal(sm.parentElement, sm.parentElement.dataset.dock) })),
+    ...(reg.tools || []).map(t => ({ kind: "tool", key: "t:" + t.name, label: t.name, sub: (t.description || "").split("\n")[0].slice(0, 90),
+      hay: t.name + " " + (t.description || ""), go: () => show("Tools") })),
+  ];
+  const score = (it, words) => {
+    const h = (it.hay || "").toLowerCase(), l = it.label.toLowerCase();
+    if (!words.every(w => h.includes(w))) return -1;
+    return (l === words.join(" ") ? 100 : l.startsWith(words[0]) ? 50 : l.includes(words[0]) ? 25 : 0)
+      + ({ character: 6, mod: 5, control: 4, section: 3, game: 2, tool: 1 }[it.kind] || 0);
+  };
+  const thumb = it => it.thumb ? `<div class="th" style="background-image:url('${it.thumb}${it.thumb.includes("?") ? "&" : "?"}${tq_}')"></div>`
+    : `<div class="th">${ssIcon[it.kind] || "•"}</div>`;
+  const row = (it, i) => `<div class="it" data-i="${i}">${thumb(it)}<div class="tx"><b>${esc(it.label)}</b><span>${esc(it.kind)} · ${esc(it.sub || "")}</span></div></div>`;
+  const paint = (list, head) => { shown = list; sel = -1;
+    res.innerHTML = (head ? `<div class="hd">${head}</div>` : "") + (list.map(row).join("") || `<div class="hd">nothing found</div>`); res.hidden = false; };
+  let gamesT = null;
+  const search = () => {
+    res.dataset.mode = "q";
+    const words = q.value.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) { res.hidden = true; return; }
+    const local = SS.items.map(it => [score(it, words), it]).filter(x => x[0] >= 0).sort((a, b) => b[0] - a[0]).slice(0, 30).map(x => x[1]);
+    paint(local);
+    clearTimeout(gamesT); gamesT = setTimeout(async () => {                    // games from the library (server-side search)
+      const term = q.value.trim(); if (term.length < 2) return;
+      const r = await api(`/api/catalog?q=${encodeURIComponent(term)}&limit=6`).catch(() => null);
+      const gs = (Array.isArray(r) ? r : r?.items || r?.games || r?.results || []).slice(0, 6);
+      if (q.value.trim() !== term || !gs.length) return;
+      paint(local.concat(gs.map(g => ({ kind: "game", key: "g:" + g.game_id, label: g.title, sub: [g.platform, g.year].filter(Boolean).join(" · "),
+        thumb: g.media && Object.keys(g.media).length ? `/api/media/${g.game_id}/best?w=120` : "", go: () => play(g.game_id) }))));
+    }, 250);
+  };
+  const pick = it => { if (!it) return; ssRemember(q.value || it.label, it); res.hidden = true; it.go?.(); };
+  q.oninput = search;
+  q.onfocus = () => { if (q.value.trim()) search(); };
+  q.onkeydown = e => {
+    const its = res.querySelectorAll(".it");
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, Math.min(its.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)));
+      its.forEach((x, i) => x.classList.toggle("sel", i === sel)); its[sel]?.scrollIntoView({ block: "nearest" }); }
+    else if (e.key === "Enter") { e.preventDefault(); if (shown.length) res.onmousedown({ target: its[Math.max(0, sel)], preventDefault() {} }); else ssRemember(q.value); }
+    else if (e.key === "Escape") res.hidden = true;
+  };
+  res.onmousedown = e => {
+    const r = e.target?.closest?.(".it"); if (!r) return; e.preventDefault();
+    const it = shown[+r.dataset.i]; if (!it) return;
+    if (!it.hist) return pick(it);
+    q.value = it.q;                                            // a past search: jump to what was picked, else search again
+    const again = it.pick && SS.items.find(x => x.key === it.pick.key);
+    if (again) return pick(again);
+    if (it.pick?.kind === "game") { res.hidden = true; ssRemember(it.q, it.pick); return play(it.pick.key.slice(2)); }
+    search();
+  };
+  $("#sshist").onclick = () => {
+    if (!res.hidden && res.dataset.mode === "hist") { res.hidden = true; return; }
+    paint(SS.hist.map(h => ({ hist: true, q: h.q, pick: h.pick, kind: h.pick?.kind || "search", key: h.pick?.key || "q:" + h.q,
+      label: h.pick?.label || h.q, sub: (h.pick ? `searched "${h.q}"` : "search") + " · " + new Date(h.ts).toLocaleDateString(),
+      thumb: h.pick?.thumb || "" })), SS.hist.length ? "Recent searches" : "No searches yet");
+    res.dataset.mode = "hist";
+  };
+  if (!SS.outside) { SS.outside = true; document.addEventListener("mousedown", e => { if (!e.target.closest?.("#ss")) { const r = $("#ssres"); if (r) r.hidden = true; } }); }
 }
 // ---------------- Examine 3D: the paused frame as a real 3D scene (scene_capture -> .glb -> three.js) ----------------
 // Entering pauses the game (it waits in picture-in-picture) and rebuilds the frame on screen in 3D; Play resumes it.
@@ -1044,6 +1167,7 @@ async function gfxInit() {
 }
 sessionsView.after = (sid, mode) => {
   if (!sid) return;
+  if ($("#ss")) smartSearchInit(sid).catch(() => {});
   if (mode !== "inspect") {                                   // mods/controls first; a failing graphics panel must not take them down
     const shown = (what, e) => $("#dock-side")?.insertAdjacentHTML("beforeend", `<p class="bad" style="font-size:12px">${what} failed: ${esc(e?.message || e)}</p>`);
     Promise.resolve().then(wbInit).catch(e => shown("Mods / controls", e));
@@ -1128,14 +1252,37 @@ document.addEventListener("dragend", () => {
   dispatchEvent(new Event("resize"));                    // the game area re-fits to the space it gained
 });
 // ---- mods: apply with a readable result; "patch" mods (code patches, cheats, drop tables) stay on across game reloads ----
-async function modApply(m, sid) {
+// a file/model mod (sprites, models, disc files) needs the emulator restarted with the new image: the server swaps it into
+// THIS session on the PC it runs on, carrying the moment over with a save state (mod "" = back to the original game)
+async function modSwap(sid, mod, onMsg) {
+  let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod });
+  while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 700)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) onMsg?.(j.progress.msg); }
+  if (j.state !== "succeeded") throw new Error(j.error || "swap failed");
+  followSession(sid, j.output.session_id);
+  return j.output;
+}
+function followSession(from, to) {                         // keep showing / controlling the game after a swap or move
+  if (!to || to === from) return;
+  if (active?.sid === from) { active.sid = to; pip(); }
+  if (cur === "Sessions" && playing === from) setTimeout(() => show("Sessions", to), 200);
+}
+setInterval(async () => {                                  // a session replaced elsewhere (chat agent, character swap): follow it
+  const sid = playing || active?.sid; if (!sid) return;   // not document.hidden: a docked game window makes Chromium call the page hidden
+  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
+  if (s?.state === "ended" && s.replaced_by) followSession(sid, s.replaced_by);
+}, 3000);
+const modDisc = m => m.calls.find(c => c.tool === "@launch")?.input.mod;
+async function modApply(m, sid, onMsg) {
   const lines = [];
   for (const c of m.calls) {
-    if (c.tool === "@launch") {                                // a disc/model mod: start the game with it on this PC
+    if (c.tool === "@launch") {                                // a disc/model mod: swap it into the running game, same PC
       const gid = c.input.game_id || m.game_id;
-      if (sid) await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game", args: {} }, require_worker: sid.split("-")[0] })
-        .catch(() => {});                                      // the modded disc replaces this game: no second window/session
-      let j = await api(`/api/games/${gid}/launch?node=${c.input.node || "windows"}&mod=${encodeURIComponent(c.input.mod)}`, {});
+      if (sid) {
+        const r = await modSwap(sid, c.input.mod, onMsg); sid = r.session_id;
+        lines.push(`${c.input.mod} on${r.state_loaded ? " · same moment" : ""}${r.notes?.length ? " · " + r.notes.join("; ") : ""}`); continue;
+      }
+      const node = window.GBOX_LOCAL?.worker || c.input.node || "auto";
+      let j = await api(`/api/games/${gid}/launch?node=${encodeURIComponent(node)}&mod=${encodeURIComponent(c.input.mod)}`, {});
       while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 1000)); j = await api("/api/jobs/" + j.id); }
       if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
       setTimeout(() => show("Sessions", j.output.session_id), 300);
@@ -1151,12 +1298,42 @@ async function modApply(m, sid) {
   }
   return { summary: "✓ " + lines.join(" · "), detail: lines.join("\n") };
 }
+const modOffable = m => m.calls.some(c => c.tool === "@launch" || c.tool === "characters" || "on" in (c.input || {}));
+async function modOff(m, sid, onMsg) {                     // switch a mod back off: original game files / the "on: false" ops
+  const sess = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
+  const lines = [];
+  if (m.calls.some(c => c.tool === "@launch" || c.tool === "characters")) {
+    if (sess.mod) { const r = await modSwap(sid, "", onMsg); sid = r.session_id; lines.push(`original game${r.state_loaded ? " · same moment" : ""}`); }
+  }
+  for (const c of m.calls.filter(c => c.tool !== "@launch" && c.tool !== "characters" && "on" in (c.input || {}))) {
+    const j = await runJob({ tool: c.tool, input: { ...c.input, on: false, session_id: sid }, require_worker: sid.split("-")[0] });
+    if (j.state !== "succeeded") throw new Error(`${c.tool}: ${j.error || j.state}`);
+    lines.push(`${c.input.op || c.tool} off`);
+  }
+  return { summary: "○ off · " + (lines.join(" · ") || "nothing to undo"), detail: lines.join("\n"), sid };
+}
 const modSticky = m => m.calls.every(c => c.tool === "cheats" || (c.tool === "pso_drops" && c.input.op !== "restore") ||
   (c.tool === "pso_mods" && ["equip_any", "crit_always", "attack_speed"].includes(c.input.op) && c.input.on !== false) ||
   (c.tool === "re_mods" && ["infinite_ammo", "combo_freeze", "merc_timer_freeze", "unlimited_health", "mercenaries_unlock", "unlock_all", "spawn_multiplier", "merc_time_bonus", "explosive_melee", "super_melee", "auto_spin", "aim_turn_speed", "weapon_mod"].includes(c.input.op) && c.input.on !== false));
 const modKeepGet = gid => { try { return JSON.parse(localStorage.getItem("gbox_modkeep_" + gid) || "[]"); } catch { return []; } };
 const modKeep = (gid, id, on) => { const l = new Set(modKeepGet(gid)); on ? l.add(id) : l.delete(id); try { localStorage.setItem("gbox_modkeep_" + gid, JSON.stringify([...l])); } catch {} };
 const MODWATCH = {};
+function modReapply() {                                   // after a console reset: switch the kept patch mods back on
+  (MODWATCH.mods || []).forEach(m => { m._applied = false; });
+  setTimeout(() => MODWATCH.tick?.(), 3000);
+}
+async function hardReset(sid, btn) {                         // Ctrl+click reset: original game from boot, this game's mod setup cleared
+  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
+  if (btn) btn.disabled = true;
+  try {
+    if (s.game_id) { bootSet(s.game_id, { disc: "", slot: "" }); try { localStorage.removeItem("gbox_modkeep_" + s.game_id); } catch {} }
+    let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: "", keep_state: false });
+    while (/queued|running/.test(j.state)) { await new Promise(z => setTimeout(z, 700)); j = await api("/api/jobs/" + j.id); }
+    if (j.state !== "succeeded") throw new Error(j.error || j.state);
+    followSession(sid, j.output.session_id); if (btn) btn.title = "Hard reset ✓ original game, mods cleared";
+  } catch (e) { if (btn) btn.title = "Hard reset failed: " + e.message; }
+  finally { if (btn) btn.disabled = false; }
+}
 function modWatch(gid, sid, mods) {                       // re-apply kept patch mods when a reload wipes them (checked every 20 s)
   clearInterval(MODWATCH.t);
   const tick = async () => {
@@ -1172,6 +1349,7 @@ function modWatch(gid, sid, mods) {                       // re-apply kept patch
         if (card) { card.classList.add("on"); card.querySelector(".row i").textContent = "kept on · " + r.summary; } }).catch(() => { m._applied = false; }); }
     }
   };
+  MODWATCH.mods = mods; MODWATCH.tick = tick;
   tick(); MODWATCH.t = setInterval(tick, 20000);
 }
 async function wbInit() {
@@ -1195,7 +1373,7 @@ async function wbInit() {
   const tdesc = Object.fromEntries((reg.tools || []).map(t => [t.name, t.description || ""]));
   const mod = (m, i) => `<div class="wbm" data-m="${i}">${m.thumb ? `<img loading="lazy" data-moment="${m.state_slot ?? ""}" title="Click to view (zoom / pan)" style="cursor:zoom-in" src="/api/artifacts/${m.thumb}?${tq()}">` : '<div class="nf">no picture yet</div>'}
       <b>${esc(m.title)}</b><span class="${m.verified ? "ok" : "unv"}">${m.verified ? "verified" : "not verified yet"} · ${m.calls.length} step${m.calls.length === 1 ? "" : "s"}</span>
-      <div class="row"><button data-apply>Activate</button><button data-shot title="Use what the game shows right now as this mod's picture">📷</button>${
+      <div class="row"><button data-apply title="${modOffable(m) ? "Click to switch this mod on or off in the running game (same PC, same moment)" : "One-shot: applies once"}">${modOffable(m) ? "Turn on" : "Activate"}</button><button data-shot title="Use what the game shows right now as this mod's picture">📷</button>${
         m.calls.some(c => c.tool === "@launch") ? `<button data-blmod title="Copy this mod's model to Blender's clipboard (Ctrl+V in a Blender 3D viewport)">⧉</button><button data-export title="Save the modded game file (bootable, with this mod built in)">💾</button>` : ""}${
         m.calls.some(c => ["@launch", "cheats", "re_mods", "characters"].includes(c.tool)) ? `<button data-romx title="Export ROM hack: a bootable copy of YOUR game file with this mod baked in (flash cart / modded console / emulator) + a shareable patch (BPS/IPS, no game data) + cheat files. Stays on your gBox.">Export ROM hack</button>` : ""}${m.state_slot != null ? `<button data-moment="${m.state_slot}">Load moment</button>` : ""}
         ${m.video ? `<a class="b" target="_blank" href="/api/artifacts/${m.video}?${tq()}">Play video</a>` : ""}<i></i></div>
@@ -1207,13 +1385,17 @@ async function wbInit() {
       <div class="wbcs">${d.controls.map(ctl).join("") || '<p class="mut">Ask gBox for a slider ("give me a slider for car speed") and it lands here.</p>'}</div></details>
     <details open data-dock="bookmarks" class="sect"><summary draggable="true">🔖 Bookmarks <span class="mut">${d.bookmarks.length} changes, with save states before and after</span></summary>
       <div class="wbbs">${d.bookmarks.map(bm).join("") || '<p class="mut">Every request that changes the game is bookmarked here.</p>'}</div></details>
-    <details open data-dock="chars" class="sect"><summary draggable="true">🧍 Characters <span class="mut">library: put one into this game</span></summary>
+    <details open data-dock="chars" class="sect"><summary draggable="true">🧍 Characters <span class="mut">library: put one into this game</span> <button class="act" id="chxbtn" style="float:right;padding:2px 8px" title="Extract characters from this game into your library (pick who's on screen)" onclick="event.preventDefault(); event.stopPropagation(); charExtractPanel()">⤓ Extract</button></summary>
       <div id="chars" data-gid="${esc(gid)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>`;
   const host = el.closest(".play") || el;
   dockApply();
   charsInit();
   modWatch(gid, sid, mods);
-  mods.forEach((m, i) => { if (modKeepGet(gid).includes(m.id)) { const c = el.closest(".play")?.querySelector(`.wbm[data-m="${i}"]`); c?.classList.add("on"); } });
+  const curMod = ((await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {}).mod || "";
+  mods.forEach((m, i) => { const c = el.closest(".play")?.querySelector(`.wbm[data-m="${i}"]`) || el.querySelector(`.wbm[data-m="${i}"]`);
+    const on = modDisc(m) ? modDisc(m) === curMod : modKeepGet(gid).includes(m.id);
+    if (on && c) { c.classList.add("on"); const b = c.querySelector("button[data-apply]"); if (b && modOffable(m)) b.textContent = "Turn off";
+      if (modDisc(m)) c.querySelector(".row i").textContent = "on in this game"; } });
   const runCtl = async (l, c, v) => { const st = l.querySelector("i"); st.textContent = "⏳";
       const fill = x => typeof x === "string" ? (x === "{value}" ? v : x.replaceAll("{value}", String(v))) : Array.isArray(x) ? x.map(fill)
         : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, fill(y)])) : x;
@@ -1235,13 +1417,19 @@ async function wbInit() {
   host.addEventListener("click", async e => {
     const card = e.target.closest(".wbm"); if (!card) return;
     const m = mods[+card.dataset.m], st = card.querySelector(".row i"), mom = e.target.closest("[data-moment]");
-    if (e.target.closest("button[data-apply]")) {                     // replay every step of the mod on this session
-      e.target.disabled = true; st.textContent = "applying…"; st.title = "";
-      try { const res = await modApply(m, sid); st.textContent = res.summary; st.title = res.detail; card.classList.add("on");
-            if (modSticky(m)) modKeep(gid, m.id, true);
-            if (!m.thumb && !m.calls.some(c => c.tool === "@launch")) setTimeout(() => modShot(m, sid, card, false), 1500); }
-      catch (err) { st.textContent = "failed: " + err.message.slice(0, 60); st.title = err.message; card.classList.remove("on"); }
-      finally { e.target.disabled = false; }
+    if (e.target.closest("button[data-apply]")) {                     // on: replay every step on this session; off: undo it
+      const btn = e.target.closest("button[data-apply]"), turnOff = modOffable(m) && card.classList.contains("on");
+      btn.disabled = true; st.textContent = turnOff ? "turning off…" : "applying…"; st.title = "";
+      const msg = t => { st.textContent = t; };
+      try {
+        if (turnOff) { const res = await modOff(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.remove("on");
+                       modKeep(gid, m.id, false); if (modOffable(m)) btn.textContent = "Turn on"; }
+        else { const res = await modApply(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.add("on");
+               if (modOffable(m)) btn.textContent = "Turn off";
+               if (modSticky(m)) modKeep(gid, m.id, true);
+               if (!m.thumb && !m.calls.some(c => c.tool === "@launch")) setTimeout(() => modShot(m, sid, card, false), 1500); } }
+      catch (err) { st.textContent = "failed: " + err.message.slice(0, 90); st.title = err.message; }
+      finally { btn.disabled = false; }
     } else if (e.target.closest("button[data-blmod]")) {
       const L = m.calls.find(c => c.tool === "@launch").input;
       st.textContent = "copying to Blender…";
@@ -1310,6 +1498,16 @@ async function charsInit() {
     cs.filter(c => c.variant_of && by[c.variant_of]).forEach(c => (kids[c.variant_of] ||= []).push(c));
     const put = c => { out.push(c); (kids[c.slug] || []).forEach(put); };
     cs.filter(c => !(c.variant_of && by[c.variant_of])).forEach(put); cs = out; }
+  const used = (() => { try { return JSON.parse(localStorage.getItem("gbox_char_used") || "{}"); } catch { return {}; } })();
+  const sortBy = (() => { try { return localStorage.getItem("gbox_char_sort") || "recent"; } catch { return "recent"; } })();
+  const groupKey = c => (c.variant_of && cs.some(x => x.slug === c.variant_of)) ? c.variant_of : c.slug;   // variants stay under their base
+  const val = { recent: c => -(used[c.slug] || 0), name: c => c.name.toLowerCase(), console: c => (c.source?.platform || "~") + " " + c.name.toLowerCase(),
+                size: c => -(c.stats?.triangles || 0) };
+  { const byGroup = {}; cs.forEach(c => (byGroup[groupKey(c)] ||= []).push(c));
+    const head = g => byGroup[g].find(c => c.slug === g) || byGroup[g][0], f = val[sortBy] || val.recent;
+    const keyOf = g => sortBy === "recent" ? -Math.max(...byGroup[g].map(c => used[c.slug] || 0)) : f(head(g));
+    cs = Object.keys(byGroup).sort((a, b) => { const x = keyOf(a), y = keyOf(b); return x < y ? -1 : x > y ? 1 : head(a).name.localeCompare(head(b).name); })
+      .flatMap(g => byGroup[g]); }
   const stale = c => (c.targets?.[gid] || []).some(t => t.needs_rebuild);
   const card = (c, i) => `<div class="chc" data-i="${i}" data-slug="${esc(c.slug)}" data-name="${esc(c.name)}" style="border:1px solid var(--line,#333);${c.variant_of ? "border-left:3px solid var(--acc,#6cf);" : ""}border-radius:6px;padding:4px;display:flex;flex-direction:column;gap:2px;font-size:12px">
       <img loading="lazy" alt="" draggable="true" title="Drag onto a character in the game to replace it" style="width:100%;aspect-ratio:1;object-fit:contain;background:#26282f;border-radius:4px;cursor:grab" src="${c.preview_url}?${tq()}"
@@ -1324,8 +1522,11 @@ async function charsInit() {
         <input type="range" data-head min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
       <button class="act" data-headgo hidden>Build head ×1.0</button>
       <i class="mut" style="font-size:11px;white-space:pre-wrap"></i></div>`;
-  el.innerHTML = cs.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px">${cs.map(card).join("")}</div>`
-    : '<p class="mut">No characters in the library yet.</p>';
+  const sortBar = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;font-size:11px">${[["recent", "Recently used"], ["name", "Name"], ["console", "Console"], ["size", "Size"]]
+    .map(([k, t]) => `<button class="fchip ${sortBy === k ? "on" : ""}" data-csort="${k}" style="padding:2px 8px;border-radius:12px">${t}</button>`).join("")}</div>`;
+  el.innerHTML = sortBar + (cs.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px">${cs.map(card).join("")}</div>`
+    : '<p class="mut">No characters in the library yet.</p>');
+  el.querySelectorAll("[data-csort]").forEach(b => b.onclick = () => { try { localStorage.setItem("gbox_char_sort", b.dataset.csort); } catch {} charsInit(); });
   charOvlWatch(sid);
   el.oninput = e => {
     const r = e.target.closest("input[data-head]"); if (!r) return;
@@ -1352,6 +1553,7 @@ async function charsInit() {
       try { const r = await blenderCopy({ character: c.slug }, sid); st.textContent = `✓ on Blender's clipboard (${r.triangles} triangles, ${r.packed} textures): Ctrl+V in its viewport`; }
       catch (err) { st.textContent = "✗ " + err.message; } finally { bl.disabled = false; } return; }
     const b = e.target.closest("button[data-use]"); if (!b) return;
+    try { const u = JSON.parse(localStorage.getItem("gbox_char_used") || "{}"); u[b.closest(".chc").dataset.slug] = Date.now(); localStorage.setItem("gbox_char_used", JSON.stringify(u)); } catch {}
     const box = b.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i");
     b.disabled = true; st.textContent = "working…";
     try {
@@ -1364,6 +1566,53 @@ async function charsInit() {
       st.textContent = r.status === "native" ? r.message : `${r.status} · ${r.mod}${r.notes ? " · " + r.notes : ""}`;
     } catch (err) { st.textContent = "failed: " + err.message.slice(0, 200); st.title = err.message; }
     finally { b.disabled = false; }
+  };
+}
+// ⤓ Extract (any game): the character on screen, or pick who from the game's roster / type a name. Runs on the Spark
+// (the collection lives there): the game's own extractor if it has one, else a 3D capture of the frame on this PC.
+async function charExtractPanel() {
+  const el = $("#chars"); if (!el) return;
+  const gid = el.dataset.gid, sid = el.dataset.sid;
+  let box = $("#chxpanel");
+  if (box) { box.remove(); return; }
+  el.insertAdjacentHTML("afterbegin", `<div id="chxpanel" class="panel" style="margin-bottom:8px;font-size:12px"><p class="mut">loading who this game can extract…</p></div>`);
+  box = $("#chxpanel");
+  let r = { roster: [] }; try { r = await api(`/api/games/${encodeURIComponent(gid)}/roster`); } catch {}
+  const ros = r.roster || [];
+  box.innerHTML = `<b>Extract from this game</b>
+    <div style="display:flex;gap:6px;margin:6px 0"><button class="act pri" id="chxscreen" title="Captures the frame and cuts out the character at the middle of the screen (usually your character)">🎯 Character on screen</button><button class="act" id="chxclose">Close</button></div>
+    <div class="mut">…or pick who${ros.length ? " (✓ = already in your library)" : ""}:</div>
+    ${ros.length ? `<input id="chxq" placeholder="filter…" style="width:100%;margin:6px 0">
+    <div id="chxlist" style="display:flex;flex-wrap:wrap;gap:4px;max-height:220px;overflow:auto">${ros.map(e => `<label data-n="${esc(e.name.toLowerCase())}" style="display:inline-flex;gap:4px;align-items:center;padding:2px 6px;border:1px solid var(--line,#333);border-radius:12px">
+      <input type="checkbox" value="${esc(e.name)}">${esc(e.name)}${e.collected ? ' <span class="ok">✓</span>' : ""}</label>`).join("")}</div>` : ""}
+    <input id="chxfree" placeholder="${ros.length ? "or type a name" : "type who, e.g. the boss, the car, Link"}" style="width:100%;margin:6px 0">
+    <button class="act" id="chxgo">Extract picked</button><div id="chxst" class="mut" style="white-space:pre-wrap;margin-top:4px"></div>`;
+  $("#chxq")?.addEventListener("input", e => { const q = e.target.value.toLowerCase(); box.querySelectorAll("#chxlist label").forEach(l => l.style.display = l.dataset.n.includes(q) ? "" : "none"); });
+  $("#chxclose").onclick = () => box.remove();
+  const st = $("#chxst");
+  const run = async (items) => {
+    box.querySelectorAll("button").forEach(b => b.disabled = true); const lines = [];
+    for (const it of items) {
+      st.textContent = lines.concat(`⏳ ${it.label}…`).join("\n");
+      try {
+        let j = await api("/api/jobs", { tool: "characters", input: { op: "extract", kind: "character", game_id: gid, session_id: sid, character: it.what, ...(it.xy || {}) } });
+        while (/queued|running/.test(j.state)) { await new Promise(z => setTimeout(z, 1200)); j = await api("/api/jobs/" + j.id);
+          if (j.progress?.msg) st.textContent = lines.concat(`⏳ ${it.label}: ${j.progress.msg}`).join("\n"); }
+        const o = j.output?.result || {};
+        lines.push(j.state !== "succeeded" ? `✗ ${it.label}: ${j.error || j.state}` : o.status === "extracted" ? `✓ ${o.entry?.name || it.label} extracted`
+          : o.status === "in_collection" ? `✓ ${o.entry?.name || it.label} (already in your library)` : `✗ ${it.label}: ${o.message || o.status}`);
+      } catch (e) { lines.push(`✗ ${it.label}: ${e.message}`); }
+      st.textContent = lines.join("\n");
+    }
+    box.querySelectorAll("button").forEach(b => b.disabled = false);
+    setTimeout(() => charsInit(), 600);                       // new entries show up in the library list
+  };
+  $("#chxscreen").onclick = () => run([{ label: "character on screen", what: "the character in the middle of the screen", xy: { x: 0.5, y: 0.55 } }]);
+  $("#chxgo").onclick = () => {
+    const picked = [...box.querySelectorAll("#chxlist input:checked")].map(i => ({ label: i.value, what: i.value }));
+    const free = ($("#chxfree").value || "").trim(); if (free) picked.push({ label: free, what: free });
+    if (!picked.length) { st.textContent = "tick someone or type a name (or use 🎯 Character on screen)"; return; }
+    run(picked);
   };
 }
 // no swap writer for this game: draw it over the player right now (an overlay in the gBox desktop app), or have gBox build one
@@ -1447,17 +1696,34 @@ async function modShot(m, sid, card, force) {                // the mod card's p
 // ---- right-click a game: boot setup (modded disc, mods switched on at boot, start-from save slot) + play ----
 const bootGet = gid => { try { return { disc: "", slot: "", ...JSON.parse(localStorage.getItem("gbox_boot_" + gid) || "{}") }; } catch { return { disc: "", slot: "" }; } };
 const bootSet = (gid, b) => { try { localStorage.setItem("gbox_boot_" + gid, JSON.stringify(b)); } catch {} };
+function bootBadgeHTML(gid) {                            // library card: this game boots with a mod / character / switches
+  const boot = bootGet(gid), keepN = modKeepGet(gid).length;
+  return boot.disc || keepN ? `<span class="bootmod" title="Boots with: ${esc(boot.disc || "the original game")}${keepN ? ` + ${keepN} switch${keepN > 1 ? "es" : ""}` : ""} (right-click to change)">${boot.disc ? "MOD" : "+" + keepN}</span>` : "";
+}
+function bootBadge(gid) {
+  const c = document.querySelector(`.card[data-gid="${CSS.escape(gid)}"]`); if (!c) return;
+  c.querySelector(".bootmod")?.remove(); c.insertAdjacentHTML("afterbegin", bootBadgeHTML(gid));
+}
 document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div>');
 document.addEventListener("contextmenu", async e => {
   const c = e.target.closest(".card[data-gid]"); if (!c) return; e.preventDefault();
   const gid = c.dataset.gid, el = $("#gmenu"), b = bootGet(gid);
   el.style.left = Math.min(innerWidth - 352, e.clientX) + "px"; el.style.top = Math.max(8, Math.min(innerHeight - 420, e.clientY)) + "px";
   el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><p class="mut">loading mods…</p>`; el.classList.add("on");
-  const mods = await api(`/api/mods?game_id=${encodeURIComponent(gid)}`).catch(() => []);
-  const disc = mods.filter(m => m.calls.some(x => x.tool === "@launch")), patch = mods.filter(m => !m.calls.some(x => x.tool === "@launch"));
+  const [mods, chars] = await Promise.all([api(`/api/mods?game_id=${encodeURIComponent(gid)}`).catch(() => []),
+    api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => [])]);
   const kept = modKeepGet(gid), dmod = m => m.calls.find(x => x.tool === "@launch").input.mod;
+  const readyMod = ch => ((ch.ready || []).find(t => (t.slot || "player") === "player") || (ch.ready || [])[0])?.mod;
+  const ready = chars.filter(readyMod), other = chars.filter(ch => !readyMod(ch) && !ch.variant_of);
+  const charMods = new Set(ready.map(readyMod));
+  const disc = mods.filter(m => m.calls.some(x => x.tool === "@launch") && !charMods.has(dmod(m))), patch = mods.filter(m => !m.calls.some(x => x.tool === "@launch"));
+  const tile = (v, name, img) => `<label title="${esc(name)}"><input type="radio" name="gmd" value="${esc(v)}" ${b.disc === v ? "checked" : ""}>${img ? `<img loading="lazy" alt="" src="${img}?${tq()}">` : `<span class="nf">🎮</span>`}${esc(name)}</label>`;
   el.innerHTML = `<h4>${esc(c.dataset.title)}</h4>
-    <div class="gms"><b>Boot with (saved: every Play uses it)</b>
+    <div class="gms"><b>Play as (saved: every Play uses it)</b>
+      <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(readyMod(ch), ch.name, ch.preview_url)).join("")}</div>
+      ${other.length ? `<label><select id="gmbuild"><option value="">+ another character for this game…</option>${other.map(ch => `<option value="${esc(ch.slug)}">${esc(ch.name)}${ch.source?.game_title ? " · " + esc(ch.source.game_title) : ""}</option>`).join("")}</select></label>` : ""}
+      <div id="gmst" class="mut" style="font-size:11px"></div></div>
+    <div class="gms"><b>Boot with a mod</b>
       <label><input type="radio" name="gmd" value="" ${!b.disc ? "checked" : ""}> Original game</label>
       ${disc.map(m => `<label><input type="radio" name="gmd" value="${esc(dmod(m))}" ${b.disc === dmod(m) ? "checked" : ""}> ${esc(m.title)}</label>`).join("")}
       ${patch.length ? `<div class="mut" style="margin-top:6px">Switched on once the game is running:</div>` +
@@ -1468,19 +1734,47 @@ document.addEventListener("contextmenu", async e => {
       <div class="mut" style="font-size:11px">F2 saves to the current slot in game; Shift/Ctrl+F2 change the slot.</div></div>
     <div class="gmb"><button class="act pri" data-go="">▶ Play</button>${window.GBOX_LOCAL?.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
       <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`;
-  el.onchange = ev => {
+  const save = () => { bootSet(gid, { disc: el.querySelector('input[name="gmd"]:checked')?.value || "", slot: $("#gmslot").value }); bootBadge(gid); };
+  el.onchange = async ev => {
     const t = ev.target;
-    if (t.dataset.keep) modKeep(gid, t.dataset.keep, t.checked);
-    else bootSet(gid, { disc: el.querySelector('input[name="gmd"]:checked')?.value || "", slot: $("#gmslot").value });
+    if (t.dataset.keep) { modKeep(gid, t.dataset.keep, t.checked); bootBadge(gid); return; }
+    if (t.name === "gmd") {                                    // one boot image at a time: keep both radio groups in step
+      el.querySelectorAll(`input[name="gmd"]`).forEach(r => { r.checked = r.value === t.value; });
+      return save();
+    }
+    if (t.id === "gmslot") return save();
+    if (t.id === "gmbuild" && t.value) {                       // build this character for this game (no launch), then select it
+      const ch = other.find(x => x.slug === t.value), st = $("#gmst"); t.disabled = true;
+      st.textContent = `building ${ch.name} for this game…`;
+      try {
+        let j = await api("/api/jobs", { tool: "characters", input: { op: "use", character: ch.slug, game_id: gid, launch: false }, require_os: "linux" });
+        while (/queued|running/.test(j.state)) { await new Promise(z => setTimeout(z, 1200)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) st.textContent = j.progress.msg; }
+        const r = j.output?.result || {};
+        if (j.state !== "succeeded") throw new Error(j.error || j.state);
+        if (!r.mod || /missing|overlay|failed/.test(r.status || "")) { st.textContent = r.message || `No in-game swap for this game yet${r.request?.number ? ` (request #${r.request.number})` : ""}: while playing, "Use in this game" draws ${ch.name} over the player instead.`; return; }
+        el.querySelector(".gmch").insertAdjacentHTML("beforeend", tile(r.mod, ch.name, ch.preview_url));
+        el.querySelectorAll(`input[name="gmd"]`).forEach(x => { x.checked = x.value === r.mod; });
+        t.querySelector(`option[value="${CSS.escape(ch.slug)}"]`)?.remove();
+        save(); st.textContent = `✓ ${ch.name} is ready: every Play of this game starts with them`;
+      } catch (err) { st.textContent = "✗ " + err.message.slice(0, 160); }
+      finally { t.disabled = false; t.value = ""; }
+    }
   };
   el.onclick = ev => { const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");
     const go = g.dataset.go; play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined); };
 });
 document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $("#gmenu")?.classList.remove("on"); });
-async function moveHere(sid, btn) {
+async function moveHere(sid, btn) {                        // pull the game onto THIS PC (from the Spark or another PC)
   btn.disabled = true; btn.textContent = "Moving… (save, launch here, load)";
-  try { const r = await api(`/api/sessions/${encodeURIComponent(sid)}/move`, { to: "windows" }); show("Sessions", r.session_id); }
-  catch (e) { btn.textContent = "Can't move: " + e.message.slice(0, 90); btn.title = e.message; }
+  try {
+    const s = (await api("/api/sessions")).find(x => x.session_id === sid) || {};
+    let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: s.mod || "", to: window.GBOX_LOCAL?.worker || "windows" });
+    while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 700)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) btn.textContent = j.progress.msg + "…"; }
+    if (j.state !== "succeeded") throw new Error(j.error || j.state);
+    if (active?.sid === sid) { active.sid = j.output.session_id; pip(); }
+    show("Sessions", j.output.session_id);
+  }
+  catch (e) { btn.disabled = false; btn.textContent = "Can't move: " + e.message.slice(0, 90); btn.title = e.message; }
 }
 async function runJob(body) {
   let j = await api("/api/jobs", body);
@@ -1495,7 +1789,8 @@ async function hardStop(sid, btn) {                         // no confirm: the e
   runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
   show("Library");
 }
-async function resetGame(sid, btn) {                       // no confirm: console reset, else relaunch the same game (+ mod)
+async function resetGame(sid, btn, hard) {
+  if (hard) return hardReset(sid, btn);                       // no confirm: console reset, else relaunch the same game (+ mod)
   const svg = btn?.querySelector("svg"), w = sid.split("-")[0];
   if (btn) { btn.disabled = true; btn.style.color = "var(--acc)"; btn.style.borderColor = "var(--acc)"; }
   if (svg) svg.animate([{ transform: "rotate(0)" }, { transform: "rotate(-360deg)" }], { duration: 700, iterations: Infinity });
@@ -1503,6 +1798,9 @@ async function resetGame(sid, btn) {                       // no confirm: consol
     btn.style.color = btn.style.borderColor = ok ? "var(--ok)" : "var(--bad)"; btn.title = msg;
     setTimeout(() => { btn.style.color = btn.style.borderColor = ""; }, 2500); };
   try {
+    const fast = await fetch(`/api/sessions/${encodeURIComponent(sid)}/rpc`, { method: "POST",          // instant: the live channel
+      headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: JSON.stringify({ op: "reset", args: {} }) }).catch(() => null);
+    if (fast?.ok) { modReapply(); return done(true, "Reset ✓ (mods kept)"); }
     const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "reset" }, require_worker: w });
     if (j.state === "succeeded") return done(true, "Reset ✓");
     const s = (await api("/api/sessions")).find(x => x.session_id === sid);
@@ -1606,7 +1904,7 @@ function padLoop() {
   const topology = JSON.stringify([list.map(gp => [padKey(gp), gp.mapping]), primaryPad]);
   if (topology !== padTopology) { padTopology = topology; padStatus(); }
   for (const gp of list) {
-    const c = cfgFor(gp), key = padKey(gp), sid = active?.sid;
+    const c = cfgFor(gp), key = padKey(gp), sid = active && !active.local ? active.sid : null;   // native games read the pad themselves
     if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
     if (remap && remap.key === key) { remapStep(gp); continue; }
     const now = c.player && sid ? pressed(gp, c) : new Set(), prev = held[key]?.buttons || new Set(), events = [];

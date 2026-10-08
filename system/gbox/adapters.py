@@ -312,10 +312,124 @@ def _examine_driver_ok(argv) -> bool:
 def _popen(ad, argv, **kw) -> subprocess.Popen:
     """Start a local-window emulator; with Examine 3D on (ad.examine) RenderDoc is loaded into it from the first
     instruction, so the frame on screen can be captured as a 3D scene later (gbox.scene_capture)."""
+    if HOST_OS == "windows":
+        from .graphics import prefer_gpu
+        prefer_gpu(argv[0])                                # the discrete GPU, never a virtual display / iGPU
+        kw.setdefault("startupinfo", hidden_start())
     if HOST_OS == "windows" and getattr(ad, "examine", False) and _examine_driver_ok(argv):
         from . import scene_capture
-        return scene_capture.popen_hooked(argv, cap_dir=ad.config.runtime / "scene_capture" / "rdc" if ad.config else None, **kw)
-    return subprocess.Popen(argv, **kw)
+        p = scene_capture.popen_hooked(argv, cap_dir=ad.config.runtime / "scene_capture" / "rdc" if ad.config else None, **kw)
+    else:
+        p = subprocess.Popen(argv, **kw)
+    if HOST_OS == "windows":
+        keep_offscreen(p.pid)
+    return p
+
+
+def hidden_start():
+    """Windows: start the emulator minimized and without focus. Its first ShowWindow takes this instead of whatever the
+    emulator asks for, so no big window flashes on the desktop before gBox docks it into the game area (winembed un-minimizes
+    it while docking)."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 7                                     # SW_SHOWMINNOACTIVE
+    return si
+
+
+def keep_offscreen(pid: int, limit_s: float = 90.0, give_up_s: float = 45.0):
+    """Windows: every top-level window of this emulator is parked off-screen the moment it's created (a WinEvent hook on
+    that process, so it's moved before it's ever shown), and stays there until gBox docks it (it becomes a child window).
+    No big window flashing on the desktop while the game loads. If nothing docks it within give_up_s (the gBox app isn't
+    running), it comes back on screen so the game isn't lost."""
+    import ctypes
+    from ctypes import wintypes
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    H = wintypes.HWND
+    u32.SetWindowPos.argtypes = [H, H, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    u32.GetWindowRect.argtypes = [H, ctypes.POINTER(wintypes.RECT)]
+    u32.GetWindowLongPtrW.argtypes, u32.GetWindowLongPtrW.restype = [H, ctypes.c_int], ctypes.c_ssize_t
+    u32.GetAncestor.argtypes, u32.GetAncestor.restype = [H, wintypes.UINT], H
+    for f in ("IsWindow", "IsWindowVisible", "IsIconic"):
+        getattr(u32, f).argtypes = [H]
+    u32.GetWindowThreadProcessId.argtypes = [H, ctypes.POINTER(wintypes.DWORD)]
+    HOOK = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, H, ctypes.c_long, ctypes.c_long, wintypes.DWORD, wintypes.DWORD)
+    u32.SetWinEventHook.argtypes = [wintypes.UINT, wintypes.UINT, wintypes.HMODULE, HOOK, wintypes.DWORD, wintypes.DWORD, wintypes.UINT]
+    u32.SetWinEventHook.restype = wintypes.HANDLE
+    u32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+    u32.PeekMessageW.argtypes = [ctypes.c_void_p, H, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+    u32.MsgWaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, wintypes.DWORD]
+    u32.SetWindowLongPtrW.argtypes, u32.SetWindowLongPtrW.restype = [H, ctypes.c_int, ctypes.c_ssize_t], ctypes.c_ssize_t
+    GWL_STYLE, GWL_EXSTYLE, WS_CHILD, WS_EX_LAYERED = -16, -20, 0x40000000, 0x00080000
+    OFF, FLAGS = -32000, 0x0001 | 0x0004 | 0x0010          # NOSIZE | NOZORDER | NOACTIVATE
+    parked: dict[int, tuple[int, int]] = {}                # hwnd -> where it wanted to be
+
+    def opaque(h):                                         # RetroArch starts transparent (video_window_opacity 0)
+        ex = u32.GetWindowLongPtrW(h, GWL_EXSTYLE)
+        if ex & WS_EX_LAYERED:
+            u32.SetWindowLongPtrW(h, GWL_EXSTYLE, ex & ~WS_EX_LAYERED)
+
+    def windows(child: bool):
+        out = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, H, wintypes.LPARAM)
+        def cb(h, _):
+            p = wintypes.DWORD()
+            u32.GetWindowThreadProcessId(h, ctypes.byref(p))
+            if p.value == pid and bool(u32.GetWindowLongPtrW(h, GWL_STYLE) & WS_CHILD) == child:
+                out.append(h)
+            return True
+        if child:
+            @ctypes.WINFUNCTYPE(wintypes.BOOL, H, wintypes.LPARAM)
+            def top(h, _):
+                u32.EnumChildWindows(h, cb, 0)
+                return True
+            u32.EnumWindows(top, 0)
+        else:
+            u32.EnumWindows(cb, 0)
+        return out
+
+    def park(h):
+        if not h or not u32.IsWindow(h) or u32.GetAncestor(h, 2) != h or (u32.GetWindowLongPtrW(h, GWL_STYLE) & WS_CHILD):
+            return                                         # GA_ROOT: top-level windows only; docked (child) = leave it
+        r = wintypes.RECT()
+        u32.GetWindowRect(h, ctypes.byref(r))
+        if r.left > OFF + 1000:
+            parked.setdefault(h, (r.left, r.top))
+            u32.SetWindowPos(h, None, OFF, OFF, 0, 0, FLAGS)
+
+    @HOOK
+    def on_event(_hook, event, h, id_obj, id_child, _thread, _t):
+        if id_obj == 0 and id_child == 0:                  # OBJID_WINDOW, the window itself
+            park(h)
+
+    def run():
+        # EVENT_OBJECT_CREATE (0x8000) .. EVENT_OBJECT_LOCATIONCHANGE (0x800B), this process only, out of context
+        hook = u32.SetWinEventHook(0x8000, 0x800B, None, on_event, pid, 0, 0x0000 | 0x0002)   # OUTOFCONTEXT | SKIPOWNPROCESS
+        t0, msg = time.time(), wintypes.MSG()
+        try:
+            while time.time() - t0 < limit_s:
+                u32.MsgWaitForMultipleObjects(0, None, False, 50, 0x04FF)   # QS_ALLINPUT: events arrive as messages
+                while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):   # PM_REMOVE
+                    u32.TranslateMessage(ctypes.byref(msg))
+                    u32.DispatchMessageW(ctypes.byref(msg))
+                for h in [h for h in parked if not u32.IsWindow(h) or (u32.GetWindowLongPtrW(h, GWL_STYLE) & WS_CHILD)]:
+                    parked.pop(h, None)                    # docked into gBox (or gone)
+                docked = windows(True)
+                if docked:                                 # docked into gBox: make sure it's opaque (older winembed), done
+                    for h in docked:
+                        opaque(h)
+                    if not parked:
+                        return
+                if time.time() - t0 > give_up_s and not docked:   # nobody docked it (gBox app closed): show it normally
+                    for h in windows(False):
+                        opaque(h)
+                    for h, (x, y) in parked.items():
+                        u32.SetWindowPos(h, None, max(0, x), max(0, y), 0, 0, FLAGS)
+                    return
+        finally:
+            if hook:
+                u32.UnhookWinEvent(hook)
+    threading.Thread(target=run, daemon=True, name=f"offscreen-{pid}").start()
 
 
 def win_suspend_emulation(pid: int) -> list[int]:
@@ -459,6 +573,9 @@ class RetroArchAdapter(CommandAdapter):
             opts.update({"video_fullscreen": "false", "video_windowed_fullscreen": "true", "video_vsync": "true",
                          "vrr_runloop_enable": "false", "audio_sync": "true", "audio_driver": "xaudio",
                          "input_driver": "dinput", "input_joypad_driver": driver, "input_autodetect_enable": "true",
+                         # NOT video_window_opacity 0 to hide the window while loading: a GL context made on a layered window keeps
+                         # presenting nothing after the window is made opaque (black game, 2026-10-08). keep_offscreen hides it.
+                         "video_window_opacity": "100",
                          "video_window_save_positions": "false", "custom_viewport_width": "0",
                          "video_windowed_position_width": "1280", "video_windowed_position_height": "960",
                          # the window is embedded inside the gBox app: no menu bar, no decorations, no companion UI
@@ -759,6 +876,7 @@ class RetroArchAdapter(CommandAdapter):
         if slot is not None:                               # the network commands only step slots up/down
             for _ in range(abs(int(slot) - cur)):
                 self.cmd("STATE_SLOT_PLUS" if slot > cur else "STATE_SLOT_MINUS")
+                time.sleep(0.05)                           # one command per frame: back-to-back steps get dropped
             self.slot = cur = int(slot)
         return cur
 
@@ -1530,7 +1648,9 @@ class RPCS3Adapter(Adapter):
         gui.parent.mkdir(parents=True, exist_ok=True)
         gui.write_text(ini, encoding="utf-8")
         self.home = home
-        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", rom], cwd=home)
+        __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
+        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", rom], cwd=home, startupinfo=hidden_start())
+        keep_offscreen(self.proc.pid)
         return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node()}
 
     def stop_game(self) -> dict:
@@ -1659,7 +1779,9 @@ class RPCS3Adapter(Adapter):
             if not provision._rpcs3_busy(home):
                 break
             time.sleep(0.25)
-        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", str(states[-1])], cwd=home)
+        __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
+        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", str(states[-1])], cwd=home, startupinfo=hidden_start())
+        keep_offscreen(self.proc.pid)
         self._handle, self.base, self.paused = None, None, False
         self.generation += 1
         return {"loaded": states[-1].name, "pid": self.proc.pid}

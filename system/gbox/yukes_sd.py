@@ -132,20 +132,30 @@ def bpe_decode(d: bytes) -> bytes:
     return bytes(out[:usz])
 
 
+BPE_DEPTH = 8          # max pair nesting: the game's decoder expands pairs on a small stack (deeper corrupts RAM)
+
+
 def _bpe_block(buf: bytes) -> bytes:
-    left, right = list(range(256)), [0] * 256
+    left, right, depth = list(range(256)), [0] * 256, [0] * 256
     taken = set(buf)                                       # codes that occur in the data (or are pairs) stay taken
     while True:
         free = [c for c in range(256) if c not in taken]
         if not free or len(buf) < 4:
             break
-        pairs = Counter(zip(buf, buf[1:]))
-        (a, b), n = pairs.most_common(1)[0]
-        if n < 4:
+        best = None
+        for (a, b), n in Counter(zip(buf, buf[1:])).most_common(64):
+            if n < 4:
+                break
+            if max(depth[a], depth[b]) + 1 <= BPE_DEPTH:
+                best = (a, b)
+                break
+        if best is None:
             break
+        a, b = best
         c = free[0]
         buf = buf.replace(bytes((a, b)), bytes((c,)))
         left[c], right[c] = a, b
+        depth[c] = max(depth[a], depth[b]) + 1
         taken.add(c)
     out = bytearray()
     c = 0
@@ -253,7 +263,9 @@ def tim_build(tim: dict) -> bytes:
     px, py, pw, ph = tim["rect"]
     clut = np.asarray(tim["clut"], "<u2").tobytes()
     pix = np.asarray(tim["pix"], np.uint8).tobytes()
-    return (struct.pack("<II", 0x10, 9) + struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut +
+    if len(clut) != 2 * cw * ch or len(pix) != 2 * pw * ph:
+        raise ValueError("TIM CLUT / pixel sizes don't match the header")
+    return (struct.pack("<II", 0x10, 8 | tim.get("bpp", 1)) + struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut +
             struct.pack("<IHHHH", 12 + len(pix), px, py, pw, ph) + pix)
 
 
@@ -602,6 +614,30 @@ def target_skeleton(bones: list) -> dict:
             "joints": 31}
 
 
+def budgets(tmpl: dict) -> dict:
+    """CAPS scaled per part file so the new EMD (first variants + the ghost groups, 12 bytes per vertex and per
+    triangle) fits in the replaced wrestler's own EMD size."""
+    caps = dict(CAPS)
+    for f in PART_FILES:
+        emd = tmpl[f]["emd"]
+        firsts = {st for st, cnt in emd["slots"] if cnt}
+        fixed = emd["aoff"] + 4 * len(emd["slots"]) + 8 * len(emd["desc"])
+        ghosts = 0
+        for i, ch in enumerate(emd["chunks"]):
+            if ch is None or i not in firsts:
+                continue
+            s = chunk_slot(ch)
+            fixed += 4 + 4 * len(ch["groups"]) + 8
+            ghosts += sum(len(v) for b, v in ch["groups"] if b not in SLOT_BONES.get(s, []))
+        bones = [b for s in FILE_SLOTS[f] for b in SLOT_BONES[s]]
+        need = sum(12 * (caps[b][0] * 1.1 + caps[b][1]) for b in bones)
+        room = len(emd["raw"]) - fixed - 12 * ghosts
+        k = min(1.0, max(0.2, room / max(need, 1)))
+        for b in bones:
+            caps[b] = (max(6, int(caps[b][0] * k)), max(6, int(caps[b][1] * k)))
+    return caps
+
+
 def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path, name: str, props=(), scale=None,
                   blender: str | None = None, progress=lambda p, m: None) -> dict:
     """-> {file: {"emd": parsed original (template), "chunks": {slot: (groups, tris)}, "atlas": (img, rect, tpage,
@@ -650,7 +686,8 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
         elif j == 4 and c[1] < T[3][1] + 25:
             part[i] = 3
     part[~np.isin(part, list(CAPS))] = 2
-    geo = _decimate_parts(P, N, UV, F, FM, part, mats, CAPS, work, blender, progress)
+    caps = budgets(tmpl)
+    geo = _decimate_parts(P, N, UV, F, FM, part, mats, caps, work, blender, progress)
     out, report = {}, {}
     for f in PART_FILES:
         p0 = tmpl[f]
@@ -661,7 +698,7 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
         img, parts_v = _bake_parts([geo[b] for b in members], mats, rw, rh, [T[b] for b in members])
         verts = {}
         for b, (vp, vn, vu, faces) in zip(members, parts_v):
-            cv, cf = CAPS[b]
+            cv, cf = caps[b]
             vp, vn, vu, faces = list(vp), list(vn), list(vu), list(faces)
             dropped = 0
             while len(vp) > cv or len(faces) > cf:          # the cylinder seam duplicates: drop the smallest faces
@@ -703,9 +740,11 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
 
 
 def _like(orig: dict, groups: list, tris: list) -> tuple[list, list]:
-    """The new vertex groups in the original chunk's bone order, with an empty group for every original bone the new
-    model doesn't use there (the loader expects the chunk's bone list), new-only bones after them."""
+    """The new vertex groups in the original chunk's bone order (the loader expects the chunk's bone list); an original
+    bone the new model doesn't use there keeps its original vertices (unreferenced, never drawn); new-only bones
+    after them."""
     order = [b for b, _v in orig["groups"]]
+    ghost = {b: list(v) for b, v in orig["groups"]}
     mine = {b: v for b, v in groups}
     start, k = {}, 0
     for b, v in groups:
@@ -716,8 +755,24 @@ def _like(orig: dict, groups: list, tris: list) -> tuple[list, list]:
         vs = mine.get(b, [])
         for j in range(len(vs)):
             remap[start[b] + j] = k + j
-        out.append((b, vs))
+        if not vs:                                         # the loader reads every group's vertices (an empty or
+            vs = ghost.get(b) or [(0, 0, 0, 0, 0, 4096)]   # one-point torso group hangs it): the original ones stay,
+        out.append((b, vs))                                # unreferenced
         k += len(vs)
+    over = sum(len(v) for _b, v in out) - 128
+    if over > 0:                                           # the 128-vertex chunk limit: shrink the ghost groups
+        for k, (b, vs) in enumerate(out):
+            if b not in mine and over > 0 and len(vs) > 3:
+                cut = min(over, len(vs) - 3)
+                out[k] = (b, vs[:len(vs) - cut])
+                over -= cut
+        # ghost vertices are never referenced, so the remap (built for the new model's vertices) needs a rebuild
+        remap, k = {}, 0
+        for b, vs in out:
+            if b in mine:
+                for j in range(len(mine[b])):
+                    remap[start[b] + j] = k + j
+            k += len(vs)
     return out, [(tuple(remap[x] for x in idx), uv) for idx, uv in tris]
 
 
@@ -744,6 +799,9 @@ def build_entry(fit_file: dict) -> bytes:
     from .aki_wrestling import quantize
     _i, pal = quantize(np.concatenate([pix.reshape(-1, 3), np.full((rw * rh, 1), 255, np.uint8)], 1)[None], 256)
     pal = np.asarray(pal)[:, :3].astype(int)
+    if len(pal) < 256:                                     # few-colour textures: the CLUT must still hold 256 entries
+        pal = np.concatenate([pal, np.repeat(pal[-1:], 256 - len(pal), 0)])
+    pal = pal[:256]
     flat = pix.reshape(-1, 3).astype(int)
     idx = np.empty(len(flat), np.uint8)
     for k in range(0, len(flat), 4096):                    # nearest palette entry
@@ -753,15 +811,17 @@ def build_entry(fit_file: dict) -> bytes:
     tx = (tpage & 0xF) * 64
     tims = []
     for t in tmpl["tims"]:
+        if t["bpp"] != 1 or t["clut_xy"][2] * t["clut_xy"][3] != 256:   # 4-bpp detail TIMs (16-colour CLUTs): as they are
+            tims.append(t)
+            continue
         px, py, pw, ph = t["rect"]
         a0, b0 = (px - tx) * 2, py % 256
         a1, b1 = a0 + pw * 2, b0 + ph
-        if a1 <= u0 or a0 >= u0 + rw or b1 <= v0 or b0 >= v0 + rh:
-            continue                                       # not under the atlas: dropped (keeps the entry small)
-        t2 = dict(t)
-        t2["pix"] = t["pix"].copy()
-        ia0, ib0, ia1, ib1 = max(a0, u0), max(b0, v0), min(a1, u0 + rw), min(b1, v0 + rh)
-        t2["pix"][ib0 - b0:ib1 - b0, ia0 - a0:ia1 - a0] = idx[ib0 - v0:ib1 - v0, ia0 - u0:ia1 - u0]
+        t2 = dict(t)                                       # every TIM stays (the game places a slot's TIMs by the
+        t2["pix"] = t["pix"].copy()                        # set's layout: dropping some corrupts VRAM in slot 2)
+        if not (a1 <= u0 or a0 >= u0 + rw or b1 <= v0 or b0 >= v0 + rh):
+            ia0, ib0, ia1, ib1 = max(a0, u0), max(b0, v0), min(a1, u0 + rw), min(b1, v0 + rh)
+            t2["pix"][ib0 - b0:ib1 - b0, ia0 - a0:ia1 - a0] = idx[ib0 - v0:ib1 - v0, ia0 - u0:ia1 - u0]
         t2["clut"] = clut
         tims.append(t2)
     texpac = pac_build([(i, bpe_encode(tim_build(t))) for i, t in enumerate(tims)])

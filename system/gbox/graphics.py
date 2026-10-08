@@ -37,6 +37,28 @@ def gpu() -> dict:
         return {"name": "unknown", "vram_mb": 4000}
 
 
+def prefer_gpu(exe) -> bool:
+    """Windows: run this emulator on the high-performance GPU (Settings -> Display -> Graphics = "High performance").
+    Without it Windows may hand D3D/Vulkan to another adapter (a virtual display, an iGPU) and games crawl. Per user,
+    per exe path, no admin needed; takes effect for the next process start. Returns True when the setting is in place."""
+    import sys
+    if sys.platform != "win32" or not exe:
+        return False
+    import winreg
+    path = str(Path(exe).resolve())
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\DirectX\UserGpuPreferences") as k:
+            try:
+                if winreg.QueryValueEx(k, path)[0] == "GpuPreference=2;":
+                    return True
+            except OSError:
+                pass
+            winreg.SetValueEx(k, path, 0, winreg.REG_SZ, "GpuPreference=2;")
+        return True
+    except OSError:
+        return False
+
+
 def _file(cfg) -> Path:
     return Path(cfg.data_dir) / "graphics.json"
 

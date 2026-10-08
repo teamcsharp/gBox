@@ -11,6 +11,7 @@ from gbox.registry import ToolUnavailable
 @pytest.mark.parametrize("features,expected", [
     ("  SDL3:\tSDL3 input: yes\n  SDL2: no\n", "sdl3"),
     ("  SDL3: no\n  SDL2:\tSDL2 input: yes\n", "sdl2"),
+    ("  SDL3:\tSDL3 input: yes\n  SDL2:\tSDL2 input: yes\n", "sdl2"),   # both: SDL2 (mature profiles; SDL3 inverted a stick)
 ])
 def test_supported_sdl_driver(monkeypatch, features, expected):
     gamepads._driver.cache_clear()
@@ -29,6 +30,7 @@ def test_exclusions_are_scoped_and_keep_xbox():
     original = {"PATH": "unchanged", "SDL_GAMECONTROLLER_IGNORE_DEVICES": "0x1234/0x5678"}
     env = gamepads.emulator_environment(original)
     assert env["SDL_JOYSTICK_DIRECTINPUT"] == "0"
+    assert env["SDL_DIRECTINPUT_ENABLED"] == "0"
     assert env["SDL_XINPUT_ENABLED"] == "1"
     blocked = env["SDL_GAMECONTROLLER_IGNORE_DEVICES"].split(",")
     assert {"0x256f/0xc635", "0xbeef/0x046d", "0x046d/0xc626", "0x1234/0x5678"} <= set(blocked)

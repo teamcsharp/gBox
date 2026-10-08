@@ -1109,6 +1109,10 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("nomercy", lambda t, p: "no mercy" in t and p == "n64", lambda: __import__("gbox.aki_wrestling", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wrestling", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("smackdown2", lambda t, p: "smackdown! 2" in t and p == "psx", lambda: __import__("gbox.yukes_sd", fromlist=["x"]).roster_entries(),
+     lambda ctx, game, e, work: __import__("gbox.yukes_sd", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("worldtour", lambda t, p: "world tour" in t and "wcw" in t and p == "n64", lambda: __import__("gbox.aki_wcw", fromlist=["x"]).roster_entries(),
+     lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
@@ -1639,11 +1643,13 @@ def characters_tool(inp: CharIn, ctx):
                                           {"kind": m.get("kind", "character"), "source": m["source"].get("game_title"),
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
-    if inp.op == "match":                                     # AKI wrestling (No Mercy): several characters, one ROM
-        from . import aki_wrestling
+    if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
+        from . import aki_wrestling, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
-        return {"result": aki_wrestling.match(ctx, chars, _game(ctx, inp), inp, [x for x in pr if x[0]], inp.title or None)}
+        g = _game(ctx, inp)
+        mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
+        return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
         r = oot_swap.tool(ctx, inp, None)
@@ -1711,6 +1717,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
+    from . import yukes_sd
+    if gid in yukes_sd.GAME_IDS or gid in yukes_sd.SD1_IDS:   # Yuke's SmackDown! 2 (PS1): slot = a wrestler (The Rock)
+        return {"result": out | yukes_sd.use(ctx, meta, game, inp)}
     from . import pe_swap
     if gid in pe_swap.GAME_IDS and inp.slot == "player":         # Parasite Eve (PS1): Aya, all 5 outfits -> pe_<slug>
         return {"result": out | pe_swap.use(ctx, meta, game, inp)}

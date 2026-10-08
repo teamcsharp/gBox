@@ -59,6 +59,9 @@ def main():
         else:
             mcp_server.serve_http(server, cfg.token(), cfg.api_host, a.http or cfg.api_port + 1)
         return
+    if a.cmd in ("serve", "worker"):                     # a venv older than a dependency gets it now, before tools import
+        from . import deps
+        deps.ensure_declared()
     if a.cmd == "serve":
         import uvicorn
         from .server import create_app

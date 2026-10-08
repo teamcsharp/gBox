@@ -433,42 +433,175 @@ def create_app(config: Config) -> FastAPI:
     def session_labels(actor=Depends(auth)):
         return {x["session_id"]: x for x in store.all("slabel")}
 
+    # --- swap / move: a running game -> the same game with another mod (or none), on the same machine or another one ---
+    # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
+    # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
+    def _run_job(tool, inp, actor, worker=None, wait=240.0) -> dict:
+        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker), actor)
+        t0 = time.time()
+        while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
+            time.sleep(0.5)
+        if jj["state"] != "succeeded":
+            raise HTTPException(409, f"{tool} failed: {jj.get('error') or jj['state']}")
+        return jj.get("output") or {}
+
+    def _swap_target(sess_wid: str, to: str) -> dict:
+        """'' = the machine the game runs on now; a worker name/id; 'windows'/'linux' = that OS (the current one if it fits)."""
+        ws = [w for w in workers() if w["online"]]
+        cur = next((w for w in ws if w["id"] == _wid(sess_wid)), None)
+        if not to or to == "same":
+            if cur:
+                return cur
+            raise HTTPException(409, "the machine running this game is offline")
+        hit = next((w for w in ws if to in (w["id"], w["name"])), None)
+        if not hit and to in ("windows", "linux"):
+            hit = cur if cur and cur["os"] == to else next(
+                (w for w in sorted(ws, key=lambda w: -w["last_seen"]) if w["os"] == to), None)
+        if not hit:
+            raise HTTPException(409, f"no online gBox worker '{to}'")
+        return hit
+
+    def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None) -> dict:
+        say = progress or (lambda pct, msg: None)
+        sess = store.get("session", sid) or _404()
+        game = store.catalog_get(sess.get("game_id") or "") or _404()
+        old_w, tw = sid.split("-")[0], _swap_target(sid.split("-")[0], to)
+        running, art, notes, old_luma = sess.get("state") == "running", None, [], None
+        if running and keep_state:
+            say(5, "Saving the moment you're at")
+            try:
+                old_luma = _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30).get("mean_luma")
+            except HTTPException:
+                pass
+            try:
+                art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=90)["result"]["artifact"]
+            except (HTTPException, KeyError) as e:
+                notes.append(f"no save state ({getattr(e, 'detail', e)}): the game starts from boot")
+        say(15, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
+        try:
+            new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=tw["id"], wait=900)
+        except HTTPException as e:
+            # a modded launch closes the same console's game on that PC first: if the new one didn't start, bring the old back
+            alive = True
+            if running:
+                try:
+                    _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30)
+                except HTTPException:
+                    alive = False
+            if running and not alive:
+                say(60, "That didn't start: putting your game back")
+                try:
+                    back = _run_job("launch_game", {"game": game, "mod": sess.get("mod") or ""}, actor, worker=old_w, wait=900)
+                    if art:
+                        time.sleep(6)
+                        _run_job("state_transfer", {"session_id": back["session_id"], "op": "import", "artifact": art}, actor,
+                                 worker=old_w, wait=90)
+                    store.put("session", sid, (store.get("session", sid) or {}) | {"state": "ended", "replaced_by": back["session_id"]})
+                except HTTPException:
+                    pass
+            if "no built mod" in str(e.detail):
+                raise HTTPException(409, f"the mod '{mod}' isn't built for {tw['name']} yet (rebuild it), then try again")
+            raise
+        nsid = new["session_id"]
+        loaded = False
+        if art:
+            say(70, "Loading your moment into it")
+            time.sleep(6)                                      # let the core boot before loading the state
+            try:
+                _run_job("state_transfer", {"session_id": nsid, "op": "import", "artifact": art}, actor, worker=tw["id"], wait=90)
+                loaded = True
+            except HTTPException as e:
+                notes.append(f"the saved moment didn't load ({e.detail}): playing from boot")
+        if running and nsid != sid:
+            say(85, "Closing the previous copy")
+            try:
+                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
+            except HTTPException:
+                pass                                           # already closed by the modded launch
+            s_ = store.get("session", sid) or {}
+            store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
+                                            "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid}})
+        if loaded and (old_luma is None or old_luma > 3):
+            # a state from another build can leave a dead black screen: then boot the new build fresh instead (a still
+            # picture is NOT treated as a failure: the game may simply be paused)
+            say(92, "Checking the picture")
+            luma = []
+            for wait_s in (2.0, 3.0):
+                time.sleep(wait_s)
+                try:
+                    luma.append(_run_job("get_frame", {"session_id": nsid}, actor, worker=tw["id"], wait=30).get("mean_luma"))
+                except HTTPException:
+                    luma.append(None)
+            if luma and all(v is not None and v <= 3 for v in luma):
+                try:
+                    _run_job("session_op", {"session_id": nsid, "op": "reset", "args": {}}, actor, worker=tw["id"], wait=60)
+                    notes.append("the saved moment went black with this build, so the game was restarted fresh")
+                except HTTPException:
+                    notes.append("the picture is black after loading the moment: press Reset to boot fresh")
+        store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid, "state_loaded": loaded})
+        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod, "state_loaded": loaded, "notes": notes}
+
+    def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
+        """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
+        sess = store.get("session", sid) or _404()
+        job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to},
+                  state=JobState.RUNNING, started=time.time())
+        store.put("job", job.id, job.model_dump())
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": pct, "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def go():
+            try:
+                out, state, err = session_swap(sid, mod, to, actor, keep_state, prog), JobState.SUCCEEDED, None
+            except HTTPException as e:
+                out, state, err = None, JobState.FAILED, str(e.detail)
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
+                                                                     "error": err})
+        threading.Thread(target=go, daemon=True).start()
+        return job
+
+    @app.get("/api/games/{gid}/roster")
+    def game_roster(gid: str, actor=Depends(auth)):
+        """Who this game's own extractor can pull out (SmackDown! 2, No Mercy, SA2, FF7...), and which are collected."""
+        from . import characters as C
+        g = store.catalog_get(gid) or _404()
+        t, plat = (g.get("title") or "").lower(), g.get("platform") or ""
+        for name, test, roster, _run in C.DEDICATED:
+            if test(t, plat):
+                root = C.library_root(config)
+                return {"extractor": name, "roster": [{"name": e["name"], "slug": e["slug"], "kind": e.get("kind", "character"),
+                                                       "collected": (root / e["slug"] / "meta.json").is_file()} for e in roster()]}
+        return {"extractor": None, "roster": []}
+
+    class SwapIn(BaseModel):
+        mod: str = ""                       # "" = the original game
+        to: str = ""                        # "" = the same machine | a worker name | windows | linux
+        keep_state: bool = True
+
+    @app.post("/api/sessions/{sid}/swap")
+    def session_swap_api(sid: str, s: SwapIn, actor=Depends(auth)):
+        """Turn a file/model mod on or off in a running game: same PC, same moment (job; output.session_id = new session)."""
+        return swap_job(sid, s.mod, s.to, actor, s.keep_state)
+
     class MoveIn(BaseModel):
-        to: str = "windows"                 # windows (this PC) | linux (the Spark)
+        to: str = "windows"                 # a worker name (this PC) | windows | linux (the Spark)
 
     @app.post("/api/sessions/{sid}/move")
     def session_move(sid: str, m: MoveIn, actor=Depends(auth)):
-        """Move a running game to another machine: save state there -> launch the same game (+ mod) here -> load it -> stop
-        the old one. Spark streaming lags; playing natively on this PC doesn't."""
+        """Move a running game to another machine: save state -> launch the same game (+ mod) there -> load it -> stop the
+        old one. Pass this PC's worker name to pull a game here from the Spark or from another PC."""
         sess = store.get("session", sid) or _404()
-
-        def run(tool, inp, worker=None, os_=None, wait=240):
-            body = {"tool": tool, "input": inp, **({"require_worker": worker} if worker else {}), **({"require_os": os_} if os_ else {})}
-            j = submit(JobRequest(**body), actor)
-            t0 = time.time()
-            while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
-                time.sleep(0.5)
-            if jj["state"] != "succeeded":
-                raise HTTPException(409, f"{tool} failed: {jj.get('error') or jj['state']}")
-            return jj["output"]
-        out = run("state_transfer", {"session_id": sid, "op": "export"}, worker=sid.split("-")[0])
-        game = store.catalog_get(sess["game_id"]) or _404()
-        try:
-            new = run("launch_game", {"game": game, "mod": sess.get("mod") or ""}, os_=m.to, wait=600)
-        except HTTPException as e:
-            if "no built mod" in str(e.detail):
-                raise HTTPException(409, f"the mod '{sess.get('mod')}' isn't built on that machine yet: copy gbox-cache/mods/"
-                                         f"{sess['game_id']}/{sess.get('mod')} there (or rebuild it), then move again")
-            raise
-        nsid = new["session_id"]
-        time.sleep(8)                                          # let the core boot before loading the state
-        run("state_transfer", {"session_id": nsid, "op": "import", "artifact": out["result"]["artifact"]}, worker=nsid.split("-")[0])
-        try:
-            run("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, worker=sid.split("-")[0], wait=60)
-        except HTTPException:
-            pass
-        store.audit(actor, "session.move", sid, {"to": m.to, "new": nsid})
-        return {"session_id": nsid, "from": sid}
+        if _swap_target(sid.split("-")[0], m.to)["id"] == _wid(sid.split("-")[0]):
+            return {"session_id": sid, "from": sid, "note": "already running there"}
+        return session_swap(sid, sess.get("mod") or "", m.to, actor)
 
     @app.get("/api/gamedata/{name}")
     def gamedata(name: str, actor=Depends(auth)):
@@ -739,7 +872,27 @@ def create_app(config: Config) -> FastAPI:
         if req.tool == "@launch":
             i = req.input or {}
             gid = i.get("game_id") or _404()
-            return launch(gid, node=i.get("node") or "windows", mod=i.get("mod") or "", actor=actor)
+            mod, node, sid = i.get("mod") or "", i.get("node") or "", i.get("session_id") or ""
+            online = {w["id"] for w in workers() if w["online"]}
+            if not sid and i.get("swap", True):
+                # the game is already running: put the mod into THAT session (same PC, same moment) instead of starting
+                # a second copy on whichever machine happened to build the mod
+                run = [s for s in store.all("session") if s.get("state") == "running" and s.get("game_id") == gid
+                       and _wid(s["session_id"].split("-")[0]) in online]
+                sid = max(run, key=lambda s: s.get("started") or 0)["session_id"] if run else ""
+            if sid and (store.get("session", sid) or {}).get("state") == "running":
+                return swap_job(sid, mod, "", actor)
+            if node in ("", "auto", "linux", "windows"):
+                # nothing running: the PC the operator plays on (newest session among online Windows workers) has the
+                # real GPU and zero input lag; the node a mod was built on (often the Spark) is only a fallback
+                win = {w["id"]: w for w in workers() if w["online"] and w["os"] == "windows"}
+                recent = sorted((s for s in store.all("session") if _wid(s["session_id"].split("-")[0]) in win),
+                                key=lambda s: -(s.get("started") or 0))
+                if recent:
+                    node = win[_wid(recent[0]["session_id"].split("-")[0])]["name"]
+                elif win:
+                    node = "windows"
+            return launch(gid, node=node or "windows", mod=mod, actor=actor)
         t = REGISTRY.get(req.tool)
         if not t:
             raise HTTPException(404, f"unknown tool {req.tool}")
@@ -748,7 +901,9 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker)
-        if sid := inp.get("session_id"):            # sessions live on the worker that launched them
+        if t.name == "characters" and inp.get("op") in ("extract", "add", "blender"):
+            job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
+        elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
         if job.require_worker:
             job.require_worker = _wid(job.require_worker)
@@ -1614,9 +1769,9 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state") and not req.op.startswith("debug_"):
-            raise HTTPException(422, "read-only and debug_* ops only; edits go through the write_memory job")
-        if req.op in ("debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
+        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu") and not req.op.startswith("debug_"):
+            raise HTTPException(422, "read-only, reset and debug_* ops only; edits go through the write_memory job")
+        if req.op in ("reset", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
             store.audit(actor, f"session.{req.op}", sid, req.args)
         rid, lv = new_id(), _live(sid)
         with lv["cond"]:

@@ -407,7 +407,7 @@ def relaunch(ctx, sess: dict, gid: str, mod: str, revert: bool) -> dict:
     if j.get("state") != "succeeded":
         return {"ok": False, "error": f"save state: {j.get('error') or j.get('state')}"}
     art = j["output"]["result"]["artifact"]
-    lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": mod, "node": wid}})
+    lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": mod, "node": wid, "swap": False}})
     from .sm64_swap import _wait
     lj = _wait(ctx, lj, 600)
     nsid = (lj.get("output") or {}).get("session_id")
@@ -426,7 +426,7 @@ def relaunch(ctx, sess: dict, gid: str, mod: str, revert: bool) -> dict:
            "frames": [o1.get("sha256"), o2.get("sha256")], "luma": o2.get("mean_luma")}
     if not ok and revert:                                  # back to the previous build at the same moment
         C._job(ctx, "session_op", {"session_id": nsid, "op": "stop_game", "args": {}}, wid, 60)
-        lj = _wait(ctx, C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": sess.get("mod") or "",
+        lj = _wait(ctx, C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": sess.get("mod") or "", "swap": False,
                                                                                             "node": wid}}), 600)
         osid = (lj.get("output") or {}).get("session_id")
         if osid:

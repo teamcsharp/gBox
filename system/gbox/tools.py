@@ -470,7 +470,16 @@ def session_rpc(sid: str, op: str, args: dict):
         return _debug_rpc(ad, g, op[6:], args)
     if op == "state":
         return _semantic_state(ad, g, bool(args.get("player_only")))
-    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, debug_*)")
+    if op == "menu":                                   # the emulator's own menu (its controller settings live there)
+        if getattr(ad, "name", "") != "retroarch":
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')}: open its controller settings from its own window")
+        ad.cmd("MENU_TOGGLE")
+        return {"menu": "toggled"}
+    if op == "reset":                                  # the console's reset switch, instantly (no job queue)
+        if not callable(getattr(type(ad), "reset", None)):
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
+        return ad.reset() or {"reset": True}
+    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, debug_*)")
 
 
 def _semantic_state(ad, g: dict, player_only: bool = False):
@@ -2716,11 +2725,14 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
+                              "aki_wrestling",   # aki_wrestling: No Mercy / Revenge / World Tour writers (via characters op=use|match)
+                              "yukes_sd",   # yukes_sd: WWF SmackDown! 2 (PS1) reader + writer (via characters op=use|match|extract)
+                              "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
     import importlib
     import subprocess
     import sys
-    pip = {"numpy": "numpy", "PIL": "pillow", "psutil": "psutil"}   # ponytail: declared deps only; extend as modules need more
+    from . import deps
     for n in names:
         for attempt in (0, 1):
             try:
@@ -2729,10 +2741,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                 break
             except ModuleNotFoundError as e:
                 LOAD_ERRORS[n] = f"{type(e).__name__}: {e}"
-                if attempt or e.name not in pip:
-                    break
-                print(f"gBox: tool module {n} needs {e.name}; installing {pip[e.name]} into this venv", flush=True)
-                if subprocess.run([sys.executable, "-m", "pip", "install", "-q", pip[e.name]], timeout=600).returncode:
+                if attempt or not deps.install_for(e.name):   # any missing package: installed here once, then retried
                     break
             except Exception as e:                   # noqa: BLE001
                 LOAD_ERRORS[n] = f"{type(e).__name__}: {e}"
@@ -2765,7 +2774,8 @@ def state_transfer(inp: StateXIn, ctx: Ctx):
     ad, g = SESSIONS[inp.session_id]
     kind = getattr(ad, "name", "")
     if kind == "retroarch":
-        states, pattern = ctx.config.runtime / "states", f"*.state{inp.slot}"
+        # whatever slot RetroArch really used (slot steps are network commands and can be dropped): the newest file wins
+        states, pattern = ctx.config.runtime / "states", "*.state*"
     elif kind == "dolphin":                                    # same Dolphin release on both machines (2609): states are compatible
         exe = getattr(ad, "_exe", None)
         states = (exe().parent / "User" / "StateSaves") if exe else (ctx.config.runtime / "dolphin-user" / "StateSaves")
@@ -2774,7 +2784,7 @@ def state_transfer(inp: StateXIn, ctx: Ctx):
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
 
     def newest():
-        fs = [f for f in states.rglob(pattern) if f.is_file()] if states.exists() else []
+        fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
         return max(fs, key=lambda f: f.stat().st_mtime) if fs else None
 
     def save_and_wait():
@@ -2790,8 +2800,9 @@ def state_transfer(inp: StateXIn, ctx: Ctx):
     if inp.op == "export":
         f = save_and_wait()
         data = f.read_bytes()
-        ref = ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"))
-        return {"result": {"artifact": ref.sha256 if hasattr(ref, "sha256") else ref, "bytes": len(data), "file": f.name}}
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"))
+        # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name}}
     if inp.op == "import":
         r = httpx.get(f"{ctx.server}/api/artifacts/{inp.artifact}", headers=ctx.headers, timeout=120)
         r.raise_for_status()

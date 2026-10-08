@@ -674,7 +674,7 @@ window.assetView = async (box, glbUrl) => {
       <pre id="con"></pre>
     </div></section>
     <section id="requests"><div class="pane" style="max-width:1100px">
-      <div class="bar"><h2 style="margin:0">Requests</h2><span class="mut" id="reqsum"></span>
+      <div class="bar"><h2 style="margin:0">Requests</h2><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button><span class="mut" id="reqsum"></span>
         <button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
       <p class="mut">Every request you make (here, by screenshot, by eyedropper, or in chat with Claude) is logged with its thread,
         status, time to complete, files changed, tokens in/out and tools used.</p>
@@ -1243,6 +1243,34 @@ document.addEventListener("click", e => { const a = e.target.closest("a.att-file
 const fmtDur = s => s == null ? "–" : s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const fmtTok = n => !n ? "0" : n > 1e6 ? (n / 1e6).toFixed(2) + "M" : n > 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
 const openThreads = new Set();
+// ✉ new request: title + details + pasted / dropped images -> the inbox (the agent picks it up like any report)
+const NEWREQ = { att: [] };
+$("#reqnew").onclick = () => {
+  let f = $("#reqform");
+  if (f) { f.remove(); return; }
+  $("#reqnew").closest(".bar").insertAdjacentHTML("afterend", `<div id="reqform" class="req open-thread" style="padding:12px;margin:10px 0">
+    <input id="rq-title" placeholder="What should be fixed or built? (title)" style="width:100%;margin-bottom:6px">
+    <textarea id="rq-body" rows="5" placeholder="Details: the game, what you did, what happened, what you expected. Ctrl+V or drop images here." style="width:100%"></textarea>
+    <div class="att" id="rq-att"></div>
+    <div class="btns" style="margin-top:6px"><button class="act pri" id="rq-send">Send request</button><button class="act" id="rq-cancel">Cancel</button><span class="mut" id="rq-st"></span></div></div>`);
+  f = $("#reqform"); NEWREQ.att = [];
+  const draw = () => { $("#rq-att").innerHTML = NEWREQ.att.map((a, i) => `<figure><img alt="" src="data:${a.type};base64,${a.b64}"><button data-i="${i}" title="remove">✕</button></figure>`).join(""); };
+  $("#rq-att").onclick = e => { const i = e.target.dataset?.i; if (i !== undefined) { NEWREQ.att.splice(+i, 1); draw(); } };
+  f.addEventListener("paste", async e => { const a = await filesToAtt(imgFiles(e.clipboardData)); if (a.length) { e.preventDefault(); e.stopPropagation(); NEWREQ.att.push(...a); draw(); } });
+  f.addEventListener("dragover", e => e.preventDefault());
+  f.addEventListener("drop", async e => { e.preventDefault(); e.stopPropagation(); NEWREQ.att.push(...await filesToAtt(imgFiles(e.dataTransfer))); draw(); });
+  $("#rq-cancel").onclick = () => f.remove();
+  $("#rq-send").onclick = async () => {
+    const body = $("#rq-body").value.trim(), title = $("#rq-title").value.trim() || body.split("\n")[0].slice(0, 120);
+    if (!title && !NEWREQ.att.length) { $("#rq-st").textContent = "Add a title or some details"; return; }
+    $("#rq-send").disabled = true; $("#rq-st").textContent = "sending…";
+    const r = await gbox.api("/api/requests", { title: title || "Screenshot request", body, source: "app", kind: "text",
+      attachments: NEWREQ.att.map(a => ({ name: a.name, type: a.type, b64: a.b64 })), context: appContext ? appContext({ via: "new request" }) : {} });
+    if (!r.ok) { $("#rq-send").disabled = false; $("#rq-st").textContent = "Couldn't send: " + (r.status || "error"); return; }
+    f.remove(); toast(`Request #${r.data.number} sent`); refreshInbox();
+  };
+  $("#rq-title").focus();
+};
 $("#reqexport").onclick = async () => {                  // the whole request history, oldest first, as Markdown
   const s = await gbox.settings(), t = await gbox.token();
   const r = await fetch(s.apiUrl + "/api/requests/export", { headers: { authorization: `Bearer ${t}` } });
@@ -1302,7 +1330,7 @@ async function modSession(m, launch) {
   const run = ss.find(x => x.state === "running" && x.game_id === m.game_id);
   if (run || !launch) return run?.session_id;
   toast(`Launching ${m.game_title || "the game"}…`);
-  let j = (await gbox.api(`/api/games/${m.game_id}/launch?node=windows`, {})).data;
+  let j = (await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}`, {})).data;   // this PC
   while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 1000)); j = (await gbox.api("/api/jobs/" + j.id)).data; }
   if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
@@ -1339,6 +1367,15 @@ document.addEventListener("click", async e => {
 setInterval(refreshInbox, 5000);
 
 // ---------------- native game window inside gBox ----------------
+function popups() {                                          // floating things right under <body>: they must show above the game window
+  return [...document.body.children].filter(el => {
+    if (el.matches("script, style, #play, #wv, #report, #flow") || el.closest("#play")) return false;
+    const cs = getComputedStyle(el);
+    if (!/fixed|absolute/.test(cs.position) || cs.display === "none" || cs.visibility === "hidden" || +cs.opacity === 0 || cs.pointerEvents === "none") return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.width * r.height < innerWidth * innerHeight * 0.85;   // not a full-window layer
+  });
+}
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
 async function embedTick() {
   try {
@@ -1380,7 +1417,8 @@ async function embedTick() {
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on")]
+    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
+      ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).filter(b => b.width > 0 && b.height > 0)
       .map(b => ({ x: Math.max(0, b.left - rect.x), y: Math.max(0, b.top - rect.y), x2: Math.min(rect.w, b.right - rect.x), y2: Math.min(rect.h, b.bottom - rect.y) }))
@@ -1466,11 +1504,12 @@ function pipHandle(rect, title) {
   if (title) h.querySelector(".t").textContent = "🎮 " + title;
   Object.assign(h.style, { display: "flex", left: rect.x + "px", top: (rect.y - 26) + "px", width: rect.w + "px" });
 }
+const isFull = () => VIEW.mode === "full" || !!document.fullscreenElement || window.outerHeight >= screen.height && window.outerWidth >= screen.width;
 function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
-  const items = [["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
+  const items = [...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["ask", "❓ Ask a question…"], ["-"],
@@ -1479,7 +1518,7 @@ function pipMenu(x, y) {
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []), ["-"],
                  ["prefs", "⚙ Preferences"], ["perf", "⏱ Performance options"], ["display", "🖥 Display settings"], ["aa", "✨ Anti-aliasing"],
                  ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
-                 ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], ["full", "⛶ Full screen"],
+                 ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
   m.innerHTML = items.map(([a, t]) => a === "-" ? "<hr>" : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { m.style.display = "none"; GM.menu = false; EMB.last = ""; gameAction(a); } };
@@ -1618,7 +1657,9 @@ gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameup") return;
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pipMenu(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
-gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart(); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
+  if (k === "reset") return document.querySelector("#wv")?.executeJavaScript(          // F5: reset the game being played
+    `(s => s && resetGame(s, document.getElementById("resetbtn")))(${JSON.stringify(EMB.sid || "")} || playing || (active && active.sid))`).catch(() => {}); if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
   if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, [contenteditable]")) return;
   if (e.key === "a" || e.key === "A") { e.preventDefault(); gameAction("autoplay"); }   // F2/F3/F4 come from the main process

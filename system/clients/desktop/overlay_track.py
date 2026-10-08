@@ -22,8 +22,16 @@ import sys
 import threading
 import time
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+except ModuleNotFoundError:        # first use on this PC: install the tracker's packages into this environment, then go on
+    import subprocess
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check",
+                    "opencv-contrib-python-headless>=4.8", "numpy>=1.26"], check=False,
+                   creationflags=0x08000000 if sys.platform == "win32" else 0)
+    import cv2
+    import numpy as np
 
 TRACK_H = 240                      # tracking resolution (lines)
 DEBUG = __import__("os").environ.get("GBOX_OVERLAY_DEBUG", "")

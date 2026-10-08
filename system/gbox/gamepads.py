@@ -21,7 +21,9 @@ def _driver(executable: str, modified: int) -> str:
         result = subprocess.run([executable, "--features"], capture_output=True, text=True,
                                 errors="replace", timeout=10,
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        for version in (3, 2):
+        # SDL2 first: its Xbox autoconfig profiles are mature. RetroArch's SDL3 joypad driver is new, ships no profiles
+        # (autoconfig/sdl3 has only gamecontrollerdb.cfg) and inverted the N64 stick's up/down on this PC (2026-10-08).
+        for version in (2, 3):
             if re.search(rf"^\s*SDL{version}\b[^\r\n]*\byes\s*$", result.stdout, re.M | re.I):
                 return f"sdl{version}"
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -33,7 +35,8 @@ def emulator_environment(source: dict[str, str]) -> dict[str, str]:
     env = dict(source)
     # Disable the joystick DirectInput backend, not keyboard/mouse input. XInput
     # remains available for wired/wireless Xbox controllers.
-    env["SDL_JOYSTICK_DIRECTINPUT"] = "0"
+    env["SDL_JOYSTICK_DIRECTINPUT"] = "0"                # SDL3's name for it
+    env["SDL_DIRECTINPUT_ENABLED"] = "0"                 # SDL2's name: no DirectInput joysticks (SpaceMouse, KMJ)
     env["SDL_XINPUT_ENABLED"] = "1"
     blocked = ["0xbeef/0x046d"]  # virtual KMJ joystick
     blocked += [f"0x256f/0x{pid}" for pid in

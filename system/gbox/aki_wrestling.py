@@ -1691,6 +1691,9 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
     from .models import CatalogEntry
     from .tools import rom_path
     gid = game["game_id"]
+    from . import aki_wcw
+    if gid in aki_wcw.GAME_IDS:                            # WCW vs. nWo: World Tour: its own writer (gbox.aki_wcw)
+        return aki_wcw.use(ctx, meta, game, inp, pairs, title)
     if gid not in NO_MERCY or gid != "23a346e48b6368a6":
         return {"status": "missing", "missing": needs(game), "message": needs(game)["have"]}
     sess = C._session(ctx, inp.session_id) if inp.session_id else None
@@ -1743,6 +1746,9 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
 
 def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], title: str | None = None) -> dict:
     """op=match: several (character, wrestler slot) pairs in one ROM."""
+    from . import aki_wcw
+    if game["game_id"] in aki_wcw.GAME_IDS:
+        return aki_wcw.match(ctx, chars, game, inp, pairs_in, title)
     from .models import CatalogEntry
     from .tools import rom_path
     rom = rom_bytes(rom_path(CatalogEntry.model_validate(game), ctx.config))
@@ -1766,7 +1772,10 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
 
 def needs(game: dict) -> dict:
     t = (game.get("title") or "").lower()
-    if "revenge" in t or "world tour" in t:
+    if "world tour" in t:
+        return {"target": "a wrestler", "format": "AKI FileTable + costume records", "steps": [],
+                "have": "World Tour writer (gbox/aki_wcw.py): characters op=use slot=<wrestler | group-member | player>"}
+    if "revenge" in t:
         return {"target": "a wrestler (17 body-part models per body type + head + per-costume part textures)",
                 "format": "AKI FileTable (Asmik LZSS) + AkiModel parts, same as No Mercy (gbox/aki_wrestling.py reads them)",
                 "steps": ["port the No Mercy writer: Revenge/World Tour costume defs list each part's texture/palette and a "
