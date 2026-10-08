@@ -87,3 +87,10 @@ Completed work for requests 125, 149, 150, 196, 224 and 720:
 - Real Electron `sendInputEvent` mouse checks exercised a drag lasting more than one second and native corner resizing. Native keyboard checks entered all 100 report characters in 66 ms. The full 724-entry inbox retained every typed character and focus during 27 overlapping refreshes; 100 paced input events finished in 1.09 seconds. Seventeen native/UI assertions passed, including simultaneous visibility of the heading and action footer in a small popup. These measurements describe the local validation fixture, rather than every possible hardware/game combination.
 
 Only requests whose described popup/typing behavior was exercised are marked done. The broad application performance investigation and universal game-mod/extraction requests remain unfinished.
+
+
+## Request status filters - 2026-10-08
+
+The Requests header now offers All, Pending and Completed, each with an operator-request count. Pending includes open, in-progress and blocked requests, plus completed parent requests with unfinished automated descendants. Completed requires the entire request tree to be done. All restores the full history. Automated entries remain nested or in the separate unlinked section, and do not inflate operator counts. The selected view persists across relaunches.
+
+Reply drafts, attachment previews and expanded details survive switching between filters; cleared or sent drafts stay cleared. Twelve isolated Electron behavior checks passed, covering every view, descendant transitions, counts, accessible selection, persistence, empty results and draft preservation. JavaScript syntax and whitespace checks also passed.

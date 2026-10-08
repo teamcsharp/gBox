@@ -3,9 +3,14 @@ window.updateInboxView = function (host, key, render, replyAttachments = {}) {
   const active = document.activeElement;
   if (host.contains(active) && active.closest("input,textarea,select,[contenteditable]")) return false;
   if (host._gboxViewKey === key) return false;
-  const drafts = new Map(Array.from(host.querySelectorAll(".req[data-id]"), card => [card.dataset.id, card.querySelector(".reply")?.value || ""]));
+  const drafts = host._gboxDrafts ||= new Map();
+  for (const card of host.querySelectorAll(".req[data-id]")) {
+    const reply = card.querySelector(":scope > .thread .reply");
+    if (reply) drafts.set(card.dataset.id, reply.value);
+  }
   const detailKey = detail => (detail.closest(".req[data-id]")?.dataset.id || "root") + ":" + detail.querySelector(":scope > summary")?.textContent;
-  const expanded = new Set(Array.from(host.querySelectorAll("details[open]"), detailKey));
+  const expanded = host._gboxExpanded ||= new Map();
+  for (const detail of host.querySelectorAll("details")) expanded.set(detailKey(detail), detail.open);
   const scroll = host.scrollTop;
   host.innerHTML = render();
   host._gboxViewKey = key;
@@ -19,7 +24,7 @@ window.updateInboxView = function (host, key, render, replyAttachments = {}) {
       figure.append(image); preview.append(figure);
     }
   }
-  for (const detail of host.querySelectorAll("details")) if (expanded.has(detailKey(detail))) detail.open = true;
+  for (const detail of host.querySelectorAll("details")) if (expanded.has(detailKey(detail))) detail.open = expanded.get(detailKey(detail));
   host.scrollTop = scroll;
   return true;
 };
