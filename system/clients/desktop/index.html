@@ -2676,7 +2676,7 @@ document.addEventListener("click", e => {
   const a = e.target.closest("#chatlog a[data-href], #live a[data-href]");
   if (a) { e.preventDefault(); gbox.browser ? gbox.browser("open", a.dataset.href).then(r => r?.ok && toast("🌐 Opened in AutoBrowse")) : gbox.openExternal(a.dataset.href); }
 });
-const CH = { cid: null, n: 0, busy: false, poll: null, models: null };
+const CH = { cid: null, n: 0, busy: false, poll: null, models: null, loadRevision: 0 };
 try { CH.cid = localStorage.getItem("gbox_chat") || null; } catch {}
 // ponytail: game -> conversation map lives in localStorage (per PC); move server-side if chats must follow the operator across PCs
 function chatSave() {
@@ -2806,12 +2806,17 @@ function renderEvent(e) {
   return "";
 }
 async function chatLoad(cid, full = true) {
-  if (!cid) return;
+  if (!cid || cid !== CH.cid) return;
+  const revision = full ? (CH.loadRevision = (CH.loadRevision || 0) + 1) : (CH.loadRevision || 0);
+  const after = full ? 0 : CH.n;
   if (!S.tok) S.tok = await gbox.token().catch(() => "");   // thumbnails/images need the token before the first render
-  const r = await gbox.api(`/api/chat/${cid}?after=${full ? 0 : CH.n}`); if (!r.ok) { CH.cid = null; return; }
+  const r = await gbox.api(`/api/chat/${cid}?after=${after}`);
+  if (cid !== CH.cid || revision !== CH.loadRevision) return; // an earlier selection must not overwrite the current chain
+  if (!r.ok) { if (full) $("#chatlog").innerHTML = `<div class="cm error">${esc(r.error || "Could not load this conversation. Select it again to retry.")}</div>`; return; }
   const c = r.data;
   if (full) { $("#chatlog").innerHTML = ""; CH.n = 0; }
   $("#chatlog").insertAdjacentHTML("beforeend", c.events.map(renderEvent).join(""));
+  if (full && !c.events.length) $("#chatlog").innerHTML = `<div class="mut">No messages in this conversation yet.</div>`;
   if (full) BUSY.steps = [];
   for (const e of c.events) busyStep(e);
   if (!full && c.events.length && !$("#chatpanel").classList.contains("on") && !c.busy) {   // window closed: the reply shows next to the bar
@@ -2826,12 +2831,12 @@ async function chatLoad(cid, full = true) {
   CH.busy = c.busy; if (c.busy) busyRender(); else if ($("#chatpanel").classList.contains("on")) $("#chatbusy").textContent = "";   // closed: keeps the reply line
   if (c.model && full) { const o = [...$("#chatmodel").options].find(o => o.value === c.model); if (o) { $("#chatmodel").value = c.model; modelCaps(); } }
   clearInterval(CH.poll);
-  if (c.busy) CH.poll = setInterval(async () => { await chatLoad(CH.cid, false); if (!CH.busy) { clearInterval(CH.poll); chatHistory(); } }, 900);
+  if (c.busy) CH.poll = setInterval(async () => { await chatLoad(cid, false); if (CH.cid === cid && !CH.busy) { clearInterval(CH.poll); chatHistory(); } }, 900);
 }
 async function chatHistory() {
   const r = await gbox.api("/api/chat"); if (!r.ok) return;
   const tok = encodeURIComponent(await gbox.token());
-  $("#chathist").innerHTML = `<div class="mut" style="padding:4px 8px 8px">Conversations</div>` + (r.data.map(c => `<div class="ci ${c.id === CH.cid ? "on" : ""}" data-c="${c.id}">
+  $("#chathist").innerHTML = `<div class="mut" style="padding:4px 8px 8px">Conversations</div>` + (r.data.map(c => `<div class="ci ${c.id === CH.cid ? "on" : ""}" data-c="${c.id}" role="button" tabindex="0" aria-label="${esc(c.title || "New conversation")}">
       <div class="t">${esc(c.title || "(new conversation)")}</div>
       <div class="m">${new Date((c.updated || c.created) * 1000).toLocaleString()} · ${c.turns} msgs${c.model ? " · " + esc(c.model) : ""}${c.busy ? " · working" : ""}</div>
       ${(c.games || []).map(g => `<span class="gchip" data-g="${g.game_id}" data-t="${esc(g.title)}" title="Load ${esc(g.title)}">
@@ -2839,21 +2844,18 @@ async function chatHistory() {
     || `<p class="mut" style="padding:8px">No conversations yet.</p>`);
 }
 $("#chathist").onclick = async e => {
-  const ci = e.target.closest(".ci"), chip = e.target.closest(".gchip");
-  if (chip) {                     // game thumbnail: open the conversation, then offer to switch to that game
-    CH.cid = ci.dataset.c; CH.game = chip.dataset.g; chatSave(); chatHistory(); chatLoad(CH.cid);
-    const cur = await chatContext().catch(() => ({}));
-    if (cur.game_id === chip.dataset.g) return;
-    if (!confirm(`Load ${chip.dataset.t}?` + (cur.game_title ? `\n\n${cur.game_title} will be closed.` : ""))) return;
-    if (cur.session_id) await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: cur.session_id, op: "stop_game" },
-                                                      require_worker: cur.session_id.split("-")[0] }).catch(() => {});
-    document.querySelector('aside button[data-s="play"]').click();
-    const wv = document.querySelector("#wv"); if (wv) wv.executeJavaScript(`play(${JSON.stringify(chip.dataset.g)})`);
-    return;
-  }
+  const ci = e.target.closest(".ci");
   if (!ci) return;
-  CH.cid = ci.dataset.c; chatSave();
-  chatHistory(); chatLoad(CH.cid);
+  clearInterval(CH.poll); CH.poll = null;
+  CH.cid = ci.dataset.c; CH.n = 0; chatSave();
+  $("#chatpanel").classList.add("on");
+  $("#chatlog").innerHTML = `<div class="mut">Loading conversation…</div>`;
+  await Promise.all([chatHistory(), chatLoad(CH.cid)]);
+};
+$("#chathist").onkeydown = e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.closest(".ci")) {
+    e.preventDefault(); $("#chathist").onclick(e);
+  }
 };
 
 // ---------------- instant commands: "gBox, load <game>" / "search for <game>" (typed or spoken) ----------------
@@ -2912,21 +2914,33 @@ async function whipMenu(ev) {
 }
 // a character card <-> something in the game: replace that thing with the character (in-game swap, or an overlay now)
 async function whipCardMenu(card, gp, ev) {
+  const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
   let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
   m.style.left = Math.min(innerWidth - 330, gp[0] + 12) + "px"; m.style.top = Math.min(innerHeight - 300, Math.max(40, gp[1] - 20)) + "px";
   m.innerHTML = `<b>${esc(card.name)} → ${esc(game)}</b><p class="mut">Looking at what you dropped it on…</p>`; m.classList.add("on");
   const shot = ev.shot ? ev.shot.split(",")[1] : null;
-  let T = { name: "the character there", kind: "character" };
-  if (shot) { const q = await gbox.api("/api/whip/identify", { image: shot, a: [gp[0] / innerWidth, gp[1] / innerHeight], b: [gp[0] / innerWidth, gp[1] / innerHeight], game });
-              if (q.ok) T = q.data.a; }
+  // The native writer resolves the precise game point. A model-card drop needs no vision/model call.
+  const T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="swap"><span>▶</span>Replace it in the game (build the swap)</button>
+    <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
+    <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="x"><span>…</span>Something else (type it)</button>`;
   m.onclick = async e => {
     const bt = e.target.closest("button[data-w]"); if (!bt) return; m.classList.remove("on");
+    if (bt.dataset.w === "live") {
+      const sid = targetSid;
+      if (!sid || EMB.sid !== sid) { toast("The selected game changed; pick the target again."); return; }
+      toast(`Preparing ${card.name} for an in-game replacement…`, 60000);
+      try {
+        const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
+          x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
+        toast(res.message || res.status, 12000);
+      } catch (err) { toast(`In-game replacement failed: ${err.message}`, 12000); }
+      return;
+    }
     if (bt.dataset.w === "ovl") {
       const res = await ovlPost({ op: "start", character: card.slug, source: "whip", x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
       if (res?.ok) toast(`◐ ${card.name} is drawn over ${T.name}: an overlay (the game itself is unchanged)`, 6000); return;

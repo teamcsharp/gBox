@@ -39,7 +39,7 @@ window.floating = function (el, handle, key) {
   const start = (event, side = "") => {
     if (event.button !== 0 || drag) return;
     raise();
-    const control = event.target.closest("button,input,textarea,select,a,[contenteditable]");
+    const control = event.target.closest("button,input,textarea,select,a,[contenteditable],[role=button],.ci,.gchip");
     if (!side && control) return;
     const inHeader = handle.contains(event.target);
     if (!side && !inHeader && !event.altKey && event.target.closest("label,canvas,video,img,pre,code,p,li,td,.cm,.lc,.slider")) return;
