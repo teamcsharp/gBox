@@ -195,20 +195,32 @@ ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
 // appended straight to disk so long sessions never sit in memory.
 const REC_DIR = path.join(process.env.LOCALAPPDATA || app.getPath("videos"), "gbox", "recordings");
 let rec = null;
-ipcMain.handle("rec:start", (_e, ext) => {
+function recordingCrop(rect, display) {
+  const d = display || screen.getDisplayMatching(win.getBounds()), k = d.scaleFactor;
+  let b = win.getBounds();
+  if (rect) {
+    if (![rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) || rect.w < 2 || rect.h < 2) throw new Error("No visible gameplay to record");
+    const content = win.getContentBounds(), zoom = win.webContents.getZoomFactor();
+    b = { x: content.x + rect.x * zoom, y: content.y + rect.y * zoom, width: rect.w * zoom, height: rect.h * zoom };
+  }
+  const x = Math.max(b.x, d.bounds.x), y = Math.max(b.y, d.bounds.y);
+  const w = Math.min(b.x + b.width, d.bounds.x + d.bounds.width) - x;
+  const h = Math.min(b.y + b.height, d.bounds.y + d.bounds.height) - y;
+  if (w < 2 || h < 2) throw new Error("The recording moved off its captured display");
+  return { x: Math.round((x - d.bounds.x) * k), y: Math.round((y - d.bounds.y) * k), w: Math.round(w * k), h: Math.round(h * k),
+           sw: Math.round(d.bounds.width * k), sh: Math.round(d.bounds.height * k) };
+}
+ipcMain.handle("rec:start", (_e, ext, rect) => {
+  if (rec) throw new Error("A recording is already running");
+  if (!["mp4", "webm"].includes(ext)) throw new Error("Unsupported recording format");
+  const d = screen.getDisplayMatching(win.getBounds()), crop = recordingCrop(rect, d);
   fs.mkdirSync(REC_DIR, { recursive: true });
   const file = path.join(REC_DIR, `gbox-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
-  rec = { file, out: fs.createWriteStream(file), bytes: 0 };
+  rec = { file, out: fs.createWriteStream(file), bytes: 0, display: d };
   // record the SCREEN gBox is on, cropped to the window: window capture leaves the docked GPU game window black
-  const d = screen.getDisplayMatching(win.getBounds()), b = win.getBounds(), k = d.scaleFactor;
-  const crop = { x: Math.round((b.x - d.bounds.x) * k), y: Math.round((b.y - d.bounds.y) * k), w: Math.round(b.width * k), h: Math.round(b.height * k),
-                 sw: Math.round(d.bounds.width * k), sh: Math.round(d.bounds.height * k) };
   return { sourceId: win.getMediaSourceId(), screenId: `screen:${d.id}:0`, displayId: String(d.id), crop, file };
 });
-ipcMain.handle("rec:crop", () => {                                  // follow the window if it moves while recording
-  const d = screen.getDisplayMatching(win.getBounds()), b = win.getBounds(), k = d.scaleFactor;
-  return { x: Math.round((b.x - d.bounds.x) * k), y: Math.round((b.y - d.bounds.y) * k), w: Math.round(b.width * k), h: Math.round(b.height * k) };
-});
+ipcMain.handle("rec:crop", (_e, rect) => recordingCrop(rect, rec?.display));
 ipcMain.handle("rec:screens", async () => (await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } }))
   .map(x => ({ id: x.id, display_id: x.display_id })));
 ipcMain.handle("rec:chunk", (_e, buf) => { if (rec) { rec.out.write(Buffer.from(buf)); rec.bytes += buf.byteLength; } return rec ? rec.bytes : 0; });
@@ -216,6 +228,11 @@ ipcMain.handle("rec:stop", () => new Promise(res => {
   if (!rec) return res(null);
   const r = rec; rec = null;
   r.out.end(() => res({ file: r.file, bytes: r.bytes }));
+}));
+ipcMain.handle("rec:abort", () => new Promise(resolve => {
+  if (!rec) return resolve();
+  const r = rec; rec = null;
+  r.out.end(() => { fs.unlink(r.file, () => resolve()); });
 }));
 // Size-capped recordings: a file over the target is re-encoded to fit (bitrate from the duration, resolution stepped down
 // as the bitrate drops so it stays sharp). HandBrakeCLI (winget HandBrake.HandBrake.CLI) does it; ffmpeg if it's missing.
@@ -237,14 +254,15 @@ ipcMain.handle("rec:fit", async (_e, file, o) => {
   const dur = Math.max(1, o.seconds || 1), preset = { fast: "veryfast", balanced: "medium", best: "slow" }[o.speed] || "medium";
   const hb = findExe("HandBrakeCLI.exe"), ff = findExe("ffmpeg.exe");
   if (!hb && !ff) throw new Error("neither HandBrakeCLI nor ffmpeg is installed (winget install HandBrake.HandBrake.CLI)");
-  let kbps = Math.max(120, Math.floor(target * 8 * 0.92 / 1000 / dur));   // no audio track in gBox recordings
+  const audioKbps = 128;
+  let kbps = Math.max(120, Math.floor(target * 8 * 0.92 / 1000 / dur) - audioKbps);
   for (let attempt = 0; attempt < 3; attempt++) {
     const h = kbps >= 3500 ? 1080 : kbps >= 1800 ? 720 : kbps >= 900 ? 540 : kbps >= 450 ? 360 : 240, fps = kbps < 900 ? 30 : 60;
     const out = file.replace(/\.(mp4|webm)$/i, "") + `-${o.targetMB}MB.mp4`;
     send("task", "rec", `compressing ${path.basename(file)} to ≤${o.targetMB} MB: ${kbps} kbps, ${h}p, ${fps} fps (${hb ? "HandBrake" : "ffmpeg"})\n`);
     if (hb) await runExe(hb, ["-i", file, "-o", out, "-e", "x264", "--encoder-preset", preset, "-b", String(kbps), "--multi-pass", "--turbo",
-                              "--maxHeight", String(h), "-r", String(fps), "--pfr", "-a", "none", "-O"]);
-    else await runExe(ff, ["-y", "-i", file, "-an", "-vf", `scale=-2:'min(${h},ih)'`, "-r", String(fps), "-c:v", "libx264", "-preset", preset,
+                              "--maxHeight", String(h), "-r", String(fps), "--pfr", "-a", "1", "-E", "av_aac", "-B", String(audioKbps), "-O"]);
+    else await runExe(ff, ["-y", "-i", file, "-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac", "-b:a", `${audioKbps}k`, "-vf", `scale=-2:'min(${h},ih)'`, "-r", String(fps), "-c:v", "libx264", "-preset", preset,
                            "-b:v", `${kbps}k`, "-maxrate", `${kbps}k`, "-bufsize", `${kbps * 2}k`, "-movflags", "+faststart", out]);
     const got = fs.statSync(out).size;
     if (got <= target) {
@@ -559,6 +577,15 @@ app.whenReady().then(() => {
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => ["media", "audioCapture"].includes(perm));
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    // Loopback captures the PC's playback audio, including native and streamed games; never the microphone.
+    if (!rec || request.frame !== win?.webContents.mainFrame) return callback({});
+    try {
+      const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
+      const source = sources.find(s => s.display_id === String(rec?.display.id));
+      callback(source ? { video: source, audio: "loopback" } : {});
+    } catch { callback({}); }
+  });
   win = new BrowserWindow({
     width: 1500, height: 950, title: "gBox", backgroundColor: "#16161a", autoHideMenuBar: true,
     icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),

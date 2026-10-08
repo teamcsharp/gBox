@@ -569,7 +569,7 @@ window.assetView = async (box, glbUrl) => {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>Capture</button>
     <button id="tb-pick" title="System eyedropper: pick any element (window, panel, button, row…) and report on it">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>Eyedropper</button>
-    <button id="tb-rec" title="Record the app to an MP4 on disk (click again to stop)">
+    <button id="tb-rec" title="Record the app with playback audio (click to stop; right-click for gameplay only)">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle id="tb-rec-dot" cx="12" cy="12" r="4.5" fill="#ff3b3b"/></svg><span id="tb-rec-t"></span></button>
     <button id="tb-recopt" title="Recording size limit and compression" style="min-width:0;padding:0 4px">▾</button>
     <button id="tb-mini" title="Mini mode: shrink gBox to a resizable game window (keeps the game's aspect ratio)">
@@ -3279,7 +3279,9 @@ document.querySelector('aside button[data-s="tools"]').addEventListener("click",
 const REC = { mr: null, t0: 0, timer: null, file: null };
 // size limit for recordings (default 10 MB): over it, the file is re-encoded with HandBrake to fit
 const recOpts = () => { try { return { targetMB: 10, speed: "balanced", keep: false, ...JSON.parse(localStorage.getItem("gbox_rec") || "{}") }; } catch { return { targetMB: 10, speed: "balanced", keep: false }; } };
-document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><b>Recording size</b>
+document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><button class="act" id="rec-app" style="width:100%">Record application + audio</button>
+  <button class="act" id="rec-game" style="width:100%;margin:6px 0">Record gameplay only + audio</button>
+  <div class="mut" style="font-size:11px;margin-bottom:8px">Includes PC playback audio. Microphone is excluded.</div><b>Recording size</b>
   <label>Size limit <select id="rec-target"><option value="5">5 MB</option><option value="8">8 MB</option><option value="10">10 MB</option>
     <option value="25">25 MB</option><option value="50">50 MB</option><option value="100">100 MB</option><option value="0">No limit</option></select></label>
   <label>Compression <select id="rec-speed"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="best">Best quality (slower)</option></select></label>
@@ -3287,11 +3289,15 @@ document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><b>Recording si
   <div class="mut" style="font-size:11px">Recordings over the limit are re-encoded with HandBrake (bitrate and resolution lowered to fit).</div>
   <button class="act" id="rec-folder" style="width:100%;margin-top:6px">📂 Open recordings folder</button></div>`);
 $("#rec-folder").onclick = () => { gbox.recOpen(null); $("#recmenu").classList.remove("on"); };
-$("#tb-recopt").onclick = e => { e.stopPropagation(); const m = $("#recmenu"), o = recOpts(), b = $("#tb-recopt").getBoundingClientRect();
+const openRecMenu = e => { e.stopPropagation(); const m = $("#recmenu"), o = recOpts(), b = $("#tb-recopt").getBoundingClientRect();
   $("#rec-target").value = String(o.targetMB); $("#rec-speed").value = o.speed; $("#rec-keep").checked = o.keep;
   m.style.left = Math.min(innerWidth - 262, b.left - 120) + "px"; m.classList.toggle("on"); };
+$("#tb-recopt").onclick = openRecMenu;
+$("#tb-rec").oncontextmenu = e => { e.preventDefault(); openRecMenu(e); };
+$("#rec-app").onclick = () => recordAction("app");
+$("#rec-game").onclick = () => recordAction("gameplay");
 $("#recmenu").onchange = () => { try { localStorage.setItem("gbox_rec", JSON.stringify({ targetMB: +$("#rec-target").value, speed: $("#rec-speed").value, keep: $("#rec-keep").checked })); } catch {} };
-document.addEventListener("mousedown", e => { if (!e.target.closest("#recmenu, #tb-recopt")) $("#recmenu").classList.remove("on"); });
+document.addEventListener("mousedown", e => { if (!e.target.closest("#recmenu, #tb-recopt, #tb-rec")) $("#recmenu").classList.remove("on"); });
 // clicking anywhere outside a pop-up closes it (its own opener toggles it instead, so it isn't closed-then-reopened)
 const POPS = [["#busysteps", "#chatbusy"], ["#taskpanel", "#tb-tasks"], ["#auditpanel", "#sb-audit"], ["#svcpanel", "#statusbar"], ["#whipmenu", null],
               ["#chatpanel", "#chatbar, #sb-chat, #chatsug, #live, #orb"], ["#ctlpop", null], ["#items", null], ["#reinv", "#tb-reinv, #pipmenu"]];
@@ -3308,37 +3314,64 @@ function closePops(target) {                                 // target null = a 
   if (!target) { $("#modelmenu")?.classList.remove("on"); $("#recmenu")?.classList.remove("on"); }
 }
 document.addEventListener("mousedown", e => closePops(e.target), true);
-async function toggleRecording() {
+async function gameplayRecordingRect() {
+  if (EMB.sid && EMB.rect && EMB.vis) return { ...EMB.rect };
+  const wv = $("#wv");
+  if (!wv) throw new Error("Start a game and keep its picture visible before recording gameplay");
+  const r = await wv.executeJavaScript(`(() => {
+    const e = document.getElementById("scr");
+    if (!e || !e.naturalWidth) return null;
+    const b = e.getBoundingClientRect(), scale = Math.min(b.width / e.naturalWidth, b.height / e.naturalHeight);
+    const w = e.naturalWidth * scale, h = e.naturalHeight * scale;
+    return w > 2 && h > 2 ? { x: b.left + (b.width-w)/2, y: b.top + (b.height-h)/2, w, h } : null;
+  })()`);
+  const o = wv.getBoundingClientRect();
+  if (!r || r.y < 0 || r.y + r.h > o.height || r.x < 0 || r.x + r.w > o.width) throw new Error("Keep the gameplay picture fully visible before recording");
+  return { x: o.left + r.x, y: o.top + r.y, w: r.w, h: r.h };
+}
+async function toggleRecording(mode = "app") {
   const btn = $("#tb-rec");
-  if (REC.mr) { REC.mr.stop(); return; }
-  const mp4 = ["video/mp4;codecs=avc1.640028", "video/mp4;codecs=avc1", "video/mp4"].find(t => MediaRecorder.isTypeSupported(t));
-  const mime = mp4 || "video/webm;codecs=vp9";
-  const { sourceId, displayId, crop, file } = await gbox.recStart(mp4 ? "mp4" : "webm");
-  // capture the screen (the docked game is a GPU window: window capture records it black) and crop to gBox's window
-  const scr = (await gbox.recScreens?.() || []).find(x => x.display_id === displayId);
-  let stream, raw = null;
-  if (scr && crop) {
-    raw = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
-      chromeMediaSource: "desktop", chromeMediaSourceId: scr.id, maxFrameRate: 60, maxWidth: crop.sw, maxHeight: crop.sh } } });
-    const v = document.createElement("video"); v.muted = true; v.srcObject = raw; await v.play();
-    const cv = document.createElement("canvas"), g = cv.getContext("2d");
-    cv.width = crop.w & ~1; cv.height = crop.h & ~1;                // H.264 needs even sizes
-    let c = crop, live = true;
-    REC.cropT = setInterval(async () => { const n = await gbox.recCrop(); if (n.w === c.w && n.h === c.h) c = { ...c, ...n }; }, 1000);
-    const draw = () => { if (!live) return; const sx = v.videoWidth / crop.sw || 1;
-      g.drawImage(v, c.x * sx, c.y * sx, c.w * sx, c.h * sx, 0, 0, cv.width, cv.height); requestAnimationFrame(draw); };
-    draw();
-    stream = cv.captureStream(60);
-    REC.stopRaw = () => { live = false; clearInterval(REC.cropT); raw.getTracks().forEach(t => t.stop()); };
-  } else {                                                            // fallback: the window itself
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
-      chromeMediaSource: "desktop", chromeMediaSourceId: sourceId, maxFrameRate: 60, minWidth: 640 } } });
+  if (REC.mr) { if (REC.mr.state === "recording") REC.mr.stop(); return; }
+  if (REC.starting) return;
+  REC.starting = true;
+  let stream, raw, opened = false;
+  try {
+  const rect = mode === "gameplay" ? await gameplayRecordingRect() : null;
+  const mp4 = ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4"].find(t => MediaRecorder.isTypeSupported(t));
+  const mime = mp4 || "video/webm;codecs=vp9,opus";
+  const { crop, file } = await gbox.recStart(mp4 ? "mp4" : "webm", rect); opened = true;
+  // Screen capture includes the docked GPU game. Crop it to the chosen app/game picture and retain loopback audio.
+  raw = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: { frameRate: 60 }, systemAudio: "include" });
+  if (!raw.getAudioTracks().length) throw new Error("Playback audio is unavailable; recording was cancelled");
+  const v = document.createElement("video"); v.muted = true; v.srcObject = raw; await v.play();
+  const videoDeadline = Date.now() + 10000;
+  while (v.readyState < 2 || !v.videoWidth || !v.videoHeight) {
+    if (Date.now() > videoDeadline) throw new Error("The display did not supply video frames; recording was cancelled");
+    await new Promise(resolve => setTimeout(resolve, 25));
   }
-  const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
-  mr.ondataavailable = async e => { if (e.data.size) await gbox.recChunk(await e.data.arrayBuffer()); };
+  const cv = document.createElement("canvas"), g = cv.getContext("2d");
+  cv.width = crop.w & ~1; cv.height = crop.h & ~1;
+  let c = crop, live = true, updating = false;
+  REC.stopRaw = () => { live = false; clearInterval(REC.cropT); clearInterval(REC.frameT); raw.getTracks().forEach(t => t.stop()); };
+  REC.cropT = setInterval(async () => {
+    if (updating || !live) return; updating = true;
+    try { const r = mode === "gameplay" ? await gameplayRecordingRect() : null; c = await gbox.recCrop(r); }
+    catch (e) { if (REC.mr?.state === "recording") REC.mr.stop(); toast(e.message, 8000); }
+    finally { updating = false; }
+  }, 250);
+  stream = cv.captureStream(0);
+  const frameTrack = stream.getVideoTracks()[0];
+  const draw = () => { if (!live) return; const sx = v.videoWidth / crop.sw, sy = v.videoHeight / crop.sh;
+    g.drawImage(v, c.x * sx, c.y * sy, c.w * sx, c.h * sy, 0, 0, cv.width, cv.height); frameTrack.requestFrame(); };
+  REC.frameT = setInterval(draw, 1000 / 60);
+  raw.getAudioTracks().forEach(t => stream.addTrack(t));
+  const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000, audioBitsPerSecond: 128_000 });
+  let chunks = Promise.resolve();
+  mr.ondataavailable = e => { if (e.data.size) chunks = chunks.then(async () => gbox.recChunk(await e.data.arrayBuffer())); };
+  raw.getVideoTracks()[0].onended = () => { if (mr.state === "recording") mr.stop(); };
   mr.onstop = async () => {
     stream.getTracks().forEach(t => t.stop()); clearInterval(REC.timer); REC.stopRaw?.(); REC.stopRaw = null;
-    await new Promise(r => setTimeout(r, 300));                  // let the last chunk land
+    await chunks;                                             // flush every chunk, including the final one
     const res = await gbox.recStop();
     REC.mr = null; btn.classList.remove("recording"); $("#tb-rec-t").textContent = "";
     if (!res) return;
@@ -3353,13 +3386,23 @@ async function toggleRecording() {
     con.textContent += `\nrecording saved: ${out.file} (${(out.bytes / 2 ** 20).toFixed(1)} MB${out.compressed ? `, compressed from ${(out.original / 2 ** 20).toFixed(1)} MB with ${out.tool}` : ""})\n`;
     gbox.recOpen(out.file);
   };
-  mr.start(1000);                                                // 1 s chunks streamed to disk
-  Object.assign(REC, { mr, t0: Date.now(), file });
+  mr.start(1000); draw();                                        // 1 s chunks streamed to disk
+  Object.assign(REC, { mr, t0: Date.now(), file, mode });
   btn.classList.add("recording");
   REC.timer = setInterval(() => { const s = Math.floor((Date.now() - REC.t0) / 1000);
     $("#tb-rec-t").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; }, 250);
+  } catch (e) {
+    stream?.getTracks().forEach(t => t.stop()); REC.stopRaw?.(); REC.stopRaw = null;
+    raw?.getTracks().forEach(t => t.stop());
+    if (opened) await gbox.recAbort();
+    throw e;
+  } finally { REC.starting = false; }
 }
-$("#tb-rec").onclick = () => toggleRecording().catch(e => { alert("Recording failed: " + e.message); });
+function recordAction(mode) {
+  $("#recmenu").classList.remove("on");
+  toggleRecording(mode).catch(e => { alert("Recording failed: " + e.message); });
+}
+$("#tb-rec").onclick = () => recordAction("app");
 
 loadSettings().then(() => { refresh(); refreshInbox(); });
 setInterval(refresh, 15000);
