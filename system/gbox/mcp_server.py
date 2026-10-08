@@ -114,7 +114,14 @@ def build(base_url: str, token: str) -> Server:
         tools = [T.Tool(name=n, description=d, input_schema=s) for n, (d, s) in CONVENIENCE.items()]
         for t in registry.values():
             schema = dict(t.get("input_schema") or obj({"input": {"type": "object"}}))
-            schema["properties"] = schema.get("properties", {}) | {"require_os": {"type": "string", "enum": ["windows", "linux"]}}
+            if t["name"].startswith("rea_"):
+                # A transport envelope preserves strict/union upstream schemas;
+                # routing fields must not be injected into their input contract.
+                schema = obj({"input": schema}, ["input"])
+            schema["properties"] = schema.get("properties", {}) | {
+                "require_os": {"type": "string", "enum": ["windows", "linux"]},
+                "require_worker": {"type": "string", "description": "Pin stateful analysis to the worker_id returned by its first job."},
+                "parent_request_id": {"type": "string", "description": "Attribute automated work to its original operator request."}}
             workers = ", ".join(t.get("workers") or []) or "no online worker"
             tools.append(T.Tool(name=PREFIX + t["name"], input_schema=schema,
                                 description=f"{t['description']} [gBox job; workers: {workers}; session_id routes it to that session's worker]"))
@@ -131,10 +138,16 @@ def build(base_url: str, token: str) -> Server:
                     await list_tools(ctx, None)
                 info = registry.get(tool) or {}
                 ros = a.pop("require_os", None)
-                generic = not (info.get("input_schema") or {}).get("properties")
+                worker = a.pop("require_worker", None)
+                parent = a.pop("parent_request_id", None)
+                generic = tool.startswith("rea_") or not (info.get("input_schema") or {}).get("properties")
                 body = {"tool": tool, "input": a.get("input", {}) if generic else a}
                 if ros:
                     body["require_os"] = ros
+                if worker:
+                    body["require_worker"] = worker
+                if parent:
+                    body["parent_request_id"] = parent
                 if sid := body["input"].get("session_id"):     # sessions live on the worker that launched them
                     body["require_worker"] = sid.split("-")[0]
                 out = await wait_job(await post("/api/jobs", body), (info.get("timeout_s") or 300) + 60)

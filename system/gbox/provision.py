@@ -543,6 +543,8 @@ def ensure_ffmpeg() -> dict:
 
 def setup(cfg: Config, with_ghidra: bool = True, log=print) -> list[dict]:
     steps = []
+    from .rea import install as install_rea
+    steps.append(("rea", lambda: install_rea(cfg)))
     if HOST_OS == "linux":
         steps.append(("apt", apt_packages))
         for lib in cfg.libraries:

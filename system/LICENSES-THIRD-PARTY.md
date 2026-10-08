@@ -78,3 +78,11 @@ references (read only, no code copied or run):
 
 Wrestler models and textures are read from the operator's own ROM into the local collection and mod folders; they are
 never redistributed. No community mods or models were downloaded.
+
+## REA (`rea-agents` 6.0.0)
+
+The complete tool contract catalog is derived from the MIT-licensed
+https://github.com/morluto/rea npm distribution. The upstream license is preserved
+in `docs/REA-LICENSE`. The pinned runtime and its transitive dependencies install
+locally into each worker runtime; none of their binaries are vendored. See
+`docs/rea.md` for provenance, installation, capability limits and verification.

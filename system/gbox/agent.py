@@ -19,6 +19,9 @@ from .models import new_id
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
 You can search the web, find and launch games, inspect and edit live emulator memory, extract sprites/tiles to Blender,
 and run Ghidra analyses. Use tools; don't guess facts you can look up or measure.
+REA provides deconstruction, application/binary/runtime analysis and reconstruction verification: use rea_tools query
+to find an operation, then rea_tools name to load its native function and schema. Run it directly or through run_tool.
+Keep related calls on the same worker. Preserve evidence/unknowns; check actual provider support before claiming success.
 
 How to work:
 - Understand the request in the operator's words. If it's about a specific game, use the session context or search_games.
@@ -524,8 +527,15 @@ def tool_specs() -> list[dict]:
            "the operator presses Ctrl+Shift+V in Blender (gBox add-on) to import it, edits it, then 'Send to gBox' in the "
            "add-on panel; then call characters op=add character=<new name> from_clipboard=true.",
            {"character": s, "package": s}, []),
-        fn("run_tool", "Run any gBox typed tool as an audited job, e.g. ghidra_script, analyze_binary, get_frame, hash_game.",
-           {"name": s, "input": {"type": "object"}}, ["name", "input"]),
+        fn("rea_tools", "Discover REA tools for deconstruction, analysis and reconstruction. Search query first, then exact name "
+           "to obtain its input schema and examples. Call run_tool with the rea_ name; keep analysis on its returned worker_id.",
+           {"query": s, "name": s}, []),
+        fn("read_rea_result", "Read full REA evidence after an inline excerpt: sha256 is evidence_sha256. Empty pointer lists root keys; "
+           "JSON Pointer selects a child; offset/limit paginate lists or keys. Strings return 6000 characters per page.",
+           {"sha256": s, "pointer": s, "offset": i, "limit": i}, ["sha256"]),
+        fn("run_tool", "Run any gBox typed tool as an audited job, including every rea_ operation. Use rea_tools to discover "
+           "their inputs; worker_id pins stateful REA calls to the same worker; node selects windows/linux.",
+           {"name": s, "input": {"type": "object"}, "worker_id": s, "node": s}, ["name", "input"]),
     ]
 
 
@@ -1115,10 +1125,32 @@ class Agent:
         j = self._job("characters", inp, limit=3600, node=None if op == "use" and session_id else "linux")
         return (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
 
-    def run_tool(self, name, input):
-        j = self._job(name, input)
-        return {"state": j.get("state", "failed"), "error": j.get("error") or j.get("detail"), "output": j.get("output"),
-                "receipt": j.get("receipt_id")}
+    def rea_tools(self, query="", name=""):
+        from .rea_tool import discover, DiscoverIn
+        out = discover(DiscoverIn(query=query, name=name), None)
+        if name:
+            out["tools"] = [{k: t[k] for k in ("gbox_name", "description", "inputSchema", "effects", "examples")} for t in out["tools"]]
+        return out
+
+    def read_rea_result(self, sha256, pointer="", offset=0, limit=20):
+        job = self._job("read_rea_result", {"sha256": sha256, "pointer": pointer, "offset": offset, "limit": limit}, node="linux")
+        return job.get("output") or {"state": job.get("state"), "error": job.get("error")}
+
+    def run_tool(self, name, input, worker_id=None, node=None):
+        worker = worker_id or (getattr(self, "rea_worker", None) if name.startswith("rea_") and not node else None)
+        j = self._job(name, input, worker=worker, node=node, limit=1140 if name.startswith("rea_") else 900)
+        if name.startswith("rea_") and j.get("worker_id"):
+            self.rea_worker = j["worker_id"]
+        output = j.get("output")
+        if name.startswith("rea_") and isinstance(output, dict) and isinstance(output.get("result"), dict):
+            # MCP text duplicates structured content; put the useful evidence
+            # first within the model's context budget, retaining its artifact ID.
+            output = dict(output, result=output["result"].get("structuredContent") or output["result"])
+            if j["output"]["result"].get("_gbox_truncated"):
+                output["_gbox_truncated"] = True
+                output["full_result_artifact"] = output.get("evidence_sha256")
+        return {"state": j.get("state", "failed"), "error": j.get("error") or j.get("detail"), "output": output,
+                "receipt": j.get("receipt_id"), "worker_id": j.get("worker_id")}
 
     # --- conversation loop ---
     def run(self, messages: list[dict], emit, context: dict, max_steps: int = 40) -> dict:
@@ -1266,7 +1298,7 @@ class Agent:
                     if bm["before"] is None:
                         bm["before"] = self._bookmark_state(bm["sid"])
                 key = name + json.dumps(args, sort_keys=True, default=str)
-                if key in seen and name not in ("look_at_screen", "read_memory", "memory_search", "memory_filter", "session_info",
+                if key in seen and not name.startswith("rea_") and name not in ("look_at_screen", "read_memory", "memory_search", "memory_filter", "session_info",
                                                 "debugger", "autoplay", "cheats"):          # live-state tools may legitimately repeat
                     result = {"repeat": True, "note": "You already ran exactly this; the result would be the same. Use what you have, "
                               "change the arguments, or try a different tool/approach.", "previous": seen[key][:1500]}
@@ -1274,7 +1306,18 @@ class Agent:
                     try:
                         if name not in {t["function"]["name"] for t in tools}:
                             raise ValueError(f"unknown tool {name}")
-                        result = self._run_recipe(self.recipes[name], args, context) if name in self.recipes else getattr(self, name)(**args)
+                        if name.startswith("rea_") and name != "rea_tools":
+                            result = self.run_tool(name, args)
+                        else:
+                            result = self._run_recipe(self.recipes[name], args, context) if name in self.recipes else getattr(self, name)(**args)
+                        if name == "rea_tools" and args.get("name"):
+                            from .rea_tool import CATALOG
+                            requested = args["name"].removeprefix("rea_")
+                            contract = next((t for t in CATALOG["tools"] if t["name"] == requested), None)
+                            direct = "rea_" + requested
+                            if contract and direct not in {t["function"]["name"] for t in tools}:
+                                tools.append({"type": "function", "function": {"name": direct,
+                                              "description": contract["description"], "parameters": contract["inputSchema"]}})
                     except Exception as e:
                         result = {"error": f"{type(e).__name__}: {e}"}
                 if isinstance(result, dict) and result.get("_cards"):     # link cards / image thumbnails for the chat

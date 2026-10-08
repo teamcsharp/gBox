@@ -56,6 +56,7 @@ class Config(BaseModel):
     blender_path: str | None = None
     blender_search: list[str] = []    # dirs searched for the newest blender executable when blender_path is unset
     ghidra_home: str | None = None
+    rea_env: dict[str, str] = {}      # explicit REA provider environment (GHIDRA_INSTALL_DIR, REA_IDA_MCP_CONFIG, etc.)
     retroarch_bios: dict[str, str] = {}   # os -> BIOS source dir (copied per core on demand)
     display: str = ":90"              # linux: Xvfb display used for headless emulator sessions
     llm_endpoints: list[LLMEndpoint] = []

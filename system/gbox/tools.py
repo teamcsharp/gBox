@@ -2729,6 +2729,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "yukes_sd",   # yukes_sd: WWF SmackDown! 2 (PS1) reader + writer (via characters op=use|match|extract)
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
+                              "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
     import importlib
     import subprocess

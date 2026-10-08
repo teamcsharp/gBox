@@ -24,6 +24,7 @@ def main():
     j.add_argument("input", nargs="?", default="{}")
     j.add_argument("--server", default=None)
     sub.add_parser("schemas", help="export JSON Schemas to schemas/")
+    sub.add_parser("rea-install", help="install the pinned REA runtime on this worker without changing agent configs")
     su = sub.add_parser("setup", help="install/verify this node's dependencies (apt, mounts, cores, BIOS, ghidra, blender)")
     su.add_argument("--no-ghidra", action="store_true")
     wz = sub.add_parser("wizard", help="setup / deploy / troubleshoot wizard in the browser (what gBox.sh opens)")
@@ -49,6 +50,10 @@ def main():
         return
 
     cfg = cfgmod.load(a.config)
+    if a.cmd == "rea-install":
+        from .rea import install
+        print(json.dumps(install(cfg), indent=2))
+        return
     if a.cmd == "mcp":
         from . import mcp_server
         if not os.environ.get("GBOX_TOKEN") and not (cfg.data_dir / "api_token").exists():   # never mint a new token here
