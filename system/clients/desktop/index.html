@@ -700,6 +700,8 @@ window.assetView = async (box, glbUrl) => {
     </div></section>
   </main>
 </div>
+<script src="inbox-view.js"></script>
+<script src="task-activity.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 let S, current = null, playLoaded = false;
@@ -764,11 +766,12 @@ $("#chat-home").onclick = () => viewAction("library");
 
 // console
 const con = $("#con");
-gbox.onTask((id, text) => { if (RB.on && id.startsWith("relaunch")) rbFeed(text);
+let activity = null;
+gbox.onTask((id, text) => { activity?.log(id, text); if (RB.on && id.startsWith("relaunch")) rbFeed(text);
   if (current && id !== current && !id.startsWith(current + "-") && id !== "win-worker") return; con.textContent += text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ""); con.scrollTop = con.scrollHeight; });
-gbox.onTaskEnd((id, code) => { con.textContent += `\n[${id} finished: exit ${code}]\n`; if (id === current) current = null; refresh(); });
+gbox.onTaskEnd((id, code) => { activity?.end(id); con.textContent += `\n[${id} finished: exit ${code}]\n`; if (id === current) current = null; refresh(); });
 gbox.onWorker(() => refresh());
-const runTask = (id, title) => { current = id; $("#con-title").textContent = title; con.textContent += `\n$ ${title}\n`; };
+const runTask = (id, title) => { activity?.start(id, title); current = id; $("#con-title").textContent = title; con.textContent += `\n$ ${title}\n`; };
 $("#con-stop").onclick = () => current && gbox.cancel(current);
 $("#con-clear").onclick = () => con.textContent = "";
 
@@ -1336,8 +1339,8 @@ async function refreshInbox() {
           <button class="act send">Send</button>${x.status !== "done" ? `<button class="act markdone">Mark done</button>` : ""}</div></div>
       ${children.has(x.id) ? `<details class="subrequests" style="margin:8px 12px"><summary>${children.get(x.id).length} automated sub-requests${children.get(x.id).some(hasPending) ? " · work pending" : ""}</summary>${children.get(x.id).map(renderRequest).join("")}</details>` : ""}</div>`;
   };
-  host.innerHTML = (roots.map(renderRequest).join("") || `<p class="mut">No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat.</p>`)
-    + (unresolved.length ? `<details class="unlinked-system"><summary>${unresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${unresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${unresolved.map(renderRequest).join("")}</details>` : "");
+  updateInboxView(host, JSON.stringify([all, MODS.list]), () => (roots.map(renderRequest).join("") || `<p class="mut">No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat.</p>`)
+    + (unresolved.length ? `<details class="unlinked-system"><summary>${unresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${unresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${unresolved.map(renderRequest).join("")}</details>` : ""), replyAtt);
 }
 $("#reqlist").addEventListener("change", async e => {
   if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
@@ -1388,7 +1391,14 @@ document.addEventListener("click", async e => {
   if (e.target.classList.contains("send")) {
     const t = card.querySelector(".reply").value.trim(), atts = replyAtt[id] || [];
     if (!t && !atts.length) return;
-    await gbox.api(`/api/requests/${id}/messages`, { author: "operator", text: t, attachments: atts }); delete replyAtt[id]; refreshInbox();
+    const button = e.target; button.disabled = true;
+    try {
+      const result = await gbox.api(`/api/requests/${id}/messages`, { author: "operator", text: t, attachments: atts });
+      if (!result.ok) throw new Error(result.error || "Could not send reply");
+      card.querySelector(".reply").value = ""; delete replyAtt[id];
+      card.querySelector(".reply-att").replaceChildren(); refreshInbox();
+    } catch (error) { toast(error.message, 8000); }
+    finally { button.disabled = false; }
   }
   if (e.target.classList.contains("markdone")) { await gbox.api(`/api/requests/${id}/status`, { status: "done", note: "Closed by operator." }); refreshInbox(); }
 });
@@ -1612,8 +1622,14 @@ updateCheck(); setInterval(updateCheck, 20000);
 const typingInPage = async () => { const wv = document.querySelector("#wv");
   if (!wv || document.activeElement !== wv) return false;
   return wv.executeJavaScript(`!!document.activeElement?.closest?.("input, textarea, select, [contenteditable]")`).catch(() => false); };
-const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !$("#issue-modal") && !document.activeElement?.closest?.("input, textarea, select, [contenteditable], #chatresize")
-  && !(await typingInPage())) gbox.embedFocus?.(); }, 120);
+const gameFocus = () => setTimeout(async () => {
+  const allowed = () => EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !$("#issue-modal")
+    && !document.activeElement?.closest?.("input, textarea, select, [contenteditable], #chatresize, #reqform");
+  if (!allowed()) return;
+  const inPage = await typingInPage();
+  // A user can focus an editor while the guest-frame check is awaiting its IPC response.
+  if (!inPage && allowed()) gbox.embedFocus?.();
+}, 120);
 gbox.onAppFocus?.(gameFocus);
 // only a click on the game itself hands it the keyboard (clicks in the library, sidebars, search boxes keep it in gBox)
 document.addEventListener("pointerup", e => { const r = EMB.rect;
@@ -3423,12 +3439,15 @@ document.body.insertAdjacentHTML("beforeend", `<div id="statusbar">
     <button class="act" id="au-close">✕</button></div><div id="auditlist"></div></div>`);
 (async () => { const s = await gbox.settings(); SBX.api = s.apiUrl; SBX.tok = await gbox.token(); })();
 const AUD = { rows: [], after: 0 };
+const activityHost = document.createElement("div"); activityHost.id = "background-activity";
+$("#sb-audit").before(activityHost); activity = new TaskActivity(activityHost);
 const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|desktop|web/, "🧑"], [/worker|lilspark|nuc|jaybuilt/i, "🖥️"], [/.*/, "⚙️"]];
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
 const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
 async function auditPoll() {
-  const r = await gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
+  const [r, jobs] = await Promise.all([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
+  if (jobs.ok) activity?.remote(jobs.data); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;

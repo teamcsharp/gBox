@@ -53,3 +53,25 @@ The final reviewed snapshot has 241 pending entries: 230 in progress, five open 
 - The full pending inbox snapshot is retained locally in `C:/tmp/gbox-inbox-remaining.json`; it is not published as project source.
 
 Source fixes are synchronized to the live Spark mirror. Verification sessions are stopped after use. Existing user edits to the desktop conversation controls and PS2 launch routing are retained.
+
+
+## Additional verified batch ? 2026-10-08
+
+Eighteen pending operator requests were completed or confirmed against their implemented behavior:
+
+| Requests | Result and evidence |
+| --- | --- |
+| 702, 232 | Inbox refresh preserves drafts, focus, selection, attachments and expanded threads; unchanged data does not rebuild the DOM. Native game focus is rechecked after asynchronous guest-frame inspection, preventing an editor from losing the keyboard. |
+| 700, 701 | Background activity displays a task title, last console/status line and progress. Real job percentages are used; unknown progress is indeterminate. Completed activity restores the audit footer. |
+| 615 | New-request icon opens a draft and submits the entered title and details. |
+| 631 | Recording menu opens the recordings folder and persists the keep-original option. Prior actual compression retained the original alongside its smaller MP4. |
+| 415 | Size target/compression controls and default 10 MiB cap are implemented. Actual ffmpeg compression fit a 0.15 MiB test cap with audio preserved; the same target-byte calculation handles 10 MiB. HandBrake's audio-preserving CLI flags are documented; runtime compression validation used ffmpeg. |
+| 488, 490 | Click-away closes registered desktop popups and the native game's context menu. |
+| 81, 84, 85 | Console ordering/hiding/All-to-reveal, console game filtering and hover-arrow scrolling with stop-on-leave passed runtime checks. |
+| 225 | Enter sends chat; Shift+Enter retains newline behavior. |
+| 140 | Repeated actor/action audit entries group into a count with an active animation. |
+| 618 | Right-click character defaults retain separate character and boot-image IDs. Boot mod switches toggle both ways; Play uses the saved choice. Game-specific writer gaps remain separate unfinished requests. |
+| 616, 617 | Console reset and F5 dispatch use the active game. Prior live normal/hard-reset evidence is preserved in `C:/tmp/gbox-reset-validation.json`; the actual Electron F5 handler and renderer reset dispatch passed additional checks. |
+| 88 | The engineering overview exists with network, structure, security, runtime/dependency/footprint sections and is updated with the current inbox, reports, recording, progress and focus architecture. |
+
+Validation: 33 Electron behavior checks passed, plus the actual F5 main-process handler check. Sixteen relevant Python API/control-plane/inbox tests passed. JavaScript syntax and whitespace checks passed. Test fixtures do not establish support for game-specific swaps, autoplay or extraction in unsupported titles; those requests remain open. The broader performance investigation (712) also remains open: this batch fixes inbox rebuilds and a keyboard-focus race, rather than claiming every performance issue is resolved.

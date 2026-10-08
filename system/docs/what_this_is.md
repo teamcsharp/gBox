@@ -3,17 +3,17 @@
 **Purpose of this file.** A bird's-eye engineering briefing for an LLM (or an engineer) to get up to speed on gBox
 without reading the repository. It covers structure, paths, runtime topology, data model, security, LLM/agent
 integration, tools, emulators, optimisation, the DGX Spark setup, footprint and external dependencies. It is updated
-at intervals; the "Last updated" line and §16 changelog say what changed. Statements are marked **verified** only
+at intervals; the "Last updated" line and §19 changelog say what changed. Statements are marked **verified** only
 where they were exercised on the real machines.
 
-Last updated: 2026-10-05.
+Last updated: 2026-10-08.
 
 ---
 
 ## 1. One-paragraph summary
 
 gBox is a self-hosted "universal game laboratory". It catalogs a large retro/console game library on a NAS
-(63,975 entries), launches any of it in emulators on a Linux GPU box (NVIDIA DGX Spark, arm64) or natively on a
+(over 63,000 entries), launches supported titles in emulators on a Linux GPU box (NVIDIA DGX Spark, arm64) or natively on a
 Windows PC, streams and controls sessions, and exposes the running game to tooling: live memory read/write/freeze,
 a CPU debugger (registers, disassembly, breakpoints, watchpoints), per-game *semantic state* profiles (player HP,
 position, enemies…), autonomous play (navigation, combat, missions with recorded metrics), Ghidra static analysis
@@ -337,3 +337,15 @@ Spark containers: `searxng` (:8081), `wyoming-whisper` (:10300), `wyoming-piper`
   eyedropper (Ctrl+I / status bar) with pre-selection and inspector; Extract tab (area geometry + live RAM entities, outliner,
   gizmo, inspector, exports). Web: 10-mode visualizer (/viz) on the loading screen, random per title, right-click to choose;
   session view fits the window (collapsible Graphics).
+
+
+## 20. Current desktop and inbox behavior (2026-10-08)
+
+* `gbox/inbox.py` identifies operator requests and automated descendants. Jobs propagate `parent_request_id` into tool context. The main inbox lists operator roots; automated work is nested under its originating request. Older automation with no provable origin is preserved separately. Ending an agent turn does not complete unfinished work.
+* `clients/desktop/inbox-view.js` updates changed request data without replacing an active editor. Draft replies, image attachments and expanded details survive updates; unchanged responses skip rebuilding the DOM. The native-game focus handler rechecks editor focus after asynchronous guest-frame inspection.
+* `clients/desktop/task-activity.js` displays a background task's title, last console/status line and real progress when provided. Unknown progress is indeterminate. `/api/jobs?state=queued,running` filters active jobs before applying the result limit.
+* `clients/desktop/issue-report.js` opens a draft with subject, issue details and pasted/dropped/file-picked attachments. Windows Explorer file clipboard support resides in the desktop main process. Submission retains original attachment bytes and available game diagnostics; failures preserve the draft. See [issue reports](issue-reports.md).
+* Recordings capture PC playback audio and support an application crop or gameplay-only crop from the recorder's right-click menu. Both HandBrake and ffmpeg compression paths preserve AAC. Actual Windows Electron recordings and ffmpeg compression have been verified; the HandBrake flags were checked against its CLI documentation. See [recording behavior and limits](recording.md).
+* Right-click boot setup persists a character slug separately from its boot image, including shared roster mods. Game-specific swap/extraction writers and some replay states still require work; the visible selector does not establish support for every game or asset.
+
+Changelog addition: 2026-10-08 ? inbox hierarchy and draft preservation, issue-report popup with arbitrary files, playback audio and gameplay-only recording, background-task progress and keyboard focus checks. These changes were tested on Windows; live service and desktop rollout is recorded in the inbox review.

@@ -1027,8 +1027,14 @@ def create_app(config: Config) -> FastAPI:
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
     @app.get("/api/jobs")
-    def list_jobs(limit: int = 100, actor=Depends(auth)):
-        return store.all("job")[-limit:][::-1]
+    def list_jobs(limit: int = 100, state: str = "", actor=Depends(auth)):
+        jobs = store.all("job")
+        if state:
+            states = set(state.split(","))
+            if not states <= {s.value for s in JobState}:
+                raise HTTPException(422, "unknown job state")
+            jobs = [job for job in jobs if job.get("state") in states]
+        return jobs[-limit:][::-1]
 
     @app.get("/api/jobs/{jid}")
     def get_job(jid: str, actor=Depends(auth)):
