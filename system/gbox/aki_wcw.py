@@ -298,12 +298,24 @@ def target_skeleton(parts: dict, J: dict) -> dict:
 
 # ---------------------------------------------------------------- extraction (a wrestler -> rigged glTF)
 
+def texture_colours(tex: bytes) -> int:
+    """Revenge CI4 files can carry two 16-colour palette banks (header count 32)."""
+    if len(tex) < 8:
+        raise ValueError('truncated AKI texture header')
+    pixels = (tex[0] + 1) * (tex[1] + 1)
+    if len(tex) >= 8 + pixels:
+        return 256
+    if len(tex) >= 8 + (pixels + 1) // 2:
+        return 16
+    raise ValueError('truncated AKI texture pixels')
+
+
 def tex_decode(tex: bytes, pal: bytes) -> np.ndarray:
     """CI4 / CI8 texture + RGBA5551 palette -> RGBA (mirrored axes baked in: the image is doubled along them)."""
     w, h, ncol = tex[0] + 1, tex[1] + 1, struct.unpack_from(">H", tex, 2)[0]
-    if ncol <= 16:
-        b = np.frombuffer(tex, np.uint8, w * h // 2, 8)
-        idx = np.stack([b >> 4, b & 15], 1).reshape(h, w)
+    if texture_colours(tex) == 16:
+        b = np.frombuffer(tex, np.uint8, (w * h + 1) // 2, 8)
+        idx = np.stack([b >> 4, b & 15], 1).reshape(-1)[:w * h].reshape(h, w)
     else:
         idx = np.frombuffer(tex, np.uint8, w * h, 8).reshape(h, w)
     n = max(ncol, 16)
@@ -373,7 +385,7 @@ def extract_run(ctx, game, e, work):
     r = extract(rom, w, out, e["name"])
     return {"files": [out], "tool": "gbox.aki_wcw (extract)", "roles": r["roles"],
             "source_files": [f"body definition + head definition + costume 0 textures of wrestler {e['key']}"],
-            "notes": "World Tour wrestler in AKI's rest pose (arms down); one rigid joint per body part"}
+            "notes": f"{game['title']} wrestler in AKI's rest pose (arms down); one rigid joint per body part"}
 
 
 # ---------------------------------------------------------------- textures
@@ -386,6 +398,9 @@ def tex_encode(hdr: bytes, img: np.ndarray, ncol: int) -> tuple[bytes, bytes]:
     c = pal.astype(np.uint16)
     v5 = ((c[:, 0] >> 3) << 11) | ((c[:, 1] >> 3) << 6) | ((c[:, 2] >> 3) << 1) | 1
     palb = v5.astype(">u2").tobytes().ljust(2 * ncol, b"\0")
+    declared = max(ncol, struct.unpack_from('>H', hdr, 2)[0])
+    # Preserve every bank the native costume loader expects, using the baked replacement colours.
+    palb = (palb * ((declared + ncol - 1) // ncol))[:2 * declared]
     if ncol == 16:
         flat = idx.reshape(-1) & 15
         pix = ((flat[0::2] << 4) | flat[1::2]).astype(np.uint8).tobytes()
@@ -454,7 +469,7 @@ def fit_character(R: Rom, w: dict, model: Path, roles: dict, work: Path, name: s
             continue
         hdr = v["texhdr"]
         tw, th = hdr[0] + 1, hdr[1] + 1
-        ncol = 16 if struct.unpack_from(">H", hdr, 2)[0] <= 16 else 256
+        ncol = texture_colours(R.ft.get(v['tex']))
         texbyte = v["raw"][7]
         if k in geo and len(geo[k]["F"]):
             img, pv = A._bake_parts([geo[k]], mats, tw, th, [J.get(WPARTS[k][1])])
@@ -679,16 +694,16 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         jobs.append({"code": w["code"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
                      "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
     name = mod_name(pairs, title)
-    work = Path(cfg.cache) / "characters_build" / name
+    work = Path(cfg.cache) / "characters_build" / gid / name
     shutil.rmtree(work, ignore_errors=True)
     b = build_rom(rom, jobs, work, _blender(cfg), progress)
     previews = []
     for (meta, w), rep in zip(pairs, b["reports"]):
         tdir = root / meta["slug"] / "targets"
         tdir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(rep["rigged"], tdir / "worldtour_wrestler.gltf")
+        shutil.copy2(rep["rigged"], tdir / f"wcw_{gid}_wrestler.gltf")
         try:
-            previews.append(str(C.render_preview(tdir / "worldtour_wrestler.gltf", tdir / "worldtour_preview.png")))
+            previews.append(str(C.render_preview(tdir / f"wcw_{gid}_wrestler.gltf", tdir / f"wcw_{gid}_preview.png")))
         except Exception:                                  # noqa: BLE001
             pass
     d = filemods.mod_dir(cfg, gid, name)
@@ -696,7 +711,7 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         shutil.rmtree(d)
     d.mkdir(parents=True)
     t = title or " vs ".join(m["name"] for m, _w in pairs)
-    img = "WCW vs. nWo World Tour - " + re.sub(r"[^\w .()'-]+", "", t).strip() + " (USA).z64"
+    img = ("WCW vs. nWo World Tour - " if gid == "59bf059d2eadd372" else "WCW nWo Revenge - ") + re.sub(r"[^\w .()'-]+", "", t).strip() + " (USA).z64"
     (d / img).write_bytes(b["rom"])
     (d / ".gbox-mod.json").write_text(json.dumps({
         "name": name, "game_id": gid, "image": img, "title": t, "built": time.time(),
@@ -707,12 +722,12 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
 
 
-def _player1(ctx, sess, ros) -> dict | None:
+def _player1(ctx, sess, ros, address=0x80057520) -> dict | None:
     """Player 1's wrestler in a running session of the game (slot code at 0x80057520)."""
     try:
         from .characters import _job
         import httpx
-        j = _job(ctx, "read_memory", {"session_id": sess["session_id"], "address": 0x80057520, "length": 16}, None, 120)
+        j = _job(ctx, "read_memory", {"session_id": sess["session_id"], "address": address, "length": 16}, None, 120)
         if j.get("state") != "succeeded":
             return None
         r = httpx.get(f"{ctx.server}/api/artifacts/{j['output']['sha256']}", headers=ctx.headers, timeout=60)
@@ -734,16 +749,20 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
     from .tools import rom_path
     gid = game["game_id"]
     if gid not in GAME_IDS:
-        return {"status": "missing", "message": "WCW/nWo Revenge: reader only (no writer yet); World Tour has one"}
+        return {"status": "missing", "message": "Native writers support WCW World Tour USA and WCW/nWo Revenge USA."}
     sess = C._session(ctx, inp.session_id) if inp.session_id else None
     node = sess["session_id"].split("-")[0] if sess else C.HOST_OS
     if not C.library_root(ctx.config).is_dir():
         cp = next((w["id"] for w in C._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"), None)
         slot = inp.slot
         if slot == "player" and sess and sess.get("game_id") == gid:
-            ros = roster(A.rom_bytes(rom_path(CatalogEntry.model_validate(game), ctx.config)))
-            w = _player1(ctx, sess, ros)
-            slot = f"{w['group']}-{w['member']}" if w else slot
+            rom = A.rom_bytes(rom_path(CatalogEntry.model_validate(game), ctx.config))
+            ros = roster(rom)
+            w = _player1(ctx, sess, ros, Rom(rom).p['slot_code'])
+            if not w:
+                return {'status': 'choose_slot', 'message': "Couldn't identify the active wrestler. Choose a wrestler by name.",
+                        'roster': [w['name'] for w in ros]}
+            slot = f"{w['group']}-{w['member']}"
         args = {"op": inp.op, "character": inp.character, "game_id": gid, "slot": slot, "rebuild": inp.rebuild,
                 "launch": False, "pairs": inp.pairs, "title": inp.title}
         j = C._job(ctx, "characters", args, cp, 2400)
@@ -758,7 +777,10 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
             if inp.slot and inp.slot != "player":
                 w = find_wrestler(ros, inp.slot)
             else:
-                w = (_player1(ctx, sess, ros) if sess and sess.get("game_id") == gid else None) or ros[0]
+                w = _player1(ctx, sess, ros, Rom(rom).p['slot_code']) if sess and sess.get("game_id") == gid else ros[0]
+                if not w:
+                    return {'status': 'choose_slot', 'message': "Couldn't identify the active wrestler. Choose a wrestler by name.",
+                            'roster': [w['name'] for w in ros]}
             pairs = [(meta, w)]
         name = mod_name(pairs, title)
         have = (filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json").exists()
@@ -769,18 +791,18 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
                 C._api(ctx, "POST", f"/api/characters/{m['slug']}/targets",
                        json={"game_id": gid, "slot": w["name"], "mod": name, "nodes": [C.HOST_OS],
                              "notes": f"replaces {w['name']} (every costume; the game's skeleton, moves and grapples); "
-                                      "preview targets/worldtour_preview.png"})
+                                      f"preview targets/wcw_{gid}_preview.png"})
     res = {"mod": name, "build": built, "replaces": ", ".join(f"{w['name']} -> {m['name']}" for m, w in (pairs or []))}
     if not inp.launch:
         return res | {"status": "built" if built else "ready"}
-    ctx.progress(92, f"Launching World Tour (mod {name})")
+    ctx.progress(92, f"Launching {game['title']} (mod {name})")
     from .sm64_swap import _wait
     lj = _wait(ctx, C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": name,
                                                                                          "node": node}}), 600)
     ok = lj.get("state") == "succeeded"
     launch = {"job": lj.get("id"), "state": lj.get("state"), "node": node,
               "session_id": (lj.get("output") or {}).get("session_id"), "error": lj.get("error")}
-    msg = (f"World Tour is running with {res['replaces']} (mod {name}). Pick the replaced wrestler on the select "
+    msg = (f"{game['title']} is running with {res['replaces']} (mod {name}). Pick the replaced wrestler on the select "
            "screen. Needs the Expansion Pak (on in parallel_n64)." if ok else
            f"Mod {name} built but the launch {lj.get('state')}: {lj.get('error')}")
     return res | {"status": ("built+launched" if built else "launched") if ok else "built, launch failed", "launch": launch,

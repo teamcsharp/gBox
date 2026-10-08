@@ -64,6 +64,8 @@ def create_app(config: Config) -> FastAPI:
     token = config.token()
     app = FastAPI(title="gBox", version="0.1.0")
     app.state.store = store
+    from .character_collection import AutoCollection
+    auto_collection = AutoCollection(store, config)
 
     @app.on_event("startup")
     async def _more_threads():
@@ -369,7 +371,8 @@ def create_app(config: Config) -> FastAPI:
         """A worker built a swap mod for a game: record it so the library shows it as ready."""
         K, root = _chars()
         try:
-            m = K.set_target(root, slug, t.game_id, t.model_dump())
+            with store.lock:
+                m = K.set_target(root, slug, t.game_id, t.model_dump())
         except KeyError:
             _404()
         store.audit(actor, "character.target", slug, t.model_dump())
@@ -655,8 +658,27 @@ def create_app(config: Config) -> FastAPI:
             if test(t, plat):
                 root = C.library_root(config)
                 return {"extractor": name, "roster": [{"name": e["name"], "slug": e["slug"], "kind": e.get("kind", "character"),
-                                                       "collected": (root / e["slug"] / "meta.json").is_file()} for e in roster()]}
-        return {"extractor": None, "roster": []}
+                                                       "collected": (root / e["slug"] / "meta.json").is_file()}
+                                                      for e in C.dedicated_entries(config, g, name, roster)],
+                        "collection": auto_collection.status(gid)}
+        return {"extractor": None, "roster": [], "collection": auto_collection.status(gid)}
+
+    @app.get("/api/character-collection/policy")
+    def collection_policy(actor=Depends(auth)):
+        return auto_collection.policy()
+
+    class CollectionPolicy(BaseModel):
+        enabled: bool = True
+        parent_request_id: str | None = None
+
+    @app.post("/api/character-collection/policy")
+    def set_collection_policy(inp: CollectionPolicy, actor=Depends(auth)):
+        if inp.parent_request_id:
+            parent = store.get('request', inp.parent_request_id)
+            if not parent or parent.get('automated'):
+                raise HTTPException(422, 'parent must identify an operator request')
+        store.put('setting', 'auto_character_collection', inp.model_dump())
+        return inp
 
     class SwapIn(BaseModel):
         mod: str = ""                       # "" = the original game
@@ -942,6 +964,13 @@ def create_app(config: Config) -> FastAPI:
             t.on_accept(store, out, actor)
         elif state != JobState.SUCCEEDED and t.on_fail:
             t.on_fail(store, j, actor)
+        if state == JobState.SUCCEEDED and t.name == 'launch_game':
+            try:
+                auto_collection.after_launch(j, r.output or {},
+                    lambda request: submit(JobRequest(**request), actor).model_dump(mode='json'))
+            except Exception as exc:
+                # Extraction scheduling must never turn a successful gameplay launch into a worker retry.
+                store.audit(actor, 'characters.auto_collect_failed', j['id'], {'error': str(exc)})
         return {"state": state, "receipt": receipt.id}
 
     # --- jobs ---
@@ -980,7 +1009,9 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(422, f"input invalid: {e}")
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id)
-        if t.name == "characters" and inp.get("op") in ("extract", "add", "blender"):
+        if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
+            job.parent_request_id = auto_collection.policy().get('parent_request_id')
+        if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
@@ -995,6 +1026,10 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if t.name == 'characters' and inp.get('op') == 'collect' and inp.get('game_id'):
+            with auto_collection.lock:
+                store.put('character_collection', inp['game_id'], {'state': job.state, 'job_id': job.id,
+                           'updated': time.time(), 'session_id': inp.get('session_id')})
         store.audit(actor, "job.rejected" if missing else "job.submit", job.id, {"tool": t.name, "input": inp, "missing": missing})
         return job
 

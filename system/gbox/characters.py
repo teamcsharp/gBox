@@ -86,7 +86,8 @@ def find(chars: list[dict], query: str) -> dict | None:
 def put_meta(root: Path, meta: dict) -> dict:
     d = Path(root) / meta["slug"]
     d.mkdir(parents=True, exist_ok=True)
-    tmp = d / "meta.json.tmp"
+    import uuid
+    tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
     return meta
@@ -515,7 +516,7 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
+    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
     character: str = ""                    # slug, name or alias ("leon", "Aya", "my PSO character"); extract: what to extract
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
@@ -1091,8 +1092,21 @@ def _one(key, slug, name, aliases):
     return lambda: [{"key": key, "slug": slug, "name": name, "aliases": aliases, "kind": "character"}]
 
 
+def _oot_run(ctx, game, entry, work):
+    from . import oot_swap
+    rom, _ = oot_swap.rom_of(ctx.config, game)
+    target = oot_swap.resolve(ctx, rom, None, entry['key'])
+    result = oot_swap.extract_target(rom, target, Path(work) / (entry['slug'] + '.gltf'), entry['name'])
+    return {'files': [result['path']], 'roles': result['roles'], 'tool': 'gbox.oot_swap',
+            'source_files': [entry['key']], 'notes': 'Native Link skeleton, display lists and textures.'}
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
+    ('oot', lambda t, p: 'ocarina of time' in t and p == 'n64',
+     lambda: [{'key': f'{age} link', 'slug': f'oot_link_{age}', 'name': label,
+               'aliases': [f'{age} link'], 'kind': 'character'}
+              for age, label in [('adult', 'Link (adult, OoT)'), ('child', 'Young Link (OoT)')]], _oot_run),
     ("melee", lambda t, p: "smash bros" in t and "melee" in t, _melee_roster, _melee_run),
     ("sa2", lambda t, p: "sonic adventure 2" in t and p == "dreamcast",
      lambda: [{"key": k, "slug": "sonic" if k == "SONIC" else f"sa2_{slugify(n)}", "name": n, "aliases": a, "kind": kd}
@@ -1119,23 +1133,83 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.yukes_sd", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("worldtour", lambda t, p: "world tour" in t and "wcw" in t and p == "n64", lambda: __import__("gbox.aki_wcw", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("revenge", lambda t, p: "revenge" in t and "wcw" in t and p == "n64", lambda: [],
+     lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
-def extract_dedicated(ctx, game: dict, what: str, root: Path) -> dict | None:
+def dedicated_entries(config, game, name, roster):
+    """WCW's ROM tables include hidden wrestlers and differ between titles."""
+    if name in ("worldtour", "revenge"):
+        from . import aki_wcw, aki_wrestling
+        from .models import CatalogEntry
+        from .tools import rom_path
+        rom = aki_wrestling.rom_bytes(rom_path(CatalogEntry.model_validate(game), config))
+        prefix = "wt" if name == "worldtour" else "rv"
+        return [{"key": f"{w['group']}-{w['member']}",
+                 "slug": ("wt_" + slugify(w['name']).replace('-', '_')) if name == 'worldtour' and
+                         (f"{w['group']}-{w['member']}", w['name']) in aki_wcw.WT_NAMES
+                         else f"{prefix}_{w['group']}_{w['member']}_{slugify(w['name'])}",
+                 "name": w['name'], "aliases": [f"{game['title']} {w['name']}", f"{w['group']}-{w['member']}"],
+                 "kind": "character"} for w in aki_wcw.roster(rom)]
+    root = library_root(config)
+    entries = []
+    for entry in roster():
+        entry = dict(entry)
+        if (root / entry['slug'] / 'meta.json').is_file() and not _same_game(get(root, entry['slug']), game):
+            entry['slug'] += '_' + game['game_id']
+        entries.append(entry)
+    return entries
+
+
+def collect(ctx, inp):
+    """Collect a supported disc roster without vision/LLM calls or gameplay interruption."""
+    game, root = _game(ctx, inp), library_root(ctx.config)
+    title, platform = game['title'].lower(), game['platform']
+    reader = next((r for r in DEDICATED if r[1](title, platform)), None)
+    if reader is None:
+        return {"status": "unsupported", "game_id": game['game_id'],
+                "message": "No native model reader for this game; no unrigged capture was substituted."}
+    name, _, roster, _ = reader
+    entries = [e for e in dedicated_entries(ctx.config, game, name, roster) if e.get('kind', 'character') == 'character']
+    results = []
+    for i, e in enumerate(entries):
+        ctx.progress(100 * i / max(1, len(entries)), f"Collecting {e['name']} ({i + 1}/{len(entries)})")
+        try:
+            res = extract_dedicated(ctx, game, e['slug'], root, (name, entries))
+            meta = get(root, res['entry']['slug'])
+            checked = verify_entry(root, meta)
+            roles = (meta.get('rig') or {}).get('roles') or {}
+            ready = checked['ok'] and bool(roles)
+            results.append({'slug': meta['slug'], 'name': meta['name'], 'status': res['status'],
+                            'verified': checked['ok'], 'retargetable': ready,
+                            'message': '' if ready else 'Model or mapped rig needs verification before retargeting.'})
+        except Exception as exc:
+            results.append({'slug': e['slug'], 'name': e['name'], 'status': 'failed',
+                            'verified': False, 'retargetable': False, 'error': str(exc)})
+    good = sum(r['verified'] for r in results)
+    mapped = sum(r['retargetable'] for r in results)
+    return {'status': 'complete' if good == mapped == len(entries) and entries else 'partial',
+            'game_id': game['game_id'], 'extractor': name, 'collected': good, 'total': len(entries),
+            'retargetable': mapped, 'entries': results}
+
+
+def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
     """The game's own extractor, when it has one: None = no extractor for this game."""
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, roster, run in DEDICATED:
         if not test(t, plat):
             continue
-        ros = roster()
+        ros = prepared[1] if prepared and prepared[0] == name else dedicated_entries(ctx.config, game, name, roster)
         e = best_match(ros, what)
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
         if (Path(root) / e["slug"] / "meta.json").is_file():
-            return {"status": "in_collection", "extractor": name, "entry": get(root, e["slug"])}
+            existing = get(root, e["slug"])
+            if verify_entry(root, existing)['ok']:
+                return {"status": "in_collection", "extractor": name, "entry": existing}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
@@ -1617,7 +1691,7 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
-@tool("characters", "1.2", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=3600,
+@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
       artifacts=["preview.png"],
       side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
                     "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
@@ -1625,6 +1699,8 @@ def _finish(ctx, res: dict) -> dict:
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
+    collect game_id: extract the native reader's character roster, reuse verified files, report individual failures
+    and mapped rig readiness; unsupported games return unsupported without capture or an LLM call. |
     live_use character=<name> session_id [x,y|slot]: bounded in-engine OoT NTSC 1.2 single-object NPC swap,
     preserving the session and pause state. Changes all loaded actors sharing that model until object reload.
     Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay. |
@@ -1640,6 +1716,8 @@ def characters_tool(inp: CharIn, ctx):
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
     add character=<new name> from_clipboard=true|artifact|path: store an edited model."""
+    if inp.op == "collect":
+        return {"result": collect(ctx, inp)}
     if inp.op in ("extract", "add", "blender"):
         res = {"extract": extract, "add": add_model, "blender": to_blender}[inp.op](ctx, inp)
         return {"result": _finish(ctx, res) if inp.op != "blender" else res}

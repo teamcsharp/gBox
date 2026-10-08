@@ -502,7 +502,7 @@ def tool_specs() -> list[dict]:
         fn("ghidra_script", "Run one Ghidra script (find one with ghidra_scripts) headlessly on an executable, e.g. to decompile "
            "a loader or dump a table. Returns the script log.", {"binary_path": s, "script": s, "args": {"type": "array", "items": s},
            "processor": s}, ["binary_path", "script"]),
-        fn("characters", "gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
+        fn("characters", "collect (game): extract the supported native character roster without vision calls; returns verified models, mapped rig readiness and individual failures. gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
            "reusable in any game. op=list | get (character) | environments | extract (character = what to extract, kind = "
            "character|vehicle|object|environment, session_id or game, x/y = its point on the picture 0..1): returns it if it's "
            "already collected, else runs the game's own extractor, else cuts it out of a RenderDoc capture of the frame "
@@ -1116,13 +1116,13 @@ class Agent:
                    from_clipboard=False, a="", b="", one_way=False, near="", size=0.0):
         if session_id and self._live_session(session_id):  # placeholder / mistyped id: fall back to the game itself
             session_id = ""
-        if not session_id and not game and op in ("extract", "use", "add", "swap", "place", "unplace"):   # the chat's game
+        if not session_id and not game and op in ("collect", "extract", "use", "add", "swap", "place", "unplace"):   # the chat's game
             game = getattr(self, "context_game", "") or ""
         inp = {"op": op, "character": character, "session_id": session_id, "game": game, "slot": slot,
                "kind": kind or ("object" if op == "extract" else "character"), "x": x, "y": y, "from_clipboard": bool(from_clipboard),
                "a": str(a or ""), "b": str(b or ""), "one_way": bool(one_way), "near": near or "", "size": float(size or 0)}
         # extract / add / blender write the collection: they run where it lives (the Spark)
-        j = self._job("characters", inp, limit=3600, node=None if op == "use" and session_id else "linux")
+        j = self._job("characters", inp, limit=14400 if op == "collect" else 3600, node=None if op == "use" and session_id else "linux")
         return (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
 
     def rea_tools(self, query="", name=""):

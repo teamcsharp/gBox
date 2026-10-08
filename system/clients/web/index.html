@@ -1614,12 +1614,48 @@ async function charExtractPanel() {
     <div class="mut">…or pick who${ros.length ? " (✓ = already in your library)" : ""}:</div>
     ${ros.length ? `<input id="chxq" placeholder="filter…" style="width:100%;margin:6px 0">
     <div id="chxlist" style="display:flex;flex-wrap:wrap;gap:4px;max-height:220px;overflow:auto">${ros.map(e => `<label data-n="${esc(e.name.toLowerCase())}" style="display:inline-flex;gap:4px;align-items:center;padding:2px 6px;border:1px solid var(--line,#333);border-radius:12px">
-      <input type="checkbox" value="${esc(e.name)}">${esc(e.name)}${e.collected ? ' <span class="ok">✓</span>' : ""}</label>`).join("")}</div>` : ""}
+      <input type="checkbox" value="${esc(e.slug)}" data-name="${esc(e.name)}">${esc(e.name)}${e.collected ? ' <span class="ok">✓</span>' : ""}</label>`).join("")}</div>` : ""}
     <input id="chxfree" placeholder="${ros.length ? "or type a name" : "type who, e.g. the boss, the car, Link"}" style="width:100%;margin:6px 0">
-    <button class="act" id="chxgo">Extract picked</button><div id="chxst" class="mut" style="white-space:pre-wrap;margin-top:4px"></div>`;
+    <button class="act" id="chxgo">Extract picked</button>${ros.length ? ' <button class="act" id="chxall">Collect entire roster</button>' : ""}<div id="chxauto" class="mut"></div><div id="chxst" class="mut" style="white-space:pre-wrap;margin-top:4px"></div>`;
   $("#chxq")?.addEventListener("input", e => { const q = e.target.value.toLowerCase(); box.querySelectorAll("#chxlist label").forEach(l => l.style.display = l.dataset.n.includes(q) ? "" : "none"); });
   $("#chxclose").onclick = () => box.remove();
   const st = $("#chxst");
+  const showCollection = c => {
+    const out = c.result;
+    box.querySelector("#chxauto").textContent = `Automatic collection: ${out?.status || c.state || "not started"}` +
+      (out ? ` (${out.collected}/${out.total} verified; ${out.retargetable} with mapped rigs)` : "") +
+      (c.error ? `: ${c.error}` : "");
+  };
+  showCollection(r.collection || {});
+  if (r.collection?.job_id && /queued|running/.test(r.collection.state)) {
+    const poll = async () => {
+      if (!box.isConnected || el.dataset.gid !== gid) return;
+      try {
+        const j = await api("/api/jobs/" + r.collection.job_id);
+        showCollection({state:j.state, result:j.output?.result, error:j.error});
+        if (/queued|running/.test(j.state)) setTimeout(poll, 2500);
+        else charsInit();
+      } catch (e) { box.querySelector("#chxauto").textContent = e.message; }
+    };
+    setTimeout(poll, 2500);
+  }
+  box.querySelector("#chxall")?.addEventListener("click", async e => {
+    e.target.disabled = true;
+    try {
+      let j = await api("/api/jobs", {tool:"characters", input:{op:"collect",game_id:gid}});
+      while (/queued|running/.test(j.state) && box.isConnected) {
+        st.textContent = j.progress?.msg || "Collecting the native character roster...";
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        j = await api("/api/jobs/" + j.id);
+      }
+      if (!box.isConnected) return;
+      showCollection({state:j.state,result:j.output?.result,error:j.error});
+      const failures = (j.output?.result?.entries || []).filter(x => !x.verified);
+      st.textContent = failures.map(x => `${x.name}: ${x.error || x.message}`).join("\n");
+      charsInit();
+    } catch (err) { st.textContent = err.message; }
+    finally { e.target.disabled = false; }
+  });
   const run = async (items) => {
     box.querySelectorAll("button").forEach(b => b.disabled = true); const lines = [];
     for (const it of items) {
@@ -1639,7 +1675,7 @@ async function charExtractPanel() {
   };
   $("#chxscreen").onclick = () => run([{ label: "character on screen", what: "the character in the middle of the screen", xy: { x: 0.5, y: 0.55 } }]);
   $("#chxgo").onclick = () => {
-    const picked = [...box.querySelectorAll("#chxlist input:checked")].map(i => ({ label: i.value, what: i.value }));
+    const picked = [...box.querySelectorAll("#chxlist input:checked")].map(i => ({ label: i.dataset.name || i.value, what: i.value }));
     const free = ($("#chxfree").value || "").trim(); if (free) picked.push({ label: free, what: free });
     if (!picked.length) { st.textContent = "tick someone or type a name (or use 🎯 Character on screen)"; return; }
     run(picked);
