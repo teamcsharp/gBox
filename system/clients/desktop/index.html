@@ -65,9 +65,9 @@
              box-shadow:0 8px 24px #0008; }
   #pipmenu button { display:block; width:100%; text-align:left; background:none; border:0; color:#e8e8ee; padding:6px 10px; border-radius:5px; cursor:pointer; font-size:13px; }
   #pipmenu button:hover { background:#ffffff14; } #pipmenu hr { border:0; border-top:1px solid var(--line); margin:4px 0; }
-  #titlebar > img, #chatbar > img { -webkit-app-region:no-drag; cursor:pointer; border-radius:50%; transition:filter .2s, box-shadow .2s; }
-  #titlebar > img:hover, #chatbar > img:hover { filter:brightness(1.4); }
-  body.talking #titlebar > img, body.talking #chatbar > img { box-shadow:0 0 0 3px #e53935; animation:micp 1s infinite; }
+  #titlebar > img { -webkit-app-region:no-drag; cursor:pointer; border-radius:50%; transition:filter .2s, box-shadow .2s; }
+  #titlebar > img:hover { filter:brightness(1.4); }
+  body.talking #titlebar > img { box-shadow:0 0 0 3px #e53935; animation:micp 1s infinite; }
   #titlebar .tools { position:absolute; left:50%; transform:translateX(-50%); display:flex; gap:6px; -webkit-app-region:no-drag; }
   #titlebar .tools button { background:none; border:1px solid transparent; color:#e8e8ee; border-radius:6px; padding:3px 8px; cursor:pointer;
                             display:flex; align-items:center; gap:6px; font:12px system-ui; }
@@ -145,10 +145,22 @@
   #rbside pre { white-space:pre-wrap; margin:4px 0 0; font-size:11px; color:var(--fg); }
   #rbcon { position:absolute; left:12px; right:12px; bottom:10px; height:130px; margin:0; overflow:auto; background:#000a; border-radius:8px; padding:8px 10px;
     font-size:11px; color:#cfd6e6; white-space:pre-wrap; backdrop-filter:blur(4px); }
-  #chatbar > .micwrap, #chatbar > #chatin { flex:0 1 32vw; min-width:180px; } #chatbar > .micwrap > input { flex:1; }
+  #chatinput { display:flex; flex:0 1 32vw; min-width:180px; }
+  #chatinput > input, #chatinput > .micwrap { flex:1; min-width:0; }
+  #chatbar #chat-home { display:flex; align-items:center; justify-content:center; flex:none; width:34px; height:34px; padding:5px; border-color:transparent; background:none; }
+  #chat-home img { width:24px; height:24px; }
+  #chatbar #chat-home:hover { background:var(--card); border-color:var(--line); }
+  #chat-home:focus-visible, #chatresize:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  #chatresize { display:flex; align-items:center; justify-content:center; flex:0 0 10px; height:32px; cursor:ew-resize; touch-action:none; user-select:none; border-radius:4px; -webkit-app-region:no-drag; }
+  #chatresize::after { content:""; width:2px; height:22px; border-radius:2px; background:var(--line); }
+  #chatresize:hover::after, #chatresize:focus-visible::after, body.chatresizing #chatresize::after { background:var(--acc); }
+  body.chatresizing, body.chatresizing * { cursor:ew-resize !important; user-select:none !important; }
+  body.chatresizing #play webview { pointer-events:none; }
+  #chatbar #modelbtn { min-width:128px; }
+  #chatbar .cbicons { flex:none; }
   #chatbar .micbtn { border:0 !important; background:none !important; padding:2px !important; right:8px; }
   #chatbar #chatmodel { max-width:200px; text-overflow:ellipsis; }
-  #chatbusy { cursor:pointer; max-width:340px; overflow:hidden; text-overflow:ellipsis; display:inline-flex; align-items:center; gap:6px; }
+  #chatbusy { cursor:pointer; min-width:0; max-width:340px; overflow:hidden; text-overflow:ellipsis; display:inline-flex; align-items:center; gap:6px; }
   #chatbusy .spin { width:10px; height:10px; flex:none; border:2px solid var(--acc); border-right-color:transparent; border-radius:50%;
     animation:bspin .75s linear infinite; } @keyframes bspin { to { transform:rotate(360deg); } }
   #chatbusy .shim { background:linear-gradient(90deg,var(--fg) 20%,var(--acc) 50%,var(--fg) 80%); background-size:220% 100%;
@@ -565,8 +577,9 @@ window.assetView = async (box, glbUrl) => {
   </div>
 </div>
 <div id="chatbar">
-  <img src="../../assets/brand/gbox-logo.svg" alt="" style="height:22px">
-  <input id="chatin" placeholder="Ask gBox… e.g. “give me infinite lives”, “extract Mario's sprites to Blender”, “what does this function do?”" autocomplete="off">
+  <button id="chat-home" type="button" title="Play &amp; Library" aria-label="Play &amp; Library"><img src="../../assets/brand/gbox-logo.svg" alt=""></button>
+  <span id="chatinput"><input id="chatin" aria-label="Ask gBox" placeholder="Ask gBox… e.g. “give me infinite lives”, “extract Mario's sprites to Blender”, “what does this function do?”" autocomplete="off"></span>
+  <div id="chatresize" role="separator" tabindex="0" aria-label="Resize speech input" aria-orientation="vertical" aria-controls="chatinput" title="Drag to resize the speech input · ←/→ adjust · double-click to reset"></div>
   <span class="busy" id="chatbusy"></span>
   <button id="modelbtn" title="Model for this conversation"><span id="modelcaps"></span><span id="modelname">…</span>
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -690,6 +703,58 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
   if (b.dataset.s === "control") refresh();
 });
+$("#chat-home").onclick = () => viewAction("library");
+// Keep the input's size independent of the microphone wrapper added after the Spark connects.
+(() => {
+  const bar = $("#chatbar"), box = $("#chatinput"), grip = $("#chatresize"), min = 180, key = "gbox_speech_width";
+  let width = null, drag = null;
+  try { const saved = Number(localStorage.getItem(key)); if (Number.isFinite(saved) && saved >= min) width = saved; } catch {}
+  function limit() {
+    const cs = getComputedStyle(bar), controls = [...bar.children].filter(el => {
+      const s = getComputedStyle(el);
+      return s.display !== "none" && !["fixed", "absolute"].includes(s.position);
+    });
+    const used = controls.filter(el => el !== box && el.id !== "chatbusy").reduce((sum, el) => sum + el.getBoundingClientRect().width, 0);
+    return Math.max(min, bar.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - used - parseFloat(cs.columnGap) * (controls.length - 1));
+  }
+  function fit() {
+    const max = Math.floor(limit());
+    box.style.maxWidth = max + "px";
+    box.style.flexBasis = width === null ? "32vw" : Math.max(min, Math.min(max, width)) + "px";
+    box.style.flexShrink = width === null ? "1" : "0";
+    const actual = Math.round(box.getBoundingClientRect().width);
+    grip.setAttribute("aria-valuemin", min); grip.setAttribute("aria-valuemax", max);
+    grip.setAttribute("aria-valuenow", actual); grip.setAttribute("aria-valuetext", actual + " pixels wide");
+  }
+  function save() { try { width === null ? localStorage.removeItem(key) : localStorage.setItem(key, String(width)); } catch {} }
+  function setWidth(value) { width = Math.round(Math.max(min, Math.min(limit(), value))); fit(); }
+  grip.onpointerdown = e => {
+    if (e.button !== 0 || drag) return;
+    e.preventDefault(); grip.focus(); drag = { id:e.pointerId, x:e.clientX, width:box.getBoundingClientRect().width };
+    grip.setPointerCapture(e.pointerId); document.body.classList.add("chatresizing");
+  };
+  grip.onpointermove = e => { if (drag && e.pointerId === drag.id) setWidth(drag.width + e.clientX - drag.x); };
+  const finish = e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag = null; document.body.classList.remove("chatresizing");
+    if (grip.hasPointerCapture(e.pointerId)) grip.releasePointerCapture(e.pointerId);
+    save();
+  };
+  grip.onpointerup = finish; grip.onpointercancel = finish; grip.onlostpointercapture = finish;
+  grip.ondblclick = () => { width = null; fit(); save(); };
+  grip.onkeydown = e => {
+    const step = e.shiftKey ? 96 : 24, actual = box.getBoundingClientRect().width;
+    if (e.key === "ArrowLeft") setWidth(actual - step);
+    else if (e.key === "ArrowRight") setWidth(actual + step);
+    else if (e.key === "Home") setWidth(min);
+    else if (e.key === "End") setWidth(limit());
+    else return;
+    e.preventDefault(); save();
+  };
+  const observer = new ResizeObserver(fit);
+  [bar, box, $("#modelbtn"), $("#chatbar .cbicons")].forEach(el => observer.observe(el));
+  fit();
+})();
 
 // console
 const con = $("#con");
@@ -1480,13 +1545,13 @@ updateCheck(); setInterval(updateCheck, 20000);
 const typingInPage = async () => { const wv = document.querySelector("#wv");
   if (!wv || document.activeElement !== wv) return false;
   return wv.executeJavaScript(`!!document.activeElement?.closest?.("input, textarea, select, [contenteditable]")`).catch(() => false); };
-const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !document.activeElement?.closest?.("input, textarea, select, [contenteditable]")
+const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !document.activeElement?.closest?.("input, textarea, select, [contenteditable], #chatresize")
   && !(await typingInPage())) gbox.embedFocus?.(); }, 120);
 gbox.onAppFocus?.(gameFocus);
 // only a click on the game itself hands it the keyboard (clicks in the library, sidebars, search boxes keep it in gBox)
 document.addEventListener("pointerup", e => { const r = EMB.rect;
   if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
-      && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble, #report, #whipmenu")) gameFocus(); });
+      && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatresize, #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble, #report, #whipmenu")) gameFocus(); });
 // ---------------- hold ~ : push-to-talk to the active conversation, the reply is spoken ----------------
 const PTT = { rec: null, chunks: [], down: false };
 async function pttDown() {
@@ -2133,13 +2198,14 @@ function tbFrame() {
 const viewRemember = m => { if (EMB.game) try { localStorage.setItem("gbox_view_" + EMB.game, m); } catch {} };
 function viewAction(a, auto = false) {                       // auto = applied by gBox on launch (don't re-save)
   const wv = document.querySelector("#wv");
-  if (["main", "pip", "full"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");
-  if (a !== "full" && ["main", "pip"].includes(a)) gbox.setFullScreen?.(false);
-  if (a === "main") {
+  if (["main", "pip", "full", "library"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");
+  if (a !== "full" && ["main", "pip", "library"].includes(a)) gbox.setFullScreen?.(false);
+  if (a === "main" || a === "library") {
     VIEW.mode = "auto";
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     document.querySelector('aside button[data-s="play"]')?.click();
-    if (wv && EMB.sid) wv.executeJavaScript(`show("Sessions", ${JSON.stringify(EMB.sid)})`).catch(() => {});
+    if (wv && a === "library") wv.executeJavaScript('show("Library")').catch(() => {});
+    else if (wv && EMB.sid) wv.executeJavaScript(`show("Sessions", ${JSON.stringify(EMB.sid)})`).catch(() => {});
   } else if (a === "pip") { VIEW.mode = "pip"; if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
   else if (a === "full") { VIEW.mode = "full"; document.querySelector('aside button[data-s="play"]')?.click();
     (gbox.setFullScreen ? gbox.setFullScreen(true) : document.documentElement.requestFullscreen()).catch?.(() => {}); }
@@ -2380,8 +2446,8 @@ function talkStop() {
   $("#talkbtn").classList.remove("on"); $("#live").classList.remove("on"); document.body.classList.remove("talking"); liveStatus("Idle"); EMB.last = "";
 }
 $("#talkbtn").onclick = () => TALK.on ? talkStop() : talkStart();
-// the gBox logo (title bar + chat bar) is a push-to-talk toggle for requests about the game being played
-document.querySelectorAll("#titlebar > img, #chatbar > img").forEach(img => {
+// The title-bar logo is a push-to-talk toggle; the speech-bar logo opens Play & Library.
+document.querySelectorAll("#titlebar > img").forEach(img => {
   img.title = "Talk to gBox about the game you're playing (click again to stop)";
   img.onclick = () => TALK.on ? talkStop() : talkStart();
 });

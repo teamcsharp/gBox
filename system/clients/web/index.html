@@ -870,7 +870,9 @@ async function sessionsView(sid, mode) {
       <div id="dock-main" class="dock" data-zone="main"></div></div>
       <div class="sidecol"><div id="dock-top" class="dock" data-zone="top">
         <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press</span></summary>
-          <div id="padglyph" title="Your controller live · click a button to press it"></div><p id="padstat" class="mut"></p></details>
+          <div id="padglyph" title="Your controller live · click a button to press it"></div>
+          <button id="padstat" class="act" style="width:100%;text-align:left;white-space:normal;font-size:11px;margin-top:4px" aria-expanded="false" aria-controls="padpicker" onclick="togglePadPicker()"></button>
+          <div id="padpicker" hidden style="margin-top:8px"></div></details>
         <details open data-dock="session" class="sect"><summary draggable="true">Session</summary>
       <div class="bar" style="margin-top:12px">
         <button class="act" onclick='sop(${JSON.stringify(sid)},"pause")'>Pause</button><button class="act" onclick='sop(${JSON.stringify(sid)},"resume")'>Resume</button>
@@ -1052,8 +1054,8 @@ sessionsView.after = (sid, mode) => {
   if (mode === "inspect") return inspectView.after(sid);
   if (mode === "examine") return examineAfter(sid);
     window.PadGlyph?.mount($("#padglyph"), null, { sid });               // live controller: your presses and gBox's
-  if (!$("#scr")) return;                                      // native local window: input goes straight to RetroArch
   padStatus();
+  if (!$("#scr")) return;                                      // native local window: input goes straight to RetroArch
   const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
   const scr = $("#scr"), held = new Set();
   scr.addEventListener("keydown", e => { if (e.code === "NumpadSubtract") { e.preventDefault(); e.stopImmediatePropagation(); sop(sid, "rewind"); } }, true);
@@ -1528,10 +1530,52 @@ const XBOX_DEFAULT = { 0: "b", 1: "a", 2: "y", 3: "x", 4: "l", 5: "r", 6: "l2", 
 const XBOX_NAMES = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "View", "Menu", "LS", "RS", "D-Up", "D-Down", "D-Left", "D-Right", "Guide"];
 let padCfg = {}; try { padCfg = JSON.parse(localStorage.getItem("gbox_pads") || "{}"); } catch {}
 const savePads = () => { try { localStorage.setItem("gbox_pads", JSON.stringify(padCfg)); } catch {} };
-const pads = () => [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean);
-function cfgFor(gp) {        // per controller model+slot: player assignment + button map (defaults: Xbox layout, P1/P2 by order)
-  const key = `${gp.id}#${gp.index}`;
-  return padCfg[key] ||= { player: gp.index < 2 ? gp.index + 1 : 0, map: { ...XBOX_DEFAULT }, stick: true };
+// 3Dconnexion's physical devices AND its virtual KMJ joystick must never drive a game.
+const blockedPad = gp => /space\s*(mouse|navigator|pilot|explorer|travell?er|ball)|3dconnexion|3dxkmj|vendor:\s*256f|256f[-:]|vendor:\s*beef\W+product:\s*046d|beef[-:]046d|(?:vendor:\s*046d\W+product:\s*|046d[-:])(c603|c605|c606|c621|c623|c625|c626|c627|c628|c629|c62b)/i.test(gp.id);
+const xboxPad = gp => /xbox|xinput|vendor:\s*045e|045e[-:]/i.test(gp.id);
+const padKey = gp => `${gp.id}#${gp.index}`;
+const pads = () => [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(gp => gp && gp.connected !== false && !blockedPad(gp))
+  .sort((a, b) => (xboxPad(a) ? 0 : a.mapping === "standard" ? 1 : 2) - (xboxPad(b) ? 0 : b.mapping === "standard" ? 1 : 2) || a.index - b.index);
+let primaryPad = null;
+try { primaryPad = JSON.parse(localStorage.getItem("gbox_primary_pad") || "null"); } catch {}
+function padBase(gp) {
+  return padCfg[padKey(gp)] ||= { player:0, map:{ ...XBOX_DEFAULT }, stick:true };
+}
+function selectedPad(list = pads()) {
+  if (primaryPad === "none") return null;
+  if (primaryPad?.id) return list.find(gp => gp.id === primaryPad.id && gp.index === primaryPad.index) || list.find(gp => gp.id === primaryPad.id) || null;
+  // Old slot-based assignments are intentionally not used for automatic selection.
+  return list.find(gp => !padBase(gp).assigned && (xboxPad(gp) || gp.mapping === "standard")) || null;
+}
+function cfgFor(gp) {
+  const c = padBase(gp), chosen = selectedPad();
+  return { ...c, player:blockedPad(gp) ? 0 : chosen && padKey(chosen) === padKey(gp) ? 1 : c.assigned && c.player === 2 ? 2 : 0 };
+}
+function selectPrimaryPad(value) {
+  if (value && value !== "none") {
+    let wanted; try { wanted = JSON.parse(value); } catch { return; }
+    const gp = pads().find(p => p.id === wanted.id && p.index === wanted.index);
+    if (!gp) return;
+    primaryPad = { id:gp.id, index:gp.index }; padBase(gp).assigned = false;
+  } else primaryPad = value === "none" ? "none" : null;
+  try { localStorage.setItem("gbox_primary_pad", JSON.stringify(primaryPad)); } catch {}
+  savePads(); padStatus();
+  if (cur === "Controllers") show("Controllers");
+}
+function padPickerHTML() {
+  const ps = pads(), selected = selectedPad(ps), value = primaryPad === "none" ? "none" : primaryPad?.id ? JSON.stringify(primaryPad) : "";
+  const option = (v, label) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(label)}</option>`;
+  return `<label style="display:block">Player 1 controller<select aria-label="Player 1 controller" style="width:100%;margin:5px 0" onchange="selectPrimaryPad(this.value)">
+    ${option("", "Automatic — prefer Xbox")}${option("none", active?.local ? "Forwarded input off" : "Off")}
+    ${ps.map(gp => option(JSON.stringify({id:gp.id,index:gp.index}), gp.id + " · slot " + gp.index)).join("")}
+    ${primaryPad?.id && !ps.some(gp => gp.id === primaryPad.id && gp.index === primaryPad.index) ? option(value, primaryPad.id + (selected ? " · reconnected" : " · disconnected")) : ""}</select></label>
+    <p class="mut" style="font-size:11px">${selected ? "Connected: " + esc(selected.id) : primaryPad === "none" ? "Controller forwarding is off." : primaryPad?.id ? "Reconnect " + esc(primaryPad.id) + " or choose another controller." : "Press a button on your Xbox controller to discover it."}<br>SpaceMouse and 3Dconnexion devices are always excluded.${active?.local ? "<br>This selects forwarded input. Native emulators also read their connected controllers directly." : ""}</p>
+    <button class="act" onclick="padStatus(); if (cur === 'Controllers') show('Controllers')">Refresh devices</button> <button class="act" onclick="show('Controllers')">Button mapping</button>`;
+}
+function togglePadPicker() {
+  const el = $("#padpicker"); if (!el) return;
+  el.hidden = !el.hidden; $("#padstat").setAttribute("aria-expanded", String(!el.hidden));
+  if (!el.hidden) el.innerHTML = padPickerHTML();
 }
 function pressed(gp, c) {    // set of RetroPad buttons currently held on this controller
   const out = new Set();
@@ -1542,17 +1586,34 @@ function pressed(gp, c) {    // set of RetroPad buttons currently held on this c
   }
   return out;
 }
-const held = {};             // controller key -> Set of buttons last sent
+const held = {};             // device -> {buttons, player, sid}; releases belong to the original player/session
+const padQueues = new Map();
+function sendPadEvents(sid, events) {
+  if (!sid || !events.length) return;
+  const pending = (padQueues.get(sid) || Promise.resolve()).then(() => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events })).catch(() => {});
+  padQueues.set(sid, pending); pending.finally(() => { if (padQueues.get(sid) === pending) padQueues.delete(sid); });
+}
+function releasePad(key) {
+  const prev = held[key]; if (!prev) return;
+  sendPadEvents(prev.sid, [...prev.buttons].map(key => ({key, down:false, player:prev.player})));
+  delete held[key];
+}
 let remap = null;            // {key, step, base} while a guided remap is running
+let padTopology = "";
 function padLoop() {
-  for (const gp of pads()) {
-    const c = cfgFor(gp), key = `${gp.id}#${gp.index}`;
+  const list = pads(), seen = new Set(list.map(padKey));
+  for (const key of Object.keys(held)) if (!seen.has(key)) releasePad(key);
+  const topology = JSON.stringify([list.map(gp => [padKey(gp), gp.mapping]), primaryPad]);
+  if (topology !== padTopology) { padTopology = topology; padStatus(); }
+  for (const gp of list) {
+    const c = cfgFor(gp), key = padKey(gp), sid = active?.sid;
+    if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
     if (remap && remap.key === key) { remapStep(gp); continue; }
-    const now = c.player ? pressed(gp, c) : new Set(), prev = held[key] || new Set(), events = [];
+    const now = c.player && sid ? pressed(gp, c) : new Set(), prev = held[key]?.buttons || new Set(), events = [];
     now.forEach(b => !prev.has(b) && events.push({ key: b, down: true, player: c.player }));
     prev.forEach(b => !now.has(b) && events.push({ key: b, down: false, player: c.player }));
-    held[key] = now;
-    if (events.length && active) api(`/api/sessions/${encodeURIComponent(active.sid)}/input`, { events }).catch(() => {});
+    held[key] = { buttons:now, player:c.player, sid };
+    sendPadEvents(sid, events);
   }
   requestAnimationFrame(padLoop);
 }
@@ -1560,10 +1621,10 @@ requestAnimationFrame(padLoop);
 addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 function padStatus() {
-  const el = $("#padstat"); if (!el) return;
-  const ps = pads();
-  el.innerHTML = ps.length ? "🎮 " + ps.map(gp => `${esc(gp.id.split("(")[0].trim())} → ${cfgFor(gp).player ? "Player " + cfgFor(gp).player : "off"}`).join(" · ")
-                           : "No controller detected — press any button on it (browsers only expose a controller after a button press).";
+  const el = $("#padstat"), gp = selectedPad();
+  if (el) { el.textContent = "🎮 " + (gp ? gp.id + " → Player 1" : primaryPad === "none" ? "Controller forwarding off" : primaryPad?.id ? primaryPad.id + " · disconnected" : "Connect Xbox controller") + " · Change…";
+    el.title = "Choose the controller for Player 1"; }
+  const picker = $("#padpicker"); if (picker && !picker.hidden) picker.innerHTML = padPickerHTML();
 }
 function remapStep(gp) {
   const pressedNow = gp.buttons.map((b, i) => b.pressed ? i : -1).filter(i => i >= 0);
@@ -1578,7 +1639,13 @@ const remapPrompt = () => `Press the button for RetroPad <b>${RETRO[remap.step].
   <button class="act" onclick="remap.step++; if (remap.step >= RETRO.length) { padCfg[remap.key].map = remap.map; savePads(); remap = null; show('Controllers'); } else $('#remapmsg').innerHTML = remapPrompt()">Skip</button>
   <button class="act" onclick="remap = null; show('Controllers')">Cancel</button>`;
 function startRemap(key) { remap = { key, step: 0, map: {}, wait: true }; show("Controllers"); }
-function setPlayer(key, p) { padCfg[key].player = +p; savePads(); show("Controllers"); }
+function setPlayer(key, p) {
+  const gp = pads().find(gp => padKey(gp) === key); if (!gp) return;
+  if (+p === 1) return selectPrimaryPad(JSON.stringify({id:gp.id,index:gp.index}));
+  if (selectedPad() && padKey(selectedPad()) === key) { primaryPad = "none"; try { localStorage.setItem("gbox_primary_pad", JSON.stringify(primaryPad)); } catch {} }
+  if (+p === 2) for (const c of Object.values(padCfg)) if (c.player === 2) c.player = 0;
+  Object.assign(padBase(gp), {player:+p, assigned:true}); savePads(); padStatus(); show("Controllers");
+}
 function resetPad(key) { padCfg[key].map = { ...XBOX_DEFAULT }; savePads(); show("Controllers"); }
 function toggleStick(key) { padCfg[key].stick = !padCfg[key].stick; savePads(); show("Controllers"); }
 async function controllersView() {
@@ -1599,7 +1666,7 @@ async function controllersView() {
       <details><summary class="mut">Button map</summary><p>${mapping}</p></details></div>`;
   }).join("") : `<p class="mut">No controller detected. Connect an Xbox (or any XInput/standard) controller and press a button — browsers only report a controller after it is used.</p>`;
   return `<h3>Controllers</h3><p class="mut">Controllers drive whichever game is open or in picture-in-picture${active ? `: <b>${esc(active.title)}</b>` : " (none right now)"}.
-    Xbox layout works out of the box; mappings are saved on this computer.</p>` + body;
+    Xbox layout works out of the box; mappings are saved on this computer.</p><div class="padrow">${padPickerHTML()}</div>` + body;
 }
 async function snap(sid) { const j = await runJob({ tool: "get_frame", input: { session_id: sid } }); const el = $("#sopres"); if (el) el.innerHTML = j.receipt_id ? `snapshot ${state(j.state)} — receipt <code>${j.receipt_id}</code>` : esc(j.error); }
 

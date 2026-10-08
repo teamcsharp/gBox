@@ -443,20 +443,22 @@ class RetroArchAdapter(CommandAdapter):
                          "rewind_buffer_size": "1024" if self.granularity > 4 else "512", "rewind_buffer_size_step": "64"})
         if HOST_OS == "windows":
             # every game: hold Select + L2 = rewind (RetroArch's own hotkey). Select is the hotkey enabler, so L2/R2 keep
-            # working in games that use them. XInput button 7 = View/Back (= Select in every xinput autoconfig; 6 is Start).
+            # working in games that use them. SDL gamepad button 4 = View/Back (Select).
             # Select + R2 = fast-forward ramping 2x -> 4x -> 16x: driven by the worker (tools._ff_ramp), since RetroArch
             # has one fixed fast-forward ratio per run.
-            opts.update({"input_enable_hotkey_btn": "7", "input_rewind_axis": "+4", "input_hold_fast_forward_axis": "nul"})
+            opts.update({"input_enable_hotkey_btn": "4", "input_rewind_axis": "+4", "input_hold_fast_forward_axis": "nul"})
         elif self.trigger_hotkeys:         # streamed: the pad's L2/R2 keys, sent together with the hotkey-enable key
             opts.update({"input_rewind": "e", "input_hold_fast_forward": "r"})
         opts["fastforward_ratio"] = "16.0"                 # the ramp's top speed; lower speeds = fast-forward part of the time
         # cheats: the game's .cht is placed under <runtime>/cheats/<core library name>/ before launch (see install_cheats)
         opts.update({"cheat_database_path": rt / "cheats", "apply_cheats_after_load": "true", "apply_cheats_after_toggle": "true"})
         if HOST_OS == "windows":
-            # native local play: vsync + real audio clock, XInput pads via RetroArch's built-in autoconfig, hotkeys on
+            from .gamepads import retroarch_driver
+            driver = retroarch_driver(self.cfg.executable or provision.retroarch_exe(self.config))
+            # Native local play: SDL autoconfig + process-scoped SpaceMouse exclusions.
             opts.update({"video_fullscreen": "false", "video_windowed_fullscreen": "true", "video_vsync": "true",
                          "vrr_runloop_enable": "false", "audio_sync": "true", "audio_driver": "xaudio",
-                         "input_driver": "dinput", "input_joypad_driver": "xinput", "input_autodetect_enable": "true",
+                         "input_driver": "dinput", "input_joypad_driver": driver, "input_autodetect_enable": "true",
                          "video_window_save_positions": "false", "custom_viewport_width": "0",
                          "video_windowed_position_width": "1280", "video_windowed_position_height": "960",
                          # the window is embedded inside the gBox app: no menu bar, no decorations, no companion UI
@@ -464,7 +466,7 @@ class RetroArchAdapter(CommandAdapter):
                          "ui_companion_enable": "false", "ui_companion_start_on_boot": "false", "video_window_auto_width_max": "0"})
             if (self.platform or "") == "ps2":       # pcsx2_libretro's GL path presents black frames on this PC; D3D11 works
                 opts["video_driver"] = "d3d11"
-        opts |= _pad_binds()                 # keyboard binds (autoplay drives these; on Windows the pads still go through XInput)
+        opts |= _pad_binds()                 # keyboard binds; native gamepads use SDL autoconfig
         if HOST_OS == "windows" and self.config is not None:   # per-game graphics settings (Sessions -> Graphics)
             from . import graphics
             opts |= graphics.retroarch_opts(graphics.get(self.config, getattr(self, "game_id", None)),
@@ -623,6 +625,9 @@ class RetroArchAdapter(CommandAdapter):
             except Exception:
                 pass                                       # cheats are optional; never block a launch
         env = dict(os.environ)
+        if HOST_OS == "windows":
+            from .gamepads import emulator_environment
+            env = emulator_environment(env)
         if HOST_OS == "linux":
             self.display = Display()
             env["DISPLAY"] = self.display.name
