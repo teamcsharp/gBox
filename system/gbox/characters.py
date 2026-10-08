@@ -515,7 +515,7 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
+    op: str = "list"                       # list | get | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
     character: str = ""                    # slug, name or alias ("leon", "Aya", "my PSO character"); extract: what to extract
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
@@ -1334,7 +1334,10 @@ def subset_glb(src: Path, node_ids: list[int], out: Path, name: str = "model", r
 
 
 def _job(ctx, tool_name: str, inp: dict, worker: str | None = None, limit: float = 900) -> dict:
-    j = _api(ctx, "POST", "/api/jobs", json={"tool": tool_name, "input": inp, **({"require_worker": worker} if worker else {})})
+    parent = getattr(ctx, "parent_request_id", None)
+    j = _api(ctx, "POST", "/api/jobs", json={"tool": tool_name, "input": inp,
+             **({"require_worker": worker} if worker else {}),
+             **({"parent_request_id": parent} if parent else {})})
     t0 = time.time()
     while j.get("state") in ("queued", "running") and time.time() - t0 < limit:
         time.sleep(1)
@@ -1614,14 +1617,17 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
-@tool("characters", "1.1", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=3600,
+@tool("characters", "1.2", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=3600,
       artifacts=["preview.png"],
       side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
                     "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
                     "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard"])
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
-    reusable in any other game. op=list [kind] | get character=<name> | environments |
+    reusable through supported game writers. op=list [kind] | get character=<name> | environments |
+    live_use character=<name> session_id [x,y|slot]: bounded in-engine OoT NTSC 1.2 single-object NPC swap,
+    preserving the session and pause state. Changes all loaded actors sharing that model until object reload.
+    Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay. |
     extract character=<what> kind=character|vehicle|object|environment session_id (or game) [x, y = the thing's point
     on the picture, 0..1]: returns it if it's already in the collection, else runs the game's own extractor, else cuts it
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
@@ -1664,12 +1670,15 @@ def characters_tool(inp: CharIn, ctx):
             raise ValueError(f"op={inp.op} works for Zelda: Ocarina of Time (N64) only")
         return {"result": r}
     meta = (best_match(chars, inp.character) or find(chars, inp.character)) if inp.character else None
-    if inp.op in ("use", "place") and inp.character and not best_match(chars, inp.character):
+    if inp.op in ("use", "live_use", "place") and inp.character and not best_match(chars, inp.character):
         return {"result": {"status": "not_in_collection", "character": inp.character,
                            "message": f"{inp.character!r} isn't in the collection yet: run characters op=extract first "
                                       f"(have: {', '.join(m['name'] for m in chars)})"}}
     if not meta:
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
+    if inp.op == "live_use":
+        from . import oot_hot_swap
+        return {"result": oot_hot_swap.use(ctx, meta, _game(ctx, inp), inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
         if not library_root(ctx.config).is_dir():
             cp = next((w["id"] for w in _api(ctx, "GET", "/api/workers") if w.get("os") == "linux" and w.get("online")), None)

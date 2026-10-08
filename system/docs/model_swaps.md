@@ -177,6 +177,22 @@ table contents, struct layouts and enums.
 - A source missing a hand bone (FF7 Tifa's right hand) leaves that hand on the forearm.
 - No live hot swap for Link yet: the swap is a ROM mod and a relaunch (with the same save).
 
+**Bounded live NPC replacement (#706, 2026-10-08)**
+- Experimental: compiler, transaction and dispatch checks pass, including a real Cloud→Saria object build.
+  Visual gameplay verification is still pending: a private cloned-save test reached NPC loading but stalled
+  with a black frame and pending object DMA. No user session or save file was modified by that test.
+- `characters op=live_use character=cloud session_id=... x=... y=...` resolves the NPC at that exact picture point.
+  This is a native memory replacement, with no relaunch, ROM switch, or overlay. The model-card drop menu exposes
+  it directly without a chat/vision call; the separate build-and-restart option keeps its existing behavior.
+- Currently limited to NTSC 1.2 humanoid NPCs with one object and enough reclaimable model bytes. The compiler
+  retargets the library character, simplifies it to the memory budget, and stores all lists/textures/vertices,
+  including the empty limb list, inside the original object size. Compound NPCs and Link return unsupported.
+- The worker pauses for target validation and writes, validates the allocation and expected bytes, reads back
+  changed ranges, and rolls back a partial write. A game that was already paused remains paused.
+- A replacement affects every loaded actor sharing that object, and ends when the object reloads. Repeated
+  changes in the same loaded object are supported. This does **not** fulfill individual-instance targeting,
+  persistence over room/age changes, Link hot swapping, or universal game/character support. #706 remains pending.
+
 ---
 
 ## 2. Phantasy Star Online (Boomas)

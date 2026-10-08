@@ -172,6 +172,7 @@ def describe(a: dict) -> str:
 # ---------------------------------------------------------------- statues in rooms (gbox.oot_place), live
 
 WATCH: dict[str, dict] = {}                             # session id -> {"items": [...], "thread", "hooks": int}
+LIVE_SWAPS: dict[str, dict] = {}
 
 
 def write_block(ad, a: int, data: bytes) -> None:
@@ -330,7 +331,7 @@ from .registry import tool  # noqa: E402
 
 class OotModelsIn(BaseModel):
     session_id: str
-    op: str = "where"                      # where | pick | actors | skeleton | floor_point | apply | clear | status
+    op: str = "where"                      # where | pick | actors | skeleton | floor_point | apply | clear | status | replace_object
     x: float | None = None                 # pick: picture point (fractions)
     y: float | None = None
     actor: str = ""                        # skeleton / find: actor name (En_Sa) or address (0x80...)
@@ -345,7 +346,7 @@ def _clean(a: dict) -> dict:
     return {k: ([round(float(x), 1) for x in v] if isinstance(v, np.ndarray) else v) for k, v in a.items()}
 
 
-@tool("oot_models", "1.0", OotModelsIn, OotModelsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE],
+@tool("oot_models", "1.1", OotModelsIn, OotModelsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE],
       timeout_s=180)
 def oot_models(inp: OotModelsIn, ctx):
     """Ocarina of Time (N64 1.2) live side of gBox's model tools (used by `characters`): where Link is, which actor is
@@ -353,6 +354,30 @@ def oot_models(inp: OotModelsIn, ctx):
     while the session runs)."""
     from .tools import SESSIONS
     ad, _g = SESSIONS[inp.session_id]
+    if inp.op == "replace_object":
+        from .oot_hot_swap import replace_object
+        if len(inp.items) != 1:
+            raise ValueError("replace_object accepts exactly one bounded object")
+        # Every actor lookup and memory write occurs with the emulator paused.
+        already = ad.query_runtime().get("state") == "PAUSED"
+        if ad.pause().get("state") != "PAUSED":
+            raise RuntimeError("could not pause the game; no model bytes were written")
+        swaps = LIVE_SWAPS.setdefault(inp.session_id, {})
+        oid = int(inp.items[0]["object"])
+        try:
+            oot.check(ad)
+            rec = replace_object(ad, inp.items[0], swaps.get(oid))
+            swaps[oid] = rec
+        except Exception as exc:
+            if not already and "rollback failed" not in str(exc):
+                ad.resume()
+            raise
+        if not already:
+            ad.resume()
+        if (ad.query_runtime().get("state") == "PAUSED") != already:
+            raise RuntimeError("model bytes verified, but the original pause state could not be restored")
+        return {"result": {"object": oid, "bytes_written": rec["bytes_written"],
+                           "verified": True, "pause_preserved": True}}
     if inp.op == "where":
         return {"result": where(ad)}
     if inp.op == "actors":
