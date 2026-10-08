@@ -22,6 +22,10 @@ and run Ghidra analyses. Use tools; don't guess facts you can look up or measure
 
 How to work:
 - Understand the request in the operator's words. If it's about a specific game, use the session context or search_games.
+- Reverse engineering (Ghidra, "find the code that…", model/file formats, patch points, character swaps a game has no writer
+  for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
+  from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
+  confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - Cheats like "infinite lives/health/money": web_search for the game's GameShark/Action Replay/Pro Action Replay codes or a RAM map,
   convert the code to an address (e.g. N64/GameCube GameShark 80XXXXXX YY = 8-bit write of YY at 0x80XXXXXX, 81XXXXXX YYYY = 16-bit;
   NES Game Genie needs decoding, Pro Action Replay 7EXXXXYY = SNES WRAM 0x7EXXXX), read_memory there to sanity-check the current value,
@@ -170,6 +174,23 @@ def tool_specs() -> list[dict]:
         fn("recall", "Search gBox's own knowledge base (everything learned in earlier conversations: wiki pages, answers, verified "
            "RAM addresses and IDs). It is checked automatically at the start of each request; call it again for a narrower question.",
            {"query": s}, ["query"]),
+        fn("re_playbook", "Reverse-engineering playbooks: step-by-step how-tos for Ghidra tasks (find the code that writes a "
+           "value, a patch point, a model loader / file format, an entity table, a level warp, the input handler, UE3 scripts), "
+           "with the exact gBox tools to call and lessons from earlier tasks. ALWAYS op=list (query = the task words) then op=get "
+           "before a Ghidra/reverse-engineering task, and op=learn after it (lesson = what worked or what to avoid, outcome = "
+           "worked|failed|partial).", {"op": s, "query": s, "id": s, "lesson": s, "outcome": s}, ["op"]),
+        fn("re_dossier", "The live game's reverse-engineering dossier: its executable (CPU, Ghidra processor, load address), "
+           "Ghidra summary, every known function/global/table/hook with its status (validated / documented / hypothesis) and "
+           "open questions. op=read before working on a title; op=record after you find something: kind function|global|table|"
+           "hook|format|struct|note, address, name, role (what it does), status hypothesis (default) or validated with evidence "
+           "= artifact sha256s that prove it; or question = an open question.",
+           {"op": s, "game": s, "kind": s, "address": s, "name": s, "role": s, "status": s, "evidence": {"type": "array", "items": s},
+            "question": s}, ["op"]),
+        fn("re_study", "Prepare a title for Ghidra: extract its main executable from the disc/ROM as an ELF at the right load "
+           "address and processor (GameCube, Wii, Dreamcast, PS1, PS2, N64, GBA, Xbox 360), or source=ram + session_id to "
+           "snapshot the running game's RAM; analyze=true also runs Ghidra auto-analysis. Results go into the title's dossier "
+           "and are reused for the same executable. Then use analyze_binary / ghidra_script / find_code_that_writes on the ELF.",
+           {"game": s, "source": s, "session_id": s, "analyze": b}),
         fn("remember", "Save a verified fact to gBox's knowledge base so later questions are answered instantly (e.g. 'PSO v2 DC: meseta "
            "u32 at 0x8C...; verified by write'). Only facts you verified.", {"text": s, "title": s}, ["text"]),
         fn("web_search", "Search the web (SearXNG). Use for cheat codes, RAM maps, game facts, wikis (Fandom, Wikipedia, "
@@ -647,6 +668,69 @@ class Agent:
     def recall(self, query):
         hits = self.api.get("/api/kb/search", params={"q": query, "game": self.game or "", "k": 6}).json()
         return {"hits": hits} if hits else {"hits": [], "note": "nothing in the knowledge base yet; search the web"}
+
+    # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers that grow with every task
+    def _re_gid(self, game=""):
+        q = game or getattr(self, "context_game", "") or self.game or ""
+        if re.fullmatch(r"[0-9a-f]{16}", q or ""):
+            return q
+        if not q:
+            raise ValueError("which game? pass game (title or game_id); none is running in this conversation")
+        items = self.api.get("/api/catalog/best", params={"q": q, "limit": 1}).json()
+        if not items:
+            raise ValueError(f"no game matches {q!r}")
+        return items[0]["game_id"]
+
+    def re_playbook(self, op="list", query="", id="", lesson="", outcome="worked"):
+        if op == "list":
+            return {"playbooks": self.api.get("/api/re/playbooks", params={"q": query}).json(),
+                    "next": "re_playbook op=get id=<the best match>"}
+        if op == "get":
+            r = self.api.get(f"/api/re/playbooks/{id}")
+            return {"text": r.json().get("text")} if r.status_code == 200 else {"error": f"no playbook {id!r}: op=list first"}
+        if op == "learn":
+            r = self.api.post(f"/api/re/playbooks/{id}/lessons", json={"lesson": lesson, "outcome": outcome, "game": self.game or ""})
+            return r.json() if r.status_code == 200 else {"error": r.text[:300]}
+        return {"error": "op: list | get | learn"}
+
+    def re_dossier(self, op="read", game="", kind="note", address="", name="", role="", status="hypothesis", evidence=None,
+                   question=""):
+        gid = self._re_gid(game)
+        if op == "read":
+            return {"game_id": gid, "text": self.api.get(f"/api/re/dossier/{gid}").json().get("text")}
+        if op == "record":
+            return self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": kind, "address": str(address or ""), "name": name,
+                                 "role": role, "status": status, "evidence": evidence or [], "question": question}).json()
+        return {"error": "op: read | record"}
+
+    def re_study(self, game="", source="auto", session_id="", analyze=True):
+        gid = self._re_gid(game)
+        d = self.api.get(f"/api/re/dossier/{gid}").json()
+        ex = d.get("executable")
+        if not ex or source == "ram":
+            if source == "ram" and session_id and (bad := self._live_session(session_id)):
+                return bad
+            j = self._job("re_executable", {"game_id": gid, "source": source, "session_id": session_id}, node="linux", limit=3600)
+            if j.get("state") != "succeeded":
+                return {"error": f"re_executable {j.get('state')}: {j.get('error')}",
+                        "next": "if the disc route fails, get the game to gameplay and use source=ram with its session_id"}
+            ex = j["output"]
+            self.api.post(f"/api/re/dossier/{gid}/study", json={"executable": ex})
+        an = d.get("analysis")
+        if analyze and (not an or an.get("elf_sha256") != ex.get("sha256")):
+            j = self._job("analyze_binary", {"binary_path": ex["elf_path"], "processor": ex.get("processor")}, node="linux", limit=3600)
+            if j.get("state") != "succeeded":
+                return {"executable": ex, "error": f"Ghidra analysis {j.get('state')}: {j.get('error')}"}
+            rc = self.api.get(f"/api/receipts/{j['receipt_id']}").json() if j.get("receipt_id") else {}
+            sha = next((a.get("sha256") for a in rc.get("artifacts", []) if a.get("name") == "analysis.json"), None)
+            from . import re_lab
+            a = self.api.get(f"/api/artifacts/{sha}", timeout=300).json() if sha else {}
+            an = re_lab.summarize_analysis(a, sha) | {"elf_sha256": ex.get("sha256")} if a else \
+                {"functions": j["output"].get("functions"), "strings": j["output"].get("strings"), "elf_sha256": ex.get("sha256")}
+            self.api.post(f"/api/re/dossier/{gid}/study", json={"analysis": an})
+        text = self.api.get(f"/api/re/dossier/{gid}").json().get("text")
+        return {"game_id": gid, "elf_path": ex.get("elf_path"), "processor": ex.get("processor"), "dossier": text,
+                "next": "re_playbook op=list query=<your task>; record findings with re_dossier op=record"}
 
     def remember(self, text, title=""):
         r = self.api.post("/api/kb", json={"text": text, "title": title, "source": "agent", "game": self.game or "", "kind": "fact"}).json()

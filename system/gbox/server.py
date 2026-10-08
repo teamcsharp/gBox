@@ -568,6 +568,66 @@ def create_app(config: Config) -> FastAPI:
         threading.Thread(target=go, daemon=True).start()
         return job
 
+    # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
+    class LessonIn(BaseModel):
+        lesson: str
+        outcome: str = "worked"             # worked | failed | partial
+        game: str = ""
+
+    class FindingIn(BaseModel):
+        kind: str = "note"
+        address: str = ""
+        name: str = ""
+        role: str = ""
+        status: str = "hypothesis"
+        evidence: list[str] = []
+        question: str = ""
+
+    class StudyIn(BaseModel):
+        executable: dict | None = None
+        analysis: dict | None = None
+
+    @app.get("/api/re/playbooks")
+    def re_playbooks(q: str = "", platform: str = "", actor=Depends(auth)):
+        from . import re_lab
+        return re_lab.playbooks(store, q, platform)
+
+    @app.get("/api/re/playbooks/{pid}")
+    def re_playbook_get(pid: str, actor=Depends(auth)):
+        from . import re_lab
+        pb = re_lab.playbook(store, pid) or _404()
+        return pb | {"text": re_lab.render_playbook(pb)}
+
+    @app.post("/api/re/playbooks/{pid}/lessons")
+    def re_playbook_learn(pid: str, l: LessonIn, actor=Depends(auth)):
+        from . import re_lab
+        try:
+            r = re_lab.learn(store, pid, l.lesson, l.outcome, l.game, actor)
+        except (KeyError, ValueError) as e:
+            raise HTTPException(422, str(e))
+        store.audit(actor, "re.lesson", pid, {"outcome": l.outcome, "game": l.game})
+        return r
+
+    @app.get("/api/re/dossier/{gid}")
+    def re_dossier_get(gid: str, actor=Depends(auth)):
+        from . import re_lab
+        d = re_lab.dossier(store, store.catalog_get(gid) or _404())
+        return d | {"text": re_lab.render_dossier(d)}
+
+    @app.post("/api/re/dossier/{gid}/findings")
+    def re_dossier_record(gid: str, f: FindingIn, actor=Depends(auth)):
+        from . import re_lab
+        r = re_lab.record(store, store.catalog_get(gid) or _404(), f.kind, f.address, f.name, f.role, f.status, f.evidence,
+                          f.question, actor)
+        store.audit(actor, "re.finding", gid, f.model_dump())
+        return r
+
+    @app.post("/api/re/dossier/{gid}/study")
+    def re_dossier_study(gid: str, s: StudyIn, actor=Depends(auth)):
+        from . import re_lab
+        d = re_lab.set_study(store, store.catalog_get(gid) or _404(), s.executable, s.analysis)
+        return {"ok": True, "text": re_lab.render_dossier(d)}
+
     @app.get("/api/games/{gid}/roster")
     def game_roster(gid: str, actor=Depends(auth)):
         """Who this game's own extractor can pull out (SmackDown! 2, No Mercy, SA2, FF7...), and which are collected."""

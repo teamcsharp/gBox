@@ -3257,8 +3257,10 @@ document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><b>Recording si
   <label>Size limit <select id="rec-target"><option value="5">5 MB</option><option value="8">8 MB</option><option value="10">10 MB</option>
     <option value="25">25 MB</option><option value="50">50 MB</option><option value="100">100 MB</option><option value="0">No limit</option></select></label>
   <label>Compression <select id="rec-speed"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="best">Best quality (slower)</option></select></label>
-  <label>Keep the original too <input type="checkbox" id="rec-keep"></label>
-  <div class="mut" style="font-size:11px">Recordings over the limit are re-encoded with HandBrake (bitrate and resolution lowered to fit).</div></div>`);
+  <label title="When a recording is downsized to the limit, the full-size original is kept next to it">Also keep my full-size original <input type="checkbox" id="rec-keep"></label>
+  <div class="mut" style="font-size:11px">Recordings over the limit are re-encoded with HandBrake (bitrate and resolution lowered to fit).</div>
+  <button class="act" id="rec-folder" style="width:100%;margin-top:6px">📂 Open recordings folder</button></div>`);
+$("#rec-folder").onclick = () => { gbox.recOpen(null); $("#recmenu").classList.remove("on"); };
 $("#tb-recopt").onclick = e => { e.stopPropagation(); const m = $("#recmenu"), o = recOpts(), b = $("#tb-recopt").getBoundingClientRect();
   $("#rec-target").value = String(o.targetMB); $("#rec-speed").value = o.speed; $("#rec-keep").checked = o.keep;
   m.style.left = Math.min(innerWidth - 262, b.left - 120) + "px"; m.classList.toggle("on"); };
