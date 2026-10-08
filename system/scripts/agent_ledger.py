@@ -107,11 +107,18 @@ def hook_prompt(ev: dict):
     if prompt.startswith(("<task-notification>", "<system-reminder>")):   # harness events, not operator requests
         prompt = ""
     if prompt:
+        sys.path.insert(0, str(REPO))
+        from gbox.inbox import automated
+        is_system = automated({"body": prompt})
+        parent = sess.get("operator_request") if is_system else None
         title = prompt.splitlines()[0][:100]
         r = api("/api/requests", {"title": title, "body": prompt, "source": "chat", "kind": "text",
+                                  "automated": is_system, "parent_request_id": parent,
                                   "context": {"cwd": ev.get("cwd"), "session": ev.get("session_id")}})
         api(f"/api/requests/{r['id']}/status", {"status": "in_progress"})
         sess.update(chat_request=r["id"], since=time.time(), claimed=[])
+        if not is_system:
+            sess["operator_request"] = r["id"]
     # surface operator reports filed in the app (screenshots / eyedropper) that the agent hasn't seen yet
     seen = set(st.get("seen", []))
     fresh = [r for src in ("app", "gap") for r in api(f"/api/requests?status=open,in_progress&source={src}") if r["id"] not in seen]
@@ -198,8 +205,8 @@ def hook_stop(ev: dict):
                                              "tokens_detail": {k: int(v * share) for k, v in u["tokens_detail"].items()},
                                              "tools": u["tools"] if i == 0 else {}, "files_changed": sorted(files),
                                              "duration_s": round(time.time() - since, 1)})
-    if sess.get("chat_request"):
-        api(f"/api/requests/{sess['chat_request']}/status", {"status": "done"})
+    # A stopped agent turn may have left work unfinished. Completion is recorded
+    # by the explicit `done` command, not inferred from the hook firing.
     sess["since"] = time.time()                        # mid-turn messages continue the same ledger window
     save_state(st)
 

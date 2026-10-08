@@ -1287,7 +1287,12 @@ $("#reqexport").onclick = async () => {                  // the whole request hi
 };
 async function refreshInbox() {
   const r = await gbox.api("/api/requests"); if (!r.ok) return;
-  const all = r.data, pending = all.filter(x => x.status !== "done").length;
+  const all = r.data, roots = all.filter(x => !x.automated && !x.parent_request_id), children = new Map();
+  const ids = new Set(all.map(x => x.id));
+  all.forEach(x => { if (x.parent_request_id && ids.has(x.parent_request_id)) { const list = children.get(x.parent_request_id) || []; list.push(x); children.set(x.parent_request_id, list); } });
+  const unresolved = all.filter(x => x.automated && (!x.parent_request_id || !ids.has(x.parent_request_id)));
+  const hasPending = x => x.status !== "done" || (children.get(x.id) || []).some(hasPending);
+  const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
   const host = $("#reqlist"); if (!host) return;
   const tok = await gbox.token();
@@ -1296,10 +1301,10 @@ async function refreshInbox() {
   MODS.list = mr.ok ? mr.data : [];
   const modsFor = n => MODS.list.filter(m => (m.requests || []).includes(n));
   const art = d => `${S.apiUrl}/api/artifacts/${d}?token=${encodeURIComponent(tok)}`;
-  const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; all.forEach(x => t[x.status]++);
+  const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; roots.forEach(x => t[x.status]++);
   const tot = all.reduce((a, x) => ({ in: a.in + (x.metrics.tokens_in || 0), out: a.out + (x.metrics.tokens_out || 0) }), { in: 0, out: 0 });
-  $("#reqsum").textContent = `${all.length} requests · ${t.open} open · ${t.in_progress} in progress · ${t.done} done · tokens ${fmtTok(tot.in)} in / ${fmtTok(tot.out)} out`;
-  host.innerHTML = all.map(x => {
+  $("#reqsum").textContent = `${roots.length} your requests · ${all.length - roots.length} automated sub-requests · ${t.open} open · ${t.in_progress} in progress · ${t.done} done · tokens ${fmtTok(tot.in)} in / ${fmtTok(tot.out)} out`;
+  const renderRequest = x => {
     const m = x.metrics, tools = Object.entries(m.tools || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join(", ");
     const ms = modsFor(x.number);
     return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
@@ -1311,7 +1316,7 @@ async function refreshInbox() {
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
-        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Claude" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Claude" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
           : `<br><a class="att-file" href="#" data-url="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">📎 ${esc(a.name)}${a.size ? ` (${Math.ceil(a.size / 1024)} KB)` : ""}</a>`).join("")}</div>`).join("")}
         ${ms.map(mm => `<details class="howto" open><summary>How gBox does it: ${esc(mm.title)} <span class="mut">(${esc(mm.game_title || "")}, ${mm.verified ? "verified" : "not verified yet"})</span></summary>
           ${mm.calls.map(c => `<div class="howcall"><b>${esc(c.tool)}</b> <span class="mut">${esc((REG.tools?.[c.tool] || "").split("\n")[0].slice(0, 260))}</span><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}
@@ -1320,9 +1325,18 @@ async function refreshInbox() {
         ${m.files_changed.length ? `<details><summary class="mut">${m.files_changed.length} files changed</summary><div class="eltag">${esc(m.files_changed.join("\n"))}</div></details>` : ""}
         <div class="att reply-att"></div>
         <div class="btns"><input type="text" class="reply" placeholder="Reply / follow-up… (Ctrl+V or drop images)" style="flex:1;min-width:200px">
-          <button class="act send">Send</button>${x.status !== "done" ? `<button class="act markdone">Mark done</button>` : ""}</div></div></div>`;
-  }).join("") || `<p class="mut">No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat.</p>`;
+          <button class="act send">Send</button>${x.status !== "done" ? `<button class="act markdone">Mark done</button>` : ""}</div></div>
+      ${children.has(x.id) ? `<details class="subrequests" style="margin:8px 12px"><summary>${children.get(x.id).length} automated sub-requests${children.get(x.id).some(hasPending) ? " · work pending" : ""}</summary>${children.get(x.id).map(renderRequest).join("")}</details>` : ""}</div>`;
+  };
+  host.innerHTML = (roots.map(renderRequest).join("") || `<p class="mut">No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat.</p>`)
+    + (unresolved.length ? `<details class="unlinked-system"><summary>${unresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${unresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${unresolved.map(renderRequest).join("")}</details>` : "");
 }
+$("#reqlist").addEventListener("change", async e => {
+  if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
+  const id = e.target.dataset.linkRequest; if (!id || !e.target.value) return;
+  const r = await gbox.api(`/api/requests/${id}/parent`, { parent_request_id: e.target.value });
+  if (r.ok) refreshInbox(); else toast(r.error || "Could not link this sub-request");
+});
 // ---- mods: a change that worked, replayable on its game (thumbnail -> that moment; buttons -> launch/apply/video) ----
 const REG = {}, MODS = { list: [] };
 async function modRun(c, sid) {

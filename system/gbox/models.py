@@ -50,6 +50,7 @@ class JobState(StrEnum):
 
 
 class Job(BaseModel):
+    parent_request_id: str | None = None
     id: str = Field(default_factory=new_id)
     tool: str
     input: dict[str, Any] = {}

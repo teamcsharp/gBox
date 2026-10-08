@@ -49,6 +49,7 @@ class JobRequest(BaseModel):
     input: dict = {}
     require_os: str | None = None
     require_worker: str | None = None
+    parent_request_id: str | None = None
 
 
 class Evaluation(BaseModel):
@@ -977,7 +978,8 @@ def create_app(config: Config) -> FastAPI:
             inp = t.In.model_validate(req.input).model_dump(mode="json")
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
-        job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker)
+        job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
+                  parent_request_id=req.parent_request_id)
         if t.name == "characters" and inp.get("op") in ("extract", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
@@ -1916,6 +1918,8 @@ def create_app(config: Config) -> FastAPI:
         element: dict | None = None        # eyedropper: selector, text, rect, view...
         context: dict = {}                 # app state: tab, session, url, window size...
         author: str = "operator"
+        parent_request_id: str | None = None
+        automated: bool = False
         attachments: list[dict] = []       # [{name, b64}] pasted / dropped images
 
     class MessageIn(BaseModel):
@@ -1952,6 +1956,12 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/requests")
     def req_create(r: RequestIn, actor=Depends(auth)):
+        from . import inbox
+        parent = r.parent_request_id or r.context.get("parent_request_id") or r.context.get("request_id")
+        if not parent and r.context.get("job_id"):
+            parent = (store.get("job", r.context["job_id"]) or {}).get("parent_request_id")
+        if parent and not store.get("request", parent):
+            raise HTTPException(404, "parent request not found")
         rid = new_id()
         r.title, r.body = _redact(r.title), _redact(r.body)
         img = None
@@ -1962,9 +1972,12 @@ def create_app(config: Config) -> FastAPI:
         doc = {"id": rid, "number": n, "title": r.title, "body": r.body, "source": r.source, "kind": r.kind,
                "image": img, "element": r.element, "context": r.context, "status": "open", "created": time.time(),
                "started": None, "completed": None, "author": r.author,
+               "parent_request_id": parent, "automated": r.automated,
                "messages": [{"author": r.author, "text": r.body, "ts": time.time(), "attachments": _attach(rid, r.attachments)}]
                            if (r.body or r.attachments) else [],
                "metrics": {"tokens_in": 0, "tokens_out": 0, "tools": {}, "files_changed": [], "duration_s": None, "turns": 0}}
+        doc["automated"] = inbox.automated(doc)
+        doc["parent_request_id"] = inbox.parent_for(doc, store.all("request"))
         store.put("request", rid, doc)
         store.audit(actor, "request.create", rid, {"title": r.title, "kind": r.kind, "source": r.source})
         return _clean(doc)
@@ -2147,7 +2160,8 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/requests")
     def req_list(status: str = "", source: str = "", actor=Depends(auth)):
-        rs = [r for r in store.all("request") if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
+        from . import inbox
+        rs = [r for r in inbox.organize(store.all("request")) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
         return _clean(sorted(rs, key=lambda r: r["created"], reverse=True))
 
     def _clean(o):
@@ -2163,6 +2177,23 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/requests/{rid}")
     def req_get(rid: str, actor=Depends(auth)):
         return _clean(_req(rid))
+
+    class ParentIn(BaseModel):
+        parent_request_id: str
+
+    @app.post("/api/requests/{rid}/parent")
+    def req_parent(rid: str, change: ParentIn, actor=Depends(auth)):
+        r, parent = _req(rid), _req(change.parent_request_id)
+        seen = {rid}
+        while parent:
+            if parent["id"] in seen:
+                raise HTTPException(409, "request hierarchy cannot contain a cycle")
+            seen.add(parent["id"])
+            parent = store.get("request", parent.get("parent_request_id")) if parent.get("parent_request_id") else None
+        r.update(parent_request_id=change.parent_request_id, automated=True)
+        store.put("request", rid, r)
+        store.audit(actor, "request.parent", rid, change.model_dump())
+        return _clean(r)
 
     @app.post("/api/requests/{rid}/messages")
     def req_message(rid: str, m: MessageIn, actor=Depends(auth)):

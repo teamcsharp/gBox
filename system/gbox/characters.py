@@ -613,7 +613,8 @@ def _request(ctx, meta: dict, game: dict, need: dict) -> dict:
     body = (f"Put {meta['name']} (library character '{meta['slug']}', from {meta['source'].get('game_title')}) into "
             f"{game['title']} (game {game['game_id']}). No swap writer for this game yet.\n" + json.dumps(need, indent=1))
     r = _api(ctx, "POST", "/api/requests", json={"title": title, "body": body, "source": "characters", "kind": "text",
-                                                "context": {"character": meta["slug"], "game_id": game["game_id"]}})
+                                                "parent_request_id": getattr(ctx, "parent_request_id", None),
+                                                "context": {"character": meta["slug"], "game_id": game["game_id"], "job_id": ctx.job_id}})
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 
@@ -1431,7 +1432,8 @@ def _extract_request(ctx, game: dict | None, what: str, kind: str, need: dict) -
     r = _api(ctx, "POST", "/api/requests", json={"title": title, "source": "characters", "kind": "text",
                                                  "body": f"Extract {what or kind} ({kind}) from {(game or {}).get('title')} into the "
                                                          f"collection. Nothing in gBox can do it yet:\n" + json.dumps(need, indent=1),
-                                                 "context": {"what": what, "kind": kind, "game_id": (game or {}).get("game_id")}})
+                                                 "parent_request_id": getattr(ctx, "parent_request_id", None),
+                                                 "context": {"what": what, "kind": kind, "game_id": (game or {}).get("game_id"), "job_id": ctx.job_id}})
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 

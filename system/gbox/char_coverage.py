@@ -185,7 +185,8 @@ def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
         "file/disc as a file mod), route it in characters_tool, add it to char_coverage.WRITERS, verify in an emulator "
         "on the Spark and reply here. Meanwhile the operator has the overlay (characters op=overlay)."])
     r = api(ctx, "POST", "/api/requests", json={"title": title, "body": body, "source": "gap", "kind": "text",
-                                                 "context": {"character": meta["slug"], "game_id": game["game_id"]}})
+                                                 "parent_request_id": getattr(ctx, "parent_request_id", None),
+                                                 "context": {"character": meta["slug"], "game_id": game["game_id"], "job_id": ctx.job_id}})
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 

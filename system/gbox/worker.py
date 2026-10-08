@@ -30,6 +30,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
 
 def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client, active: set):
     ctx = Ctx(config, job_id=job["id"], worker=wid)
+    ctx.parent_request_id = job.get("parent_request_id")
     ctx.server, ctx.headers = server, h
     res = {"job_id": job["id"], "ok": True}
     for attempt in (0, 1):

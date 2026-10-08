@@ -1694,7 +1694,7 @@ async function modShot(m, sid, card, force) {                // the mod card's p
   } catch (err) { if (force) { st.textContent = "no picture: " + err.message.slice(0, 60); st.title = err.message; } }
 }
 // ---- right-click a game: boot setup (modded disc, mods switched on at boot, start-from save slot) + play ----
-const bootGet = gid => { try { return { disc: "", slot: "", ...JSON.parse(localStorage.getItem("gbox_boot_" + gid) || "{}") }; } catch { return { disc: "", slot: "" }; } };
+const bootGet = gid => { try { return { disc: "", slot: "", character: "", ...JSON.parse(localStorage.getItem("gbox_boot_" + gid) || "{}") }; } catch { return { disc: "", slot: "", character: "" }; } };
 const bootSet = (gid, b) => { try { localStorage.setItem("gbox_boot_" + gid, JSON.stringify(b)); } catch {} };
 function bootBadgeHTML(gid) {                            // library card: this game boots with a mod / character / switches
   const boot = bootGet(gid), keepN = modKeepGet(gid).length;
@@ -1713,16 +1713,23 @@ document.addEventListener("contextmenu", async e => {
   const [mods, chars] = await Promise.all([api(`/api/mods?game_id=${encodeURIComponent(gid)}`).catch(() => []),
     api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => [])]);
   const kept = modKeepGet(gid), dmod = m => m.calls.find(x => x.tool === "@launch").input.mod;
-  const readyMod = ch => ((ch.ready || []).find(t => (t.slot || "player") === "player") || (ch.ready || [])[0])?.mod;
+  const readyTarget = ch => (ch.ready || []).find(t => (t.slot || "player") === "player") || (ch.ready || [])[0];
+  const readyMod = ch => readyTarget(ch)?.mod;
   const ready = chars.filter(readyMod), other = chars.filter(ch => !readyMod(ch) && !ch.variant_of);
   const charMods = new Set(ready.map(readyMod));
   const disc = mods.filter(m => m.calls.some(x => x.tool === "@launch") && !charMods.has(dmod(m))), patch = mods.filter(m => !m.calls.some(x => x.tool === "@launch"));
-  const tile = (v, name, img) => `<label title="${esc(name)}"><input type="radio" name="gmd" value="${esc(v)}" ${b.disc === v ? "checked" : ""}>${img ? `<img loading="lazy" alt="" src="${img}?${tq()}">` : `<span class="nf">🎮</span>`}${esc(name)}</label>`;
+  // Roster mods contain several characters. Choose a character by slug and
+  // keep its boot image separately, so selecting Sonic cannot select Tikal.
+  const selectedChar = ready.find(ch => ch.slug === b.character && readyMod(ch) === b.disc)
+    || (!b.character && b.disc ? ready.find(ch => readyMod(ch) === b.disc) : null);
+  const tile = (slug, name, img, mod = "", targetSlot = "") => `<label title="${esc(name)}"><input type="radio" name="gmc" value="${esc(slug)}" data-disc="${esc(mod)}" data-character-slot="${esc(targetSlot)}" ${selectedChar?.slug === slug || (!slug && !b.disc) ? "checked" : ""}>${img ? `<img loading="lazy" alt="" src="${img}?${tq()}">` : `<span class="nf">🎮</span>`}${esc(name)}</label>`;
+  const characterNote = (name, targetSlot) => targetSlot && targetSlot !== "player"
+    ? `${name} selected: choose ${targetSlot} on the game's character selection screen.` : `${name} selected: every Play of this game uses them.`;
   el.innerHTML = `<h4>${esc(c.dataset.title)}</h4>
     <div class="gms"><b>Play as (saved: every Play uses it)</b>
-      <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(readyMod(ch), ch.name, ch.preview_url)).join("")}</div>
+      <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(ch.slug, ch.name, ch.preview_url, readyMod(ch), readyTarget(ch)?.slot)).join("")}</div>
       ${other.length ? `<label><select id="gmbuild"><option value="">+ another character for this game…</option>${other.map(ch => `<option value="${esc(ch.slug)}">${esc(ch.name)}${ch.source?.game_title ? " · " + esc(ch.source.game_title) : ""}</option>`).join("")}</select></label>` : ""}
-      <div id="gmst" class="mut" style="font-size:11px"></div></div>
+      <div id="gmst" class="mut" style="font-size:11px">${selectedChar ? esc(characterNote(selectedChar.name, readyTarget(selectedChar)?.slot)) : ""}</div></div>
     <div class="gms"><b>Boot with a mod</b>
       <label><input type="radio" name="gmd" value="" ${!b.disc ? "checked" : ""}> Original game</label>
       ${disc.map(m => `<label><input type="radio" name="gmd" value="${esc(dmod(m))}" ${b.disc === dmod(m) ? "checked" : ""}> ${esc(m.title)}</label>`).join("")}
@@ -1734,13 +1741,21 @@ document.addEventListener("contextmenu", async e => {
       <div class="mut" style="font-size:11px">F2 saves to the current slot in game; Shift/Ctrl+F2 change the slot.</div></div>
     <div class="gmb"><button class="act pri" data-go="">▶ Play</button>${window.GBOX_LOCAL?.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
       <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`;
-  const save = () => { bootSet(gid, { disc: el.querySelector('input[name="gmd"]:checked')?.value || "", slot: $("#gmslot").value }); bootBadge(gid); };
+  const save = (disc = bootGet(gid).disc, character = bootGet(gid).character) => {
+    bootSet(gid, { disc, character, slot: $("#gmslot").value }); bootBadge(gid);
+  };
   el.onchange = async ev => {
     const t = ev.target;
     if (t.dataset.keep) { modKeep(gid, t.dataset.keep, t.checked); bootBadge(gid); return; }
-    if (t.name === "gmd") {                                    // one boot image at a time: keep both radio groups in step
-      el.querySelectorAll(`input[name="gmd"]`).forEach(r => { r.checked = r.value === t.value; });
-      return save();
+    if (t.name === "gmc") {
+      el.querySelectorAll('input[name="gmd"]').forEach(r => { r.checked = r.value === t.dataset.disc; });
+      $("#gmst").textContent = t.value ? characterNote(ready.find(ch => ch.slug === t.value)?.name || t.closest("label").textContent, t.dataset.characterSlot) : "Original game selected.";
+      return save(t.dataset.disc, t.value);
+    }
+    if (t.name === "gmd") {
+      el.querySelectorAll('input[name="gmc"]').forEach(r => { r.checked = !r.value && !t.value; });
+      $("#gmst").textContent = t.value ? "Boot mod selected." : "Original game selected.";
+      return save(t.value, "");
     }
     if (t.id === "gmslot") return save();
     if (t.id === "gmbuild" && t.value) {                       // build this character for this game (no launch), then select it
@@ -1752,10 +1767,11 @@ document.addEventListener("contextmenu", async e => {
         const r = j.output?.result || {};
         if (j.state !== "succeeded") throw new Error(j.error || j.state);
         if (!r.mod || /missing|overlay|failed/.test(r.status || "")) { st.textContent = r.message || `No in-game swap for this game yet${r.request?.number ? ` (request #${r.request.number})` : ""}: while playing, "Use in this game" draws ${ch.name} over the player instead.`; return; }
-        el.querySelector(".gmch").insertAdjacentHTML("beforeend", tile(r.mod, ch.name, ch.preview_url));
-        el.querySelectorAll(`input[name="gmd"]`).forEach(x => { x.checked = x.value === r.mod; });
+        el.querySelector(".gmch").insertAdjacentHTML("beforeend", tile(ch.slug, ch.name, ch.preview_url, r.mod, r.slot || "player"));
+        el.querySelectorAll('input[name="gmc"]').forEach(x => { x.checked = x.value === ch.slug; });
+        el.querySelectorAll('input[name="gmd"]').forEach(x => { x.checked = x.value === r.mod; });
         t.querySelector(`option[value="${CSS.escape(ch.slug)}"]`)?.remove();
-        save(); st.textContent = `✓ ${ch.name} is ready: every Play of this game starts with them`;
+        save(r.mod, ch.slug); st.textContent = `✓ ${characterNote(ch.name, r.slot || "player")}`;
       } catch (err) { st.textContent = "✗ " + err.message.slice(0, 160); }
       finally { t.disabled = false; t.value = ""; }
     }

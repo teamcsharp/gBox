@@ -543,6 +543,8 @@ class Agent:
         if sid and tool != "session_op" and (bad := self._live_session(sid)):   # a mistyped id would queue the job forever
             return {"state": "failed", "error": bad["error"], "output": None}
         body = {"tool": tool, "input": inp}
+        if getattr(self, "parent_request_id", None):
+            body["parent_request_id"] = self.parent_request_id
         if node:
             body["require_os"] = node
         if worker:
@@ -1122,6 +1124,7 @@ class Agent:
     def run(self, messages: list[dict], emit, context: dict, max_steps: int = 40) -> dict:
         """messages: OpenAI-style history (mutated). emit(event) streams steps to the UI. Returns usage totals."""
         self.local_worker = context.get("local_worker")
+        self.parent_request_id = context.get("request_id")
         self.context_game = context.get("game_id") or context.get("game_title") or ""
         sid = context.get("session_id")
         if sid:                                                # the app can hand over a stale id (game relaunched): use the live one
@@ -1394,11 +1397,12 @@ class ChatHub:
             "Make gBox able to do this next time: build or fix the tool(s) it lacked, make their specs self-describing, test "
             "with a real call, then re-run the request and reply here with what changed."])
         api_requests("create", {"title": f"GAP: {text.splitlines()[0][:90]}", "body": body, "source": "gap", "kind": "text",
-                                "context": context | {"conversation": cid}})
+                                "parent_request_id": context.get("request_id"), "context": context | {"conversation": cid}})
 
     def _turn(self, cid, text, context, api_requests):
         c, t0 = self.get(cid), time.time()
-        req = api_requests("create", {"title": text.splitlines()[0][:100], "body": text, "source": "gbox-chat", "kind": "text", "context": context})
+        req = api_requests("create", {"title": text.splitlines()[0][:100], "body": text, "source": "gbox-chat", "kind": "text", "context": context | {"conversation": cid}})
+        context = context | {"request_id": req, "conversation": cid}
 
         def emit(ev):
             with self.lock:
