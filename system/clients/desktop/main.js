@@ -191,6 +191,28 @@ ipcMain.handle("win:worker", (_e, op) => {
 
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
 
+ipcMain.handle("report:clipboard-files", async () => {
+  if (process.platform !== "win32") return [];
+  // Explorer's copied files use CF_HDROP, which Chromium's paste event does not always expose.
+  const paths = await new Promise((resolve, reject) => {
+    execFile("powershell.exe", ["-NoProfile", "-STA", "-Command",
+      "Add-Type -AssemblyName System.Windows.Forms; $OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); ConvertTo-Json -Compress -InputObject @([System.Windows.Forms.Clipboard]::GetFileDropList())"],
+      { windowsHide: true, encoding: "utf8", timeout: 10000 }, (error, stdout) => {
+        if (error) return reject(new Error("Cannot read copied files: " + error.message));
+        try { resolve(JSON.parse(stdout.replace(/^\uFEFF/, "").trim() || "[]")); } catch { reject(new Error("Cannot read copied files")); }
+      });
+  });
+  if (paths.length > 18) throw new Error("Attach up to 18 files per report");
+  return Promise.all(paths.map(async file => {
+    const stat = await fs.promises.stat(file);
+    if (!stat.isFile()) throw new Error(`Copy individual files, rather than folders: ${path.basename(file)}`);
+    const data = await fs.promises.readFile(file), ext = path.extname(file).toLowerCase();
+    const type = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+                    ".md": "text/markdown", ".txt": "text/plain", ".pdf": "application/pdf" })[ext] || "application/octet-stream";
+    return { name: path.basename(file), type, b64: data.toString("base64") };
+  }));
+});
+
 // Screen recording: the renderer records this window (MediaRecorder, H.264 MP4) and streams 1 s chunks here,
 // appended straight to disk so long sessions never sit in memory.
 const REC_DIR = path.join(process.env.LOCALAPPDATA || app.getPath("videos"), "gbox", "recordings");

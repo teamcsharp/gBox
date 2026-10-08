@@ -1207,7 +1207,7 @@ function rpUndo(redo) {
 function captureMenu(x, y) {                                 // reuses #whipmenu: click-away (POPS) + cut out of the docked game
   let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
   m.style.left = Math.max(8, Math.min(innerWidth - 330, x - 20)) + "px"; m.style.top = Math.min(innerHeight - 200, y + 14) + "px";
-  m.innerHTML = `<b>Capture</b><div class="mut">Report issue files one report: screenshot (with the game), session, emulator, active mods, recent tools, emulator log + app console.</div>
+  m.innerHTML = `<b>Capture</b><div class="mut">Describe an issue and paste images or files. A screenshot, game details and available logs are attached when you send.</div>
     <button data-c="issue"><span>⚑</span>Report issue</button><button data-c="sketch"><span>✎</span>Capture and sketch…</button>`;
   m.classList.add("on"); EMB.last = "";
   m.onclick = e => { const b = e.target.closest("button[data-c]"); if (!b) return; m.classList.remove("on"); EMB.last = "";
@@ -1220,10 +1220,21 @@ const REPORT_PROBE = `(() => { const wb = document.querySelector("#wb"), slot = 
     .filter(c => c.on || c.st).map(c => c.t + ": " + (c.on ? "on" : "") + (c.st ? " · " + c.st : ""));
   return { sid: wb?.dataset.sid || slot?.dataset.sid || (typeof active !== "undefined" && active ? active.sid : null), gid: wb?.dataset.gid || null,
            keep, on, tab: typeof cur !== "undefined" ? cur : null, hash: location.hash }; })()`;
+let issueOpening = false;
 async function reportIssue() {
-  const btn = $("#tb-capture"), old = btn.title; btn.style.color = "var(--acc)"; toast("⚑ Filing the issue report…", 20000);
+  if (document.getElementById("issue-modal")) { document.getElementById("issue-subject").focus(); return; }
+  if (issueOpening) return;
+  issueOpening = true;
   try {
-    const shot = (await gbox.captureOS().catch(() => null)) || await gbox.capture();     // OS-level: includes the docked game
+    // Capture before opening the form so the report contains the original game/app picture.
+    const shot = (await gbox.captureOS().catch(() => null)) || await gbox.capture().catch(() => null);
+    openIssueReport({ diagnostics: () => issueDiagnostics(shot), clipboardFiles: () => gbox.clipboardFiles(),
+      submit: body => gbox.api("/api/requests/issue", body),
+      onSent: report => { toast(`Report #${report.number} sent with your details, attachments and diagnostics`, 6000); refreshInbox(); } });
+  } catch (error) { toast("Could not open the report: " + error.message, 8000); }
+  finally { issueOpening = false; }
+}
+async function issueDiagnostics(shot) {
     const wv = document.querySelector("#wv");
     const pg = wv ? await wv.executeJavaScript(REPORT_PROBE).catch(() => ({})) : {};
     const ss = await gbox.api("/api/sessions"), run = (ss.ok ? ss.data : []).filter(s => s.state === "running");
@@ -1237,12 +1248,9 @@ async function reportIssue() {
       image_b64: shot ? shot.split(",")[1] : null, mods_on: pg.on || [], kept_mods: (pg.keep || {})[sess.game_id || pg.gid] || [],
       context: appContext({ gbox: { tab: pg.tab, hash: pg.hash }, docked: EMB.sid || null }),
       attachments: con ? [{ name: "desktop-console.txt", type: "text/plain", b64: btoa(unescape(encodeURIComponent(con))) }] : [] };
-    const r = await gbox.api("/api/requests/issue", body);
-    if (!r.ok) throw new Error(r.error);
-    toast(`⚑ Report #${r.data.number} filed: screenshot, session, mods, tools, emulator log + console attached`, 6000); refreshInbox();
-  } catch (e) { toast("⚑ Report failed: " + (e.message || e).slice(0, 140), 8000); }
-  finally { btn.style.color = ""; btn.title = old; }
+    return body;
 }
+
 document.addEventListener("click", e => { const a = e.target.closest("a.att-file"); if (!a) return; e.preventDefault(); gbox.openExternal(a.dataset.url); });
 
 // ---------------- requests inbox (operator <-> agent) ----------------
@@ -1414,7 +1422,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || FLOW.on;      // full-window overlays: the game steps aside
+    const overlay = $("#report").classList.contains("on") || !!$("#issue-modal") || FLOW.on;      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
     const wv = document.querySelector("#wv");
@@ -1604,7 +1612,7 @@ updateCheck(); setInterval(updateCheck, 20000);
 const typingInPage = async () => { const wv = document.querySelector("#wv");
   if (!wv || document.activeElement !== wv) return false;
   return wv.executeJavaScript(`!!document.activeElement?.closest?.("input, textarea, select, [contenteditable]")`).catch(() => false); };
-const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !document.activeElement?.closest?.("input, textarea, select, [contenteditable], #chatresize")
+const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !$("#issue-modal") && !document.activeElement?.closest?.("input, textarea, select, [contenteditable], #chatresize")
   && !(await typingInPage())) gbox.embedFocus?.(); }, 120);
 gbox.onAppFocus?.(gameFocus);
 // only a click on the game itself hands it the keyboard (clicks in the library, sidebars, search boxes keep it in gBox)
@@ -3654,6 +3662,7 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
   await gbox.clipImage(grid.toDataURL("image/png")); $("#chatbusy").textContent = `✓ ${pages} page${pages > 1 ? "s" : ""} copied to the clipboard`; }
   catch (e) { alert(e.message); } };
 </script>
+<script src="issue-report.js"></script>
 <script src="decant-ui.js"></script>
 <script type="module" src="extract.js"></script>
 </body>

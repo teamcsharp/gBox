@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("gbox", {
   capture: () => ipcRenderer.invoke("capture"),
   captureOS: () => ipcRenderer.invoke("capture:os"),
   consoleTail: n => ipcRenderer.invoke("console:tail", n),
+  clipboardFiles: () => ipcRenderer.invoke("report:clipboard-files"),
   embedSync: st => ipcRenderer.invoke("embed:sync", st),
   embedRelease: () => ipcRenderer.invoke("embed:release"),
   stt: buf => ipcRenderer.invoke("stt", buf),
