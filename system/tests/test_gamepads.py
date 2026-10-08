@@ -39,6 +39,38 @@ def test_exclusions_are_scoped_and_keep_xbox():
     assert env["PATH"] == original["PATH"]
 
 
+def test_sdl3_only_build_installs_normalized_xbox_profile(tmp_path, monkeypatch):
+    executable = tmp_path / "retroarch.exe"
+    executable.touch()
+    gamepads._driver.cache_clear()
+    monkeypatch.setattr(gamepads.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="SDL3: yes\n"))
+    assert gamepads.retroarch_driver(str(executable)) == "sdl3"
+    profile = tmp_path / "autoconfig/sdl3/gbox-xbox.cfg"
+    mapping = dict(line.split(" = ") for line in profile.read_text().splitlines())
+    assert mapping["input_driver"] == '"sdl3"'
+    assert mapping["input_device"] == '"XInput Controller"'
+    # SDL Y is negative upwards, unlike the XInput profile's Y convention.
+    for stick, axis in [("l", 1), ("r", 3)]:
+        assert mapping[f"input_{stick}_y_minus_axis"] == f'"-{axis}"'
+        assert mapping[f"input_{stick}_y_plus_axis"] == f'"+{axis}"'
+    assert mapping["input_select_btn"] == '"4"'
+    assert mapping["input_l_btn"] == '"9"'
+    assert mapping["input_up_btn"] == '"11"'
+    assert mapping["input_l2_axis"] == '"+4"'
+    modified = profile.stat().st_mtime_ns
+    gamepads.retroarch_driver(str(executable))
+    assert profile.stat().st_mtime_ns == modified
+
+
+def test_sdl2_profiles_are_left_alone(tmp_path, monkeypatch):
+    executable = tmp_path / "retroarch.exe"
+    executable.touch()
+    gamepads._driver.cache_clear()
+    monkeypatch.setattr(gamepads.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="SDL2: yes\nSDL3: yes\n"))
+    assert gamepads.retroarch_driver(str(executable)) == "sdl2"
+    assert not (tmp_path / "autoconfig").exists()
+
+
 def test_windows_session_uses_sdl_and_correct_select_hotkey(tmp_path, monkeypatch):
     monkeypatch.setattr(adapters, "HOST_OS", "windows")
     monkeypatch.setattr(gamepads, "retroarch_driver", lambda exe: "sdl3")

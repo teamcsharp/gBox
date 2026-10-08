@@ -187,12 +187,15 @@ def apply_hotswap(ad, pt: dict, ctx, revert_on_fail=True) -> dict:
     t_read = time.time() - t0
     order = None
     for name, conv in (("be", lambda b: b), ("le32", _swap32)):
-        i4 = ram.find(conv(o4[:512]))
+        # Different builds share the first vertices/padding. A prefix match can
+        # overwrite a model loaded from a different save state; require the
+        # complete previous segment before changing any live memory.
+        i4 = ram.find(conv(o4))
         if i4 >= 0 and i4 % 4 == 0:
             order, cv = name, conv
             break
     if order is None:
-        if ram.find(n4[:512]) >= 0 or ram.find(_swap32(n4[:512])) >= 0:
+        if ram.find(n4) >= 0 or ram.find(_swap32(n4)) >= 0:
             return {"ok": True, "already": True, "message": "the new model is already in the game's memory"}
         raise RuntimeError("Mario's current model data isn't in the game's RAM where the previous build put it "
                            "(the session runs a different build): relaunch it with the mod instead")
@@ -369,7 +372,7 @@ def push(ctx, inp) -> dict:
         method = "hotswap" if writer == "sm64" and sess.get("adapter") == "retroarch" else "relaunch"
     stage("reloading", 70, f"{method} into session {sid}")
     if method == "hotswap":
-        cur = sess.get("mod") or ""
+        cur = sess.get("live_mod") or sess.get("mod") or ""
         old_img = (_mod_image(cfg, gid, cur, prev) if cur == mod else _mod_image(cfg, gid, cur)) if cur else None
         old_rom = old_img.read_bytes() if old_img and old_img.exists() else vanilla
         sha = _upload(ctx, "hotswap.json", json.dumps(sm64_patch(old_rom, new_rom)).encode())
@@ -384,6 +387,7 @@ def push(ctx, inp) -> dict:
                           "message": f"hot swap didn't go live: {why}; the previous build is back"}
         if cur != mod:                                     # the session's ROM is now a different build: label it
             out["note"] = f"session started with {cur or 'the original game'}; Mario's model is {mod} now (until a reset)"
+        C._api(ctx, "POST", f"/api/sessions/{sid}/live-model", json={"mod": mod})
     else:
         r = relaunch(ctx, sess, gid, mod, inp.revert_on_fail)
         out["reload"] = r

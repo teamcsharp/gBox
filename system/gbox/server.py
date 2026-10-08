@@ -265,13 +265,23 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
         return store.read_artifact(o["sha256"]) or b""
 
+    def _mod_picture(m: dict) -> dict:
+        """Discard missing or tiny artifacts left by the old JSON-body capture path."""
+        if m.get("thumb"):
+            artifact = store.get("artifact", m["thumb"]) or {}
+            if (artifact.get("size") or 0) < 64:
+                m = m | {"thumb": None}
+        return m
+
     @app.post("/api/mods/{mid}/thumb")
     async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, actor=Depends(auth)):
         """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one."""
-        m = store.get("mod", mid) or _404()
+        m = _mod_picture(store.get("mod", mid) or _404())
         if m.get("thumb") and not force:
             return m
         body = await request.body()
+        if not (body.startswith(b"\x89PNG") or body.startswith(b"\xff\xd8\xff")):
+            body = b""                                 # not an image (the app posts "{}"): use what the game shows now
         if not body:
             if not session_id:
                 raise HTTPException(400, "send an image or a session_id")
@@ -286,6 +296,7 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/mods")
     def mod_list(game_id: str = "", actor=Depends(auth)):
         out = [m for m in store.all("mod") if not game_id or m["game_id"] == game_id]
+        out = [_mod_picture(m) for m in out]
         return sorted(out, key=lambda m: -m.get("ts", 0))
 
     @app.delete("/api/mods/{mid}")
@@ -303,9 +314,14 @@ def create_app(config: Config) -> FastAPI:
     def chars_list(game_id: str = "", actor=Depends(auth)):
         """Library characters (+ ready swap mods for game_id) with preview URLs."""
         K, root = _chars()
+        def model_bytes(m):
+            try:
+                return (Path(root) / m["slug"] / m["model"]).stat().st_size
+            except OSError:
+                return 0
         tf = lambda slug: sorted("targets/" + f.name for f in (Path(root) / slug / "targets").glob("*") if f.is_file())             if (Path(root) / slug / "targets").is_dir() else []          # game-fitted models (Blender copy of a swap mod)
         return [m | {"preview_url": f"/api/characters/{m['slug']}/preview", "model_url": f"/api/characters/{m['slug']}/file/{m['model']}",
-                     "target_files": tf(m["slug"])}
+                     "target_files": tf(m["slug"]), "model_bytes": model_bytes(m)}
                 for m in K.list_all(root, game_id)]
 
     @app.get("/api/characters/{slug}")
@@ -700,6 +716,7 @@ def create_app(config: Config) -> FastAPI:
                 seen.add(k)
                 uniq.append(it)
         mods = sorted((m for m in store.all("mod") if m["game_id"] == gid), key=lambda m: -m.get("ts", 0))
+        mods = [_mod_picture(m) for m in mods]
         return {"controls": uniq, "bookmarks": sorted(bookmarks, key=lambda b: b.get("ts") or 0, reverse=True), "mods": mods}
 
     previews = config.data_dir / "previews"
@@ -1272,7 +1289,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/games/{gid}/launch")
     def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", actor=Depends(auth)):
-        """Launch a cataloged game on the right node: linux core if one exists, else the Windows node.
+        """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
         debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists."""
         e = store.catalog_get(gid) or _404()
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})})
@@ -1283,8 +1300,10 @@ def create_app(config: Config) -> FastAPI:
         elif node != "auto":
             byname = [w for w in workers() if w["online"] and w["name"] == node]
             req.require_worker = byname[0]["id"] if byname else node
-        elif e.get("platform") == "ps3":
-            req.require_os = "windows"                     # RPCS3
+        elif e.get("platform") in ("ps2", "ps3"):
+            # PS2 on the Spark uses an experimental ARM CPU backend. Keep ordinary
+            # play on the Windows PC's mature recompiler and direct game display.
+            req.require_os = "windows"
         elif e.get("launch", {}).get("kind") == "attract":
             from . import systems                          # the platform rule wins over a core stored at scan time
             has_core = e.get("core") and (e.get("platform") == "arcade" or systems.core_for(e.get("platform", ""))[0])
@@ -1318,6 +1337,21 @@ def create_app(config: Config) -> FastAPI:
             lv = live.get(s_["session_id"], {})
             out.append(s_ | {"last_frame_age": round(time.time() - lv["ts"], 1) if lv.get("ts") else None})
         return out[::-1]
+
+    class LiveModelIn(BaseModel):
+        mod: str = ""
+
+    @app.post("/api/sessions/{sid}/live-model")
+    def live_model(sid: str, model: LiveModelIn, actor=Depends(auth)):
+        session = store.get("session", sid) or _404()
+        if session.get("state") != "running":
+            raise HTTPException(409, "session is not running")
+        if model.mod and not all(c.isascii() and (c.isalnum() or c in "_-") for c in model.mod):
+            raise HTTPException(422, "invalid mod name")
+        session["live_mod"] = model.mod
+        store.put("session", sid, session)
+        store.audit(actor, "session.live_model", sid, {"mod": model.mod})
+        return {"session_id": sid, "live_mod": model.mod}
 
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
@@ -1933,7 +1967,7 @@ def create_app(config: Config) -> FastAPI:
                "metrics": {"tokens_in": 0, "tokens_out": 0, "tools": {}, "files_changed": [], "duration_s": None, "turns": 0}}
         store.put("request", rid, doc)
         store.audit(actor, "request.create", rid, {"title": r.title, "kind": r.kind, "source": r.source})
-        return doc
+        return _clean(doc)
 
     class IssueIn(BaseModel):
         session_id: str = ""
@@ -2138,7 +2172,7 @@ def create_app(config: Config) -> FastAPI:
             r["status"], r["completed"] = "open", None      # a follow-up reopens the request
         store.put("request", rid, r)
         store.audit(actor, "request.message", rid, {"author": m.author, "chars": len(m.text)})
-        return r
+        return _clean(r)
 
     @app.post("/api/requests/{rid}/status")
     def req_status(rid: str, s: StatusIn, actor=Depends(auth)):
@@ -2155,7 +2189,7 @@ def create_app(config: Config) -> FastAPI:
             r["messages"].append({"author": "agent", "text": s.note, "ts": now})
         store.put("request", rid, r)
         store.audit(actor, f"request.{s.status}", rid, {"note": s.note[:200]})
-        return r
+        return _clean(r)
 
     @app.post("/api/requests/{rid}/metrics")
     def req_metrics(rid: str, m: MetricsIn, actor=Depends(auth)):
@@ -2174,7 +2208,7 @@ def create_app(config: Config) -> FastAPI:
             mt["agent_seconds"] = round(mt.get("agent_seconds", 0) + m.duration_s, 1)
         store.put("request", rid, r)
         store.audit(actor, "request.metrics", rid, {"tokens_out": m.tokens_out, "tools": m.tools, "files": len(m.files_changed)})
-        return r
+        return _clean(r)
 
     @app.post("/api/knowledge")
     def add_edge(e: KnowledgeEdge, actor=Depends(auth)):

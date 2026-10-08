@@ -399,8 +399,9 @@ def rig_from_gltf(path: Path, roles: dict[str, str]) -> dict:
                     q = parent_node.get(q)
                 owner = np.full(len(P), pos_of.get(q, 0))
             idx = acc(pr["indices"]).reshape(-1, 3) if "indices" in pr else np.arange(len(P)).reshape(-1, 3)
-            tex, color = None, (255, 255, 255, 255)
+            tex, color, alpha_mode = None, (255, 255, 255, 255), "OPAQUE"
             if (mi := pr.get("material")) is not None:
+                alpha_mode = gl["materials"][mi].get("alphaMode", "OPAQUE")
                 pbr = gl["materials"][mi].get("pbrMetallicRoughness", {})
                 color = tuple(int(c * 255) for c in pbr.get("baseColorFactor", [1, 1, 1, 1]))
                 if (bct := pbr.get("baseColorTexture")) is not None:
@@ -408,7 +409,7 @@ def rig_from_gltf(path: Path, roles: dict[str, str]) -> dict:
                         texcache[bct["index"]] = image(bct["index"])
                     tex = texcache[bct["index"]]
             prims.append({"pos": P, "nrm": N, "uv": UV, "tris": idx, "owner": owner, "tex": tex, "color": color,
-                          "name": f"m{len(prims)}"})
+                          "alpha_mode": alpha_mode, "name": f"m{len(prims)}"})
     return {"joints": np.array([W[j][:3, 3] for j in jn]), "parent": parent, "roles": rmap, "prims": prims}
 
 
@@ -726,6 +727,10 @@ def best_match(entries: list[dict], query: str, min_score: float = 0.34) -> dict
     """Exact slug / name / alias, else the best word overlap (Jaccard >= min_score); None when nothing is close
     (unlike find(), which always returns its best guess)."""
     q = query.strip().lower()
+    # A canonical identifier must win over another character's shared alias.
+    for e in entries:
+        if q and q == str(e.get("slug", "")).lower():
+            return e
     for e in entries:
         if q and q in [n.lower() for n in _names(e)]:
             return e

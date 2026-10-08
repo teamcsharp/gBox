@@ -663,10 +663,16 @@ def pack_atlases(prims: list[dict], sizes: list[tuple[int, int]], fill: float = 
     for p in prims:
         tex = p.get("tex")
         col = tuple(int(c) for c in (p.get("color") or (200, 200, 200, 255))[:4])
-        key = ("tex", id(tex)) if tex is not None else ("col", col)
+        mode = p.get("alpha_mode", "OPAQUE")
+        key = ("tex", id(tex), mode) if tex is not None else ("col", col)
         P, T = np.asarray(p["pos"], float), np.asarray(p["tris"], int).reshape(-1, 3)
         area = float(np.linalg.norm(np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]]), axis=1).sum()) / 2
         it = items.setdefault(key, {"img": tex, "color": col, "area": 0.0})
+        if tex is not None and mode == "OPAQUE" and it["img"] is tex:
+            # glTF OPAQUE ignores texture alpha. Carry that rule into the PS2
+            # atlas instead of cutting holes in opaque FF7 body materials.
+            it["img"] = np.asarray(tex).copy()
+            it["img"][..., 3] = 255
         it["area"] += area + 1e-6
         prim_item.append(key)
     total_px = sum(w * h for w, h in sizes)
@@ -735,9 +741,8 @@ def pack_atlases(prims: list[dict], sizes: list[tuple[int, int]], fill: float = 
 
 
 def stripify(tris: list[tuple]) -> list[list[int]]:
-    """Greedy triangle strips over undirected edges (the LCS ped renderer doesn't cull: the game's own strips mix
-    both windings), SGI-style start (fewest free neighbours first, best of 3 rotations) and swaps (A B C -> A B C A X
-    re-draws ABC to turn onto edge CA, 1 vertex instead of a new strip). A 3-vertex list is a lone triangle."""
+    """Greedy strips preserving every source triangle's winding, with the fewest-neighbour start and best of
+    three cyclic rotations. A 3-vertex list is a lone triangle."""
     und: dict = {}
     for t, (a, b, c) in enumerate(tris):
         for e in ((a, b), (b, c), (c, a)):
@@ -747,18 +752,16 @@ def stripify(tris: list[tuple]) -> list[list[int]]:
 
     def take(u, v):
         for t in und.get(frozenset((u, v)), ()):
-            if not used[t]:
+            tri = tris[t]
+            if not used[t] and any(tri[k] == u and tri[(k + 1) % 3] == v for k in range(3)):
                 return t
         return None
 
     def grow(s0):
         st, tk = list(s0), []
         while True:
-            t = take(st[-2], st[-1])
-            if t is None and len(st) >= 3:
-                t = take(st[-3], st[-1])
-                if t is not None:
-                    st.append(st[-3])
+            u, v = st[-2:]
+            t = take(v, u) if len(st) % 2 else take(u, v)
             if t is None:
                 return st, tk
             used[t] = True
@@ -784,8 +787,7 @@ def stripify(tris: list[tuple]) -> list[list[int]]:
 
 
 def _mesh_strips(tris: list[tuple], max_len: int = 300) -> list[list[int]]:
-    """Triangles (vertex index triples) -> meshes, each one triangle strip (sub-strips joined by 2 degenerate
-    vertices)."""
+    """Triangles -> strips joined by degenerate vertices, keeping each new strip's parity even."""
     pieces = stripify(tris)
     meshes, cur = [], []
     for s in pieces:
@@ -793,6 +795,8 @@ def _mesh_strips(tris: list[tuple], max_len: int = 300) -> list[list[int]]:
             meshes.append(cur)
             cur = []
         if cur:
+            if len(cur) % 2:
+                cur.append(cur[-1])
             cur += [cur[-1], s[0]]
         cur += s
     if cur:

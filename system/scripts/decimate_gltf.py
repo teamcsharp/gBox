@@ -25,6 +25,15 @@ for o in meshes:
     for m in list(o.modifiers):                    # the armature deform is re-added after decimating the rest mesh
         o.modifiers.remove(m)
     if ratio < 0.999:
+        # glTF splits vertices at UV and normal seams. Collapse sees those
+        # copies as disconnected triangles and deletes faces instead of
+        # simplifying the surface. Weld positions first; UVs remain on loops.
+        span = max((max(v.co[k] for v in o.data.vertices) - min(v.co[k] for v in o.data.vertices)
+                    for k in range(3)), default=0.0)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.remove_doubles(threshold=max(span * 1e-7, 1e-9))
+        bpy.ops.object.mode_set(mode="OBJECT")
         d = o.modifiers.new("dec", "DECIMATE")
         d.decimate_type = "COLLAPSE"
         d.ratio = ratio

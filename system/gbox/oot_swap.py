@@ -140,6 +140,19 @@ def guess_roles(P: np.ndarray, parent: list[int], front: float | None = None) ->
         ca, cb = chain(a), set(chain(b))
         return next(x for x in reversed(ca) if x in cb)
     l2 = next((l for l in order[1:] if P[lca(l1, l) , 1] > max(P[l1, 1], P[l, 1]) + 0.2 * H), None)
+    # A skirt can end below both feet. Prefer a low pair on opposite sides
+    # of their common ancestor rather than treating the central dress as a leg.
+    pairs = []
+    for k, a in enumerate(order):
+        for b in order[k + 1:]:
+            root = lca(a, b)
+            xa, xb = P[a, 0] - P[root, 0], P[b, 0] - P[root, 0]
+            if (xa * xb < 0 and min(abs(xa), abs(xb)) > 0.02 * H
+                    and P[root, 1] > max(P[a, 1], P[b, 1]) + 0.2 * H):
+                pairs.append((P[a, 1] + P[b, 1], a, b))
+    if pairs:
+        _, l1, l2 = min(pairs)
+        c1 = chain(l1)
     if l2 is None:
         raise ValueError("no second leg found: not a humanoid skeleton")
     legs_root = lca(l1, l2)
@@ -165,7 +178,7 @@ def guess_roles(P: np.ndarray, parent: list[int], front: float | None = None) ->
     groups = {}
     for l in cand:
         ch = [j for j in chain(l) if j not in spine]
-        if ch:
+        if ch and max(abs(P[j, 0] - xc) for j in ch) >= 0.08 * H:
             length = sum(float(np.linalg.norm(P[ch[k + 1]] - P[ch[k]])) for k in range(len(ch) - 1))
             if ch[0] not in groups or length > groups[ch[0]][0]:
                 groups[ch[0]] = (length, l, ch)

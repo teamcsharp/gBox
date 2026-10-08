@@ -145,7 +145,12 @@
   #rbside pre { white-space:pre-wrap; margin:4px 0 0; font-size:11px; color:var(--fg); }
   #rbcon { position:absolute; left:12px; right:12px; bottom:10px; height:130px; margin:0; overflow:auto; background:#000a; border-radius:8px; padding:8px 10px;
     font-size:11px; color:#cfd6e6; white-space:pre-wrap; backdrop-filter:blur(4px); }
-  #chatinput { display:flex; flex:0 1 32vw; min-width:180px; }
+  #chatinput { display:flex; align-items:center; flex:0 1 32vw; min-width:180px; border:1px solid var(--line); border-radius:18px; background:var(--bg); padding:0 3px; }
+  #chatinput:focus-within { border-color:var(--acc); }
+  #chatbar #chatinput input { border:0; background:transparent; padding-left:5px; }
+  #chatbar #chatinput > button { display:flex; align-items:center; justify-content:center; flex:0 0 28px; width:28px; height:28px; padding:4px; border:0; border-radius:50%; background:transparent; }
+  #chatbar #chatinput > button:hover, #chatbar #chatinput > button[aria-expanded="true"] { background:var(--card); color:var(--acc); }
+  #chatinput > button:focus-visible { outline:2px solid var(--acc); outline-offset:-2px; }
   #chatinput > input, #chatinput > .micwrap { flex:1; min-width:0; }
   #chatbar #chat-home { display:flex; align-items:center; justify-content:center; flex:none; width:34px; height:34px; padding:5px; border-color:transparent; background:none; }
   #chat-home img { width:24px; height:24px; }
@@ -578,7 +583,11 @@ window.assetView = async (box, glbUrl) => {
 </div>
 <div id="chatbar">
   <button id="chat-home" type="button" title="Play &amp; Library" aria-label="Play &amp; Library"><img src="../../assets/brand/gbox-logo.svg" alt=""></button>
-  <span id="chatinput"><input id="chatin" aria-label="Ask gBox" placeholder="Ask gBox… e.g. “give me infinite lives”, “extract Mario's sprites to Blender”, “what does this function do?”" autocomplete="off"></span>
+  <span id="chatinput">
+  <button id="chatnew" type="button" aria-label="New conversation" title="New conversation"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+  <input id="chatin" aria-label="Ask gBox" placeholder="Ask gBox… e.g. “give me infinite lives”, “extract Mario's sprites to Blender”, “what does this function do?”" autocomplete="off">
+  <button id="chathistbtn" type="button" title="Conversation history" aria-label="Conversation history" aria-controls="chatpanel" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+  </span>
   <div id="chatresize" role="separator" tabindex="0" aria-label="Resize speech input" aria-orientation="vertical" aria-controls="chatinput" title="Drag to resize the speech input · ←/→ adjust · double-click to reset"></div>
   <span class="busy" id="chatbusy"></span>
   <button id="modelbtn" title="Model for this conversation"><span id="modelcaps"></span><span id="modelname">…</span>
@@ -588,9 +597,6 @@ window.assetView = async (box, glbUrl) => {
   <span class="cbicons">
   <button id="talkbtn" title="Talk: voice conversation with gBox (Spark speech-to-text + XTTS v2 voices)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9v2M12 7v6M16 9v2"/></svg></button>
   <button id="chatflowbtn" title="Flow: live 3D map of what gBox is doing for this conversation (click nodes for details)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.3 11 16.7 6M7.3 13l9.4 5"/></svg></button>
-  <button id="chathistbtn" title="Conversation history"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
-  <button id="chatnew" title="New conversation"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
-  <button id="chattoggle" title="Show / hide the conversation"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
   </span>
 </div>
 <aside id="live" aria-label="Voice conversation">
@@ -3133,8 +3139,14 @@ $("#chatbusy").onclick = () => {
   el.style.left = Math.max(8, Math.min(innerWidth - 430, r.left)) + "px"; el.style.top = r.bottom + 6 + "px";
   busyList(); el.classList.toggle("on");
 };
-$("#chattoggle").onclick = async () => { $("#chatpanel").classList.toggle("on"); if ($("#chatpanel").classList.contains("on")) { await chatForGame(); chatHistory(); chatLoad(CH.cid); } };
-$("#chathistbtn").onclick = () => { $("#chatpanel").classList.add("on"); chatHistory(); chatLoad(CH.cid); };
+$("#chathistbtn").onclick = () => {
+  const panel = $("#chatpanel"), open = !panel.classList.contains("on") || !panel.classList.contains("hist");
+  panel.classList.toggle("on", open);
+  if (open) { panel.classList.add("hist"); chatHistory(); if (CH.cid) chatLoad(CH.cid); }
+  dispatchEvent(new Event("resize"));
+};
+new MutationObserver(() => $("#chathistbtn").setAttribute("aria-expanded", String($("#chatpanel").classList.contains("on") && $("#chatpanel").classList.contains("hist"))))
+  .observe($("#chatpanel"), { attributes:true, attributeFilter:["class"] });
 $("#chatnew").onclick = async () => { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; chatSave();
   $("#chatlog").innerHTML = `<div class="mut">New conversation. Ask anything about the game you're playing, or what to find, launch, edit or extract.</div>`; CH.n = 0;
   chatHistory(); $("#chatin").focus(); toast("New conversation"); };

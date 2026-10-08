@@ -10,7 +10,37 @@ from .registry import ToolUnavailable
 
 def retroarch_driver(executable: str) -> str:
     path = Path(executable)
-    return _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)
+    driver = _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)
+    if path.is_file() and driver == "sdl3":
+        install_sdl3_xbox_profile(path.parent / "autoconfig")
+    return driver
+
+
+def install_sdl3_xbox_profile(directory: Path) -> Path:
+    """Keep SDL's normalized Xbox mapping ahead of the incompatible XInput fallback.
+
+    RetroArch can match the name 'XInput Controller' to its XInput profile even
+    while SDL3 is reading it. XInput's Y signs and shoulder/Back indices differ
+    from SDL_Gamepad. A driver-local profile also works when SDL2 isn't built.
+    """
+    buttons = {"b": 0, "a": 1, "y": 2, "x": 3, "select": 4, "start": 6,
+               "l3": 7, "r3": 8, "l": 9, "r": 10,
+               "up": 11, "down": 12, "left": 13, "right": 14, "menu_toggle": 5}
+    axes = {"l2": "+4", "r2": "+5", "l_x_minus": "-0", "l_x_plus": "+0",
+            "l_y_minus": "-1", "l_y_plus": "+1", "r_x_minus": "-2", "r_x_plus": "+2",
+            "r_y_minus": "-3", "r_y_plus": "+3"}
+    names = ["XInput Controller", "Xbox One Controller", "Xbox One Wireless Controller",
+             "Xbox Series X Controller", "Xbox Wireless Controller", "Xbox 360 Controller"]
+    lines = ['input_driver = "sdl3"', 'input_device_display_name = "Xbox controller (SDL3)"']
+    lines += [f'input_device{"_alt" + str(i) if i else ""} = "{name}"' for i, name in enumerate(names)]
+    lines += [f'input_{key}_btn = "{value}"' for key, value in buttons.items()]
+    lines += [f'input_{key}_axis = "{value}"' for key, value in axes.items()]
+    profile = directory / "sdl3" / "gbox-xbox.cfg"
+    body = "\n".join(lines) + "\n"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    if not profile.is_file() or profile.read_text(encoding="utf-8") != body:
+        profile.write_text(body, encoding="utf-8")
+    return profile
 
 
 @lru_cache(maxsize=8)
@@ -21,8 +51,7 @@ def _driver(executable: str, modified: int) -> str:
         result = subprocess.run([executable, "--features"], capture_output=True, text=True,
                                 errors="replace", timeout=10,
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        # SDL2 first: its Xbox autoconfig profiles are mature. RetroArch's SDL3 joypad driver is new, ships no profiles
-        # (autoconfig/sdl3 has only gamecontrollerdb.cfg) and inverted the N64 stick's up/down on this PC (2026-10-08).
+        # Prefer SDL2 when available; SDL3-only builds get an explicit Xbox profile.
         for version in (2, 3):
             if re.search(rf"^\s*SDL{version}\b[^\r\n]*\byes\s*$", result.stdout, re.M | re.I):
                 return f"sdl{version}"

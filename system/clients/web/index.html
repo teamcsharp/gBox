@@ -1502,7 +1502,7 @@ async function charsInit() {
   const sortBy = (() => { try { return localStorage.getItem("gbox_char_sort") || "recent"; } catch { return "recent"; } })();
   const groupKey = c => (c.variant_of && cs.some(x => x.slug === c.variant_of)) ? c.variant_of : c.slug;   // variants stay under their base
   const val = { recent: c => -(used[c.slug] || 0), name: c => c.name.toLowerCase(), console: c => (c.source?.platform || "~") + " " + c.name.toLowerCase(),
-                size: c => -(c.stats?.triangles || 0) };
+                size: c => -(c.model_bytes || 0) };
   { const byGroup = {}; cs.forEach(c => (byGroup[groupKey(c)] ||= []).push(c));
     const head = g => byGroup[g].find(c => c.slug === g) || byGroup[g][0], f = val[sortBy] || val.recent;
     const keyOf = g => sortBy === "recent" ? -Math.max(...byGroup[g].map(c => used[c.slug] || 0)) : f(head(g));
@@ -1522,7 +1522,7 @@ async function charsInit() {
         <input type="range" data-head min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
       <button class="act" data-headgo hidden>Build head ×1.0</button>
       <i class="mut" style="font-size:11px;white-space:pre-wrap"></i></div>`;
-  const sortBar = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;font-size:11px">${[["recent", "Recently used"], ["name", "Name"], ["console", "Console"], ["size", "Size"]]
+  const sortBar = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;font-size:11px">${[["recent", "Recently used"], ["name", "Name"], ["console", "Console"], ["size", "File size"]]
     .map(([k, t]) => `<button class="fchip ${sortBy === k ? "on" : ""}" data-csort="${k}" style="padding:2px 8px;border-radius:12px">${t}</button>`).join("")}</div>`;
   el.innerHTML = sortBar + (cs.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px">${cs.map(card).join("")}</div>`
     : '<p class="mut">No characters in the library yet.</p>');
@@ -1798,6 +1798,16 @@ async function resetGame(sid, btn, hard) {
     btn.style.color = btn.style.borderColor = ok ? "var(--ok)" : "var(--bad)"; btn.title = msg;
     setTimeout(() => { btn.style.color = btn.style.borderColor = ""; }, 2500); };
   try {
+    const current = (await api("/api/sessions")).find(s => s.session_id === sid);
+    if (current?.live_mod && current.live_mod !== current.mod) {
+      // Reset the model currently in memory, including a Blender hot swap.
+      // The emulator's reset command would reload its original boot model.
+      let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: current.live_mod, keep_state: false });
+      while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 500)); j = await api("/api/jobs/" + j.id); }
+      if (j.state !== "succeeded") throw new Error(j.error || j.state);
+      followSession(sid, j.output.session_id);
+      return done(true, "Reset ✓ (mods and current character kept)");
+    }
     const fast = await fetch(`/api/sessions/${encodeURIComponent(sid)}/rpc`, { method: "POST",          // instant: the live channel
       headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: JSON.stringify({ op: "reset", args: {} }) }).catch(() => null);
     if (fast?.ok) { modReapply(); return done(true, "Reset ✓ (mods kept)"); }
