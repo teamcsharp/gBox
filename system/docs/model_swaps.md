@@ -18,6 +18,9 @@ Licensing: every source model here (Nintendo, SEGA, Capcom, Rockstar) is copyrig
 | Any library character as Toni | LCS PS2 | **Done in gBox** | `characters op=use` builds `lcs_<character>`: every Toni outfit replaced (gbox/gta_stories_models.py, section 3). VCS/PSP not yet. |
 | Any library character as Glitch, or as a bot picked on screen | Metal Arms GameCube | **Done in gBox** | `characters op=use` builds `ma_<character>` (Glitch, play + cutscenes) or, with `slot=npc` + a screen point, `ma_<character>_<bot>` (gbox/metal_arms.py, section 8). Glitch is in the collection with body roles. |
 | Any library character as a wrestler (one or several per ROM) | WWF No Mercy (N64, USA Rev A) | **Done in gBox** | `characters op=use` / `op=match` builds `nomercy_<character>_as_<wrestler>` (gbox/aki_wrestling.py, section 9). Revenge / World Tour: reader only. |
+| Any library character as Aya (all 5 outfits, field + battle) | Parasite Eve (PS1) | **Done in gBox** | `characters op=use` builds `pe_<character>` (gbox/pe_swap.py, section 10). Mario checked on the Spark. |
+| Any library character as Cloud (field + battle models) | Final Fantasy VII (PS1) | **Done in gBox** | `characters op=use` builds `ff7_<character>` (gbox/ff7_swap.py, section 11). Mario checked on the Spark. |
+| Which games can rip / reimport, and the fallback | every studied game | **Done in gBox** | `characters op=coverage` (section 12). No writer: overlay + a gap report. |
 | Leon/Mario/Sonic as player | RE4 2005 UHD (PC) | **Medium** | JADERLINK BIN/TPL tools: SMD/OBJ in, `.bin/.tpl` back into `pl*.udas`. Leon-replacement mods exist. |
 | Mario/Sonic as Chris/Jill/Leon/Claire | RE1/2/3 classic PC | **Hard** | RE2MV/RE3MV with OBJ per body part. Very low-poly rigid segments, mostly manual. |
 | OoT characters as PSO Boomas (keeping Booma animations) | PSO BB (PC) | **Hard** | pso-blender (jtuu) `.xj` export into the Booma `.bml` via PSOBMLExtract. The model must match the Booma bone hierarchy. |
@@ -520,3 +523,157 @@ References (read only, no code copied or run; their licences are recorded in `LI
 - Saves: a cart save that already holds edited wrestlers overrides the default costumes, but the hook still matches by face. The CAW (create-a-wrestler) slots aren't covered.
 - Rigid skinning, one joint per part. The seams open slightly on big bends (waist/chest).
 - Real hardware needs the Expansion Pak (the table lives at `0x80700000`).
+
+## 10. Parasite Eve (PS1): any character as Aya, built into gBox (`gbox/pe_swap.py`, 2026-10-07)
+
+Status: **works, checked in game on the Spark** (pcsx_rearmed, headless). Mario played as Aya in the opening street
+cutscene, the opera entrance and the lobby and hall, walking. Mod `pe_mario`, card "Parasite Eve: Mario as Aya".
+
+- `characters op=use character=<name> game="Parasite Eve"` builds `pe_<slug>` (a raw `.bin/.cue` copy of the disc) and
+  launches it. It works on Disc 1 and Disc 2, which share a byte-identical PE.IMG.
+- **Slot:** Aya's real-time model, all 5 outfits (PE.IMG common blobs 18..22 hold model + animations, blobs 13..17 hold
+  the VRAM textures). Field and battle use the same model. FMVs are pre-rendered and still show Aya.
+- **Retarget:** Aya's rest pose (frame 0 of her lowest animation) gives the target skeleton. `pe_swap.OUTFIT_BONES` maps
+  body roles to bones for each outfit, and the head's bulk decides left/right. The generic rigid retarget is
+  `sm64_swap.retarget`, with `fit_height`: the whole figure is scaled to 0.9 x Aya's height, not to her head joint.
+  Bone count, traversal list and bounding spheres stay Aya's, so her animations play.
+- **Budgets:** these are Aya's own. Model bytes must fit her model's slot in the blob (the blob keeps its sectors).
+  Vertices must not exceed hers, and GPU packet bytes (GT3 0x50, GT4 0x68) must not exceed hers. If the model is over,
+  Blender decimates it. Mario ends up at 600 to 750 triangles per outfit.
+- **Textures:** the 256x256 4-bit page at VRAM (960,256) with 32 CLUT slots (rows 448/449). Each texture gets its own
+  15-colour CLUT, and flat colours become 4x4 cells. The blob's own three VRAM uploads are refilled at the same size.
+- **Disc:** the PE.IMG sectors of the 10 blobs are rewritten in place. EDC/ECC is recomputed (`gbox/psxdisc.py`
+  `RawBin`, `fix_sector`; checked against mastered sectors).
+- **Collection:** the extractor now reads all 5 outfits with correct roles: `aya`, `aya_evening_dress`,
+  `aya_long_coat`, `aya_tshirt_jeans`, `aya_liberated`.
+
+## 11. Final Fantasy VII (PS1): any character as Cloud, field + battle, built into gBox (`gbox/ff7_swap.py`, 2026-10-07)
+
+Status: **works, checked in game on the Spark**. Mario walked in the Sector 1 station with Barret and fought the first MP
+battle (attacking with the Buster Sword). Mod `ff7_mario`, card "FF7: Mario as Cloud".
+
+- `characters op=use character=<name> game="Final Fantasy VII"` builds `ff7_<slug>` for Disc 1, 2 or 3.
+- **Field model** `FIELD/CLOUD.BCX`. The format was reverse-engineered here and is documented in
+  `gbox/ff7_models.py` `read_field_model`: 22 bones, 15 parts, Gouraud polygons with a per-vertex lighting normal index.
+  The normal table is FIELD.BIN, gunzipped, at 0x3F520, 240 entries.
+  - **Budget:** FIELD.BIN's file table loads exactly 7072 bytes for this file, so the LZS stream must not grow
+    (gBox has its own LZS encoder). The decompressed file stays at or under Cloud's size, with 255 vertices or polygons
+    per part and GPU packets no larger than Cloud's.
+  - **Result:** about 430 triangles, as quads where two triangles share an edge.
+  - 10 special-scene BSX files (e.g. CLSIN2_1, LAS4_4) carry their own copy of Cloud's mesh and are not patched.
+- **Battle model** `ENEMY6/CLOUD.LZS`. Section 0 (skeleton + meshes) is rebuilt as Gouraud triangles and quads.
+  Animations, settings, the TIM and the weapons (the Buster Sword) are copied unchanged. The compressed size must not
+  exceed the original 66694 bytes. Mario keeps all 752 triangles.
+- **Textures:** baked into per-corner colours, since the PS1 field and battle bodies are Gouraud.
+- **Rip side:** `read_field_model` + `field_to_gltf` extract every party field model, and `ff7_swap.field_spec` derives
+  body roles from the skeleton topology. In the collection: `ff7_cloud_field`, `ff7_tifa_field`, `ff7_ballet_field`
+  (Barret), `ff7_earith_field` (Aerith), `ff7_red_field`, `ff7_cid_field`, `ff7_vincent_field`. `ff7_yufi_field` and
+  `ff7_ketcy_field` are ripped without roles because their layout doesn't match.
+  The battle models of the other party members can be extracted but have no automatic roles yet.
+
+## 12. Coverage matrix
+
+`characters op=coverage` (`gbox/char_coverage.py`) returns, for each game gBox has studied (games with a writer, games
+the collection came from, games this document discusses), three things: whether it can **rip** the game's characters
+(extractor → collection), whether it can **reimport** any collection character into it (a swap writer that
+`characters op=use` actually routes to), and which slots. A game with no writer answers `op=use` with the overlay
+fallback: if the game is running, the character is drawn over the player in the desktop app right away. It also files
+a **gap report** (inbox source `gap`, title "GAP: character writer for <game>") so the writer gets built.
+
+Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15 with both; 80 collection characters.
+
+| Game | Platform | Rip (extractor) | In the collection | Reimport (writer, slots) |
+|---|---|---|---|---|
+| Final Fantasy VII (Discs 1-3) | psx | ff7 (battle LZS + field BCX) | cloud (+2 variants), ff7_tifa, 9 field models (7 with roles); not ripped: battle models of Barret, Aerith, Red XIII, Cid, Yuffie, Vincent, Cait Sith (no auto roles yet) | **gbox.ff7_swap**: player (Cloud field + battle) |
+| Parasite Eve (Discs 1-2) | psx | parasite_eve | aya + all 4 other outfits | **gbox.pe_swap**: player (Aya, all outfits) |
+| Super Mario 64 (USA / Europe) | n64 | sm64 | mario | **gbox.sm64_swap**: player |
+| Resident Evil 4 (GC, Discs 1-2) / Wii Edition | gamecube / wii | re4gc | leon | **build_re4 (+ re4wii)**: player (+ enemies via re4gc_enemies by hand) |
+| Resident Evil 6 | xbox360 | re6_models | re6_leon, re6_helena | **gbox.re6_tool**: player, enemies, enemy:<family> |
+| Legend of Zelda: Ocarina of Time | n64 | oot_swap | oot_link_child, oot_link_adult, oot_km1, oot_kw1 | **gbox.oot_swap**: Link (both ages), any NPC, swap, place |
+| Metal Arms: Glitch in the System | gamecube | metal_arms | glitch, ma_grunt, ma_krunk, ma_miner, ma_titan, ma_zobby; not ripped: Exavolt | **gbox.metal_arms**: player, npc, enemy |
+| WWF No Mercy (USA; EU Rev A reader) / WCW Revenge / World Tour | n64 | nomercy | nm_kane, nm_mankind, nm_steve_austin, nm_the_rock, nm_undertaker; not ripped: the rest of the roster | **gbox.aki_wrestling**: any wrestler, player |
+| GTA: Liberty City Stories | ps2 | gta_lcs | lcs_toni, toni_cipriani; not ripped: the other Toni outfits | **gbox.gta_stories_models**: player (every outfit) |
+| Sonic Adventure 2 | dreamcast | sa2 | sonic, sa2_shadow, sa2_tails, sa2_knuckles, sa2_rouge, sa2_dr_eggman, sa2_amy_rose, sa2_metal_sonic, sa2_tikal, sa2_chaos_0 | **gbox.sa2_chars**: player (Sonic; section 13) |
+| Phantasy Star Online Ver. 2 | dreamcast | pso | hucast; not ripped: the other 8 classes | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
+| Super Smash Bros. Melee | gamecube | melee | 27 fighters | overlay only |
+| Shenmue (Disc 1) | dreamcast | shenmue | ryo | overlay only |
+| Resident Evil 4 (2023, Steam) | pc | re4r | re4r_leon, re4r_ashley (no roles) | overlay only |
+| RE Director's Cut, RE3 Nemesis, Parasite Eve II, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
+
+Regenerate it with `characters op=coverage`: `char_coverage.markdown()` prints this table from the live data. A new
+writer counts as soon as its module has `GAME_IDS` + `use()`, is listed in `char_coverage.WRITERS`, and
+`characters_tool` routes to it.
+
+
+## 13. Sonic Adventure 2 (Dreamcast): any character as Sonic, built into gBox (`gbox/sa2_chars.py`, `gbox/ninja_swap.py`, 2026-10-07)
+
+Status: **works on Sonic Adventure 2 (USA) DC** (catalog `d95ed7ed1e40552a`). `characters op=use character=<any> game_id=d95ed7ed1e40552a`
+builds `sa2_<slug>` on the Spark: a copy of the GD-ROM image (GDI, unchanged tracks hard-linked) with Sonic's model and
+textures replaced. Checked on the Spark (Flycast): RE6 Leon (`sa2_re6_leon`, 649 triangles) through the Hero story's City
+Escape, on the board and running on foot, Sonic's motions driving him.
+
+**Files**: `SONIC2/SONICMDL.PRS` (PRS) holds a table `{s32 id, u32 offset}` ending at id -1; pointers inside are file
+offsets. Id 0 is Sonic's full 62-node tree; most other ids (1-30: upper body, hands, shoes, ...) point INTO that tree,
+and 31 / 48 are lower-detail copies (each with their own sub-ids). `SONICTEX.PRS` is a PVM of 11 textures.
+Both files are packed back to back on a full GD-ROM: **each must fit its old sectors** (39 / 29).
+
+**What the writer does** (`sa2_chars.build_swap`):
+1. Retarget onto Sonic's bind pose (`ninja_swap.fit` → `sm64_swap.retarget`, roles = node indices; the head goes on
+   node 44, the head bone, because 47 / 49 below it are head variants the game may hide), decimate in Blender until it fits.
+2. Per node, rigid geometry: chunk vertices 0x29 (position + normal) in the node's space, strips 0x41 (greedy
+   stripify), the body's own material + texture flags, double-sided.
+3. **The game needs Sonic's original vertex chunks**: with them removed it hangs loading a stage (bisected on the
+   Spark: emptying the strips is fine, emptying the vertex lists hangs). So every node keeps its vertex chunks and the
+   character's vertices follow them from a cache slot past the highest original one; only the strips are replaced.
+4. The LOD trees 31 / 48 and all their sub-ids are repointed to the same node of the main tree (same node order), which
+   frees their bytes; new data goes into freed holes first (best fit), so the file barely grows.
+5. Textures: one 256 px atlas (`re6_models._pack`), VQ-compressed (`ninja.pvr_vq`, k-means codebook) into texture 5
+   (`sonic_soapshoes`, the biggest, only used by the replaced models).
+6. PRS: `ninja.prs_compress` (optimal parse; ~0.5 % bigger than SEGA's own). GD-ROM: `gdrom.patch_gdi` rewrites the
+   files in place, updates the ISO9660 size, recomputes EDC/ECC (checked against real sectors).
+
+**Not covered**: Sonic's spin ball / board / Light Dash parts (separate ids, still Sonic), cutscene (event) models, 2P
+and alternate costumes (`HSONIC*`, `XSONIC*`, `PSOSONIC*`), the other playable characters' slots. The model budget
+is low (~650 triangles) because the original vertex chunks must stay. The GameCube version (SA2 Battle) isn't done.
+
+Shared pieces: `gbox/ninja.py` now writes Ninja data too (PRS, VQ / small-VQ / twiddled PVRs, PVM entries, chunk
+vertex + strip lists with a base slot, NJS_OBJECT trees, POF0); `gbox/gdrom.py` patches GDI images (`patch_gdi`;
+moved files can only go into a donor file's sectors: Flycast crashes reading past the last file).
+
+## 14. Phantasy Star Online Ver. 2 (Dreamcast): player class writer, NOT working yet (`gbox/pso_player.py`, 2026-10-07)
+
+The operator's character is **GBOX, a HUmar** (class A; read from the memory card screen), not the HUcast in the
+collection. `pso_player.build_swap` writes the HUmar (or HUcast) body: `PSO/PL<x>BDY00.NJ` (loose, NJCM + POF0) and
+the same file inside `PSO/PL<x>NJ.BML` (repacked, PRS), every head / hair / cap file as an invisible speck, and the
+atlas into all 97 textures of `PL<x>TEX.AFS` in each texture's own size and format (VQ, small VQ, twiddled).
+Findings from the Spark (offline mode only, never online):
+- In game (Pioneer 2) the **loose** `.NJ` files are drawn; the memory card / character screens use them too.
+- With the body's weighted vertex chunks replaced by rigid ones the game draws garbage (menu preview) — same engine
+  rule as SA2. Keeping the original chunks makes the body ~60 KB, far over its 11 sectors; a bigger body file
+  (moved to a donor file's sectors or past the last file) makes Flycast drop the content or draws nothing.
+- So `characters op=use` for PSO answers `not_working` instead of building. What's needed: find the game's buffer limit
+  for the body file / why it needs the weighted chunks (Ghidra on 1ST_READ.BIN: the player model loader), or write the
+  character as weighted chunks in the original slots (0x2C vertices with Ninja-flag weights), keeping the original
+  vertex counts per chunk.
+
+## 15. RE6 Leon (`re6_leon`) in other games, and fixes found on the way (2026-10-07)
+
+Mods (all built on the Spark, mod cards with game frames): RE4 GC `re4_re6_leon` (story opening: walk, run, aim),
+SM64 `sm64_re6_leon` (castle grounds), OoT `oot_re6leon` (child in Link's house, adult in the Fire Temple / Death
+Mountain Crater, climbing), SA2 DC `sa2_re6_leon` (City Escape, section 13). PSO: section 14 (not working).
+- **RE6 extractor bone order** (`re6_models.Mod.decode`): in the 4-bone vertex formats (0x14D4..., 0x6459...) the four
+  u8 bone indices are stored last-to-first (b[3] goes with weight 0). Reading them in order put almost every body vertex
+  on the chest (thighs, upper arms: 0 vertices), so every rigid retarget left the sleeves in a T-pose. `re6_leon` was
+  re-exported (vertices now sit next to their bones); `re6_helena` was not (its arc names didn't resolve: re-export
+  it before using it). Untextured RE6 materials (Leon's earpiece) now export dark grey instead of glTF white.
+- **RE4 GC build loop** (`characters.build_re4`): the last decimation (20 %) was written but never tried; a 17k-triangle
+  source failed with "decimating didn't help". RE6 Leon fits at ~3400 triangles with 64 px textures.
+- **SM64 / OoT material keys** (`sm64_swap.to_writer`, `oot_swap.to_parts`, `oot_place`): materials were keyed by the
+  texture array's `id()`, so a model whose primitives each decode their own copy of the same image (RE6: 84 materials,
+  11 images) got one texture per primitive and the budget flattened 72 of them to colours (white patches in OoT).
+  They're keyed by the image content now (OoT Leon: 9 textures, nothing flattened).
+- SA2 characters (Sonic, Shadow, Tails, Knuckles, Rouge, Eggman, Amy, Cyclone) are built for RE4 GC, RE6 (on i9-NUC)
+  and LCS PS2. Played: Shadow in RE4 (`re4_sa2_shadow`), Sonic and Shadow in LCS (`lcs_sonic`, `lcs_sa2_shadow`).
+  RE6 `re6_sonic` / `re6_sa2_shadow` are built but not booted (cards say so). Shadow / Knuckles / Rouge got body roles
+  from `characters.tree_roles` (same node layout as Sonic); the Cyclone's are hand-picked (mech legs 27-32, Tails in
+  the cockpit: arms 7-18, head 24).

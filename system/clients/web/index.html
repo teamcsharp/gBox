@@ -334,6 +334,60 @@ function trayPop() {
     : '<p class="mut" style="padding:10px">No notifications yet.</p>';
   el.classList.add("on");
 }
+// click a mod thumbnail: view it in a pop-up (wheel / + - zoom at the cursor, drag to pan, double-click = fit, Esc / backdrop = close)
+document.body.insertAdjacentHTML("beforeend", `<div id="lbox" style="display:none;position:fixed;inset:0;z-index:120;background:#000d;overflow:hidden;cursor:grab">
+  <img alt="" draggable="false" style="position:absolute;left:0;top:0;transform-origin:0 0;max-width:none;user-select:none;image-rendering:auto">
+  <div style="position:absolute;top:10px;right:12px;display:flex;gap:6px"><button class="act" data-z="1.25">+</button><button class="act" data-z="0.8">−</button>
+  <button class="act" data-z="fit">Fit</button><button class="act" data-z="1:1">1:1</button><button class="act" data-z="x">✕</button></div></div>`);
+const LB = { el: $("#lbox"), k: 1, x: 0, y: 0 };
+LB.img = LB.el.querySelector("img");
+const lbApply = () => LB.img.style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.k})`;
+const lbZoom = (f, cx = innerWidth / 2, cy = innerHeight / 2) => {          // keep the point under the cursor still
+  const k = Math.min(32, Math.max(0.05, LB.k * f)); LB.x = cx - (cx - LB.x) * k / LB.k; LB.y = cy - (cy - LB.y) * k / LB.k; LB.k = k; lbApply(); };
+const lbFit = () => { const w = LB.img.naturalWidth || 1, h = LB.img.naturalHeight || 1;
+  LB.k = Math.min((innerWidth - 40) / w, (innerHeight - 70) / h); LB.x = (innerWidth - w * LB.k) / 2; LB.y = (innerHeight - h * LB.k) / 2 + 15; lbApply(); };
+function lbOpen(src) { LB.img.onload = lbFit; LB.img.src = src; LB.el.style.display = "block"; if (LB.img.complete) lbFit(); }
+const lbClose = () => { LB.el.style.display = "none"; LB.img.removeAttribute("src"); };
+LB.el.addEventListener("wheel", e => { e.preventDefault(); lbZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY); }, { passive: false });
+LB.el.addEventListener("pointerdown", e => { if (e.target.closest("button")) return; LB.drag = { x: e.clientX, y: e.clientY, ox: LB.x, oy: LB.y, moved: false };
+  LB.el.setPointerCapture(e.pointerId); LB.el.style.cursor = "grabbing"; });
+LB.el.addEventListener("pointermove", e => { const d = LB.drag; if (!d) return; if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 3) d.moved = true;
+  LB.x = d.ox + e.clientX - d.x; LB.y = d.oy + e.clientY - d.y; lbApply(); });
+LB.el.addEventListener("pointerup", e => { const d = LB.drag; LB.drag = null; LB.el.style.cursor = "grab";
+  if (d && !d.moved && e.target === LB.el) lbClose(); });                 // a click on the backdrop (not a drag) closes
+LB.el.addEventListener("dblclick", lbFit);
+LB.el.addEventListener("click", e => { const z = e.target.closest("button[data-z]")?.dataset.z; if (!z) return;
+  if (z === "x") lbClose(); else if (z === "fit") lbFit(); else if (z === "1:1") lbZoom(1 / LB.k); else lbZoom(+z); });
+addEventListener("keydown", e => { if (LB.el.style.display === "none") return;
+  if (e.key === "Escape") lbClose(); else if (e.key === "+" || e.key === "=") lbZoom(1.25); else if (e.key === "-") lbZoom(0.8); else if (e.key === "0") lbFit(); });
+document.addEventListener("click", e => { const im = e.target.closest(".wbm > img, .wbm img[data-moment]"); if (!im || e.target.closest("button")) return;
+  e.preventDefault(); e.stopPropagation(); lbOpen(im.src.replace(/([?&])w=\d+/, "$1")); }, true);   // capture: before the card's own click (Load moment stays a button)
+// right-click any option while a game is open: report that it doesn't work with this title (game, what was tried,
+// what the card showed, the session's recent jobs and a frame go into the inbox for a fix)
+document.addEventListener("contextmenu", e => {
+  if (e.target.closest(".tchip, .card[data-gid], input, textarea")) return;
+  const scr = document.querySelector(".screen[data-sid]"), opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a");
+  if (!scr || !opt) return; e.preventDefault();
+  const sid = scr.dataset.sid, box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
+  const what = ((opt.closest(".chc")?.dataset.name ? opt.closest(".chc").dataset.name + ": " : "") + (opt.innerText || opt.title || opt.getAttribute("aria-label") || "").trim()).replace(/\s+/g, " ").slice(0, 120);
+  const detail = (box.innerText || "").trim().replace(/\n{2,}/g, "\n").slice(0, 1500);
+  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m);
+    m.style.cssText = "position:fixed;z-index:99;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:260px;font-size:13px"; }
+  m.style.left = Math.min(innerWidth - 300, e.clientX) + "px"; m.style.top = Math.min(innerHeight - 140, e.clientY) + "px";
+  m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">⚑ Report: “${esc(what || "this")}” doesn't work in this game</button>
+    <input placeholder="What did you expect? (optional)" style="width:100%;margin-top:6px;box-sizing:border-box"><div class="mut" style="margin-top:4px"></div>`;
+  m.style.display = "block";
+  const send = async () => {
+    m.querySelector(".mut").textContent = "Filing the report with the game, what you tried and its output…";
+    try { const r = await api("/api/requests/issue", { session_id: sid, what: what || "an option", detail, note: m.querySelector("input").value,
+            element: { text: what, cls: opt.className || "", tag: opt.tagName } });
+          m.querySelector(".mut").textContent = `✓ Report #${r.number} is in the inbox`; setTimeout(() => m.style.display = "none", 2500); }
+    catch (err) { m.querySelector(".mut").textContent = "✗ " + err.message; }
+  };
+  m.querySelector("[data-rep]").onclick = send;
+  m.querySelector("input").onkeydown = k => { if (k.key === "Enter") send(); };
+});
+document.addEventListener("mousedown", e => { const m = $("#issuemenu"); if (m && !m.contains(e.target)) m.style.display = "none"; });
 // right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();
@@ -799,7 +853,9 @@ async function sessionsView(sid, mode) {
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
-    ${s.state === "running" ? `<button class="act" style="margin-left:auto;color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
+    ${s.state === "running" ? `<button class="act" id="resetbtn" style="margin-left:auto;padding:5px 7px;line-height:0" title="Reset: restart the game (console reset; emulators without one relaunch the same game + mod)"
+      aria-label="Reset" onclick='resetGame(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
+    <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
       aria-label="Stop" onclick='hardStop(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg></button>` : ""}</div>`;
   if (mode === "inspect") return head + await inspectView(sid);
   if (mode === "examine") return head + examineView(sid, s);
@@ -1135,7 +1191,7 @@ async function wbInit() {
   const mods = d.mods || [];
   const reg = await api("/api/registry").catch(() => ({ tools: [] }));
   const tdesc = Object.fromEntries((reg.tools || []).map(t => [t.name, t.description || ""]));
-  const mod = (m, i) => `<div class="wbm" data-m="${i}">${m.thumb ? `<img loading="lazy" data-moment="${m.state_slot ?? ""}" title="Load this moment" src="/api/artifacts/${m.thumb}?${tq()}">` : '<div class="nf">no picture yet</div>'}
+  const mod = (m, i) => `<div class="wbm" data-m="${i}">${m.thumb ? `<img loading="lazy" data-moment="${m.state_slot ?? ""}" title="Click to view (zoom / pan)" style="cursor:zoom-in" src="/api/artifacts/${m.thumb}?${tq()}">` : '<div class="nf">no picture yet</div>'}
       <b>${esc(m.title)}</b><span class="${m.verified ? "ok" : "unv"}">${m.verified ? "verified" : "not verified yet"} · ${m.calls.length} step${m.calls.length === 1 ? "" : "s"}</span>
       <div class="row"><button data-apply>Activate</button><button data-shot title="Use what the game shows right now as this mod's picture">📷</button>${
         m.calls.some(c => c.tool === "@launch") ? `<button data-blmod title="Copy this mod's model to Blender's clipboard (Ctrl+V in a Blender 3D viewport)">⧉</button><button data-export title="Save the modded game file (bootable, with this mod built in)">💾</button>` : ""}${
@@ -1381,7 +1437,7 @@ async function modShot(m, sid, card, force) {                // the mod card's p
   try {
     const r = await api(`/api/mods/${m.id}/thumb?session_id=${encodeURIComponent(sid)}${force ? "&force=true" : ""}`, {});
     m.thumb = r.thumb;
-    const html = `<img loading="lazy" data-moment="${m.state_slot ?? ""}" title="Load this moment" src="/api/artifacts/${r.thumb}?${tq()}">`;
+    const html = `<img loading="lazy" data-moment="${m.state_slot ?? ""}" title="Click to view (zoom / pan)" style="cursor:zoom-in" src="/api/artifacts/${r.thumb}?${tq()}">`;
     const old = card.querySelector(":scope > img, :scope > .nf"); if (old) old.outerHTML = html;
     if (force) st.textContent = "picture saved";
   } catch (err) { if (force) { st.textContent = "no picture: " + err.message.slice(0, 60); st.title = err.message; } }
@@ -1436,6 +1492,26 @@ async function hardStop(sid, btn) {                         // no confirm: the e
   await api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "stop button" }).catch(() => {});
   runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
   show("Library");
+}
+async function resetGame(sid, btn) {                       // no confirm: console reset, else relaunch the same game (+ mod)
+  const svg = btn?.querySelector("svg"), w = sid.split("-")[0];
+  if (btn) { btn.disabled = true; btn.style.color = "var(--acc)"; btn.style.borderColor = "var(--acc)"; }
+  if (svg) svg.animate([{ transform: "rotate(0)" }, { transform: "rotate(-360deg)" }], { duration: 700, iterations: Infinity });
+  const done = (ok, msg) => { if (!btn) return; svg?.getAnimations().forEach(a => a.cancel()); btn.disabled = false;
+    btn.style.color = btn.style.borderColor = ok ? "var(--ok)" : "var(--bad)"; btn.title = msg;
+    setTimeout(() => { btn.style.color = btn.style.borderColor = ""; }, 2500); };
+  try {
+    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "reset" }, require_worker: w });
+    if (j.state === "succeeded") return done(true, "Reset ✓");
+    const s = (await api("/api/sessions")).find(x => x.session_id === sid);
+    if (!s?.game_id) throw new Error(j.error || "can't reset this session");
+    if (active?.sid === sid) { active = null; pip(); }
+    await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game", args: {} }, require_worker: w }).catch(() => {});
+    let l = await api(`/api/games/${s.game_id}/launch?node=${encodeURIComponent(w)}${s.mod ? "&mod=" + encodeURIComponent(s.mod) : ""}`, {});
+    while (/queued|running/.test(l.state)) { await new Promise(r => setTimeout(r, 500)); l = await api("/api/jobs/" + l.id); }
+    if (l.state !== "succeeded") throw new Error(l.error || "relaunch failed");
+    show("Sessions", l.output.session_id);                   // the relaunched game (new session)
+  } catch (e) { done(false, "Reset failed: " + e.message); }
 }
 async function sop(sid, op) {
   const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });

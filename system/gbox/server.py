@@ -1720,6 +1720,109 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "request.create", rid, {"title": r.title, "kind": r.kind, "source": r.source})
         return doc
 
+    class IssueIn(BaseModel):
+        session_id: str = ""
+        what: str                          # the option the operator right-clicked ("Use in this game", a mod, ...)
+        detail: str = ""                   # what the card around it showed (its status / output line)
+        note: str = ""                     # optional words from the operator
+        element: dict | None = None
+        title: str = ""                    # overrides "Doesn't work in <game>: <what>"
+        image_b64: str | None = None       # the app's own OS-level screenshot (incl. the docked game); else a session frame
+        attachments: list[dict] = []       # [{name, b64, type}] e.g. the desktop app's console output
+        context: dict = {}                 # app state (tab, window, worker...)
+        mods_on: list[str] = []            # mod cards showing as on / applied in the app ("title: status")
+        kept_mods: list[str] = []          # mod ids the operator keeps on for this game
+
+    def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
+        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here."""
+        try:
+            j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
+                                  require_worker=sid.split("-")[0]), "issue")
+            t0 = time.time()
+            while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
+                time.sleep(0.4)
+            if jj["state"] == "succeeded":
+                res = (jj.get("output") or {}).get("result") or {}
+                if res.get("log"):
+                    return res["log"], res.get("path") or ""
+                why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
+            else:
+                why = f"log_tail: {jj.get('error') or jj['state']}"
+                if jj["state"] in ("queued", "running"):
+                    job_cancel(j.id, actor="issue")
+        except Exception as e:                        # noqa: BLE001
+            why = f"log_tail: {e}"
+        f = Path(str((s_.get("detail") or {}).get("log") or ""))
+        try:
+            if f.name and f.is_file():
+                return f.read_text(errors="replace")[-60000:], str(f)
+        except OSError:
+            pass
+        return "", why
+
+    def _issue_chat(sid: str) -> list[str]:
+        """Conversation tool calls that touched this session (newest last), with their results."""
+        out = []
+        for c in store.all("chat"):
+            ev = c.get("events") or []
+            for i, e in enumerate(ev):
+                if e.get("type") != "tool_call" or (e.get("args") or {}).get("session_id") != sid:
+                    continue
+                res = next((x for x in ev[i + 1:i + 40] if x.get("type") == "error"
+                            or (x.get("type") == "tool_result" and x.get("name") == e.get("name"))), {})
+                out.append((e.get("ts") or 0, f"- [{c['id'][:8]}] {e.get('name')} {json.dumps(e.get('args'))[:300]}"
+                                              + (f"\n  -> {(res.get('text') or '')[:500]}" if res else "")))
+        return [t for _, t in sorted(out, key=lambda x: x[0])[-15:]]
+
+    @app.post("/api/requests/issue")
+    def req_issue(r: IssueIn, actor=Depends(auth)):
+        s_ = store.get("session", r.session_id) or {} if r.session_id else {}
+        game = s_.get("title") or s_.get("game_title") or "no game running"
+        since = (s_.get("started") or s_.get("created") or time.time() - 3600) - 5
+        jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id
+                       or (s_.get("game_id") and (j.get("input") or {}).get("game_id") == s_.get("game_id") and j.get("created", 0) >= since)),
+                      key=lambda j: j.get("created", 0))[-20:] if r.session_id else []
+        jobs = [j for j in jobs if j.get("tool") != "get_frame"]          # report/thumbnail pictures, not operator actions
+        lines = [f"## What the operator tried\n{r.what}" + (f"\n\n{r.note}" if r.note else ""),
+                 f"## Game\n{game} (game_id {s_.get('game_id', '?')}, {s_.get('platform') or s_.get('system') or '?'}, "
+                 f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
+        if r.detail:
+            lines.append(f"## What gBox showed\n{r.detail}")
+        if r.session_id and s_.get("mod"):
+            lines.append(f"## Disc / model mod this session was launched with\n{s_['mod']}")
+        kept = [(store.get("mod", m) or {"title": m}) for m in r.kept_mods[:30]]
+        if r.mods_on or kept:
+            lines.append("## Active mods\n" + "\n".join([f"- on in the app: {m[:300]}" for m in r.mods_on[:30]]
+                + [f"- kept on: {m.get('title')} ({', '.join(c.get('tool', '?') for c in m.get('calls') or [])})" for m in kept]))
+        if jobs:
+            lines.append("## Recent gBox jobs for this game\n" + "\n".join(
+                f"- {j['tool']} [{j['state']}] input={json.dumps(j.get('input'))[:300]}"
+                + (f"\n  error: {j['error'][:600]}" if j.get("error") else "")
+                + (f"\n  result: {json.dumps((j.get('output') or {}).get('result'))[:600]}" if (j.get("output") or {}).get("result") else "")
+                for j in jobs))
+        atts = list(r.attachments)
+        if r.session_id:
+            if chat := _issue_chat(r.session_id):
+                lines.append("## Conversation tool calls on this session\n" + "\n".join(chat))
+            log, where = _issue_log(r.session_id, s_)
+            if log:
+                atts.append({"name": "emulator-log.txt", "type": "text/plain", "b64": base64.b64encode(log.encode("utf-8", "replace")).decode()})
+                lines.append(f"## Emulator log\nAttached: emulator-log.txt ({where}, last {len(log)} chars). Last lines:\n"
+                             + "\n".join(log.rstrip().splitlines()[-15:]))
+            else:
+                lines.append(f"## Emulator log\nnone ({where})")
+        if any(a.get("name") == "desktop-console.txt" for a in atts):
+            lines.append("## Desktop app console\nAttached: desktop-console.txt")
+        img = r.image_b64
+        if r.session_id and not img:
+            try:
+                img = base64.b64encode(_session_png(r.session_id)).decode()
+            except Exception:                         # noqa: BLE001  (no frame: the report still goes in)
+                pass
+        return req_create(RequestIn(title=(r.title or f"Doesn't work in {game}: {r.what}")[:140], body="\n\n".join(lines), source="app",
+                                    kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
+                                    context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id"), "game": game}), actor)
+
     class ImportItem(BaseModel):
         text: str
         created: float

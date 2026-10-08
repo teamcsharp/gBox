@@ -323,21 +323,25 @@ def tool_specs() -> list[dict]:
            "('change my loadout to the rocket launcher and both magnums') | auto items=[...] on=true (saved: applied whenever RE6 "
            "runs; on=false stops) | inventory (the start loadouts per character) | status (mode title/story/mercenaries, online, "
            "loadout state). Loadouts take effect when a match is started from character select (Continue/Retry keep the "
-           "running loadout): tell the operator. UNLOCKS: unlock = skip the forced prologue + open Campaign, Extra Content > "
-           "The Mercenaries and Agent Hunt (edits the save, backup kept; restart RE6 if it's running). 'Mercenaries No Mercy' "
-           "is PC-only: say plainly that the 360 version doesn't have it. CHARACTER SWAPS: 'play as Aya' = characters op=use "
+           "running loadout): tell the operator. loadout_set = set_loadout. UNLOCKS (boot profile 'RE6: Everything "
+           "unlocked', ON by default): unlock_all [on=false restores the original save] = every campaign / chapter / "
+           "difficulty up to Professional, Agent Hunt, Mercenaries (3 stages on this disc, all 9 characters + EX costumes), "
+           "skills, figures/emblems/titles; in the save (backup kept) and live in a running RE6. everything_unlocked on= "
+           "(the same + saved as the boot default), boot_to_title on= (default on: the logo movie is skipped and gBox presses "
+           "through PRESS START + notices to the title screen when no real controller is connected). 'Mercenaries No Mercy', "
+           "No Hope difficulty, DLC stages/retro costumes aren't in this 360 build: say so plainly. CHARACTER SWAPS: 'play as Aya' = characters op=use "
            "(builds re6_<slug>: Leon in every costume becomes that collection character; pick Leon). build_mod character=<name> "
            "builds without launching; mods lists them. revert_all = loadouts back to the originals, auto off, save restored, "
            "gBox's RE6 mods deleted (the disc is never changed). LIVE (verified in game, Mercenaries; same player structure in "
            "the campaign): infinite_health on=true|false, infinite_ammo on=true|false (held while RE6 runs, saved; 'god mode' / "
            "'unlimited ammo'; offer them as offer_controls toggles: tool re6, input {session_id, op:'infinite_ammo', on:'{value}'}) "
-           "| give_now item=<name|id> [amount] = into the inventory RIGHT NOW mid-match (ammo, herbs, grenades, sprays, and guns "
-           "whose model the stage has loaded; a gun that isn't loaded goes into the Mercenaries loadout for the next match/Retry "
-           "- relay the tool's message). Ctrl+click item picker requests ('make this / give me <item>' with 'this game's item id N') "
+           "| give_now item=<name|id> [amount] = into the inventory RIGHT NOW mid-match (ammo, herbs, grenades, sprays, and ANY "
+           "gun: gBox loads the gun's resources first; relay the tool's message) | remove_item slot=N | set_slot slot=N "
+           "[item=] [amount=] (change / recount one inventory slot live; slots from live_inventory). Ctrl+click item picker requests ('make this / give me <item>' with 'this game's item id N') "
            "-> give_now item=N | live_inventory | auto_qte on=true|false (every QTE / button prompt succeeds; ON by default "
            "whenever RE6 boots through gBox) | settings. NOT available yet (say so): replacing a pickup lying in the world, "
-           "Mercenaries stage/character/costume unlocks beyond 'unlock', faster movement for a swapped character.",
-           {"session_id": s, "op": s, "item": s, "amount": i, "items": {"type": "array", "items": {}}, "character": s,
+           "campaign-only characters (Deborah, Simmons...) as playable Mercenaries characters, faster movement for a swapped character.",
+           {"session_id": s, "op": s, "item": s, "amount": i, "slot": i, "items": {"type": "array", "items": {}}, "character": s,
             "replace": b, "on": b, "target": s, "costume": s}, ["op"]),
         fn("re_inventory", "ANY Resident Evil running live (RE4 GameCube, RE6 Xbox 360, classic REs whose slot layout gBox "
            "knows): the selected character's inventory. FIRST CHOICE for 'give me a rocket launcher', 'put a first aid spray in "

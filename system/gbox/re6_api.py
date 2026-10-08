@@ -18,9 +18,12 @@ class SettingsIn(BaseModel):
     auto_qte: bool | None = None          # every QTE prompt succeeds (default on)
     infinite_health: bool | None = None
     infinite_ammo: bool | None = None
+    everything_unlocked: bool | None = None   # boot profile "RE6: Everything unlocked": the save is unlocked before boot
+    boot_to_title: bool | None = None         # skip the logo movie + press through to the title screen
 
 
-DEFAULTS = {"auto_qte": True, "infinite_health": False, "infinite_ammo": False}
+DEFAULTS = {"auto_qte": True, "infinite_health": False, "infinite_ammo": False, "everything_unlocked": True,
+            "boot_to_title": True}
 
 
 class LoadoutIn(BaseModel):

@@ -91,6 +91,9 @@
   #report.on { display:grid; grid-template-columns:minmax(0,1fr) 340px; }
   #report .stage { overflow:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
   #report canvas { max-width:100%; border:1px solid var(--line); cursor:crosshair; touch-action:none; background:#000; }
+  #rp-wrap { position:relative; align-self:flex-start; max-width:100%; line-height:0; }
+  #report #rp-live { position:absolute; left:1px; top:1px; width:calc(100% - 2px); height:calc(100% - 2px); max-width:none; border:0; background:none; pointer-events:none; }
+  .req a.att-file { display:inline-block; margin:4px 4px 0 0; padding:3px 8px; border:1px solid var(--line); border-radius:6px; color:var(--fg); text-decoration:none; font-size:12px; }
   #report aside { background:var(--side); border-left:1px solid var(--line); padding:14px; overflow:auto; }
   #report textarea, #report input[type=text] { width:100%; font:inherit; padding:6px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; }
   #report textarea { min-height:140px; resize:vertical; }
@@ -602,7 +605,7 @@ window.assetView = async (box, glbUrl) => {
         <button class="act" id="rp-front" title="Bring forward (PgUp)">▲</button><button class="act" id="rp-back" title="Send backward (PgDn)">▼</button>
         <button class="act" id="rp-del" title="Remove image (Delete)">✕</button></span></div>
     <p class="mut" style="margin:0">Paste (Ctrl+V) or drop images onto the screenshot to overlay them. "Move / transform": drag to move, corner = scale (Shift: free), ○ = rotate (Shift: 15° steps), wheel = scale, [ ] = rotate.</p>
-    <canvas id="rp-canvas"></canvas></div>
+    <div id="rp-wrap"><canvas id="rp-canvas"></canvas><canvas id="rp-live"></canvas></div></div>
   <aside><h3 style="margin-top:0">New report</h3>
     <label>Title<input type="text" id="rp-title" placeholder="What should change?"></label>
     <label>Details<textarea id="rp-body" placeholder="Describe the request. Sketch on the screenshot to point at things. Paste (Ctrl+V) or drop images here too."></textarea></label>
@@ -935,8 +938,11 @@ async function openReport(kind, el = null) {
   RP.kind = kind; RP.el = el; RP.strokes = []; RP.layers = []; RP.sel = null;
   RP.img = new Image(); RP.img.src = shot; await RP.img.decode();
   const cv = $("#rp-canvas"); cv.width = RP.img.width; cv.height = RP.img.height;
+  const lv = $("#rp-live"); lv.width = cv.width; lv.height = cv.height;
+  RP.ink = Object.assign(document.createElement("canvas"), { width: cv.width, height: cv.height }); RP.redo = []; RP.cur = null;
   const scale = RP.img.width / innerWidth;                  // device pixels per CSS pixel
   if (el) RP.strokes.push({ tool: "box", color: "#ff3b3b", size: 3 * scale, pts: [[el.rect.x * scale, el.rect.y * scale], [(el.rect.x + el.rect.w) * scale, (el.rect.y + el.rect.h) * scale]] });
+  inkRebuild(); rpCursor();
   RP.attachments = []; renderAttach();
   $("#rp-mode").textContent = el ? "Eyedropper report" : "Screenshot report";
   $("#rp-el").innerHTML = el ? `<p class="mut" style="margin:6px 0">Selected element (${esc(el.view)})</p><div class="eltag">${esc(el.selector)}\n&lt;${esc(el.tag)}&gt; ${esc(el.text)}\n${esc(el.path)}</div>` : "";
@@ -963,7 +969,15 @@ function addLayer(img) {
 function layerUi() {
   $("#rp-layerbar").style.display = RP.sel ? "inline" : "none";
   if (RP.sel) $("#rp-op").value = Math.round(RP.sel.op * 100);
-  $("#rp-canvas").style.cursor = $("#rp-tool").value === "move" ? "move" : "crosshair";
+  rpCursor();
+}
+function rpCursor() {                                        // the brush itself as the cursor (its real size and colour)
+  const t = $("#rp-tool").value, cv = $("#rp-canvas");
+  if (t === "move") return cv.style.cursor = "move";
+  if (t === "box" || t === "arrow") return cv.style.cursor = "crosshair";
+  const d = Math.max(4, Math.min(120, Math.round(+$("#rp-size").value * (t === "hi" ? 4 : 1)))), n = d + 4, r = d / 2;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${n}" height="${n}"><circle cx="${n / 2}" cy="${n / 2}" r="${r}" fill="${$("#rp-color").value}" fill-opacity="${t === "hi" ? .35 : .25}" stroke="#000" stroke-width="1.5"/><circle cx="${n / 2}" cy="${n / 2}" r="${Math.max(1, r - 1.2)}" fill="none" stroke="#fff" stroke-width="1"/></svg>`;
+  cv.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${n / 2} ${n / 2}, crosshair`;
 }
 async function filesToLayers(files) {
   for (const f of files) {
@@ -988,8 +1002,17 @@ function redraw() {
     c.fillRect(hd.scale[0] - h / 2, hd.scale[1] - h / 2, h, h);
     c.beginPath(); c.arc(hd.rotate[0], hd.rotate[1], h / 2, 0, Math.PI * 2); c.fill();
   }
-  for (const s of RP.strokes.concat(RP.cur ? [RP.cur] : [])) {
-    c.strokeStyle = s.color; c.lineWidth = s.size; c.lineCap = c.lineJoin = "round"; c.globalAlpha = s.tool === "hi" ? 0.35 : 1;
+  c.drawImage(RP.ink, 0, 0);                                  // every finished stroke, cached (see inkRebuild)
+}
+// The screenshot is big (device pixels): never repaint it per pointer move. Finished strokes live in RP.ink (rebuilt only on
+// undo / clear); the stroke being drawn goes incrementally onto the transparent #rp-live canvas above, then is committed.
+function inkRebuild() {
+  const c = RP.ink.getContext("2d"); c.clearRect(0, 0, RP.ink.width, RP.ink.height);
+  for (const s of RP.strokes) drawStroke(c, s);
+}
+function drawStroke(c, s, alpha) {
+  {
+    c.strokeStyle = s.color; c.lineWidth = s.size; c.lineCap = c.lineJoin = "round"; c.globalAlpha = alpha ?? (s.tool === "hi" ? 0.35 : 1);
     const p = s.pts;
     if (s.tool === "box" && p.length > 1) c.strokeRect(p[0][0], p[0][1], p.at(-1)[0] - p[0][0], p.at(-1)[1] - p[0][1]);
     else if (s.tool === "arrow" && p.length > 1) {
@@ -1005,9 +1028,36 @@ function redraw() {
     c.globalAlpha = 1;
   }
 }
+let RP_LRAF = 0;
+function liveDraw() {                                        // only the new part of the stroke being drawn
+  RP_LRAF = 0; const s = RP.cur; if (!s) return;
+  const lv = $("#rp-live"), c = lv.getContext("2d"), p = s.pts;
+  c.strokeStyle = s.color; c.lineWidth = s.size; c.lineCap = c.lineJoin = "round"; c.globalAlpha = 1;   // highlighter: CSS opacity
+  if (s.tool === "box" || s.tool === "arrow") { c.clearRect(0, 0, lv.width, lv.height); return drawStroke(c, s, 1); }
+  const mid = i => [(p[i][0] + p[i + 1][0]) / 2, (p[i][1] + p[i + 1][1]) / 2];
+  c.beginPath();
+  if (!s.seg) { c.moveTo(p[0][0], p[0][1]); c.lineTo(p[0][0] + 0.01, p[0][1]); s.seg = 1; }      // a dot at once
+  for (let k = s.seg; k <= p.length - 2; k++) {              // same quadratic-midpoint path drawStroke makes, piece by piece
+    const a = k === 1 ? p[0] : mid(k - 1), b = mid(k);
+    c.moveTo(a[0], a[1]); c.quadraticCurveTo(p[k][0], p[k][1], b[0], b[1]); s.seg = k + 1;
+  }
+  c.stroke();
+}
+function rpCommit() {                                        // pointer up / cancel / capture lost: keep the stroke, never drop it
+  const s = RP.cur; if (!s) return; RP.cur = null;
+  if (RP_LRAF) { cancelAnimationFrame(RP_LRAF); RP_LRAF = 0; }
+  delete s.seg; RP.strokes.push(s); RP.redo = [];
+  drawStroke(RP.ink.getContext("2d"), s); drawStroke($("#rp-canvas").getContext("2d"), s);
+  const lv = $("#rp-live"); lv.getContext("2d").clearRect(0, 0, lv.width, lv.height); lv.style.opacity = 1;
+}
+function rpUndo(redo) {
+  if (redo) { if (!RP.redo?.length) return; RP.strokes.push(RP.redo.pop()); }
+  else { if (!RP.strokes.length) return; (RP.redo ||= []).push(RP.strokes.pop()); }
+  inkRebuild(); redraw();
+}
 (() => {
   const cv = $("#rp-canvas"); cv.style.touchAction = "none"; const pt = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
-  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); const t = $("#rp-tool").value;
+  cv.onpointerdown = e => { if (e.button > 0) return; e.preventDefault(); document.activeElement?.blur?.(); rpCommit(); cv.setPointerCapture(e.pointerId); const t = $("#rp-tool").value;
     if (t === "move") {                                      // select / move / scale / rotate a pasted image
       const p = pt(e), k = rpScale(), near = (a, r) => Math.hypot(a[0] - p[0], a[1] - p[1]) < r * k;
       if (RP.sel) { const hd = layerHandles(RP.sel);
@@ -1017,7 +1067,8 @@ function redraw() {
       if (RP.sel) RP.drag = { mode: "move", L: RP.sel, dx: p[0] - RP.sel.x, dy: p[1] - RP.sel.y };
       layerUi(); redraw(); return;
     }
-    RP.cur = { tool: t, color: $("#rp-color").value, size: +$("#rp-size").value * (t === "hi" ? 4 : 1) * (cv.width / cv.getBoundingClientRect().width), pts: [pt(e)] }; };
+    RP.cur = { tool: t, color: $("#rp-color").value, size: +$("#rp-size").value * (t === "hi" ? 4 : 1) * (cv.width / cv.getBoundingClientRect().width), pts: [pt(e)] };
+    $("#rp-live").style.opacity = t === "hi" ? 0.35 : 1; liveDraw(); };
   cv.onpointermove = e => {
     const d = RP.drag;
     if (d) { const p = pt(e), L = d.L;
@@ -1028,9 +1079,11 @@ function redraw() {
         else { const f = Math.max(0.02, Math.hypot(lx, ly) / d.d0); L.w = d.w0 * f; L.h = d.h0 * f; } }
       return redrawSoon(); }
     if (!RP.cur) return;
-    for (const ce of (e.getCoalescedEvents?.() || []).length ? e.getCoalescedEvents() : [e]) RP.cur.pts.push(pt(ce));
-    redrawSoon(); };
-  cv.onpointerup = () => { RP.drag = null; if (RP.cur) RP.strokes.push(RP.cur); RP.cur = null; redraw(); };
+    const evs = e.getCoalescedEvents?.() || []; for (const ce of evs.length ? evs : [e]) RP.cur.pts.push(pt(ce));
+    if (!RP_LRAF) RP_LRAF = requestAnimationFrame(liveDraw); };
+  cv.onpointerup = e => { RP.drag = null; if (RP.cur && RP.cur.tool !== "pen" && RP.cur.tool !== "hi") RP.cur.pts.push(pt(e)); rpCommit(); };
+  cv.onpointercancel = cv.onlostpointercapture = () => { RP.drag = null; rpCommit(); };
+  $("#rp-size").oninput = $("#rp-color").oninput = rpCursor;
   cv.addEventListener("wheel", e => { if (!RP.sel || $("#rp-tool").value !== "move") return; e.preventDefault();
     const f = e.deltaY > 0 ? 0.92 : 1.08; RP.sel.w *= f; RP.sel.h *= f; redraw(); }, { passive: false });
   $("#rp-tool").onchange = layerUi;
@@ -1039,6 +1092,11 @@ function redraw() {
     [RP.layers[i], RP.layers[j]] = [RP.layers[j], RP.layers[i]]; redraw(); };
   const delLayer = () => { RP.layers = RP.layers.filter(L => L !== RP.sel); RP.sel = null; layerUi(); redraw(); };
   $("#rp-front").onclick = () => order(1); $("#rp-back").onclick = () => order(-1); $("#rp-del").onclick = delLayer;
+  addEventListener("keydown", e => {                         // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y: undo / redo the sketch
+    if (!$("#report").classList.contains("on") || !(e.ctrlKey || e.metaKey) || /INPUT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+    const k = e.key.toLowerCase();
+    if (k === "z" || k === "y") { e.preventDefault(); rpUndo(k === "y" || e.shiftKey); }
+  });
   addEventListener("keydown", e => {
     if (!$("#report").classList.contains("on") || !RP.sel || /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)) return;
     if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); delLayer(); }
@@ -1052,8 +1110,8 @@ function redraw() {
     if (!$("#report").classList.contains("on") || e.target.closest?.("#report aside")) return;   // the side panel keeps attachments
     const f = imgFiles(e.clipboardData); if (f.length) { e.preventDefault(); filesToLayers(f); }
   });
-  $("#rp-undo").onclick = () => { RP.strokes.pop(); redraw(); };
-  $("#rp-clear").onclick = () => { RP.strokes = RP.el ? RP.strokes.slice(0, 1) : []; redraw(); };
+  $("#rp-undo").onclick = () => rpUndo(); $("#rp-undo").title = "Undo (Ctrl+Z) · redo: Ctrl+Shift+Z";
+  $("#rp-clear").onclick = () => { RP.strokes = RP.el ? RP.strokes.slice(0, 1) : []; RP.redo = []; inkRebuild(); redraw(); };
   $("#rp-cancel").onclick = () => $("#report").classList.remove("on");
   $("#rp-send").onclick = async () => {
     const title = $("#rp-title").value.trim(); if (!title) return $("#rp-msg").textContent = "Give the report a title.";
@@ -1068,10 +1126,53 @@ function redraw() {
     document.querySelector('aside button[data-s="requests"]').click();
   };
   $("#tb-capture").onclick = () => openReport("screenshot");
+  $("#tb-capture").oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); captureMenu(e.clientX, e.clientY); };
   $("#tb-pick").onclick = pickElement;
   $("#tb-inbox").onclick = () => document.querySelector('aside button[data-s="requests"]').click();
   addEventListener("keydown", e => { if (e.key === "Escape") $("#report").classList.remove("on"); });
 })();
+
+// ---------------- one-click issue report (right-click the Capture icon) ----------------
+function captureMenu(x, y) {                                 // reuses #whipmenu: click-away (POPS) + cut out of the docked game
+  let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
+  m.style.left = Math.max(8, Math.min(innerWidth - 330, x - 20)) + "px"; m.style.top = Math.min(innerHeight - 200, y + 14) + "px";
+  m.innerHTML = `<b>Capture</b><div class="mut">Report issue files one report: screenshot (with the game), session, emulator, active mods, recent tools, emulator log + app console.</div>
+    <button data-c="issue"><span>⚑</span>Report issue</button><button data-c="sketch"><span>✎</span>Capture and sketch…</button>`;
+  m.classList.add("on"); EMB.last = "";
+  m.onclick = e => { const b = e.target.closest("button[data-c]"); if (!b) return; m.classList.remove("on"); EMB.last = "";
+    b.dataset.c === "issue" ? reportIssue() : openReport("screenshot"); };
+}
+const REPORT_PROBE = `(() => { const wb = document.querySelector("#wb"), slot = document.querySelector("#nativeslot");
+  const keep = {}; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i);
+    if (k.startsWith("gbox_modkeep_")) keep[k.slice(13)] = JSON.parse(localStorage.getItem(k) || "[]"); } } catch {}
+  const on = [...document.querySelectorAll(".wbm")].map(c => ({ t: c.querySelector("b")?.textContent || "", on: c.classList.contains("on"), st: c.querySelector(".row i")?.textContent || "" }))
+    .filter(c => c.on || c.st).map(c => c.t + ": " + (c.on ? "on" : "") + (c.st ? " · " + c.st : ""));
+  return { sid: wb?.dataset.sid || slot?.dataset.sid || (typeof active !== "undefined" && active ? active.sid : null), gid: wb?.dataset.gid || null,
+           keep, on, tab: typeof cur !== "undefined" ? cur : null, hash: location.hash }; })()`;
+async function reportIssue() {
+  const btn = $("#tb-capture"), old = btn.title; btn.style.color = "var(--acc)"; toast("⚑ Filing the issue report…", 20000);
+  try {
+    const shot = (await gbox.captureOS().catch(() => null)) || await gbox.capture();     // OS-level: includes the docked game
+    const wv = document.querySelector("#wv");
+    const pg = wv ? await wv.executeJavaScript(REPORT_PROBE).catch(() => ({})) : {};
+    const ss = await gbox.api("/api/sessions"), run = (ss.ok ? ss.data : []).filter(s => s.state === "running");
+    const sid = pg.sid || EMB.sid || run[0]?.session_id || "", sess = run.find(s => s.session_id === sid) || (ss.ok ? ss.data : []).find(s => s.session_id === sid) || {};
+    const con = await gbox.consoleTail(200000).catch(() => "");
+    const st = await gbox.settings().catch(() => ({}));
+    const body = { session_id: sid, what: "Report issue (Capture icon)", title: `Issue report: ${sess.title || "gBox"}${sess.adapter ? " (" + sess.adapter + ")" : ""}`,
+      detail: [`Session ${sid || "none"} · ${sess.state || "-"} · adapter ${sess.adapter || "?"} · worker ${sess.detail?.worker_name || (sid ? sid.split("-")[0] : "-")}`,
+               `Emulator: ${sess.detail?.emulator || sess.adapter || "?"}${sess.detail?.core ? " · core " + sess.detail.core : ""}${sess.mod ? " · mod " + sess.mod : ""}`,
+               `App: tab ${pg.tab || "?"} ${pg.hash || ""} · section ${document.querySelector("aside button.on")?.dataset.s || "?"} · docked ${EMB.sid ? EMB.sid + " (" + (EMB.title || "") + ")" : "none"} · this PC's worker ${st.workerName || "?"}`].join("\n"),
+      image_b64: shot ? shot.split(",")[1] : null, mods_on: pg.on || [], kept_mods: (pg.keep || {})[sess.game_id || pg.gid] || [],
+      context: appContext({ gbox: { tab: pg.tab, hash: pg.hash }, docked: EMB.sid || null }),
+      attachments: con ? [{ name: "desktop-console.txt", type: "text/plain", b64: btoa(unescape(encodeURIComponent(con))) }] : [] };
+    const r = await gbox.api("/api/requests/issue", body);
+    if (!r.ok) throw new Error(r.error);
+    toast(`⚑ Report #${r.data.number} filed: screenshot, session, mods, tools, emulator log + console attached`, 6000); refreshInbox();
+  } catch (e) { toast("⚑ Report failed: " + (e.message || e).slice(0, 140), 8000); }
+  finally { btn.style.color = ""; btn.title = old; }
+}
+document.addEventListener("click", e => { const a = e.target.closest("a.att-file"); if (!a) return; e.preventDefault(); gbox.openExternal(a.dataset.url); });
 
 // ---------------- requests inbox (operator <-> agent) ----------------
 const fmtDur = s => s == null ? "–" : s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
@@ -1111,7 +1212,8 @@ async function refreshInbox() {
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
-        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Claude" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`).join("")}</div>`).join("")}
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Claude" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
+          : `<br><a class="att-file" href="#" data-url="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">📎 ${esc(a.name)}${a.size ? ` (${Math.ceil(a.size / 1024)} KB)` : ""}</a>`).join("")}</div>`).join("")}
         ${ms.map(mm => `<details class="howto" open><summary>How gBox does it: ${esc(mm.title)} <span class="mut">(${esc(mm.game_title || "")}, ${mm.verified ? "verified" : "not verified yet"})</span></summary>
           ${mm.calls.map(c => `<div class="howcall"><b>${esc(c.tool)}</b> <span class="mut">${esc((REG.tools?.[c.tool] || "").split("\n")[0].slice(0, 260))}</span><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}
           <div class="btns"><button class="act modplay" data-mod="${mm.id}">Load game in this state</button><button class="act modapply" data-mod="${mm.id}">Apply to running game</button>
@@ -1378,13 +1480,13 @@ updateCheck(); setInterval(updateCheck, 20000);
 const typingInPage = async () => { const wv = document.querySelector("#wv");
   if (!wv || document.activeElement !== wv) return false;
   return wv.executeJavaScript(`!!document.activeElement?.closest?.("input, textarea, select, [contenteditable]")`).catch(() => false); };
-const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !document.activeElement?.closest?.("input, textarea, select, [contenteditable]")
+const gameFocus = () => setTimeout(async () => { if (EMB.sid && EMB.rect && !EYE.on && !$("#report").classList.contains("on") && !document.activeElement?.closest?.("input, textarea, select, [contenteditable]")
   && !(await typingInPage())) gbox.embedFocus?.(); }, 120);
 gbox.onAppFocus?.(gameFocus);
 // only a click on the game itself hands it the keyboard (clicks in the library, sidebars, search boxes keep it in gBox)
 document.addEventListener("pointerup", e => { const r = EMB.rect;
   if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
-      && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble")) gameFocus(); });
+      && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble, #report, #whipmenu")) gameFocus(); });
 // ---------------- hold ~ : push-to-talk to the active conversation, the reply is spoken ----------------
 const PTT = { rec: null, chunks: [], down: false };
 async function pttDown() {

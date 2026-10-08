@@ -18,8 +18,7 @@ the extra Mercenaries mods. Status as of 2026-10-07. "Verified" means checked in
 | "turn faster while aiming" | `aim_turn_speed multiplier=N` | |
 | "play as Aya" | `characters op=use character=Aya game=<release>` | builds/launches the swap mod |
 
-Tools: `re_mods` (RE4 GameCube + Wii), `re6` (RE6 X360: today `unlock`, `give`/`set_loadout`/`auto`; aliases
-`unlock_all` / `merc_loadout` would match this table), `re4r` (RE4 2023: `set`/`freeze`/hooks; blocked until the
+Tools: `re_mods` (RE4 GameCube + Wii), `re6` (RE6 X360: `unlock_all` (= unlock, boot default), `give`/`set_loadout` (= loadout_set)/`auto`, live `give_now`/`remove_item`/`set_slot`), `re4r` (RE4 2023: `set`/`freeze`/hooks; blocked until the
 operator accepts Capcom's EULA in Steam - gBox never accepts it).
 
 ## Matrix
@@ -36,7 +35,7 @@ operator accepts Capcom's EULA in Steam - gBox never accepts it).
 | RE3 Nemesis Dreamcast (b172dc2d23549d59) | flycast | **missing** (same save-gated unlock) | **missing** | none |
 | RE3 Nemesis GameCube (2e2acf3bfe6e5fd3) | Dolphin | **missing** (same) | **missing** | none |
 | Mercenaries 3D (0ed22ae742e1b56b) | citra_libretro, Spark (boots to the Capcom logo) | **missing**: unlocks are save-based (the 3DS save cannot be erased in game: back it up first); the core exposes no memory map to gBox, so live flags are not possible here | **missing**: MT Framework Mobile writer | none |
-| RE6 X360 (0871eee3b68cdea3) | Xenia PC | `re6 op=unlock` (prologue skip + modes); stage/character ranks not mapped | `re6_<slug>` (Aya, SM64 Mario verified) | loadouts (`give/set_loadout/auto`), **verified**: infinite_health, infinite_ammo, give_now (ammo/herbs/grenades mid-match), auto_qte (default on). See docs/re6.md |
+| RE6 X360 (0871eee3b68cdea3) | Xenia PC | **verified**: `re6 op=unlock_all` = boot default "Everything unlocked": all 3 stages on the disc, all 9 characters + EX costumes, Agent Hunt, every campaign/chapter/difficulty, skills (save template from the game's own unlock routine; live too). Boots to the title (logo movie skipped) | `re6_<slug>` (Aya, SM64 Mario verified) | **verified**: any weapon in any character's loadout (EK fired), give_now of guns the stage didn't load (resources preloaded; Lightning Hawk fired), remove_item / set_slot, infinite_health/ammo, auto_qte (default on). No Mercy / DLC stages not on the 360 disc. See docs/re6.md |
 | RE4 2023 Steam (steam-2050650) | native + REFramework | by the RE4R agent; blocked on Capcom's EULA (operator) | by the RE4R agent | live stats/hooks |
 
 ## RE4 notes

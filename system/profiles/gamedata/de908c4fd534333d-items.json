@@ -1,0 +1,448 @@
+{
+ "game": "Resident Evil Director's Cut (PSX, USA)",
+ "game_id": "de908c4fd534333d",
+ "platform": "psx",
+ "source": "Live in a normal RetroArch/pcsx_rearmed session on lilspark (2026-10-07), Standard mode, Jill and Chris new games. Ids 0x01-0x5A were written 3 at a time into slots 1-3, status screen closed/reopened, names read from the name bar (labeled sheets rei/n1_A.jpg rei/n1_B.jpg). Names as shown (game prints them in capitals; title-cased here); suffixes '(n)' only disambiguate ids that share a name; the Bazooka round-type labels follow the ammo order 0x10-0x12 (explosive/acid/flame) and are not screen-verified. 0x4C and 0x4E-0x5A print nothing (unused). Weapon 'max' = magazine size from community knowledge except Beretta 15 (seen live).",
+ "items": [
+  {
+   "id": 1,
+   "name": "Combat Knife",
+   "kind": "weapon"
+  },
+  {
+   "id": 2,
+   "name": "Beretta",
+   "kind": "weapon",
+   "max": 15
+  },
+  {
+   "id": 3,
+   "name": "Shotgun",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 4,
+   "name": "Beretta (2)",
+   "kind": "weapon",
+   "max": 15
+  },
+  {
+   "id": 5,
+   "name": "Colt Python",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 6,
+   "name": "Flamethrower",
+   "kind": "weapon"
+  },
+  {
+   "id": 7,
+   "name": "Bazooka (explosive)",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 8,
+   "name": "Bazooka (acid)",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 9,
+   "name": "Bazooka (flame)",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 10,
+   "name": "R. Launcher",
+   "kind": "weapon"
+  },
+  {
+   "id": 11,
+   "name": "Clip",
+   "kind": "ammo"
+  },
+  {
+   "id": 12,
+   "name": "Shells",
+   "kind": "ammo"
+  },
+  {
+   "id": 13,
+   "name": "Lockpick",
+   "kind": "key"
+  },
+  {
+   "id": 14,
+   "name": "Magnum Rounds",
+   "kind": "ammo"
+  },
+  {
+   "id": 15,
+   "name": "Fuel",
+   "kind": "ammo"
+  },
+  {
+   "id": 16,
+   "name": "Explosive R.",
+   "kind": "ammo"
+  },
+  {
+   "id": 17,
+   "name": "Acid Rounds",
+   "kind": "ammo"
+  },
+  {
+   "id": 18,
+   "name": "Flame Rounds",
+   "kind": "ammo"
+  },
+  {
+   "id": 19,
+   "name": "Empty Bottle",
+   "kind": "key"
+  },
+  {
+   "id": 20,
+   "name": "Water",
+   "kind": "key"
+  },
+  {
+   "id": 21,
+   "name": "UMB No. 2",
+   "kind": "key"
+  },
+  {
+   "id": 22,
+   "name": "UMB No. 4",
+   "kind": "key"
+  },
+  {
+   "id": 23,
+   "name": "UMB No. 7",
+   "kind": "key"
+  },
+  {
+   "id": 24,
+   "name": "UMB No. 13",
+   "kind": "key"
+  },
+  {
+   "id": 25,
+   "name": "Yellow-6",
+   "kind": "key"
+  },
+  {
+   "id": 26,
+   "name": "NP-003",
+   "kind": "key"
+  },
+  {
+   "id": 27,
+   "name": "V-Jolt",
+   "kind": "key"
+  },
+  {
+   "id": 28,
+   "name": "Broken Shotgun",
+   "kind": "key"
+  },
+  {
+   "id": 29,
+   "name": "Crank (1)",
+   "kind": "key"
+  },
+  {
+   "id": 30,
+   "name": "Crank (2)",
+   "kind": "key"
+  },
+  {
+   "id": 31,
+   "name": "Emblem",
+   "kind": "key"
+  },
+  {
+   "id": 32,
+   "name": "Gold Emblem",
+   "kind": "key"
+  },
+  {
+   "id": 33,
+   "name": "Blue Jewel",
+   "kind": "key"
+  },
+  {
+   "id": 34,
+   "name": "Red Jewel",
+   "kind": "key"
+  },
+  {
+   "id": 35,
+   "name": "Music Notes",
+   "kind": "key"
+  },
+  {
+   "id": 36,
+   "name": "Wolf Medal",
+   "kind": "key"
+  },
+  {
+   "id": 37,
+   "name": "Eagle Medal",
+   "kind": "key"
+  },
+  {
+   "id": 38,
+   "name": "Chemical",
+   "kind": "key"
+  },
+  {
+   "id": 39,
+   "name": "Battery",
+   "kind": "key"
+  },
+  {
+   "id": 40,
+   "name": "MO Disk",
+   "kind": "key"
+  },
+  {
+   "id": 41,
+   "name": "Wind Crest",
+   "kind": "key"
+  },
+  {
+   "id": 42,
+   "name": "Flare",
+   "kind": "key"
+  },
+  {
+   "id": 43,
+   "name": "Slides",
+   "kind": "key"
+  },
+  {
+   "id": 44,
+   "name": "Moon Crest",
+   "kind": "key"
+  },
+  {
+   "id": 45,
+   "name": "Star Crest",
+   "kind": "key"
+  },
+  {
+   "id": 46,
+   "name": "Sun Crest",
+   "kind": "key"
+  },
+  {
+   "id": 47,
+   "name": "Ink Ribbon",
+   "kind": "other"
+  },
+  {
+   "id": 48,
+   "name": "Lighter",
+   "kind": "key"
+  },
+  {
+   "id": 49,
+   "name": "Moon Crest (2)",
+   "kind": "key"
+  },
+  {
+   "id": 50,
+   "name": "Moon Crest (3)",
+   "kind": "key"
+  },
+  {
+   "id": 51,
+   "name": "Mansion Key (1)",
+   "kind": "key"
+  },
+  {
+   "id": 52,
+   "name": "Mansion Key (2)",
+   "kind": "key"
+  },
+  {
+   "id": 53,
+   "name": "Mansion Key (3)",
+   "kind": "key"
+  },
+  {
+   "id": 54,
+   "name": "Mansion Key (4)",
+   "kind": "key"
+  },
+  {
+   "id": 55,
+   "name": "Lab Key",
+   "kind": "key"
+  },
+  {
+   "id": 56,
+   "name": "Special Key",
+   "kind": "key"
+  },
+  {
+   "id": 57,
+   "name": "Dormitory Key (1)",
+   "kind": "key"
+  },
+  {
+   "id": 58,
+   "name": "Dormitory Key (2)",
+   "kind": "key"
+  },
+  {
+   "id": 59,
+   "name": "C. Room Key",
+   "kind": "key"
+  },
+  {
+   "id": 60,
+   "name": "Lab Key (2)",
+   "kind": "key"
+  },
+  {
+   "id": 61,
+   "name": "Small Key",
+   "kind": "key"
+  },
+  {
+   "id": 62,
+   "name": "Red Book",
+   "kind": "key"
+  },
+  {
+   "id": 63,
+   "name": "Doom Book 2",
+   "kind": "key"
+  },
+  {
+   "id": 64,
+   "name": "Doom Book 1",
+   "kind": "key"
+  },
+  {
+   "id": 65,
+   "name": "F.-Aid Spray",
+   "kind": "heal"
+  },
+  {
+   "id": 66,
+   "name": "Serum",
+   "kind": "heal"
+  },
+  {
+   "id": 67,
+   "name": "Red Herb",
+   "kind": "heal"
+  },
+  {
+   "id": 68,
+   "name": "Green Herb",
+   "kind": "heal"
+  },
+  {
+   "id": 69,
+   "name": "Blue Herb",
+   "kind": "heal"
+  },
+  {
+   "id": 70,
+   "name": "Mixed Herbs (1)",
+   "kind": "heal"
+  },
+  {
+   "id": 71,
+   "name": "Mixed Herbs (2)",
+   "kind": "heal"
+  },
+  {
+   "id": 72,
+   "name": "Mixed Herbs (3)",
+   "kind": "heal"
+  },
+  {
+   "id": 73,
+   "name": "Mixed Herbs (4)",
+   "kind": "heal"
+  },
+  {
+   "id": 74,
+   "name": "Mixed Herbs (5)",
+   "kind": "heal"
+  },
+  {
+   "id": 75,
+   "name": "Mixed Herbs (6)",
+   "kind": "heal"
+  },
+  {
+   "id": 77,
+   "name": "Com. Radio",
+   "kind": "key"
+  }
+ ],
+ "inventory": {
+  "endian": "little",
+  "addr": "0x0C8784",
+  "address_form": "PSX RAM offset (0x00000000-0x001FFFFF); native 0x80xxxxxx addresses fail with read/write_memory in a normal RetroArch session.",
+  "slots": 8,
+  "stride": 2,
+  "id": [
+   0,
+   1
+  ],
+  "count": [
+   1,
+   1
+  ],
+  "empty": 0,
+  "characters": [
+   {
+    "name": "Chris",
+    "match": {
+     "addr": "0x0C8669",
+     "size": 1,
+     "value": 0
+    },
+    "addr": "0x0C8784",
+    "slots": 6
+   },
+   {
+    "name": "Jill",
+    "match": {
+     "addr": "0x0C8669",
+     "size": 1,
+     "value": 1
+    },
+    "addr": "0x0C8784",
+    "slots": 8
+   }
+  ],
+  "item_count": {
+   "addr": "0x0C8667",
+   "size": 1,
+   "note": "number of occupied inventory slots (Jill start 3, Chris start 2). The status screen only shows/uses slots 0..item_count-1: an item written into slot >= item_count is invisible and unusable until this byte is raised. Keep items packed from slot 0 and set item_count = index of last non-empty slot + 1 (setting it past the last item shows junk knife icons with 0 for the empty slots)."
+  },
+  "health": {
+   "addr": "0x0C51AC",
+   "size": 2,
+   "signed": true,
+   "max": 140,
+   "max_addr": "0x0C867E",
+   "note": "max differs per character: Chris 140, Jill 96; current max is the u16 at max_addr (read 0x8C / 0x60)"
+  },
+  "notes": "Slot = 2 bytes {u8 id, u8 count}; Combat Knife count 0, non-stack items count 1. Same address for both characters; Chris uses 6 slots, Jill 8. Names/counts update after the status screen is reopened; the ICON drawn for a slot is cached per slot (a re-used slot keeps the old icon, a newly counted slot may show a wrong icon) - cosmetic only. 0x0C8790 held [02 0F] in Chris's game (beyond his 6 slots; not part of his inventory).",
+  "verified": "2026-10-07 live: Jill start inventory [01 00][02 0F][41 01] at 0x0C8784 matched the status screen (Combat Knife, Beretta 15, F.-Aid Spray); Chris [01 00][41 01] (rei/re1go.jpg). Jill: slot2=R. Launcher x4, slot4=Shotgun x7 with item_count 4 -> names R. LAUNCHER / SHOTGUN and counts 4 / 7 shown (rei/re1_write_verify.jpg); without raising item_count the slot-4 item was not shown. Chris: slot3=R. Launcher x5 + item_count 3 -> shown (rei/re1_chris_verify.jpg). HP: wrote 10 -> 'Danger', 96 -> 'Fine' for Jill (rei/re1_hp10.jpg, rei/re1_hp96.jpg); Chris HP 140 read, 20 -> Danger. Character byte 0x0C8669: Jill 1, Chris 0 (compared both new games). Frames in the agent scratchpad rei/."
+ }
+}

@@ -146,12 +146,45 @@ def lzss(d: bytes) -> bytes:
     return bytes(out[:n])
 
 
-def lzss_store(d: bytes) -> bytes:
-    """Asmik LZSS encoder (greedy, 4 KB window, matches of 3..18): the game loads a wrestler's parts through a fixed
-    staging buffer, so new files must compress about as well as the originals."""
-    out = bytearray(b"\0" + len(d).to_bytes(3, "big"))
-    n, i = len(d), 0
+def lzss_store(d: bytes, depth: int = 96) -> bytes:
+    """Asmik LZSS encoder (4 KB window, matches of 3..18, optimal parse: the cheapest literal/match sequence by
+    dynamic programming, plus matches into the ring's initial zeros). The game loads a wrestler's parts through a
+    fixed staging buffer and files rewritten in place must fit their old span, so this packs a bit tighter than AKI's."""
+    n = len(d)
+    best = [(0, 0)] * n                                    # per position: (longest match, its source position)
     heads: dict[bytes, list[int]] = {}
+    for i in range(n):
+        bl, bp = 0, 0
+        if i + 3 <= n:
+            for q in reversed(heads.get(d[i:i + 3], [])[-depth:]):
+                if i - q > 4096:
+                    break
+                ln = 3
+                while ln < 18 and i + ln < n and d[q + ln] == d[i + ln]:
+                    ln += 1
+                if ln > bl:
+                    bl, bp = ln, q
+                    if ln == 18:
+                        break
+            if i < 4096 - 18 and bl < 18:                  # the ring starts as zeros: a run of zeros can come from it
+                z = 0
+                while z < 18 and i + z < n and d[i + z] == 0:
+                    z += 1
+                if z >= 3 and z > bl and i - 4096 + z <= 0:
+                    bl, bp = z, i - 4096
+            heads.setdefault(d[i:i + 3], []).append(i)
+        best[i] = (bl, bp)
+    cost = [0] * (n + 1)
+    step = [1] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        c, st = 9 + cost[i + 1], 1
+        bl = best[i][0]
+        for ln in range(3, bl + 1):
+            if 17 + cost[i + ln] < c:
+                c, st = 17 + cost[i + ln], ln
+        cost[i], step[i] = c, st
+    out = bytearray(b"\0" + n.to_bytes(3, "big"))
+    i = 0
     while i < n:
         flag_at = len(out)
         out.append(0)
@@ -159,29 +192,14 @@ def lzss_store(d: bytes) -> bytes:
         for bit in range(8):
             if i >= n:
                 break
-            best_len, best_pos = 0, 0
-            if i + 3 <= n:
-                for q in reversed(heads.get(d[i:i + 3], [])[-48:]):
-                    if i - q > 4096:
-                        break
-                    ln = 3
-                    while ln < 18 and i + ln < n and d[q + ln] == d[i + ln]:
-                        ln += 1
-                    if ln > best_len:
-                        best_len, best_pos = ln, q
-                        if ln == 18:
-                            break
-            if best_len >= 3:
-                sv = (best_pos - 0x12) & 0xFFF
-                out += bytes([sv & 0xFF, ((sv >> 4) & 0xF0) | (best_len - 3)])
-                step = best_len
+            st = step[i]
+            if st >= 3:
+                sv = (best[i][1] - 0x12) & 0xFFF
+                out += bytes([sv & 0xFF, ((sv >> 4) & 0xF0) | (st - 3)])
             else:
                 flags |= 1 << bit
                 out.append(d[i])
-                step = 1
-            for k in range(i, min(i + step, n - 2)):
-                heads.setdefault(d[k:k + 3], []).append(k)
-            i += step
+            i += st
         out[flag_at] = flags
     return bytes(out)
 
@@ -536,6 +554,15 @@ class NMWriter:
         self.ft = FileTable(rom, self.p)
         self.files: list[bytes] = []
         self.templates: list[tuple[int, bytes]] = []
+        self.inplace: dict[int, bytes] = {}               # file id -> new bytes written over the old file's span
+
+    def replace_file(self, fid: int, data: bytes) -> None:
+        """Rewrite an existing file where it is (the new bytes, compressed like the old ones, must fit its span)."""
+        o, n, enc = self.ft.span(fid)
+        z = lzss_store(data) if enc else data
+        if len(z) > n:
+            raise ValueError(f"file {fid:#x}: {len(z)} bytes don't fit its {n}-byte span")
+        self.inplace[fid] = z + bytes(n - len(z))
 
     def add_file(self, data: bytes) -> int:
         self.files.append(data)
@@ -598,6 +625,9 @@ class NMWriter:
             rom += b"\xff" * (size - len(rom))
         rom[data_at:data_end] = blob
         rom[ft_rom:ft_rom + total] = payload
+        for fid, z in self.inplace.items():
+            o, n, _enc = self.ft.span(fid)
+            rom[o:o + n] = z
         _patch_nm_code(rom, ft_rom, n_entries, total, hook_at, hook)
         return bytes(fix_crc(rom))
 
@@ -1012,11 +1042,80 @@ def fit_character(rom: bytes, model: Path, roles: dict, body_type: int, work: Pa
                                                        "triangles": sum(v["faces"] for v in report.values())}}
 
 
+NAMES_FID = 2                    # No Mercy: u16 offsets (big-endian) then the strings, 3 per name slot k at entries
+                                 # 3k..3k+2: full name (Superstar Select), short name (HUD), nickname ("STONE COLD").
+                                 # Slots follow the roster but also hold alternate names (THE GOODFATHER, FUNAKI, HO...),
+                                 # so a wrestler's slot is found by his name.
+
+
+def ring_names(rom: bytes) -> list[str | None]:
+    """File 2's strings in table order (None = an unused, zero table entry)."""
+    d = FileTable(rom).get(NAMES_FID)
+    first = struct.unpack_from(">H", d, 0)[0]
+    offs = struct.unpack_from(f">{first // 2}H", d, 0)
+    return [d[o:d.index(b"\0", o)].decode("latin-1") if o else None for o in offs]
+
+
+def short_name(name: str) -> str:
+    w = [x for x in re.split(r"\s+", name.strip()) if x.lower().rstrip(".") not in ("dr", "the", "mr", "miss")]
+    return (w[0] if w else name)[:12]
+
+
+def name_slot(strs: list, wrestler: str) -> int:
+    """The name slot of a default wrestler (by his name: "Scotty 2 Hotty" = SCOTTY TOO HOTTY)."""
+    import difflib
+    norm = lambda x: re.sub(r"[^A-Z0-9]", "", (x or "").upper().replace(" 2 ", " TOO "))
+    want = norm(wrestler)
+    cands = [(0.99 if len(norm(strs[3 * k])) >= 4 and len(want) >= 4 and (want.startswith(norm(strs[3 * k])) or norm(strs[3 * k]).startswith(want))
+              else difflib.SequenceMatcher(None, want, norm(strs[3 * k])).ratio(), k) for k in range(1, len(strs) // 3)
+             if strs[3 * k]]
+    r, k = max(cands)
+    if r < 0.75:
+        raise LookupError(f"no name slot for {wrestler!r}")
+    return k
+
+
+def set_ring_names(wr: "NMWriter", names: dict[str, tuple[str, str]]) -> dict:
+    """{default wrestler name: (full, short)} -> file 2 rebuilt (offset table + strings) and written in place."""
+    strs = ring_names(wr.rom)
+    def clean(x):
+        return re.sub(r"[^A-Z0-9 .'&-]", "", x.upper().encode("ascii", "ignore").decode())[:16]
+    out = {}
+    for who, (full, short) in names.items():
+        try:
+            n = name_slot(strs, who)
+        except LookupError:
+            out[who] = None
+            continue
+        strs[3 * n], strs[3 * n + 1], strs[3 * n + 2] = clean(full), clean(short), ""
+        out[who] = strs[3 * n]
+    head = len(strs) * 2
+    body, offs = bytearray(), []
+    for x in strs:
+        if x is None:
+            offs.append(0)
+            continue
+        offs.append(head + len(body))
+        body += x.encode("latin-1") + b"\0"
+    orig = wr.ft.get(NAMES_FID)
+    data = struct.pack(f">{len(offs)}H", *offs) + bytes(body)
+    data += bytes(max(0, len(orig) - len(data)))
+    wr.replace_file(NAMES_FID, data)
+    return out
+
+
 def build_rom(rom: bytes, jobs: list[dict], work: Path, blender=None, progress=lambda p, m: None, **kw) -> dict:
-    """jobs: [{wrestler (number), model, roles, name, props, scale}] -> {rom, reports}."""
+    """jobs: [{wrestler (number), model, roles, name, props, scale, ring_name?}] -> {rom, reports}. ring_name (default
+    the character's name; False = keep) replaces the wrestler's name on Superstar Select (skipped if it won't fit)."""
     wr = NMWriter(rom)
     ros = roster(rom)
     reports = []
+    try:
+        renamed = set_ring_names(wr, {ros[jb["wrestler"] - 1]["name"]: (jb.get("ring_name") or jb["name"],
+                                                                       short_name(jb.get("ring_name") or jb["name"]))
+                                      for jb in jobs if jb.get("ring_name", True)})
+    except Exception as e:                                 # noqa: BLE001 - names are cosmetic
+        renamed = {"error": str(e)}
     for k, jb in enumerate(jobs):
         w = ros[jb["wrestler"] - 1]
         body = w["body"][0]
@@ -1037,7 +1136,7 @@ def build_rom(rom: bytes, jobs: list[dict], work: Path, blender=None, progress=l
                         "shared_faces": [x["name"] for x in ros if x["number"] != w["number"] and set(x["face_tex"]) & set(keys)],
                         "rigged": str(fit["rigged"]), **fit["report"]})
     progress(90, "Writing the ROM (file table moved to the end, hook installed)")
-    return {"rom": wr.build(**kw), "reports": reports, "writer": wr}
+    return {"rom": wr.build(**kw), "reports": reports, "writer": wr, "names": renamed}
 
 
 # ---------------------------------------------------------------- extraction from a running game (exact textures)
@@ -1514,7 +1613,10 @@ def add_from_ram(root: Path, rom: bytes, ram: bytes, game: dict, slot: int, work
                  notes="WWF No Mercy wrestler in AKI's rest pose (arms down); 19 rigid joints, one per body part")
 
 
-def mod_name(pairs: list[tuple[dict, dict]]) -> str:
+def mod_name(pairs: list[tuple[dict, dict]], title: str | None = None) -> str:
+    if title and len(pairs) > 2:                           # a whole roster: name it after the card title
+        t = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+        return "nomercy_" + re.sub(r"^(wwf_)?no_mercy_", "", t)[:48].strip("_")
     if len(pairs) == 1:
         return f"nomercy_{pairs[0][0]['slug']}_as_{slug_of(pairs[0][1]['name'])[3:]}"
     return "nomercy_" + "_vs_".join(m["slug"].replace("melee_", "") for m, _w in pairs)
@@ -1539,7 +1641,7 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"wrestler": w["number"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
                      "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
-    name = mod_name(pairs)
+    name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / name
     shutil.rmtree(work, ignore_errors=True)
     from .sm64_swap import _blender
@@ -1611,7 +1713,7 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
             else:
                 w = (_player1(ctx, sess, rom) if sess and sess.get("game_id") == gid else None) or roster(rom)[0]
             pairs = [(meta, w)]
-        name = mod_name(pairs)
+        name = mod_name(pairs, title)
         from . import filemods
         have = (filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json").exists()
         built = None

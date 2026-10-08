@@ -59,12 +59,13 @@ def aya_target(pe: P.PEData, outfit: int) -> dict:
     Tg = np.array([C @ t for _r, t in world])
     pv = P.posed_vertices(model, world) @ C.T
     ob = OUTFIT_BONES[outfit]
-    # facing: up = +y; front = the toes' side of the ankles; left = up x front
-    feet = [ob["legA"][2], ob["legB"][2]]
-    toes = np.concatenate([pv[model.bones[b][0]:model.bones[b][0] + model.bones[b][1]] - Tg[b] for b in feet])
-    front = toes.mean(0)
+    # facing: up = +y; front = where the head's bulk sits from its joint (face/nose; the feet of some rest poses point
+    # backwards), snapped to the nearest axis; left = up x front
+    hb0 = model.bones[ob["head"]]
+    front = pv[hb0[0]:hb0[0] + hb0[1]].mean(0) - Tg[ob["head"]]
     front[1] = 0
-    front /= np.linalg.norm(front) or 1
+    k = int(np.argmax(np.abs(front)))
+    front = np.eye(3)[k] * np.sign(front[k])
     up = np.array([0, 1.0, 0])
     left = np.cross(up, front)
     B = np.stack([left, up, front])                    # rows: canonical axes in glTF-like coordinates

@@ -390,9 +390,10 @@ class XeniaAdapter:
         """Old winkey builds read the real keyboard state: SendInput, only while Xenia (or gBox docking it) is the
         foreground window, so keys never land in another app. Pad slot 0; a real XInput pad on slot 0 takes priority."""
         u = ctypes.windll.user32
-        root = u.GetAncestor(self._window(), 2)
+        win = self._window()
+        root = u.GetAncestor(win, 2)
         for _ in range(100):
-            if u.GetForegroundWindow() == root:
+            if u.GetForegroundWindow() in (root, win):     # docked in the gBox window, Xenia's own window reports as foreground
                 break
             time.sleep(0.1)
         else:

@@ -74,6 +74,8 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
         for p in rp:
             p["J"] = np.asarray(p["jid"])[:, None] if np.ndim(p["jid"]) == 1 else np.asarray(p["jid"])
         img = re6_models._pack(rp, atlas)                  # un-indexes the prims, uv -> atlas
+        if img.size != (atlas, atlas):                     # a 3x3 grid packs 255 px; uvs are fractions: resize
+            img = img.resize((atlas, atlas))
         geo = split_nodes(rp, tgt)
         try:
             data = encode(geo)
@@ -88,7 +90,7 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
 
 def split_nodes(prims: list[dict], tgt: dict) -> dict:
     """Un-indexed prims (world positions in the bind pose, joint per vertex in J[:, 0]) -> {node: (pos, nrm,
-    [((i0, i1, i2), ((u, v) x3))])} in node space, vertices shared within a node."""
+    [((i0, i1, i2), ((u, v) x3))])} in node space, one vertex per position within a node."""
     inv = [np.linalg.inv(w) for w in tgt["W"]]
     out: dict = {}
     keys: dict = {}
@@ -105,14 +107,20 @@ def split_nodes(prims: list[dict], tgt: dict) -> dict:
                 q = M[:3, :3] @ P[i] + M[:3, 3]
                 n = M[:3, :3] @ N[i]
                 n = n / (np.linalg.norm(n) or 1)
-                key = (tuple(np.round(q, 4)), tuple(np.round(n, 2)))
-                if key not in kk:
+                key = tuple(np.round(q, 3))                 # one vertex per position (UVs live on the strips);
+                if key not in kk:                           # its normal = the mean of the corners' normals
                     kk[key] = len(pos)
                     pos.append(q)
-                    nrm.append(n)
+                    nrm.append(np.zeros(3))
+                nrm[kk[key]] = nrm[kk[key]] + n
                 idx.append(kk[key])
             tris.append((tuple(idx), tuple((float(UV[i][0]), float(UV[i][1])) for i in t)))
-    return {j: (np.array(a), np.array(b), c) for j, (a, b, c) in out.items()}
+    res = {}
+    for j, (a, b, c) in out.items():
+        b = np.array(b)
+        b /= np.maximum(np.linalg.norm(b, axis=1, keepdims=True), 1e-9)
+        res[j] = (np.array(a), b, c)
+    return res
 
 
 def preview(rigged: Path, out: Path) -> Path:

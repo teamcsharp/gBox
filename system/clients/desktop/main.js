@@ -63,7 +63,16 @@ const venvPython = () => STANDALONE ? path.join(STANDALONE, ".venv", "Scripts", 
 
 let win, worker = null, workerStopRequested = false;
 const procs = new Map();                              // id -> child process (streamed tasks)
-const send = (ch, ...a) => win && !win.isDestroyed() && win.webContents.send(ch, ...a);
+// console output of the whole app (main process, renderer + gBox webview, worker / task streams) for issue reports
+let CONSOLE = "";
+const logPush = (src, text) => { CONSOLE = (CONSOLE + `${new Date().toISOString().slice(11, 23)} [${src}] ${String(text).replace(/\n+$/, "")}\n`).slice(-400000); };
+for (const lv of ["log", "warn", "error"]) { const orig = console[lv].bind(console); console[lv] = (...a) => { logPush("main:" + lv, a.map(String).join(" ")); orig(...a); }; }
+app.on("web-contents-created", (_e, wc) => wc.on("console-message", (ev, level, message, line, source) => {
+  const m = ev?.message ?? message, lv = ev?.level ?? level, src = ev?.sourceId ?? source, ln = ev?.lineNumber ?? line;
+  logPush(`${wc.getType()}:${lv}`, `${m}${src ? `  (${String(src).split("/").pop()}:${ln})` : ""}`);
+}));
+ipcMain.handle("console:tail", (_e, n = 200000) => CONSOLE.slice(-n));
+const send = (ch, ...a) => { if (ch === "task") logPush(a[0], a[1]); return win && !win.isDestroyed() && win.webContents.send(ch, ...a); };
 
 function stream(id, cmd, args, opts = {}) {
   // Run a command, streaming stdout/stderr lines to the renderer as `task:<id>` events.

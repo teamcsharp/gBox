@@ -70,7 +70,7 @@ def catalog(game_id: str) -> dict:
             continue
         row = {"id": iid, "name": str(it.get("name", f"item {iid}")).rstrip("*"),
                "kind": KINDS.get(str(it.get("kind", "other")).lower(), "other")}
-        for k in ("max", "icon", "owner", "special"):
+        for k in ("max", "icon", "owner", "special", "flag"):
             if it.get(k) not in (None, ""):
                 row[k] = it[k]
         items.append(row)
@@ -81,31 +81,31 @@ def catalog(game_id: str) -> dict:
 
 # canonical name, kind, the names different REs give it (most specific first)
 CANON = [
-    ("Handgun", "weapon", ["handgun", "handgun (leon)", "nine-oh-nine (909)", "beretta", "beretta m92f", "m92f", "h&k vp70",
+    ("Handgun", "weapon", ["handgun", "hand gun", "handgun (leon)", "nine-oh-nine (909)", "beretta", "beretta m92f", "m92f", "h&k vp70",
                            "vp70", "sigpro", "sigpro sp 2009", "browning", "browning hp", "glock 17", "wing shooter"]),
     ("Shotgun", "weapon", ["shotgun", "benelli m3s", "remington m1100-p", "w-870", "pump action shotgun"]),
     ("Magnum", "weapon", ["magnum", "colt python", "s&w m629c", "broken butterfly", "elephant killer", "lightning hawk",
                           "desert eagle", "custom magnum"]),
-    ("Rocket Launcher", "weapon", ["rocket launcher"]),
+    ("Rocket Launcher", "weapon", ["rocket launcher", "r. launcher"]),
     ("Infinite Rocket Launcher", "weapon", ["infinite launcher", "infinite rocket launcher", "rocket launcher (infinite)"]),
-    ("Grenade Launcher", "weapon", ["grenade launcher", "grenade launcher (grenade)", "grenade launcher (explosive)"]),
-    ("Machine Gun", "weapon", ["sub machine gun", "submachine gun", "smg", "tmp", "m-100p", "ingram", "mp-af",
+    ("Grenade Launcher", "weapon", ["grenade launcher", "grenade launcher (grenade)", "grenade launcher (explosive)", "g. launcher (grenade rounds)", "g. launcher"]),
+    ("Machine Gun", "weapon", ["sub machine gun", "submachine gun", "s. machine gun", "smg", "tmp", "m-100p", "ingram", "mp-af",
                                "assault rifle", "chicago typewriter"]),
     ("Sniper Rifle", "weapon", ["sniper rifle", "rifle", "semi-auto sniper rifle", "rifle (semi-auto)"]),
     ("Gatling Gun", "weapon", ["gatling gun", "minigun", "mini gun"]),
     ("Flamethrower", "weapon", ["flamethrower", "flame thrower"]),
     ("Crossbow", "weapon", ["crossbow", "bowgun", "bow gun", "krauser's bow"]),
     ("Knife", "weapon", ["knife", "combat knife", "survival knife"]),
-    ("Hand Grenade", "weapon", ["hand grenade", "grenade"]),
+    ("Hand Grenade", "weapon", ["hand grenade"]),
     ("Flash Grenade", "weapon", ["flash grenade"]),
     ("Incendiary Grenade", "weapon", ["incendiary grenade"]),
-    ("Handgun Ammo", "ammo", ["handgun ammo", "handgun bullets", "handgun rounds", "9mm ammo", "clip", "handgun clip"]),
+    ("Handgun Ammo", "ammo", ["handgun ammo", "handgun bullets", "h. gun bullets", "h.g. bullets", "handgun rounds", "9mm ammo", "clip", "handgun clip"]),
     ("Shotgun Shells", "ammo", ["shotgun shells", "12-gauge shells", "shells"]),
-    ("Magnum Ammo", "ammo", ["magnum ammo", "magnum rounds", "magnum bullets", ".50 action-express magnum ammo"]),
+    ("Magnum Ammo", "ammo", ["magnum ammo", "magnum rounds", "magnum bullets", "m. bullets", ".50 action-express magnum ammo"]),
     ("Rifle Ammo", "ammo", ["rifle ammo", "rifle bullets", "7.62mm nato ammo"]),
-    ("Machine Gun Ammo", "ammo", ["tmp ammo", "machine gun bullets", "sub machine gun bullets", "smg ammo", "5.56mm nato ammo",
+    ("Machine Gun Ammo", "ammo", ["tmp ammo", "machine gun bullets", "m.g. bullets", "sub machine gun bullets", "smg ammo", "5.56mm nato ammo",
                                   "assault rifle clip"]),
-    ("Grenade Rounds", "ammo", ["grenade rounds", "explosive rounds", "40mm explosive rounds"]),
+    ("Grenade Rounds", "ammo", ["grenade rounds", "g. rounds", "explosive rounds", "40mm explosive rounds"]),
     ("First Aid Spray", "heal", ["first aid spray", "f. aid spray", "first aid"]),
     ("Green Herb", "heal", ["green herb", "herb (green)"]),
     ("Red Herb", "heal", ["red herb", "herb (red)"]),
@@ -139,7 +139,7 @@ def canon_id(cat: dict, canon: str) -> dict | None:
         hit = next((i for n, i in names if n.startswith(p + " ") or n.startswith(p + "(")), None)
         if hit:
             return hit
-    for p in pats:
+    for p in (p for p in pats if " " in p):              # loose match only for specific (multi-word) names
         hit = next((i for n, i in names if re.search(r"(^|\W)" + re.escape(p) + r"($|\W)", n)), None)
         if hit:
             return hit
@@ -452,7 +452,10 @@ def struct_read(mem, game_id: str) -> dict:
     d = bytes(mem.read_memory(lay["addr"], lay["slots"] * lay["stride"]))
     empty, fid, fcnt = _int(lay.get("empty", 0)), lay.get("id", [0, 1]), lay.get("count", [1, 1])
     slots = []
-    for k in range(lay["slots"]):
+    used = lay["slots"]
+    if lay.get("item_count"):                                   # RE1: only slots 0..count-1 exist for the game
+        used = min(used, bytes(mem.read_memory(_int(lay["item_count"]["addr"]), 1))[0])
+    for k in range(used):
         s = d[k * lay["stride"]:(k + 1) * lay["stride"]]
         iid = _field(s, fid, lay["endian"])
         if iid == empty:
@@ -475,6 +478,27 @@ def struct_read(mem, game_id: str) -> dict:
 
 def struct_apply(ad, game_id: str, op: str, inp) -> dict:
     lay = _layout(game_id, ad)
+    ic = lay.get("item_count")
+    if not ic:
+        return _struct_apply(ad, game_id, op, inp, lay)
+    # the game keeps a count of occupied slots (RE1): slots past it are invisible, so the list stays packed from slot 0
+    n = bytes(ad.read_memory(_int(ic["addr"]), 1))[0]
+    size, st, fid = lay["slots"] * lay["stride"], lay["stride"], lay.get("id", [0, 1])
+    d = bytearray(bytes(ad.read_memory(lay["addr"], size)))
+    for k in range(min(n, lay["slots"]), lay["slots"]):         # stale bytes past the count are empty slots to us
+        d[k * st:(k + 1) * st] = bytes(st)
+    ad.write_memory(lay["addr"], bytes(d))
+    res = _struct_apply(ad, game_id, op, inp, lay)
+    d = bytes(ad.read_memory(lay["addr"], size))
+    full = [d[k * st:(k + 1) * st] for k in range(lay["slots"]) if _field(d[k * st:(k + 1) * st], fid, lay["endian"]) != _int(lay.get("empty", 0))]
+    packed = b"".join(full) + bytes(size - len(full) * st)
+    if packed != d:
+        ad.write_memory(lay["addr"], packed)
+    ad.write_memory(_int(ic["addr"]), bytes([len(full)]))
+    return res
+
+
+def _struct_apply(ad, game_id: str, op: str, inp, lay: dict) -> dict:
     e, fid, fcnt = lay["endian"], lay.get("id", [0, 1]), lay.get("count", [1, 1])
     empty = _int(lay.get("empty", 0))
     extra = {int(k): _int(v) for k, v in (lay.get("extra") or {}).items()}
@@ -493,6 +517,8 @@ def struct_apply(ad, game_id: str, op: str, inp) -> dict:
         _put(buf, fcnt, max(0, min(cmax, int(amt))), e)
         for off, v in extra.items():
             buf[off] = v & 0xFF
+        if lay.get("flag") and row.get("flag") is not None:       # per-item display flag (RE3: how the count is drawn)
+            _put(buf, lay["flag"], _int(row["flag"]), e)
 
     def check(k):
         if not 0 <= k < lay["slots"]:

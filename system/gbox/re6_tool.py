@@ -13,11 +13,15 @@ ops (live ones need session_id of a running RE6 session):
   set_loadout items=[...]     the case = these items (weapons first; amount = ammo / count); replaces what's there
   auto on=true|false          apply the saved loadout (POST /api/re6/loadout) at the start of every Mercenaries match
   infinite_ammo / infinite_health on=true|false   held live (every gun/ammo stack full / Life = LifeMax); saved per game
-  give_now item=<name|id> amount   into the running game's inventory now (Mercenaries or campaign): ammo, herbs,
-                              grenades, sprays, and guns whose model the stage has loaded; other guns -> loadout table
+  give_now item=<name|id> amount   into the running game's inventory now (Mercenaries or campaign): any item; a gun
+                              the stage didn't load gets its resources (uWpNNNN.arc) loaded first
+  remove_item slot=N          empty one inventory slot live
+  set_slot slot=N item= amount=   change one slot live (another item, or only the count)
   live_inventory              the player's inventory right now (slot, item, count / max)
+  unlock_all [on=false]       everything unlocked (save + live), on=false = original save back (= unlock)
+  everything_unlocked / boot_to_title on=   the boot profile switches (both on by default)
   auto_qte on=true|false      every QTE prompt succeeds (default on whenever RE6 boots through gBox)
-  settings                    the saved RE6 switches (auto_qte, infinite_health, infinite_ammo)
+  settings                    the saved RE6 switches (auto_qte, infinite_*, everything_unlocked, boot_to_title)
   revert_all                  undo every live change, stop auto / freezes, delete gBox's RE6 mod folders
   catalog                     the item list (names from the disc)
   build_mod character=<library name> [target=leon costume=]   character swap mod (no launch)
@@ -463,7 +467,56 @@ def _save_sum(d: bytes) -> int:
     return sum(struct.unpack_from(f">{n}I", d, 12)) & 0xFFFFFFFF
 
 
+# "Everything unlocked" = what the game's own unused debug routine 0x824D8800 (this = save manager [0x83CA4F98]) does:
+# every campaign / chapter / difficulty record, all skills, Mercenaries stages (u32 at 0x974, 10 bits) and characters +
+# costumes (u32 at 0x978, 30 bits; 0x10101 = Leon / Chris / Jake by default), figures / emblems / titles / special
+# features. gBox ran it once in the game, let the game write its save, and keeps the result as a template
+# (profiles/gamedata/0871eee3b68cdea3-unlock.json): offsets are save-file offsets; the running game keeps the same bytes at
+# [0x83CA4F98] + idx * 0x8A04 + 0x30 (idx = u32 at manager+0x24), so the same template applies live.
+# Save-file map: 0xBC mUnlockFlag; 0xCC-0x6F8 story/chapter/collection progress; 0x6F8 skill points; 0x700 skills owned
+# (97); 0x974 / 0x978 Mercenaries stage / character masks; 0x164C campaign records [7 characters][5 chapters]
+# [5 difficulties] x 12 bytes {u32 flags, u32 rank, f32 time}; 0x235C Mercenaries records [solo, duo][10 stages]
+# [16 characters] x 12 {u8 played, u8 rank (0 = best), u32 score, u8 kills, combo, costume, partner}; 0x4AF0
+# per-character Mercenaries inventories (same 0x70-byte records as the loadout table).
+MGR, MGR_STRIDE, MGR_SAVE = 0x83CA4F98, 0x8A04, 0x30
+_UNLOCK: dict = {}
+
+
+def unlock_template() -> dict:
+    if not _UNLOCK:
+        f = Path(__file__).resolve().parent.parent / "profiles" / "gamedata" / f"{re6.GAME_ID}-unlock.json"
+        _UNLOCK.update(json.loads(f.read_text()))
+    return _UNLOCK
+
+
+def apply_unlock(d: bytearray) -> int:
+    """Everything unlocked, applied to a save image (file layout from offset 0). Only raises values: what the player
+    already has (better ranks / times, Mercenaries scores, skill points) is kept. Returns the number of bytes changed."""
+    t = unlock_template()
+    before = bytes(d)
+    for off, val in t["or32"].items():
+        o = int(off, 16)
+        struct.pack_into(">I", d, o, struct.unpack_from(">I", d, o)[0] | int(val, 16))
+    for off in t["flags8"]:
+        o = int(off, 16)
+        d[o] = max(d[o], 1)
+    for r in t["regions"]:
+        o, src, m = int(r["off"], 16), bytes.fromhex(r["hex"]), r["mode"]
+        if m == "max8":
+            d[o:o + len(src)] = bytes(max(a, b) for a, b in zip(d[o:o + len(src)], src))
+        elif m == "max32":
+            n = len(src) // 4
+            cur, new = struct.unpack_from(f">{n}I", d, o), struct.unpack(f">{n}I", src)
+            struct.pack_into(f">{n}I", d, o, *[max(a, b) for a, b in zip(cur, new)])
+        elif m == "rec12":                               # campaign record: only where the player has none
+            for k in range(0, len(src), 12):
+                if not struct.unpack_from(">I", d, o + k)[0]:
+                    d[o + k:o + k + 12] = src[k:k + 12]
+    return sum(1 for a, b in zip(before, d) if a != b)
+
+
 def unlock_save(cfg) -> dict:
+    """Offline: everything unlocked in Xenia's RE6 save (backup of the original kept once; restore_save = revert)."""
     sp = save_path(cfg)
     if not sp.is_file():
         raise FileNotFoundError("no RE6 save yet: start the game once (it creates the save at the title screen)")
@@ -474,10 +527,50 @@ def unlock_save(cfg) -> dict:
     if struct.unpack_from(">I", d, 8)[0] != _save_sum(d):
         raise ValueError("the save's checksum doesn't match: not touching it")
     before = struct.unpack_from(">I", d, 0xBC)[0]
-    struct.pack_into(">I", d, 0xBC, 0xFFFFFFFF)
-    struct.pack_into(">I", d, 8, _save_sum(d))
-    sp.write_bytes(bytes(d))
-    return {"unlock_flag": {"before": hex(before), "after": "0xffffffff"}, "backup": str(bk)}
+    n = apply_unlock(d)
+    if n:
+        struct.pack_into(">I", d, 8, _save_sum(d))
+        sp.write_bytes(bytes(d))
+    return {"unlock_flag": {"before": hex(before), "after": hex(struct.unpack_from(">I", d, 0xBC)[0])},
+            "bytes_changed": n, "already_unlocked": n == 0, "backup": str(bk)}
+
+
+def _runs(a: bytes, b: bytes, gap: int = 16):
+    """[(start, end)] of the differing bytes, runs closer than `gap` merged."""
+    out = []
+    for i in (i for i in range(len(a)) if a[i] != b[i]):
+        if out and i - out[-1][1] < gap:
+            out[-1][1] = i + 1
+        else:
+            out.append([i, i + 1])
+    return out
+
+
+def unlock_live(ad) -> dict:
+    """The same template written into the running game's save data (any screen); the game writes it to the save at its
+    next save point (end of a match / chapter, or the menus' own saves)."""
+    mgr = _u32(ad, MGR)
+    if not mgr:
+        raise Unsupported("RE6's save manager isn't up yet (still booting)")
+    base = mgr + _u32(ad, mgr + 0x24) * MGR_STRIDE + MGR_SAVE
+    cur = ad.read_memory(base, 0x4500)
+    d = bytearray(cur)
+    n = apply_unlock(d)
+    for s, e in _runs(cur, d):
+        ad.write_memory(base + s, bytes(d[s:e]))
+    # the save I/O object keeps the file image it read at boot (+0xC910, 0x6000 bytes, file layout) and the menus
+    # re-read the manager's data from it (seen: title -> main menu): patch that image too, checksum included
+    io = _u32(ad, SAVE_IO)
+    img = None
+    if io and _u32(ad, io + SAVE_IO_BUF) == SAVE_MAGIC:
+        cur2 = ad.read_memory(io + SAVE_IO_BUF, 0x6000)
+        f = bytearray(cur2)
+        img = apply_unlock(f)
+        struct.pack_into(">I", f, 8, _save_sum(f))
+        for s, e in _runs(cur2, f):
+            ad.write_memory(io + SAVE_IO_BUF + s, bytes(f[s:e]))
+    return {"bytes_changed": n, "file_image_bytes_changed": img, "stage_mask": hex(_u32(ad, base + 0x974)),
+            "character_mask": hex(_u32(ad, base + 0x978))}
 
 
 def restore_save(cfg) -> bool:
@@ -488,6 +581,52 @@ def restore_save(cfg) -> bool:
     shutil.rmtree(dst, ignore_errors=True)
     shutil.copytree(bk, dst)
     return True
+
+
+# ------------------------------------------------------------------ default boot profile "RE6: Everything unlocked"
+# Every RE6 launch through gBox (settings everything_unlocked / boot_to_title, both on by default):
+#  * before Xenia starts, the save gets the everything-unlocked template (backup of the original kept; revert_all or
+#    unlock_all on=false restores it); the forced prologue is skipped by the save's mUnlockFlag;
+#  * right after boot, two 1-word code patches skip the RE6 logo movie that plays after PRESS START (two paths load it):
+#    - the first-boot title sequence (0x823AF6A0, state 10) loads "movie\re6logo" through sResource vtable+0x30 (the
+#      bctrl at 0x823AF9B0) and, when that returns nothing, goes straight on to the title: the patch makes the call
+#      return 0 (li r3, 0);
+#    - the opening scene (0x82FD7908) plays movie index 0/1 (bh6logo / re6logo; 2/3 = the title loops) through
+#      0x82FD67A0, which already skips any index < 0 or > 3: the patch moves the lower bound to 2 (cmpwi r9, 2), so the
+#      logo movies are skipped and the title loops still play.
+#    Leaving the movie file out of a mod folder instead does NOT work (the game shows "Disc Read Error"). Like Auto QTE
+#    the patches must land before the code is first compiled (gBox writes them as soon as the executable is in memory);
+#  * with no real controller connected, gBox then presses START / A through PRESS START and the three notices (Xbox LIVE,
+#    loading content, storage) until the title screen (_auto_title).
+TITLE_PATCHES = [(0x823AF9B0, 0x4E800421, 0x38600000), (0x82FD67B4, 0x2F090000, 0x2F090002)]
+
+
+def title_install(ad) -> str:
+    res = []
+    for a, orig, new in TITLE_PATCHES:
+        cur = struct.unpack(">I", ad.read_memory(a, 4))[0]
+        if cur == new:
+            res.append("already")
+        elif cur != orig:
+            res.append("unknown code")
+        else:
+            ad.write_memory(a, struct.pack(">I", new))
+            res.append("patched")
+    return "patched" if all(r == "patched" for r in res) else "/".join(res)
+
+
+def pre_launch(ctx, mod: str = "") -> dict:
+    """Called by launch_game before Xenia starts RE6: everything unlocked in the save (setting everything_unlocked)."""
+    _LIVE["cfg"] = ctx.config
+    st = settings(ctx.server, ctx.headers)
+    out = {"everything_unlocked": bool(st.get("everything_unlocked", True)), "boot_to_title": bool(st.get("boot_to_title", True))}
+    if out["everything_unlocked"]:
+        try:
+            out["unlock"] = unlock_save(ctx.config)
+        except (FileNotFoundError, ValueError) as e:       # first boot: the game creates the save; the next launch unlocks
+            out["unlock"] = {"error": str(e)}
+    _LIVE["pre"] = out
+    return out
 
 
 # ------------------------------------------------------------------ auto loadout watcher
@@ -565,7 +704,7 @@ QTE_ORIG = bytes.fromhex("578b063e")
 QTE_CODE = [0x3D6083D7, 0x816BFFF0, 0x2C0B0000, 0x40820040, 0x817F000C, 0x280B0000, 0x41820034, 0x816B0030,
             0x280B001A, 0x41800024, 0x280B001F, 0x40810020, 0x280B002A, 0x41800014, 0x280B002C, 0x40810010,
             0x280B0079, 0x41820008, 0x3B800001, 0x578B063E, 0x2B0B0000, 0x4A830020]
-_LIVE = {"holds": {}, "qte": {}, "inj": threading.Lock()}
+_LIVE = {"holds": {}, "qte": {}, "title": {}, "inj": threading.Lock()}
 
 
 def _u32(ad, a):
@@ -717,21 +856,35 @@ def give_now(ad, cfg, iid: int, amount: int = 0, all_players=False, slot: int = 
         raise Unsupported("no player in the game right now (start a match / load the chapter first)")
     code = item_code(iid)
     names = _names(cfg)
-    pre = None
+    pre, ammo = None, None
     if is_gun(iid):
+        inv = ad.read_memory(ps[0] + INV, SLOT_SZ * 24)
+        rows = [inv[k * SLOT_SZ:(k + 1) * SLOT_SZ] for k in range(24)]
+        held = [r for r in rows if r[4] and r[5] < 7 and code_item(struct.unpack_from(">H", r, 6)[0]) == iid]
+        if held and slot < 0:                              # already carried: top the magazine up instead of a 2nd copy
+            r = held[0]
+            n = amount if amount > 0 else struct.unpack_from(">H", r, 0x10)[0]
+            ad.write_memory(_slot_addr(ad, ps[0], r[5]) + 0xA, struct.pack(">H", min(n, 0xFFFE)))
+            return {"live": True, "slots": [r[5]], "item": iid, "name": names.get(iid, iid), "preloaded": None,
+                    "topped_up": n}
         # a gun the stage didn't load: preload its unit archive first (see preload_weapon), else the game waits forever
-        have = {code_item(struct.unpack_from(">H", ad.read_memory(ps[0] + INV + SLOT_SZ * k, 8), 6)[0]) for k in range(7)}
-        if iid not in have and weapon_class(ad, code):
+        known = {code_item(struct.unpack_from(">H", r, 6)[0]) for r in rows if r[5] < 7}
+        if iid not in known and weapon_class(ad, code):
             pre = preload_weapon(ad, ps[0], iid)
             if not pre["resource"]:
                 return {"live": False, "reason": f"the game couldn't load {names.get(iid, iid)}'s resources "
                         f"({pre['class']}.arc); it was added to the Mercenaries loadout instead"}
+        am = AMMO_OF.get(iid)                              # its ammo too, if the case has none
+        if am and not any(r[4] and code_item(struct.unpack_from(">H", r, 6)[0]) == am for r in rows):
+            ammo = am
     res = []
     for p in (ps if all_players else ps[:1]):
         r = call_on_player(ad, p, SETITEM, (slot, code, amount if amount > 0 else -1, 0, 0))
         res.append(r)
+        if ammo and r >= 0:
+            call_on_player(ad, p, SETITEM, (-1, item_code(ammo), STOCK.get(ammo, 30), 0, 0))
     return {"live": True, "slots": res, "item": iid, "name": names.get(iid, iid),
-            "preloaded": pre["class"] if pre else None}
+            "preloaded": pre["class"] if pre else None, "ammo_added": names.get(ammo) if ammo else None}
 
 
 def _slot_addr(ad, p, slot: int) -> int:
@@ -786,8 +939,11 @@ def set_slot(ad, cfg, slot: int, iid: int | None, amount: int = 0) -> dict:
             r = give_now(ad, cfg, iid, amount)              # the game picks the gun slot (reuses its own record)
         else:
             r = give_now(ad, cfg, iid, amount, slot=slot)
-        return r | {"slot": slot, "replaced": names.get(cur) if cur is not None else None,
-                    "message": f"Slot {slot}: {names.get(iid, iid)}" + (f" (was {names.get(cur, cur)})" if cur is not None else "")}
+        got = (r.get("slots") or [slot])[0]
+        msg = ((f"{names.get(cur, cur)} in slot {slot} replaced by " if cur is not None else "") + f"{names.get(iid, iid)}"
+               + (f" (the game put it in gun slot {got})" if got != slot else f" in slot {got}") + ".")
+        return r | {"slot": got, "replaced": names.get(cur) if cur is not None else None,
+                    "message": msg if got is not None and got >= 0 else f"The game refused {names.get(iid, iid)}."}
     if not s[4]:
         raise ValueError(f"slot {slot} is empty: give an item")
     n = max(0, min(0xFFFE, int(amount)))
@@ -855,23 +1011,46 @@ def qte_set(ad, on: bool):
     ad.write_memory(QTE_FLAG, struct.pack(">I", 0 if on else 1))
 
 
+SETTING_DEFAULTS = {"auto_qte": True, "infinite_health": False, "infinite_ammo": False, "everything_unlocked": True,
+                    "boot_to_title": True}
+
+
+def _local_settings_file() -> Path | None:
+    cfg = _LIVE.get("cfg")
+    return re6.runtime(cfg) / "settings_local.json" if cfg is not None else None
+
+
 def settings(server, headers) -> dict:
+    """The saved RE6 switches: control plane (GET /api/re6/settings) over a node-local copy (switches the control plane
+    doesn't know yet, e.g. before it was restarted with a newer gBox) over the defaults."""
     import httpx
+    local = {}
+    f = _local_settings_file()
     try:
-        return httpx.get(f"{server}/api/re6/settings", headers=headers, timeout=10).json()
+        if f and f.is_file():
+            local = json.loads(f.read_text())
+    except (OSError, ValueError):
+        pass
+    try:
+        srv = httpx.get(f"{server}/api/re6/settings", headers=headers, timeout=10).json()
     except Exception:                                      # noqa: BLE001
-        return {"auto_qte": True}
+        srv = {}
+    return SETTING_DEFAULTS | local | {k: v for k, v in srv.items() if k in SETTING_DEFAULTS or k == "game_id"}
 
 
 def _boot_patch(sid: str, server, headers):
-    """Right after RE6 starts: wait for the executable image, install Auto QTE before the first prompt, apply settings."""
+    """Right after RE6 starts: wait for the executable image, then (before the code first runs) the logo-movie skip and
+    Auto QTE, then the saved switches."""
     from .tools import SESSIONS
+    st = settings(server, headers)
     t = time.time()
     while time.time() - t < 300 and sid in SESSIONS:
         ad = SESSIONS[sid][0]
         try:
             if ad.read_memory(TITLE_CHECK[0], len(TITLE_CHECK[1])) == TITLE_CHECK[1]:
-                st = settings(server, headers)
+                if st.get("boot_to_title", True):
+                    _LIVE["title"][sid] = title_install(ad)
+                    threading.Thread(target=_auto_title, args=(sid,), daemon=True, name="re6-title").start()
                 _LIVE["qte"][sid] = qte_install(ad)
                 qte_set(ad, bool(st.get("auto_qte", True)))
                 set_hold(sid, "health", bool(st.get("infinite_health")))
@@ -879,11 +1058,60 @@ def _boot_patch(sid: str, server, headers):
                 return
         except Exception:                                  # noqa: BLE001 - guest memory not mapped yet
             pass
-        time.sleep(0.2)
+        time.sleep(0.05)
+
+
+SAVE_IO, SAVE_IO_BUF, SAVE_MAGIC = 0x83CA53F8, 0xC910, 0x12071800
+
+
+def _save_loaded(ad) -> bool:
+    """The save I/O object ([0x83CA53F8], built by 0x824A7A10) has a 0x6000-byte file buffer at +0xC910, zeroed at boot;
+    it holds the file (magic 0x12071800 first) once the save was read (or created on a first boot)."""
+    io = _u32(ad, SAVE_IO)
+    return bool(io) and _u32(ad, io + SAVE_IO_BUF) == SAVE_MAGIC
+
+
+def _auto_title(sid: str):
+    """Press through PRESS START and the three notices (Xbox LIVE / loading content / storage) to the title screen.
+    PRESS START takes only START and the notices only A, so until the save is read gBox alternates the two; after it,
+    a few more A (the storage notice; A does nothing on the title screen itself), then stops. Only with no real
+    controller (the keyboard pad is then player 1); with a pad connected the player presses START, since the game binds
+    to the controller that pressed it. With the 2023 Xenia (physical-keyboard driver) a key only goes out while Xenia /
+    the gBox window docking it is the active window (never into another app). (Xenia's log is written in bursts, so it
+    can't tell when the title is up; the save I/O buffer in memory tells when the save was read.)"""
+    from .tools import SESSIONS
+    from .xenia import _xinput_connected
+    if sid not in SESSIONS:
+        return
+    ad = SESSIONS[sid][0]
+    if _xinput_connected() or not hasattr(ad, "press"):
+        _LIVE["title"][sid] = f"{_LIVE['title'].get(sid)}; auto-press skipped (a controller is connected: press START)"
+        return
+    t = time.time()
+    try:
+        time.sleep(4)
+        k, after = 0, 0
+        while time.time() - t < 120 and sid in SESSIONS:
+            loaded = _save_loaded(ad)
+            if loaded:
+                after += 1
+                if after > 4:
+                    _LIVE["title"][sid] = f"title screen after {time.time() - t:.0f} s"
+                    return
+            try:
+                ad.press("start" if not loaded and k % 2 else "a")
+            except RuntimeError:                           # Xenia not the active window right now (old driver): wait
+                pass
+            k += 1
+            time.sleep(1.6 if loaded else 1.2)
+        _LIVE["title"][sid] = f"{_LIVE['title'].get(sid)}; the save wasn't read within 120 s"
+    except Exception as e:                                 # noqa: BLE001 - window closed
+        _LIVE["title"][sid] = f"auto-press stopped: {e}"
 
 
 def on_launch(sid: str, ctx):
     """Called by launch_game when an RE6 session starts on this node."""
+    _LIVE["cfg"] = ctx.config
     threading.Thread(target=_boot_patch, args=(sid, ctx.server, ctx.headers), daemon=True, name="re6-boot").start()
     ensure_watcher(ctx)
 
@@ -891,9 +1119,11 @@ def on_launch(sid: str, ctx):
 # ------------------------------------------------------------------ the tool
 
 class Re6In(BaseModel):
-    op: str = "status"          # status | inventory | give | give_now | live_inventory | set_loadout | auto | unlock |
+    op: str = "status"          # status | inventory | give | give_now | live_inventory | remove_item | set_slot | set_loadout
+                                # (= loadout_set) | auto | unlock_all (= unlock) | everything_unlocked | boot_to_title |
                                 # revert_all | catalog | build_mod | mods | infinite_ammo | infinite_health | auto_qte | settings
     session_id: str = ""
+    slot: int = -1              # remove_item / set_slot: inventory slot number (0-6 guns, 7-12 selectors, 15-23 case)
     item: str = ""              # give: name ('elephant killer', 'hand cannon') or id
     amount: int = 0             # give: ammo / count (0 = a full magazine / sensible stack)
     items: list = []            # set_loadout / auto: names, ids or {id, amount}
@@ -929,7 +1159,9 @@ def _items_arg(cfg, items) -> list[tuple[int, int]]:
       side_effects=["writes the Mercenaries loadout table in the running game (restored by revert_all)",
                     "live: holds Life / ammo counts, calls the game's own setItem on the game thread (give_now), Auto QTE "
                     "code patch at boot with a runtime off switch (revert_all switches it off)",
-                    "unlock: edits the RE6 save in Xenia's content folder (backup kept, restored by revert_all)",
+                    "unlock_all / boot profile: edits the RE6 save in Xenia's content folder before every launch (backup kept, "
+                    "restored by unlock_all on=false / revert_all); logo-movie skip code patch at boot; presses START/A to "
+                    "the title when no controller is connected",
                     "build_mod: writes a mod folder under cache/mods (hard links + replaced arcs)"])
 def re6_tool(inp: Re6In, ctx):
     """Resident Evil 6 (Xbox 360 in Xenia): Mercenaries loadouts (any item incl. story-only weapons), unlocks,
@@ -967,18 +1199,23 @@ def re6_tool(inp: Re6In, ctx):
         if not meta:
             raise ValueError(f"{inp.character!r} isn't in the collection")
         return {"result": build_character(ctx, meta, inp.target, inp.costume, ctx.progress)}
-    if op == "unlock":
-        from .tools import SESSIONS
-        running = [s for s, (a, g) in SESSIONS.items() if isinstance(g, dict) and g.get("game_id") in GAME_IDS]
-        r = unlock_save(cfg)
-        return {"result": r | {"message": "Intro skipped and The Mercenaries unlocked in the save (Play Game > Extra Content > "
-                               "The Mercenaries)." + (" RE6 is running: restart it to load the edited save (the game "
-                               "would otherwise write its own copy back)." if running else " Launch RE6 to use it."),
-                               "restart_needed": bool(running), "no_mercy": "not in the Xbox 360 version (it was a PC-only "
-                               "mode); the 360 build has no No Mercy mode, files or menu entry"}}
+    if op == "loadout_set":
+        op = "set_loadout"
+    if op == "weapon_classes":
+        names = _names(cfg)
+        return {"result": {"weapons": [{"id": i, "name": names.get(i), "class": f"uWp{c}"} for i, c in sorted(WP_CLASS.items())]}}
+    if op in ("unlock", "unlock_all", "everything_unlocked"):
+        return {"result": unlock_all(ctx, inp.on, setting=op == "everything_unlocked", session_id=inp.session_id)}
+    if op == "boot_to_title":
+        _save_setting(ctx, "boot_to_title", inp.on)
+        return {"result": {"boot_to_title": inp.on, "message": ("From the next RE6 start: the RE6 logo movie is skipped and "
+                           "gBox presses through PRESS START and the notices to the title screen (only with no real "
+                           "controller connected)." if inp.on else "From the next RE6 start the game boots normally "
+                           "(logo movie, PRESS START).") + " The running game isn't changed."}}
     if op == "revert_all":
         return {"result": revert_all(ctx, inp.session_id)}
     if op == "settings":
+        _LIVE["cfg"] = cfg
         return {"result": settings(ctx.server, ctx.headers)}
     ad, g, guard = _guard(inp.session_id)
     if op == "status":
@@ -1047,6 +1284,15 @@ def re6_tool(inp: Re6In, ctx):
         return {"result": {op: inp.on, "message": f"{what} {'on' if inp.on else 'off'} (held by gBox while RE6 runs; saved for "
                            "this game, so it comes back on at the next start)." + (" Guns, ammo stacks and carried grenades "
                            "stay full; first-aid sprays and herbs are left alone." if op == "infinite_ammo" and inp.on else "")}}
+    if op == "remove_item":
+        if inp.slot < 0:
+            raise ValueError("remove_item needs slot=<inventory slot> (see live_inventory)")
+        return {"result": remove_item(ad, cfg, inp.slot)}
+    if op == "set_slot":
+        if inp.slot < 0:
+            raise ValueError("set_slot needs slot=<inventory slot> and item= and/or amount=")
+        iid = resolve_item(cfg, inp.item) if str(inp.item).strip() else None
+        return {"result": set_slot(ad, cfg, inp.slot, iid, inp.amount)}
     if op == "live_inventory":
         ps = players(ad)
         if not ps:
@@ -1060,14 +1306,68 @@ def re6_tool(inp: Re6In, ctx):
             _STATE["undo"].setdefault(inp.session_id, b"".join(_records(ad)))
             apply_loadout(ad, cfg, [(iid, inp.amount)], inp.character, replace=False)
             return {"result": r | {"message": r["reason"] + ": pick the character again (or Retry) and it's in the case."}}
-        return {"result": r | {"message": f"{r['name']} is in your inventory now." if min(r["slots"]) >= 0 else
+        if r.get("topped_up"):
+            return {"result": r | {"message": f"{r['name']} is already carried: magazine set to {r['topped_up']}."}}
+        return {"result": r | {"message": (f"{r['name']} is in your inventory now" + (f" (its resources {r['preloaded']}"
+                               ".arc loaded first)" if r.get("preloaded") else "") + (f", with {r['ammo_added']}"
+                               if r.get("ammo_added") else "") + ".") if min(r["slots"]) >= 0 else
                                f"The game refused {r['name']} (no free slot of that kind)."}}
-    raise ValueError("op: status | inventory | live_inventory | give | give_now | set_loadout | auto | unlock | revert_all | "
-                     "catalog | build_mod | mods | infinite_ammo | infinite_health | auto_qte | settings")
+    raise ValueError("op: status | inventory | live_inventory | give | give_now | remove_item | set_slot | set_loadout | "
+                     "loadout_set | auto | unlock_all | everything_unlocked | boot_to_title | revert_all | catalog | "
+                     "weapon_classes | build_mod | mods | infinite_ammo | infinite_health | auto_qte | settings")
+
+
+def unlock_all(ctx, on: bool = True, setting: bool = False, session_id: str = "") -> dict:
+    """Everything unlocked (on) / the original save back (off). Offline in the save file; also live in every running RE6
+    session on this node (the game then saves it itself). setting=True also stores the boot default."""
+    from .tools import SESSIONS
+    cfg = ctx.config
+    if setting:
+        _save_setting(ctx, "everything_unlocked", on)
+    running = [(s, a) for s, (a, g) in list(SESSIONS.items()) if isinstance(g, dict) and g.get("game_id") in GAME_IDS]
+    if not on:
+        if running:
+            return {"everything_unlocked": False, "restored": False, "message": "RE6 is running: close it, then "
+                    "unlock_all on=false (or revert_all) puts the original save back (the running game would write its "
+                    "own copy over it)." + (" Saved: the next starts keep the original save." if setting else "")}
+        ok = restore_save(cfg)
+        return {"everything_unlocked": False, "restored": ok, "message": ("Original RE6 save restored from gBox's backup."
+                if ok else "No backup: gBox never changed this save.") + (" Saved: RE6 starts with the save as it is."
+                if setting else "")}
+    out = {"everything_unlocked": True}
+    try:
+        out["save"] = unlock_save(cfg)
+    except (FileNotFoundError, ValueError) as e:
+        out["save"] = {"error": str(e)}
+    live = {}
+    for sid, ad in running:
+        try:
+            _guard(sid)
+            live[sid] = unlock_live(ad)
+        except Exception as e:                             # noqa: BLE001 - still booting / not mapped
+            live[sid] = {"error": str(e)}
+    out["live"] = live
+    out["message"] = ("Everything unlocked: all campaigns, chapters and difficulties (Amateur-Professional), Agent Hunt, "
+                      "The Mercenaries with all 3 stages on this disc and all 9 characters with their EX costumes, every "
+                      "skill, figures / emblems / titles / special features." + (" Live in the running game too "
+                      "(menus update when re-entered; the game saves it at its next save point)." if running else
+                      " Launch RE6 to use it.") + (" Saved as the boot default." if setting else ""))
+    out["not_on_this_disc"] = ("No Hope difficulty, Mercenaries No Mercy and the DLC stages / retro costumes are later "
+                               "title-update / DLC / PC content, not in this Xbox 360 build (BH6MasterRelease Jul 2012)")
+    return out
 
 
 def _save_setting(ctx, key: str, val: bool):
     import httpx
+    _LIVE["cfg"] = ctx.config
+    f = _local_settings_file()
+    try:                                                   # node-local copy (see settings())
+        cur = json.loads(f.read_text()) if f.is_file() else {}
+        cur[key] = bool(val)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(cur))
+    except (OSError, ValueError):
+        pass
     try:
         httpx.post(f"{ctx.server}/api/re6/settings", headers=ctx.headers, timeout=10, json={key: bool(val)})
     except Exception:                                      # noqa: BLE001 - the live change still happens
@@ -1104,6 +1404,8 @@ def revert_all(ctx, session_id: str = "") -> dict:
                 pass
     try:
         import httpx
+        for k in ("everything_unlocked", "boot_to_title"):
+            _save_setting(ctx, k, False)
         httpx.post(f"{ctx.server}/api/re6/settings", headers=ctx.headers, timeout=10,
                    json={"auto_qte": False, "infinite_health": False, "infinite_ammo": False})
     except Exception:                                      # noqa: BLE001

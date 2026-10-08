@@ -404,10 +404,68 @@ def to_manifest(nj: NJ, name: str, source: dict, textures: list[str] | None = No
 
 
 # ---------------------------------------------------------------- writing (gBox character swaps: gbox.sa2_chars, gbox.pso_player)
-def prs_compress(data: bytes) -> bytes:
-    """PRS encoder (the exact inverse of prs_decompress): literals, short refs (2..5 bytes, 256 back), long refs
-    (3..9 bytes inline or 1..256 with a count byte, 8191 back). Greedy with one-step lazy matching, hash chains."""
-    n, out = len(data), bytearray()
+def prs_compress(data: bytes, depth: int = 256) -> bytes:
+    """PRS encoder (the exact inverse of prs_decompress): literals (9 bits), short refs (2..5 bytes, 256 back, 12
+    bits), long refs (3..9 bytes inline, 18 bits; 10..256 with a count byte, 26 bits; 8191 back). Hash-chain match
+    finder + an optimal parse (shortest bit cost, dynamic programming from the end): about SEGA's own ratio."""
+    n = len(data)
+    head, prev = {}, [-1] * n
+    longm = [(0, 0)] * n                                     # (length, distance) longest match, distance <= 8191
+    shortm = [(0, 0)] * n                                    # longest match with distance <= 255 (short refs)
+    for i in range(n):
+        if i + 2 < n:
+            key = data[i:i + 3]
+            j, tries = head.get(key, -1), 0
+            lim = min(256, n - i)
+            bl = bo = sl = so = 0
+            while j >= 0 and i - j <= 8191 and tries < depth:
+                if data[j + bl:j + bl + 1] == data[i + bl:i + bl + 1] or (i - j <= 255 and sl < 5):
+                    k = 0
+                    while k < lim and data[j + k] == data[i + k]:
+                        k += 1
+                    if k > bl:
+                        bl, bo = k, i - j
+                    if i - j <= 255 and k > sl:
+                        sl, so = min(k, 5), i - j
+                    if bl == lim:
+                        break
+                j, tries = prev[j], tries + 1
+            longm[i] = (bl, bo)
+            if sl < 2 and i + 1 < n and i >= 1 and data[i - 1:i + 1] == data[i:i + 2]:
+                sl, so = 2, 1
+            shortm[i] = (sl, so)
+            prev[i] = head.get(key, -1)
+            head[key] = i
+        elif i + 1 < n:                                      # the last two bytes: a 2-byte short ref is possible
+            for d in range(1, min(255, i) + 1):
+                if data[i - d:i - d + 2] == data[i:i + 2]:
+                    shortm[i] = (2, d)
+                    break
+    INF = float("inf")
+    cost = [INF] * (n + 1)
+    choice = [None] * (n + 1)
+    cost[n] = 0
+    for i in range(n - 1, -1, -1):
+        best, ch = 9 + cost[i + 1], (1, 0)
+        sl, so = shortm[i]
+        for L in range(2, sl + 1):
+            c = 12 + cost[i + L]
+            if c < best:
+                best, ch = c, (L, -so)
+        ll, lo = longm[i]
+        if ll >= 3:
+            for L in range(3, min(9, ll) + 1):
+                c = 18 + cost[i + L]
+                if c < best:
+                    best, ch = c, (L, lo)
+            if ll >= 10:
+                Ls = range(10, ll + 1) if ll < 48 else list(range(10, 48)) + [ll]
+                for L in Ls:
+                    c = 26 + cost[i + L]
+                    if c < best:
+                        best, ch = c, (L, lo)
+        cost[i], choice[i] = best, ch
+    out = bytearray()
     st = {"pos": None, "n": 8}
 
     def bit(b):
@@ -416,80 +474,51 @@ def prs_compress(data: bytes) -> bytes:
             out.append(0)
         out[st["pos"]] |= (b & 1) << st["n"]
         st["n"] += 1
-
-    head, prev = {}, [0] * n
-
-    def find(i):
-        if i + 2 >= n:
-            return 0, 0
-        best_len, best_off, j, tries = 0, 0, head.get(data[i:i + 3], -1), 0
-        lim = min(256, n - i)
-        while j >= 0 and i - j <= 8191 and tries < 64:
-            if data[j + best_len:j + best_len + 1] == data[i + best_len:i + best_len + 1]:
-                k = 0
-                while k < lim and data[j + k] == data[i + k]:
-                    k += 1
-                if k > best_len:
-                    best_len, best_off = k, i - j
-                    if k == lim:
-                        break
-            j, tries = prev[j], tries + 1
-        if best_len == 2 and best_off > 255:
-            return 0, 0
-        return best_len, best_off
-
-    def insert(i):
-        if i + 2 < n:
-            key = data[i:i + 3]
-            prev[i] = head.get(key, -1)
-            head[key] = i
-
     i = 0
     while i < n:
-        ln, off = find(i)
-        insert(i)
-        if 2 <= ln < 256:                                    # lazy: a longer match one byte later wins
-            ln2, off2 = find(i + 1)
-            if ln2 > ln + 1:
-                bit(1)
-                out.append(data[i])
-                i += 1
-                ln, off = ln2, off2
-                insert(i)
-        if ln >= 2 and off <= 255 and ln <= 5:
+        L, off = choice[i]
+        if L == 1:
+            bit(1)
+            out.append(data[i])
+        elif off < 0:                                        # short reference
             bit(0), bit(0)
-            c = ln - 2
+            c = L - 2
             bit(c >> 1), bit(c & 1)
-            out.append((-off) & 0xFF)
-        elif ln >= 3:
+            out.append((off) & 0xFF)
+        else:
             bit(0), bit(1)
             o = (-off) & 0x1FFF
-            if ln <= 9:
-                a = (o << 3) | (ln - 2)
+            if L <= 9:
+                a = (o << 3) | (L - 2)
                 out += bytes((a & 0xFF, a >> 8))
             else:
                 a = o << 3
-                out += bytes((a & 0xFF, a >> 8, ln - 1))
-        else:
-            bit(1)
-            out.append(data[i])
-            ln = 1
-        for k in range(i + 1, i + ln):
-            insert(k)
-        i += ln
+                out += bytes((a & 0xFF, a >> 8, L - 1))
+        i += L
     bit(0), bit(1)
     out += b"\0\0"
     return bytes(out)
 
 
-def _rgb565(c) -> int:
+def _px16(c, pix: int) -> int:
+    """RGB(A) 0..255 -> a 16-bit PVR pixel: 0 ARGB1555, 1 RGB565, 2 ARGB4444 (opaque unless alpha given)."""
     c = np.clip(np.asarray(c, float), 0, 255)
+    a = c[3] if len(c) > 3 else 255
+    if pix == 0:
+        return (0x8000 if a >= 128 else 0) | (int(c[0]) >> 3) << 10 | (int(c[1]) >> 3) << 5 | int(c[2]) >> 3
+    if pix == 2:
+        return (int(a) >> 4) << 12 | (int(c[0]) >> 4) << 8 | (int(c[1]) >> 4) << 4 | int(c[2]) >> 4
     return (int(c[0]) >> 3) << 11 | (int(c[1]) >> 2) << 5 | int(c[2]) >> 3
 
 
-def pvr_vq(rgba, gbix: int | None = None, iters: int = 12) -> bytes:
-    """Square power-of-two image -> [GBIX] + PVRT VQ (data format 3, RGB565): a 256-entry codebook of 2x2 blocks
-    (k-means) + one twiddled index byte per block. 256x256 = 18 KB."""
+def _rgb565(c) -> int:
+    return _px16(c, 1)
+
+
+def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: bool = False) -> bytes:
+    """Square power-of-two image -> [GBIX] + PVRT VQ: data format 3 (256-entry codebook of 2x2 blocks, k-means) or,
+    small=True, format 0x10 (small VQ: the codebook size pvr_decode expects for the width), + one twiddled index
+    byte per block. pix: 16-bit pixel format of the codebook. 256x256 = 18 KB."""
     img = np.asarray(rgba, float)[..., :3]
     h, w = img.shape[:2]
     if h != w or w & (w - 1) or w < 8:
@@ -498,29 +527,59 @@ def pvr_vq(rgba, gbix: int | None = None, iters: int = 12) -> bytes:
     # block k: (x, y), (x, y + 1), (x + 1, y), (x + 1, y + 1) = pvr_decode's order
     blocks = np.stack([img[0::2, 0::2], img[1::2, 0::2], img[0::2, 1::2], img[1::2, 1::2]], 2).reshape(-1, 12)
     rng = np.random.default_rng(0)
-    k = min(256, len(blocks))
+    nbook = (16 if w <= 16 else 32 if w <= 32 else 128 if w <= 64 else 256) if small else 256
+    k = min(nbook, len(blocks))
     cb = blocks[rng.choice(len(blocks), k, replace=False)].copy()
+
+    def labels():
+        return np.concatenate([((blocks[s:s + 4096, None, :] - cb[None]) ** 2).sum(2).argmin(1)
+                               for s in range(0, len(blocks), 4096)])
     for _ in range(iters):
-        d = ((blocks[:, None, :] - cb[None, :, :]) ** 2).sum(2) if len(blocks) * k < 4_000_000 else None
-        if d is None:                                        # big images: chunked distance
-            lab = np.concatenate([((blocks[s:s + 4096, None, :] - cb[None]) ** 2).sum(2).argmin(1)
-                                  for s in range(0, len(blocks), 4096)])
-        else:
-            lab = d.argmin(1)
+        lab = labels()
         for c in range(k):
             m = lab == c
             cb[c] = blocks[m].mean(0) if m.any() else blocks[rng.integers(len(blocks))]
-    lab = np.concatenate([((blocks[s:s + 4096, None, :] - cb[None]) ** 2).sum(2).argmin(1) for s in range(0, len(blocks), 4096)])
-    book = b"".join(struct.pack("<4H", *[_rgb565(cb[c, 3 * q:3 * q + 3]) for q in range(4)]) for c in range(k))
-    book += bytes(8 * (256 - k))
+    lab = labels()
+    book = b"".join(struct.pack("<4H", *[_px16(cb[c, 3 * q:3 * q + 3], pix) for q in range(4)]) for c in range(k))
+    book += bytes(8 * (nbook - k))
     idx = bytearray(bw * bw)
     lab = lab.reshape(bw, bw)                                # [by, bx]
     for by in range(bw):
         for bx in range(bw):
             idx[_twiddle(bx, by)] = lab[by, bx]
     body = book + bytes(idx)
-    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), 1, 3, 0, w, h) + body
+    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), pix, 0x10 if small else 3, 0, w, h) + body
     return (b"GBIX" + struct.pack("<II", 8, gbix) + bytes(4) if gbix is not None else b"") + pvrt
+
+
+def pvr_twiddled(rgba, pix: int = 1) -> bytes:
+    """Square power-of-two image -> PVRT data format 1 (twiddled 16-bit pixels)."""
+    img = np.asarray(rgba, float)
+    h, w = img.shape[:2]
+    if h != w or w & (w - 1):
+        raise ValueError(f"twiddled needs a square power-of-two texture, got {w}x{h}")
+    out = bytearray(2 * w * h)
+    for y in range(h):
+        for x in range(w):
+            struct.pack_into("<H", out, 2 * _twiddle(x, y), _px16(img[y, x], pix))
+    return b"PVRT" + struct.pack("<IBBHHH", 8 + len(out), pix, 1, 0, w, h) + bytes(out)
+
+
+def pvr_like(old: bytes, rgb_img) -> bytes:
+    """`rgb_img` (PIL) encoded like the PVR `old` (same size, pixel and data format; its GBIX kept): VQ (3), small
+    VQ (0x10) or twiddled (1). ValueError for other formats."""
+    q = old.find(b"PVRT")
+    pix, fmt, w, h = old[q + 8], old[q + 9], *struct.unpack_from("<HH", old, q + 12)
+    img = np.asarray(rgb_img.convert("RGB").resize((w, h)))
+    if fmt == 3:
+        new = pvr_vq(img, pix=pix)
+    elif fmt == 0x10:
+        new = pvr_vq(img, pix=pix, small=True)
+    elif fmt == 1:
+        new = pvr_twiddled(img, pix)
+    else:
+        raise ValueError(f"PVR data format {fmt:#x} not written")
+    return old[:q] + new
 
 
 def pvm_entry_gbix(chunk: bytes) -> int | None:
@@ -572,10 +631,11 @@ def tree_nodes(d: bytes, off: int, e: str = "<") -> list[dict]:
     """An NJS_OBJECT tree in depth-first order: {off, flags, model, pos/ang/scl raw bytes, child, sibling (indices)}."""
     out = []
 
-    def walk(o, parent):
+    def walk(o, parent, root=False):
         first = None
         prev = None
-        while o:
+        while o or root:                                     # the root may sit at offset 0 (NJ files)
+            root = False
             flags, model = struct.unpack_from(e + "II", d, o)
             child, sib = struct.unpack_from(e + "II", d, o + 44)
             i = len(out)
@@ -589,7 +649,7 @@ def tree_nodes(d: bytes, off: int, e: str = "<") -> list[dict]:
                 out[i]["child"] = walk(child, i)
             prev, o = i, sib
         return first
-    walk(off, None)
+    walk(off, None, True)
     return out
 
 
@@ -609,23 +669,32 @@ def tree_ranges(d: bytes, off: int, e: str = "<") -> list[tuple[int, int]]:
 
 
 def cnk_model_lists(pos, nrm, tris, texid: int, mat: bytes, tiny_flags: int = 0x34, tex_flags: int = 0x4000,
-                    strip_flags: int = 0x12, e: str = "<") -> tuple[bytes, bytes, list, float]:
+                    strip_flags: int = 0x12, e: str = "<", base: int = 0,
+                    keep_vlist: bytes = b"") -> tuple[bytes, bytes, list, float]:
     """One rigid node's geometry -> (vertex list, polygon list, bound centre, radius). pos/nrm: (n, 3) node-local;
     tris: [((i0, i1, i2), ((u0, v0), (u1, v1), (u2, v2)))]. Vertex chunk 0x29 (position + normal), one strip
-    chunk 0x41 (UVs, 1.0 = 255) of 3-vertex strips; strip_flags 0x10 = double sided."""
+    chunk 0x41 (UVs, 1.0 = 255) of strips (gbox.re4gc_enemies.stripify); strip_flags 0x10 = double sided. base: the first vertex
+    cache slot; keep_vlist: the node's original vertex chunks (without their end chunk), run first (games that read
+    the original vertices, SA2's weighted characters, need them kept)."""
     pos, nrm = np.asarray(pos, np.float32), np.asarray(nrm, np.float32)
     n = len(pos)
     vb = np.concatenate([pos, nrm], 1).astype(e + "f4").tobytes()
-    vl = struct.pack(e + "IHH", 0x29 | ((1 + 6 * n) << 16), 0, n) + vb + struct.pack(e + "I", 0xFF)
+    vl = keep_vlist + struct.pack(e + "IHH", 0x29 | ((1 + 6 * n) << 16), base, n) + vb + struct.pack(e + "I", 0xFF)
     pl = bytearray()
     if mat:
         pl += mat
     pl += struct.pack(e + "HH", 8 | (tiny_flags << 8), (texid & 0x1FFF) | tex_flags)
-    body = bytearray(struct.pack(e + "H", len(tris)))
-    for (a, b, c), uvs in tris:
-        body += struct.pack(e + "h", 3)
-        for i, (u, v) in zip((a, b, c), uvs):
-            body += struct.pack(e + "Hhh", i, int(np.clip(round(u * 255), -32768, 32767)), int(np.clip(round(v * 255), -32768, 32767)))
+    from .re4gc_enemies import stripify                    # greedy strips; a strip vertex = index + uv
+    q = lambda x: int(np.clip(round(x * 255), -32768, 32767))
+    corners = [tuple((i + base, q(u), q(v)) for i, (u, v) in zip(idx, uvs)) for idx, uvs in tris]
+    strips = []
+    for kind, vs in stripify(corners):
+        strips += [vs] if kind == 0x98 else [vs[k:k + 3] for k in range(0, len(vs), 3)]
+    body = bytearray(struct.pack(e + "H", len(strips)))
+    for vs in strips:
+        body += struct.pack(e + "h", len(vs))
+        for i, u, v in vs:
+            body += struct.pack(e + "Hhh", i, u, v)
     if len(body) % 4:                                        # size counts shorts; keep the list 4-aligned
         body += bytes(2)
     pl += struct.pack(e + "HH", 0x41 | (strip_flags << 8), len(body) // 2) + body
@@ -712,6 +781,11 @@ def _selftest():
     assert prs_decompress(lit_only(raw)) == raw
     for blob in (raw, b"abcabcabcabcabcabcabcabcabc" * 50, bytes(range(256)) * 40, b""):
         assert prs_decompress(prs_compress(blob)) == blob
+    img = np.zeros((16, 16, 3), np.uint8)
+    img[:8] = (255, 0, 0)
+    for f in (pvr_vq(img), pvr_vq(img, small=True, pix=2), pvr_twiddled(img, 1)):
+        w, h, rgba, _ = pvr_decode(f)
+        assert (w, h) == (16, 16) and rgba[0] > 200 and rgba[(15 * 16) * 4] < 50, (rgba[:4], rgba[(15 * 16) * 4:][:4])
     assert _twiddle(1, 0) == 2 and _twiddle(0, 1) == 1 and _twiddle(1, 1) == 3
     m = _node_matrix([1, 2, 3], [0, 16384, 0], [1, 1, 1], False)          # 90 deg about Y
     v = _xf(m, [1, 0, 0])

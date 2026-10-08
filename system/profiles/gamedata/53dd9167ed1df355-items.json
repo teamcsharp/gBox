@@ -1,0 +1,742 @@
+{
+ "game": "Resident Evil 3: Nemesis (PSX, USA)",
+ "game_id": "53dd9167ed1df355",
+ "platform": "psx",
+ "source": "Live in a normal RetroArch/pcsx_rearmed session on lilspark (2026-10-07), Easy mode new game. Every id 0x01-0x96 was written 10 at a time into the live inventory, the status screen was closed and reopened and the cursor walked over all slots; names read from the name box (labeled sheets rei/n3_A.jpg rei/n3_B.jpg rei/n3_C.jpg + rei/r3_0..2_sheet.jpg, rei/r3_98/99_sheet.jpg). Names are exactly as shown; '(n)'/parenthesised suffixes only disambiguate ids that share a name (G. Launcher round types follow the community order). Ids printing 'BOTU' (unused: 2C 2D 2E 30 35 3B 3E 49 4A 4B 53 54 56 57 5D 76 7A) are omitted; 0x85+ are FILE documents. 'flag' = value for slot byte 2 (display mode, see notes); flags for 0x15/0x16/0x17/0x19/0x1A/0x1B/0x1D/0x81/0x03/0x04/0x05/0x0F/0x2A/0x01 were seen in the game's own inventory tables, others are sensible defaults. Weapon max = observed starting loads (Hand Gun 15, Shotgun 7, Magnum 6) and AR 100%.",
+ "items": [
+  {
+   "id": 1,
+   "name": "Knife",
+   "kind": "weapon",
+   "flag": 0
+  },
+  {
+   "id": 2,
+   "name": "Merc's Handgun",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 3,
+   "name": "Hand Gun",
+   "kind": "weapon",
+   "flag": 1,
+   "max": 15
+  },
+  {
+   "id": 4,
+   "name": "Shotgun",
+   "kind": "weapon",
+   "flag": 1,
+   "max": 7
+  },
+  {
+   "id": 5,
+   "name": "Magnum",
+   "kind": "weapon",
+   "flag": 1,
+   "max": 6
+  },
+  {
+   "id": 6,
+   "name": "G. Launcher (grenade rounds)",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 7,
+   "name": "G. Launcher (flame rounds)",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 8,
+   "name": "G. Launcher (acid rounds)",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 9,
+   "name": "G. Launcher (freeze rounds)",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 10,
+   "name": "R. Launcher",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 11,
+   "name": "Gatling Gun",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 12,
+   "name": "Mine Thrower",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 13,
+   "name": "EAGLE 6.0",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 14,
+   "name": "Assault Rifle (manual)",
+   "kind": "weapon",
+   "flag": 22,
+   "max": 100
+  },
+  {
+   "id": 15,
+   "name": "Assault Rifle (auto)",
+   "kind": "weapon",
+   "flag": 22,
+   "max": 100
+  },
+  {
+   "id": 16,
+   "name": "Western Custom",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 17,
+   "name": "SIGPRO E",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 18,
+   "name": "M92F E",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 19,
+   "name": "Benelli M3S E",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 20,
+   "name": "M. Thrower E",
+   "kind": "weapon",
+   "flag": 1
+  },
+  {
+   "id": 21,
+   "name": "H. Gun Bullets",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 22,
+   "name": "Magnum Bullets",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 23,
+   "name": "Shotgun Shells",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 24,
+   "name": "Grenade Rounds",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 25,
+   "name": "Flame Rounds",
+   "kind": "ammo",
+   "flag": 5
+  },
+  {
+   "id": 26,
+   "name": "Acid Rounds",
+   "kind": "ammo",
+   "flag": 9
+  },
+  {
+   "id": 27,
+   "name": "Freeze Rounds",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 28,
+   "name": "M.T. Rounds",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 29,
+   "name": "A.R. Bullets",
+   "kind": "ammo",
+   "flag": 14
+  },
+  {
+   "id": 30,
+   "name": "H.G. Bullets E",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 31,
+   "name": "S.G. Shell E",
+   "kind": "ammo",
+   "flag": 13
+  },
+  {
+   "id": 32,
+   "name": "F. Aid Spray",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 33,
+   "name": "Green Herb",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 34,
+   "name": "Blue Herb",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 35,
+   "name": "Red Herb",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 36,
+   "name": "Mixed Herb (1)",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 37,
+   "name": "Mixed Herb (2)",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 38,
+   "name": "Mixed Herb (3)",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 39,
+   "name": "Mixed Herb (4)",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 40,
+   "name": "Mixed Herb (5)",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 41,
+   "name": "Mixed Herb (6)",
+   "kind": "heal",
+   "flag": 0
+  },
+  {
+   "id": 42,
+   "name": "F. Aid Box",
+   "kind": "heal",
+   "flag": 1
+  },
+  {
+   "id": 43,
+   "name": "Crank",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 47,
+   "name": "S.T.A.R.S. Card",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 49,
+   "name": "Battery",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 50,
+   "name": "Fire Hook",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 51,
+   "name": "Power Cable",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 52,
+   "name": "Fuse",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 54,
+   "name": "Oil Additive",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 55,
+   "name": "Card Case",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 56,
+   "name": "S.T.A.R.S. Card (2)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 57,
+   "name": "Machine Oil",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 58,
+   "name": "Mixed Oil",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 60,
+   "name": "Wrench",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 61,
+   "name": "Iron Pipe",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 63,
+   "name": "Fire Hose",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 64,
+   "name": "Tape Recorder",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 65,
+   "name": "Lighter Oil",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 66,
+   "name": "Lighter",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 67,
+   "name": "Lighter (2)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 68,
+   "name": "Green Gem",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 69,
+   "name": "Blue Gem",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 70,
+   "name": "Amber Ball",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 71,
+   "name": "Obsidian Ball",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 72,
+   "name": "Crystal Ball",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 76,
+   "name": "Gold Gear",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 77,
+   "name": "Silver Gear",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 78,
+   "name": "Chronos Gear",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 79,
+   "name": "Bronze Book",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 80,
+   "name": "Bronze Compass",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 81,
+   "name": "Vaccine Medium",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 82,
+   "name": "Vaccine Base",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 85,
+   "name": "Vaccine",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 88,
+   "name": "Medium Base",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 89,
+   "name": "EAGLE Parts A",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 90,
+   "name": "EAGLE Parts B",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 91,
+   "name": "M37 Parts A",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 92,
+   "name": "M37 Parts B",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 94,
+   "name": "Chronos Chain",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 95,
+   "name": "Rusted Crank",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 96,
+   "name": "Card Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 97,
+   "name": "Gun Powder A",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 98,
+   "name": "Gun Powder B",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 99,
+   "name": "Gun Powder C",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 100,
+   "name": "Gun Powder AA",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 101,
+   "name": "Gun Powder BB",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 102,
+   "name": "Gun Powder AC",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 103,
+   "name": "Gun Powder BC",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 104,
+   "name": "Gun Powder CC",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 105,
+   "name": "Gun Powder AAA",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 106,
+   "name": "Gun Powder AAB",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 107,
+   "name": "Gun Powder BBA",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 108,
+   "name": "Gun Powder BBB",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 109,
+   "name": "Gun Powder CCC",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 110,
+   "name": "Inf. Bullets",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 111,
+   "name": "Water Sample",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 112,
+   "name": "System Disk",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 113,
+   "name": "Dummy Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 114,
+   "name": "Lockpick",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 115,
+   "name": "Warehouse Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 116,
+   "name": "Sickroom Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 117,
+   "name": "Emblem Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 119,
+   "name": "Clock T. Key (1)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 120,
+   "name": "Clock T. Key (2)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 121,
+   "name": "Chronos Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 123,
+   "name": "Park Key (1)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 124,
+   "name": "Park Key (2)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 125,
+   "name": "Park Key (3)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 126,
+   "name": "Facility Key (1)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 127,
+   "name": "Facility Key (2)",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 128,
+   "name": "Boutique Key",
+   "kind": "key",
+   "flag": 0
+  },
+  {
+   "id": 129,
+   "name": "Ink Ribbon",
+   "kind": "other",
+   "flag": 13
+  },
+  {
+   "id": 130,
+   "name": "Reloading Tool",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 131,
+   "name": "Game Inst. A",
+   "kind": "other",
+   "flag": 0
+  },
+  {
+   "id": 132,
+   "name": "Game Inst. B",
+   "kind": "other",
+   "flag": 0
+  }
+ ],
+ "inventory": {
+  "endian": "little",
+  "addr": "0x0D2134",
+  "address_form": "PSX RAM offset (0x00000000-0x001FFFFF); native 0x80xxxxxx addresses fail with read/write_memory in a normal RetroArch session.",
+  "slots": 10,
+  "stride": 4,
+  "id": [
+   0,
+   1
+  ],
+  "count": [
+   1,
+   1
+  ],
+  "flag": [
+   2,
+   1
+  ],
+  "extra": {
+   "3": 0
+  },
+  "empty": 0,
+  "health": {
+   "addr": "0x0CCC90",
+   "size": 2,
+   "signed": true,
+   "max": 200,
+   "max_addr": "0x0CCC92"
+  },
+  "characters": [
+   {
+    "name": "Jill",
+    "addr": "0x0D2134",
+    "slots": 10
+   }
+  ],
+  "notes": "Slot = 4 bytes {u8 id, u8 count, u8 flag, u8 0}. Byte 2 (flag) controls how the count is drawn and MUST be set: 0x00 = no number (keys, herbs, F. Aid Spray), 0x01 = green number (weapons, F. Aid Box), 0x0D/0x0E = blue number (ammo), 0x05/0x09 = other colours used for flame/acid rounds, 0x16 = red percentage (Assault Rifle, count 100 = 100%). Verified: R. Launcher x5 flag 01 -> '5', H. Gun Bullets x60 flag 0D -> blue '60', same with flag 00 -> no number, Assault Rifle flag 16 count 100 -> '100%'. Jill has 10 slots (cursor grid 2x5). Names/counts appear after the status screen is reopened; icons of newly written ids are NOT redrawn until the game loads them (cell stays blank), same as RE2. Other inventory-shaped arrays exist at 0x0D21DC and 0x0D2274 (look like the other character's / stored inventories, e.g. for the Carlos segments) - not verified, write 0x0D2134 for the active character. WARNING: 0x0BDDD4 looks like an HP but is an enemy's HP, not Jill's.",
+  "verified": "2026-10-07 live: start inventory (Easy) at 0x0D2134 = [0F 64 16][82 FA 00][83 01 00][84 01 00][2A 03 01] matched the status screen (Assault Rifle 100%, Reloading Tool, Game Inst. A/B, F. Aid Box 3: rei/re3s_3.jpg). Write test rei/re3_write_verify.jpg. HP: 0x0CCC90 tracked damage (200->140->140->80 with CONDITION Fine/Fine/Caution, rei/k1-3.jpg); wrote 15 -> 'Danger' (rei/re3_hp15.jpg), wrote 200 -> 'Fine' (rei/re3_hp200.jpg). Frames are in the agent scratchpad rei/."
+ }
+}

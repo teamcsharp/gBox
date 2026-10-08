@@ -225,6 +225,14 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
         src = rom_path(g, ctx.config)
         if not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
+        if g.game_id == "0871eee3b68cdea3":                # Resident Evil 6 (X360): boot profile "Everything unlocked"
+            try:
+                from . import re6_tool
+                pre = re6_tool.pre_launch(ctx, inp.mod)
+                if (pre.get("unlock") or {}).get("bytes_changed"):
+                    ctx.progress(18, "RE6 save: everything unlocked (original backed up)")
+            except Exception as e:                         # noqa: BLE001 - never block the launch
+                print(f"gBox: re6 pre-launch failed: {e}", flush=True)
         if inp.mod:
             from . import filemods
             if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
@@ -568,6 +576,23 @@ def session_op(inp: SessionIn, ctx: Ctx):
         ad, g = SESSIONS[inp.session_id]
         res = _record(ad, g, inp.op == "record_start", ctx)
         return {"result": res, "session_id": inp.session_id, "ended": False}
+    if inp.op == "log_tail":                                         # issue reports: the emulator's own console/log output
+        ad, _ = SESSIONS[inp.session_id]
+        n = int(inp.args.get("n", 60000))
+        if callable(getattr(type(ad), "log_tail", None)):
+            log, path = ad.log_tail(n), getattr(ad, "log_path", None)
+        elif getattr(ad, "home", None) and (Path(ad.home) / "RPCS3.log").exists():     # RPCS3 writes its own log
+            path = Path(ad.home) / "RPCS3.log"
+            log = path.read_text(errors="replace")[-n:]
+        else:
+            log, path = "", None
+        return {"result": {"log": log, "path": str(path or ""), "emulator": getattr(ad, "name", "?")},
+                "session_id": inp.session_id, "ended": False}
+    if inp.op == "reset":                                            # restart the emulated console (the session stays)
+        ad, _ = SESSIONS[inp.session_id]
+        if not callable(getattr(type(ad), "reset", None)):
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset: relaunch the game instead")
+        return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
     if inp.op == "send_input":                                       # controller glyph shows gBox's presses

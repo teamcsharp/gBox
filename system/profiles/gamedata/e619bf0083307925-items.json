@@ -1,0 +1,564 @@
+{
+ "game": "Resident Evil 2 (PSX, USA Dual Shock, Disc 1 Leon)",
+ "game_id": "e619bf0083307925",
+ "platform": "psx",
+ "source": "Live RAM search + writes in a normal RetroArch/pcsx_rearmed session on lilspark (2026-10-07). Every id 0x01-0x78 was written into the live inventory with the status screen open and the name the game printed was read from frames (rei/n2_A.jpg, rei/n2_B.jpg; Claire disc sample rei/n2c.jpg). Base names are exactly as the game shows them; text in parentheses disambiguates ids that share a name (variant labels for herbs/keys/films/stones follow the community item list, not the screen). Weapon 'max' = magazine capacity from community knowledge (not live-verified); 0xFF count shows as infinite.",
+ "items": [
+  {
+   "id": 1,
+   "name": "Knife",
+   "kind": "weapon"
+  },
+  {
+   "id": 2,
+   "name": "Hand Gun (Leon, VP70)",
+   "kind": "weapon",
+   "max": 18
+  },
+  {
+   "id": 3,
+   "name": "Hand Gun (Claire, Browning)",
+   "kind": "weapon",
+   "max": 13
+  },
+  {
+   "id": 4,
+   "name": "C. Hand Gun",
+   "kind": "weapon",
+   "max": 18
+  },
+  {
+   "id": 5,
+   "name": "Magnum",
+   "kind": "weapon",
+   "max": 8
+  },
+  {
+   "id": 6,
+   "name": "C. Magnum",
+   "kind": "weapon",
+   "max": 8
+  },
+  {
+   "id": 7,
+   "name": "Shotgun",
+   "kind": "weapon",
+   "max": 5
+  },
+  {
+   "id": 8,
+   "name": "C. Shotgun",
+   "kind": "weapon",
+   "max": 7
+  },
+  {
+   "id": 9,
+   "name": "G. Launcher (grenade rounds)",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 10,
+   "name": "G. Launcher (flame rounds)",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 11,
+   "name": "G. Launcher (acid rounds)",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 12,
+   "name": "Bow Gun",
+   "kind": "weapon",
+   "max": 18
+  },
+  {
+   "id": 13,
+   "name": "Colt S.A.A.",
+   "kind": "weapon",
+   "max": 6
+  },
+  {
+   "id": 14,
+   "name": "Spark Shot",
+   "kind": "weapon",
+   "max": 100
+  },
+  {
+   "id": 15,
+   "name": "S. Machine Gun",
+   "kind": "weapon",
+   "max": 100
+  },
+  {
+   "id": 16,
+   "name": "Flamethrower",
+   "kind": "weapon",
+   "max": 100
+  },
+  {
+   "id": 17,
+   "name": "R. Launcher",
+   "kind": "weapon"
+  },
+  {
+   "id": 18,
+   "name": "Gatling Gun",
+   "kind": "weapon"
+  },
+  {
+   "id": 19,
+   "name": "Hand Gun (alt.)",
+   "kind": "weapon"
+  },
+  {
+   "id": 20,
+   "name": "H. Gun Bullets",
+   "kind": "ammo"
+  },
+  {
+   "id": 21,
+   "name": "Shotgun Shells",
+   "kind": "ammo"
+  },
+  {
+   "id": 22,
+   "name": "M. Bullets",
+   "kind": "ammo"
+  },
+  {
+   "id": 23,
+   "name": "Fuel",
+   "kind": "ammo"
+  },
+  {
+   "id": 24,
+   "name": "G. Rounds",
+   "kind": "ammo"
+  },
+  {
+   "id": 25,
+   "name": "Flame Rounds",
+   "kind": "ammo"
+  },
+  {
+   "id": 26,
+   "name": "Acid Rounds",
+   "kind": "ammo"
+  },
+  {
+   "id": 27,
+   "name": "M.G. Bullets",
+   "kind": "ammo"
+  },
+  {
+   "id": 28,
+   "name": "S. Shot Bullets",
+   "kind": "ammo"
+  },
+  {
+   "id": 29,
+   "name": "Bow Gun Bolts",
+   "kind": "ammo"
+  },
+  {
+   "id": 30,
+   "name": "Ink Ribbon",
+   "kind": "other"
+  },
+  {
+   "id": 31,
+   "name": "Small Key",
+   "kind": "key"
+  },
+  {
+   "id": 32,
+   "name": "H. Gun Parts",
+   "kind": "other"
+  },
+  {
+   "id": 33,
+   "name": "Magnum Parts",
+   "kind": "other"
+  },
+  {
+   "id": 34,
+   "name": "Shotgun Parts",
+   "kind": "other"
+  },
+  {
+   "id": 35,
+   "name": "F. Aid Spray",
+   "kind": "heal"
+  },
+  {
+   "id": 36,
+   "name": "Antivirus bomb",
+   "kind": "key"
+  },
+  {
+   "id": 37,
+   "name": "Chemical AC-W24",
+   "kind": "key"
+  },
+  {
+   "id": 38,
+   "name": "Green Herb",
+   "kind": "heal"
+  },
+  {
+   "id": 39,
+   "name": "Red Herb",
+   "kind": "heal"
+  },
+  {
+   "id": 40,
+   "name": "Blue Herb",
+   "kind": "heal"
+  },
+  {
+   "id": 41,
+   "name": "Mixed Herb (G+G)",
+   "kind": "heal"
+  },
+  {
+   "id": 42,
+   "name": "Mixed Herb (G+R)",
+   "kind": "heal"
+  },
+  {
+   "id": 43,
+   "name": "Mixed Herb (G+B)",
+   "kind": "heal"
+  },
+  {
+   "id": 44,
+   "name": "Mixed Herb (G+G+G)",
+   "kind": "heal"
+  },
+  {
+   "id": 45,
+   "name": "Mixed Herb (G+G+B)",
+   "kind": "heal"
+  },
+  {
+   "id": 46,
+   "name": "Mixed Herb (G+R+B)",
+   "kind": "heal"
+  },
+  {
+   "id": 47,
+   "name": "Lighter",
+   "kind": "key"
+  },
+  {
+   "id": 48,
+   "name": "Lockpick",
+   "kind": "key"
+  },
+  {
+   "id": 49,
+   "name": "Picture",
+   "kind": "key"
+  },
+  {
+   "id": 50,
+   "name": "Valve Handle",
+   "kind": "key"
+  },
+  {
+   "id": 51,
+   "name": "Red Jewel",
+   "kind": "key"
+  },
+  {
+   "id": 52,
+   "name": "Red Card Key",
+   "kind": "key"
+  },
+  {
+   "id": 53,
+   "name": "Blue Card Key",
+   "kind": "key"
+  },
+  {
+   "id": 54,
+   "name": "Serpent Stone",
+   "kind": "key"
+  },
+  {
+   "id": 55,
+   "name": "Jaguar Stone",
+   "kind": "key"
+  },
+  {
+   "id": 56,
+   "name": "Blue Stone (1)",
+   "kind": "key"
+  },
+  {
+   "id": 57,
+   "name": "Blue Stone (2)",
+   "kind": "key"
+  },
+  {
+   "id": 58,
+   "name": "Eagle Stone",
+   "kind": "key"
+  },
+  {
+   "id": 59,
+   "name": "Bishop Plug",
+   "kind": "key"
+  },
+  {
+   "id": 60,
+   "name": "Rook Plug",
+   "kind": "key"
+  },
+  {
+   "id": 61,
+   "name": "Knight Plug",
+   "kind": "key"
+  },
+  {
+   "id": 62,
+   "name": "King Plug",
+   "kind": "key"
+  },
+  {
+   "id": 63,
+   "name": "W. Box Key",
+   "kind": "key"
+  },
+  {
+   "id": 64,
+   "name": "Detonator",
+   "kind": "key"
+  },
+  {
+   "id": 65,
+   "name": "Plastic Bomb",
+   "kind": "key"
+  },
+  {
+   "id": 66,
+   "name": "Bomb & Det.",
+   "kind": "key"
+  },
+  {
+   "id": 67,
+   "name": "Crank",
+   "kind": "key"
+  },
+  {
+   "id": 68,
+   "name": "Film (A)",
+   "kind": "key"
+  },
+  {
+   "id": 69,
+   "name": "Film (B)",
+   "kind": "key"
+  },
+  {
+   "id": 70,
+   "name": "Film (C)",
+   "kind": "key"
+  },
+  {
+   "id": 71,
+   "name": "Unicorn Medal",
+   "kind": "key"
+  },
+  {
+   "id": 72,
+   "name": "Eagle Medal",
+   "kind": "key"
+  },
+  {
+   "id": 73,
+   "name": "Wolf Medal",
+   "kind": "key"
+  },
+  {
+   "id": 74,
+   "name": "G. Cogwheel",
+   "kind": "key"
+  },
+  {
+   "id": 75,
+   "name": "Manhole Opener",
+   "kind": "key"
+  },
+  {
+   "id": 76,
+   "name": "Main Fuse",
+   "kind": "key"
+  },
+  {
+   "id": 77,
+   "name": "Fuse Case",
+   "kind": "key"
+  },
+  {
+   "id": 78,
+   "name": "Vaccine",
+   "kind": "key"
+  },
+  {
+   "id": 79,
+   "name": "Vaccine Cart.",
+   "kind": "key"
+  },
+  {
+   "id": 80,
+   "name": "Film (D)",
+   "kind": "key"
+  },
+  {
+   "id": 81,
+   "name": "Base Vaccine",
+   "kind": "key"
+  },
+  {
+   "id": 82,
+   "name": "G-virus",
+   "kind": "key"
+  },
+  {
+   "id": 83,
+   "name": "Special Key",
+   "kind": "key"
+  },
+  {
+   "id": 84,
+   "name": "Joint S Plug",
+   "kind": "key"
+  },
+  {
+   "id": 85,
+   "name": "Joint N Plug",
+   "kind": "key"
+  },
+  {
+   "id": 86,
+   "name": "Cord",
+   "kind": "key"
+  },
+  {
+   "id": 87,
+   "name": "Picture (2)",
+   "kind": "key"
+  },
+  {
+   "id": 88,
+   "name": "Cabin Key",
+   "kind": "key"
+  },
+  {
+   "id": 89,
+   "name": "Precinct Key (1)",
+   "kind": "key"
+  },
+  {
+   "id": 90,
+   "name": "Precinct Key (2)",
+   "kind": "key"
+  },
+  {
+   "id": 91,
+   "name": "Precinct Key (3)",
+   "kind": "key"
+  },
+  {
+   "id": 92,
+   "name": "Precinct Key (4)",
+   "kind": "key"
+  },
+  {
+   "id": 93,
+   "name": "C. Panel Key (1)",
+   "kind": "key"
+  },
+  {
+   "id": 94,
+   "name": "C. Panel Key (2)",
+   "kind": "key"
+  },
+  {
+   "id": 95,
+   "name": "P. Room Key",
+   "kind": "key"
+  },
+  {
+   "id": 96,
+   "name": "MO disk",
+   "kind": "key"
+  },
+  {
+   "id": 97,
+   "name": "Lab Card Key",
+   "kind": "key"
+  },
+  {
+   "id": 98,
+   "name": "Master Key",
+   "kind": "key"
+  },
+  {
+   "id": 99,
+   "name": "Platform Key",
+   "kind": "key"
+  }
+ ],
+ "inventory": {
+  "endian": "little",
+  "addr": "0x0D4A3C",
+  "address_form": "PSX RAM offset (0x00000000-0x001FFFFF). Native 0x80xxxxxx addresses FAIL with read_memory/write_memory in a normal RetroArch session ('no descriptor for address').",
+  "slots": 8,
+  "slots_max": 10,
+  "stride": 4,
+  "id": [
+   0,
+   1
+  ],
+  "count": [
+   1,
+   1
+  ],
+  "extra": {
+   "2": 0,
+   "3": 0
+  },
+  "empty": 0,
+  "special_slot": {
+   "addr": "0x0D4A64",
+   "note": "11th slot (Lighter/Lockpick); same 4-byte format"
+  },
+  "characters": [
+   {
+    "name": "Leon",
+    "addr": "0x0D4A3C",
+    "slots": 8
+   }
+  ],
+  "equipped": {
+   "slot_index_addr": "0x0D5BF8",
+   "item_id_addr": "0x0D5BFA",
+   "size": 1
+  },
+  "health": {
+   "addr": "0x0CFD4E",
+   "size": 2,
+   "signed": true,
+   "max": 200,
+   "max_addr": "0x0CFD5A"
+  },
+  "notes": "Slot = 4 bytes {u8 id, u8 count, u8 0, u8 0}; write all 4 bytes (bytes 2-3 = 0). count 0xFF is displayed as infinite (verified). 8 slots usable (10 with the Side Pack; the array has 10 entries) plus a separate 11th 'special' slot right after (addr+0x28) holding Leon's Lighter (0x2F) / Claire's Lockpick (0x30). Ids 0x64-0x67 show 'no item'; 0x68+ are FILE documents, not inventory items. Counts and names update immediately (even with the status screen open), but the item ICON of a newly written id is not drawn in the status screen until it is loaded by the game (icon cell stays blank; the item still works: equipping a written R. Launcher via the menu put it in the EQUIP box with its count). HP is the player object's s16 HP (200 = full; Fine/Caution/Danger derived from it); max HP s16 at health.addr+0x0C (=200). Leon disc: equipped slot index u8 at 0xD5BF8 and equipped item id u8 at 0xD5BFA (observed changing 0->2 / 0x02->0x11 when equipping slot 3 via the menu; not write-tested). A second copy of the inventory exists at 0xDF398 (same layout; seems to be a room/save snapshot: writing it does NOT change the live inventory; write 0xD4A3C).",
+  "verified": "2026-10-07 live: start inventory read [02 12][01 01] + special 2F 01 at 0xD4A3C matched the status screen (Hand Gun 18, Knife, Lighter: rei/re2_inv0.jpg). Wrote slot3=R. Launcher x4, slot4=H. Gun Bullets x60, slot5=F. Aid Spray, slot6=S. Machine Gun x255 -> status screen showed 4 / 60 / infinite and names (rei/re2_write_verify.jpg); equipped the R. Launcher (EQUIP box showed 4). HP: 0xCFD4E went 20->0 on death; wrote 200 -> CONDITION changed Danger->Fine (rei/re2_hp200.jpg). Name sweep rei/n2_A.jpg rei/n2_B.jpg. Frames are in the agent scratchpad (\u2026/scratchpad/rei/)."
+ }
+}

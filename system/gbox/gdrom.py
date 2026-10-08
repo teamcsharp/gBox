@@ -113,10 +113,13 @@ def mode1_sector(raw: bytes, data: bytes) -> bytes:
     return bytes(s)
 
 
-def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[str, bytes], progress=None) -> Path:
+def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[str, bytes], progress=None,
+              donors: list[str] = ()) -> Path:
     """Copy a GDI to out_dir/<name>.gdi (unchanged tracks hard-linked, the last data track copied) with `files`
-    rewritten in place: each must fit its old sectors plus the free sectors before the next file (a full GD-ROM
-    has no room to move files). ISO9660 sizes updated; EDC/ECC recomputed. Only the last data track is patched."""
+    rewritten in place when they fit their old sectors plus the free ones before the next file, else moved into
+    the sectors of a `donors` file the mod gives up (its directory entry then points at the moved data too).
+    Sectors after the last file are NOT used: Flycast crashes reading them. ISO9660 extent and size updated;
+    EDC/ECC recomputed. Only the last data track is patched."""
     import os
     import shutil
     src_gdi, out_dir = Path(src_gdi), Path(out_dir)
@@ -125,6 +128,11 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
     order = sorted(l for l, _s in disc.files.values())
     start, ssz, tpath = max(disc.tracks)
     plan = []
+    spare = []                                                    # [lba, sectors] of donor files
+    for dn in donors:
+        l_, s_ = disc.files[dn]
+        nxt = next((l for l in order if l > l_), None)
+        spare.append([l_, (nxt - l_) if nxt else (s_ + 2047) // 2048])
     for key, data in files.items():
         if key not in disc.files:
             raise ValueError(f"{key} is not on this disc")
@@ -134,9 +142,12 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
         nxt = next((l for l in order if l > lba), None)
         room = (nxt - lba) if nxt else (size + 2047) // 2048
         need = (len(data) + 2047) // 2048
-        if need > room:
-            raise ValueError(f"{key}: {len(data)} bytes need {need} sectors, only {room} free at LBA {lba} "
-                             f"(the original is {size} bytes)")
+        if need > room:                                      # moved into a donor file's sectors
+            sp = next((x for x in spare if x[1] >= need), None)
+            if sp is None:
+                raise ValueError(f"{key}: {len(data)} bytes need {need} sectors, only {room} free at LBA {lba} "
+                                 f"(the original is {size} bytes)" + (" and no donor file is big enough" if donors else ""))
+            lba, sp[0], sp[1] = sp[0], sp[0] + need, sp[1] - need
         plan.append((key, lba, data))
     out_dir.mkdir(parents=True, exist_ok=True)
     lines = [ln for ln in src_gdi.read_text().splitlines() if ln.strip()]
@@ -174,6 +185,8 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
             dlba, doff = disc.records[key]
             f.seek((dlba - start) * ssz + (16 if ssz == 2352 else 0))
             sec = bytearray(f.read(2048))                  # this copy's sector (an earlier file may have changed it)
+            sec[doff + 2:doff + 6] = struct.pack("<I", lba)       # extent (moved files) + size, both byte orders
+            sec[doff + 6:doff + 10] = struct.pack(">I", lba)
             sec[doff + 10:doff + 14] = struct.pack("<I", len(data))
             sec[doff + 14:doff + 18] = struct.pack(">I", len(data))
             put(dlba, bytes(sec))

@@ -99,7 +99,8 @@ def make_target(W: list[np.ndarray], verts: dict[int, np.ndarray], spec: dict, f
     feet = [spec["legA"][2], spec["legB"][2]]
     front = np.concatenate([verts[b] @ C.T - Tg[b] for b in feet if b in verts]).mean(0)
     front[1] = 0
-    front /= np.linalg.norm(front) or 1
+    k = int(np.argmax(np.abs(front)))                       # models face along an axis: snap
+    front = np.eye(3)[k] * np.sign(front[k])
     up = np.array([0, 1.0, 0])
     B = np.stack([np.cross(up, front), up, front])
     T = Tg @ B.T
@@ -233,10 +234,45 @@ def field_normals(disc) -> np.ndarray:
     return np.frombuffer(fb[FIELD_NORMALS_AT:FIELD_NORMALS_AT + 8 * NORMALS], "<i2").reshape(-1, 4)[:, :3] / 4096.0
 
 
+def field_spec(fm: dict) -> dict | None:
+    """Body roles of a field skeleton from its topology (FF7 party layout: root -> pelvis 1 -> chest 2 -> head; each arm
+    hangs off the pelvis through mesh-less joints, then upper / fore / hand; each leg off the root through a mesh-less
+    joint, then thigh / shin / foot). None when the skeleton doesn't follow it (Cait Sith)."""
+    bones = fm["bones"]
+    kids = {i: [k for k, b in enumerate(bones) if b["parent"] == i] for i in range(len(bones))}
+    W = F.field_pose(bones, fm["anims"][0][0] if fm["anims"] else None)
+    y = {i: -W[i][1, 3] for i in range(len(bones))}       # height (PSX y is down)
+
+    def depth(i):
+        return 1 + max((depth(k) for k in kids[i]), default=0)
+
+    def chain(start):                                     # the first three mesh bones down the deepest branch
+        out, cur = [], start
+        while cur is not None and len(out) < 3:
+            if bones[cur]["has_mesh"]:
+                out.append(cur)
+            cur = max(kids[cur], key=depth) if kids[cur] else None
+        return tuple(out) if len(out) == 3 else None
+    if len(bones) < 4 or not bones[1]["has_mesh"] or not kids.get(1):
+        return None
+    chest = next((k for k in kids[1] if bones[k]["has_mesh"]), None)
+    head = next((k for k in kids.get(chest, []) if bones[k]["has_mesh"]), None) if chest is not None else None
+    arms = [c for c in (chain(k) for k in kids[1] if k != chest and not bones[k]["has_mesh"]) if c]
+    legs = sorted((c for c in (chain(k) for k in kids[0] if k != 1) if c), key=lambda c: y[c[2]])[:2]   # lowest ends
+    if len(arms) > 2:                                     # e.g. a tail: keep the two chains reaching furthest sideways
+        arms = sorted(arms, key=lambda c: -abs(W[c[2]][0, 3] - W[1][0, 3]))[:2]
+    if head is None or len(arms) != 2 or len(legs) != 2:
+        return None
+    return {"hip": 1, "chest": chest, "head": head, "armA": arms[0], "armB": arms[1], "legA": legs[0], "legB": legs[1]}
+
+
 def field_target(fm: dict) -> dict:
     W = F.field_pose(fm["bones"], fm["anims"][0][0])
     verts = {p["bone"]: (np.c_[p["verts"], np.ones(len(p["verts"]))] @ W[p["bone"]].T)[:, :3] for p in fm["parts"]}
-    return make_target(W, verts, FIELD_ROLES, FIELD_FIT_HEIGHT)
+    spec = field_spec(fm)
+    if spec is None:
+        raise ValueError("this field skeleton doesn't have the party layout (two arms off the pelvis, two legs off the root)")
+    return make_target(W, verts, spec, FIELD_FIT_HEIGHT)
 
 
 def write_field(fm: dict, geo: dict[int, dict], normals: np.ndarray, nsign: float) -> tuple[bytes, dict]:

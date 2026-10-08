@@ -114,7 +114,8 @@ def _first_material(mdl: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int
 
 
 def build_swap(gdi: str | Path, model: Path, roles: dict, work: Path, name: str, char: str = "SONIC",
-               blender: str | None = None, progress=lambda p, m: None, scale: dict | None = None) -> dict:
+               blender: str | None = None, progress=lambda p, m: None, scale: dict | None = None,
+               lod_remap: bool = True) -> dict:
     """-> {files {disc path: bytes} (<CHAR>MDL.PRS, <CHAR>TEX.PRS), report, rigged, atlas}. Every file must fit its
     old sectors on the disc (gbox.gdrom.patch_gdi); the model is decimated until both do."""
     from .gdrom import GDRom
@@ -139,7 +140,7 @@ def build_swap(gdi: str | Path, model: Path, roles: dict, work: Path, name: str,
     # the lower-detail trees (31, 48) have the same node order: every table entry into them (their sub-trees too)
     # moves to the same node of the main tree, so their bytes are freed as well
     remap = {}
-    for k in pl["ids"][1:]:
+    for k in pl["ids"][1:] if lod_remap else ():
         if k in tab:
             lod = ninja.tree_nodes(mdl, tab[k])
             if len(lod) == len(nodes):
@@ -160,27 +161,79 @@ def build_swap(gdi: str | Path, model: Path, roles: dict, work: Path, name: str,
                     rs.append((pl_, pl_ + ninja.chunk_list_len(mdl, pl_, "p")))
         return rs
     body = bytearray(mdl)
-    lods = [nd for k in pl["ids"][1:] if k in tab for nd in ninja.tree_nodes(mdl, tab[k])]
+    lods = [nd for k in pl["ids"][1:] if lod_remap and k in tab for nd in ninja.tree_nodes(mdl, tab[k])]
     for a_, b_ in model_ranges(nodes + lods) + [(nd["off"], nd["off"] + 52) for nd in lods]:
         body[a_:b_] = bytes(b_ - a_)
     for nd in others:                                       # nodes still in use keep their structs
         body[nd["off"]:nd["off"] + 52] = mdl[nd["off"]:nd["off"] + 52]
+    for nd in nodes:                                        # the main tree's node structs stay (edited in place)
+        body[nd["off"]:nd["off"] + 52] = mdl[nd["off"]:nd["off"] + 52]
+    freed = np.frombuffer(bytes(body), np.uint8) != np.frombuffer(mdl, np.uint8)
+    for a_, b_ in model_ranges(nodes + lods) + [(nd["off"], nd["off"] + 52) for nd in lods]:
+        if not body[a_:b_].strip(b"\0"):
+            freed[a_:b_] = True
+    holes, i = [], 0                                        # the freed byte runs: the new models go there first,
+    while i < len(freed):                                   # so the file (and the game's buffer) doesn't grow
+        if freed[i]:
+            j = i
+            while j < len(freed) and freed[j]:
+                j += 1
+            st_ = (i + 3) & ~3
+            if j - st_ >= 32:
+                holes.append([st_, j])
+            i = j
+        else:
+            i += 1
     for a_, b_ in model_ranges(others):                     # shared with a node outside the tree: keep
         body[a_:b_] = mdl[a_:b_]
     slot = pl["atlas_slot"]
 
+    def orig_vlist(nd):                                     # the node's vertex chunks without the end chunk
+        if not nd["model"]:
+            return b""
+        vl = struct.unpack_from("<I", mdl, nd["model"])[0]
+        return mdl[vl:vl + ninja.chunk_list_len(mdl, vl, "v") - 4] if vl else b""
+    vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
+
     def encode(geo):
         out = bytearray(body)
         out += bytes((-len(out)) % 32)
-        for j, nd in enumerate(nodes):
-            mo = 0
+        free = [h[:] for h in holes]
+
+        def alloc(blob):                                    # best fit into a freed hole, else at the end
+            size = (len(blob) + 3) & ~3
+            fits = [h for h in free if h[1] - h[0] >= size]
+            if fits:
+                h = min(fits, key=lambda h: h[1] - h[0])
+                o, h[0] = h[0], h[0] + size
+            else:
+                o = len(out)
+                out.extend(bytes(size))
+            out[o:o + len(blob)] = blob
+            return o
+        # The game reads the original vertex lists (weighted vertices; it hangs without them), so every node keeps
+        # its vertex chunks (copied) and only its strips change: the character's vertices go after them, from cache
+        # slot `vbase` on (past every slot the original chunks write), and its strips draw those.
+        ep = None
+        lists = {}
+        for j in sorted(range(len(nodes)), key=lambda j: -len(geo[j][2]) if j in geo else 0):
+            nd = nodes[j]
+            keep = orig_vlist(nd)
             if j in geo:
                 P, N, T = geo[j]
-                vl, pl_, c, r = ninja.cnk_model_lists(P, N, T, slot, mat, tiny_fl, tex_fl, strip_fl)
-                mo = len(out)
-                vo, po = mo + 24, mo + 24 + len(vl)
-                out += struct.pack("<II4f", vo, po, *c, r) + vl + pl_
-                out += bytes((-len(out)) % 4)
+                vl, pl_, c, r = ninja.cnk_model_lists(P, N, T, slot, mat, tiny_fl, tex_fl, strip_fl, base=vbase,
+                                                      keep_vlist=keep)
+                lists[j] = (alloc(vl), alloc(pl_), c, r)
+            elif nd["model"]:
+                if ep is None:
+                    ep = alloc(struct.pack("<HH", 0xFF, 0))
+                c_r = struct.unpack_from("<4f", mdl, nd["model"] + 8)
+                lists[j] = (alloc(keep + struct.pack("<I", 0xFF)) if keep else 0, ep, list(c_r[:3]), c_r[3])
+        for j, nd in enumerate(nodes):
+            mo = 0
+            if j in lists:
+                vo, po, c, r = lists[j]
+                mo = alloc(struct.pack("<II4f", vo, po, *c, r))
             flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]   # drawn: clear NJD_EVAL_HIDE
             struct.pack_into("<II", out, nd["off"], flags, mo)
         o = 0

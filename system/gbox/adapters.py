@@ -723,6 +723,12 @@ class RetroArchAdapter(CommandAdapter):
             self.cmd("PAUSE_TOGGLE")
         return self.query_runtime()
 
+    def reset(self) -> dict:
+        """Reset the emulated console (RetroArch RESET = the core's soft reset / power cycle); unpauses first."""
+        self.resume()
+        self.cmd("RESET")
+        return {"reset": True} | self.query_runtime()
+
     def rewind(self, seconds: float = 5.0) -> dict:
         """Jump back in time through RetroArch's rewind buffer (one REWIND step per frame; each step = granularity frames)."""
         if not self.rewind_on:

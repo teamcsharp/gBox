@@ -514,7 +514,7 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | use | overlay | extract | add | blender | environments | swap | place | unplace
+    op: str = "list"                       # list | get | use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
     character: str = ""                    # slug, name or alias ("leon", "Aya", "my PSO character"); extract: what to extract
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
@@ -874,8 +874,91 @@ def _sa2_run(ctx, game, e, work):
         except Exception:                                  # noqa: BLE001
             pass
     glb = sa2_chars.export(gdi, str(work), e["key"], max(tris, key=tris.get))
-    return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.sa2_chars + gbox.ninja",
-            "source_files": [f"SONIC2/{e['key']}MDL.PRS", f"SONIC2/{e['key']}TEX.PRS"]}
+    out = {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.sa2_chars + gbox.ninja",
+           "source_files": [f"SONIC2/{e['key']}MDL.PRS", f"SONIC2/{e['key']}TEX.PRS"]}
+    if e.get("kind", "character") == "character":
+        try:
+            out["roles"] = tree_roles(glb)
+        except Exception:                                  # noqa: BLE001 - no humanoid tree (Chao, blobs): no roles
+            pass
+    return out
+
+
+def tree_roles(path: Path) -> dict[str, str]:
+    """Body roles of a humanoid skeleton from its joint tree + rest positions (+Y up, facing +Z, left = +X), for rigs
+    with generic joint names (SA2's node000..): feet = the lowest leaves left/right, pelvis = their common ancestor,
+    hands = the outermost leaves outside the pelvis subtree below mid-head height, chest = the parent of the hands'
+    common ancestor, head = the first branching joint toward the top of the model; limb joints = the position groups
+    along each chain (shoulder / elbow / wrist; hip / knee nearest mid-leg / ankle). Reproduces SA2 Sonic's hand-picked
+    roles."""
+    gl = _load(path)[0]
+    from .re4gc_models import _node_world
+    W = _node_world(gl)
+    sk = max(gl.get("skins") or [{"joints": []}], key=lambda x: len(x["joints"]))["joints"]
+    if len(sk) < 8:
+        raise ValueError("no skeleton")
+    name = {j: gl["nodes"][j].get("name", f"node{j}") for j in sk}
+    pos = {j: np.asarray(W[j])[:3, 3] for j in sk}
+    par = {c: i for i, n in enumerate(gl["nodes"]) for c in n.get("children", []) if c in name and i in name}
+    kids = {j: [c for c in gl["nodes"][j].get("children", []) if c in name] for j in sk}
+
+    def anc(j):
+        out = [j]
+        while out[-1] in par:
+            out.append(par[out[-1]])
+        return out
+
+    def lca(a, b):
+        A = anc(a)
+        return next(x for x in anc(b) if x in A)
+
+    P = np.array([pos[j] for j in sk])
+    H = float(np.ptp(P[:, 1]))
+    y0, ytop = float(P[:, 1].min()), float(P[:, 1].max())
+
+    def groups(chain):
+        G = []
+        for j in chain:
+            if G and np.linalg.norm(pos[j] - pos[G[-1][-1]]) < 0.02 * H:
+                G[-1].append(j)
+            else:
+                G.append([j])
+        return G
+
+    def path(a, leaf):                                     # joints below a, toward leaf
+        A = list(reversed(anc(leaf)))
+        return A[A.index(a) + 1:]
+    leaves = [j for j in sk if not kids[j]]
+    lf = min([j for j in leaves if pos[j][0] > 0.02 * H], key=lambda j: pos[j][1])
+    rf = min([j for j in leaves if pos[j][0] < -0.02 * H], key=lambda j: pos[j][1])
+    pelvis = lca(lf, rf)
+    upper = [j for j in leaves if pelvis not in anc(j) and pos[j][1] < pos[pelvis][1] + 0.5 * (ytop - pos[pelvis][1])]
+    lh, rh = max(upper, key=lambda j: pos[j][0]), min(upper, key=lambda j: pos[j][0])
+    sh = lca(lh, rh)
+    hip = lca(sh, pelvis)
+    chest = par[sh] if sh in par and pos[par[sh]][1] > pos[hip][1] else sh
+    top = max(sk, key=lambda j: (round(pos[j][1] / H, 2), -sk.index(j)))
+    hd = path(sh, top)[0] if sh in anc(top) and sh != top else top
+    while len(kids[hd]) == 1:
+        hd = kids[hd][0]
+    roles = {"hip": name[hip], "chest": name[chest], "head": name[hd]}
+    for side, hand, foot in (("l", lh, lf), ("r", rh, rf)):
+        G = groups(path(sh, hand))
+        roles[f"{side}_upper"] = name[G[0][-1]]
+        if len(G) > 2:
+            roles[f"{side}_fore"], roles[f"{side}_hand"] = name[G[1][0]], name[G[2][0]]
+        G = groups(path(pelvis, foot))
+        hy = pos[G[0][0]][1]
+        roles[f"{side}_thigh"] = name[G[0][-1]]
+        fg = [g for g in G[1:] if pos[g[0]][1] - y0 > 0.15 * (hy - y0)]
+        if fg:
+            ft = fg[-1]
+            roles[f"{side}_foot"] = name[ft[-1]]
+            ay = pos[ft[0]][1]
+            mid = [g for g in G[1:] if g is not ft and pos[g[0]][1] > ay]
+            if mid:
+                roles[f"{side}_shin"] = name[min(mid, key=lambda g: abs(pos[g[0]][1] - (hy + ay) / 2))[0]]
+    return roles
 
 
 FF7_CHARS = [("CLOUD", "Cloud Strife (battle)", ["FF7 Cloud battle"]), ("HICLOUD", "Cloud Strife", ["Cloud", "FF7 Cloud"]),
@@ -886,8 +969,27 @@ FF7_CHARS = [("CLOUD", "Cloud Strife (battle)", ["FF7 Cloud battle"]), ("HICLOUD
              ("HELLMASK", "Hellmasker", []), ("DEATHGIG", "Death Gigas", []), ("CHAOS", "Chaos (Vincent)", [])]
 
 
+def _ff7_field_roster():
+    from .ff7_models import FIELD_BCX
+    return [{"key": f"FIELD:{k}", "slug": f"ff7_{k.lower()}_field", "name": n, "kind": "character",
+             "aliases": [n.replace(" (field)", " field"), "FF7 " + n]} for k, n in FIELD_BCX.items()]
+
+
 def _ff7_run(ctx, game, e, work):
     from . import ff7_models as F
+    if e["key"].startswith("FIELD:"):                      # field model (FIELD/<NAME>.BCX), body roles from its topology
+        from .ff7_swap import field_target
+        nm = e["key"][6:]
+        fm = F.field_from_disc(_rom(ctx, game), nm)
+        out = work / f"ff7_{nm.lower()}_field.gltf"
+        F.field_to_gltf(fm, out)
+        try:
+            roles = {r: f"j{b:02d}" for r, b in field_target(fm)["jmap"].items()}
+        except ValueError:
+            roles = None
+        return {"files": [out], "tool": "gbox.ff7_models (field model, read_field_model)", "source_files": [f"FIELD/{nm}.BCX"],
+                "roles": roles, "notes": "FF7 field model (bind pose = frame 0 of its standing animation); Gouraud colours, "
+                                         "the few textured face polygons drawn in their vertex colours"}
     model = F.from_disc(_rom(ctx, game), f"ENEMY6/{e['key']}.LZS")
     out = work / f"ff7_{e['key'].lower()}.gltf"
     names = {i: f"j{i:02d}" for i in range(len(model["bones"]))}
@@ -913,10 +1015,19 @@ def _pe_roster():
 
 def _pe_run(ctx, game, e, work):
     from . import parasite_eve as PE
+    from .pe_swap import OUTFIT_BONES, aya_target
     out = work / f"aya_{PE.AYA_OUTFITS_NAMES[e['key']]}.glb"
-    PE.export_aya(PE.PEData(_rom(ctx, game)), out, e["key"])
+    pe = PE.PEData(_rom(ctx, game))
+    PE.export_aya(pe, out, e["key"])
+    # every outfit has its own bone layout: roles from gbox.pe_swap's per-outfit map (left/right from the geometry)
+    t = aya_target(pe, e["key"])
+    ob = OUTFIT_BONES[e["key"]]
+    roles = {r: f"j{b:02d}" for r, b in t["jmap"].items()} | {"neck": f"j{ob['neck']:02d}"}
+    for side in ("l", "r"):
+        arm = next(a for a in (ob["armA"], ob["armB"]) if a[1] == t["jmap"][f"{side}_upper"])
+        roles[f"{side}_clav"] = f"j{arm[0]:02d}"
     return {"files": [out], "tool": "gbox.parasite_eve (export_aya)", "source_files": ["PE.IMG (Aya common blobs)", "SLUS_006.62"],
-            "roles": _roles_by_name(out, {k: [v] for k, v in AYA_ROLES.items()})}
+            "roles": roles}
 
 
 def _pso_roster():
@@ -982,7 +1093,7 @@ DEDICATED = [
               for k, n, a, kd in SA2_CHARS], _sa2_run),
     ("ff7", lambda t, p: re.search(r"final fantasy vii\b", t) is not None and p == "psx",
      lambda: [{"key": k, "slug": "cloud" if k == "HICLOUD" else f"ff7_{k.lower()}", "name": n, "aliases": a, "kind": "character"}
-              for k, n, a in FF7_CHARS], _ff7_run),
+              for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
     ("shenmue", lambda t, p: re.match(r"shenmue(?! ii)", t) is not None and p == "dreamcast",
@@ -1504,8 +1615,9 @@ def characters_tool(inp: CharIn, ctx):
     on the picture, 0..1]: returns it if it's already in the collection, else runs the game's own extractor, else cuts it
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
     and files a request | use character=<name> session_id|game: launch/build the swap mod (RE4 GC replaces Leon, SM64 Mario, GTA LCS
-    PS2 every Toni outfit, OoT Link both ages or [x, y | slot=<NPC name>] the NPC there), else
-    report what that game lacks | swap a=<who> b=<who> session_id (OoT; who = "link", an NPC name or a picture point
+    PS2 every Toni outfit, OoT Link both ages or [x, y | slot=<NPC name>] the NPC there, Parasite Eve Aya (all outfits),
+    FF7 Cloud (field + battle)), else the overlay (when the game runs) + a gap report so the writer gets built |
+    coverage: per studied game, can gBox rip its characters and reimport any character into it (slots) | swap a=<who> b=<who> session_id (OoT; who = "link", an NPC name or a picture point
     "x,y"): A gets B's model and B gets A's (one_way=true: only A <- B, "play as B") | place character=<name>
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
@@ -1517,6 +1629,9 @@ def characters_tool(inp: CharIn, ctx):
     if inp.op == "environments":
         envs = _api(ctx, "GET", "/api/environments")
         return {"result": {"environments": [_brief(m, True) for m in envs]}}
+    if inp.op == "coverage":                                  # rip / reimport matrix per studied game (gbox.char_coverage)
+        from . import char_coverage
+        return {"result": char_coverage.coverage(ctx, _api)}
     q = {"game_id": inp.game_id} if inp.game_id else {}
     chars = _api(ctx, "GET", "/api/characters", params=q)
     if inp.op == "list":
@@ -1568,7 +1683,7 @@ def characters_tool(inp: CharIn, ctx):
         from . import overlay_swap
         return {"result": overlay_swap.start(ctx, _api, meta, inp.session_id, inp.x, inp.y)}
     if inp.op != "use":
-        raise ValueError(f"unknown op {inp.op} (list | get | use | overlay | extract | add | blender | environments)")
+        raise ValueError(f"unknown op {inp.op} (list | get | use | overlay | extract | add | blender | environments | coverage)")
     game = _game(ctx, inp)
     gid = game["game_id"]
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
@@ -1587,6 +1702,12 @@ def characters_tool(inp: CharIn, ctx):
     from . import metal_arms
     if gid in metal_arms.GAME_IDS and inp.slot in ("player", "npc", "enemy", "enemies"):   # Metal Arms GC: Glitch / a bot
         return {"result": out | metal_arms.use(ctx, meta, game, inp)}
+    from . import sa2_chars
+    if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
+        return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
+    from . import pso_player
+    if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
+        return {"result": out | pso_player.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
@@ -1621,7 +1742,5 @@ def characters_tool(inp: CharIn, ctx):
                 "gbox/re4gc_enemies.Builder (Melee rigs) run by hand", "steps": ["re4gc_enemies.combine for the Ganado files"]}
     else:
         need = needs_for(game)
-    req = _request(ctx, meta, game, need)
-    return {"result": out | {"status": "missing", "missing": need, "request": req,
-                             "message": f"No swap writer for {game['title']} yet; filed request #{req.get('number')}. "
-                                        "characters op=overlay draws it over the player on screen now (an overlay)."}}
+    from . import char_coverage                               # no writer: overlay now (if the game runs) + a gap report
+    return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
