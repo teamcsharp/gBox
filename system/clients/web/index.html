@@ -590,6 +590,11 @@ const state = s => `<span class="${s === "succeeded" ? "ok" : /failed|invalid|re
 // ---------------- Library ----------------
 const L = { q: "", platform: "", system: "", offset: 0, limit: 60, facets: null, plats: new Set(), sort: "name",
             fav: false, recent: false, local: false, letter: "", carousel: null };
+function newLibraryPage() {
+  L.revision = (L.revision || 0) + 1;
+  L.loading = false; L.loadingLess = false;
+  return L.revision;
+}
 try { const s = JSON.parse(localStorage.getItem("gbox_lib") || "{}"); Object.assign(L, s, { plats: new Set(s.plats || []) }); } catch {}
 const saveLib = () => { try { localStorage.setItem("gbox_lib", JSON.stringify({ sort: L.sort, fav: L.fav, recent: L.recent, local: L.local, letter: L.letter, plats: [...L.plats] })); } catch {} };
 const PNAMES = { arcade: "Arcade (MAME)", arcade_fbneo: "Arcade (FBNeo)", arcade_hbmame: "Arcade (HBMAME)", nes: "NES / Famicom", snes: "Super Nintendo",
@@ -600,6 +605,7 @@ const PNAMES = { arcade: "Arcade (MAME)", arcade_fbneo: "Arcade (FBNeo)", arcade
 const queryParams = (offset) => new URLSearchParams({ q: L.q, platform: L.plats.size ? [...L.plats].join(",") + "," : L.platform, system: L.system,
   offset, limit: L.limit, sort: L.sort, favorites: L.fav, recent: L.recent, local: L.local ? (window.GBOX_LOCAL?.worker || "") : "", letter: L.letter });
 async function library() {
+  newLibraryPage(); L.jumping = false;
   L.facets = L.facets || await api("/api/catalog/facets");
   L.offset = 0; L.done = false; L.start = 0;
   L.carousel = L.carousel || await api("/api/catalog/platforms");
@@ -657,52 +663,76 @@ function carScroll(d) { const t = $("#car"); t.scrollBy({ left: d * t.clientWidt
 const LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
 function setupScrub() {
   const sc = $("#scrub"), tip = $("#scrubtip");
+  sc._cleanup?.();
   sc.style.display = cur === "Library" ? "flex" : "none";
-  sc.innerHTML = LETTERS.map(c => `<span data-l="${c}">${c}</span>`).join("");
+  sc.innerHTML = LETTERS.map(c => `<span data-l="${c}" role="button" tabindex="0" aria-label="Jump to ${c}">${c}</span>`).join("");
   let dragging = false, pending = null, timer = null;
+  const run = c => jumpTo(c).catch(e => { if (cur === "Library") $("#count").textContent = `Could not jump to ${c}: ${e.message}`; });
   const pick = e => {
     const r = sc.getBoundingClientRect(), i = Math.max(0, Math.min(LETTERS.length - 1, Math.floor((e.clientY - r.top) / r.height * LETTERS.length)));
     const c = LETTERS[i];
     sc.querySelectorAll("span").forEach(s => s.classList.toggle("on", s.dataset.l === c));
     tip.textContent = c; tip.style.display = "flex"; tip.style.top = Math.max(60, e.clientY - 26) + "px";
-    if (c !== pending) { pending = c; clearTimeout(timer); timer = setTimeout(() => jumpTo(c), dragging ? 120 : 0); }
+    if (c !== pending) { pending = c; clearTimeout(timer); timer = setTimeout(() => { timer = null; run(c); }, 90); }
   };
-  sc.onpointerdown = e => { dragging = true; sc.classList.add("drag"); sc.setPointerCapture(e.pointerId); pick(e); };
+  sc.onpointerdown = e => { if (e.button !== 0) return; e.preventDefault(); dragging = true; pending = null; sc.classList.add("drag"); sc.setPointerCapture(e.pointerId); pick(e); };
   sc.onpointermove = e => { if (dragging) pick(e); };
-  sc.onpointerup = () => { dragging = false; sc.classList.remove("drag"); setTimeout(() => tip.style.display = "none", 500); };
+  sc.onpointerup = e => { if (!dragging) return; pick(e); dragging = false; sc.classList.remove("drag");
+    if (sc.hasPointerCapture(e.pointerId)) sc.releasePointerCapture(e.pointerId);
+    if (timer) { clearTimeout(timer); timer = null; run(pending); }
+    setTimeout(() => tip.style.display = "none", 500); };
+  sc.onpointercancel = () => { dragging = false; clearTimeout(timer); timer = null; pending = null; sc.classList.remove("drag"); tip.style.display = "none"; };
+  sc.onkeydown = e => { const c = e.target.dataset.l; if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); run(c); } };
+  sc._cleanup = () => { clearTimeout(timer); dragging = false; sc.classList.remove("drag"); tip.style.display = "none"; };
 }
 async function jumpTo(letter) {
-  if (L.sort !== "name") { L.sort = "name"; saveLib(); }               // the index follows the A-Z order
+  if (cur !== "Library") return;
+  const revision = newLibraryPage(); L.jumping = true;
+  L.sort = "name"; L.letter = ""; saveLib(); // jump within the full filtered list, not a legacy single-letter filter
+  if ($("#sort")) $("#sort").value = "name";
+  $("#count").textContent = `Jumping to ${letter}…`;
   const p = queryParams(0); p.delete("offset"); p.delete("limit"); p.delete("sort"); p.delete("letter");
+  try {
   const { offset } = await api(`/api/catalog/letter_offset?letter=${encodeURIComponent(letter)}&` + p);
+  if (revision !== L.revision || cur !== "Library") return;
   const r = await api("/api/catalog?" + queryParams(offset));
+  if (revision !== L.revision || cur !== "Library") return;
   L.start = offset; L.shown = offset + r.items.length; L.done = L.shown >= r.total; L.total = r.total;
   $("#grid").innerHTML = r.items.map(card).join("");
   $("#less").style.display = L.start > 0 ? "block" : "none";
   $("#count").textContent = `${r.total.toLocaleString()} matches · from “${letter}” (#${(offset + 1).toLocaleString()})`;
-  scrollTo({ top: $("#grid").offsetTop - 150 });
+  $("#more").textContent = L.done ? "That's everything." : "Loading more…";
+  const grid = $("#grid"), pinned = $(".libtop"), header = $("header");
+  scrollTo({ top: Math.max(0, grid.getBoundingClientRect().top + scrollY - (header?.offsetHeight || 0) - (pinned?.offsetHeight || 0) - 8), behavior: "instant" });
+  } catch (e) {
+    if (revision === L.revision && cur === "Library") throw e;
+  } finally { if (revision === L.revision) L.jumping = false; }
 }
 async function loadLess() {                                             // scrolling up past the jump point
-  if (L.loadingLess || !L.start || cur !== "Library") return;
+  if (L.loadingLess || L.jumping || !L.start || cur !== "Library") return;
+  const revision = L.revision, start = L.start;
   L.loadingLess = true;
   try {
-    const off = Math.max(0, L.start - L.limit), r = await api("/api/catalog?" + queryParams(off));
-    const items = r.items.slice(0, L.start - off), before = document.documentElement.scrollHeight;
+    const off = Math.max(0, start - L.limit), r = await api("/api/catalog?" + queryParams(off));
+    if (revision !== L.revision || cur !== "Library") return;
+    const items = r.items.slice(0, start - off), before = document.documentElement.scrollHeight;
     $("#grid").insertAdjacentHTML("afterbegin", items.map(card).join(""));
     scrollBy(0, document.documentElement.scrollHeight - before);       // keep the view steady
     L.start = off; $("#less").style.display = L.start > 0 ? "block" : "none";
-  } finally { L.loadingLess = false; }
+  } finally { if (revision === L.revision) L.loadingLess = false; }
 }
 async function loadMore() {
-  if (L.loading || L.done || cur !== "Library") return;
+  if (L.loading || L.jumping || L.done || cur !== "Library") return;
+  const revision = L.revision;
   L.loading = true;
   try {
     const r = await api("/api/catalog?" + queryParams(L.shown));
+    if (revision !== L.revision || cur !== "Library") return;
     $("#grid")?.insertAdjacentHTML("beforeend", r.items.map(card).join(""));
     L.shown += r.items.length; L.done = !r.items.length || L.shown >= r.total;
     const c = $("#count"); if (c) c.textContent = `${r.total.toLocaleString()} matches · showing ${L.shown.toLocaleString()}`;
     const m = $("#more"); if (m) m.textContent = L.done ? "That's everything." : "Loading more…";
-  } finally { L.loading = false; }
+  } finally { if (revision === L.revision) L.loading = false; }
   const m = $("#more");                                   // still visible (tall screen)? keep filling
   if (m && !L.done && m.getBoundingClientRect().top < innerHeight + 800) loadMore();
 }
