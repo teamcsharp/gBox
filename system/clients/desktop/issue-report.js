@@ -5,8 +5,9 @@ window.openIssueReport = function ({ diagnostics, submit, clipboardFiles, onSent
   const dialog = document.createElement("dialog");
   dialog.id = "issue-modal";
   dialog.style.cssText = "width:min(620px,85vw);max-height:85vh;overflow:auto;background:var(--bg,#16161a);color:var(--fg,#eee);border:1px solid var(--line,#444);border-radius:12px;padding:22px";
-  dialog.innerHTML = `<form>
-    <h2 style="margin:0 0 16px">Report issue</h2>
+  dialog.innerHTML = `<form style="display:flex;flex-direction:column;height:100%;min-height:0">
+    <h2 style="margin:0 0 16px;flex-shrink:0">Report issue</h2>
+    <div id="issue-fields" style="flex:1;min-height:0;overflow:auto">
     <label for="issue-subject">Subject</label>
     <input id="issue-subject" required maxlength="140" placeholder="Briefly describe the problem" style="width:100%;box-sizing:border-box;margin:6px 0 14px">
     <label for="issue-body">Issue</label>
@@ -20,10 +21,13 @@ window.openIssueReport = function ({ diagnostics, submit, clipboardFiles, onSent
     </div>
     <p style="font-size:12px;color:var(--mut,#aaa)">A screenshot and available game diagnostics are attached when you send.</p>
     <p id="issue-status" role="status" style="font-size:13px;white-space:pre-wrap"></p>
+    </div><div id="issue-actions" style="flex-shrink:0;padding-top:10px">
     <button type="submit" class="act pri" id="issue-send">Send report</button>
     <button type="button" class="act" id="issue-cancel">Cancel</button>
+    </div>
   </form>`;
   document.body.append(dialog); dialog.showModal();
+  window.floating?.(dialog, dialog.querySelector("h2"), "issue-report");
   const find = s => dialog.querySelector(s), attachments = [];
   let pending = Promise.resolve(), busy = false, attachmentError = null;
   const status = text => { find("#issue-status").textContent = text; };
@@ -74,7 +78,7 @@ window.openIssueReport = function ({ diagnostics, submit, clipboardFiles, onSent
   find("#issue-paste").onclick = () => enqueue(async () => {
     const items = await clipboardFiles(); if (!items.length) throw new Error("Copy files in File Explorer, then paste here."); return items;
   });
-  const close = () => { if (!busy) { dialog.close(); dialog.remove(); } };
+  const close = () => { if (!busy) { dialog.__floatingDestroy?.(); dialog.close(); dialog.remove(); } };
   find("#issue-cancel").onclick = close;
   dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
   find("form").onsubmit = async event => {
@@ -89,7 +93,7 @@ window.openIssueReport = function ({ diagnostics, submit, clipboardFiles, onSent
       const gathered = await context; if (gathered.error) throw gathered.error;
       const result = await submit({ ...gathered.value, title, note, attachments: [...attachments, ...(gathered.value.attachments || [])] });
       if (!result.ok) throw new Error(result.error || `Request failed (${result.status || "unknown error"})`);
-      dialog.close(); dialog.remove(); onSent(result.data);
+      dialog.__floatingDestroy?.(); dialog.close(); dialog.remove(); onSent(result.data);
     } catch (error) {
       busy = false; for (const control of dialog.querySelectorAll("button,input,textarea")) control.disabled = false;
       draw(); status("Report not sent: " + error.message);

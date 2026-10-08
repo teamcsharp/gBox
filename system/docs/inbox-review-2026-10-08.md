@@ -75,3 +75,15 @@ Eighteen pending operator requests were completed or confirmed against their imp
 | 88 | The engineering overview exists with network, structure, security, runtime/dependency/footprint sections and is updated with the current inbox, reports, recording, progress and focus architecture. |
 
 Validation: 33 Electron behavior checks passed, plus the actual F5 main-process handler check. Sixteen relevant Python API/control-plane/inbox tests passed. JavaScript syntax and whitespace checks passed. Test fixtures do not establish support for game-specific swaps, autoplay or extraction in unsupported titles; those requests remain open. The broader performance investigation (712) also remains open: this batch fixes inbox rebuilds and a keyboard-focus race, rather than claiming every performance issue is resolved.
+
+
+## Popup lifecycle and report typing batch ? 2026-10-08
+
+Completed work for requests 125, 149, 150, 196, 224 and 720:
+
+- Shared floating-window handling covers existing chat, audit, service, talk, task, controller, eyedropper, save-state, inventory and troubleshooting windows, plus the issue-report dialog. Dragging continues through transient pointer-capture loss until actual pointer release/cancel, with window-event fallback. Header dragging, empty-area dragging and Alt+drag movement preserve normal editor/control behavior.
+- Geometry clamps to the usable viewport, including screens smaller than the former 320?240 minimum. Off-screen saved layouts are recovered, header/footer bounds remain accessible, and five open/close cycles retain the saved size rather than shrinking it.
+- Removing a popup cancels its active drag and releases event listeners and mutation observers. Early inbox-refresh checks skip expensive formatting while a report or editor owns the keyboard.
+- Real Electron `sendInputEvent` mouse checks exercised a drag lasting more than one second and native corner resizing. Native keyboard checks entered all 100 report characters in 66 ms. The full 724-entry inbox retained every typed character and focus during 27 overlapping refreshes; 100 paced input events finished in 1.09 seconds. Seventeen native/UI assertions passed, including simultaneous visibility of the heading and action footer in a small popup. These measurements describe the local validation fixture, rather than every possible hardware/game combination.
+
+Only requests whose described popup/typing behavior was exercised are marked done. The broad application performance investigation and universal game-mod/extraction requests remain unfinished.

@@ -700,6 +700,7 @@ window.assetView = async (box, glbUrl) => {
     </div></section>
   </main>
 </div>
+<script src="floating.js"></script>
 <script src="inbox-view.js"></script>
 <script src="task-activity.js"></script>
 <script>
@@ -1306,6 +1307,7 @@ async function refreshInbox() {
   const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
   const host = $("#reqlist"); if (!host) return;
+  if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const tok = await gbox.token();
   const [mr, rg] = await Promise.all([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
   if (rg?.ok) REG.tools = Object.fromEntries(rg.data.tools.map(z => [z.name, z.description || ""]));
@@ -3493,57 +3495,10 @@ async function statusRight() {
 statusRight(); setInterval(statusRight, 5000);
 
 // ================= every pop-up: drag by its header, resize from the corner; position + size remembered =================
-function floating(el, handle, key) {
-  // drag by the header; resize from any edge or corner; always fully inside the app (above the status bar).
-  // Size/position are saved only when a drag ends (saving transient layouts made panels shrink every time they opened).
-  const set = (k, v) => el.style.setProperty(k, v, "important");     // beats the layout rules' !important
-  const MINW = 320, MINH = 240, TOP = 36, BAR = 30;
-  const place = g => {
-    const r = el.getBoundingClientRect();
-    const w = Math.max(MINW, Math.min(innerWidth, g.w || r.width)), h = Math.max(MINH, Math.min(innerHeight - TOP - BAR, g.h || r.height));
-    set("right", "auto"); set("bottom", "auto"); set("width", w + "px"); set("height", h + "px");
-    set("left", Math.max(0, Math.min(innerWidth - w, g.x)) + "px");
-    set("top", Math.max(TOP, Math.min(innerHeight - BAR - h, g.y)) + "px");
-    if (typeof EMB !== "undefined" && EMB.sid && !EMB.busy) { EMB.busy = true; embedTick().finally(() => EMB.busy = false); }   // re-cut the game window now, not in 250 ms
-  };
-  try { const g = JSON.parse(localStorage.getItem("gbox_float_" + key) || "null"); if (g) requestAnimationFrame(() => place(g)); } catch {}
-  const save = () => { const r = el.getBoundingClientRect(); if (r.width < MINW || r.height < MINH) return;
-    try { localStorage.setItem("gbox_float_" + key, JSON.stringify({ x: r.left, y: r.top, w: r.width, h: r.height })); } catch {} };
-  const drag = (target, move) => target.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || (target === handle && e.target.closest("button, input, select, textarea, a"))) return;
-    e.preventDefault(); e.stopPropagation();
-    const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY;
-    target.setPointerCapture(e.pointerId);
-    target.onpointermove = ev => move(r, ev.clientX - x0, ev.clientY - y0);
-    target.onpointerup = target.onpointercancel = () => { target.onpointermove = target.onpointerup = target.onpointercancel = null; save(); };
-  });
-  handle.classList.add("gb-drag");
-  drag(handle, (r, dx, dy) => place({ x: r.left + dx, y: r.top + dy, w: r.width, h: r.height }));
-  // anywhere else in the popup moves it too (after 5px, so clicks still click); controls, text and canvases keep their own mouse
-  el.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || handle.contains(e.target) || e.target.closest(".gb-rz, button, input, textarea, select, a, label, canvas, video, img, pre, code, p, li, td, [contenteditable], .cm, .lc, .slider")) return;
-    const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY; let on = false;
-    const mv = ev => { const dx = ev.clientX - x0, dy = ev.clientY - y0;
-      if (!on && Math.hypot(dx, dy) < 5) return; on = true; getSelection()?.removeAllRanges(); place({ x: r.left + dx, y: r.top + dy, w: r.width, h: r.height }); };
-    const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); if (on) save(); };
-    addEventListener("pointermove", mv); addEventListener("pointerup", up);
-  });
-  el.addEventListener("scroll", () => { if (getComputedStyle(el).overflow === "hidden") el.scrollTop = el.scrollLeft = 0; });
-  for (const side of ["n", "s", "e", "w", "ne", "nw", "se", "sw"]) {       // invisible resize handles on every edge + corner
-    const g = document.createElement("div"); g.className = "gb-rz gb-rz-" + side; el.appendChild(g);
-    drag(g, (r, dx, dy) => {
-      let { left: x, top: y, width: w, height: h } = r;
-      if (side.includes("e")) w = r.width + dx;
-      if (side.includes("s")) h = r.height + dy;
-      if (side.includes("w")) { w = Math.max(MINW, r.width - dx); x = r.right - w; }
-      if (side.includes("n")) { h = Math.max(MINH, r.height - dy); y = r.bottom - h; }
-      place({ x, y, w, h });
-    });
-  }
-  addEventListener("resize", () => { const r = el.getBoundingClientRect(); if (r.width) place({ x: r.left, y: r.top, w: r.width, h: r.height }); });
-  handle.addEventListener("dblclick", e => { if (e.target.closest("button, input, select")) return;
-    try { localStorage.removeItem("gbox_float_" + key); } catch {} ["left", "top", "right", "bottom", "width", "height"].forEach(k => el.style.removeProperty(k)); });
-}
+window.onFloatingMove = () => {
+  if (EMB.sid && !EMB.busy) { EMB.busy = true; embedTick().finally(() => EMB.busy = false); }
+};
+floating($("#taskpanel"), $("#taskpanel .th"), "tasks");
 floating($("#chatpanel"), $("#chathead"), "chat");
 floating($("#auditpanel"), $("#auditpanel .ah"), "audit");
 floating($("#live"), $("#live .hd"), "talk");

@@ -349,3 +349,5 @@ Spark containers: `searxng` (:8081), `wyoming-whisper` (:10300), `wyoming-piper`
 * Right-click boot setup persists a character slug separately from its boot image, including shared roster mods. Game-specific swap/extraction writers and some replay states still require work; the visible selector does not establish support for every game or asset.
 
 Changelog addition: 2026-10-08 ? inbox hierarchy and draft preservation, issue-report popup with arbitrary files, playback audio and gameplay-only recording, background-task progress and keyboard focus checks. These changes were tested on Windows; live service and desktop rollout is recorded in the inbox review.
+
+* Popup lifecycle update: `clients/desktop/floating.js` provides shared persisted geometry, viewport clamping, drag/resize handling with pointer-capture-loss fallback, and listener cleanup on removal. Issue reports keep their heading/actions visible while the fields scroll. Native input validation and the full 724-entry inbox typing benchmark are recorded in [the inbox review](inbox-review-2026-10-08.md).
