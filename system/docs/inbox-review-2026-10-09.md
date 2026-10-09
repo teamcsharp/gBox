@@ -1,12 +1,12 @@
 # Inbox review — 2026-10-09
 
-The live inbox contained 861 requests at the last snapshot: 586 done, 244 in progress, 25 open and 6 blocked. New requests arrived during this review, so these counts are a snapshot. Only requests with specific completion evidence were closed.
+The live inbox contained 861 requests at the last snapshot: 618 done, 216 in progress, 21 open and 6 blocked. New requests arrived during this review, so these counts are a snapshot. Only requests with specific completion evidence were closed.
 
 ## Completed in this pass
 
 | Requests | Result |
 | --- | --- |
-| 89 recurring review reminders | Audited their exact 15-minute windows across 17 stored chats and 38 operator turns. No operator turns occurred in those windows. Audit: `C:/tmp/gbox-review-audit-20261009.json`. |
+| 121 recurring review reminders | Audited their exact 15-minute windows across 17 stored chats and 38 operator turns. In 120 windows no operator turn occurred. One contained “Are you able to hear me?”, answered correctly with “I can hear you.” Audits: `C:/tmp/gbox-review-audit-20261009.json` and `C:/tmp/gbox-review-audit-late-20261009.json`. |
 | 809 | Console checklist persists visibility, filters game results, and applies to All, search, favorites, letter paging and console tiles. Eleven Edge checks passed. |
 | 807 | Flow icon placed at the far right of the desktop conversation toolbar; Edge layout checked at 1500, 1000 and 800 px. |
 | 811, 812, 814 | Running-session thumbnails keep the same image element through routine polling. The next frame is preloaded before replacement; a failed frame request does not erase the displayed frame. Browser check confirmed stable image identity while notifications changed. |
