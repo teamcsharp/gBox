@@ -24,6 +24,11 @@ u32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 u32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
 u32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
 u32.SetParent.restype = wintypes.HWND
+u32.GetParent.argtypes = [wintypes.HWND]
+u32.GetParent.restype = wintypes.HWND
+k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+k32.CloseHandle.argtypes = [wintypes.HANDLE]
 g32.CreateRectRgn.restype = wintypes.HRGN
 g32.CombineRgn.argtypes = [wintypes.HRGN, wintypes.HRGN, wintypes.HRGN, ctypes.c_int]
 g32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
@@ -66,14 +71,14 @@ def descendants(pid: int) -> set[int]:
     return out
 
 
-def find_window(pid: int):
+def find_window(pid: int, hidden=False):
     pids, best = descendants(pid), [None, 0]
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def cb(h, _):
         wpid = wintypes.DWORD()
         u32.GetWindowThreadProcessId(h, ctypes.byref(wpid))
-        if wpid.value in pids and u32.IsWindowVisible(h):
+        if wpid.value in pids and (hidden or u32.IsWindowVisible(h)):
             r = wintypes.RECT()
             if u32.IsIconic(h):                              # minimized (emulators started minimized): its normal size
                 class WP(ctypes.Structure):
@@ -95,12 +100,15 @@ def find_window(pid: int):
 
 
 def attach(pid: int, parent: int):
-    if state["hwnd"] and state["pid"] == pid and u32.IsWindow(state["hwnd"]):
+    if not parent or not u32.IsWindow(parent):
+        hide()
+        return {'ok': False, 'error': 'The gBox parent window is no longer available'}
+    if state["hwnd"] and state["pid"] == pid and u32.IsWindow(state["hwnd"]) and u32.GetParent(state['hwnd']) == parent:
         return {"ok": True, "hwnd": state["hwnd"], "already": True}
     detach()
     h = None
     for _ in range(150):                                     # the emulator may still be creating its window
-        h = find_window(pid)
+        h = find_window(pid) or find_window(pid, hidden=True)
         if h:
             break
         time.sleep(0.1)
@@ -115,6 +123,10 @@ def attach(pid: int, parent: int):
     u32.SetWindowLongPtrW(h, GWL_STYLE, style)
     u32.SetWindowLongPtrW(h, GWL_EXSTYLE, state["exstyle"] & ~WS_EX_APPWINDOW)   # no separate taskbar button
     u32.SetParent(h, parent)
+    if u32.GetParent(h) != parent:
+        u32.ShowWindow(h, SW_HIDE)
+        state.update(hwnd=None, pid=None, parent=None)
+        return {'ok': False, 'error': 'Game window could not be docked; hidden to prevent a desktop popup'}
     x, y, w, hh = state["rect"] or (0, 0, 640, 480)
     u32.SetWindowPos(h, 0, int(x), int(y), max(1, int(w)), max(1, int(hh)), SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW | 0x0010)   # NOACTIVATE
     if not state["shown"]:
@@ -210,11 +222,11 @@ def hide():
 def detach():
     h = state["hwnd"]
     if h and u32.IsWindow(h):
-        u32.SetParent(h, None)
-        u32.SetWindowLongPtrW(h, GWL_STYLE, state["style"])
-        u32.SetWindowLongPtrW(h, GWL_EXSTYLE, state["exstyle"])
-        u32.SetWindowPos(h, 0, 100, 100, 1280, 960, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
-    state.update(hwnd=None, pid=None, parent=None, holes=None)
+        # Switching views or game processes must never release a visible desktop popup.
+        u32.ShowWindow(h, SW_HIDE)
+        # Leave it parented: restoring top-level styles lets some emulators show it again.
+        # The worker stops old games; releasing a dock must not resurrect their windows.
+    state.update(hwnd=None, pid=None, parent=None, holes=None, placed=None)
     return {"ok": True}
 
 

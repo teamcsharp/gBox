@@ -1436,10 +1436,12 @@ function popups() {                                          // floating things 
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
 async function embedTick() {
+  if (EMB.busy) return;
+  EMB.busy = true;
   try {
     const r = await gbox.api("/api/sessions");
-    const mine = r.ok && r.data.find(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
-                                          && !EMB.closed.has(s.session_id));      // a closed game never comes back as a ghost
+    const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
+                                          && !EMB.closed.has(s.session_id)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is
     if (!mine) { pipHandle(null); EMB.sid = null; EMB.rect = null; if (EMB.pid) { EMB.pid = null; EMB.last = ""; await gbox.embedSync(null); } return; }
     if (mine.session_id !== EMB.sid) {
@@ -1486,6 +1488,7 @@ async function embedTick() {
     const key = JSON.stringify(st);
     if (key !== EMB.last || Date.now() - (EMB.t || 0) > 2000) { EMB.last = key; EMB.t = Date.now(); await gbox.embedSync(st); }   // resend: heals a missed show
   } catch { EMB.last = ""; }
+  finally { EMB.busy = false; }
 }
 setInterval(embedTick, 250);
 const VOV = { on: false };

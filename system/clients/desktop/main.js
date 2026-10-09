@@ -393,7 +393,13 @@ function f3(on) {
   try { if (on && !globalShortcut.isRegistered("F3")) Object.entries(keys).forEach(([k, a]) => globalShortcut.register(k, () => win && win.webContents.send("hotkey", a)));
         else if (!on && globalShortcut.isRegistered("F3")) Object.keys(keys).forEach(k => globalShortcut.unregister(k)); } catch {}
 }
-ipcMain.handle("embed:sync", async (_e, st) => {
+let embedSyncQueue = Promise.resolve();
+ipcMain.handle("embed:sync", (_e, st) => {
+  const next = embedSyncQueue.then(() => syncEmbeddedGame(st));
+  embedSyncQueue = next.catch(() => {});
+  return next;
+});
+async function syncEmbeddedGame(st) {
   // st: { pid, rect: {x,y,w,h} in window CSS px, visible }
   f3(!!(st && st.pid));
   if (!st || !st.pid) { if (embedded) { await embedCmd({ op: "hide" }); } return { ok: true }; }
@@ -407,7 +413,7 @@ ipcMain.handle("embed:sync", async (_e, st) => {
   const k = screen.getDisplayMatching(win.getBounds()).scaleFactor;
   return embedCmd({ op: "move", x: Math.round(st.rect.x * k), y: Math.round(st.rect.y * k), w: Math.round(st.rect.w * k), h: Math.round(st.rect.h * k),
                     holes: (st.holes || []).map(h => [h.x, h.y, h.w, h.h].map(v => Math.round(v * k))) });
-});
+}
 // Update pending = app or worker code on disk changed after this app started (the logo click applies it).
 const APP_START = Date.now();
 ipcMain.handle("update:pending", () => {

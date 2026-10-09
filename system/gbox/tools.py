@@ -209,6 +209,12 @@ class LaunchOut(BaseModel):
     detail: dict
 
 def _launch_accept(store, out: LaunchOut, actor: str):
+    for checkpoint in out.detail.get('previous_checkpoints', []):
+        old_sid = checkpoint['session_id']
+        old = store.get('session', old_sid)
+        if old:
+            store.put('session', old_sid, old | {'state': 'ended', 'ended': time.time(),
+                      'checkpoint': checkpoint['artifact'], 'exit': {'via': 'single_game', 'to': out.session_id}})
     g = out.detail.get("_game", {})
     store.put("session", out.session_id, {"session_id": out.session_id, "game_id": g.get("game_id"), "title": g.get("title"),
                                           "mod": out.detail.get("mod") or "",
@@ -226,11 +232,53 @@ def _launch_fail(store, job: dict, actor: str):
     if gid:
         store.catalog_update(gid, playable=f"launch failed: {(job.get('error') or '')[:200]}")
 
-@tool("launch_game", "1.1", LaunchIn, LaunchOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=900,
+_LAUNCH_LOCK = threading.RLock()
+
+
+def _close_previous_games(ctx):
+    """One emulator per worker. Preserve every current game before stopping any of them."""
+    previous = list(SESSIONS.items())
+    checkpoints = []
+    for sid, (ad, game) in previous:
+        proc = getattr(ad, 'proc', None)
+        if proc and proc.poll() is not None:
+            if getattr(ctx, 'server', None):
+                httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
+                           json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
+            SESSIONS.pop(sid, None)
+            continue
+        ctx.progress(71, 'Saving the previous game before switching')
+        try:
+            saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
+        except Exception as exc:
+            raise Unsupported(f"The previous game could not be saved: {exc}. It was kept running. Stop it in Sessions before starting another game.") from exc
+        checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), **saved})
+    for sid, (ad, _) in previous:
+        if sid not in SESSIONS:
+            continue
+        ad.stop_game()
+        proc = getattr(ad, 'proc', None)
+        if proc and proc.poll() is None:
+            raise RuntimeError('The previous emulator is still running; another game was not started')
+        if getattr(ctx, 'server', None):
+            snapshot = next(s for s in checkpoints if s['session_id'] == sid)
+            httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
+                       json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
+        SESSIONS.pop(sid, None)
+        track_emulator(ctx.config, sid, None, add=False)
+    return checkpoints
+
+
+@tool("launch_game", "1.2", LaunchIn, LaunchOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=900,
       side_effects=["starts emulator/game process", "may download a core/BIOS", "may stage a copy into cache"],
       validation="adapter reported content running", on_accept=_launch_accept, on_fail=_launch_fail)
 def launch_game(inp: LaunchIn, ctx: Ctx):
     """Launch a cataloged game on this node; missing cores/BIOS are installed automatically. Streams to the UI."""
+    with _LAUNCH_LOCK:
+        return _launch_game(inp, ctx)
+
+
+def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
@@ -239,8 +287,10 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     if g.launch.get("kind") == "steam":
+        checkpoints = _close_previous_games(ctx)
         detail = ad.launch_game(g.launch["appid"], (g.source_paths or [None])[0])
     elif isinstance(ad, adapters.RocketLauncherAdapter):
+        checkpoints = _close_previous_games(ctx)
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
         src = rom_path(g, ctx.config)
@@ -261,16 +311,6 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
                 filemods.fetch(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = filemods.launch_path(ctx.config, g.game_id, src, inp.mod)
             ctx.progress(28, f"Mod: {inp.mod}")
-            # a modded disc replaces what this machine is playing on that console (Mario -> HUcast): never a 2nd window
-            for old_sid, (old_ad, old_g) in list(SESSIONS.items()):
-                if (old_g.get("game_id") if isinstance(old_g, dict) else getattr(old_g, "game_id", "")) == g.game_id:
-                    try:
-                        old_ad.stop_game()
-                    except Exception:
-                        pass
-                    SESSIONS.pop(old_sid, None)
-                    track_emulator(ctx.config, old_sid, None, add=False)
-                    ctx.progress(30, "Closed the previous game (the mod replaces it)")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
@@ -287,6 +327,7 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(70, f"Staged to cache ({'reused' if not receipt.get('copied', True) else 'copied'}) · evicted {len(receipt['evicted'])}")
             ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
             src = Path(receipt["dst"])
+        checkpoints = _close_previous_games(ctx)
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         detail = ad.launch_game(str(src))
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
@@ -309,6 +350,7 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
         threading.Thread(target=_pump, args=(sid, ad, ctx.server, ctx.headers), daemon=True).start()
     detail["_game"] = {"game_id": g.game_id, "title": g.title}
     detail["mod"] = inp.mod or ""                              # a "move to this PC" relaunches with the same mod
+    detail['previous_checkpoints'] = checkpoints
     if sys.platform == "win32" and getattr(ad, "name", "") == "retroarch":
         threading.Thread(target=_ff_ramp, args=(sid, ad), daemon=True).start()
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
