@@ -903,7 +903,7 @@ async function loadPlay() {
   const tok = await gbox.token();
   if (!tok) { $("#playhost").textContent = "No API token: paste it in Settings (it is in ~/gBox/gbox-data/api_token on the Spark), or make the share/SSH reachable."; return; }
   playLoaded = true;
-  $("#play").innerHTML = `<webview id="wv" src="${esc(S.apiUrl)}/" allowpopups></webview>`;
+  $("#play").innerHTML = `<webview id="wv" src="${esc(S.apiUrl)}/?embedded=1" allowpopups></webview>`;
   const wv = $("#wv");
   let injected = false;
   wv.addEventListener("dom-ready", () => {
@@ -3669,6 +3669,19 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
   catch (e) { alert(e.message); } };
 </script>
 <script src="issue-report.js"></script>
+<script src="../web/viz/asset-sidebar.js"></script>
+<script>
+(async () => {
+  const settings = await gbox.settings(), token = await gbox.token(), host = document.querySelector('.app');
+  host.classList.add('has-assets');
+  window.assetSidebar = GBoxAssets.mount({ host,
+    backgroundUpdates: true,
+    api: async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || 'Asset request failed'); return r.data; },
+    url: path => settings.apiUrl + path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token),
+    download: url => gbox.openExternal(url)
+  });
+})().catch(e => console.error('Asset sidebar:', e));
+</script>
 <script src="decant-ui.js"></script>
 <script type="module" src="extract.js"></script>
 </body>

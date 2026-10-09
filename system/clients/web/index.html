@@ -2721,5 +2721,16 @@ function re6View(v) {
 }
 if (HASH.get("session")) show("Sessions", HASH.get("session"), HASH.get("mode") || undefined); else show(cur);
 </script>
+<script src="/viz/asset-sidebar.js"></script>
+<script>
+if (!new URLSearchParams(location.search).has('embedded')) {
+  document.body.classList.add('assets-browser');
+  const style = document.createElement('style');
+  style.textContent = 'body.assets-browser{padding-right:var(--assets-width,280px)} body.assets-browser #asset-sidebar{position:fixed;right:0;top:var(--assets-top,64px);height:calc(100vh - var(--assets-top,64px));z-index:20}';
+  document.head.append(style);
+  new ResizeObserver(() => document.body.style.setProperty('--assets-top', document.querySelector('header').getBoundingClientRect().bottom + 'px')).observe(document.querySelector('header'));
+  window.assetSidebar = GBoxAssets.mount({ host: document.body, api, url: path => path + (path.includes('?') ? '&' : '?') + tq() });
+}
+</script>
 </body>
 </html>

@@ -80,6 +80,9 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(401, "bad token")
         return request.headers.get("x-gbox-actor", "operator")
 
+    from . import asset_library
+    asset_library.routes(app, store, config, auth)
+
     # --- shell ---
     @app.get("/")
     def index():
@@ -144,6 +147,7 @@ def create_app(config: Config) -> FastAPI:
                 "ts": time.time(), "by": actor}
         store.put("clipboard", "current", item)
         store.audit(actor, "clipboard.copy", ref.sha256, {"kind": "gltf", "name": name})
+        app.state.assets.invalidate()
         return item
 
     from . import re6_api                         # Resident Evil 6: item catalogue + icons, saved Mercenaries loadout
@@ -960,6 +964,8 @@ def create_app(config: Config) -> FastAPI:
         j.update(state=state, finished=receipt.finished, output=r.output, error=r.error or ("; ".join(problems) or None),
                  receipt_id=receipt.id)
         store.put("job", j["id"], j)
+        if state == JobState.SUCCEEDED and (t.name in asset_library.ASSET_TOOLS or t.name == 'blender_copy'):
+            app.state.assets.invalidate()
         if state == JobState.SUCCEEDED and t.on_accept:
             t.on_accept(store, out, actor)
         elif state != JobState.SUCCEEDED and t.on_fail:
@@ -1497,6 +1503,7 @@ def create_app(config: Config) -> FastAPI:
         item = {"seq": prev["seq"] + 1, "kind": c.kind, "name": c.name, "sha256": sha, "meta": c.meta, "ts": time.time(), "by": actor}
         store.put("clipboard", "current", item)
         store.audit(actor, "clipboard.copy", sha, {"kind": c.kind, "name": c.name})
+        app.state.assets.invalidate()
         return item
 
     @app.get("/api/clipboard")
