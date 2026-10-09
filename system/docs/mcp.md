@@ -12,12 +12,18 @@ Code: `gbox/mcp_server.py`. Dependency: `pip install "mcp>=2.3"` (the `mcp` extr
 |---|---|
 | `job_<name>` | One per registry tool (`GET /api/registry`), with the tool's own input schema plus optional `require_os`. Submits `POST /api/jobs`, waits for it, returns `{id, state, worker_id, output, error}`. A `session_id` in the input routes the job to that session's worker. |
 | `list_games(query, platform?, limit?)` | Ranked library search (`/api/catalog/best`). |
+| `list_favorites(limit?)` | Favorited games, with IDs for roster work. |
+| `game_roster(game_id)` | Native reader, roster and background collection state for one game. |
+| `start_job(tool, input, require_os?, require_worker?, parent_request_id?)` | Submit a registry job without waiting; returns its ID and initial state. |
+| `get_job(job_id)` | Poll a background job's state, progress, result and error. |
 | `launch_game(game_id, node?, debug?)` | `POST /api/games/{id}/launch`; returns the launch job (output carries the session id). |
 | `list_sessions(include_ended?)` | `/api/sessions`, live ones by default. |
 | `read_memory(session_id, address, length?)` | Session RPC `read_memory` (read-only peek, max 4096 bytes). |
 | `ask_gbox(text, session_id?, chat_id?, timeout_s?)` | Runs gBox's own chat agent (`/api/chat`), waits for the turn, returns `{chat_id, answer, tool_calls, errors, choices}`. Pass `chat_id` back to continue the conversation. Every turn is a metered request in the inbox. |
 | `kb_search(query, game?, k?)` | `/api/kb/search`. |
 | `list_recipes()` | `/api/recipes`. |
+
+On the DGX Spark, Hermes has a `gbox` stdio MCP registration using the Linux service venv and local control-plane URL. Verify it with `hermes mcp test gbox`. The server discovers 206 tools; Hermes selects 12 useful tools in `~/.hermes/config.yaml`, with `start_job` covering the full job registry without loading 194 additional schemas into each conversation. New Hermes sessions load the registration; use `/reload-mcp` in an existing session. The Hermes workflow is in `system/hermes/gbox/SKILL.md` and deployed to `~/.hermes/skills/gaming/gbox/SKILL.md`.
 
 Resources: `gbox://sessions` (live sessions), `gbox://games` (first 500 library entries + total).
 

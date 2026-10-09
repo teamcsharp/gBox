@@ -25,6 +25,13 @@ def obj(props, req=()):
 CONVENIENCE = {
     "list_games": ("Search the game library (title words). Returns game_id, title, platform, system, core.",
                    obj({"query": S, "platform": S, "limit": I}, ["query"])),
+    "list_favorites": ("List favorited games, including ROMs queued for background model collection.", obj({"limit": I})),
+    "game_roster": ("Show a game's native model reader, character roster, and background collection job state.",
+                    obj({"game_id": S}, ["game_id"])),
+    "start_job": ("Dispatch any gBox registry tool as a background job and return its ID immediately. Use get_job to follow it.",
+                  obj({"tool": S, "input": {"type": "object"}, "require_os": S, "require_worker": S,
+                       "parent_request_id": S}, ["tool", "input"])),
+    "get_job": ("Read a background gBox job's state, progress, result, and error.", obj({"job_id": S}, ["job_id"])),
     "launch_game": ("Launch a library game. node: auto | windows | linux | <worker name>. debug=true runs it on the Spark "
                     "under a full-debugger emulator. Returns the launch job (its output has the session_id).",
                     obj({"game_id": S, "node": S, "debug": B}, ["game_id"])),
@@ -91,6 +98,17 @@ def build(base_url: str, token: str) -> Server:
             if a.get("platform"):
                 games = [g for g in games if g.get("platform") == a["platform"]]
             return [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "core", "playable")} for g in games]
+        if name == "list_favorites":
+            page = await get("/api/catalog", favorites=True, limit=max(1, min(a.get("limit", 100), 1000)))
+            return {"total": page["total"], "items": [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "playable")}
+                                                     for g in page["items"]]}
+        if name == "game_roster":
+            return await get(f"/api/games/{a['game_id']}/roster")
+        if name == "start_job":
+            body = {k: a[k] for k in ("tool", "input", "require_os", "require_worker", "parent_request_id") if k in a}
+            return await post("/api/jobs", body)
+        if name == "get_job":
+            return await get(f"/api/jobs/{a['job_id']}")
         if name == "launch_game":
             job = await post(f"/api/games/{a['game_id']}/launch", node=a.get("node", "auto"), debug=str(a.get("debug", False)).lower())
             return await wait_job(job, 300)

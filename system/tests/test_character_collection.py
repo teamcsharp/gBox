@@ -44,6 +44,35 @@ def test_disabled_and_unsupported_do_not_queue(tmp_path):
     assert automatic.status('mario')['state'] == 'not_started'
 
 
+def test_favoriting_schedules_one_background_roster_without_launching(tmp_path):
+    from fastapi.testclient import TestClient
+    from gbox.config import Config
+    from gbox.server import create_app
+    cfg = Config(data_dir=tmp_path)
+    app = create_app(cfg)
+    store = app.state.store
+    game = {'game_id': 'sm64', 'title': 'Super Mario 64', 'platform': 'n64',
+            'source_paths': ['mario.z64'], 'format': 'z64', 'profile_id': 'sm64'}
+    store.upsert_catalog([game])
+    with TestClient(app) as client:
+        client.headers['Authorization'] = f'Bearer {cfg.token()}'
+        off = client.post('/api/catalog/sm64/favorite?on=false').json()
+        assert off['collection']['state'] == 'not_started'
+        first = client.post('/api/catalog/sm64/favorite').json()
+        second = client.post('/api/catalog/sm64/favorite').json()
+        jobs = [j for j in store.all('job') if j['tool'] == 'characters']
+        assert first['collection']['job_id'] == second['collection']['job_id'] == jobs[0]['id']
+        assert len(jobs) == 1 and jobs[0]['input']['op'] == 'collect'
+        assert jobs[0]['require_os'] == 'linux' and not store.all('session')
+        failed = store.get('job', jobs[0]['id'])
+        failed['state'] = 'failed'
+        failed['error'] = 'worker restarted'
+        store.put('job', failed['id'], failed)
+        retry = client.post('/api/catalog/sm64/favorite').json()
+        assert retry['collection']['job_id'] != failed['id']
+        assert len([j for j in store.all('job') if j['tool'] == 'characters']) == 2
+
+
 def test_collect_reports_failed_and_unrigged_models(monkeypatch, tmp_path):
     game = {'game_id': 'fixture', 'title': 'Fixture', 'platform': 'test'}
     entries = [{'slug': s, 'name': s, 'aliases': []} for s in ('good', 'unrigged', 'broken')]

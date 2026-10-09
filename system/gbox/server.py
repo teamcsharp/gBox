@@ -1292,10 +1292,15 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/catalog/{gid}/favorite")
     def favorite(gid: str, on: bool = True, actor=Depends(auth)):
-        store.catalog_get(gid) or _404()
+        game = store.catalog_get(gid) or _404()
         store.catalog_update(gid, favorite=on)
         store.audit(actor, "catalog.favorite", gid, {"on": on})
-        return {"game_id": gid, "favorite": on}
+        if on:
+            try:
+                auto_collection.after_favorite(game, lambda request: submit(JobRequest(**request), actor).model_dump(mode="json"))
+            except Exception as exc:
+                store.audit(actor, "characters.auto_collect_failed", gid, {"error": str(exc)})
+        return {"game_id": gid, "favorite": on, "collection": auto_collection.status(gid)}
 
     @app.get("/api/catalog/{gid}")
     def catalog_entry(gid: str, actor=Depends(auth)):

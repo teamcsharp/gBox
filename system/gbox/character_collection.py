@@ -21,20 +21,18 @@ class AutoCollection:
                                'result': (job.get('output') or {}).get('result'), 'error': job.get('error')}
         return record
 
-    def after_launch(self, job, output, submit):
+    def _schedule(self, game, parent_request_id, session_id, submit, retry_failed=False):
         policy = self.policy()
         if not policy.get('enabled'):
             return
-        # LaunchOut deliberately carries only game_id/title; platform comes from the validated launch input.
-        game = (job.get('input', {}).get('game') or {}) | ((output.get('detail') or {}).get('_game') or {})
         gid = game.get('game_id')
         if not gid:
             return
         with self.lock:
             previous = self.status(gid)
-            # Failed/partial jobs remain visible and require explicit retry, rather than repeating expensive work.
+            # A favorite action explicitly retries failed work; launches never repeat expensive failures.
             supported = any(test((game.get('title') or '').lower(), game.get('platform')) for _, test, _, _ in C.DEDICATED)
-            if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported):
+            if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed'):
                 return
             if not supported:
                 self.store.put('character_collection', gid, {'state': 'unsupported', 'updated': time.time(),
@@ -42,6 +40,15 @@ class AutoCollection:
                 return
             created = submit({'tool': 'characters', 'input': {'op': 'collect', 'game_id': gid},
                               'require_os': 'linux',
-                              'parent_request_id': job.get('parent_request_id') or policy.get('parent_request_id')})
+                              'parent_request_id': parent_request_id or policy.get('parent_request_id')})
             self.store.put('character_collection', gid, {'state': created['state'], 'job_id': created['id'],
-                           'updated': time.time(), 'session_id': output.get('session_id')})
+                           'updated': time.time(), 'session_id': session_id})
+
+    def after_launch(self, job, output, submit):
+        # LaunchOut deliberately carries only game_id/title; platform comes from the validated launch input.
+        game = (job.get('input', {}).get('game') or {}) | ((output.get('detail') or {}).get('_game') or {})
+        self._schedule(game, job.get('parent_request_id'), output.get('session_id'), submit)
+
+    def after_favorite(self, game, submit):
+        """A favorite starts native roster collection without starting or interrupting the game."""
+        self._schedule(game, None, None, submit, retry_failed=True)
