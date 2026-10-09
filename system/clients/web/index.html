@@ -1928,6 +1928,9 @@ document.addEventListener("contextmenu", async e => {
       ${patch.length ? `<div class="mut" style="margin-top:6px">Switched on once the game is running:</div>` +
         patch.map(m => `<label><input type="checkbox" data-keep="${esc(m.id)}" ${kept.includes(m.id) ? "checked" : ""}> ${esc(m.title)}</label>`).join("") : ""}
       ${!mods.length ? '<p class="mut">No mods for this game yet: ask gBox for one while playing.</p>' : ""}</div>
+    <div class="gms"><b>Model collection</b>
+      <button id="gmcollect" type="button">Extract this game's character models in the background</button>
+      <div id="gmcollectstatus" class="mut" style="font-size:11px;margin-top:5px">Runs on Spark; track progress in Tasks. The game does not need to run here.</div></div>
     <div class="gms"><b>Start from</b><label>Save state <select id="gmslot"><option value="">the beginning (no state)</option>
       ${[...Array(10).keys()].map(i => `<option value="${i}" ${String(b.slot) === String(i) ? "selected" : ""}>slot ${i}</option>`).join("")}</select></label>
       <div class="mut" style="font-size:11px">F2 saves to the current slot in game; Shift/Ctrl+F2 change the slot.</div></div>
@@ -1966,6 +1969,16 @@ document.addEventListener("contextmenu", async e => {
         save(r.mod, ch.slug); st.textContent = `✓ ${characterNote(ch.name, r.slot || "player")}`;
       } catch (err) { st.textContent = "✗ " + err.message.slice(0, 160); }
       finally { t.disabled = false; t.value = ""; }
+    }
+  };
+  el.querySelector("#gmcollect").onclick = async ev => {
+    const button = ev.currentTarget, status = el.querySelector("#gmcollectstatus");
+    button.disabled = true; status.textContent = "Submitting extraction task…";
+    try {
+      const job = await api("/api/jobs", { tool: "characters", input: { op: "collect", game_id: gid }, require_os: "linux" });
+      status.textContent = `Task ${job.id} queued on Spark. Open Tasks for progress, logs, and cancellation.`;
+    } catch (err) {
+      button.disabled = false; status.textContent = `Could not queue extraction: ${err.message}`;
     }
   };
   el.onclick = ev => { const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");

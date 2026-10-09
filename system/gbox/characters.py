@@ -1176,9 +1176,20 @@ def collect(ctx, inp):
     entries = [e for e in dedicated_entries(ctx.config, game, name, roster) if e.get('kind', 'character') == 'character']
     results = []
     for i, e in enumerate(entries):
-        ctx.progress(100 * i / max(1, len(entries)), f"Collecting {e['name']} ({i + 1}/{len(entries)})")
+        total = max(1, len(entries))
+        ctx.progress(100 * i / total, f"Collecting {e['name']} ({i + 1}/{total})")
+        # Native extractors report progress for one character. Scale that into
+        # this roster's range so a long collection does not appear stuck at 85%.
+        class EntryContext:
+            def __getattr__(self, key):
+                return getattr(ctx, key)
+
+            def progress(self, pct, message):
+                overall = None if pct is None else 100 * (i + max(0, min(100, pct)) / 100) / total
+                ctx.progress(overall, f"{e['name']} ({i + 1}/{total}): {message}")
+
         try:
-            res = extract_dedicated(ctx, game, e['slug'], root, (name, entries))
+            res = extract_dedicated(EntryContext(), game, e['slug'], root, (name, entries))
             meta = get(root, res['entry']['slug'])
             checked = verify_entry(root, meta)
             roles = (meta.get('rig') or {}).get('roles') or {}
@@ -1189,6 +1200,7 @@ def collect(ctx, inp):
         except Exception as exc:
             results.append({'slug': e['slug'], 'name': e['name'], 'status': 'failed',
                             'verified': False, 'retargetable': False, 'error': str(exc)})
+    ctx.progress(100, f"Collected {len(entries)} characters from {game['title']}")
     good = sum(r['verified'] for r in results)
     mapped = sum(r['retargetable'] for r in results)
     return {'status': 'complete' if good == mapped == len(entries) and entries else 'partial',

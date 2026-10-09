@@ -2115,6 +2115,7 @@ def create_app(config: Config) -> FastAPI:
         note: str = ""
 
     class MetricsIn(BaseModel):
+        model: str | None = None
         tokens_in: int | None = None       # incl. cache reads/writes, from the agent transcript
         tokens_out: int | None = None
         tokens_detail: dict = {}
@@ -2401,6 +2402,8 @@ def create_app(config: Config) -> FastAPI:
         """Accumulates agent usage onto a request (one call per agent turn)."""
         r = _req(rid)
         mt = r["metrics"]
+        if m.model:
+            mt["model"] = m.model
         mt["tokens_in"] = (mt.get("tokens_in") or 0) + (m.tokens_in or 0)
         mt["tokens_out"] = (mt.get("tokens_out") or 0) + (m.tokens_out or 0)
         for k, v in m.tokens_detail.items():

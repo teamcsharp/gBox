@@ -100,6 +100,26 @@ def test_collect_reports_failed_and_unrigged_models(monkeypatch, tmp_path):
     assert C.collect(ctx, C.CharIn(op='collect'))['status'] == 'partial'  # all meshes exist, one lacks a rig
 
 
+def test_collect_scales_each_extractor_progress_across_roster(monkeypatch, tmp_path):
+    game = {'game_id': 'fixture', 'title': 'Fixture', 'platform': 'test'}
+    entries = [{'slug': s, 'name': s, 'aliases': []} for s in ('first', 'second')]
+    monkeypatch.setattr(C, 'DEDICATED', [('fixture', lambda t, p: True, lambda: entries, None)])
+    monkeypatch.setattr(C, '_game', lambda ctx, inp: game)
+    monkeypatch.setattr(C, 'library_root', lambda cfg: tmp_path)
+    def extract(ctx, game, slug, root, prepared):
+        ctx.progress(20, 'extracting')
+        ctx.progress(85, 'preview')
+        return {'status': 'in_collection', 'entry': {'slug': slug}}
+    monkeypatch.setattr(C, 'extract_dedicated', extract)
+    monkeypatch.setattr(C, 'get', lambda root, slug: {'slug': slug, 'name': slug, 'rig': {'roles': {'hip': 'hip'}}})
+    monkeypatch.setattr(C, 'verify_entry', lambda root, meta: {'ok': True})
+    events = []
+    ctx = SimpleNamespace(config=None, progress=lambda pct, msg: events.append((pct, msg)))
+    assert C.collect(ctx, C.CharIn(op='collect'))['status'] == 'complete'
+    assert [pct for pct, _ in events] == [0, 10, 42.5, 50, 60, 92.5, 100]
+    assert 'second (2/2): preview' in events[-2][1]
+
+
 def test_policy_api_does_not_match_character_slug(plane):
     response = plane.get('/api/character-collection/policy')
     assert response.status_code == 200 and response.json()['enabled']

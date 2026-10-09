@@ -1158,6 +1158,14 @@ class Agent:
         self.local_worker = context.get("local_worker")
         self.parent_request_id = context.get("request_id")
         self.context_game = context.get("game_id") or context.get("game_title") or ""
+        latest = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+        plain = latest.split("\n[context:", 1)[0].strip() if isinstance(latest, str) else ""
+        if re.fullmatch(r"(?:hi|hello|hey|hey there|good morning|good afternoon|good evening)[!?.\s]*", plain, re.I):
+            game = context.get("game_title")
+            answer = f"Hi! What would you like to do with {game}?" if game else "Hi! What would you like to do in gBox?"
+            messages.append({"role": "assistant", "content": answer})
+            emit({"type": "assistant", "text": answer})
+            return {"usage": {"in": 0, "out": 0}, "tools": {}}
         sid = context.get("session_id")
         if sid:                                                # the app can hand over a stale id (game relaunched): use the live one
             try:
@@ -1242,11 +1250,17 @@ class Agent:
                              "'fact'/'wiki' are stronger). Use them to skip web searches they already answer:\n"
                              + "\n---\n".join(f"[{h['kind']}] {h['title']} ({h['source']}): {h['text'][:900]}" for h in hits)})
         for _ in range(max_steps):
-            for attempt in range(3):                           # the model sometimes emits a tool call the server can't parse:
-                r = httpx.post(f"{self.llm_url}/chat/completions", timeout=600,   # ask again (a little warmer) instead of dying
+            for attempt in range(3):                           # retry transient runner OOMs and malformed tool calls
+                r = httpx.post(f"{self.llm_url}/chat/completions", timeout=600,
                                json={"model": self.model, "messages": messages, "tools": tools,
                                      "temperature": 0.2 + 0.25 * attempt}).json()
-                if "choices" in r or "error parsing tool call" not in json.dumps(r):
+                if "choices" in r:
+                    break
+                error = json.dumps(r).lower()
+                if "out of memory" in error and attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                if "error parsing tool call" not in error or attempt == 2:
                     break
             if "choices" not in r:
                 raise RuntimeError(f"LLM error: {json.dumps(r)[:300]}")
