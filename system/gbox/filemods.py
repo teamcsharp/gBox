@@ -8,7 +8,13 @@ import json
 import os
 import shutil
 import time
+import threading
+import hashlib
 from pathlib import Path
+
+_FETCH_LOCKS = {}
+_FETCH_GUARD = threading.Lock()
+_HASHES = {}
 
 
 def game_root(rom: Path) -> Path:
@@ -173,11 +179,29 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     return out / Path(rom).relative_to(game_root(rom))
 
 
-def _files(d: Path) -> list[dict]:
-    return [{"path": p.relative_to(d).as_posix(), "size": p.stat().st_size} for p in sorted(d.rglob("*")) if p.is_file()]
+def _files(d: Path, hashes: bool = False) -> list[dict]:
+    files = []
+    for p in sorted(d.rglob('*')):
+        if not p.is_file() or p.name.endswith('.part'): continue
+        stat = p.stat(); item = {'path': p.relative_to(d).as_posix(), 'size': stat.st_size}
+        if hashes:
+            key = (str(p.resolve()), stat.st_mtime_ns, stat.st_size)
+            if key not in _HASHES:
+                with p.open('rb') as stream: _HASHES[key] = hashlib.file_digest(stream, 'sha256').hexdigest()
+            item['sha256'] = _HASHES[key]
+        files.append(item)
+    return files
 
 
 def fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None) -> bool:
+    key = str(mod_dir(cfg, game_id, name).resolve())
+    with _FETCH_GUARD:
+        lock = _FETCH_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        return _fetch(cfg, server, headers, game_id, name, progress)
+
+
+def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, retry=True) -> bool:
     """A mod built elsewhere: download it from the central collection (the Spark) into this machine's cache. Resumable:
     files already here with the right size are kept. Returns False if the collection doesn't have it either."""
     import httpx
@@ -187,21 +211,50 @@ def fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
     r.raise_for_status()
     files, out = r.json()["files"], mod_dir(cfg, game_id, name)
     total, done = sum(f["size"] for f in files) or 1, 0
+    reported = 0
     for f in sorted(files, key=lambda f: f["path"] == ".gbox-mod.json"):    # the marker last: a half copy isn't a mod
         dst = out / f["path"]
+        if not dst.resolve().is_relative_to(out.resolve()):
+            raise ValueError('mod file must stay inside its cache folder')
         if dst.exists() and dst.stat().st_size == f["size"]:
-            done += f["size"]
-            continue
+            with dst.open('rb') as stream:
+                valid = not f.get('sha256') or hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
+            if valid:
+                done += f["size"]; continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(dst.name + ".part")
-        with httpx.stream("GET", f"{server}/api/modfiles/{game_id}/{name}/file/{f['path']}", headers=headers, timeout=None) as s:
+        offset = tmp.stat().st_size if tmp.exists() else 0
+        if offset > f['size']: offset = 0
+        if offset == f['size']:
+            with tmp.open('rb') as stream:
+                valid = not f.get('sha256') or hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
+            if valid: os.replace(tmp, dst); done += offset; continue
+            offset = 0
+        request_headers = dict(headers)
+        if offset: request_headers['Range'] = f'bytes={offset}-'
+        with httpx.stream("GET", f"{server}/api/modfiles/{game_id}/{name}/file/{f['path']}", headers=request_headers,
+                          timeout=httpx.Timeout(60, connect=30)) as s:
             s.raise_for_status()
-            with open(tmp, "wb") as fh:
+            if offset and s.status_code == 206:
+                if not s.headers.get('Content-Range', '').startswith(f'bytes {offset}-'):
+                    raise ValueError('mod server returned an unexpected resume range')
+            else: offset = 0
+            done += offset
+            with open(tmp, "ab" if offset else "wb") as fh:
                 for chunk in s.iter_bytes(1 << 20):
                     fh.write(chunk)
                     done += len(chunk)
-                    if progress:
+                    if progress and time.monotonic() - reported >= .5:
                         progress(20 + int(8 * done / total), f"Fetching mod {name} from the collection: {done >> 20}/{total >> 20} MB")
+                        reported = time.monotonic()
+        if tmp.stat().st_size != f['size']:
+            raise ValueError(f"incomplete mod transfer: {f['path']}")
+        if f.get('sha256'):
+            with tmp.open('rb') as stream: valid = hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
+            if not valid:
+                tmp.unlink()
+                if retry: return _fetch(cfg, server, headers, game_id, name, progress, retry=False)
+                raise ValueError(f"Mod checksum mismatch: {f['path']}")
         os.replace(tmp, dst)
     return (out / ".gbox-mod.json").exists()
 

@@ -175,6 +175,27 @@ def rom_path(g: CatalogEntry, config) -> Path:
 
 # --- runtime sessions -----------------------------------------------------------------------
 
+class PrepareModIn(BaseModel):
+    game: CatalogEntry
+    mod: str
+
+
+class PrepareModOut(BaseModel):
+    ready: bool
+
+
+@tool('prepare_mod', '1.0', PrepareModIn, PrepareModOut, capabilities=['runtime'], permissions=[P.EXECUTE], timeout_s=1800)
+def prepare_mod(inp: PrepareModIn, ctx: Ctx):
+    """Stage replacement files on the target worker without closing or changing its running game."""
+    from . import filemods
+    marker = filemods.mod_dir(ctx.config, inp.game.game_id, inp.mod) / '.gbox-mod.json'
+    if ctx.server:
+        filemods.fetch(ctx.config, ctx.server, ctx.headers, inp.game.game_id, inp.mod, ctx.progress)
+    if not marker.exists():
+        raise RuntimeError('Replacement preparation did not complete')
+    return {'ready': True}
+
+
 class LaunchIn(BaseModel):
     game: CatalogEntry
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
@@ -242,7 +263,7 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(28, f"Mod: {inp.mod}")
             # a modded disc replaces what this machine is playing on that console (Mario -> HUcast): never a 2nd window
             for old_sid, (old_ad, old_g) in list(SESSIONS.items()):
-                if (old_g.get("platform") if isinstance(old_g, dict) else getattr(old_g, "platform", "")) == g.platform:
+                if (old_g.get("game_id") if isinstance(old_g, dict) else getattr(old_g, "game_id", "")) == g.game_id:
                     try:
                         old_ad.stop_game()
                     except Exception:
@@ -2769,11 +2790,22 @@ class StateXOut(BaseModel):
     result: dict
 
 
-@tool("state_transfer", "1.0", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
+_STATE_TRANSFER_LOCK = threading.RLock()
+
+
+@tool("state_transfer", "1.1", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
+    with _STATE_TRANSFER_LOCK:
+        return _state_transfer(inp, ctx)
+
+
+def _state_transfer(inp: StateXIn, ctx: Ctx):
     """Move a running game between machines (Spark <-> this PC) through a save state: RetroArch cores, and GameCube/Wii on
     standalone Dolphin (the same release on both machines)."""
-    ad, g = SESSIONS[inp.session_id]
+    session = SESSIONS.get(inp.session_id)
+    if session is None:
+        raise Unsupported('This session ended. Open the running game before transferring its state.')
+    ad, g = session
     kind = getattr(ad, "name", "")
     if kind == "retroarch":
         # whatever slot RetroArch really used (slot steps are network commands and can be dropped): the newest file wins
@@ -2787,6 +2819,9 @@ def state_transfer(inp: StateXIn, ctx: Ctx):
 
     def newest():
         fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
+        if kind == 'retroarch' and g.get('_rom_path'):
+            prefix = Path(g['_rom_path']).stem + '.'
+            fs = [f for f in fs if f.name.startswith(prefix) and re.search(r'\.state\d*$', f.name)]
         return max(fs, key=lambda f: f.stat().st_mtime) if fs else None
 
     def save_and_wait():
@@ -2796,6 +2831,11 @@ def state_transfer(inp: StateXIn, ctx: Ctx):
             f = newest()
             if f and f.stat().st_mtime >= t0 - 1 and f.stat().st_size > 0:
                 time.sleep(0.5)
+                if kind == 'retroarch':
+                    # Hotkeys and dropped slot commands can disagree with our cached slot.
+                    # The file actually written identifies the emulator's current slot.
+                    suffix = f.name.rsplit('.state', 1)[-1]
+                    ad.slot = int(suffix) if suffix.isdigit() else 0
                 return f
             time.sleep(0.2)
         raise RuntimeError("the emulator didn't write a save state")
@@ -2808,10 +2848,12 @@ def state_transfer(inp: StateXIn, ctx: Ctx):
     if inp.op == "import":
         r = httpx.get(f"{ctx.server}/api/artifacts/{inp.artifact}", headers=ctx.headers, timeout=120)
         r.raise_for_status()
+        if sha256(r.content) != inp.artifact:
+            raise ValueError('Saved-state download did not match the preserved checkpoint')
         f = save_and_wait()                                     # this machine's own state file name/folder for the game
         f.write_bytes(r.content)
         time.sleep(0.3)
-        ad.load_state(inp.slot) if kind == "retroarch" else ad.load_state()
+        ad.load_state(ad.slot) if kind == "retroarch" else ad.load_state()
         return {"result": {"loaded": True, "file": f.name, "bytes": len(r.content)}}
     raise ValueError("op: export | import")
 

@@ -460,10 +460,12 @@ def create_app(config: Config) -> FastAPI:
     # --- swap / move: a running game -> the same game with another mod (or none), on the same machine or another one ---
     # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
-    def _run_job(tool, inp, actor, worker=None, wait=240.0) -> dict:
+    def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None) -> dict:
         j = submit(JobRequest(tool=tool, input=inp, require_worker=worker), actor)
         t0 = time.time()
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
+            if progress and jj.get('progress'):
+                progress(jj['progress'].get('pct', 0), jj['progress'].get('msg', ''))
             time.sleep(0.5)
         if jj["state"] != "succeeded":
             raise HTTPException(409, f"{tool} failed: {jj.get('error') or jj['state']}")
@@ -488,11 +490,18 @@ def create_app(config: Config) -> FastAPI:
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None) -> dict:
         say = progress or (lambda pct, msg: None)
         sess = store.get("session", sid) or _404()
+        seen = set()
+        while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
+            seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         old_w, tw = sid.split("-")[0], _swap_target(sid.split("-")[0], to)
         running, art, notes, old_luma = sess.get("state") == "running", None, [], None
+        if mod:
+            say(2, "Preparing replacement files; your current game keeps running")
+            _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
+                     progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
         if running and keep_state:
-            say(5, "Saving the moment you're at")
+            say(62, "Saving your current moment before applying the replacement")
             try:
                 old_luma = _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30).get("mean_luma")
             except HTTPException:
@@ -500,8 +509,8 @@ def create_app(config: Config) -> FastAPI:
             try:
                 art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=90)["result"]["artifact"]
             except (HTTPException, KeyError) as e:
-                notes.append(f"no save state ({getattr(e, 'detail', e)}): the game starts from boot")
-        say(15, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
+                raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
+        say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
         try:
             new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=tw["id"], wait=900)
         except HTTPException as e:
@@ -535,7 +544,20 @@ def create_app(config: Config) -> FastAPI:
                 _run_job("state_transfer", {"session_id": nsid, "op": "import", "artifact": art}, actor, worker=tw["id"], wait=90)
                 loaded = True
             except HTTPException as e:
-                notes.append(f"the saved moment didn't load ({e.detail}): playing from boot")
+                try:
+                    _run_job('session_op', {'session_id': nsid, 'op': 'stop_game', 'args': {}}, actor, worker=tw['id'], wait=60)
+                except HTTPException:
+                    pass
+                if old_w == tw['id']:
+                    say(75, 'State restore failed; recovering the original game and checkpoint')
+                    try:
+                        back = _run_job('launch_game', {'game': game, 'mod': sess.get('mod') or ''}, actor, worker=old_w, wait=900)
+                        time.sleep(6)
+                        _run_job('state_transfer', {'session_id': back['session_id'], 'op': 'import', 'artifact': art}, actor, worker=old_w, wait=90)
+                        store.put('session', sid, (store.get('session', sid) or {}) | {'state': 'ended', 'replaced_by': back['session_id']})
+                    except HTTPException:
+                        pass
+                raise HTTPException(409, f"Replacement state restore failed ({e.detail}). The original checkpoint is retained: {art}. Check Sessions for the recovered game.")
         if running and nsid != sid:
             say(85, "Closing the previous copy")
             try:
@@ -546,8 +568,7 @@ def create_app(config: Config) -> FastAPI:
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
                                             "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid}})
         if loaded and (old_luma is None or old_luma > 3):
-            # a state from another build can leave a dead black screen: then boot the new build fresh instead (a still
-            # picture is NOT treated as a failure: the game may simply be paused)
+            # A dark restored frame can be a loading screen. Never reset away the operator's saved moment.
             say(92, "Checking the picture")
             luma = []
             for wait_s in (2.0, 3.0):
@@ -557,24 +578,37 @@ def create_app(config: Config) -> FastAPI:
                 except HTTPException:
                     luma.append(None)
             if luma and all(v is not None and v <= 3 for v in luma):
-                try:
-                    _run_job("session_op", {"session_id": nsid, "op": "reset", "args": {}}, actor, worker=tw["id"], wait=60)
-                    notes.append("the saved moment went black with this build, so the game was restarted fresh")
-                except HTTPException:
-                    notes.append("the picture is black after loading the moment: press Reset to boot fresh")
+                notes.append("The restored frame is dark. Your state was preserved; use Inspect or return to Play to check it.")
         store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid, "state_loaded": loaded})
         return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod, "state_loaded": loaded, "notes": notes}
 
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
         sess = store.get("session", sid) or _404()
-        job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to},
-                  state=JobState.RUNNING, started=time.time())
-        store.put("job", job.id, job.model_dump())
+        seen = set()
+        while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
+            seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
+        with store.lock:
+            for existing in store.all('job'):
+                inp = existing.get('input') or {}
+                if (existing.get('tool') == 'session_swap' and existing.get('state') in ('queued', 'running')
+                    and inp.get('game_id') == sess.get('game_id')
+                    and _wid(inp.get('session_id', '').split('-')[0]) == _wid(sid.split('-')[0])):
+                    if inp.get('mod', '') == mod and inp.get('to', '') == to and inp.get('keep_state', True) == keep_state:
+                        return Job.model_validate(existing)
+                    raise HTTPException(409, 'A replacement is already being prepared for this game. Wait for it to finish before selecting another model.')
+            if keep_state and sess.get('state') != 'running':
+                raise HTTPException(409, 'This session has ended. Open the running game before replacing its models.')
+            job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
+                      state=JobState.RUNNING, started=time.time())
+            store.put("job", job.id, job.model_dump())
 
         def prog(pct, msg):
             with store.lock:
                 j = store.get("job", job.id)
+                previous = j.get('progress') or {}
+                if previous.get('pct') == pct and previous.get('msg') == msg:
+                    return
                 j["progress"] = {"pct": pct, "msg": msg, "ts": time.time()}
                 j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
                 store.put("job", job.id, j)
@@ -1345,6 +1379,23 @@ def create_app(config: Config) -> FastAPI:
         """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
         debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists."""
         e = store.catalog_get(gid) or _404()
+        if mod and not debug:
+            available = {w['id']: w for w in workers() if w['online']}
+            for pending in store.all('job'):
+                inp = pending.get('input') or {}
+                wid = _wid(inp.get('session_id', '').split('-')[0])
+                worker = available.get(wid) or {}
+                if (pending.get('tool') == 'session_swap' and pending.get('state') in ('queued', 'running')
+                    and inp.get('game_id') == gid and (node == 'auto' or node in (wid, worker.get('name'), worker.get('os')))):
+                    return swap_job(inp['session_id'], mod, inp.get('to', ''), actor)
+            running = [s for s in store.all('session') if s.get('game_id') == gid and s.get('state') == 'running'
+                       and _wid(s['session_id'].split('-')[0]) in available]
+            running = [s for s in running if node == 'auto' or node in (
+                available[_wid(s['session_id'].split('-')[0])]['name'],
+                available[_wid(s['session_id'].split('-')[0])]['os'], _wid(s['session_id'].split('-')[0]))]
+            if running:
+                current = max(running, key=lambda s: s.get('started') or 0)
+                return swap_job(current['session_id'], mod, '', actor)
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})})
         if debug:
             node = "linux"
@@ -1559,7 +1610,7 @@ def create_app(config: Config) -> FastAPI:
         d = _mod_root(gid, name)
         if not (d / ".gbox-mod.json").exists():
             raise HTTPException(404, "not in the collection")
-        return {"game_id": gid, "name": name, "files": filemods._files(d)}
+        return {"game_id": gid, "name": name, "files": filemods._files(d, hashes=True)}
 
     @app.get("/api/modfiles/{gid}/{name}/file/{path:path}")
     def modfile_get(gid: str, name: str, path: str, actor=Depends(auth)):
