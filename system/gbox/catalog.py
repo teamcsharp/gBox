@@ -14,7 +14,7 @@ from .models import CatalogEntry
 
 EXT_PLATFORM = {
     ".nes": "nes", ".fds": "nes", ".sfc": "snes", ".smc": "snes", ".gb": "gb", ".gbc": "gbc", ".gba": "gba",
-    ".n64": "n64", ".z64": "n64", ".v64": "n64", ".md": "genesis", ".gen": "genesis", ".sms": "sms",
+    ".n64": "n64", ".z64": "n64", ".v64": "n64", ".md": "genesis", ".gen": "genesis", ".smd": "genesis", ".sms": "sms",
     ".gg": "gamegear", ".pce": "pce", ".gdi": "dreamcast", ".cdi": "dreamcast", ".gcm": "gamecube", ".gcz": "gamecube",
     ".rvz": "gamecube_wii", ".wbfs": "wii", ".wua": "wiiu", ".pbp": "psp", ".cso": "psp", ".nds": "nds",
     ".3ds": "3ds", ".xci": "switch", ".nsp": "switch",
@@ -47,6 +47,12 @@ def param_sfo(b: bytes) -> dict:
 def sniff(path: Path) -> tuple[str | None, dict]:
     """Identify platform from disc/ROM headers. Returns (platform, metadata)."""
     head = _read(path, 0, 0x40000)
+    if b"PLAYSTATION" in head:
+        head = _read(path, 0, 4 * 1024**2)
+    return sniff_head(head, path.stat().st_size)
+
+
+def sniff_head(head: bytes, size: int) -> tuple[str | None, dict]:
     if head[:8] == b"MComprHD":
         return None, {"note": "CHD container; platform requires chdman/libchdr inspection"}
     # Sega IP.BIN at sector start (cooked 2048 at 0, raw 2352 at 0x10)
@@ -69,8 +75,11 @@ def sniff(path: Path) -> tuple[str | None, dict]:
             system = head[pvd + 8:pvd + 40].decode("ascii", "replace").strip()
             volume = head[pvd + 40:pvd + 72].decode("ascii", "replace").strip()
             if system.startswith("PLAYSTATION"):
-                # ponytail: size heuristic; parse SYSTEM.CNF BOOT vs BOOT2 if PS1/PS2 misclassify
-                return ("ps2" if path.stat().st_size > 900_000_000 else "ps1"), {"volume": volume}
+                if re.search(rb"BOOT2\s*=\s*cdrom", head, re.I):
+                    return "ps2", {"volume": volume, "boot_platform": "ps2"}
+                if re.search(rb"BOOT\s*=\s*cdrom", head, re.I):
+                    return "ps1", {"volume": volume, "boot_platform": "ps1"}
+                return ("ps2" if size > 900_000_000 else "ps1"), {"volume": volume}
             if volume == "PSP GAME" or system == "PSP GAME":
                 return "psp", {"volume": volume}
             return None, {"iso_system": system, "volume": volume}
@@ -124,7 +133,9 @@ def _referenced_tracks(path: Path) -> set[Path]:
 
 
 def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = None,
-         lib_id: str | None = None, do_hash: bool = True) -> tuple[list[CatalogEntry], list[str]]:
+         lib_id: str | None = None, do_hash: bool = True, platform_hint: str | None = None,
+         recursive: bool = True, exclude_dirs: list[str] | None = None,
+         exclude_files: list[str] | None = None) -> tuple[list[CatalogEntry], list[str]]:
     """Walk library roots without modifying anything. Returns (deduped entries, problems).
 
     do_hash=False (network libraries): identity = library + relative path; content hashes come later on demand.
@@ -135,8 +146,14 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
         if not Path(root).exists():
             problems.append(f"library path not reachable: {root}")
             continue
-        for dirpath, _, names in os.walk(root):
-            files += [Path(dirpath, n) for n in names]
+        from fnmatch import fnmatch
+        for dirpath, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if recursive and not any(
+                fnmatch((Path(dirpath, d).relative_to(root).as_posix()).lower(), pattern.lower())
+                for pattern in (exclude_dirs or []))]
+            files += [Path(dirpath, n) for n in names if not any(
+                fnmatch(Path(dirpath, n).relative_to(root).as_posix().lower(), pattern.lower())
+                for pattern in (exclude_files or []))]
     sheets = [f for f in files if f.suffix.lower() in (".cue", ".gdi")]
     tracks = set().union(*(_referenced_tracks(s) for s in sheets)) if sheets else set()
 
@@ -164,11 +181,36 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
             except OSError as e:
                 problems.append(f"{f}: {e}")
             continue
-        zplat = zip_platform(f) if ext == ".zip" else None
-        if f.resolve() in tracks or (ext not in EXT_PLATFORM and ext not in SNIFF_EXT and not zplat):
+        archive = None
+        archive_meta = {}
+        zplat = None
+        if ext in (".zip", ".7z"):
+            from . import rom_archives
+            try:
+                contents = rom_archives.members(f)
+                archive = rom_archives.boot_member(contents)
+                if not archive:
+                    continue
+                zplat = EXT_PLATFORM.get(Path(archive).suffix.lower()) or platform_hint
+                if "/ps3_game/usrdir/eboot.bin" in ("/" + archive.lower()):
+                    zplat = "ps3"
+                if zplat in ("psx", "ps1", "ps2"):
+                    track = next((e for e in sorted(contents, key=lambda e: e["size"], reverse=True)
+                                  if Path(e["name"]).suffix.lower() in (".bin", ".iso", ".img")), None)
+                    if track:
+                        _, archive_meta = sniff_head(rom_archives.prefix(f, track["name"], 4 * 1024**2), track["size"])
+                        if archive_meta.get("boot_platform"):
+                            zplat = "psx" if archive_meta["boot_platform"] == "ps1" else "ps2"
+                if not zplat:
+                    problems.append(f"archive needs a console mapping: {f}")
+                    continue
+            except (OSError, ValueError, RuntimeError) as exc:
+                problems.append(f"{f}: {exc}")
+                continue
+        if f.resolve() in tracks or (ext not in EXT_PLATFORM and ext not in SNIFF_EXT and not archive):
             continue
         try:
-            platform_, conf, meta = EXT_PLATFORM.get(ext) or zplat, "extension" if not zplat else "zip contents", {}
+            platform_, conf, meta = EXT_PLATFORM.get(ext) or zplat or platform_hint, "extension" if not archive else "archive contents", archive_meta
             candidates, hash_target = [f], f
             if ext in (".cue", ".gdi"):
                 candidates = [r for r in sorted(_referenced_tracks(f)) if r.exists()]
@@ -181,6 +223,11 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                     p2, meta = sniff(c)
                     if p2:
                         platform_, conf = p2, "header"
+                        # PS1 and PS2 use the same ISO system id; an explicit library mapping outranks the size heuristic.
+                        if p2 == "ps1" and platform_hint and meta.get("boot_platform"):
+                            platform_ = "psx"
+                        elif p2 in ("ps1", "ps2") and platform_hint in ("psx", "ps1", "ps2") and not meta.get("boot_platform"):
+                            platform_ = platform_hint
                         break
             if not platform_:
                 problems.append(f"unidentified platform: {f}")
@@ -202,7 +249,8 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 hashes=hashes, size=f.stat().st_size, format=ext.lstrip("."),
                 runtimes={platform_: runtimes[platform_]} if platform_ in runtimes else
                          ({f"retroarch/{core}": "auto-install"} if core else {}),
-                launch={"kind": "emulator", "platform": platform_, "path": str(f)}, profile_id=gid)
+                launch={"kind": "emulator", "platform": platform_, "path": str(f),
+                        **({"archive_member": archive} if archive else {})}, profile_id=gid)
         except OSError as e:
             problems.append(f"{f}: {e}")
     return list(by_hash.values()), problems

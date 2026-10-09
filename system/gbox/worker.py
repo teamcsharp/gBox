@@ -87,15 +87,21 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
             try:
-                c.post("/api/workers/register", json=info.model_dump()).raise_for_status()
+                c.post("/api/workers/register", json=info.model_dump(), timeout=60).raise_for_status()
                 break
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
         described = time.time()
         while not stop.is_set():
             if time.time() - described > REDESCRIBE_S:
-                info, described = describe(config, name, info.id), time.time()
-                c.post("/api/workers/register", json=info.model_dump())
+                try:
+                    info = describe(config, name, info.id)
+                    c.post("/api/workers/register", json=info.model_dump(), timeout=60).raise_for_status()
+                    described = time.time()
+                except (httpx.HTTPError, OSError) as exc:
+                    print(f"worker registration retry: {exc}", flush=True)
+                    stop.wait(poll_s * 5)
+                    continue
             if len(active) >= MAX_PARALLEL:
                 stop.wait(poll_s)
                 continue
@@ -105,12 +111,19 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 stop.wait(poll_s * 5)
                 continue
             if r.status_code == 404:                               # server restarted with fresh state
-                c.post("/api/workers/register", json=info.model_dump()).raise_for_status()
+                try:
+                    c.post("/api/workers/register", json=info.model_dump(), timeout=60).raise_for_status()
+                except httpx.HTTPError:
+                    stop.wait(poll_s * 5)
                 continue
             if r.status_code == 204:
                 stop.wait(poll_s)
                 continue
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except httpx.HTTPError:
+                stop.wait(poll_s * 5)
+                continue
             job = r.json()
             active.add(job["id"])
             threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active), daemon=True).start()

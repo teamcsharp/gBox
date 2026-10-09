@@ -926,6 +926,10 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/workers/register")
     def register(w: WorkerInfo, actor=Depends(auth)):
         w.last_seen = time.time()
+        prev = store.get("worker", w.id)
+        if prev and (prev.get("tools"), prev.get("unavailable")) == (w.tools, w.unavailable):
+            store.put("worker", w.id, w.model_dump())
+            return {"id": w.id}
         old_ids = {o["id"] for o in store.all("worker") if o["name"] == w.name and o["id"] != w.id}
         for j in store.all("job"):                  # a restarted worker can never finish its old jobs
             if j["state"] == JobState.RUNNING and j["worker_id"] in old_ids:
@@ -941,10 +945,7 @@ def create_app(config: Config) -> FastAPI:
         for j in store.all("job"):                  # queued for the old id (a client that cached it): the new one takes them
             if j["state"] == JobState.QUEUED and j.get("require_worker") and _wid(j["require_worker"]) == w.id != j["require_worker"]:
                 store.put("job", j["id"], j | {"require_worker": w.id})
-        prev = store.get("worker", w.id)
         store.put("worker", w.id, w.model_dump())
-        if prev and (prev.get("tools"), prev.get("unavailable")) == (w.tools, w.unavailable):
-            return {"id": w.id}                     # periodic refresh, nothing changed: not worth an audit row
         store.audit(actor, "worker.register", w.id, {"name": w.name, "os": w.os, "tools": w.tools, "unavailable": w.unavailable})
         return {"id": w.id}
 
@@ -956,7 +957,7 @@ def create_app(config: Config) -> FastAPI:
         with store.lock:
             w["last_seen"] = time.time()
             store.put("worker", wid, w)
-            for j in store.all("job"):
+            for j in store.queued_jobs():
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
@@ -1160,8 +1161,8 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/catalog")
     def search_catalog(q: str = "", platform: str = "", system: str = "", library: str = "",
                        limit: int = 100, offset: int = 0, sort: str = "name", favorites: bool = False,
-                       recent: bool = False, local: str = "", letter: str = "", actor=Depends(auth)):
-        kw = dict(sort=sort, favorites=favorites, recent=recent, local=local, letter=letter)
+                       recent: bool = False, local: str = "", letter: str = "", exclude_platforms: str = "", actor=Depends(auth)):
+        kw = dict(sort=sort, favorites=favorites, recent=recent, local=local, letter=letter, exclude_platforms=exclude_platforms)
         total, items = store.search(q, platform, system, library, min(limit, 500), offset, **kw)
         # build the thumbnail cache ahead of the user: this page, then the next one
         _warm([e["game_id"] for e in items])
@@ -1226,9 +1227,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/catalog/letter_offset")
     def letter_offset(letter: str, q: str = "", platform: str = "", system: str = "", favorites: bool = False,
-                      recent: bool = False, local: str = "", actor=Depends(auth)):
+                      recent: bool = False, local: str = "", exclude_platforms: str = "", actor=Depends(auth)):
         n, _ = store.search(q, platform, system, "", 1, 0, favorites=favorites, recent=recent, local=local,
-                            start_letter="" if letter == "#" else letter.upper()[:1])
+                            start_letter="" if letter == "#" else letter.upper()[:1], exclude_platforms=exclude_platforms)
         return {"letter": letter, "offset": n}
 
     @app.get("/api/catalog/platforms")
@@ -1311,6 +1312,7 @@ def create_app(config: Config) -> FastAPI:
     thumbs.mkdir(parents=True, exist_ok=True)
     thumb_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="thumb")
     thumb_busy: set[str] = set()
+    thumb_publish_lock = threading.Lock()
     MISS_TTL = 86400                                 # re-check art that was missing once a day
 
     def _thumb(gid: str, kind: str, w: int) -> Path | None:
@@ -1326,20 +1328,30 @@ def create_app(config: Config) -> FastAPI:
         if not src:
             miss.touch()
             return None
-        tmp = out.with_suffix(".tmp.jpg")
+        tmp = out.with_name(out.stem + f"-{threading.get_ident()}-{time.time_ns()}.tmp.jpg")
         r = subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-frames:v", "1",
                             "-vf", f"scale='min({w},iw)':-2", "-q:v", "4", str(tmp)], capture_output=True, timeout=60)
         if r.returncode or not tmp.exists():
+            tmp.unlink(missing_ok=True)
             miss.touch()
             return None
-        tmp.replace(out)
+        with thumb_publish_lock:
+            if not out.exists():
+                tmp.replace(out)
+            else:
+                tmp.unlink(missing_ok=True)
         return out
 
     def _warm(gids: list[str]):
+        def warm(gid):
+            try:
+                _thumb(gid, "best", 360)
+            finally:
+                thumb_busy.discard(gid)
         for gid in gids:
             if gid not in thumb_busy and not (thumbs / gid[:2] / f"{gid}-best-360.jpg").exists():
                 thumb_busy.add(gid)
-                thumb_pool.submit(lambda g=gid: (_thumb(g, "best", 360), thumb_busy.discard(g)))
+                thumb_pool.submit(warm, gid)
 
     @app.get("/api/media/{gid}/{kind}")
     def media(gid: str, kind: str, w: int = 0, actor=Depends(auth)):

@@ -46,3 +46,186 @@ kind = "files"
 mount = "//10.89.1.125/QuickSwap2"
 mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/PS3", windows = "//10.89.1.125/QuickSwap2/Emulation/PS3" }
+
+# Additional QuickSwap2 ROM folders. BIOS, emulator installations and NAND backups are not games.
+
+[[libraries]]
+id = "quickswap-root"
+kind = "files"
+platform = "psx"
+recursive = false
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation", windows = "//10.89.1.125/QuickSwap2/Emulation" }
+
+[[libraries]]
+id = "quickswap-dc"
+kind = "files"
+platform = "dreamcast"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/DC", windows = "//10.89.1.125/QuickSwap2/Emulation/DC" }
+
+[[libraries]]
+id = "quickswap-n64"
+kind = "files"
+platform = "n64"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/n64", windows = "//10.89.1.125/QuickSwap2/Emulation/n64" }
+
+[[libraries]]
+id = "quickswap-nes"
+kind = "files"
+platform = "nes"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/NES", windows = "//10.89.1.125/QuickSwap2/Emulation/NES" }
+
+[[libraries]]
+id = "quickswap-ps1"
+kind = "files"
+platform = "psx"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/PS1", windows = "//10.89.1.125/QuickSwap2/Emulation/PS1" }
+
+[[libraries]]
+id = "quickswap-ps2"
+kind = "files"
+platform = "ps2"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/PS2", windows = "//10.89.1.125/QuickSwap2/Emulation/PS2" }
+
+[[libraries]]
+id = "quickswap-saturn"
+kind = "files"
+platform = "saturn"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/Saturn", windows = "//10.89.1.125/QuickSwap2/Emulation/Saturn" }
+
+[[libraries]]
+id = "quickswap-segacd"
+kind = "files"
+platform = "segacd"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/segaCD", windows = "//10.89.1.125/QuickSwap2/Emulation/segaCD" }
+
+[[libraries]]
+id = "quickswap-snes"
+kind = "files"
+platform = "snes"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/SNES", windows = "//10.89.1.125/QuickSwap2/Emulation/SNES" }
+
+[[libraries]]
+id = "quickswap-psx"
+kind = "files"
+platform = "psx"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_psx", windows = "//10.89.1.125/QuickSwap2/Emulation/_psx" }
+
+[[libraries]]
+id = "quickswap-dc-disc"
+kind = "files"
+platform = "dreamcast"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "dc_flash.bin", "dc_boot.bin"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/_dc iso", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/_dc iso" }
+
+[[libraries]]
+id = "quickswap-ps2-disc"
+kind = "files"
+platform = "ps2"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/PS2 ISOs", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/PS2 ISOs" }
+
+[[libraries]]
+id = "quickswap-psx-disc"
+kind = "files"
+platform = "psx"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/_psx", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/_psx" }
+
+[[libraries]]
+id = "quickswap-bmx"
+kind = "files"
+platform = "psx"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/Dave Mirra", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/Dave Mirra" }
+
+[[libraries]]
+id = "quickswap-nes-extra"
+kind = "files"
+platform = "nes"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/NES/nes roms", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/NES/nes roms" }
+
+[[libraries]]
+id = "quickswap-genesis"
+kind = "files"
+platform = "genesis"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/_sega genesis/rom", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/_sega genesis/rom" }
+
+[[libraries]]
+id = "quickswap-wii"
+kind = "files"
+platform = "wii"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*BIOS*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_emulation/Wii Emulation/Dolphin/ISOs", windows = "//10.89.1.125/QuickSwap2/Emulation/_emulation/Wii Emulation/Dolphin/ISOs" }
+
+[[libraries]]
+id = "quickswap-switch"
+kind = "files"
+platform = "switch"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*bios*", "*[[]0100F2C0115B6800[]]*"] # title update, not a standalone game
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/_switch", windows = "//10.89.1.125/QuickSwap2/Emulation/_switch" }

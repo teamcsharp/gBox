@@ -108,7 +108,9 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         if lib.kind == "attract":
             e, p, stats = catalog.scan_attract(root, lib.id, cache)
         else:
-            e, p = catalog.scan([root], {}, cache, lib_id=lib.id, do_hash=lib.hash)
+            e, p = catalog.scan([root], {}, cache, lib_id=lib.id, do_hash=lib.hash,
+                                platform_hint=lib.platform, recursive=lib.recursive, exclude_dirs=lib.exclude_dirs,
+                                exclude_files=lib.exclude_files)
             stats = {}
         entries += e
         problems += p
@@ -314,7 +316,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
-        if g.platform != "ps3" and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # PS3 = whole folder
+        if g.platform != "ps3" and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Archives unpack directly into the local cache; PS3 = whole folder
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
             last = [0.0]
@@ -327,6 +329,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(70, f"Staged to cache ({'reused' if not receipt.get('copied', True) else 'copied'}) · evicted {len(receipt['evicted'])}")
             ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
             src = Path(receipt["dst"])
+        if g.launch.get("archive_member") and not inp.mod:
+            from . import rom_archives
+            src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
+            staged_on = __import__("platform").node()
         checkpoints = _close_previous_games(ctx)
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         detail = ad.launch_game(str(src))

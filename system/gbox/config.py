@@ -26,6 +26,10 @@ class Library(BaseModel):
     mount: str | None = None          # linux: SMB source to mount at paths["linux"] during setup
     mount_root: str | None = None     # linux: mountpoint when paths["linux"] is a subdir of the share
     hash: bool = False                # content-hash files during scan (slow over SMB; on demand otherwise)
+    platform: str | None = None       # known console for a plain ROM folder (disc containers have ambiguous extensions)
+    recursive: bool = True
+    exclude_dirs: list[str] = []      # relative folder globs, e.g. BIOS and emulator installations
+    exclude_files: list[str] = []
 
     def root(self, os_: str = HOST_OS) -> Path | None:
         p = self.paths.get(os_)

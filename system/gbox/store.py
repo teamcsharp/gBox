@@ -27,6 +27,7 @@ class Store:
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS docs(kind TEXT, id TEXT, body TEXT, PRIMARY KEY(kind, id));
+            CREATE INDEX IF NOT EXISTS docs_queued_jobs ON docs(json_extract(body,'$.state')) WHERE kind='job';
             CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY, ts REAL, actor TEXT, action TEXT,
                                              subject TEXT, data TEXT, prev TEXT, hash TEXT);
             CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
@@ -109,8 +110,13 @@ class Store:
 
     def search(self, q: str = "", platform: str = "", system: str = "", library: str = "",
                limit: int = 100, offset: int = 0, sort: str = "name", favorites: bool = False, recent: bool = False,
-               local: str = "", letter: str = "", start_letter: str | None = None) -> tuple[int, list[dict]]:
+               local: str = "", letter: str = "", start_letter: str | None = None,
+               exclude_platforms: str = "") -> tuple[int, list[dict]]:
         where, args = [], []
+        hidden = [p for p in exclude_platforms.split(",") if p]
+        if hidden:
+            where.append(f"COALESCE(platform, '') NOT IN ({','.join('?' * len(hidden))})")
+            args += hidden
         if platform and "," in platform:                       # carousel multi-select
             ps = [p for p in platform.split(",") if p]
             where.append(f"platform IN ({','.join('?' * len(ps))})")
@@ -200,6 +206,12 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    def queued_jobs(self) -> list[dict]:
+        """Claim only queued work, in submission order, without decoding every completed job."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM docs WHERE kind='job' AND json_extract(body,'$.state')='queued' ORDER BY rowid").fetchall()
+        return [json.loads(row[0]) for row in rows]
 
     # --- audit ledger ---
     def audit(self, actor: str, action: str, subject: str, data: dict | None = None) -> int:

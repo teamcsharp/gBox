@@ -163,6 +163,7 @@
   body.chatresizing #play webview { pointer-events:none; }
   #chatbar #modelbtn { min-width:128px; }
   #chatbar .cbicons { flex:none; }
+  #chatbar .flow-action { margin-left:auto; }
   #chatbar .micbtn { border:0 !important; background:none !important; padding:2px !important; right:8px; }
   #chatbar #chatmodel { max-width:200px; text-overflow:ellipsis; }
   #chatbusy { cursor:pointer; min-width:0; max-width:340px; overflow:hidden; text-overflow:ellipsis; display:inline-flex; align-items:center; gap:6px; }
@@ -179,13 +180,13 @@
     border-right-color:transparent; border-radius:50%; animation:bspin .75s linear infinite; }
   #busysteps .st b { display:block; } #busysteps .st .r { color:var(--mut); white-space:pre-wrap; word-break:break-word; max-height:4.5em; overflow:hidden; }
   @keyframes bin { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
-  #taskpanel { position:fixed; right:12px; top:84px; width:min(760px, calc(100vw - 24px)); max-height:calc(100vh - 120px); overflow:auto; z-index:58;
+  #taskpanel { position:fixed; right:12px; top:84px; width:min(760px, calc(100vw - 24px)); max-height:calc(100vh - 120px); overflow-y:auto; overflow-x:hidden; z-index:58;
     display:none; background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 14px 44px #000b; font-size:12px; }
   #taskpanel.on { display:block; } #taskpanel .th { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line);
     position:sticky; top:0; background:var(--bg); } #taskpanel .th b { flex:1; font-size:14px; }
-  #taskpanel .mc { padding:8px 12px; border-bottom:1px solid var(--line); } #taskpanel .mh { display:flex; flex-wrap:wrap; gap:6px 14px; margin-bottom:6px; }
-  #taskpanel .mh b { font-size:13px; } #taskpanel table { width:100%; border-collapse:collapse; }
-  #taskpanel td, #taskpanel th { padding:4px 6px; text-align:right; white-space:nowrap; } #taskpanel td:first-child, #taskpanel th:first-child,
+  #taskpanel .mc { padding:8px 12px; border-bottom:1px solid var(--line); min-width:0; } #taskpanel .mh { display:flex; flex-wrap:wrap; gap:6px 14px; margin-bottom:6px; }
+  #taskpanel .mh b { font-size:13px; } #taskpanel table { width:100%; table-layout:fixed; border-collapse:collapse; }
+  #taskpanel td, #taskpanel th { padding:4px 6px; text-align:right; white-space:normal; overflow-wrap:anywhere; } #taskpanel td:first-child, #taskpanel th:first-child,
   #taskpanel td:nth-child(2), #taskpanel th:nth-child(2) { text-align:left; } #taskpanel th { color:var(--mut); font-weight:500; }
   #taskpanel tr:hover td { background:var(--card); } #taskpanel .kd { padding:1px 6px; border-radius:8px; background:var(--card); color:var(--mut); }
   #taskpanel .kd.game { color:var(--ok); } #taskpanel .kd.agent { color:var(--warn); }
@@ -193,6 +194,8 @@
   #taskpanel .x { color:var(--bad); background:none; border:1px solid transparent; border-radius:5px; cursor:pointer; padding:2px 7px; font:inherit; }
   #taskpanel .x:hover { border-color:var(--bad); } #taskpanel .bar { display:inline-block; width:46px; height:5px; background:var(--card); border-radius:3px;
     vertical-align:middle; margin-left:4px; overflow:hidden; } #taskpanel .bar i { display:block; height:100%; background:var(--acc); }
+  #taskpanel details { min-width:0; } #taskpanel summary { cursor:pointer; } #taskpanel pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:220px; overflow:auto; }
+  #titlebar .tools button[hidden] { display:none; }
   #whipmenu { display:none; position:fixed; z-index:90; width:318px; padding:10px; background:var(--bg); border:1px solid var(--line);
     border-radius:10px; box-shadow:0 12px 40px #000b; font-size:13px; } #whipmenu.on { display:block; }
   #whipmenu > div { margin:2px 0 8px; } #whipmenu button { display:flex; gap:10px; align-items:center; width:100%; text-align:left; padding:7px 8px;
@@ -572,7 +575,7 @@ window.assetView = async (box, glbUrl) => {
     <button id="tb-rec" title="Record the app with playback audio (click to stop; right-click for gameplay only)">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle id="tb-rec-dot" cx="12" cy="12" r="4.5" fill="#ff3b3b"/></svg><span id="tb-rec-t"></span></button>
     <button id="tb-recopt" title="Recording size limit and compression" style="min-width:0;padding:0 4px">▾</button>
-    <button id="tb-mini" title="Mini mode: shrink gBox to a resizable game window (keeps the game's aspect ratio)">
+    <button id="tb-mini" hidden title="Mini mode: shrink gBox to a resizable game window (keeps the game's aspect ratio)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor"/></svg>Mini</button>
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
@@ -596,6 +599,8 @@ window.assetView = async (box, glbUrl) => {
   <div id="modelmenu" role="listbox"><input id="mm-q" placeholder="Filter models…" autocomplete="off" data-nomic><div id="mm-list"></div></div>
   <span class="cbicons">
   <button id="talkbtn" title="Talk: voice conversation with gBox (Spark speech-to-text + XTTS v2 voices)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9v2M12 7v6M16 9v2"/></svg></button>
+  </span>
+  <span class="cbicons flow-action">
   <button id="chatflowbtn" title="Flow: live 3D map of what gBox is doing for this conversation (click nodes for details)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.3 11 16.7 6M7.3 13l9.4 5"/></svg></button>
   </span>
 </div>
@@ -847,11 +852,16 @@ setInterval(async () => {
 // ---- Tasks: every machine's gBox processes + jobs in flight, with what they cost and a hard stop ----
 document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b><span class="mut" id="tk-at"></span>
   <button class="act" id="tk-close">Close</button></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div>`);
-const TK = { t: null };
+const TK = { t: null, busy: false, expanded: new Set() };
 const tkAge = ts => { const s = Math.max(0, Date.now() / 1000 - (ts || 0)); return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; };
 const tkBar = (v, max) => `<span class="bar"><i style="width:${Math.min(100, 100 * v / (max || 100))}%"></i></span>`;
 async function tasksLoad() {
-  const r = await gbox.api("/api/tasks"); if (!r.ok) { $("#tk-body").innerHTML = `<p class="mut" style="padding:12px">${esc(r.error)}</p>`; return; }
+  if (TK.busy) return;
+  TK.busy = true;
+  let r;
+  try { r = await gbox.api("/api/tasks"); } finally { TK.busy = false; }
+  if (!$("#taskpanel").classList.contains("on")) return;
+  if (!r.ok) { $("#tk-body").innerHTML = `<p class="mut" style="padding:12px">${esc(r.error)}</p>`; return; }
   const d = r.data, kind = k => `<span class="kd ${k === "game" ? "game" : k === "agent test" ? "agent" : ""}">${esc(k)}</span>`;
   $("#tk-at").textContent = "updated " + new Date().toLocaleTimeString();
   $("#tk-body").innerHTML = d.machines.map(m => { const t = m.totals || {};
@@ -861,12 +871,12 @@ async function tasksLoad() {
       ${t.gpu ? `<span>${esc(t.gpu)} ${t.gpu_pct}%${tkBar(t.gpu_pct)}</span><span>VRAM ${((t.vram_used_mb || 0) / 1024).toFixed(1)} / ${((t.vram_total_mb || 0) / 1024).toFixed(0)} GB${tkBar(t.vram_used_mb, t.vram_total_mb)}</span>` : ""}
       ${m.error ? `<span style="color:var(--bad)">${esc(m.error)}</span>` : ""}</div>
       <table><tr><th>What</th><th>Name</th><th>RAM</th><th>CPU</th><th>GPU</th><th>VRAM</th><th>Age</th><th></th></tr>
-      ${(m.tasks || []).map(x => `<tr title="${esc(x.cmd)}"><td>${kind(x.kind)}</td><td><span class="nm">${esc(x.name)}</span>${x.procs > 1 ? ` <span class="mut">+${x.procs - 1}</span>` : ""}</td>
+      ${(m.tasks || []).map(x => `<tr><td>${kind(x.kind)}</td><td><details><summary><span class="nm">${esc(x.name)}</span></summary><pre>${esc(x.cmd || "No command line available")}</pre></details>${x.procs > 1 ? ` <span class="mut">+${x.procs - 1}</span>` : ""}</td>
         <td>${x.ram_mb >= 1024 ? (x.ram_mb / 1024).toFixed(1) + " GB" : x.ram_mb + " MB"}</td><td>${x.cpu_pct}%</td><td>${x.gpu_pct}%</td><td>${x.vram_mb} MB</td>
         <td>${tkAge(x.started)}</td><td>${x.killable ? `<button class="x" data-kill="${x.pid}" data-w="${esc(m.worker_id)}" title="Stop it now (and everything it started)">✕ Stop</button>` : '<span class="mut" title="gBox itself">—</span>'}</td></tr>`).join("")
         || '<tr><td colspan="8" class="mut" style="text-align:left">nothing running</td></tr>'}</table></div>`; }).join("") +
     `<div class="mc"><div class="mh"><b>Jobs in flight</b><span class="mut">${d.jobs.length}</span></div><table>
-      ${d.jobs.map(j => `<tr><td>${kind(j.state)}</td><td><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></td><td>${esc(j.worker)}</td>
+      ${d.jobs.map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}><summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary><pre>${TK.expanded.has(j.id) ? "Loading task output…" : ""}</pre></details></td><td>${esc(j.worker)}</td>
         <td>${tkAge(j.created)}</td><td><button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></td></tr>`).join("") || '<tr><td class="mut" style="text-align:left">none</td></tr>'}</table></div>`;
 }
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
@@ -880,6 +890,18 @@ $("#tk-body").onclick = async e => {
   if (!r.ok) { b.textContent = "failed"; b.title = r.error; }
   tasksLoad();
 };
+$("#tk-body").addEventListener("toggle", async e => {
+  const detail = e.target.closest?.("[data-detail-job]");
+  if (!detail) return;
+  const id = detail.dataset.detailJob;
+  if (!detail.open) { TK.expanded.delete(id); return; }
+  TK.expanded.add(id);
+  const r = await gbox.api(`/api/jobs/${id}`);
+  if (!detail.isConnected || !detail.open) return;
+  detail.querySelector("pre").textContent = r.ok
+    ? [...(r.data.progress_log || []), r.data.error || ""].filter(Boolean).join("\n") || "No console output yet."
+    : r.error;
+}, true);
 const kv = (el, rows) => el.innerHTML = rows.map(([k, v]) => `<span>${esc(k)}</span><span>${v}</span>`).join("");
 const dot = (id, cls) => $(id).className = "dot " + cls;
 async function refresh() {
@@ -1440,6 +1462,7 @@ async function embedTick() {
   EMB.busy = true;
   try {
     const r = await gbox.api("/api/sessions");
+    if (r.ok) $("#tb-mini").hidden = !r.data.some(s => s.state === "running");
     const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is

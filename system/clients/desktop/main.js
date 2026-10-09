@@ -107,7 +107,8 @@ async function api(p, body) {
   const t = await token();
   const r = await fetch(settings().apiUrl + p, {
     method: body ? "POST" : "GET", body: body && JSON.stringify(body),
-    headers: { authorization: `Bearer ${t}`, "content-type": "application/json" }, signal: AbortSignal.timeout(8000),
+    headers: { authorization: `Bearer ${t}`, "content-type": "application/json" },
+    signal: AbortSignal.timeout(p === "/api/tasks" ? 35000 : 8000),
   });
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
