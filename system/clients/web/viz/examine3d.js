@@ -50,6 +50,10 @@ export async function createExaminer(container, opts = {}) {
 
   async function load(url) {
     const gltf = await new GLTFLoader().loadAsync(url);
+    if (state.dead) {
+      gltf.scene.traverse(o => { if (o.isMesh) { o.geometry.dispose(); [].concat(o.material).forEach(m => { m.map?.dispose(); m.dispose(); }); } });
+      return;
+    }
     clear();
     const root = gltf.scene;
     state.root = root;

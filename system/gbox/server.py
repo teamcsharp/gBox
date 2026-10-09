@@ -1007,6 +1007,10 @@ def create_app(config: Config) -> FastAPI:
             inp = t.In.model_validate(req.input).model_dump(mode="json")
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
+        if t.name == "scene_capture":
+            session = store.get("session", inp["session_id"])
+            if not session or session.get("state") != "running":
+                raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id)
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:

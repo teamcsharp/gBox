@@ -888,6 +888,25 @@ def extract(rdc, out_dir: Path, fovy: float = 0, aspect: float = 0, mode: str = 
 # ------------------------------------------------------------------------------------------------ session flow
 
 def capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect: float = 0, progress=None) -> dict:
+    """Keep a successful scene paused; restore the original pause state if capture fails."""
+    from .registry import Unsupported
+    proc = getattr(ad, "proc", None)
+    if proc is None or proc.poll() is not None:
+        raise Unsupported("This game's emulator has stopped. Open the running game in Sessions.")
+    runtime = ad.query_runtime()
+    was_paused = runtime.get("paused", False) or runtime.get("state") == "PAUSED" or bool(getattr(ad, "paused_tids", None))
+    try:
+        result = _capture_session(ad, out_dir, frames, fovy, aspect, progress)
+    except Exception:
+        try:
+            ad.pause() if was_paused else ad.resume()
+        except Exception:
+            pass
+        raise
+    return result | {"resume_on_leave": not was_paused}
+
+
+def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect: float = 0, progress=None) -> dict:
     """Pause a live local-window session on a frame and rebuild that frame as a 3D scene. The game stays paused.
     RetroArch: pause, arm the capture, FRAMEADVANCE until it lands (exactly the frames the game is paused on).
     Dolphin (and other emulators without a frame step): arm the capture, let the next frame through, then pause."""
@@ -989,6 +1008,7 @@ class SceneOut(BaseModel):
     glb: str                               # sha256 of the scene.glb artifact
     summary: dict
     paused: bool = True
+    resume_on_leave: bool = True
 
 
 def _scene_validate(out: SceneOut, arts):
@@ -1007,19 +1027,32 @@ def scene_capture(inp: SceneIn, ctx: Ctx):
     """Examine in 3D: pause a live session and rebuild the frame on screen as a 3D scene (glTF + textures, one node
     per draw call, HUD as its own layer). The game stays paused; resume with session_op resume."""
     from .tools import SESSIONS
-    ad, g = SESSIONS[inp.session_id]
+    from .registry import Unsupported
+    session = SESSIONS.get(inp.session_id)
+    if session is None:
+        raise Unsupported("This game session is no longer available on its worker. Open the running game in Sessions.")
+    ad, g = session
     out = ctx.config.runtime / "scene_capture" / inp.session_id
     s = capture_session(ad, out, max(1, min(inp.frames, 4)), inp.fovy, inp.aspect, ctx.progress)
-    ctx.progress(92, f"Uploading the scene ({s['draws_exported']} draws, {s['textures']} textures)")
-    glb = (out / "scene.glb").read_bytes()
-    meta = {"session": inp.session_id, "game": g.get("game_id"), "title": g.get("title")}
-    ctx.artifact("scene.glb", glb, "model/gltf-binary", **meta)
-    ctx.artifact("scene.json", json.dumps(s).encode(), "application/json", **meta)
-    if (out / "frame.png").exists():
-        ctx.artifact("frame.png", (out / "frame.png").read_bytes(), "image/png", **meta)
-    small = {k: v for k, v in s.items() if k not in ("draw_list", "projection")}
-    small["glb_bytes"] = len(glb)
-    return {"session_id": inp.session_id, "glb": sha256(glb), "summary": small, "paused": True}
+    try:
+        ctx.progress(92, f"Uploading the scene ({s['draws_exported']} draws, {s['textures']} textures)")
+        glb = (out / "scene.glb").read_bytes()
+        meta = {"session": inp.session_id, "game": g.get("game_id"), "title": g.get("title")}
+        ctx.artifact("scene.glb", glb, "model/gltf-binary", **meta)
+        ctx.artifact("scene.json", json.dumps(s).encode(), "application/json", **meta)
+        if (out / "frame.png").exists():
+            ctx.artifact("frame.png", (out / "frame.png").read_bytes(), "image/png", **meta)
+        small = {k: v for k, v in s.items() if k not in ("draw_list", "projection")}
+        small["glb_bytes"] = len(glb)
+        return {"session_id": inp.session_id, "glb": sha256(glb), "summary": small, "paused": True,
+                "resume_on_leave": s["resume_on_leave"]}
+    except Exception:
+        if s["resume_on_leave"]:
+            try:
+                ad.resume()
+            except Exception:
+                pass
+        raise
 
 
 if __name__ == "__main__":

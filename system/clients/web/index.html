@@ -437,17 +437,20 @@ async function api(path, body, method) {
   }
   if (!r.ok) throw new Error(r.status + " " + (await r.text())); return r.json();
 }
-let cur = "Library", timer = null;
-const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: null };   // Examine 3D state (see examineView)
+let cur = "Library", timer = null, viewRevision = 0, sessionMode = null;
+const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
 async function show(t, ...args) {
+  const revision = ++viewRevision;
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
   cur = t; const sc = document.getElementById("scrub"); if (sc && t !== "Library") sc.style.display = "none"; clearInterval(timer); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
   playing = t === "Sessions" && args[0] ? args[0] : null;          // the session shown full-size, if any
+  sessionMode = t === "Sessions" ? args[1] || null : null;
   pip();                                                         // leaving a game -> picture-in-picture
-  try { $("#view").innerHTML = await tabs[t](...args); tabs[t].after && tabs[t].after(...args); }
-  catch (e) { $("#view").innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+  try { const html = await tabs[t](...args); if (revision !== viewRevision) return;
+    $("#view").innerHTML = html; tabs[t].after && tabs[t].after(...args); }
+  catch (e) { if (revision === viewRevision) $("#view").innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
 }
 
 
@@ -879,6 +882,20 @@ async function details(id) {
 // ---------------- Sessions / play view ----------------
 const KEYMAP = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Enter: "Return", " ": "space", Backspace: "BackSpace", Tab: "Tab" };
 const keysym = e => e.code === "ShiftRight" ? "Shift_R" : e.code === "ShiftLeft" ? "Shift_L" : KEYMAP[e.key] || (/^[a-z0-9]$/i.test(e.key) ? e.key.toLowerCase() : /^F\d+$/.test(e.key) ? e.key : null);
+function liveExamineSession(ss, sid) {
+  const original = ss.find(s => s.session_id === sid);
+  let s = original; const seen = new Set();
+  while (s && !seen.has(s.session_id)) {
+    if (s.state === "running") return s;
+    seen.add(s.session_id); s = ss.find(x => x.session_id === s.replaced_by);
+  }
+  const running = ss.filter(s => s.state === "running");
+  return running.find(s => s.game_id === original?.game_id && s.detail?.worker_name === original?.detail?.worker_name)
+    || running.find(s => s.session_id === active?.sid)
+    || running.find(s => s.game_id === original?.game_id)
+    || running.find(s => s.detail?.worker_name === window.GBOX_LOCAL?.worker)
+    || running[0];
+}
 async function sessionsView(sid, mode) {
   const ss = await api("/api/sessions");
   if (!sid) return `<p class="mut">Open a running game to watch and control it, or reopen any game from your history (relaunches its ROM).</p>` +
@@ -888,10 +905,12 @@ async function sessionsView(sid, mode) {
       <td>${s.state === "running" ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>Open</button>` : ""}
           ${s.game_id ? `<button class="act" onclick='play(${JSON.stringify(s.game_id)})'>Reopen</button>` : ""}</td>
       <td><code class="mut">${esc(s.session_id)}</code></td></tr>`));
-  const s = ss.find(x => x.session_id === sid) || {};
+  const original = ss.find(x => x.session_id === sid);
+  const s = (mode === "examine" ? liveExamineSession(ss, sid) : original) || original || {};
+  sid = s.session_id || sid;
   const local = !!(s.detail && s.detail.local_window);
   const btn = k => `<button class="act" data-k="${k}">${k}</button>`;
-  const head = `<div class="bar"><button class="act" onclick="show('Sessions')">All sessions</button><b>${esc(s.title)}</b>
+  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><b>${esc(s.title || 'Game session')}</b>
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
@@ -899,6 +918,7 @@ async function sessionsView(sid, mode) {
       aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
       aria-label="Stop" onclick='hardStop(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg></button>` : ""}</div>`;
+  if (s.state !== "running") return head + `<p class="mut">This session has ended. Open a running game to examine it${s.game_id ? ', or reopen this game' : ''}.</p>${s.game_id ? `<button class="act pri" onclick='play(${JSON.stringify(s.game_id)})'>Reopen game</button>` : ''}`;
   if (mode === "inspect") return head + await inspectView(sid);
   if (mode === "examine") return head + examineView(sid, s);
   return head + `
@@ -1054,7 +1074,7 @@ function examineView(sid, s) {
         <button class="act" id="ex_home" title="Back to the game's own camera">Game view</button>
         <a class="act" id="ex_dl" download="scene.glb" style="display:none">.glb</a></div>
       <div class="bar"><button class="act" id="ex_blsel" title="Put the selected object on Blender's clipboard: then Ctrl+V in a Blender 3D viewport pastes it, textured" disabled>⧉ Selection → Blender</button>
-        <button class="act" id="ex_blall" title="Put the whole captured scene on Blender's clipboard (Ctrl+V in Blender)">⧉ Scene → Blender</button></div>
+        <button class="act" id="ex_blall" title="Put the whole captured scene on Blender's clipboard (Ctrl+V in Blender)" disabled>⧉ Scene → Blender</button></div>
       <div id="ex_blmsg" class="mut" style="font-size:12px"></div>
       <label><input type="checkbox" id="ex_hud"> HUD / 2D layer</label>
       <label><input type="checkbox" id="ex_wire"> Wireframe</label>
@@ -1066,14 +1086,26 @@ function examineView(sid, s) {
 }
 async function examineAfter(sid) {
   EXAM.sid = sid;
-  const el = $("#exv");
-  const say = (pct, msg) => { $("#exprog").classList.add("on"); $("#exmsg").textContent = msg; $("#exbar").style.width = Math.max(3, pct) + "%"; };
-  const done = () => $("#exprog")?.classList.remove("on");
+  const el = $("#exv"), revision = viewRevision;
+  const current = () => EXAM.sid === sid && revision === viewRevision && el.isConnected;
+  const say = (pct, msg) => { if (!current()) return; $("#exprog").classList.add("on"); $("#exmsg").textContent = msg; $("#exbar").style.width = Math.max(3, pct) + "%"; };
+  const done = () => { if (current()) $("#exprog")?.classList.remove("on"); };
+  const workers = await api("/api/workers").catch(() => []);
+  if (!current()) return;
+  const worker = workers.find(w => w.id === sid.split("-")[0]);
+  if (worker && worker.online === false) { examineFallback(sid, "The game's worker is offline. Reconnect it to inspect live gameplay."); return; }
+  if (worker && !worker.tools.includes("scene_capture")) {
+    examineFallback(sid, worker.unavailable?.scene_capture || "This worker does not support 3D frame capture."); return;
+  }
   try {
     EXAM.mod = EXAM.mod || await import("/viz/examine3d.js");
-  } catch (e) { say(0, "3D viewer unavailable: " + e.message); return; }
-  if (!EXAM.viewer) EXAM.viewer = await EXAM.mod.createExaminer(el, { onPick: examinePicked });
-  else EXAM.viewer.attach(el);
+  } catch (e) { if (current()) examineFallback(sid, "3D viewer unavailable: " + e.message); return; }
+  if (!current()) return;
+  let created;
+  try { created = await EXAM.mod.createExaminer(el, { onPick: info => { if (current()) examinePicked(info); } }); }
+  catch (e) { if (current()) examineFallback(sid, "3D viewer unavailable: " + e.message); return; }
+  if (!current()) { created.dispose(); return; }
+  EXAM.viewer?.dispose(); EXAM.viewer = created;
   const v = EXAM.viewer, c = EXAM.cache[sid];
   $("#ex_hud").onchange = e => v.setHud(e.target.checked);
   $("#ex_wire").onchange = e => v.setWireframe(e.target.checked);
@@ -1083,46 +1115,73 @@ async function examineAfter(sid) {
   const toBlender = async nodes => {
     const c = EXAM.cache[sid]; if (!c?.glb) return;
     $("#ex_blmsg").textContent = "Copying to Blender…";
-    try { const r = await blenderCopy({ artifact: c.glb, nodes }, sid);
+    try { const r = await blenderCopy({ artifact: c.glb, nodes }, sid); if (!current()) return;
           $("#ex_blmsg").textContent = `✓ ${r.objects} object(s), ${r.triangles} triangles, ${r.packed} texture(s): press Ctrl+V in Blender's 3D viewport`; }
-    catch (e) { $("#ex_blmsg").textContent = "✗ " + e.message; }
+    catch (e) { if (current()) $("#ex_blmsg").textContent = "✗ " + e.message; }
   };
   $("#ex_blsel").onclick = () => EXAM.picked && toBlender([EXAM.picked]);
   $("#ex_blall").onclick = () => toBlender([]);
-  if (c && c.shown !== v) await examineShow(sid, c).catch(e => say(0, e.message));
+  if (c && c.shown !== v) {
+    try { await examineShow(sid, c); }
+    catch (e) { if (current()) examineFallback(sid, e.message); return; }
+  }
   else if (c) examineInfo(c);
-  if (c && !c.stale) { runJob({ tool: "session_op", input: { session_id: sid, op: "pause" } }).catch(() => {}); return; }   // same frame: instant
+  if (!current()) return;
+  if (c && !c.stale) { done(); return; }   // same frame: instant
   examineCapture(sid, say, done);
 }
+function examineFallback(sid, message) {
+  if (EXAM.sid !== sid || $("#exam")?.dataset.sid !== sid) return;
+  EXAM.viewer?.dispose(); EXAM.viewer = null;
+  $("#exv").innerHTML = `<div style="padding:16px"><p>${esc(message)}</p><p class="mut">Live game view. Inspect remains available for this game; a 3D scene requires a supported graphics capture.</p><img style="max-width:100%;max-height:55vh" alt="Live game frame" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}"><p><button class="act pri" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect this game</button><button class="act" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Retry 3D capture</button></p></div>`;
+  if (/without Examine 3D/.test(message)) {
+    $("#exv").insertAdjacentHTML("beforeend", '<button class="act" id="ex_relaunch">Save state and relaunch for 3D capture</button><p class="mut" id="ex_relaunch_msg"></p>');
+    $("#ex_relaunch").onclick = () => examineRelaunch(sid).catch(e => { if (EXAM.sid === sid) $("#ex_relaunch_msg").textContent = e.message; });
+  }
+  for (const id of ["ex_cap", "ex_home", "ex_blsel", "ex_blall", "ex_hud", "ex_wire", "ex_depth"]) $("#" + id).disabled = true;
+}
 async function examineCapture(sid, say, done) {
-  if (EXAM.busy) return;
-  EXAM.busy = sid;
+  const revision = viewRevision, current = () => EXAM.sid === sid && revision === viewRevision;
+  if (EXAM.busy.has(sid)) {
+    say(2, "Waiting for this game's capture…"); await EXAM.busy.get(sid);
+    if (current() && EXAM.cache[sid]) { await examineShow(sid, EXAM.cache[sid]); done(); }
+    else if (current()) examineFallback(sid, "The previous capture failed. Retry to capture the current game.");
+    return;
+  }
+  let finish; EXAM.busy.set(sid, new Promise(resolve => { finish = resolve; }));
   say(2, "Pausing the game and capturing the frame…");
   try {
     let j = await api("/api/jobs", { tool: "scene_capture", input: { session_id: sid } });
     while (/queued|running/.test(j.state)) {
       await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id);
-      if (EXAM.sid === sid && j.progress) say(j.progress.pct, j.progress.msg);
+      if (current() && j.progress) say(j.progress.pct, j.progress.msg);
     }
     if (j.state !== "succeeded") throw new Error(j.error || j.state);
-    const c = EXAM.cache[sid] = { glb: j.output.glb, summary: j.output.summary, stale: false, shown: null };
-    if (EXAM.sid === sid) { say(96, `Loading ${c.summary.draws_exported} draw calls…`); await examineShow(sid, c); done(); }
+    const c = EXAM.cache[sid] = { glb: j.output.glb, summary: j.output.summary, resume: j.output.resume_on_leave !== false, stale: false, shown: null };
+    if (current()) { say(96, `Loading ${c.summary.draws_exported} draw calls…`); await examineShow(sid, c); done(); }
   } catch (e) {
-    if (EXAM.sid !== sid) return;
-    const relaunch = /without Examine 3D/.test(e.message);
-    say(0, e.message.replace(/^.*?(Unsupported|RuntimeError|ToolUnavailable):\s*/, ""));
-    if (relaunch && !$("#ex_relaunch")) $("#exprog").insertAdjacentHTML("beforeend", ` <button class="act pri" id="ex_relaunch">Relaunch with Examine 3D ready</button>`);
-    if (relaunch) $("#ex_relaunch").onclick = () => examineRelaunch(sid);
-  } finally { EXAM.busy = null; }
+    if (!current()) return;
+    const c = EXAM.cache[sid];
+    if (c?.resume) { c.stale = true; runJob({ tool: "session_op", input: { session_id: sid, op: "resume" } }).catch(() => {}); }
+    examineFallback(sid, e.message.replace(/^.*?(Unsupported|RuntimeError|ToolUnavailable):\s*/, ""));
+  } finally {
+    EXAM.busy.delete(sid); finish();
+    const c = EXAM.cache[sid];
+    if (EXAM.sid !== sid && c) { c.stale = true; if (c.resume) runJob({ tool: "session_op", input: { session_id: sid, op: "resume" } }).catch(() => {}); }
+  }
 }
 async function examineShow(sid, c) {
-  await EXAM.viewer.load(`/api/artifacts/${c.glb}?${tq()}`);
-  c.shown = EXAM.viewer;
+  const viewer = EXAM.viewer, revision = viewRevision;
+  if (!viewer || EXAM.sid !== sid) return;
+  await viewer.load(`/api/artifacts/${c.glb}?${tq()}`);
+  if (EXAM.sid !== sid || revision !== viewRevision || EXAM.viewer !== viewer) return;
+  c.shown = viewer;
   EXAM.viewer.setHud($("#ex_hud")?.checked); EXAM.viewer.setWireframe($("#ex_wire")?.checked); EXAM.viewer.setDepth(+($("#ex_depth")?.value || 1));
   examineInfo(c);
 }
 function examineInfo(c) {
   const s = c.summary || {}, el = $("#ex_info"); if (!el) return;
+  $("#ex_blall").disabled = false;
   const dl = $("#ex_dl"); dl.href = `/api/artifacts/${c.glb}?${tq()}`; dl.style.display = "";
   const row = (k, v) => v == null ? "" : `<b>${k}</b><span>${esc(String(v))}</span>`;
   el.className = "kv"; el.innerHTML = row("Draw calls", `${s.draws_exported} of ${s.draws_total} (${s.scene_draws} 3D · ${s.hud_draws} HUD)`)
@@ -1150,17 +1209,22 @@ function examinePicked(info) {
 }
 function examineLeave() {                                   // back to Play (or anywhere else): the game runs on
   const sid = EXAM.sid; EXAM.sid = null;
-  if (EXAM.cache[sid]) EXAM.cache[sid].stale = true;
-  runJob({ tool: "session_op", input: { session_id: sid, op: "resume" } }).catch(() => {});
+  EXAM.viewer?.dispose(); EXAM.viewer = null;
+  const c = EXAM.cache[sid]; if (c) c.stale = true;
+  if (sid && c?.resume && !EXAM.busy.has(sid)) runJob({ tool: "session_op", input: { session_id: sid, op: "resume" } }).catch(() => {});
 }
 async function examineRelaunch(sid) {                       // save state -> restart the game (RenderDoc inside) -> load it
   const ss = await api("/api/sessions"), s = ss.find(x => x.session_id === sid) || {};
-  $("#exmsg").textContent = "Saving state…";
+  if (s.state !== "running" || !s.game_id) throw new Error("This session has ended. Open the running game first.");
+  $("#ex_relaunch_msg").textContent = "Saving state…";
   const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "save_state" } });
   const slot = j.output?.result?.slot;
-  await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
+  if (j.state !== "succeeded" || slot == null) throw new Error(j.error || "Save state was not confirmed; the game was kept running.");
+  if (EXAM.sid !== sid) return;
+  const stopped = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
+  if (stopped.state !== "succeeded") throw new Error(stopped.error || "Could not stop the old emulator.");
   EXAM.sid = null;
-  play(s.game_id, s.detail?.worker_name || window.GBOX_LOCAL?.worker, false, { slot: slot ?? "" });
+  return play(s.game_id, s.detail?.worker_name || window.GBOX_LOCAL?.worker, false, { ...bootGet(s.game_id), disc: s.mod || "", slot });
 }
 
 // ---------------- per-game graphics (resolution, MSAA, AF, FSR/sharpen, post-AA, vsync), applied at launch ----------------
@@ -1197,6 +1261,9 @@ async function gfxInit() {
 }
 sessionsView.after = (sid, mode) => {
   if (!sid) return;
+  const head = $("#session-head");
+  if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
+  sid = head.dataset.sid; playing = sid;
   if ($("#ss")) smartSearchInit(sid).catch(() => {});
   if (mode !== "inspect") {                                   // mods/controls first; a failing graphics panel must not take them down
     const shown = (what, e) => $("#dock-side")?.insertAdjacentHTML("beforeend", `<p class="bad" style="font-size:12px">${what} failed: ${esc(e?.message || e)}</p>`);
@@ -1294,12 +1361,20 @@ async function modSwap(sid, mod, onMsg) {
 function followSession(from, to) {                         // keep showing / controlling the game after a swap or move
   if (!to || to === from) return;
   if (active?.sid === from) { active.sid = to; pip(); }
-  if (cur === "Sessions" && playing === from) setTimeout(() => show("Sessions", to), 200);
+  if (cur === "Sessions" && playing === from) {
+    const mode = sessionMode;
+    setTimeout(() => { if (cur === "Sessions" && playing === from) show("Sessions", to, mode); }, 200);
+  }
 }
 setInterval(async () => {                                  // a session replaced elsewhere (chat agent, character swap): follow it
   const sid = playing || active?.sid; if (!sid) return;   // not document.hidden: a docked game window makes Chromium call the page hidden
-  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
+  const ss = await api("/api/sessions").catch(() => null); if (!ss) return;
+  const s = ss.find(x => x.session_id === sid);
   if (s?.state === "ended" && s.replaced_by) followSession(sid, s.replaced_by);
+  else if (cur === "Sessions" && sessionMode === "examine" && s?.state !== "running") {
+    const live = liveExamineSession(ss, sid);
+    if (live) followSession(sid, live.session_id); else show("Sessions", sid, "examine");
+  }
 }, 3000);
 const modDisc = m => m.calls.find(c => c.tool === "@launch")?.input.mod;
 async function modApply(m, sid, onMsg) {
