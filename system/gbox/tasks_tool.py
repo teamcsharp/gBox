@@ -104,13 +104,29 @@ def _kind(cmd: str, name: str, in_session: bool) -> str:
 def list_tasks() -> dict:
     import psutil
     by_pid = _sessions_by_pid()
+    # Every subprocess started by a gBox worker belongs to an app task, even when
+    # its command line does not contain "gbox" (ffmpeg, 7z, emulator helpers, etc.).
+    try:
+        children = {p.pid for p in psutil.Process().children(recursive=True)}
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        children = set()
     procs = []
-    for p in psutil.process_iter(["pid", "ppid", "name", "cmdline", "create_time"]):
+    # Windows can block for minutes while psutil reads *any* attribute of an
+    # unrelated process. Worker descendants and live session PIDs are the
+    # authoritative app-owned processes, so inspect only those by PID.
+    fields = None if sys.platform == "win32" else ["pid", "ppid", "name", "cmdline", "create_time"]
+    for p in psutil.process_iter(fields):
         try:
-            cmd = " ".join(p.info["cmdline"] or [])
-            if not (p.info["pid"] in by_pid or GBOX.search(cmd) or GBOX.search(p.info["name"] or "")):
+            pid = p.pid if sys.platform == "win32" else p.info["pid"]
+            known = pid in by_pid or pid in children
+            if sys.platform == "win32" and not known:
                 continue
-            if p.info["pid"] == os.getpid():
+            if sys.platform == "win32":
+                p.info = {"pid": pid, "ppid": p.ppid(), "name": p.name(), "cmdline": p.cmdline(), "create_time": p.create_time()}
+            cmd = " ".join(p.info["cmdline"] or [])
+            if not (known or GBOX.search(cmd) or GBOX.search(p.info["name"] or "")):
+                continue
+            if pid == os.getpid():
                 continue
             p.cpu_percent(None)
             procs.append(p)

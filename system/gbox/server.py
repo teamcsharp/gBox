@@ -995,7 +995,7 @@ def create_app(config: Config) -> FastAPI:
             "receipt": receipt.id, "artifacts": [a.sha256 for a in refs], "problems": problems, "error": r.error})
         store.put("receipt", receipt.id, receipt.model_dump())
         if r.log:
-            store.put_artifact("\n".join(r.log).encode(), "worker.log", "text/plain", {"job": j["id"]})
+            j["log_sha"] = store.put_artifact("\n".join(r.log).encode(), "worker.log", "text/plain", {"job": j["id"]}).sha256
         j.update(state=state, finished=receipt.finished, output=r.output, error=r.error or ("; ".join(problems) or None),
                  receipt_id=receipt.id)
         store.put("job", j["id"], j)
@@ -1106,8 +1106,27 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.cancel", jid, {"state": j["state"]})
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
+    def retire_unrunnable_jobs():
+        """Keep dead sessions and long-gone workers out of the visible active queue."""
+        now = time.time()
+        with store.lock:
+            available = {key for w in workers() if w["online"] for key in (w["id"], w["name"])}
+            for job in store.queued_jobs():
+                sid = (job.get("input") or {}).get("session_id")
+                session = store.get("session", sid) if sid else None
+                worker_id = _wid(job.get("require_worker")) if job.get("require_worker") else None
+                reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running")
+                          else "assigned worker is no longer available" if worker_id and now - (job.get("created") or now) > 3600
+                          and worker_id not in available else None)
+                if not reason:
+                    continue
+                job.update(state=JobState.FAILED, finished=now, error=reason)
+                store.put("job", job["id"], job)
+                store.audit("scheduler", "job.failed", job["id"], {"reason": reason})
+
     @app.get("/api/jobs")
     def list_jobs(limit: int = 100, state: str = "", actor=Depends(auth)):
+        retire_unrunnable_jobs()
         jobs = store.all("job")
         if state:
             states = set(state.split(","))
@@ -1119,6 +1138,12 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/jobs/{jid}")
     def get_job(jid: str, actor=Depends(auth)):
         return store.get("job", jid) or _404()
+
+    @app.get("/api/jobs/{jid}/log")
+    def get_job_log(jid: str, actor=Depends(auth)):
+        job = store.get("job", jid) or _404()
+        data = store.read_artifact(job["log_sha"]) if job.get("log_sha") else None
+        return {"log": data.decode("utf-8", "replace")[-50000:] if data else ""}
 
     @app.get("/api/receipts/{rid}")
     def get_receipt(rid: str, actor=Depends(auth)):
@@ -1712,23 +1737,52 @@ def create_app(config: Config) -> FastAPI:
             time.sleep(0.3)
         return jj
 
+    task_cache: dict[str, dict] = {}
+    task_cache_lock = threading.Lock()
+
     @app.get("/api/tasks")
     def tasks_all(actor=Depends(auth)):
-        """Task monitor: every machine's gBox processes (RAM/CPU/GPU/VRAM, machine totals) + the jobs in flight."""
+        """Return the latest machine readings without waiting for slow GPU/process counters."""
+        retire_unrunnable_jobs()
         ws = [w for w in workers() if w["online"] and "tasks" in (w.get("tools") or [])]
-        with concurrent.futures.ThreadPoolExecutor(max(1, len(ws))) as ex:
-            res = list(ex.map(lambda w: (w, _run_on(w["id"], "tasks", {"op": "list"})), ws))
         machines = []
-        for w, jj in res:
-            ok = jj and jj["state"] == "succeeded"
-            machines.append({"worker_id": w["id"], "name": w["name"], "os": w.get("os"),
-                             **(jj["output"]["result"] if ok else {"error": (jj or {}).get("error") or "no answer", "tasks": []})})
+        with task_cache_lock:  # concurrent UI polls must not create duplicate inventory jobs
+            now = time.time()
+            for w in ws:
+                wid = w["id"]
+                cached = task_cache.setdefault(wid, {})
+                if jid := cached.get("job_id"):
+                    jj = store.get("job", jid)
+                    if not jj or jj["state"] not in ("queued", "running"):
+                        cached["job_id"] = None
+                        if jj and jj["state"] == "succeeded" and isinstance((jj.get("output") or {}).get("result"), dict):
+                            cached["result"] = jj["output"]["result"]
+                            cached["updated"] = jj.get("finished") or now
+                            cached.pop("error", None)
+                        else:
+                            cached["error"] = (jj or {}).get("error") or "machine inventory failed"
+                        cached["submitted"] = now
+                if not cached.get("job_id") and now - cached.get("submitted", 0) >= 10:
+                    jj = submit(JobRequest(tool="tasks", input={"op": "list"}, require_worker=wid), "tasks")
+                    cached["submitted"] = now
+                    if jj.state in (JobState.QUEUED, JobState.RUNNING):
+                        cached["job_id"] = jj.id
+                    else:
+                        cached["error"] = jj.error or "machine inventory unavailable"
+                machines.append({"worker_id": wid, "name": w["name"], "os": w.get("os"),
+                                 **(cached.get("result") or {"tasks": []}),
+                                 "updated": cached.get("updated"),
+                                 "error": cached.get("error") if not cached.get("result") else None,
+                                 "collecting": bool(cached.get("job_id"))})
         names = {w["id"]: w["name"] for w in workers()}
-        jobs = [{"id": j["id"], "tool": j["tool"], "state": j["state"],
-                 "worker": names.get(j.get("worker_id") or j.get("require_worker") or "", ""),
-                 "created": j.get("created"), "progress": (j.get("progress") or {}).get("msg", "")}
-                for j in store.all("job") if j["state"] in ("queued", "running") and j["tool"] != "tasks"]
-        return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0))}
+        def task_job(j):
+            return {"id": j["id"], "tool": j["tool"], "state": j["state"],
+                    "worker": names.get(j.get("worker_id") or j.get("require_worker") or "", ""),
+                    "created": j.get("created"), "progress": (j.get("progress") or {}).get("msg", "")}
+        all_jobs = [j for j in store.all("job") if j["tool"] != "tasks"]
+        jobs = [task_job(j) for j in all_jobs if j["state"] in ("queued", "running")]
+        recent = [task_job(j) for j in all_jobs if j["state"] not in ("queued", "running")][-10:][::-1]
+        return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)), "recent": recent}
 
     class TaskKill(BaseModel):
         worker_id: str

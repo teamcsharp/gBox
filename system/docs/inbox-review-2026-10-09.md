@@ -28,3 +28,10 @@ The live inbox contained 861 requests at the last snapshot: 618 done, 216 in pro
 - Updated web and desktop source files were synchronized by SHA-256 to the Spark share. The desktop app picks up its changes on its next launch.
 
 The remaining inbox includes game-specific failures, cross-game model editing and larger integrations. No blanket completion status was applied to them.
+
+## Follow-up: stuck queue and Tasks panel
+
+- The footer's `characters queued` item was bound to an ended game session. An audit found 43 queued jobs, all 31-87 hours old and tied to ended/missing sessions or absent workers. Their IDs and prior states were saved in `C:/tmp/gbox-stale-queued-jobs-20261009.json`; all 43 were canceled. The live user-job queue was empty afterward.
+- The server now fails queued work attached to ended sessions, and work assigned to workers that have been unavailable for more than an hour. The footer also has a cancel-and-close control so a task can be dismissed directly.
+- Request 839 was completed: the Tasks panel loads without waiting for slow process counters, expands worker-job progress and stored logs, and shows desktop command output and cancellation. The live `/api/tasks` response returned in 1.2 seconds after deployment. Request 841 remains in progress because a Windows worker still times out while gathering its process inventory; the source now avoids reading every unrelated Windows process, but that worker has not yet loaded the updated file.
+- The Python suite passed with 151 tests and 6 skips before the final queue and Windows inventory changes; focused tests for those changes passed 5/5. JavaScript syntax checks and mocked Edge interactions passed. Updated desktop files require an app relaunch to appear in the running window.

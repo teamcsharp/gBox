@@ -63,6 +63,7 @@ const venvPython = () => STANDALONE ? path.join(STANDALONE, ".venv", "Scripts", 
 
 let win, worker = null, workerStopRequested = false;
 const procs = new Map();                              // id -> child process (streamed tasks)
+const taskLogs = new Map();                           // recent app commands and their streamed output
 // console output of the whole app (main process, renderer + gBox webview, worker / task streams) for issue reports
 let CONSOLE = "";
 const logPush = (src, text) => { CONSOLE = (CONSOLE + `${new Date().toISOString().slice(11, 23)} [${src}] ${String(text).replace(/\n+$/, "")}\n`).slice(-400000); };
@@ -72,17 +73,35 @@ app.on("web-contents-created", (_e, wc) => wc.on("console-message", (ev, level, 
   logPush(`${wc.getType()}:${lv}`, `${m}${src ? `  (${String(src).split("/").pop()}:${ln})` : ""}`);
 }));
 ipcMain.handle("console:tail", (_e, n = 200000) => CONSOLE.slice(-n));
-const send = (ch, ...a) => { if (ch === "task") logPush(a[0], a[1]); return win && !win.isDestroyed() && win.webContents.send(ch, ...a); };
+const send = (ch, ...a) => {
+  if (ch === "task") {
+    logPush(a[0], a[1]);
+    const task = taskLogs.get(a[0]);
+    if (task) task.output = (task.output + String(a[1])).slice(-50000);
+  }
+  return win && !win.isDestroyed() && win.webContents.send(ch, ...a);
+};
+function taskDone(id, code) {
+  const task = taskLogs.get(id);
+  if (!task) return;
+  task.state = "ended"; task.exit_code = code; task.ended = Date.now() / 1000;
+  setTimeout(() => { if (taskLogs.get(id) === task) taskLogs.delete(id); }, 300000).unref();
+}
 
 function stream(id, cmd, args, opts = {}) {
   // Run a command, streaming stdout/stderr lines to the renderer as `task:<id>` events.
   return new Promise(resolve => {
     const p = spawn(cmd, args, { windowsHide: true, ...opts });
     procs.set(id, p);
+    taskLogs.set(id, { id, pid: p.pid, started: Date.now() / 1000, state: "running", output: "" });
     const out = d => send("task", id, d.toString());
     p.stdout.on("data", out); p.stderr.on("data", out);
     p.on("error", e => { send("task", id, `\n[error] ${e.message}\n`); });
-    p.on("close", code => { procs.delete(id); send("task-end", id, code); resolve(code); });
+    p.on("close", code => {
+      procs.delete(id);
+      taskDone(id, code);
+      send("task-end", id, code); resolve(code);
+    });
   });
 }
 
@@ -150,7 +169,21 @@ ipcMain.handle("spark:action", async (_e, action) => {
   return id;
 });
 
-ipcMain.handle("task:cancel", (_e, id) => { const p = procs.get(id); if (p) p.kill(); return !!p; });
+ipcMain.handle("task:snapshot", () => [...taskLogs.values()].map(task => ({ ...task })));
+ipcMain.handle("task:cancel", (_e, id) => {
+  if (id === "recording" && rec) {
+    const r = rec; rec = null;
+    r.out.end(() => fs.unlink(r.file, () => {}));
+    send("recording-cancelled");
+    send("task", id, "\nRecording cancelled.\n"); taskDone(id, 1);
+    return true;
+  }
+  const p = procs.get(id);
+  if (!p) return false;
+  if (process.platform === "win32" && p.pid) execFile("taskkill", ["/T", "/F", "/PID", String(p.pid)], { windowsHide: true }, () => {});
+  else p.kill();
+  return true;
+});
 
 ipcMain.handle("win:setup", () => {
   const s = settings();
@@ -240,22 +273,24 @@ ipcMain.handle("rec:start", (_e, ext, rect) => {
   fs.mkdirSync(REC_DIR, { recursive: true });
   const file = path.join(REC_DIR, `gbox-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
   rec = { file, out: fs.createWriteStream(file), bytes: 0, display: d };
+  taskLogs.set("recording", { id: "recording", started: Date.now() / 1000, state: "running", output: `Recording ${path.basename(file)}\n`, bytes: 0 });
   // record the SCREEN gBox is on, cropped to the window: window capture leaves the docked GPU game window black
   return { sourceId: win.getMediaSourceId(), screenId: `screen:${d.id}:0`, displayId: String(d.id), crop, file };
 });
 ipcMain.handle("rec:crop", (_e, rect) => recordingCrop(rect, rec?.display));
 ipcMain.handle("rec:screens", async () => (await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } }))
   .map(x => ({ id: x.id, display_id: x.display_id })));
-ipcMain.handle("rec:chunk", (_e, buf) => { if (rec) { rec.out.write(Buffer.from(buf)); rec.bytes += buf.byteLength; } return rec ? rec.bytes : 0; });
+ipcMain.handle("rec:chunk", (_e, buf) => { if (rec) { rec.out.write(Buffer.from(buf)); rec.bytes += buf.byteLength;
+  const task = taskLogs.get("recording"); if (task) task.bytes = rec.bytes; } return rec ? rec.bytes : 0; });
 ipcMain.handle("rec:stop", () => new Promise(res => {
   if (!rec) return res(null);
   const r = rec; rec = null;
-  r.out.end(() => res({ file: r.file, bytes: r.bytes }));
+  r.out.end(() => { send("task", "recording", `Finished: ${r.bytes} bytes\n`); taskDone("recording", 0); res({ file: r.file, bytes: r.bytes }); });
 }));
 ipcMain.handle("rec:abort", () => new Promise(resolve => {
   if (!rec) return resolve();
   const r = rec; rec = null;
-  r.out.end(() => { fs.unlink(r.file, () => resolve()); });
+  r.out.end(() => { fs.unlink(r.file, () => { send("task", "recording", "Recording aborted.\n"); taskDone("recording", 1); resolve(); }); });
 }));
 // Size-capped recordings: a file over the target is re-encoded to fit (bitrate from the duration, resolution stepped down
 // as the bitrate drops so it stays sharp). HandBrakeCLI (winget HandBrake.HandBrake.CLI) does it; ffmpeg if it's missing.
@@ -268,8 +303,13 @@ function findExe(name) {
 }
 const runExe = (exe, args) => new Promise((res, rej) => {
   const p = spawn(exe, args, { windowsHide: true }); let err = "";
-  p.stderr.on("data", d => { err = (err + d).slice(-2000); }); p.stdout.on("data", () => {});
-  p.on("close", code => code === 0 ? res() : rej(new Error(`${path.basename(exe)} exit ${code}: ${err.split("\n").slice(-3).join(" ")}`)));
+  procs.set("rec-fit", p);
+  taskLogs.set("rec-fit", { id: "rec-fit", pid: p.pid, started: Date.now() / 1000, state: "running", output: "" });
+  p.stderr.on("data", d => { err = (err + d).slice(-2000); send("task", "rec-fit", String(d)); });
+  p.stdout.on("data", d => send("task", "rec-fit", String(d)));
+  p.on("error", e => { err = e.message; send("task", "rec-fit", `[error] ${e.message}\n`); });
+  p.on("close", code => { procs.delete("rec-fit"); taskDone("rec-fit", code);
+    code === 0 ? res() : rej(new Error(`${path.basename(exe)} exit ${code}: ${err.split("\n").slice(-3).join(" ")}`)); });
 });
 ipcMain.handle("rec:fit", async (_e, file, o) => {
   const target = (o.targetMB || 10) * 1048576, size = fs.statSync(file).size;
@@ -564,12 +604,14 @@ function decantRun(extra) {
     const p = spawn(venvPython(), decantArgs(extra), { env: { ...process.env, PYTHONPATH: settings().repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1" },
                                                        cwd: os.homedir(), windowsHide: true });
     procs.set("decant", p);
+    taskLogs.set("decant", { id: "decant", pid: p.pid, started: Date.now() / 1000, state: "running", output: "" });
     try { os.setPriority(p.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}   // never slow down a game being played
     let out = "", err = "";
     p.stdout.on("data", d => { out += d; });
     p.stderr.on("data", d => { err += d; for (const l of String(d).split(/\r?\n/)) { if (!l.trim()) continue;
-      try { const o = JSON.parse(l); send("decant", o.log || l); } catch { send("decant", l); } } });
-    p.on("close", code => { procs.delete("decant");
+      try { const o = JSON.parse(l); send("decant", o.log || l); send("task", "decant", (o.log || l) + "\n"); }
+      catch { send("decant", l); send("task", "decant", l + "\n"); } } });
+    p.on("close", code => { procs.delete("decant"); taskDone("decant", code);
       try { resolve(JSON.parse(out.trim().split(/\r?\n/).pop())); }
       catch { resolve({ error: `decant exited ${code}: ${(err || out).trim().split(/\r?\n/).slice(-4).join(" ")}` }); } });
   });
