@@ -6,7 +6,7 @@ platforms: [linux]
 ---
 # gBox on the DGX Spark
 
-The `gbox` MCP server connects to the live gBox control plane. Use its tools for game state and jobs. A new Hermes session discovers the server automatically; in an existing session run `/reload-mcp` if the tools are absent.
+The `gbox` MCP server connects to the live gBox control plane. Use its tools for game state and jobs. Hermes registers them with the `mcp_gbox_` prefix, for example `mcp_gbox_list_favorites` and `mcp_gbox_start_job`; call those tools directly rather than trying to import them in a terminal. A new Hermes session discovers the server automatically; in an existing session run `/reload-mcp` if the tools are absent. A one-shot test with `gemma4:e4b` and `-t gbox` returned the live favorite count.
 
 ## Favorites and model collection
 

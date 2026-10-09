@@ -25,6 +25,8 @@ Code: `gbox/mcp_server.py`. Dependency: `pip install "mcp>=2.3"` (the `mcp` extr
 
 On the DGX Spark, Hermes has a `gbox` stdio MCP registration using the Linux service venv and local control-plane URL. Verify it with `hermes mcp test gbox`. The server discovers 206 tools; Hermes selects 12 useful tools in `~/.hermes/config.yaml`, with `start_job` covering the full job registry without loading 194 additional schemas into each conversation. New Hermes sessions load the registration; use `/reload-mcp` in an existing session. The Hermes workflow is in `system/hermes/gbox/SKILL.md` and deployed to `~/.hermes/skills/gaming/gbox/SKILL.md`.
 
+Hermes tool names use the `mcp_gbox_` prefix. A verified one-shot command on the Spark is `hermes -m gemma4:e4b -t gbox -z 'Call mcp_gbox_list_favorites and report its total'`; it returned 28 favorites at the time of the test. The configured default 30B Nemotron model was not verified in the same bounded test.
+
 Resources: `gbox://sessions` (live sessions), `gbox://games` (first 500 library entries + total).
 
 Write/launch tools (`launch_game`, `job_write_memory`, `job_mod`, ...) act on the real games; the job permissions in
