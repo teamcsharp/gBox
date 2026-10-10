@@ -66,3 +66,30 @@ def test_publish_runs_tests_and_pushes_actual_commit_before_pr(tracked_repo, mon
     assert '1 passed' in result['checks'][0]
     assert result['commit'] == git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin)
     assert result['url'].endswith('/pull/123')
+
+
+def test_resumed_publication_updates_existing_pr_after_push(tracked_repo, monkeypatch):
+    _, origin, git = tracked_repo
+    from pathlib import Path
+    task = delivery.prepare('abcdef0123456789', 12)
+    (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
+    real_run, updates = subprocess.run, []
+    title = 'Revised fix: literal $(value) and `details`'
+
+    def fake_gh(args, **kw):
+        if args[0] != 'gh':
+            return real_run(args, **kw)
+        if args[1:3] == ['pr', 'view']:
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                'url': 'https://github.com/teamcsharp/gBox/pull/123'}), stderr='')
+        assert args[1:3] == ['api', 'repos/teamcsharp/gBox/pulls/123']
+        assert args[3:5] == ['--method', 'PATCH']
+        assert git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin) != task['baseline']
+        updates.append(json.loads(Path(args[args.index('--input') + 1]).read_text(encoding='utf-8')))
+        return SimpleNamespace(returncode=0, stdout='{}', stderr='')
+
+    monkeypatch.setattr(delivery.subprocess, 'run', fake_gh)
+    result = delivery.publish(task['request_id'], title, ['system/gbox/value.py'], ['tests/test_value.py'])
+    assert len(updates) == 1 and updates[0]['title'] == title
+    assert title in updates[0]['body'] and '1 passed' in updates[0]['body']
+    assert result['commit'] == git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin)

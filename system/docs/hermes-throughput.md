@@ -119,10 +119,19 @@ and delivered [draft PR #3](https://github.com/teamcsharp/gBox/pull/3), commit
 `2adf113c02f53a6de17c4bbeb132bc2b8b4004c7`. Its endpoint checks passed; the
 agent also ran nineteen related checks. The patch reuses an in-flight capture
 report instead of stacking another save job. Live acceptance remains pending.
-Review must additionally check that separate issue descriptions and new
-screenshots are preserved when a save capture is still pending; the draft's
-early return currently discards those new inputs. This is a review finding,
-not a completed capture-system fix.
+Codex manually corrected the initial draft's lost-input behavior: only matching
+issue details reuse a pending report; each repeated capture appends its new
+screenshot, diagnostics and timestamped session/context snapshot. Distinct
+issue details create a separate report. Twenty-one related checks passed,
+including preservation of the latest evidence and separation of distinct
+issues. The revised PR head is `46fb89887d6f82cc53a7418f63ea1d19264a5f58`.
+Deployment and live capture-system acceptance are still pending.
+
+Resumed publication now refreshes the draft PR's title and validation body via
+GitHub REST. This avoids the installed CLI's deprecated classic-project GraphQL
+field and ensures future task iterations update the review description as well
+as the source branch. A focused real-Git test verifies push precedes this update
+and that title/body text is preserved through a structured JSON input file.
 
 All three are actual open draft PRs, verified through GitHub. The source fixes
 have not been merged by the dispatch repair. Full measured session usage,

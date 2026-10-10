@@ -138,6 +138,15 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                                    '--json', 'url'], cwd=root, capture_output=True, text=True, timeout=30)
         if existing.returncode == 0:
             url = json.loads(existing.stdout)['url']
+            match = re.fullmatch(r'https://github\.com/' + re.escape(REPOSITORY) + r'/pull/(\d+)', url)
+            if not match:
+                raise RuntimeError('GitHub returned an unexpected pull request URL')
+            # Keep the review description in sync when a resumed task changes its patch.
+            # REST avoids gh pr edit's dependency on deprecated classic project fields.
+            update_path = state_dir() / (request_id + '-pr-update.json')
+            update_path.write_text(json.dumps({'title': title[:180], 'body': body}), encoding='utf-8')
+            _run(['gh', 'api', f'repos/{REPOSITORY}/pulls/{match[1]}', '--method', 'PATCH',
+                  '--input', str(update_path)], root)
         else:
             url = _run(['gh', 'pr', 'create', '--draft', '--repo', REPOSITORY, '--base', 'main',
                         '--head', workspace['branch'], '--title', title[:180], '--body-file', str(body_path)], root)
