@@ -940,10 +940,10 @@ setInterval(async () => {
 document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b><span class="mut" id="tk-at"></span>
   <button class="act" id="tk-close">Close</button></div><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div>`);
 document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="head"><b id="tv-title">Task progress</b><span id="tv-state" class="mut"></span>
-  <button class="act" id="tv-close">Close</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
+  <button class="act" id="tv-close">Back to Tasks</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
   <div id="tv-stages" class="stages"></div></div></div>`);
 const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
-const TV = { id: null, timer: null, view: null };
+const TV = { id: null, timer: null, view: null, returnPanel: false };
 const tkAge = ts => { const s = Math.max(0, Date.now() / 1000 - (ts || 0)); return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; };
 const tkBar = (v, max) => `<span class="bar"><i style="width:${Math.min(100, 100 * v / (max || 100))}%"></i></span>`;
 const tkProgress = (pct, active) => {
@@ -1070,12 +1070,19 @@ async function tvPoll() {
     '<span>No worker stages reported yet.</span>';
   TV.view?.update(p.pct == null ? NaN : Number(p.pct), stages, j.state === "running");
 }
-function tvClose() {
+function tvClose(back = true) {
   clearInterval(TV.timer); TV.timer = null; TV.id = null; TV.view?.stop(); TV.view = null;
   $("#taskviz").classList.remove("on");
+  if (back && TV.returnPanel) {
+    $("#taskpanel").classList.add("on"); tasksLocalLoad(); tasksLoad();
+    TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000);
+  }
+  TV.returnPanel = false;
 }
 async function tvOpen(id) {
-  tvClose(); TV.id = id; $("#taskviz").classList.add("on");
+  tvClose(false); TV.id = id; TV.returnPanel = $("#taskpanel").classList.contains("on");
+  $("#taskpanel").classList.remove("on"); clearInterval(TK.t);
+  $("#taskviz").classList.add("on");
   try { TV.view = window.taskVizCreate($("#tv-canvas")); }
   catch (e) { $("#tv-stages").textContent = `3D view unavailable: ${e.message}`; }
   await tvPoll(); TV.timer = setInterval(tvPoll, 2000);
