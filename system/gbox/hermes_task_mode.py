@@ -34,10 +34,22 @@ def _job() -> dict | None:
 
 def status() -> dict:
     job = _job() or {}
+    last_status, last_error = job.get("last_status"), job.get("last_error")
+    if job.get("id") and last_status == "ok":
+        output_dir = _home() / "cron" / "output" / job["id"]
+        try:
+            latest = max(output_dir.glob("*.md"), key=lambda p: p.stat().st_mtime)
+            response = latest.read_text(encoding="utf-8").split("## Response", 1)[-1]
+            if "[CRON_FAILURE]" in response:
+                last_status = "failed"
+                last_error = next((line.strip()[:300] for line in response.splitlines()
+                                   if "[CRON_FAILURE]" in line), "Hermes reported no concrete progress")
+        except (OSError, ValueError):
+            pass
     return {"enabled": bool(job.get("enabled")), "available": _cli().is_file(),
             "job_id": job.get("id"), "model": job.get("model"), "schedule": job.get("schedule_display"),
-            "last_run_at": job.get("last_run_at"), "last_status": job.get("last_status"),
-            "last_error": job.get("last_error")}
+            "last_run_at": job.get("last_run_at"), "last_status": last_status,
+            "last_error": last_error}
 
 
 def _model() -> tuple[str | None, str]:

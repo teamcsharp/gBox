@@ -56,3 +56,17 @@ def test_task_mode_prefers_tool_capable_model_when_memory_allows(monkeypatch):
     assert mode._model()[0] == "gemma4:e4b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 10 * 1024**3})())
     assert mode._model()[0] is None
+
+
+def test_task_mode_surfaces_agent_reported_cron_failure(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    output = home / "cron" / "output" / "job-1"
+    output.mkdir(parents=True)
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "job-1", "name": mode.NAME,
+        "enabled": True, "last_status": "ok"}]}))
+    (output / "run.md").write_text("# Cron Job\n## Response\n[CRON_FAILURE] No source patch was made.\n")
+    monkeypatch.setattr(mode, "_home", lambda: home)
+    monkeypatch.setattr(mode, "_cli", lambda: tmp_path / "hermes")
+    state = mode.status()
+    assert state["last_status"] == "failed"
+    assert "No source patch" in state["last_error"]
