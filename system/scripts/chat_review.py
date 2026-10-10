@@ -73,19 +73,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", default="http://10.89.1.246:8765")
     ap.add_argument("--hours", type=float, default=24)
+    ap.add_argument("--end", type=float, help="Unix timestamp ending the audit window (default: now)")
     ap.add_argument("--chat")
     ap.add_argument("--only-failed", action="store_true")
     ap.add_argument("--full", action="store_true", help="print every tool call with args and result")
     a = ap.parse_args()
     c = client(a.server)
     chats = [{"id": a.chat}] if a.chat else c.get("/api/chat").json()
-    since = time.time() - a.hours * 3600
+    end = a.end if a.end is not None else time.time()
+    since = end - a.hours * 3600
     n_req = n_bad = 0
     for ch in chats:
         d = c.get(f"/api/chat/{ch['id']}").json()
         game = ", ".join(g.get("title", "") for g in d.get("games") or []) or "-"
         for req, evs in turns(d.get("events", [])):
-            if (req.get("ts") or 0) < since:
+            if not since <= (req.get("ts") or 0) < end:
                 continue
             n_req += 1
             flags, names, answer = judge(req, evs)
@@ -105,7 +107,7 @@ def main():
                     elif e.get("type") == "tool_result":
                         print("   ->  ", re.sub(r"\s+", " ", e.get("text") or "")[:300])
             print("answer:", re.sub(r"\s+", " ", answer)[:400])
-    print(f"\n{n_req} requests in the last {a.hours:g} h, {n_bad} flagged")
+    print(f"\n{n_req} requests in {a.hours:g} h ending {time.strftime('%m-%d %H:%M', time.localtime(end))}, {n_bad} flagged")
 
 
 if __name__ == "__main__":
