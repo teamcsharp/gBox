@@ -67,11 +67,11 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             ps1_writer._publish(ctx, folder, gid, MOD_NAME)
         chars._api(ctx, "POST", "/api/characters/hucast/targets", json={"game_id": gid, "slot": "player",
                    "mod": MOD_NAME, "nodes": ["windows"],
-                   "notes": "Native PS1 player KMD from the US Rev 1 disc."})
-        chars._api(ctx, "POST", "/api/mods", json={"title": "HUcast in Metal Gear Solid (Disc 1)",
+                   "notes": "Experimental PS1 init/snake KMD patch; first dock scene did not show a visible player change."})
+        chars._api(ctx, "POST", "/api/mods", json={"title": "Experimental HUcast in Metal Gear Solid (Disc 1)",
                    "calls": [{"tool": "@launch", "input": {"mod": MOD_NAME}}], "game_id": gid,
-                   "game_title": game["title"], "desc": "Native PS1 Snake KMD replacement from the US Rev 1 disc.",
+                   "game_title": game["title"], "desc": "Experimental Snake KMD disc patch. The first dock room still showed the original player in a gameplay comparison.",
                    "verified": False, "requests": [855]})
     launched = chars._launch(ctx, gid, MOD_NAME, "windows") if inp.launch else None
     return {"status": "built" if report else "ready", "mod": MOD_NAME, "build": report,
-            "launch": launched, "message": "HUcast PS1 player model is selectable for Metal Gear Solid disc 1."}
+            "launch": launched, "message": "Experimental MGS disc patch is selectable, but a visible player swap is not verified."}
