@@ -509,12 +509,24 @@ tabs.GameModels.after = (gid, title) => {
   const models = GAME_MODELS.models;
   $("#models-back").onclick = () => show("Library");
   $("#models-collect").onclick = async e => {
-    e.currentTarget.disabled = true;
+    const button = e.currentTarget;
+    button.disabled = true;
     const status = $("#models-collect-status"); status.textContent = "Submitting extraction task…";
     try {
-      const job = await api("/api/jobs", { tool: "characters", input: { op: "collect", game_id: gid }, require_os: "linux" });
-      status.textContent = `Task ${job.id} queued. Track it in Jobs; reopen Models when it finishes.`;
-    } catch (err) { status.textContent = err.message; e.currentTarget.disabled = false; }
+      let job = await api("/api/jobs", { tool: "characters", input: { op: "collect", game_id: gid }, require_os: "linux" });
+      status.textContent = `Task ${job.id} queued. Track it in Jobs.`;
+      while (/queued|running/.test(job.state)) {
+        await new Promise(r => setTimeout(r, 1200));
+        job = await api("/api/jobs/" + job.id);
+        if (job.progress?.msg) status.textContent = job.progress.msg;
+      }
+      if (job.state !== "succeeded") throw new Error(job.error || job.state);
+      const result = job.output?.result || {};
+      status.textContent = result.status === "unsupported" || result.status === "missing"
+        ? (result.message || "This game has no native model reader yet.")
+        : (result.message || `Extraction finished. Reopen Models to view the collection.`);
+    } catch (err) { status.textContent = `Extraction failed: ${err.message}`; }
+    finally { button.disabled = false; }
   };
   page.onclick = async ev => {
     const button = ev.target.closest("[data-model]"); if (!button) return;
