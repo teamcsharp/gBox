@@ -1988,6 +1988,7 @@ async function modRun(c, sid) {
     : await gbox.api("/api/jobs", { tool: c.tool, input: { ...c.input, session_id: sid }, require_worker: sid.split("-")[0] });
   if (!started.ok || !started.data) throw new Error(`${c.tool}: ${started.error || "job request failed"}`);
   let j = started.data;
+  if (!j?.id || !j?.state) throw new Error(`${c.tool}: invalid job response`);
   while (["queued", "running"].includes(j.state)) {
     await new Promise(r => setTimeout(r, 500));
     const polled = await gbox.api("/api/jobs/" + j.id);
@@ -2010,6 +2011,7 @@ async function modSession(m, launch) {
   const started = await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}&mod=${encodeURIComponent(bootMod)}`, {});   // this PC
   if (!started.ok || !started.data) throw new Error(started.error || "game launch request failed");
   let j = started.data;
+  if (!j?.id || !j?.state) throw new Error(`Launch returned no trackable job for ${m.game_title || m.game_id}`);
   while (["queued", "running"].includes(j.state)) {
     await new Promise(r => setTimeout(r, 1000));
     const polled = await gbox.api("/api/jobs/" + j.id);
@@ -2018,6 +2020,7 @@ async function modSession(m, launch) {
   }
   if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
+  if (!j.output?.session_id) throw new Error(`Launch completed without a game session for ${m.game_title || m.game_id}`);
   return { sid: j.output.session_id, bootApplied: !!bootMod };
 }
 async function modPlay(m, how) {
@@ -2043,14 +2046,15 @@ async function modPlay(m, how) {
     const shot = await gbox.captureOS?.().catch(() => null);
     const report = await gbox.api("/api/requests/auto-mod-failure", { session_id: attemptedSid, game: m.game_title || "",
       model: m.title || "", action: "apply mod", target: how, moment: "current game moment",
-      detail: err.message, job_id: err.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
+      detail: `${err.message}\n${String(err.stack || "").slice(0, 1600)}`, job_id: err.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
     toast("⚠ " + err.message + (report?.ok ? ` · auto report #${report.data.number}` : ""), 12000);
   }
 }
 document.addEventListener("click", e => {
   const f = e.target.closest(".reqmod, .modplay, .modapply, .modvideo"); if (!f) return;
   e.stopPropagation(); const m = MODS.list.find(x => x.id === f.dataset.mod); if (!m) return;
-  modPlay(m, f.classList.contains("modapply") ? "apply" : f.classList.contains("modvideo") ? "video" : "moment");
+  modPlay(m, f.classList.contains("modapply") ? "apply" : f.classList.contains("modvideo") ? "video"
+    : m.state_slot == null ? "play" : "moment");
 }, true);
 document.addEventListener("contextmenu", e => { const f = e.target.closest(".reqmod"); if (!f) return;
   const m = MODS.list.find(x => x.id === f.dataset.mod); if (m?.video) { e.preventDefault(); modPlay(m, "video"); } });

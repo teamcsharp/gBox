@@ -1307,7 +1307,8 @@ class Agent:
                     args = {}
                 emit({"type": "tool_call", "name": name, "args": args})
                 used[name] = used.get(name, 0) + 1
-                if name in MODIFIES and bm["sid"]:
+                changes_game = _modifies_game(name, args)
+                if changes_game and bm["sid"]:
                     bm["tools"].append(name)
                     if bm["before"] is None:
                         bm["before"] = self._bookmark_state(bm["sid"])
@@ -1341,7 +1342,7 @@ class Agent:
                             emit({"type": "cards", **{k: v for k, v in c.items() if k != "type"}})
                 text = json.dumps(result, default=str)
                 emit({"type": "tool_result", "name": name, "text": text[:4000]})
-                if name in MODIFIES and bm["sid"] and isinstance(result, dict) and not result.get("error") and result.get("state") != "failed":
+                if changes_game and bm["sid"] and isinstance(result, dict) and not result.get("error") and result.get("state") != "failed":
                     bm["calls"].append({"tool": name, "input": args})        # replayable as a mod switch
                     bm["verified"] |= '"verified": true' in text or '"landed": true' in text
                 if isinstance(result, dict):                        # images for the live sidebar
@@ -1360,6 +1361,17 @@ WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
 MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay"}
+
+
+def _modifies_game(name: str, args: dict) -> bool:
+    """Only actual game changes earn a before/after state and a replayable mod card."""
+    if name not in MODIFIES:
+        return False
+    op = str(args.get("op") or "").lower()
+    if name == "mod":
+        return op == "apply"     # list/verify are reads; save/delete edit files, not the running game
+    return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
+                      "coverage", "scan", "plan", "search", "describe", "query"}
 
 
 class ChatHub:
