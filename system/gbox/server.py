@@ -2464,6 +2464,21 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
         s_ = store.get("session", r.session_id) or {} if r.session_id else {}
+        if r.save_state and r.session_id:
+            # Repeated capture-icon clicks while a save-state capture is already in flight
+            # stacked duplicate reports and jobs (the "failing endlessly" pileup). Reuse the
+            # newest in-flight report for this session instead of creating another one.
+            pending = None
+            for old in store.all("request"):
+                ctx = old.get("context") or {}
+                if ctx.get("session_id") != r.session_id or not ctx.get("state_job_id"):
+                    continue
+                job = store.get("job", ctx["state_job_id"])
+                if job and job.get("state") in ("queued", "running"):
+                    if pending is None or old.get("created", 0) > pending.get("created", 0):
+                        pending = old
+            if pending:
+                return _clean(pending)
         game = s_.get("title") or s_.get("game_title") or r.context.get("game") or "no game running"
         since = (s_.get("started") or s_.get("created") or time.time() - 3600) - 5
         jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id

@@ -77,3 +77,36 @@ def test_issue_keeps_game_context_when_launch_never_created_a_session(cfg):
     assert "Ocarina of Time (game_id ocarina" in report["body"]
     assert "No launch job submitted after 35 seconds" in report["body"]
     assert report["messages"][0]["attachments"][0]["name"] == "launch-diagnostics.json"
+
+
+def test_issue_reuses_in_flight_capture_report(cfg):
+    app = create_app(cfg)
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/requests/issue")
+    closure = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__))
+    closure["_issue_log"].cell_contents = lambda sid, session: ("", "not available in test")
+    closure["_issue_chat"].cell_contents = lambda sid: []
+    sid = "testworker-123"
+    app.state.store.put("session", sid, {"session_id": sid, "game_id": "mgs-vr", "title": "VR Missions",
+                                          "state": "running", "adapter": "unsupported-for-transfer"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+
+    first = client.post("/api/requests/issue", json={"session_id": sid, "what": "Report issue (Capture icon)",
+        "image_b64": base64.b64encode(b"image").decode()})
+    assert first.status_code == 200, first.text
+    report = first.json()
+    jid = report["context"]["state_job_id"]
+
+    # A second click while the save-state capture is still queued reuses the same report
+    # instead of stacking another report and job (the "failing endlessly" pileup).
+    second = client.post("/api/requests/issue", json={"session_id": sid, "what": "Report issue (Capture icon)",
+        "image_b64": base64.b64encode(b"image").decode()})
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == report["id"]
+
+    # Once the capture job has settled, a fresh report is allowed again.
+    job = client.get(f"/api/jobs/{jid}").json()
+    app.state.store.put("job", jid, job | {"state": "succeeded"})
+    third = client.post("/api/requests/issue", json={"session_id": sid, "what": "Report issue (Capture icon)",
+        "image_b64": base64.b64encode(b"image").decode()})
+    assert third.status_code == 200, third.text
+    assert third.json()["id"] != report["id"]
