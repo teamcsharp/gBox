@@ -110,3 +110,51 @@ def test_issue_reuses_in_flight_capture_report(cfg):
         "image_b64": base64.b64encode(b"image").decode()})
     assert third.status_code == 200, third.text
     assert third.json()["id"] != report["id"]
+
+
+def test_reused_issue_preserves_new_screenshot_diagnostics_and_context(cfg):
+    app = create_app(cfg)
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/requests/issue")
+    closure = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__))
+    closure["_issue_log"].cell_contents = lambda sid, session: ("", "offline in test")
+    closure["_issue_chat"].cell_contents = lambda sid: []
+    sid = "testworker-456"
+    app.state.store.put("session", sid, {"session_id": sid, "title": "VR Missions",
+                                          "state": "running", "adapter": "unsupported-for-transfer"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    payload = {"session_id": sid, "what": "Report issue (Capture icon)",
+               "image_b64": base64.b64encode(b"first image").decode()}
+    first = client.post("/api/requests/issue", json=payload).json()
+    second = client.post("/api/requests/issue", json=payload | {
+        "image_b64": base64.b64encode(b"latest image").decode(),
+        "context": {"renderer": "vulkan", "attempt": 2},
+        "attachments": [{"name": "latest-console.txt", "type": "text/plain",
+                         "b64": base64.b64encode(b"latest error").decode()}]}).json()
+    assert second["id"] == first["id"]
+    assert second["context"]["state_job_id"] == first["context"]["state_job_id"]
+    attachments = {a["name"]: a for a in second["messages"][-1]["attachments"]}
+    assert client.get("/api/artifacts/" + attachments["repeat-capture.png"]["sha256"]).content == b"latest image"
+    assert client.get("/api/artifacts/" + attachments["latest-console.txt"]["sha256"]).content == b"latest error"
+    context = client.get("/api/artifacts/" + attachments["repeat-capture-context.json"]["sha256"]).json()
+    assert context["context"] == {"renderer": "vulkan", "attempt": 2}
+    assert context["session"]["title"] == "VR Missions"
+
+
+def test_distinct_issue_is_not_hidden_by_pending_capture(cfg):
+    app = create_app(cfg)
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/requests/issue")
+    closure = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__))
+    closure["_issue_log"].cell_contents = lambda sid, session: ("", "offline in test")
+    closure["_issue_chat"].cell_contents = lambda sid: []
+    sid = "testworker-789"
+    app.state.store.put("session", sid, {"session_id": sid, "title": "VR Missions",
+                                          "state": "running", "adapter": "unsupported-for-transfer"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    payload = {"session_id": sid, "what": "Report issue (Capture icon)",
+               "note": "game is frozen", "image_b64": base64.b64encode(b"image").decode()}
+    first = client.post("/api/requests/issue", json=payload).json()
+    second = client.post("/api/requests/issue", json=payload | {"note": "model swap is wrong"}).json()
+    assert second["id"] != first["id"]
+    assert "model swap is wrong" in second["body"]
+    assert "game is frozen" in first["body"]
+    assert second["context"]["state_job_id"] != first["context"]["state_job_id"]

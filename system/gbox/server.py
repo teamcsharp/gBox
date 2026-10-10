@@ -2464,6 +2464,8 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
         s_ = store.get("session", r.session_id) or {} if r.session_id else {}
+        capture_key = json.dumps({k: getattr(r, k) for k in (
+            "what", "detail", "note", "title", "element", "mods_on", "kept_mods")}, sort_keys=True)
         if r.save_state and r.session_id:
             # Repeated capture-icon clicks while a save-state capture is already in flight
             # stacked duplicate reports and jobs (the "failing endlessly" pileup). Reuse the
@@ -2471,14 +2473,33 @@ def create_app(config: Config) -> FastAPI:
             pending = None
             for old in store.all("request"):
                 ctx = old.get("context") or {}
-                if ctx.get("session_id") != r.session_id or not ctx.get("state_job_id"):
+                if (ctx.get("session_id") != r.session_id or not ctx.get("state_job_id")
+                        or ctx.get("issue_capture_key") != capture_key or old.get("status") == "done"):
                     continue
                 job = store.get("job", ctx["state_job_id"])
                 if job and job.get("state") in ("queued", "running"):
                     if pending is None or old.get("created", 0) > pending.get("created", 0):
                         pending = old
             if pending:
-                return _clean(pending)
+                rid, now = pending["id"], time.time()
+                # Reuse the pending save job, while preserving every subsequent capture's
+                # screenshot, diagnostics and context. A distinct issue gets a new report.
+                attachments = _attach(rid, r.attachments)
+                if r.image_b64:
+                    attachments += _attach(rid, [{"name": "repeat-capture.png", "type": "image/png",
+                                                   "b64": r.image_b64}])
+                snapshot = r.model_dump(exclude={"image_b64", "attachments"}) | {"captured_at": now, "session": s_}
+                ref = store.put_artifact(json.dumps(snapshot, ensure_ascii=False, indent=2).encode(),
+                                         "repeat-capture-context.json", "application/json", {"request": rid})
+                attachments.append({"sha256": ref.sha256, "name": ref.name, "type": "application/json", "size": ref.size})
+                with store.lock:
+                    latest = store.get("request", rid) or pending
+                    latest.setdefault("messages", []).append({"author": "operator",
+                        "text": f"Repeated capture: {r.what}" + (f"\n{r.detail}" if r.detail else "")
+                                + (f"\n{r.note}" if r.note else ""), "ts": now, "attachments": attachments})
+                    store.put("request", rid, latest)
+                    store.audit(actor, "request.capture_reused", rid, {"state_job_id": latest["context"]["state_job_id"]})
+                    return _clean(latest)
         game = s_.get("title") or s_.get("game_title") or r.context.get("game") or "no game running"
         since = (s_.get("started") or s_.get("created") or time.time() - 3600) - 5
         jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id
@@ -2525,7 +2546,8 @@ def create_app(config: Config) -> FastAPI:
                                       kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
                                       context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id") or r.context.get("game_id"),
                                                            "game": game,
-                                                           "save_state_requested": r.save_state}), actor)
+                                                           "save_state_requested": r.save_state,
+                                                           "issue_capture_key": capture_key}), actor)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
