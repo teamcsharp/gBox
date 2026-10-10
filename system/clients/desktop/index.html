@@ -212,6 +212,11 @@
   @keyframes task-scan { from { transform:translateX(-100%); } to { transform:translateX(315%); } }
   #taskpanel .task-detail { padding:7px 4px; text-align:left; }
   #taskpanel .task-detail pre { margin:6px 0; padding:8px; background:var(--card); border-radius:5px; }
+  #taskpanel .job-card { position:relative; margin:5px 0; padding:8px 10px; border:1px solid var(--line); border-radius:6px; }
+  #taskpanel .job-card summary { line-height:1.5; padding-right:72px; }
+  #taskpanel .job-card summary .nm { max-width:none; font-weight:600; }
+  #taskpanel .job-card > .x { position:absolute; top:6px; right:8px; }
+  #taskpanel .job-card .task-detail { width:100%; box-sizing:border-box; }
   #taskpanel .task-files { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
   #taskpanel .task-file { max-width:210px; padding:5px; border:1px solid var(--line); border-radius:5px; }
   #taskpanel .task-file img { display:block; max-width:190px; max-height:140px; object-fit:contain; margin-bottom:4px; }
@@ -987,13 +992,15 @@ async function tasksLoad() {
         <td>${x.ram_mb >= 1024 ? (x.ram_mb / 1024).toFixed(1) + " GB" : x.ram_mb + " MB"}</td><td>${x.cpu_pct}%</td><td>${x.gpu_pct}%</td><td>${x.vram_mb} MB</td>
         <td>${tkAge(x.started)}</td><td>${x.killable ? `<button class="x" data-kill="${x.pid}" data-w="${esc(m.worker_id)}" title="Stop it now (and everything it started)">✕ Stop</button>` : '<span class="mut" title="gBox itself">—</span>'}</td></tr>`).join("")
         || '<tr><td colspan="8" class="mut" style="text-align:left">nothing running</td></tr>'}</table></div>`; }).join("") +
-    `<div class="mc"><div class="mh"><b>Jobs in flight</b><span class="mut">${d.jobs.length}</span></div><table>
-      ${d.jobs.map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}><summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary>${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></td><td>${esc(j.worker)}</td>
-        <td>${tkAge(j.created)}</td><td><button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></td></tr>`).join("") || '<tr><td class="mut" style="text-align:left">none</td></tr>'}</table></div>` +
-    `<div class="mc"><div class="mh"><b>Recent jobs</b><span class="mut">${(d.recent || []).length}</span></div><table>
-      ${(d.recent || []).map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
-        <summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary>${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></td>
-        <td>${esc(j.worker)}</td><td>${tkAge(j.created)}</td></tr>`).join("") || '<tr><td class="mut">none</td></tr>'}</table></div>`;
+    `<div class="mc"><div class="mh"><b>Jobs in flight</b><span class="mut">${d.jobs.length}</span></div>
+      ${d.jobs.map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
+        <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
+        ${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details>
+        <button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></div>`).join("") || '<span class="mut">none</span>'}</div>` +
+    `<div class="mc"><div class="mh"><b>Recent jobs</b><span class="mut">${(d.recent || []).length}</span></div>
+      ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
+        <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
+        ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`;
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
     pre.scrollTop = position?.follow === false ? position.top : pre.scrollHeight;
