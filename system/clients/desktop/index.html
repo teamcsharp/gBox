@@ -239,6 +239,8 @@
   #task-evidence aside summary { cursor:pointer; font-weight:600; }
   #task-evidence aside pre, #task-evidence aside p { white-space:pre-wrap; overflow-wrap:anywhere; }
   #task-evidence aside pre { max-height:240px; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; }
+  #ev-incomplete-form { border:1px solid var(--acc); border-radius:8px; padding:12px; margin-bottom:14px; }
+  #ev-incomplete-form textarea { width:100%; min-height:110px; resize:vertical; box-sizing:border-box; margin:8px 0; }
   @media(max-width:720px) { #task-evidence .ev-layout { grid-template-columns:1fr; grid-template-rows:minmax(180px,45vh) minmax(0,1fr); } #task-evidence aside { border-left:0; border-top:1px solid var(--line); } }
   #taskviz { display:none; position:fixed; z-index:1000 !important; left:50%; top:50%; transform:translate(-50%,-50%);
     width:min(680px,calc(100vw - 40px)); max-height:calc(100vh - 60px); overflow:auto; background:var(--bg);
@@ -962,11 +964,14 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="hea
   <button class="act" id="tv-close">Back to Tasks</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
   <div id="tv-stages" class="stages"></div></div></div>`);
 document.body.insertAdjacentHTML("beforeend", `<div id="task-evidence" role="dialog" aria-modal="true" aria-label="Task evidence">
-  <div class="ev-head"><b id="ev-title">Task evidence</b><span id="ev-status" class="mut"></span><button class="act" id="ev-close">Close</button></div>
+  <div class="ev-head"><b id="ev-title">Task evidence</b><span id="ev-status" class="mut"></span><button class="act" id="ev-incomplete" hidden>Report incomplete</button><button class="act" id="ev-close">Close</button></div>
   <div class="ev-layout"><div class="ev-stage"><div class="ev-empty" id="ev-empty">No screenshots attached yet.</div><img id="ev-image" alt="Task screenshot" hidden><div id="ev-thumbs" class="ev-thumbs"></div></div>
-  <aside><h3>Tasks and attempts</h3><div id="ev-steps"></div></aside></div></div>`);
+  <aside><div id="ev-incomplete-form" hidden><b>What is still wrong?</b><p class="mut">Describe the glitch or failed result. This reopens the task, preserves its completion history, and dispatches another resolution attempt.</p>
+    <textarea id="ev-incomplete-text" aria-label="Explain why this task is incomplete" placeholder="For example: the model did not appear in VR Missions; the image glitches when I load this save..."></textarea>
+    <div class="btns"><button class="act" id="ev-incomplete-send">Reopen and resolve</button><button class="act" id="ev-incomplete-cancel">Cancel</button></div></div>
+    <h3>Tasks and attempts</h3><div id="ev-steps"></div></aside></div></div>`);
 const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
-const EV = { images: [], selected: null, state: null };
+const EV = { images: [], selected: null, state: null, requestId: null };
 function evSelect(sha) {
   const item = EV.images.find(x => x.sha === sha); if (!item) return;
   EV.selected = sha;
@@ -978,6 +983,9 @@ async function evRequest(requestId, selectedSha = null, run = null) {
   const r = await gbox.api(`/api/requests/${encodeURIComponent(requestId)}`);
   if (!r.ok) { $("#ev-steps").textContent = r.error; return; }
   const x = r.data, tok = S.tok || await gbox.token();
+  EV.requestId = x.id;
+  $("#ev-incomplete").hidden = x.status !== "done";
+  $("#ev-incomplete-form").hidden = true;
   const images = [];
   if (x.image) images.push({ sha: x.image, label: "Original report screenshot" });
   for (const msg of x.messages || []) for (const a of msg.attachments || [])
@@ -1015,6 +1023,7 @@ async function evRun(runId) {
   if (!r.ok) return toast(r.error || "Could not load task report");
   const run = r.data;
   if (run.request_id) return evRequest(run.request_id, null, run);
+  EV.requestId = null; $("#ev-incomplete").hidden = true; $("#ev-incomplete-form").hidden = true;
   EV.images = [];
   $("#ev-image").hidden = true; $("#ev-empty").hidden = false; $("#ev-thumbs").innerHTML = "";
   $("#ev-title").textContent = run.name || "Hermes run";
@@ -1024,6 +1033,26 @@ async function evRun(runId) {
   $("#task-evidence").classList.add("on");
 }
 $("#ev-close").onclick = () => $("#task-evidence").classList.remove("on");
+$("#ev-incomplete").onclick = () => {
+  $("#ev-incomplete-form").hidden = false;
+  $("#ev-incomplete-text").focus();
+};
+$("#ev-incomplete-cancel").onclick = () => { $("#ev-incomplete-form").hidden = true; };
+$("#ev-incomplete-send").onclick = async e => {
+  const explanation = $("#ev-incomplete-text").value.trim();
+  if (!explanation) { $("#ev-incomplete-text").focus(); return toast("Explain what failed first"); }
+  const button = e.currentTarget; button.disabled = true;
+  try {
+    const result = await gbox.api(`/api/requests/${encodeURIComponent(EV.requestId)}/report-incomplete`,
+      { explanation, session_id: EMB.sid || "" });
+    if (!result.ok) throw new Error(result.error || "Could not reopen request");
+    $("#ev-incomplete-text").value = "";
+    toast(`Request #${result.data.number} reopened; resolution dispatched`, 8000);
+    await evRequest(EV.requestId);
+    refreshInbox();
+  } catch (error) { toast(error.message, 8000); }
+  finally { button.disabled = false; }
+};
 $("#task-evidence").addEventListener("click", async e => {
   const b = e.target.closest("[data-ev-sha]"); if (b) evSelect(b.dataset.evSha);
   if (e.target.id === "ev-restore" && EV.state) {
@@ -1715,6 +1744,7 @@ async function refreshInbox() {
     return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
       ${x.context?.auto_report ? '<span class="chip" style="float:right;margin:6px">Auto report</span>' : ""}
       <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="Open screenshots, tasks, attempts and results">Detailed report</button>
+      ${x.status === "done" ? `<button class="act reportincomplete" style="float:right;margin:6px">Report incomplete</button>` : ""}
       ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - click to load this moment${mm.video ? " (right-click: video)" : ""}">
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}load</figcaption></figure>`).join("")}</div>` : ""}
       <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span><span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
@@ -1793,6 +1823,7 @@ document.addEventListener("contextmenu", e => { const f = e.target.closest(".req
 document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
+  if (e.target.closest(".reportincomplete")) { e.stopPropagation(); await evRequest(id); $("#ev-incomplete").click(); return; }
   if (e.target.closest("[data-report-detail], img.shot, img.att-img")) {
     const img = e.target.closest("img.shot, img.att-img");
     const sha = img?.src.match(/\/api\/artifacts\/([0-9a-f]{64})/)?.[1] || null;

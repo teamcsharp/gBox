@@ -78,3 +78,30 @@ def test_capture_request_screenshot_attaches_live_frame_with_step(cfg):
     entry = response.json()
     assert entry["task_step"]["attempt"] == "2"
     assert client.get(f"/api/artifacts/{entry['attachments'][0]['sha256']}").content == png
+
+
+def test_completed_request_can_be_disputed_with_evidence_and_new_resolution(cfg, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(ChatHub, "post", lambda self, cid, text, context, *args: dispatched.append((cid, text, context)))
+    app = create_app(cfg)
+    app.state.store.put("session", "worker-session", {"session_id": "worker-session", "state": "running",
+                                                       "title": "Metal Gear Solid - VR Missions"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    report = client.post("/api/requests", json={"title": "VR Missions model swap", "body": "Replace Snake with HUcast"}).json()
+    rid = report["id"]
+    assert client.post(f"/api/requests/{rid}/status", json={"status": "done", "note": "Previously claimed complete"}).status_code == 200
+    png = b"\x89PNG\r\n\x1a\nfailed-frame"
+    complaint = {"explanation": "The game glitches and HUcast is not visible", "session_id": "worker-session", "attachments": [{
+        "name": "glitch.png", "type": "image/png", "b64": base64.b64encode(png).decode()}]}
+    reopened = client.post(f"/api/requests/{rid}/report-incomplete", json=complaint)
+    assert reopened.status_code == 200, reopened.text
+    item = reopened.json()
+    assert item["status"] == "in_progress" and item["completed"] is None
+    assert item["context"]["disputed_completions"][0]["completed"] is not None
+    assert item["context"]["resolution_chat_id"] == dispatched[0][0]
+    assert client.get(f"/api/jobs/{item['context']['state_job_id']}").json()["input"]["op"] == "save_state"
+    assert dispatched[0][2]["request_id"] == rid and dispatched[0][2]["resolve_auto_report"]
+    evidence = next(m for m in item["messages"] if m["author"] == "operator" and "Completion disputed" in m["text"])
+    assert client.get(f"/api/artifacts/{evidence['attachments'][0]['sha256']}").content == png
+    assert client.post(f"/api/requests/{rid}/report-incomplete", json=complaint).status_code == 409
+    assert client.post(f"/api/requests/{rid}/report-incomplete", json={"explanation": " "}).status_code == 422

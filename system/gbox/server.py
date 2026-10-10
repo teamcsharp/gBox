@@ -2560,6 +2560,76 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "request.message", rid, {"author": m.author, "chars": len(m.text)})
         return _clean(r)
 
+    class IncompleteIn(BaseModel):
+        explanation: str
+        session_id: str = ""
+        attachments: list[dict] = []
+
+    @app.post("/api/requests/{rid}/report-incomplete")
+    def req_report_incomplete(rid: str, complaint: IncompleteIn, actor=Depends(auth)):
+        """Dispute a completion, retain its history and evidence, and queue another resolution attempt."""
+        explanation = complaint.explanation.strip()
+        if not explanation:
+            raise HTTPException(422, "Explain what failed before reopening the task")
+        report = _req(rid)
+        if report["status"] != "done":
+            raise HTTPException(409, "Only completed requests can be reported incomplete")
+        now = time.time()
+        report.setdefault("context", {}).setdefault("disputed_completions", []).append({
+            "completed": report.get("completed"), "reported": now, "explanation": explanation})
+        report["messages"].append({"author": "operator", "text": f"Completion disputed: {explanation}",
+                                   "ts": now, "attachments": _attach(rid, complaint.attachments)})
+        report["status"], report["completed"] = "in_progress", None
+        report["messages"].append({"author": "agent", "text": "Previous completion withdrawn. The failure is being investigated again.",
+                                   "ts": now, "attachments": [], "task_step": {"action": "reopen disputed completion",
+                                   "attempt": str(len(report["context"]["disputed_completions"])),
+                                   "result": explanation[:4000], "status": "running"}})
+        session_id = complaint.session_id
+        session = store.get("session", session_id) or {} if session_id else {}
+        if session.get("state") == "running" and not session.get("ended"):
+            try:
+                slot = 40 + sum(1 for old in store.all("request") if (old.get("context") or {}).get("session_id") == session_id)
+                saved = submit(JobRequest(tool="session_op", input={"session_id": session_id, "op": "save_state",
+                                          "args": {"slot": slot}}, parent_request_id=rid), actor)
+                report["context"].update(session_id=session_id, state_job_id=saved.id)
+                report["messages"].append({"author": "agent", "text": f"Requested save state for the failed moment (job {saved.id}, slot {slot}).",
+                                           "ts": time.time(), "attachments": [], "task_step": {"action": "save failed moment",
+                                           "attempt": "1", "result": saved.state, "status": saved.state}})
+            except Exception as exc:
+                report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
+        store.put("request", rid, report)
+        try:
+            chat = hub.get(new_id())
+            store.put("chat", chat["id"], chat)
+            prompt = (f"Resolve disputed completion of gBox request #{report['number']} ({rid}): {report['title']}.\n"
+                      f"Operator's observed failure: {explanation}\n"
+                      "Inspect the prior result and attached evidence, fix the underlying problem, record each attempt and outcome, "
+                      "capture verification screenshots, record actual token usage, and mark done only after the operator-visible result is verified. "
+                      "Preserve the running game and any save state.")
+            hub.post(chat["id"], prompt, {"request_id": rid, "session_id": session_id,
+                                          "resolve_auto_report": True}, api_requests, None, [])
+            report = store.get("request", rid) or report
+            report.setdefault("context", {})["resolution_chat_id"] = chat["id"]
+            report["messages"].append({"author": "agent", "text": f"Resolution dispatched (chat {chat['id']}).",
+                                       "ts": time.time(), "attachments": [], "task_step": {"action": "dispatch resolution",
+                                       "attempt": "1", "result": chat["id"], "status": "running"}})
+        except Exception as exc:
+            report = store.get("request", rid) or report
+            report["messages"].append({"author": "agent", "text": f"Resolution dispatch failed: {exc}",
+                                       "ts": time.time(), "attachments": []})
+        store.put("request", rid, report)
+        store.audit(actor, "request.report_incomplete", rid, {"chars": len(explanation), "session": session_id})
+        if session.get("state") == "running" and not session.get("ended") and not complaint.attachments:
+            def _capture_disputed():
+                try:
+                    asyncio.run(req_capture(rid, RequestCaptureIn(session_id=session_id,
+                        text="Game frame when completion was disputed", task_step={"action": "capture failed moment",
+                        "attempt": "1", "result": "game frame attached", "status": "finished"}), "gbox-auto"))
+                except Exception as exc:
+                    store.audit("gbox-auto", "request.capture.error", rid, {"error": str(exc)[:500]})
+            threading.Thread(target=_capture_disputed, daemon=True).start()
+        return _clean(report)
+
     class RequestCaptureIn(BaseModel):
         session_id: str
         text: str = ""
