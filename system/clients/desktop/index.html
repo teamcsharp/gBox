@@ -86,6 +86,8 @@
     border-radius:8px; box-shadow:0 10px 30px #0009; font-size:13px; -webkit-app-region:no-drag; } #recmenu.on { display:block; }
   #recmenu label { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0; }
   #recmenu select { font:inherit; font-size:12px; padding:3px 6px; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:5px; }
+  #rec-target { width:100%; margin:3px 0 0; accent-color:var(--acc); cursor:pointer; }
+  #rec-target-value { color:var(--acc); font-variant-numeric:tabular-nums; }
   @keyframes recblink { 50% { opacity:.2; } }
   #titlebar .badge { background:var(--acc); color:#fff; border-radius:9px; padding:0 6px; font-size:11px; }
   .app { margin-top:36px; height:calc(100vh - 36px) !important; } section { height:calc(100vh - 36px) !important; }
@@ -3603,26 +3605,33 @@ document.querySelector('aside button[data-s="tools"]').addEventListener("click",
 // ---------------- screen recording (MP4 streamed to disk) ----------------
 const REC = { mr: null, t0: 0, timer: null, file: null };
 gbox.onRecordingCancelled(() => { REC.cancelled = true; if (REC.mr?.state === "recording") REC.mr.stop(); });
-// size limit for recordings (default 10 MB): over it, the file is re-encoded with HandBrake to fit
-const recOpts = () => { try { return { targetMB: 10, speed: "balanced", keep: false, ...JSON.parse(localStorage.getItem("gbox_rec") || "{}") }; } catch { return { targetMB: 10, speed: "balanced", keep: false }; } };
+// Over the selected size limit, the file is re-encoded with HandBrake to fit.
+const recOpts = () => { try { return { targetMB: 20, speed: "balanced", keep: false, ...JSON.parse(localStorage.getItem("gbox_rec") || "{}") }; } catch { return { targetMB: 20, speed: "balanced", keep: false }; } };
 document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><button class="act" id="rec-app" style="width:100%">Record application + audio</button>
   <button class="act" id="rec-game" style="width:100%;margin:6px 0">Record gameplay only + audio</button>
   <div class="mut" style="font-size:11px;margin-bottom:8px">Includes PC playback audio. Microphone is excluded.</div><b>Recording size</b>
-  <label>Size limit <select id="rec-target"><option value="5">5 MB</option><option value="8">8 MB</option><option value="10">10 MB</option>
-    <option value="25">25 MB</option><option value="50">50 MB</option><option value="100">100 MB</option><option value="0">No limit</option></select></label>
+  <label for="rec-target">Size limit <output id="rec-target-value" for="rec-target">20 MB</output></label>
+  <input id="rec-target" type="range" min="0" max="100" step="1" value="20" aria-label="Recording size limit in megabytes; zero means no limit">
+  <div class="mut" style="font-size:11px;text-align:right">0 = no limit · 100 MB maximum</div>
   <label>Compression <select id="rec-speed"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="best">Best quality (slower)</option></select></label>
   <label title="When a recording is downsized to the limit, the full-size original is kept next to it">Also keep my full-size original <input type="checkbox" id="rec-keep"></label>
   <div class="mut" style="font-size:11px">Recordings over the limit are re-encoded with HandBrake (bitrate and resolution lowered to fit).</div>
   <button class="act" id="rec-folder" style="width:100%;margin-top:6px">📂 Open recordings folder</button></div>`);
 $("#rec-folder").onclick = () => { gbox.recOpen(null); $("#recmenu").classList.remove("on"); };
 const openRecMenu = e => { e.stopPropagation(); const m = $("#recmenu"), o = recOpts(), b = $("#tb-recopt").getBoundingClientRect();
-  $("#rec-target").value = String(o.targetMB); $("#rec-speed").value = o.speed; $("#rec-keep").checked = o.keep;
+  $("#rec-target").value = String(Math.max(0, Math.min(100, Number(o.targetMB) || 0)));
+  $("#rec-target-value").value = +$("#rec-target").value ? `${$("#rec-target").value} MB` : "No limit";
+  $("#rec-speed").value = o.speed; $("#rec-keep").checked = o.keep;
   m.style.left = Math.min(innerWidth - 262, b.left - 120) + "px"; m.classList.toggle("on"); };
 $("#tb-recopt").onclick = openRecMenu;
 $("#tb-rec").oncontextmenu = e => { e.preventDefault(); openRecMenu(e); };
 $("#rec-app").onclick = () => recordAction("app");
 $("#rec-game").onclick = () => recordAction("gameplay");
-$("#recmenu").onchange = () => { try { localStorage.setItem("gbox_rec", JSON.stringify({ targetMB: +$("#rec-target").value, speed: $("#rec-speed").value, keep: $("#rec-keep").checked })); } catch {} };
+const saveRecOpts = () => { const n = +$("#rec-target").value;
+  $("#rec-target-value").value = n ? `${n} MB` : "No limit";
+  try { localStorage.setItem("gbox_rec", JSON.stringify({ targetMB: n, speed: $("#rec-speed").value, keep: $("#rec-keep").checked })); } catch {} };
+$("#rec-target").oninput = saveRecOpts;
+$("#recmenu").onchange = saveRecOpts;
 document.addEventListener("mousedown", e => { if (!e.target.closest("#recmenu, #tb-recopt, #tb-rec")) $("#recmenu").classList.remove("on"); });
 // clicking anywhere outside a pop-up closes it (its own opener toggles it instead, so it isn't closed-then-reopened)
 const POPS = [["#busysteps", "#chatbusy"], ["#taskpanel", "#tb-tasks"], ["#auditpanel", "#sb-audit"], ["#svcpanel", "#statusbar"], ["#whipmenu", null],
