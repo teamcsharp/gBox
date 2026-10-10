@@ -1091,8 +1091,39 @@ def _oot_run(ctx, game, entry, work):
             'source_files': [entry['key']], 'notes': 'Native Link skeleton, display lists and textures.'}
 
 
+def _mgs_vr_run(ctx, game, entry, work):
+    """Decode the original Snake from the owned US disc, using a Windows worker for MetalMintSolid."""
+    from . import mgs_vr_swap
+    out = Path(work) / 'mgs_vr_snake.glb'
+    if HOST_OS == 'windows':
+        mgs_vr_swap.decode_original_player(ctx.config, out, ctx.progress)
+    else:
+        workers = [w for w in _api(ctx, 'GET', '/api/workers')
+                   if w.get('os') == 'windows' and w.get('online') and 'characters' in (w.get('tools') or [])]
+        workers.sort(key=lambda w: len(w.get('tools') or []), reverse=True)
+        failures = []
+        for worker in workers:
+            job = _job(ctx, 'characters', {'op': 'mgs_vr_decode', 'game_id': game['game_id']}, worker['id'], 900)
+            if job.get('state') != 'succeeded':
+                failures.append(f"{worker.get('name')}: {job.get('error') or job.get('state')}")
+                continue
+            receipt = _api(ctx, 'GET', f"/api/receipts/{job['receipt_id']}")
+            model = next((a for a in receipt.get('artifacts', []) if a.get('name') == 'mgs-vr-snake.glb'), None)
+            if model:
+                out.write_bytes(_api(ctx, 'GET', f"/api/artifacts/{model['sha256']}", timeout=300))
+                break
+            failures.append(f"{worker.get('name')}: decoded model artifact was absent")
+        if not out.is_file():
+            raise RuntimeError('No Windows worker could decode the VR Missions Snake model: ' + '; '.join(failures))
+    return {'files': [out], 'roles': {}, 'tool': 'gbox.mgs_vr_swap / MetalMintSolid',
+            'source_files': ['MGS/STAGE.DIR', 'init.stg', '0_0.dar:39213.kmd', '1_0.dar:PS1 textures'],
+            'notes': 'Original US VR Missions Snake mesh, 16 KMD joints and embedded PS1 textures. No cross-game retarget map yet.'}
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
+    ('mgs_vr', lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
+     _one('SNAKE', 'mgs_vr_snake', 'Solid Snake (VR Missions)', ['Snake', 'MGS VR Snake']), _mgs_vr_run),
     ('oot', lambda t, p: 'ocarina of time' in t and p == 'n64',
      lambda: [{'key': f'{age} link', 'slug': f'oot_link_{age}', 'name': label,
                'aliases': [f'{age} link'], 'kind': 'character'}
@@ -1718,6 +1749,17 @@ def characters_tool(inp: CharIn, ctx):
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
     add character=<new name> from_clipboard=true|artifact|path: store an edited model."""
+    if inp.op == "mgs_vr_decode":                    # internal Windows handoff for the native reader
+        from . import mgs_vr_swap
+        game = _game(ctx, inp)
+        if HOST_OS != "windows" or game["game_id"] not in mgs_vr_swap.GAME_IDS:
+            raise ValueError("VR Missions disc decoding requires a Windows worker and the US VR Missions game")
+        out = Path(ctx.config.cache) / "characters_build" / "mgs_vr_decode" / f"{ctx.job_id}.glb"
+        mgs_vr_swap.decode_original_player(ctx.config, out, ctx.progress)
+        data = out.read_bytes()
+        ctx.artifact("mgs-vr-snake.glb", data, "model/gltf-binary", game_id=game["game_id"])
+        out.unlink(missing_ok=True)
+        return {"result": {"status": "decoded", "model": "Solid Snake (VR Missions)", "bytes": len(data)}}
     if inp.op == "collect":
         return {"result": collect(ctx, inp)}
     if inp.op in ("extract", "add", "blender"):

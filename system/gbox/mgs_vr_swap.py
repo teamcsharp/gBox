@@ -61,6 +61,42 @@ def base_bin(cfg, progress=lambda _p, _m: None) -> Path:
     return image
 
 
+def decode_original_player(cfg, out_glb: Path, progress=lambda _p, _m: None) -> Path:
+    """Read Snake's original VR Missions KMD and its PS1 textures into a textured GLB."""
+    base = base_bin(cfg, progress)
+    disc = psxdisc.RawBin(base, writable=False)
+    try:
+        stage_dir = disc.read("MGS/STAGE.DIR")
+    finally:
+        disc.close()
+    if len(stage_dir) not in (72593408, 71892992):
+        raise ValueError("this MGS PS1 disc has an unknown STAGE.DIR size")
+    out_glb.parent.mkdir(parents=True, exist_ok=True)
+    mint = _mint(cfg)
+    with tempfile.TemporaryDirectory(prefix="mgs_vr_read_", dir=out_glb.parent) as temp:
+        work = Path(temp)
+        (work / "stage.dir").write_bytes(stage_dir)
+        for name in ("stage", "init", "models", "texture_archive", "textures"):
+            (work / name).mkdir()
+        progress(20, "Opening the VR Missions stage archive")
+        _run(mint, "dir", "extract", work / "stage.dir", work / "stage")
+        _run(mint, "stg", "extract", work / "stage" / "init.stg", work / "init")
+        _run(mint, "dar", "extract", work / "init" / "0_0.dar", work / "models", "--platform", "Psx")
+        original = work / "models" / "39213.kmd"
+        if hashlib.sha256(original.read_bytes()).hexdigest() != PLAYER_KMD_SHA256:
+            raise ValueError("Snake KMD differs from the known US VR Missions revision")
+        progress(60, "Decoding Snake's PS1 texture archive")
+        _run(mint, "dar", "extract", work / "init" / "1_0.dar", work / "texture_archive", "--platform", "Psx")
+        _run(mint, "pcx", "batchdecode", work / "texture_archive", work / "textures")
+        progress(80, "Converting the original Snake mesh and textures to glTF")
+        _run(mint, "kmd", "decode", original, work / "snake.glb", "--textures", work / "textures")
+        if (work / "snake.glb").read_bytes()[:4] != b"glTF":
+            raise ValueError("MetalMintSolid did not produce a GLB model")
+        shutil.copy2(work / "snake.glb", out_glb)
+    progress(100, "Original Snake model and textures decoded")
+    return out_glb
+
+
 def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
           progress=lambda _p, _m: None) -> dict:
     """Build a bootable modded BIN/CUE from an owned raw disc and a fitted KMD."""
