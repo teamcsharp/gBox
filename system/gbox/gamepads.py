@@ -117,6 +117,45 @@ def bind_yuzu_player_one(config_path: Path, guid: str) -> bool:
     return True
 
 
+YUZU_KEYBOARD_BUTTONS = {
+    "a": 67, "b": 88, "x": 86, "y": 90, "lstick": 70, "rstick": 71,
+    "l": 81, "r": 69, "zl": 82, "zr": 84, "plus": 77, "minus": 78,
+    "dleft": 16777234, "dup": 16777235, "dright": 16777236, "ddown": 16777237,
+    "sl": 81, "sr": 69,
+}
+
+
+def bind_yuzu_xinput_bridge(config_path: Path) -> bool:
+    """Bind player one to keys emitted from XInput when this Yuzu SDL build reads no pad state."""
+    original = config_path.read_bytes()
+    body = original.decode("utf-8")
+    bindings = {f"player_0_button_{name}": f'"engine:keyboard,code:{code},toggle:0"'
+                for name, code in YUZU_KEYBOARD_BUTTONS.items()}
+    bindings["player_0_lstick"] = ('"engine:analog_from_button,up:engine$0keyboard$1code$087$1toggle$00,'
+                                    'left:engine$0keyboard$1code$065$1toggle$00,'
+                                    'modifier:engine$0keyboard$1code$016777248$1toggle$00,'
+                                    'down:engine$0keyboard$1code$083$1toggle$00,'
+                                    'right:engine$0keyboard$1code$068$1toggle$00,modifier_scale:0.500000"')
+    bindings["player_0_rstick"] = ('"engine:analog_from_button,up:engine$0keyboard$1code$073$1toggle$00,'
+                                    'left:engine$0keyboard$1code$074$1toggle$00,'
+                                    'modifier:engine$0keyboard$1code$00$1toggle$00,'
+                                    'down:engine$0keyboard$1code$075$1toggle$00,'
+                                    'right:engine$0keyboard$1code$076$1toggle$00,modifier_scale:0.500000"')
+    lines = []
+    for line in body.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        key = bare.partition("=")[0]
+        lines.append(f"{key}={bindings[key]}{line[len(bare):]}" if key in bindings else line)
+    changed = "".join(lines)
+    if changed == body:
+        return False
+    backup = config_path.with_name(config_path.name + ".gbox-sdl")
+    if not backup.exists():
+        backup.write_bytes(original)
+    config_path.write_bytes(changed.encode("utf-8"))
+    return True
+
+
 def retroarch_driver(executable: str) -> str:
     path = Path(executable)
     driver = _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)

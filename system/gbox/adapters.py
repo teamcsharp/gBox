@@ -1562,6 +1562,7 @@ class YuzuAdapter(Adapter):
     def __init__(self, config: Config):
         self.config = config
         self.proc = None
+        self.bridge_proc = None
         self.paused_tids = []
         self.examine_unavailable_reason = "3D draw-call capture is not integrated with the Yuzu window yet."
 
@@ -1572,8 +1573,9 @@ class YuzuAdapter(Adapter):
         from . import gamepads
         guid = gamepads.sdl2_xbox_guid(exe.parent / "SDL2.dll")
         controller_config = exe.parent / "user" / "config" / "qt-config.ini"
-        if guid and controller_config.is_file():
-            gamepads.bind_yuzu_player_one(controller_config, guid)
+        bridge = bool(guid and controller_config.is_file())
+        if bridge:
+            gamepads.bind_yuzu_xinput_bridge(controller_config)
         self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(),
                                      env=gamepads.emulator_environment(os.environ))
         keep_offscreen(self.proc.pid)
@@ -1586,12 +1588,24 @@ class YuzuAdapter(Adapter):
         else:
             self.stop_game()
             raise RuntimeError("Yuzu did not open a game window within 60 seconds")
+        if bridge:
+            self.bridge_proc = subprocess.Popen([sys.executable, "-u", "-P", "-m", "gbox.yuzu_input", str(self.proc.pid)],
+                                                stdin=subprocess.PIPE, startupinfo=hidden_start())
         return {"pid": self.proc.pid, "rom": rom, "local_window": True, "controller_guid": guid,
+                "controller_mode": "xinput_keyboard_bridge" if bridge else "sdl",
                 "worker_name": __import__("platform").node(), "emulator": "yuzu"}
 
     def stop_game(self) -> dict:
         if self.paused_tids:
             self.resume()
+        if self.bridge_proc and self.bridge_proc.poll() is None:
+            try:
+                self.bridge_proc.stdin.write(b"stop\n")
+                self.bridge_proc.stdin.flush()
+                self.bridge_proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                _kill_tree(self.bridge_proc)
+        self.bridge_proc = None
         _kill_tree(self.proc)
         return {"returncode": self.proc.poll() if self.proc else None}
 

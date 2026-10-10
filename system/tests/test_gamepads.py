@@ -56,6 +56,28 @@ def test_yuzu_rebinds_only_player_one_and_keeps_original(tmp_path):
     assert not gamepads.bind_yuzu_player_one(ini, new)
 
 
+def test_yuzu_xinput_bridge_bindings_are_scoped_and_backed_up(tmp_path):
+    ini = tmp_path / "qt-config.ini"
+    body = ('[Controls]\r\nplayer_0_button_a="engine:sdl,port:0,button:1"\r\n'
+            'player_0_lstick="engine:sdl,port:0,axis_x:0"\r\n'
+            'player_1_button_a="engine:keyboard,code:42"\r\n')
+    ini.write_bytes(body.encode())
+    assert gamepads.bind_yuzu_xinput_bridge(ini)
+    updated = ini.read_bytes().decode()
+    assert 'player_0_button_a="engine:keyboard,code:67,toggle:0"\r\n' in updated
+    assert 'player_0_lstick="engine:analog_from_button,' in updated
+    assert 'player_1_button_a="engine:keyboard,code:42"' in updated
+    assert ini.with_name("qt-config.ini.gbox-sdl").read_bytes().decode() == body
+    assert not gamepads.bind_yuzu_xinput_bridge(ini)
+
+
+def test_yuzu_xinput_bridge_maps_face_buttons_and_sticks():
+    from gbox.yuzu_input import keys_for_pad
+    pad = {"buttons": 0x1000 | 0x0010, "lt": 0, "rt": 255,
+           "lx": -20000, "ly": 21000, "rx": 17000, "ry": -18000}
+    assert keys_for_pad(pad) == {0x43, 0x4D, 0x54, 0x41, 0x57, 0x4C, 0x4B}
+
+
 def test_sdl3_only_build_installs_normalized_xbox_profile(tmp_path, monkeypatch):
     executable = tmp_path / "retroarch.exe"
     executable.touch()
