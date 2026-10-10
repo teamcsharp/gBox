@@ -30,6 +30,7 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
     assert enabled.json()["enabled"] is True
     assert enabled.json()["model"] == "qwen3.6:35b"
     assert calls[0][0] == "create"
+    assert calls[0][1] == "every 6h"
     assert "--skill" not in calls[0]
     assert "--workdir" in calls[0]
     assert client.post("/api/hermes/task-mode", json={"enabled": True}).status_code == 200

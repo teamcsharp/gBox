@@ -79,7 +79,9 @@ def set_enabled(enabled: bool) -> dict:
             job = _job()
         if enabled and not job:
             model, note = _model()
-            args = ["create", "every 10m", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,
+            # Cloud agent runs reread the project and can use substantial
+            # context; leave room in the operator's monthly plan for manual runs.
+            args = ["create", "every 6h", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,
                     "--workdir", str(_PROMPT.parents[2]),
                     "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "low"]
             if model:
