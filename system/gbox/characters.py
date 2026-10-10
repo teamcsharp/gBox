@@ -1067,6 +1067,22 @@ def _sm64_run(ctx, game, e, work):
     return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"]}
 
 
+def _doa2_roster():
+    from . import doa2_chars
+    return doa2_chars.roster()
+
+
+def _doa2_run(ctx, game, e, work):
+    from . import doa2_chars
+    r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0])
+    m = r["manifest"]
+    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars (containers verified)",
+            "source_files": m["source"]["resource_ids"],
+            "notes": f"skeleton facts: {m['skeleton_facts']['n_bones']} bones, "
+                     f"{m['skeleton_facts']['n_objects']} objects, base {m['skeleton_facts']['object_ptr_base']}; "
+                     "mesh decoding is the next slice (geometry: missing)"}
+
+
 def _re4_run(ctx, game, e, work):
     out = export_leon(_gc_iso(ctx, game), work)
     return {"files": [out], "tool": "gbox.re4gc_models (characters.export_leon)", "source_files": ["em/pl00.drs (BINs 0, 2, 4, 5, 6, 7)"],
@@ -1137,6 +1153,7 @@ DEDICATED = [
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
+    ("doa2", lambda t, p: "dead or alive 2" in t and p == "dreamcast", _doa2_roster, _doa2_run),
     ("shenmue", lambda t, p: re.match(r"shenmue(?! ii)", t) is not None and p == "dreamcast",
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
