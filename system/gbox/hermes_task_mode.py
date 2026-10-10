@@ -71,7 +71,7 @@ def set_enabled(enabled: bool) -> dict:
         if enabled and not job:
             model, note = _model()
             args = ["create", "every 10m", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,
-                    "--skill", "gbox", "--workdir", str(_PROMPT.parents[2]),
+                    "--workdir", str(_PROMPT.parents[2]),
                     "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "high"]
             if model:
                 args += ["--model", model, "--provider", "custom"]
@@ -82,7 +82,7 @@ def set_enabled(enabled: bool) -> dict:
             _run("run", result["job_id"])
             return result | {"model_note": note}
         if job and enabled and not job.get("enabled"):
-            _run("edit", job["id"], "--prompt", _PROMPT.read_text(encoding="utf-8"))
+            _run("edit", job["id"], "--clear-skills", "--prompt", _PROMPT.read_text(encoding="utf-8"))
             _run("resume", job["id"])
             _run("run", job["id"])
         elif job and not enabled and job.get("enabled"):
