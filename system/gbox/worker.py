@@ -127,15 +127,17 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
     if HOST_OS != "windows":
         return
     from .adapters import MjpegStream
+    from .remote_desktop import gbox_window_rect
 
     stream = None
     seen = 0
+    rect, rect_at = None, 0.0
     with httpx.Client(base_url=server, headers=h, timeout=15) as client:
         while not stop.is_set():
             try:
                 watch = client.get(f"/api/workers/{wid}/desktop/watch").json().get("watch", False)
                 if watch and stream is None:
-                    stream = MjpegStream(None, fps=8, max_width=1600, draw_mouse=True)
+                    stream = MjpegStream(None, fps=8, max_width=3200, draw_mouse=True)
                     seen = 0
                 if not watch and stream is not None:
                     stream.close()
@@ -146,8 +148,13 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                         stream = None
                     elif stream.wait(seen, 1) and stream.latest:
                         seen = stream.seq
+                        if time.monotonic() - rect_at >= 1:
+                            rect, rect_at = gbox_window_rect(), time.monotonic()
+                        frame_headers = {"content-type": "image/jpeg"}
+                        if rect:
+                            frame_headers["x-gbox-app-rect"] = ",".join(f"{v:.6f}" for v in rect)
                         client.post(f"/api/workers/{wid}/desktop/frame", content=stream.latest,
-                                    headers={"content-type": "image/jpeg"}, timeout=10).raise_for_status()
+                                    headers=frame_headers, timeout=10).raise_for_status()
                 else:
                     time.sleep(2)
             except (httpx.HTTPError, OSError, ValueError, AttributeError):

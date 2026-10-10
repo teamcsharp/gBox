@@ -969,7 +969,7 @@ def create_app(config: Config) -> FastAPI:
         frame = desktop_frames.get(wid) or {}
         return {"watching": time.time() < desktop_watch.get(wid, 0),
                 "last_frame_age": round(time.time() - frame["ts"], 1) if frame else None,
-                "frames": frame.get("seq", 0)}
+                "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None}
 
     @app.post("/api/workers/{wid}/desktop/frame")
     async def desktop_frame_upload(wid: str, request: Request, actor=Depends(auth)):
@@ -979,18 +979,28 @@ def create_app(config: Config) -> FastAPI:
         image = await request.body()
         if not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9") or len(image) > 8_000_000:
             raise HTTPException(422, "expected a JPEG frame under 8 MB")
+        try:
+            app_rect = tuple(float(v) for v in request.headers.get("x-gbox-app-rect", "").split(","))
+            if len(app_rect) != 4 or not all(0 <= v <= 1 for v in app_rect):
+                app_rect = None
+        except ValueError:
+            app_rect = None
         with desktop_condition:
             prior = desktop_frames.get(wid) or {}
-            desktop_frames[wid] = {"image": image, "seq": prior.get("seq", 0) + 1, "ts": time.time()}
+            desktop_frames[wid] = {"image": image, "app_rect": app_rect,
+                                   "seq": prior.get("seq", 0) + 1, "ts": time.time()}
             desktop_condition.notify_all()
         return {"ok": True}
 
     @app.get("/api/workers/{wid}/desktop/stream")
-    def desktop_stream(wid: str, actor=Depends(auth)):
+    def desktop_stream(wid: str, view: str = "app", actor=Depends(auth)):
         wid = _wid(wid)
         if not store.get("worker", wid):
             raise HTTPException(404, "worker not found")
+        if view not in ("app", "desktop"):
+            raise HTTPException(422, "view must be app or desktop")
         def frames():
+            from .remote_desktop import crop_jpeg
             seen = 0
             while True:
                 desktop_watch[wid] = time.time() + 8
@@ -1000,7 +1010,9 @@ def create_app(config: Config) -> FastAPI:
                 if frame.get("seq") == seen or time.time() - frame.get("ts", 0) > 5:
                     continue
                 seen = frame["seq"]
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame["image"] + b"\r\n"
+                image = frame["image"] if view == "desktop" else crop_jpeg(frame["image"], frame.get("app_rect"))
+                if image:
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + image + b"\r\n"
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"Cache-Control": "no-store"})
 
