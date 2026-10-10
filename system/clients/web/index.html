@@ -75,11 +75,11 @@
     background:var(--card); color:var(--fg); cursor:pointer; } .tbell.new { border-color:var(--acc); color:var(--acc); }
   .tbell b { position:absolute; top:-5px; right:-5px; min-width:15px; height:15px; border-radius:8px; background:var(--acc); color:#fff; font-size:10px; line-height:15px; }
   .tbell b[hidden] { display:none; }
-  #gmenu { position:fixed; width:340px; max-height:80vh; overflow:auto; display:none; z-index:85; background:var(--bg); border:1px solid var(--line);
+  #gmenu { position:fixed; width:min(340px, calc(100vw - 24px)); box-sizing:border-box; max-height:80vh; overflow-y:auto; overflow-x:hidden; display:none; z-index:85; background:var(--bg); border:1px solid var(--line);
     border-radius:10px; box-shadow:0 12px 40px #000a; padding:10px 12px; font-size:13px; } #gmenu.on { display:block; }
   #gmenu h4 { margin:0 0 6px; font-size:14px; } #gmenu .gms { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:6px 0; }
   #gmenu .gms > b { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); margin-bottom:4px; }
-  #gmenu label { display:flex; gap:8px; align-items:center; padding:3px 0; cursor:pointer; } #gmenu select { flex:1; }
+  #gmenu label { display:flex; gap:8px; align-items:center; min-width:0; overflow-wrap:anywhere; padding:3px 0; cursor:pointer; } #gmenu select { flex:1; min-width:0; max-width:100%; box-sizing:border-box; }
   #gmenu .gmch { display:grid; grid-template-columns:repeat(4, 1fr); gap:5px; margin:4px 0 6px }
   #gmenu .gmch label { flex-direction:column; gap:2px; padding:3px; border:1px solid var(--line); border-radius:6px; font-size:10px; text-align:center; line-height:1.15 }
   #gmenu .gmch label:has(input:checked) { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 15%, transparent) }

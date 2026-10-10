@@ -1887,6 +1887,24 @@ def create_app(config: Config) -> FastAPI:
             time.sleep(0.3)
         return jj
 
+    @app.get("/api/hermes/task-mode")
+    def hermes_task_mode_state(actor=Depends(auth)):
+        from . import hermes_task_mode
+        return hermes_task_mode.status()
+
+    class TaskModeIn(BaseModel):
+        enabled: bool
+
+    @app.post("/api/hermes/task-mode")
+    def hermes_task_mode_set(value: TaskModeIn, actor=Depends(auth)):
+        from . import hermes_task_mode
+        try:
+            result = hermes_task_mode.set_enabled(value.enabled)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            raise HTTPException(503, str(exc)[:1000]) from exc
+        store.audit(actor, "hermes.task_mode", result.get("job_id") or "", {"enabled": value.enabled})
+        return result
+
     task_cache: dict[str, dict] = {}
     task_cache_lock = threading.Lock()
 

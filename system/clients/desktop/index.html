@@ -687,6 +687,7 @@ window.taskVizCreate = canvas => {
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
     <button id="tb-remote" title="Watch the other computer's desktop while it tests games and tasks">Other PC</button>
+    <label id="tb-task-mode-label" title="Let Hermes work through unresolved inbox requests on the DGX Spark" style="display:flex;align-items:center;gap:5px;padding:0 7px;white-space:nowrap;cursor:pointer"><input id="tb-task-mode" type="checkbox">Task mode</label>
     <button id="tb-reinv" hidden title="Inventory: change the weapons and items of the character you're playing (Resident Evil), live">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 12h16"/></svg>Inventory</button>
     <button id="tb-inbox" title="Requests inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Inbox <span class="badge" id="tb-count">0</span></button>
@@ -1053,6 +1054,26 @@ async function remoteStatus() {
   $("#rp-meta").textContent = `${game?.title || "Desktop"} · ${active.length ? active.join(", ") : "no running jobs"} · ${age == null ? "waiting for frame" : `frame ${age}s ago`} · ${REMOTE.quietReady ? "agent audio held at 2%" : "2% audio pending worker reload"}`;
 }
 $("#tb-remote").onclick = () => remoteWatch();
+async function refreshTaskMode() {
+  const r = await gbox.api("/api/hermes/task-mode");
+  if (!r.ok) return;
+  $("#tb-task-mode").checked = !!r.data.enabled;
+  $("#tb-task-mode").disabled = !r.data.available;
+  $("#tb-task-mode-label").title = r.data.available
+    ? `Hermes inbox work: ${r.data.enabled ? "on" : "off"}${r.data.model ? ` · ${r.data.model}` : ""}${r.data.last_status ? ` · last run ${r.data.last_status}` : ""}`
+    : "Hermes scheduler is unavailable on the DGX Spark";
+}
+$("#tb-task-mode").onchange = async e => {
+  const box = e.currentTarget, wanted = box.checked;
+  box.disabled = true;
+  const r = await gbox.api("/api/hermes/task-mode", { enabled: wanted });
+  if (!r.ok) { box.checked = !wanted; toast(r.error || "Could not change Task mode", 9000); }
+  else toast(`Task mode ${r.data.enabled ? "on" : "off"}${r.data.model ? ` · ${r.data.model}` : ""}`);
+  box.disabled = false;
+  refreshTaskMode();
+};
+refreshTaskMode();
+setInterval(refreshTaskMode, 30000);
 $("#rp-worker").onchange = e => remoteWatch(e.target.value);
 $("#rp-image").onerror = () => remoteFallback();
 $("#rp-min").onclick = () => {
@@ -1853,8 +1874,8 @@ async function refreshInbox() {
       ${x.context?.auto_report ? '<span class="chip" style="float:right;margin:6px">Auto report</span>' : ""}
       <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="Open screenshots, tasks, attempts and results">Detailed report</button>
       ${x.status === "done" ? `<button class="act reportincomplete" style="float:right;margin:6px">Report incomplete</button>` : ""}
-      ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - click to load this moment${mm.video ? " (right-click: video)" : ""}">
-        ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}load</figcaption></figure>`).join("")}</div>` : ""}
+      ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - ${mm.state_slot == null ? "open the mod (no saved moment attached)" : "load the saved moment"}${mm.video ? " (right-click: video)" : ""}">
+        ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}${mm.state_slot == null ? "play mod" : "load moment"}</figcaption></figure>`).join("")}</div>` : ""}
       <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span><span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
       <div class="m">${new Date(x.created * 1000).toLocaleString()} · took ${fmtDur(m.duration_s ?? (x.status === "done" ? null : (Date.now() / 1000 - (x.started || x.created))))}
         · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
@@ -1887,31 +1908,62 @@ $("#reqlist").addEventListener("change", async e => {
 // ---- mods: a change that worked, replayable on its game (thumbnail -> that moment; buttons -> launch/apply/video) ----
 const REG = {}, MODS = { list: [] };
 async function modRun(c, sid) {
-  let j = (await gbox.api("/api/jobs", { tool: c.tool, input: { ...c.input, session_id: sid }, require_worker: sid.split("-")[0] })).data;
-  while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 500)); j = (await gbox.api("/api/jobs/" + j.id)).data; }
+  const swapping = c.tool === "@launch";
+  const started = swapping
+    ? await gbox.api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: c.input.mod || "", keep_state: true })
+    : await gbox.api("/api/jobs", { tool: c.tool, input: { ...c.input, session_id: sid }, require_worker: sid.split("-")[0] });
+  if (!started.ok || !started.data) throw new Error(`${c.tool}: ${started.error || "job request failed"}`);
+  let j = started.data;
+  while (["queued", "running"].includes(j.state)) {
+    await new Promise(r => setTimeout(r, 500));
+    const polled = await gbox.api("/api/jobs/" + j.id);
+    if (!polled.ok || !polled.data) throw new Error(`${c.tool}: ${polled.error || "job status unavailable"} (job ${j.id})`);
+    j = polled.data;
+  }
   if (j.state !== "succeeded") { const err = new Error(`${c.tool}: ${j.error || j.state}`); err.jobId = j.id; throw err; }
+  if (swapping && j.output?.state_loaded === false) {
+    const err = new Error("The mod opened, but the saved game moment did not restore. This is not a successful replacement.");
+    err.jobId = j.id; throw err;
+  }
   return j;
 }
 async function modSession(m, launch) {
   const ss = (await gbox.api("/api/sessions")).data || [];
   const run = ss.find(x => x.state === "running" && x.game_id === m.game_id);
-  if (run || !launch) return run?.session_id;
+  const bootMod = m.calls.find(c => c.tool === "@launch")?.input?.mod || "";
+  if (run || !launch) return { sid: run?.session_id || "", bootApplied: !!run && !!bootMod && run.mod === bootMod };
   toast(`Launching ${m.game_title || "the game"}…`);
-  let j = (await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}`, {})).data;   // this PC
-  while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 1000)); j = (await gbox.api("/api/jobs/" + j.id)).data; }
+  const started = await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}&mod=${encodeURIComponent(bootMod)}`, {});   // this PC
+  if (!started.ok || !started.data) throw new Error(started.error || "game launch request failed");
+  let j = started.data;
+  while (["queued", "running"].includes(j.state)) {
+    await new Promise(r => setTimeout(r, 1000));
+    const polled = await gbox.api("/api/jobs/" + j.id);
+    if (!polled.ok || !polled.data) throw new Error(polled.error || `Could not read launch job ${j.id}`);
+    j = polled.data;
+  }
   if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
-  return j.output.session_id;
+  return { sid: j.output.session_id, bootApplied: !!bootMod };
 }
 async function modPlay(m, how) {
   let attemptedSid = "";
   try {
     if (how === "video") { const t = await gbox.token(); window.open(`${S.apiUrl}/api/artifacts/${m.video}?token=${encodeURIComponent(t)}`); return; }
-    const sid = await modSession(m, how !== "apply");
+    const target = await modSession(m, how !== "apply");
+    let sid = target.sid;
     attemptedSid = sid || "";
     if (!sid) { toast(`Start ${m.game_title || "the game"} first`); return; }
-    if (how === "apply" || m.state_slot == null) { for (const c of m.calls) await modRun(c, sid); toast(`${m.title}: on`); }
-    else { await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid); toast(`${m.title}: loaded`); }
+    for (const c of m.calls) {
+      if (c.tool === "@launch" && target.bootApplied) continue;
+      const job = await modRun(c, sid);
+      sid = job.output?.session_id || sid;
+      attemptedSid = sid;
+    }
+    if (how === "moment" && m.state_slot != null) {
+      await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid);
+      toast(`${m.title}: saved moment loaded`);
+    } else toast(`${m.title}: ${m.state_slot == null && how === "moment" ? "mod opened; no saved moment is attached to its picture" : "on"}`);
     document.querySelector(`[data-s="play"]`)?.click();             // show the game
   } catch (err) {
     const shot = await gbox.captureOS?.().catch(() => null);
@@ -2008,10 +2060,15 @@ async function embedTick() {
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
+    const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => [...document.querySelectorAll("#gmenu.on")]
+      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height }; }))()`).catch(() => []) : [];
+    const webOrigin = wv?.getBoundingClientRect();
     const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
       ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
-      .map(el => el.getBoundingClientRect()).filter(b => b.width > 0 && b.height > 0)
+      .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => ({ left: webOrigin.left + b.x, top: webOrigin.top + b.y,
+        right: webOrigin.left + b.x + b.w, bottom: webOrigin.top + b.y + b.h, width: b.w, height: b.h })))
+      .filter(b => b.width > 0 && b.height > 0)
       .map(b => ({ x: Math.max(0, b.left - rect.x), y: Math.max(0, b.top - rect.y), x2: Math.min(rect.w, b.right - rect.x), y2: Math.min(rect.h, b.bottom - rect.y) }))
       .filter(h => h.x2 > h.x && h.y2 > h.y).map(h => ({ x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.x2 - h.x), h: Math.round(h.y2 - h.y) })) : [];
     const st = { pid: EMB.pid, rect, holes, visible: !!rect && !hidden && rect.h > 40 };
