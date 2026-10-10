@@ -78,6 +78,17 @@
   #titlebar .tools button.recording #tb-rec-t { font-size:12px; margin-left:6px; }
   #titlebar .tools button.recording { background:#ff3b3b22; border-color:#ff3b3b; }
   #titlebar .tools button.recording #tb-rec-dot { animation:recblink 1s steps(2) infinite; }
+  #titlebar .tools #tb-task-mode-label { display:flex; align-items:center; justify-content:center; box-sizing:border-box;
+    width:36px; height:30px; margin:0; padding:0; gap:0; border:1px solid transparent; border-radius:6px;
+    color:#e8e8ee; cursor:pointer; }
+  #titlebar .tools #tb-task-mode-label:hover { background:#ffffff14; border-color:var(--line); }
+  #titlebar .tools #tb-task-mode-label:focus-within { outline:2px solid var(--acc); outline-offset:1px; }
+  #tb-task-mode { appearance:none; display:grid; place-items:center; flex:none; width:18px; height:18px; margin:0;
+    border:2px solid currentColor; border-radius:3px; background:transparent; cursor:pointer; }
+  #tb-task-mode:checked { background:var(--acc); border-color:var(--acc); }
+  #tb-task-mode:checked::after { content:""; width:4px; height:8px; border:solid #fff; border-width:0 2px 2px 0;
+    transform:translateY(-1px) rotate(45deg); }
+  #tb-task-mode:disabled { opacity:.45; cursor:not-allowed; }
   #top-volume { display:flex; align-items:center; gap:5px; color:#e8e8ee; font-size:11px; }
   #top-volume svg { width:17px; height:17px; flex:none; }
   #top-volume input { width:90px; margin:0; accent-color:var(--acc); cursor:pointer; }
@@ -687,7 +698,7 @@ window.taskVizCreate = canvas => {
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
     <button id="tb-remote" title="Watch the other computer's desktop while it tests games and tasks">Other PC</button>
-    <label id="tb-task-mode-label" title="Let Hermes work through unresolved inbox requests on the DGX Spark" style="display:flex;align-items:center;gap:5px;padding:0 7px;white-space:nowrap;cursor:pointer"><input id="tb-task-mode" type="checkbox">Task mode</label>
+    <label id="tb-task-mode-label" title="Let Hermes work through unresolved inbox requests on the DGX Spark"><input id="tb-task-mode" type="checkbox" aria-label="Task mode"></label>
     <button id="tb-reinv" hidden title="Inventory: change the weapons and items of the character you're playing (Resident Evil), live">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 12h16"/></svg>Inventory</button>
     <button id="tb-inbox" title="Requests inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Inbox <span class="badge" id="tb-count">0</span></button>
