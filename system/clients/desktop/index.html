@@ -195,6 +195,11 @@
   #taskpanel .x:hover { border-color:var(--bad); } #taskpanel .bar { display:inline-block; width:46px; height:5px; background:var(--card); border-radius:3px;
     vertical-align:middle; margin-left:4px; overflow:hidden; } #taskpanel .bar i { display:block; height:100%; background:var(--acc); }
   #taskpanel details { min-width:0; } #taskpanel summary { cursor:pointer; } #taskpanel pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:220px; overflow:auto; }
+  #taskpanel .hermes-run { border:1px solid var(--line); border-radius:7px; padding:8px 10px; margin:6px 0; }
+  #taskpanel .hermes-run summary { line-height:1.5; } #taskpanel .hermes-run .nm { max-width:none; font-weight:600; }
+  #taskpanel .hermes-run .meta { color:var(--mut); margin:5px 0 0 16px; }
+  #taskpanel .hermes-run pre { max-height:360px; margin:8px 0 0; padding:10px; background:var(--card); border-radius:5px;
+    font:11px/1.4 ui-monospace,Consolas,monospace; }
   #titlebar .tools button[hidden] { display:none; }
   #whipmenu { display:none; position:fixed; z-index:90; width:318px; padding:10px; background:var(--bg); border:1px solid var(--line);
     border-radius:10px; box-shadow:0 12px 40px #000b; font-size:13px; } #whipmenu.on { display:block; }
@@ -852,7 +857,7 @@ setInterval(async () => {
 // ---- Tasks: every machine's gBox processes + jobs in flight, with what they cost and a hard stop ----
 document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b><span class="mut" id="tk-at"></span>
   <button class="act" id="tk-close">Close</button></div><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div>`);
-const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set() };
+const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
 const tkAge = ts => { const s = Math.max(0, Date.now() / 1000 - (ts || 0)); return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; };
 const tkBar = (v, max) => `<span class="bar"><i style="width:${Math.min(100, 100 * v / (max || 100))}%"></i></span>`;
 async function tasksLocalLoad() {
@@ -871,9 +876,18 @@ async function tasksLoad() {
   try { r = await gbox.api("/api/tasks"); } finally { TK.busy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
   if (!r.ok) { $("#tk-body").innerHTML = `<p class="mut" style="padding:12px">${esc(r.error)}</p>`; return; }
+  $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
+    const pre = detail.querySelector("pre");
+    TK.hermesScroll.set(detail.dataset.detailHermes, { top: pre.scrollTop, follow: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20 });
+  });
   const d = r.data, kind = k => `<span class="kd ${k === "game" ? "game" : k === "agent test" ? "agent" : ""}">${esc(k)}</span>`;
   $("#tk-at").textContent = "updated " + new Date().toLocaleTimeString();
-  $("#tk-body").innerHTML = d.machines.map(m => { const t = m.totals || {};
+  $("#tk-body").innerHTML = `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
+      ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
+        <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
+        <div class="meta">${esc(run.model || "Hermes")} · ${Number(run.tokens_in || 0).toLocaleString()} in / ${Number(run.tokens_out || 0).toLocaleString()} out · started ${tkAge(run.started)} ago</div>
+        <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}</div>` +
+    d.machines.map(m => { const t = m.totals || {};
     return `<div class="mc"><div class="mh"><b>${esc(m.name)}</b>
       <span>CPU ${t.cpu_pct ?? "?"}%${tkBar(t.cpu_pct || 0)}</span>
       <span>RAM ${((t.ram_used_mb || 0) / 1024).toFixed(1)} / ${((t.ram_total_mb || 0) / 1024).toFixed(0)} GB${tkBar(t.ram_used_mb || 0, t.ram_total_mb)}</span>
@@ -891,6 +905,21 @@ async function tasksLoad() {
       ${(d.recent || []).map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
         <summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary><pre>${TK.expanded.has(j.id) ? "Loading task output…" : ""}</pre></details></td>
         <td>${esc(j.worker)}</td><td>${tkAge(j.created)}</td></tr>`).join("") || '<tr><td class="mut">none</td></tr>'}</table></div>`;
+  $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
+    const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
+    pre.scrollTop = position?.follow === false ? position.top : pre.scrollHeight;
+    tkHermesRefresh(detail);
+  });
+}
+async function tkHermesRefresh(detail) {
+  const id = detail.dataset.detailHermes;
+  const r = await gbox.api(`/api/tasks/hermes/${id}`);
+  if (!detail.isConnected || !detail.open) return;
+  const output = r.ok ? r.data.output : `Could not load Hermes output: ${r.error}`;
+  TK.hermesOutput.set(id, output);
+  const pre = detail.querySelector("pre"), follow = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20, top = pre.scrollTop;
+  pre.textContent = output;
+  pre.scrollTop = follow ? pre.scrollHeight : top;
 }
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
   clearInterval(TK.t); if (on) { tasksLocalLoad(); tasksLoad(); TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000); } };
@@ -904,6 +933,13 @@ $("#tk-body").onclick = async e => {
   tasksLoad();
 };
 $("#tk-body").addEventListener("toggle", async e => {
+  const hermes = e.target.closest?.("[data-detail-hermes]");
+  if (hermes) {
+    const id = hermes.dataset.detailHermes;
+    if (hermes.open) { TK.hermesExpanded.add(id); tkHermesRefresh(hermes); }
+    else TK.hermesExpanded.delete(id);
+    return;
+  }
   const detail = e.target.closest?.("[data-detail-job]");
   if (!detail) return;
   const id = detail.dataset.detailJob;

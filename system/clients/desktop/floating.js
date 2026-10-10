@@ -42,7 +42,7 @@ window.floating = function (el, handle, key) {
     const control = event.target.closest("button,input,textarea,select,a,[contenteditable],[role=button],.ci,.gchip");
     if (!side && control) return;
     const inHeader = handle.contains(event.target);
-    if (!side && !inHeader && !event.altKey && event.target.closest("label,canvas,video,img,pre,code,p,li,td,.cm,.lc,.slider")) return;
+    if (!side && !inHeader && !event.altKey && event.target.closest("label,canvas,video,img,pre,code,p,li,td,summary,details,.cm,.lc,.slider")) return;
     const r = el.getBoundingClientRect();
     drag = { id: event.pointerId, side, x: event.clientX, y: event.clientY, r, moved: false };
     el.setPointerCapture(event.pointerId);

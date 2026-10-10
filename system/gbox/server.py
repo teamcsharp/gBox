@@ -1787,7 +1787,15 @@ def create_app(config: Config) -> FastAPI:
         all_jobs = [j for j in store.all("job") if j["tool"] != "tasks"]
         jobs = [task_job(j) for j in all_jobs if j["state"] in ("queued", "running")]
         recent = [task_job(j) for j in all_jobs if j["state"] not in ("queued", "running")][-10:][::-1]
-        return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)), "recent": recent}
+        from . import hermes_tasks
+        return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)),
+                "recent": recent, "hermes": hermes_tasks.list_runs()}
+
+    @app.get("/api/tasks/hermes/{run_id}")
+    def tasks_hermes_run(run_id: str, actor=Depends(auth)):
+        """Live Hermes turn and tool output for an expandable Tasks entry."""
+        from . import hermes_tasks
+        return hermes_tasks.get_run(run_id) or _404()
 
     class TaskKill(BaseModel):
         worker_id: str
