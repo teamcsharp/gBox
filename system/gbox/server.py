@@ -1010,7 +1010,7 @@ def create_app(config: Config) -> FastAPI:
                 if frame.get("seq") == seen or time.time() - frame.get("ts", 0) > 5:
                     continue
                 seen = frame["seq"]
-                image = frame["image"] if view == "desktop" else crop_jpeg(frame["image"], frame.get("app_rect"))
+                image = frame["image"] if view == "desktop" or frame.get("app_rect") is None else crop_jpeg(frame["image"], frame["app_rect"])
                 if image:
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + image + b"\r\n"
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",

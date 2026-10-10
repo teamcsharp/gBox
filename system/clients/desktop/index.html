@@ -1080,7 +1080,7 @@ async function remoteStatus() {
   const active = (jobs.data || []).filter(j => j.state === "running" && j.worker_id === REMOTE.worker).map(j => j.tool);
   const age = status.data?.last_frame_age;
   if (!status.ok || (status.data?.frames === 0 && Date.now() - REMOTE.opened > 8000)) remoteFallback();
-  $("#rp-meta").textContent = `${REMOTE.view === "app" ? (status.data?.app_available ? "gBox" : "gBox window unavailable; choose Desktop") : (game?.title || "Desktop")} · ${active.length ? active.join(", ") : "no running jobs"} · ${age == null ? "waiting for frame" : `frame ${age}s ago`} · ${REMOTE.quietReady ? "agent audio held at 2%" : "2% audio pending worker reload"}`;
+  $("#rp-meta").textContent = `${REMOTE.view === "app" ? (status.data?.app_available ? "gBox" : "Desktop fallback; remote worker update pending") : (game?.title || "Desktop")} · ${active.length ? active.join(", ") : "no running jobs"} · ${age == null ? "waiting for frame" : `frame ${age}s ago`} · ${REMOTE.quietReady ? "agent audio held at 2%" : "2% audio pending worker reload"}`;
 }
 $("#tb-remote").onclick = () => remoteWatch();
 async function refreshTaskMode() {
