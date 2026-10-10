@@ -1906,7 +1906,7 @@ async function loadPlay() {
   const wv = $("#wv");
   let injected = false;
   wv.addEventListener("dom-ready", () => {
-    wv.executeJavaScript(`window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName })};`);   // "Play" runs on this PC
+    wv.executeJavaScript(`window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })};`);   // "Play" runs on this PC
     if (injected) return;
     injected = true;
     wv.executeJavaScript(`localStorage.setItem("gbox_tok", ${JSON.stringify(tok)}); location.reload();`);
@@ -2271,6 +2271,27 @@ async function issueDiagnostics(shot) {
           error: pg.launch.error || null } : null }),
       attachments };
     return body;
+}
+
+async function reportEmulationIncident(sid, action = 'auto') {
+  const wv = document.querySelector('#wv');
+  try {
+    const shot = (await gbox.captureOS().catch(() => null)) || await gbox.capture().catch(() => null);
+    const diagnostics = await issueDiagnostics(shot);
+    const response = await gbox.api(`/api/sessions/${encodeURIComponent(sid)}/emulation-issue`, {
+      action,
+      image_b64: diagnostics.image_b64, attachments: diagnostics.attachments,
+      context: { ...diagnostics.context, docked_session: EMB.sid, docked_rect: EMB.rect,
+                 application_details: diagnostics.detail }
+    });
+    if (!response.ok) throw new Error(response.error || 'Could not save the emulation report');
+    toast(`Emulation report #${response.data.request.number} saved; recovery started`, 6000);
+    refreshInbox();
+    wv?.executeJavaScript(`emulationIssueAccepted(${JSON.stringify(sid)}, ${JSON.stringify(response.data)})`).catch(() => {});
+  } catch (error) {
+    toast('Emulation report failed: ' + error.message, 8000);
+    wv?.executeJavaScript(`emulationIssueFailed(${JSON.stringify(sid)}, ${JSON.stringify(error.message)})`).catch(() => {});
+  }
 }
 
 document.addEventListener("click", e => { const a = e.target.closest("a.att-file"); if (!a) return; e.preventDefault(); gbox.openExternal(a.dataset.url); });
@@ -2807,7 +2828,10 @@ gbox.onPadState?.(pads => {
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));
-    if (m.ev === "padscan") syncNativePads(); else cardDragMsg(m);
+    if (m.ev === "padscan") syncNativePads();
+    else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
+    else if (m.ev === 'emulationreport') evRequest(m.requestId);
+    else cardDragMsg(m);
   } catch {} }); } }, 1000);
 gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameup" && CARDDRAG.c && Date.now() - CARDDRAG.t < 60000 && (!CARDDRAG.end || Date.now() - CARDDRAG.end < 1500)) {

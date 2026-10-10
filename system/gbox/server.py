@@ -2683,6 +2683,29 @@ def create_app(config: Config) -> FastAPI:
             threading.Thread(target=_preserve_failure, daemon=True, name=f"auto-failure-{rid[:8]}").start()
         return _clean(report)
 
+    from . import emulation_issue
+
+    def _incident_job(tool, inp, worker, wait, parent, actor):
+        job = submit(JobRequest(tool=tool, input=inp, require_worker=worker,
+                                parent_request_id=parent, agent_use=True), actor)
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            current = store.get('job', job.id) or {}
+            if current.get('state') not in ('queued', 'running'):
+                if current.get('state') != 'succeeded':
+                    raise RuntimeError(f"{tool}: {current.get('error') or current.get('state')}")
+                return current.get('output') or {}
+            time.sleep(.25)
+        job_cancel(job.id, actor)
+        raise RuntimeError(f'{tool}: diagnostic/recovery job timed out ({job.id})')
+
+    def _incident_dispatch(rid, number):
+        from .hermes_task_mode import dispatch_request
+        return dispatch_request(rid, number)
+
+    emulation_issue.routes(app, store, auth, lambda body, actor: req_create(RequestIn(**body), actor),
+                           _incident_job, _incident_dispatch)
+
     class ImportItem(BaseModel):
         text: str
         created: float

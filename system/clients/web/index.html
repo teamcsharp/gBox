@@ -1082,7 +1082,7 @@ async function sessionsView(sid, mode) {
   sid = s.session_id || sid;
   const local = !!(s.detail && s.detail.local_window);
   const btn = k => `<button class="act" data-k="${k}">${k}</button>`;
-  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><b>${esc(s.title || 'Game session')}</b>
+  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button><b>${esc(s.title || 'Game session')}</b>
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
@@ -2932,5 +2932,6 @@ if (!new URLSearchParams(location.search).has('embedded')) {
   window.assetSidebar = GBoxAssets.mount({ host: document.body, api, url: path => path + (path.includes('?') ? '&' : '?') + tq() });
 }
 </script>
+<script src="/viz/emulation-issue.js"></script>
 </body>
 </html>
