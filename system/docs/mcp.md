@@ -74,3 +74,7 @@ LAN-only like the control plane; not run as a service. On the Spark, install the
 ```
 claude mcp add gbox --transport http http://10.89.1.246:8766/mcp --header "Authorization: Bearer <token>"
 ```
+
+# Other-PC testing
+
+Hermes can call `list_workers` and `select_idle_worker` to find the Windows worker the operator is not using. Use `launch_game(node="idle")` for a fresh emulator test or `start_job(require_worker="idle")` for analysis and modding, then pin later jobs to the returned worker ID. Session operations route to their owning worker. `capture_worker_screen` returns a desktop image and can attach it to an inbox request with a task step. The gBox desktop's **Other PC** button opens a live, resizable picture-in-picture of that worker. Agent use holds Windows playback outputs at 2% while a job or agent-started game is active.

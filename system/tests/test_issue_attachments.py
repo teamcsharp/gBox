@@ -5,6 +5,34 @@ from fastapi.testclient import TestClient
 from gbox.server import create_app
 
 
+def test_issue_captures_running_game_state_by_default(cfg):
+    app = create_app(cfg)
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/requests/issue")
+    closure = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__))
+    closure["_issue_log"].cell_contents = lambda sid, session: ("", "not available in test")
+    closure["_issue_chat"].cell_contents = lambda sid: []
+    sid = "testworker-123"
+    app.state.store.put("session", sid, {"session_id": sid, "game_id": "mgs-vr", "title": "VR Missions",
+                                          "state": "running", "adapter": "unsupported-for-transfer"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    response = client.post("/api/requests/issue", json={"session_id": sid, "what": "Model swap failed",
+        "image_b64": base64.b64encode(b"image").decode()})
+    assert response.status_code == 200, response.text
+    report = response.json()
+    job_id = report["context"]["state_job_id"]
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["tool"] == "session_op"
+    assert job["input"]["op"] == "save_state"
+    assert job["input"]["args"]["slot"] == report["context"]["state_slot"]
+    assert job["parent_request_id"] == report["id"]
+
+    opted_out = client.post("/api/requests/issue", json={"session_id": sid, "what": "Another issue",
+        "save_state": False, "image_b64": base64.b64encode(b"image").decode()})
+    assert opted_out.status_code == 200, opted_out.text
+    assert opted_out.json()["context"]["save_state_requested"] is False
+    assert "state_job_id" not in opted_out.json()["context"]
+
+
 def test_issue_keeps_subject_details_and_arbitrary_attachment_bytes(cfg):
     client = TestClient(create_app(cfg), headers={"Authorization": f"Bearer {cfg.token()}"})
     files = [

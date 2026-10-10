@@ -56,6 +56,7 @@ class Job(BaseModel):
     input: dict[str, Any] = {}
     require_os: str | None = None    # pin to "windows"/"linux" only when necessary
     require_worker: str | None = None
+    agent_use: bool = False       # agent is using a PC; keep its output unobtrusive
     state: JobState = JobState.QUEUED
     worker_id: str | None = None
     created: float = Field(default_factory=time.time)
@@ -97,6 +98,9 @@ class WorkerInfo(BaseModel):
     tools: list[str]                 # tools this worker can actually run right now
     unavailable: dict[str, str] = {} # tool -> reason (shown in UI; never hidden)
     last_seen: float = Field(default_factory=time.time)
+    idle_seconds: float | None = None  # time since local user input; unknown on headless workers
+    active_jobs: int = 0
+    features: list[str] = []
 
 
 class CatalogEntry(BaseModel):

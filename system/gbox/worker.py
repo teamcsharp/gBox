@@ -16,23 +16,63 @@ MAX_PARALLEL = 4          # long jobs (library scans) must not block short ones 
 REDESCRIBE_S = 60         # re-check tool availability (e.g. after provisioning installed ghidra)
 
 
+def user_idle_seconds() -> float | None:
+    """Windows console-session inactivity, including input outside gBox. None means unknown."""
+    if platform.system().lower() != "windows":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return None
+        ctypes.windll.kernel32.GetTickCount.restype = wintypes.DWORD
+        return round(((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000, 1)
+    except (AttributeError, OSError):
+        return None
+
+
 def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
     ok, bad = [], {}
     for t in REGISTRY.values():
         reason = t.unavailable_reason(config)
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad)
+    features = ["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else []
+    info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     if wid:
         info.id = wid
     return info
 
 
-def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client, active: set):
+def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client,
+             active: set, active_agent: set, quiet_sessions: set):
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.server, ctx.headers = server, h
     res = {"job_id": job["id"], "ok": True}
+    if job.get("agent_use") and HOST_OS == "windows":
+        from .audio_volume import keep_pc_at_two_percent
+        if not deps.install_for("pycaw"):
+            res.update(ok=False, error="Cannot keep this PC at 2% volume: pycaw is unavailable")
+        else:
+            try:
+                keep_pc_at_two_percent()
+            except Exception as exc:
+                res.update(ok=False, error=f"Cannot keep this PC at 2% volume: {exc}")
+    if not res["ok"]:
+        res["artifacts"], res["log"] = [], ctx.log
+        try:
+            client.post(f"/api/workers/{wid}/result", json=res, timeout=30).raise_for_status()
+        finally:
+            active.discard(job["id"])
+            active_agent.discard(job["id"])
+        return
     for attempt in (0, 1):
         try:
             res["output"] = execute(job["tool"], job["input"], ctx)
@@ -55,10 +95,68 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     res["artifacts"] = [{"name": n, "media_type": mt, "provenance": p, "b64": base64.b64encode(d).decode()}
                         for n, d, mt, p in ctx.artifacts]
     res["log"] = ctx.log
+    if job.get("agent_use") and res["ok"] and job["tool"] == "launch_game" and (res.get("output") or {}).get("session_id"):
+        quiet_sessions.add(res["output"]["session_id"])
     try:
         client.post(f"/api/workers/{wid}/result", json=res, timeout=600).raise_for_status()
     finally:
         active.discard(job["id"])
+        active_agent.discard(job["id"])
+
+
+def _quiet_volume_loop(stop: threading.Event, active_agent: set, quiet_sessions: set):
+    if HOST_OS != "windows":
+        return
+    from .audio_volume import keep_pc_at_two_percent
+    from .tools import SESSIONS
+
+    while not stop.is_set():
+        time.sleep(2)
+        if stop.is_set():
+            break
+        quiet_sessions.intersection_update(SESSIONS)
+        if active_agent or quiet_sessions:
+            try:
+                keep_pc_at_two_percent()
+            except Exception as exc:
+                print(f"agent 2% volume enforcement: {exc}", flush=True)
+
+
+def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, config: Config):
+    """Send the Windows desktop only while a gBox remote-PC picture-in-picture viewer is open."""
+    if HOST_OS != "windows":
+        return
+    from .adapters import MjpegStream
+
+    stream = None
+    seen = 0
+    with httpx.Client(base_url=server, headers=h, timeout=15) as client:
+        while not stop.is_set():
+            try:
+                watch = client.get(f"/api/workers/{wid}/desktop/watch").json().get("watch", False)
+                if watch and stream is None:
+                    stream = MjpegStream(None, fps=8, max_width=1600, draw_mouse=True)
+                    seen = 0
+                if not watch and stream is not None:
+                    stream.close()
+                    stream = None
+                if stream is not None:
+                    if stream.proc.poll() is not None:
+                        stream.close()
+                        stream = None
+                    elif stream.wait(seen, 1) and stream.latest:
+                        seen = stream.seq
+                        client.post(f"/api/workers/{wid}/desktop/frame", content=stream.latest,
+                                    headers={"content-type": "image/jpeg"}, timeout=10).raise_for_status()
+                else:
+                    time.sleep(2)
+            except (httpx.HTTPError, OSError, ValueError, AttributeError):
+                if stream is not None:
+                    stream.close()
+                    stream = None
+                time.sleep(3)
+    if stream is not None:
+        stream.close()
 
 
 def run(server: str, token: str, config: Config, name: str | None = None,
@@ -84,6 +182,9 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     except Exception as e:
         print(f"orphan cleanup skipped: {e}", flush=True)
     active: set[str] = set()
+    active_agent: set[str] = set()
+    quiet_sessions: set[str] = set()
+    threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
             try:
@@ -91,6 +192,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 break
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
+        threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True).start()
         described = time.time()
         while not stop.is_set():
             if time.time() - described > REDESCRIBE_S:
@@ -106,7 +208,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 stop.wait(poll_s)
                 continue
             try:
-                r = c.post(f"/api/workers/{info.id}/claim")
+                r = c.post(f"/api/workers/{info.id}/claim", json={"idle_seconds": user_idle_seconds(),
+                                                                     "active_jobs": len(active)})
             except httpx.TransportError:
                 stop.wait(poll_s * 5)
                 continue
@@ -126,4 +229,6 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 continue
             job = r.json()
             active.add(job["id"])
-            threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active), daemon=True).start()
+            if job.get("agent_use"):
+                active_agent.add(job["id"])
+            threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions), daemon=True).start()

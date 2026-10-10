@@ -50,6 +50,7 @@ class JobRequest(BaseModel):
     require_os: str | None = None
     require_worker: str | None = None
     parent_request_id: str | None = None
+    agent_use: bool = False
 
 
 class Evaluation(BaseModel):
@@ -921,6 +922,88 @@ def create_app(config: Config) -> FastAPI:
     def list_workers(actor=Depends(auth)):
         return workers()
 
+    def idle_worker(tool: str = "launch_game") -> dict:
+        """Choose the other Windows PC, using recent user input and live-game ownership."""
+        online = [w for w in workers() if w["online"] and w["os"] == "windows"]
+        capable = [w for w in online if tool in (w.get("tools") or [])]
+        if len(online) < 2 or not capable:
+            raise HTTPException(409, "Two online Windows workers and the requested tool are needed for other-PC testing")
+        running = [s for s in store.all("session") if s.get("state") == "running"]
+        newest = max(running, key=lambda s: s.get("started") or 0, default={})
+        game_owner = (newest.get("session_id") or "").split("-")[0]
+        # A recently interactive PC is the operator's; when input telemetry is not yet available,
+        # the PC owning the most recent live game is the best known operator workstation.
+        reported = [w for w in online if w.get("idle_seconds") is not None and not w.get("active_jobs")]
+        active = min(reported, key=lambda w: w["idle_seconds"])["id"] if reported else game_owner
+        if reported and all(w["idle_seconds"] >= 60 for w in reported) and game_owner:
+            active = game_owner
+        candidates = [w for w in capable if w["id"] != active]
+        if not candidates:
+            raise HTTPException(409, "The requested tool is available only on the computer in use")
+        candidates.sort(key=lambda w: (w.get("idle_seconds") if w.get("idle_seconds") is not None else
+                                       (0 if w["id"] == game_owner else 3600), -w.get("active_jobs", 0)), reverse=True)
+        chosen = candidates[0]
+        if chosen.get("idle_seconds") is not None and chosen["idle_seconds"] < 30 and not chosen.get("active_jobs"):
+            raise HTTPException(409, "The other computer has recent user input; waiting for it to become idle")
+        return chosen | {"operator_worker_id": active, "selection": "other Windows PC"}
+
+    @app.get("/api/workers/idle")
+    def get_idle_worker(tool: str = "launch_game", actor=Depends(auth)):
+        return idle_worker(tool)
+
+    class WorkerActivity(BaseModel):
+        idle_seconds: float | None = None
+        active_jobs: int = 0
+
+    desktop_frames: dict[str, dict] = {}
+    desktop_watch: dict[str, float] = {}
+    desktop_condition = threading.Condition()
+
+    @app.get("/api/workers/{wid}/desktop/watch")
+    def desktop_watch_state(wid: str, actor=Depends(auth)):
+        return {"watch": time.time() < desktop_watch.get(_wid(wid), 0)}
+
+    @app.get("/api/workers/{wid}/desktop/status")
+    def desktop_status(wid: str, actor=Depends(auth)):
+        wid = _wid(wid)
+        frame = desktop_frames.get(wid) or {}
+        return {"watching": time.time() < desktop_watch.get(wid, 0),
+                "last_frame_age": round(time.time() - frame["ts"], 1) if frame else None,
+                "frames": frame.get("seq", 0)}
+
+    @app.post("/api/workers/{wid}/desktop/frame")
+    async def desktop_frame_upload(wid: str, request: Request, actor=Depends(auth)):
+        wid = _wid(wid)
+        if not store.get("worker", wid):
+            raise HTTPException(404, "worker not found")
+        image = await request.body()
+        if not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9") or len(image) > 8_000_000:
+            raise HTTPException(422, "expected a JPEG frame under 8 MB")
+        with desktop_condition:
+            prior = desktop_frames.get(wid) or {}
+            desktop_frames[wid] = {"image": image, "seq": prior.get("seq", 0) + 1, "ts": time.time()}
+            desktop_condition.notify_all()
+        return {"ok": True}
+
+    @app.get("/api/workers/{wid}/desktop/stream")
+    def desktop_stream(wid: str, actor=Depends(auth)):
+        wid = _wid(wid)
+        if not store.get("worker", wid):
+            raise HTTPException(404, "worker not found")
+        def frames():
+            seen = 0
+            while True:
+                desktop_watch[wid] = time.time() + 8
+                with desktop_condition:
+                    desktop_condition.wait_for(lambda: (desktop_frames.get(wid) or {}).get("seq", 0) != seen, timeout=2)
+                    frame = desktop_frames.get(wid) or {}
+                if frame.get("seq") == seen or time.time() - frame.get("ts", 0) > 5:
+                    continue
+                seen = frame["seq"]
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame["image"] + b"\r\n"
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-store"})
+
     def _wid(wid: str) -> str:
         """A worker id a client cached may belong to a worker that has since restarted (new id): follow it."""
         for _ in range(20):
@@ -957,12 +1040,15 @@ def create_app(config: Config) -> FastAPI:
         return {"id": w.id}
 
     @app.post("/api/workers/{wid}/claim")
-    def claim(wid: str, actor=Depends(auth)):
+    def claim(wid: str, activity: WorkerActivity | None = None, actor=Depends(auth)):
         w = store.get("worker", wid)
         if not w:
             raise HTTPException(404, "unknown worker; register first")
         with store.lock:
             w["last_seen"] = time.time()
+            if activity:
+                w["idle_seconds"] = activity.idle_seconds
+                w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
             for j in store.queued_jobs():
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
@@ -1054,7 +1140,7 @@ def create_app(config: Config) -> FastAPI:
             gid = i.get("game_id") or _404()
             mod, node, sid = i.get("mod") or "", i.get("node") or "", i.get("session_id") or ""
             online = {w["id"] for w in workers() if w["online"]}
-            if not sid and i.get("swap", True):
+            if not sid and i.get("swap", True) and node not in ("idle", "other"):
                 # the game is already running: put the mod into THAT session (same PC, same moment) instead of starting
                 # a second copy on whichever machine happened to build the mod
                 run = [s for s in store.all("session") if s.get("state") == "running" and s.get("game_id") == gid
@@ -1085,17 +1171,25 @@ def create_app(config: Config) -> FastAPI:
             if not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
-                  parent_request_id=req.parent_request_id)
+                  parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("mcp", "gbox-agent", "hermes"))
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
+        if job.require_worker in ("idle", "other"):
+            job.require_worker = idle_worker(t.name)["id"]
         if job.require_worker:
+            named = next((w["id"] for w in workers() if w["name"] == job.require_worker), None)
+            if named:
+                job.require_worker = named
             job.require_worker = _wid(job.require_worker)
         missing = [p for p in t.permissions if p not in config.granted_permissions]
         w = store.get("worker", job.require_worker) if job.require_worker else None
+        if w and job.agent_use and w.get("os") == "windows" and t.name in ("launch_game", "autoplay") \
+                and "two_percent_audio" not in (w.get("features") or []):
+            job.state, job.error = JobState.REJECTED, f"{w.get('name')} must update its worker before audible agent tests can enforce 2% volume"
         if w and t.name not in (w.get("tools") or []) and time.time() - w.get("last_seen", 0) < 60:
             why = (w.get("unavailable") or {}).get(t.name) or "; ".join(f"{k}: {v}" for k, v in (w.get("unavailable") or {}).items()
                                                                      if k.startswith("module ")) or "not installed there"
@@ -1467,6 +1561,10 @@ def create_app(config: Config) -> FastAPI:
         """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
         debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists."""
         e = store.catalog_get(gid) or _404()
+        if node in ("idle", "other"):
+            if debug:
+                raise HTTPException(409, "Full debugger mode currently requires the Spark; use debug=false on the other PC")
+            node = idle_worker("launch_game")["name"]
         if mod and not debug:
             available = {w['id']: w for w in workers() if w['online']}
             for pending in store.all('job'):
@@ -1484,7 +1582,8 @@ def create_app(config: Config) -> FastAPI:
             if running:
                 current = max(running, key=lambda s: s.get('started') or 0)
                 return swap_job(current['session_id'], mod, '', actor)
-        req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})})
+        req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})},
+                         agent_use=actor in ("mcp", "gbox-agent", "hermes"))
         if debug:
             node = "linux"
         if node in ("linux", "windows"):
@@ -2258,6 +2357,7 @@ def create_app(config: Config) -> FastAPI:
 
     class IssueIn(BaseModel):
         session_id: str = ""
+        save_state: bool = True            # capture the exact game moment unless the operator opts out
         what: str                          # the option the operator right-clicked ("Use in this game", a mod, ...)
         detail: str = ""                   # what the card around it showed (its status / output line)
         note: str = ""                     # optional words from the operator
@@ -2355,9 +2455,63 @@ def create_app(config: Config) -> FastAPI:
                 img = base64.b64encode(_session_png(r.session_id)).decode()
             except Exception:                         # noqa: BLE001  (no frame: the report still goes in)
                 pass
-        return req_create(RequestIn(title=(r.title or f"Doesn't work in {game}: {r.what}")[:140], body="\n\n".join(lines), source="app",
-                                    kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
-                                    context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id"), "game": game}), actor)
+        report = req_create(RequestIn(title=(r.title or f"Doesn't work in {game}: {r.what}")[:140], body="\n\n".join(lines), source="app",
+                                      kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
+                                      context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id"), "game": game,
+                                                           "save_state_requested": r.save_state}), actor)
+        if not r.save_state or not r.session_id or s_.get("state") != "running":
+            return report
+        rid = report["id"]
+        try:
+            # A dedicated slot leaves the operator's ordinary quick save alone. The job is linked to the
+            # report so Hermes can wait for its actual result before trying to reproduce the failure.
+            slot = 60 + sum(1 for old in store.all("request") if old["id"] != rid and
+                            (old.get("context") or {}).get("session_id") == r.session_id and
+                            (old.get("context") or {}).get("state_job_id"))
+            saved = submit(JobRequest(tool="session_op", input={"session_id": r.session_id, "op": "save_state", "args": {"slot": slot}},
+                                      parent_request_id=rid), actor)
+            report["context"].update(state_job_id=saved.id, state_slot=slot)
+            report["messages"].append({"author": "agent", "text": f"Capturing the reported game moment in slot {slot} (job {saved.id}).",
+                                       "ts": time.time(), "attachments": [], "task_step": {"action": "save reported game moment",
+                                       "attempt": "1", "result": saved.state, "status": saved.state}})
+            store.put("request", rid, report)
+
+            # Supported cores can also export a portable artifact for Hermes or a client on another PC.
+            # Wait for the local checkpoint first; the export tool takes its own adjacent checkpoint.
+            if (s_.get("adapter") or "").lower() in ("retroarch", "dolphin"):
+                def export_issue_state():
+                    deadline = time.time() + 120
+                    while time.time() < deadline:
+                        current = store.get("job", saved.id) or {}
+                        if current.get("state") not in ("queued", "running"):
+                            break
+                        time.sleep(0.5)
+                    if current.get("state") != "succeeded":
+                        return
+                    try:
+                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id, "op": "export", "slot": slot},
+                                                     parent_request_id=rid), actor)
+                        with store.lock:
+                            latest = store.get("request", rid) or {}
+                            if not latest:
+                                return
+                            latest.setdefault("context", {})["state_export_job_id"] = exported.id
+                            latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable save-state export queued (job {exported.id}).",
+                                "ts": time.time(), "attachments": [], "task_step": {"action": "export reported game moment",
+                                "attempt": "1", "result": exported.state, "status": exported.state}})
+                            store.put("request", rid, latest)
+                    except Exception as exc:
+                        with store.lock:
+                            latest = store.get("request", rid) or {}
+                            if latest:
+                                latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable export unavailable: {exc}",
+                                    "ts": time.time(), "attachments": []})
+                                store.put("request", rid, latest)
+                threading.Thread(target=export_issue_state, daemon=True, name=f"issue-state-{rid[:8]}").start()
+        except Exception as exc:
+            report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
+            store.put("request", rid, report)
+        return report
 
     class AutoFailureIn(BaseModel):
         session_id: str = ""

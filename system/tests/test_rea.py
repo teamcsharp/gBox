@@ -145,7 +145,7 @@ def test_mcp_preserves_union_contract_and_routes_worker(monkeypatch):
             assert not result.is_error
 
     asyncio.run(check())
-    assert submitted == [{"tool": info["name"], "input": arguments, "require_os": "windows", "require_worker": "fixture-worker", "parent_request_id": "711"}]
+    assert submitted == [{"tool": info["name"], "input": arguments, "require_os": "windows", "require_worker": "fixture-worker", "parent_request_id": "711", "agent_use": True}]
 
 
 @pytest.fixture

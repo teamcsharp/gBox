@@ -20,6 +20,8 @@ window.openIssueReport = function ({ diagnostics, submit, clipboardFiles, onSent
       <div id="issue-attachments" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px"></div>
     </div>
     <p style="font-size:12px;color:var(--mut,#aaa)">A screenshot and available game diagnostics are attached when you send.</p>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input id="issue-save-state" type="checkbox" checked>
+      Save the current game moment for diagnosis (recommended)</label>
     <p id="issue-status" role="status" style="font-size:13px;white-space:pre-wrap"></p>
     </div><div id="issue-actions" style="flex-shrink:0;padding-top:10px">
     <button type="submit" class="act pri" id="issue-send">Send report</button>
@@ -85,13 +87,15 @@ window.openIssueReport = function ({ diagnostics, submit, clipboardFiles, onSent
     event.preventDefault(); if (busy) return;
     const title = find("#issue-subject").value.trim(), note = find("#issue-body").value.trim();
     if (!title || !note) return status("Enter a subject and describe the issue.");
+    const saveState = find("#issue-save-state").checked;
     busy = true;
     for (const control of dialog.querySelectorAll("button,input,textarea")) control.disabled = true;
     try {
       await pending; status("Sending report…");
       if (attachmentError) throw attachmentError;
       const gathered = await context; if (gathered.error) throw gathered.error;
-      const result = await submit({ ...gathered.value, title, note, attachments: [...attachments, ...(gathered.value.attachments || [])] });
+      const result = await submit({ ...gathered.value, title, note, save_state: saveState,
+        attachments: [...attachments, ...(gathered.value.attachments || [])] });
       if (!result.ok) throw new Error(result.error || `Request failed (${result.status || "unknown error"})`);
       dialog.__floatingDestroy?.(); dialog.close(); dialog.remove(); onSent(result.data);
     } catch (error) {

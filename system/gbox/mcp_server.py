@@ -45,14 +45,20 @@ CONVENIENCE = {
                                     "metrics": {"type": "object"}}, ["request_id"])),
     "list_games": ("Search the game library (title words). Returns game_id, title, platform, system, core.",
                    obj({"query": S, "platform": S, "limit": I}, ["query"])),
+    "list_workers": ("List all gBox computers, online state, idle time, current agent jobs, and available tools.", obj({})),
+    "select_idle_worker": ("Choose the Windows PC the operator is not using, for a specified tool. Pin later jobs to its returned id.",
+                           obj({"tool": S})),
+    "capture_worker_screen": ("Capture the other PC's entire desktop as an image. Optionally attach the screenshot and a task step to an inbox request.",
+                              obj({"worker": S, "request_id": S, "text": S, "task_step": {"type": "object"},
+                                   "region": {"type": "array", "items": I, "minItems": 4, "maxItems": 4}})),
     "list_favorites": ("List favorited games, including ROMs queued for background model collection.", obj({"limit": I})),
     "game_roster": ("Show a game's native model reader, character roster, and background collection job state.",
                     obj({"game_id": S}, ["game_id"])),
-    "start_job": ("Dispatch any gBox registry tool as a background job and return its ID immediately. Use get_job to follow it.",
+    "start_job": ("Dispatch any gBox registry tool as a background job and return its ID immediately. Use require_worker=idle to choose the other Windows PC, then pin later work to its worker_id.",
                   obj({"tool": S, "input": {"type": "object"}, "require_os": S, "require_worker": S,
                        "parent_request_id": S}, ["tool", "input"])),
     "get_job": ("Read a background gBox job's state, progress, result, and error.", obj({"job_id": S}, ["job_id"])),
-    "launch_game": ("Launch a library game. node: auto | windows | linux | <worker name>. debug=true runs it on the Spark "
+    "launch_game": ("Launch a library game. node: idle | auto | windows | linux | <worker name>. idle chooses the other Windows PC; debug=true runs on the Spark "
                     "under a full-debugger emulator. Returns the launch job (its output has the session_id).",
                     obj({"game_id": S, "node": S, "debug": B}, ["game_id"])),
     "list_sessions": ("Game sessions (session_id, title, adapter, state, last_frame_age). Live ones only unless include_ended.",
@@ -146,6 +152,20 @@ def build(base_url: str, token: str) -> Server:
             if a.get("platform"):
                 games = [g for g in games if g.get("platform") == a["platform"]]
             return [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "core", "playable")} for g in games]
+        if name == "list_workers":
+            return await get("/api/workers")
+        if name == "select_idle_worker":
+            return await get("/api/workers/idle", tool=a.get("tool", "launch_game"))
+        if name == "capture_worker_screen":
+            worker = a.get("worker") or "idle"
+            if worker in ("idle", "other"):
+                worker = (await get("/api/workers/idle", tool="get_frame"))["id"]
+            body = {"tool": "get_frame", "input": {}, "require_worker": worker, "agent_use": True}
+            if a.get("region"):
+                body["input"]["region"] = a["region"]
+            if a.get("request_id"):
+                body["parent_request_id"] = a["request_id"]
+            return await wait_job(await post("/api/jobs", body), 120)
         if name == "list_favorites":
             page = await get("/api/catalog", favorites=True, limit=max(1, min(a.get("limit", 100), 1000)))
             return {"total": page["total"], "items": [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "playable")}
@@ -154,6 +174,7 @@ def build(base_url: str, token: str) -> Server:
             return await get(f"/api/games/{a['game_id']}/roster")
         if name == "start_job":
             body = {k: a[k] for k in ("tool", "input", "require_os", "require_worker", "parent_request_id") if k in a}
+            body["agent_use"] = True
             return await post("/api/jobs", body)
         if name == "get_job":
             return await get(f"/api/jobs/{a['job_id']}")
@@ -215,6 +236,23 @@ def build(base_url: str, token: str) -> Server:
                         body += f"\n[truncated; {len(r.content)} bytes total]"
                     return T.CallToolResult(content=[T.TextContent(text=body)])
                 return T.CallToolResult(content=[T.TextContent(text=f"Attachment {digest}: {media}, {len(r.content)} bytes; binary preview unavailable")])
+            if name == "capture_worker_screen":
+                out = await convenience(name, a)
+                if out.get("state") != "succeeded":
+                    raise RuntimeError(out.get("error") or f"capture job {out.get('state')}")
+                digest = out["output"]["sha256"]
+                r = await api.get(f"/api/artifacts/{digest}")
+                r.raise_for_status()
+                if a.get("request_id"):
+                    await post(f"/api/requests/{a['request_id']}/messages", {"author": "agent",
+                        "text": a.get("text") or "Desktop screenshot from the test computer",
+                        "attachments": [{"name": f"worker-{out.get('worker_id')}-desktop.png", "type": "image/png",
+                                         "b64": base64.b64encode(r.content).decode()}],
+                        "task_step": a.get("task_step") or {"action": "capture remote desktop", "attempt": "1",
+                                                      "result": digest, "status": "finished"}})
+                return T.CallToolResult(content=[T.TextContent(text=json.dumps({"job_id": out["id"],
+                    "worker_id": out.get("worker_id"), "sha256": digest, "attached_request_id": a.get("request_id")})),
+                    T.ImageContent(data=base64.b64encode(r.content).decode(), mime_type="image/png")])
             if name in CONVENIENCE:
                 out, ok = await convenience(name, a), True
             elif name.startswith(PREFIX):
@@ -226,7 +264,7 @@ def build(base_url: str, token: str) -> Server:
                 worker = a.pop("require_worker", None)
                 parent = a.pop("parent_request_id", None)
                 generic = tool.startswith("rea_") or not (info.get("input_schema") or {}).get("properties")
-                body = {"tool": tool, "input": a.get("input", {}) if generic else a}
+                body = {"tool": tool, "input": a.get("input", {}) if generic else a, "agent_use": True}
                 if ros:
                     body["require_os"] = ros
                 if worker:

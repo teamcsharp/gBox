@@ -241,6 +241,18 @@
   #task-evidence aside pre { max-height:240px; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; }
   #ev-incomplete-form { border:1px solid var(--acc); border-radius:8px; padding:12px; margin-bottom:14px; }
   #ev-incomplete-form textarea { width:100%; min-height:110px; resize:vertical; box-sizing:border-box; margin:8px 0; }
+  #remote-pip { display:none; position:fixed; right:18px; bottom:48px; z-index:990; width:min(540px,90vw); height:360px;
+    min-width:270px; min-height:42px; resize:both; overflow:hidden; border:1px solid var(--line); border-radius:10px;
+    background:var(--bg); box-shadow:0 12px 45px #000a; color:var(--fg); flex-direction:column; }
+  #remote-pip.on { display:flex; }
+  #remote-pip.wide { width:min(84vw,1600px); height:min(84vh,1000px); }
+  #remote-pip.minimized { width:320px; height:42px; resize:none; }
+  #remote-pip .rp-head { display:flex; align-items:center; gap:6px; padding:5px 7px; background:var(--card); cursor:move; }
+  #remote-pip .rp-head b { white-space:nowrap; }
+  #remote-pip .rp-head select { min-width:0; flex:1; background:var(--bg); color:var(--fg); }
+  #remote-pip img { width:100%; flex:1; min-height:0; object-fit:contain; background:#08090d; }
+  #remote-pip .rp-foot { padding:5px 8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #remote-pip.minimized img, #remote-pip.minimized .rp-foot { display:none; }
   @media(max-width:720px) { #task-evidence .ev-layout { grid-template-columns:1fr; grid-template-rows:minmax(180px,45vh) minmax(0,1fr); } #task-evidence aside { border-left:0; border-top:1px solid var(--line); } }
   #taskviz { display:none; position:fixed; z-index:1000 !important; left:50%; top:50%; transform:translate(-50%,-50%);
     width:min(680px,calc(100vw - 40px)); max-height:calc(100vh - 60px); overflow:auto; background:var(--bg);
@@ -674,6 +686,7 @@ window.taskVizCreate = canvas => {
     <div id="top-volume" title="Volume for gBox and its games"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9v6h4l5 4V5L7 9H3zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></svg><input type="range" min="0" max="100" value="30" aria-label="gBox and game volume"><output>30%</output></div>
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
+    <button id="tb-remote" title="Watch the other computer's desktop while it tests games and tasks">Other PC</button>
     <button id="tb-reinv" hidden title="Inventory: change the weapons and items of the character you're playing (Resident Evil), live">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 12h16"/></svg>Inventory</button>
     <button id="tb-inbox" title="Requests inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Inbox <span class="badge" id="tb-count">0</span></button>
@@ -970,6 +983,92 @@ document.body.insertAdjacentHTML("beforeend", `<div id="task-evidence" role="dia
     <textarea id="ev-incomplete-text" aria-label="Explain why this task is incomplete" placeholder="For example: the model did not appear in VR Missions; the image glitches when I load this save..."></textarea>
     <div class="btns"><button class="act" id="ev-incomplete-send">Reopen and resolve</button><button class="act" id="ev-incomplete-cancel">Cancel</button></div></div>
     <h3>Tasks and attempts</h3><div id="ev-steps"></div></aside></div></div>`);
+document.body.insertAdjacentHTML("beforeend", `<div id="remote-pip" aria-label="Other computer live desktop">
+  <div class="rp-head"><b>Other PC</b><select id="rp-worker" aria-label="Computer to watch"></select>
+    <button class="act" id="rp-expand" title="Expand view">Expand</button><button class="act" id="rp-min" title="Minimize remote view">Minimize</button>
+    <button class="act" id="rp-close" title="Close remote view">Close</button></div>
+  <img id="rp-image" alt="Live desktop of the selected computer"><div id="rp-meta" class="rp-foot mut">Connecting...</div></div>`);
+const REMOTE = { worker: null, timer: null, pollTimer: null, pending: false, opened: 0, quietReady: false };
+async function remotePollFrame() {
+  if (REMOTE.pending || !REMOTE.worker || $("#remote-pip").classList.contains("minimized")) return;
+  REMOTE.pending = true;
+  try {
+    const started = await gbox.api("/api/jobs", { tool: "get_frame", input: {}, require_worker: REMOTE.worker });
+    if (!started.ok) throw new Error(started.error || "Could not capture desktop");
+    let job = started.data;
+    for (let i = 0; i < 40 && ["queued", "running"].includes(job.state); i++) {
+      await new Promise(r => setTimeout(r, 500));
+      job = (await gbox.api(`/api/jobs/${job.id}`)).data;
+    }
+    if (job.state !== "succeeded") throw new Error(job.error || job.state);
+    const token = await gbox.token();
+    $("#rp-image").src = `${S.apiUrl}/api/artifacts/${job.output.sha256}?token=${encodeURIComponent(token)}&t=${Date.now()}`;
+  } catch (e) { $("#rp-meta").textContent = `Desktop capture: ${e.message}`; }
+  finally { REMOTE.pending = false; }
+}
+function remoteFallback() {
+  if (REMOTE.pollTimer || !REMOTE.worker || !$("#remote-pip").classList.contains("on") ||
+      $("#remote-pip").classList.contains("minimized")) return;
+  $("#rp-meta").textContent = "Using periodic desktop screenshots until the live worker stream starts";
+  REMOTE.pollTimer = setInterval(remotePollFrame, 2500);
+  remotePollFrame();
+}
+async function remoteWatch(workerId = null) {
+  const wr = await gbox.api("/api/workers");
+  if (!wr.ok) return toast(wr.error || "Could not list computers");
+  const windows = wr.data.filter(w => w.online && w.os === "windows");
+  if (!workerId) {
+    const idle = await gbox.api("/api/workers/idle?tool=get_frame");
+    if (idle.ok) workerId = idle.data.id;
+    else if (String(idle.error || "").includes("404") && S.workerName)
+      workerId = windows.find(w => w.name !== S.workerName && w.tools?.includes("get_frame"))?.id;
+    if (!workerId) return toast(idle.error || "No other computer is idle");
+  }
+  const selected = windows.find(w => w.id === workerId);
+  if (!selected) return toast("That computer is offline");
+  REMOTE.worker = workerId;
+  REMOTE.quietReady = !!selected.features?.includes("two_percent_audio");
+  REMOTE.opened = Date.now();
+  clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null;
+  $("#rp-worker").innerHTML = windows.map(w => `<option value="${esc(w.id)}">${esc(w.name)}${w.id === workerId ? " - testing" : ""}</option>`).join("");
+  $("#rp-worker").value = workerId;
+  $("#remote-pip").classList.add("on");
+  $("#remote-pip").classList.remove("minimized");
+  $("#rp-min").textContent = "Minimize";
+  const tok = await gbox.token();
+  $("#rp-image").src = `${S.apiUrl}/api/workers/${encodeURIComponent(workerId)}/desktop/stream?token=${encodeURIComponent(tok)}&t=${Date.now()}`;
+  clearInterval(REMOTE.timer);
+  REMOTE.timer = setInterval(remoteStatus, 5000);
+  remoteStatus();
+}
+async function remoteStatus() {
+  if (!REMOTE.worker || !$("#remote-pip").classList.contains("on")) return;
+  const [status, sessions, jobs] = await Promise.all([
+    gbox.api(`/api/workers/${encodeURIComponent(REMOTE.worker)}/desktop/status`),
+    gbox.api("/api/sessions"), gbox.api("/api/jobs?limit=100")]);
+  const game = (sessions.data || []).find(s => s.state === "running" && s.session_id?.startsWith(REMOTE.worker + "-"));
+  const active = (jobs.data || []).filter(j => j.state === "running" && j.worker_id === REMOTE.worker).map(j => j.tool);
+  const age = status.data?.last_frame_age;
+  if (!status.ok || (status.data?.frames === 0 && Date.now() - REMOTE.opened > 8000)) remoteFallback();
+  $("#rp-meta").textContent = `${game?.title || "Desktop"} · ${active.length ? active.join(", ") : "no running jobs"} · ${age == null ? "waiting for frame" : `frame ${age}s ago`} · ${REMOTE.quietReady ? "agent audio held at 2%" : "2% audio pending worker reload"}`;
+}
+$("#tb-remote").onclick = () => remoteWatch();
+$("#rp-worker").onchange = e => remoteWatch(e.target.value);
+$("#rp-image").onerror = () => remoteFallback();
+$("#rp-min").onclick = () => {
+  const small = $("#remote-pip").classList.toggle("minimized");
+  $("#rp-min").textContent = small ? "Restore" : "Minimize";
+  if (small) { $("#rp-image").removeAttribute("src"); clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null; }
+  else remoteWatch(REMOTE.worker);
+};
+$("#rp-expand").onclick = () => {
+  const wide = $("#remote-pip").classList.toggle("wide");
+  $("#rp-expand").textContent = wide ? "Normal" : "Expand";
+};
+$("#rp-close").onclick = () => {
+  $("#remote-pip").classList.remove("on", "minimized"); $("#rp-image").removeAttribute("src");
+  REMOTE.worker = null; clearInterval(REMOTE.timer); clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null;
+};
 const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
 const EV = { images: [], selected: null, state: null, requestId: null };
 function evSelect(sha) {
@@ -1013,6 +1112,15 @@ async function evRequest(requestId, selectedSha = null, run = null) {
       EV.state = job.state === "succeeded" ? { sessionId: x.context.session_id, slot } : null;
       stateHtml = `<details open><summary>Saved game moment · ${esc(job.state)}</summary><p>${job.state === "succeeded" ? `Save state ready${slot == null ? "" : ` in slot ${slot}`}.` : esc(job.error || "Save state is being prepared.")}</p>
         ${EV.state ? '<button class="act" id="ev-restore">Restore this moment</button>' : ""}</details>`;
+    }
+  }
+  if (x.context?.state_export_job_id) {
+    const er = await gbox.api(`/api/jobs/${encodeURIComponent(x.context.state_export_job_id)}`);
+    if (er.ok) {
+      const exported = er.data, artifact = exported.output?.result?.artifact;
+      stateHtml += `<details><summary>Portable save state · ${esc(exported.state)}</summary><p>${artifact
+        ? `Saved moment can be loaded on another compatible PC. ${esc(artifact)}`
+        : esc(exported.error || "Export is being prepared.")}</p></details>`;
     }
   }
   $("#ev-steps").innerHTML = `<p class="mut">${esc(x.body || "No description")}</p>${stateHtml}${runSteps}${steps || (!runSteps ? '<p class="mut">No task attempts recorded yet.</p>' : "")}`;
@@ -4033,7 +4141,10 @@ async function svcShow(key) {
       title = `${w.os === "windows" ? "🪟" : "🐧"} ${w.name || id}`; sub = w.online ? "online" : "offline";
       const sess = (ss.data || []).filter(x => x.state === "running" && x.session_id.startsWith(id + "-"));
       const jobs = (js.data || []).filter(j => j.worker_id === id).slice(0, 25);
-      body = svcKV({ name: w.name, id: w.id, os: w.os, online: w.online ? "yes" : "no", "last check-in": ago(w.last_seen), version: w.version, host: w.host,
+      body = (w.os === "windows" && w.online ? `<button class="act" data-watch-worker="${esc(w.id)}">Watch this PC in picture-in-picture</button>` : "")
+        + svcKV({ name: w.name, id: w.id, os: w.os, online: w.online ? "yes" : "no", "last check-in": ago(w.last_seen),
+                  "user idle": w.idle_seconds == null ? "unknown" : `${Math.round(w.idle_seconds)} s`,
+                  "agent jobs": w.active_jobs || 0, version: w.version, host: w.host,
                   "tools available": (w.tools || []).length, "running games": sess.map(x => `${x.title} (${x.adapter})`).join(", ") || "none" })
         + `<details><summary>Tools on this computer (${(w.tools || []).length})</summary><p>${(w.tools || []).map(esc).join(", ")}</p></details>`
         + (Object.keys(w.unavailable || {}).length ? `<details open><summary>Unavailable here (${Object.keys(w.unavailable).length})</summary>${svcKV(w.unavailable)}</details>` : "")
@@ -4053,6 +4164,25 @@ $("#sb-right").addEventListener("click", e => { const k = e.target.closest("[dat
 $("#svc-close").onclick = () => { $("#svcpanel").classList.remove("on"); SVC_KEY = null; };
 $("#svc-refresh").onclick = () => SVC_KEY && svcShow(SVC_KEY);
 floating($("#svcpanel"), $("#svcpanel .ah"), "svc"); window.floating = floating;
+$("#svcbody").addEventListener("click", e => {
+  const id = e.target.closest("[data-watch-worker]")?.dataset.watchWorker;
+  if (id) remoteWatch(id);
+});
+let remoteDrag = null;
+$("#remote-pip .rp-head").addEventListener("pointerdown", e => {
+  if (e.button !== 0 || e.target.closest("button,select")) return;
+  const r = $("#remote-pip").getBoundingClientRect();
+  remoteDrag = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
+  e.currentTarget.setPointerCapture(e.pointerId);
+});
+$("#remote-pip .rp-head").addEventListener("pointermove", e => {
+  if (!remoteDrag) return;
+  const panel = $("#remote-pip");
+  panel.style.left = Math.max(0, Math.min(innerWidth - 120, remoteDrag.left + e.clientX - remoteDrag.x)) + "px";
+  panel.style.top = Math.max(0, Math.min(innerHeight - 42, remoteDrag.top + e.clientY - remoteDrag.y)) + "px";
+  panel.style.right = panel.style.bottom = "auto";
+});
+$("#remote-pip .rp-head").addEventListener("pointerup", () => { remoteDrag = null; });
 
 // ================= chat window: open from the status bar, history toggle, images, exports =================
 $("#sb-chat").onclick = () => { const p = $("#chatpanel"); p.classList.toggle("on"); dispatchEvent(new Event("resize"));

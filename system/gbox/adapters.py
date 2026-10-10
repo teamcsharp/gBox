@@ -137,14 +137,15 @@ def grab_png(display: str | None, region: list[int] | None = None) -> bytes:
 class MjpegStream:
     """Persistent ffmpeg grab -> MJPEG pipe; `latest` always holds the newest complete JPEG.
     ponytail: MJPEG over HTTP (~60 fps on LAN, no audio); move to H.264/NVENC over WebRTC if bandwidth/latency bite."""
-    def __init__(self, display: str | None, fps: int = 60, size: tuple[int, int] | None = None):
+    def __init__(self, display: str | None, fps: int = 60, size: tuple[int, int] | None = None,
+                 max_width: int = 960, draw_mouse: bool = False):
         if HOST_OS == "windows":
-            src = ["-f", "gdigrab", "-draw_mouse", "0", "-framerate", str(fps), "-i", "desktop"]
+            src = ["-f", "gdigrab", "-draw_mouse", "1" if draw_mouse else "0", "-framerate", str(fps), "-i", "desktop"]
         else:
             src = ["-f", "x11grab", "-draw_mouse", "0", "-framerate", str(fps),
                    *(["-video_size", f"{size[0]}x{size[1]}"] if size else []), "-i", display or ":0"]
         self.proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-fflags", "nobuffer", *src,
-                                      "-vf", "scale='min(960,iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-pix_fmt", "yuvj420p",
+                                      "-vf", f"scale='min({max_width},iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-pix_fmt", "yuvj420p",
                                       "-q:v", "7", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.latest, self.seq, self.cond = None, 0, threading.Condition()
         threading.Thread(target=self._read, daemon=True).start()
