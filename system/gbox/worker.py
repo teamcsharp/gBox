@@ -14,6 +14,7 @@ from .registry import HOST_OS, REGISTRY, Ctx, execute
 
 MAX_PARALLEL = 4          # long jobs (library scans) must not block short ones (stop_game) on the same node
 REDESCRIBE_S = 60         # re-check tool availability (e.g. after provisioning installed ghidra)
+HEARTBEAT_S = 10          # liveness must not depend on a free execution slot
 
 
 def user_idle_seconds() -> float | None:
@@ -123,6 +124,19 @@ def _quiet_volume_loop(stop: threading.Event, active_agent: set, quiet_sessions:
                 print(f"agent 2% volume enforcement: {exc}", flush=True)
 
 
+def _heartbeat_loop(stop, current_info, active, server, headers):
+    """Keep saturated workers visible without claiming another job."""
+    with httpx.Client(base_url=server, headers=headers, timeout=10) as client:
+        while not stop.wait(HEARTBEAT_S):
+            try:
+                info = current_info().model_copy(update={'idle_seconds': user_idle_seconds(),
+                                                        'active_jobs': len(active)})
+                client.post('/api/workers/register', json=info.model_dump()).raise_for_status()
+            except (httpx.HTTPError, OSError):
+                # Re-registration is safe to retry. A job itself is never rerun.
+                continue
+
+
 def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, config: Config):
     """Send the Windows desktop only while a gBox remote-PC picture-in-picture viewer is open."""
     if HOST_OS != "windows":
@@ -201,6 +215,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
         threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True).start()
+        threading.Thread(target=_heartbeat_loop, args=(stop, lambda: info, active, server, h), daemon=True).start()
         described = time.time()
         while not stop.is_set():
             if time.time() - described > REDESCRIBE_S:

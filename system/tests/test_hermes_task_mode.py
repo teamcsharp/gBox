@@ -1,11 +1,18 @@
 import json
 import sqlite3
 import datetime as dt
+import pytest
 
 from fastapi.testclient import TestClient
 
 from gbox import hermes_task_mode as mode
 from gbox.server import create_app
+
+
+@pytest.fixture(autouse=True)
+def isolate_delivery_repository(monkeypatch, tmp_path):
+    monkeypatch.setenv('GBOX_HERMES_REPO', str(tmp_path / 'unprovisioned-repo'))
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path / 'dispatch-state'))
 
 
 def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
@@ -33,7 +40,7 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
     assert enabled.json()["model"] == "qwen3.6:35b"
     assert calls[0][0] == "create"
     assert calls[0][1] == "every 30m"
-    assert calls[0][calls[0].index('--reasoning-effort') + 1] == 'max'
+    assert calls[0][calls[0].index('--reasoning-effort') + 1] == 'high'
     assert "--skill" not in calls[0]
     assert "--workdir" in calls[0]
     assert client.post("/api/hermes/task-mode", json={"enabled": True}).status_code == 200
@@ -100,7 +107,7 @@ def test_task_mode_does_not_call_a_plain_cron_exit_success(monkeypatch, tmp_path
     assert "independently verified" in state["last_error"]
 
 
-def test_task_mode_reports_effective_cloud_model_and_investigation_uses_max_effort(monkeypatch, tmp_path):
+def test_investigation_limits_reasoning_without_changing_interactive_effort(monkeypatch, tmp_path):
     home = tmp_path / '.hermes'
     (home / 'cron').mkdir(parents=True)
     (home / 'config.yaml').write_text('model:\n  provider: nous\n  default: anthropic/claude-opus-5.5\n'
@@ -117,7 +124,7 @@ def test_task_mode_reports_effective_cloud_model_and_investigation_uses_max_effo
     assert state['model'] == 'anthropic/claude-opus-5.5' and state['reasoning_effort'] == 'max'
     assert state['max_turns'] == 150
     assert mode.dispatch_request('request-id', 1051) == 'incident-job'
-    assert calls[0][calls[0].index('--reasoning-effort') + 1] == 'max'
+    assert calls[0][calls[0].index('--reasoning-effort') + 1] == 'high'
     assert 'request-id' in calls[0][2] and '--repeat' in calls[0]
     assert mode.dispatch_request('request-id', 1051) == 'incident-job'
     assert len(calls) == 1

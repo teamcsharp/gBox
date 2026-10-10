@@ -82,6 +82,25 @@ def _once() -> str:
     return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=1)).isoformat()
 
 
+def _handoff() -> str:
+    from .hermes_feedback import brief
+    return (' Prepare or reuse this request\'s isolated Git workspace with prepare_task_workspace before editing. '
+            'Never edit the live canonical share. Use the returned workdir and preserve earlier patches. '
+            'Use start_job/get_job for remote operations; keep the same pending job ID, check worker health once, '
+            'and continue source work if remote calls time out. Do not test on the operator PC. '
+            'Use a 45-tool-call work budget with the final 10 calls reserved for focused tests, '
+            'publish_task_changes, evidence and a final reply. Publish explicit source files and focused tests '
+            'through publish_task_changes to produce a real commit and draft GitHub PR even if deployment '
+            'must wait. A pending PR or screenshot alone does not complete the ticket.' + brief())
+
+
+def _workdir(request_id: str, number: int) -> str:
+    from . import hermes_delivery
+    if (hermes_delivery.repository() / '.git').exists():
+        return hermes_delivery.prepare(request_id, number)['workdir']
+    return str(_PROMPT.parents[2])
+
+
 def status() -> dict:
     job, config = _job() or {}, _config()
     model_config, agent_config, cron = (config.get(k) or {} for k in ('model', 'agent', 'cron'))
@@ -138,10 +157,10 @@ def _kickoff(job: dict) -> None:
     if any((j.get('enabled') or _active(j['id'])) for j in _jobs()
            if j.get('name', '').startswith(NAME + ' activation ')):
         return
-    args = ['create', _once(), _PROMPT.read_text(encoding='utf-8'), '--name',
+    args = ['create', _once(), _PROMPT.read_text(encoding='utf-8') + _handoff(), '--name',
             NAME + ' activation ' + str(time.time_ns()), '--repeat', '1',
             '--workdir', str(_PROMPT.parents[2]), '--deliver', 'local',
-            '--failure-deliver', 'local', '--reasoning-effort', 'max']
+            '--failure-deliver', 'local', '--reasoning-effort', 'high']
     args += _route_args(job)
     _run(*args)
 
@@ -161,7 +180,7 @@ def set_enabled(enabled: bool) -> dict:
             model, note = _model()
             args = ["create", "every 30m", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,
                     "--workdir", str(_PROMPT.parents[2]),
-                    "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "max", "--continuity"]
+                    "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "high", "--continuity"]
             if model:
                 args += ["--model", model, "--provider", "custom"]
             _run(*args)
@@ -200,7 +219,12 @@ def dispatch_request(request_id: str, number: int) -> str:
                 return existing['id']
             if (existing.get('schedule') or {}).get('kind') == 'once':
                 # Hermes locks and resets the genuine one-shot occurrence itself.
-                args = ['edit', existing['id'], '--continuity']
+                args = ['edit', existing['id'], '--continuity', '--prompt',
+                        f'Resume report #{number}, request_id={request_id}. Read get_request, the previous replies and saved patch. '
+                        'Change the failed step using get_dispatch_feedback, validate the existing fix and finish its handoff. '
+                        'Keep the ticket in progress until its acceptance criteria are verified.' + _handoff(),
+                        '--workdir', _workdir(request_id, number),
+                        '--reasoning-effort', 'high']
                 if not _route_args(_job() or {}):
                     args += ['--unpin']
                 _run(*args)
@@ -223,9 +247,9 @@ def dispatch_request(request_id: str, number: int) -> str:
                   "verification. Before editing, inspect list_tasks and the report's latest replies to avoid "
                   "duplicating an active investigation. Work on this report only, checkpoint each material "
                   "attempt in its replies, and reserve the last turns for validation and an honest final result. "
-                  "Edit the canonical /home/ehm_eckx/gBox/system source with terminal, read_file and patch; "
+                  "Edit the isolated task workspace with terminal, read_file and patch; "
                   "execute_code is denied in unattended cron. Read at most 120 nearby source lines per call. "
-                  "Use .venv-linux-aarch64/bin/python for focused tests of the changed behavior. Once those pass, "
+                  "Use /home/ehm_eckx/gBox/system/.venv-linux-aarch64/bin/python with PYTHONPATH set to your task's system directory for focused tests. Once those pass, "
                   "do not repeat unrelated baseline/headless test failures without a relevant new change. "
                   "A moving frame after relaunch alone does not prove that the supplied moment "
                   "was restored or that the underlying fault was fixed.")
@@ -233,9 +257,10 @@ def dispatch_request(request_id: str, number: int) -> str:
             prompt += (f" This resumes failed Hermes job {previous}. Read the report's previous replies "
                        "and existing source before changing anything; preserve already-applied fixes. "
                        "The old failed run remains available in Tasks for its evidence and token accounting.")
+        prompt += _handoff()
         args = ['create', _once(), prompt, '--name', name, '--repeat', '1',
-                '--workdir', str(_PROMPT.parents[2]), '--deliver', 'local', '--failure-deliver', 'local',
-                '--reasoning-effort', 'max']
+                '--workdir', _workdir(request_id, number), '--deliver', 'local', '--failure-deliver', 'local',
+                '--reasoning-effort', 'high']
         inbox = _job() or {}
         args += _route_args(inbox)
         _run(*args)

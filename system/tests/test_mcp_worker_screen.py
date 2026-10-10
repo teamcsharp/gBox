@@ -23,6 +23,8 @@ def test_hermes_can_select_other_pc_and_read_its_desktop(monkeypatch):
             return httpx.Response(200, json={"id": "other", "name": "Test PC", "os": "windows", "online": True})
         if path == "/api/workers":
             return httpx.Response(200, json=[{"id": "main"}, {"id": "other"}])
+        if path == '/api/jobs' and req.method == 'GET':
+            return httpx.Response(200, json=[])
         if path == "/api/jobs" and req.method == "POST":
             posted.append((path, json.loads(req.content)))
             return httpx.Response(200, json={"id": "frame-job", "state": "succeeded", "worker_id": "other",

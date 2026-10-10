@@ -8,6 +8,7 @@ import asyncio
 import base64
 import hmac
 import json
+import os
 import time
 
 import httpx
@@ -17,6 +18,7 @@ from mcp.server.lowlevel import Server
 S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
 ADDR = {"type": ["string", "integer"], "description": "hex string (0x80001234) or integer"}
 PREFIX = "job_"                                   # registry tools; unprefixed names are the conveniences below
+JOB_WAIT_SECONDS = 25  # Return a durable job ID before the agent's MCP watchdog fires.
 
 
 def obj(props, req=()):
@@ -24,6 +26,12 @@ def obj(props, req=()):
 
 
 CONVENIENCE = {
+    "prepare_task_workspace": ("Create or reuse an isolated Git worktree for this inbox request. Edit the returned workdir, preserving earlier patches. Never edit the shared runtime source concurrently.",
+                               obj({'request_id': S}, ['request_id'])),
+    "publish_task_changes": ("Validate explicit files in this request's Git workspace, commit, push and create or update a draft GitHub PR. Python changes require focused tests. Returns real commit and PR URL and posts them to the report. This does not close the ticket or deploy to a PC.",
+                             obj({'request_id': S, 'title': S, 'files': {'type': 'array', 'items': S},
+                                  'tests': {'type': 'array', 'items': S}}, ['request_id', 'title', 'files'])),
+    "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
     "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true.",
@@ -95,11 +103,56 @@ def build(base_url: str, token: str) -> Server:
         return r.json()
 
     async def wait_job(job, timeout):
-        t0 = time.time()
-        while job.get("state") in ("queued", "running") and time.time() - t0 < timeout:
-            await asyncio.sleep(1)
-            job = await get(f"/api/jobs/{job['id']}")
-        return {k: job.get(k) for k in ("id", "tool", "state", "worker_id", "output", "error")}
+        async def poll():
+            nonlocal job
+            while job.get('state') in ('queued', 'running'):
+                await asyncio.sleep(1)
+                job = await get(f"/api/jobs/{job['id']}")
+        if timeout > 0:
+            try:
+                await asyncio.wait_for(poll(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass  # Retain the last durable state even if an HTTP poll stalls.
+        out = {k: job.get(k) for k in ("id", "tool", "state", "worker_id", "output", "error")}
+        if out['state'] in ('queued', 'running'):
+            out['next_action'] = 'Use get_job with this id; do not submit this operation again. If the worker is unavailable, preserve the job and continue source work.'
+        return out
+
+    async def select_background_worker(tool):
+        protected = os.environ.get('GBOX_OPERATOR_WORKER')
+        if not protected:
+            return await get('/api/workers/idle', tool=tool)
+        candidates = [w for w in await get('/api/workers') if w.get('online') and w.get('os') == 'windows'
+                      and protected not in (w.get('id'), w.get('name')) and tool in w.get('tools', [])
+                      and w.get('idle_seconds') is not None and w['idle_seconds'] >= 60
+                      and w.get('active_jobs', 0) < 4]
+        if not candidates:
+            raise RuntimeError('No idle test worker is available outside the protected operator PC. Continue source work.')
+        chosen = max(candidates, key=lambda w: w['idle_seconds'])
+        if tool == 'launch_game' and any((s.get('session_id') or '').startswith(chosen['id'] + '-')
+                                        for s in await sessions()):
+            raise RuntimeError('The test PC already has a live game; preserve it and continue source work.')
+        return chosen | {'operator_worker_id': protected, 'selection': 'protected operator PC excluded'}
+
+    async def start_background(body):
+        if body.get('require_worker') in ('idle', 'other'):
+            body = body | {'require_worker': (await select_background_worker(body['tool']))['id']}
+        # Retrying an MCP call must not multiply model swaps on the same session.
+        active = await get('/api/jobs', state='queued,running', limit=100)
+        for job in active:
+            if (job.get('tool') == body['tool'] and job.get('input') == body.get('input', {})
+                    and job.get('require_worker') == body.get('require_worker')
+                    and job.get('parent_request_id') == body.get('parent_request_id')):
+                return job | {'deduplicated': True}
+        target = body.get('require_worker')
+        if target and target not in ('idle', 'other'):
+            workers = await get('/api/workers')
+            worker = next((w for w in workers if target in (w.get('id'), w.get('name'))), None)
+            if not worker or not worker.get('online'):
+                raise RuntimeError('Target worker is unavailable. Do not enqueue more requests for it; use an idle worker or continue source work.')
+            if worker.get('active_jobs', 0) >= 4:
+                raise RuntimeError('Target worker is saturated. Read existing jobs instead of dispatching another operation.')
+        return await post('/api/jobs', body)
 
     async def sessions(include_ended=False):
         return [s for s in await get("/api/sessions") if include_ended or not s.get("ended")]
@@ -122,6 +175,23 @@ def build(base_url: str, token: str) -> Server:
                 "choices": [{"question": e["question"], "options": e["options"]} for e in ev if e["type"] == "choices"]}
 
     async def convenience(name, a):
+        if name == 'get_dispatch_feedback':
+            from . import hermes_feedback
+            data = await asyncio.to_thread(hermes_feedback.scan)
+            return {key: data.get(key) for key in ('cooldowns', 'current_route', 'updated_at')} | {'lessons': data.get('lessons', [])[-20:]}
+        if name == 'prepare_task_workspace':
+            from . import hermes_delivery
+            report = await get('/api/requests/' + a['request_id'])
+            return await asyncio.to_thread(hermes_delivery.prepare, a['request_id'], report['number'])
+        if name == 'publish_task_changes':
+            from . import hermes_delivery
+            await get('/api/requests/' + a['request_id'])
+            out = await asyncio.to_thread(hermes_delivery.publish, a['request_id'], a['title'], a['files'], a.get('tests', []))
+            await post('/api/requests/' + a['request_id'] + '/messages', {'author': 'agent',
+                'text': f"Published tested task changes: {out['url']}\nCommit: {out['commit']}\n" + '\n'.join(out['checks']),
+                'task_step': {'action': 'publish verified source changes', 'attempt': '1',
+                              'result': out['url'], 'status': 'finished'}})
+            return out
         if name == "list_tasks":
             snapshot = await get('/api/tasks')
             hermes = snapshot.get('hermes', [])
@@ -168,17 +238,17 @@ def build(base_url: str, token: str) -> Server:
         if name == "list_workers":
             return await get("/api/workers")
         if name == "select_idle_worker":
-            return await get("/api/workers/idle", tool=a.get("tool", "launch_game"))
+            return await select_background_worker(a.get('tool', 'launch_game'))
         if name == "capture_worker_screen":
             worker = a.get("worker") or "idle"
             if worker in ("idle", "other"):
-                worker = (await get("/api/workers/idle", tool="get_frame"))["id"]
+                worker = (await select_background_worker('get_frame'))['id']
             body = {"tool": "get_frame", "input": {}, "require_worker": worker, "agent_use": True}
             if a.get("region"):
                 body["input"]["region"] = a["region"]
             if a.get("request_id"):
                 body["parent_request_id"] = a["request_id"]
-            return await wait_job(await post("/api/jobs", body), 120)
+            return await wait_job(await start_background(body), JOB_WAIT_SECONDS)
         if name == "list_favorites":
             page = await get("/api/catalog", favorites=True, limit=max(1, min(a.get("limit", 100), 1000)))
             return {"total": page["total"], "items": [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "playable")}
@@ -188,12 +258,17 @@ def build(base_url: str, token: str) -> Server:
         if name == "start_job":
             body = {k: a[k] for k in ("tool", "input", "require_os", "require_worker", "parent_request_id") if k in a}
             body["agent_use"] = True
-            return await post("/api/jobs", body)
+            if sid := body.get('input', {}).get('session_id'):
+                body['require_worker'] = sid.split('-')[0]
+            return await start_background(body)
         if name == "get_job":
             return await get(f"/api/jobs/{a['job_id']}")
         if name == "launch_game":
-            job = await post(f"/api/games/{a['game_id']}/launch", node=a.get("node", "auto"), debug=str(a.get("debug", False)).lower())
-            return await wait_job(job, 300)
+            node = a.get('node', 'auto')
+            if node in ('idle', 'other'):
+                node = (await select_background_worker('launch_game'))['name']
+            job = await post(f"/api/games/{a['game_id']}/launch", node=node, debug=str(a.get("debug", False)).lower())
+            return await wait_job(job, JOB_WAIT_SECONDS)
         if name == "list_sessions":
             return await sessions(a.get("include_ended", False))
         if name == "read_memory":
@@ -251,6 +326,8 @@ def build(base_url: str, token: str) -> Server:
                 return T.CallToolResult(content=[T.TextContent(text=f"Attachment {digest}: {media}, {len(r.content)} bytes; binary preview unavailable")])
             if name == "capture_worker_screen":
                 out = await convenience(name, a)
+                if out.get('state') in ('queued', 'running'):
+                    return T.CallToolResult(content=[T.TextContent(text=json.dumps(out))])
                 if out.get("state") != "succeeded":
                     raise RuntimeError(out.get("error") or f"capture job {out.get('state')}")
                 digest = out["output"]["sha256"]
@@ -286,8 +363,8 @@ def build(base_url: str, token: str) -> Server:
                     body["parent_request_id"] = parent
                 if sid := body["input"].get("session_id"):     # sessions live on the worker that launched them
                     body["require_worker"] = sid.split("-")[0]
-                out = await wait_job(await post("/api/jobs", body), (info.get("timeout_s") or 300) + 60)
-                ok = out["state"] == "succeeded"
+                out = await wait_job(await start_background(body), JOB_WAIT_SECONDS)
+                ok = out["state"] in ("succeeded", "queued", "running")
             else:
                 raise ValueError(f"unknown tool {name}")
         except Exception as e:
