@@ -1757,7 +1757,10 @@ const REPORT_PROBE = `(() => { const wb = document.querySelector("#wb"), slot = 
   const on = [...document.querySelectorAll(".wbm")].map(c => ({ t: c.querySelector("b")?.textContent || "", on: c.classList.contains("on"), st: c.querySelector(".row i")?.textContent || "" }))
     .filter(c => c.on || c.st).map(c => c.t + ": " + (c.on ? "on" : "") + (c.st ? " · " + c.st : ""));
   return { sid: wb?.dataset.sid || slot?.dataset.sid || (typeof active !== "undefined" && active ? active.sid : null), gid: wb?.dataset.gid || null,
-           keep, on, tab: typeof cur !== "undefined" ? cur : null, hash: location.hash }; })()`;
+           keep, on, tab: typeof cur !== "undefined" ? cur : null, hash: location.hash,
+           launch: document.querySelector("#loader.on") && typeof LAST_LAUNCH !== "undefined" ? LAST_LAUNCH : null,
+           loader: document.querySelector("#loader.on") ? { progress: document.querySelector("#ldpct")?.textContent || "",
+             message: document.querySelector("#ldcon")?.textContent || "" } : null }; })()`;
 let issueOpening = false;
 async function reportIssue() {
   if (document.getElementById("issue-modal")) { document.getElementById("issue-subject").focus(); return; }
@@ -1776,16 +1779,32 @@ async function issueDiagnostics(shot) {
     const wv = document.querySelector("#wv");
     const pg = wv ? await wv.executeJavaScript(REPORT_PROBE).catch(() => ({})) : {};
     const ss = await gbox.api("/api/sessions"), run = (ss.ok ? ss.data : []).filter(s => s.state === "running");
-    const sid = pg.sid || EMB.sid || run[0]?.session_id || "", sess = run.find(s => s.session_id === sid) || (ss.ok ? ss.data : []).find(s => s.session_id === sid) || {};
-    const con = await gbox.consoleTail(200000).catch(() => "");
-    const st = await gbox.settings().catch(() => ({}));
-    const body = { session_id: sid, what: "Report issue (Capture icon)", title: `Issue report: ${sess.title || "gBox"}${sess.adapter ? " (" + sess.adapter + ")" : ""}`,
+    const sid = pg.launch ? "" : (pg.sid || EMB.sid || run[0]?.session_id || ""), sess = run.find(s => s.session_id === sid) || (ss.ok ? ss.data : []).find(s => s.session_id === sid) || {};
+    const [con, st, jr, wr] = await Promise.all([
+      gbox.consoleTail(200000).catch(() => ""), gbox.settings().catch(() => ({})),
+      pg.launch ? gbox.api("/api/jobs?limit=100").catch(() => ({})) : Promise.resolve({}),
+      pg.launch ? gbox.api("/api/workers").catch(() => ({})) : Promise.resolve({})]);
+    const jobs = jr.ok && Array.isArray(jr.data) ? jr.data : [];
+    const launchJob = pg.launch?.job ? jobs.find(j => j.id === pg.launch.job) : jobs.find(j =>
+      j.tool === "launch_game" && j.input?.game_id === pg.launch?.id &&
+      j.created * 1000 >= (pg.launch?.started || 0) - 10000);
+    const launch = pg.launch ? { ...pg.launch, elapsed_seconds: Math.round((Date.now() - pg.launch.started) / 1000),
+      loader: pg.loader, job_record: launchJob || null, job_lookup: jr.ok ? "available" : "unavailable",
+      workers: wr.ok ? wr.data : "unavailable" } : null;
+    const launchText = launch ? `Launch: ${launch.title || "?"} (game ${launch.id}, core ${launch.core || "?"}, target ${launch.node}) · ${launch.elapsed_seconds}s · job ${launch.job || "none"} · ${launch.error || launch.loader?.message || "preparing"}${jr.ok && !launch.job && !launchJob ? " · no launch job submitted" : ""}` : "";
+    const attachments = con ? [{ name: "desktop-console.txt", type: "text/plain", b64: btoa(unescape(encodeURIComponent(con))) }] : [];
+    if (launch) attachments.push({ name: "launch-diagnostics.json", type: "application/json",
+      b64: btoa(unescape(encodeURIComponent(JSON.stringify(launch, null, 2)))) });
+    const body = { session_id: sid, what: "Report issue (Capture icon)", title: `Issue report: ${sess.title || pg.launch?.title || "gBox"}${sess.adapter ? " (" + sess.adapter + ")" : ""}`,
       detail: [`Session ${sid || "none"} · ${sess.state || "-"} · adapter ${sess.adapter || "?"} · worker ${sess.detail?.worker_name || (sid ? sid.split("-")[0] : "-")}`,
                `Emulator: ${sess.detail?.emulator || sess.adapter || "?"}${sess.detail?.core ? " · core " + sess.detail.core : ""}${sess.mod ? " · mod " + sess.mod : ""}`,
                `App: tab ${pg.tab || "?"} ${pg.hash || ""} · section ${document.querySelector("aside button.on")?.dataset.s || "?"} · docked ${EMB.sid ? EMB.sid + " (" + (EMB.title || "") + ")" : "none"} · this PC's worker ${st.workerName || "?"}`].join("\n"),
-      image_b64: shot ? shot.split(",")[1] : null, mods_on: pg.on || [], kept_mods: (pg.keep || {})[sess.game_id || pg.gid] || [],
-      context: appContext({ gbox: { tab: pg.tab, hash: pg.hash }, docked: EMB.sid || null }),
-      attachments: con ? [{ name: "desktop-console.txt", type: "text/plain", b64: btoa(unescape(encodeURIComponent(con))) }] : [] };
+      note: launchText, image_b64: shot ? shot.split(",")[1] : null, mods_on: pg.on || [], kept_mods: (pg.keep || {})[sess.game_id || pg.gid] || [],
+      context: appContext({ gbox: { tab: pg.tab, hash: pg.hash }, docked: EMB.sid || null,
+        game_id: sess.game_id || pg.launch?.id || pg.gid || null, game: sess.title || pg.launch?.title || null,
+        launch: pg.launch ? { job_id: pg.launch.job, node: pg.launch.node, core: pg.launch.core,
+          error: pg.launch.error || null } : null }),
+      attachments };
     return body;
 }
 

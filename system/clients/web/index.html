@@ -447,12 +447,18 @@ document.addEventListener("click", async e => {
 });
 trayTick(); setInterval(trayTick, 5000);
 $("#tok").onchange = e => { tok = e.target.value; try { localStorage.setItem("gbox_tok", tok); } catch {} show(cur); };
-async function api(path, body, method) {
+async function api(path, body, method, timeoutMs = 0) {
   const m = method || (body ? "POST" : "GET");
   let r;
   for (let i = 0; ; i++) {                                 // reads ride out a Spark restart / Wi-Fi blip (~30 s) instead of failing a job
-    try { r = await fetch(path, { method: m, headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: body && JSON.stringify(body) }); }
-    catch (e) { if (m !== "GET" || i >= 20) throw new Error("gBox server unreachable: " + e.message); await new Promise(z => setTimeout(z, 1500)); continue; }
+    try {
+      const controller = timeoutMs ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      try { r = await fetch(path, { method: m, headers: { authorization: "Bearer " + tok, "content-type": "application/json" },
+        body: body && JSON.stringify(body), signal: controller?.signal }); }
+      finally { if (timer) clearTimeout(timer); }
+    }
+    catch (e) { if (e.name === "AbortError" || m !== "GET" || i >= 20) throw new Error("gBox server unreachable: " + e.message); await new Promise(z => setTimeout(z, 1500)); continue; }
     if (m === "GET" && r.status >= 502 && r.status <= 504 && i < 20) { await new Promise(z => setTimeout(z, 1500)); continue; }
     break;
   }
@@ -489,13 +495,17 @@ const loader = {
     return this.three;
   },
   frame() {},
-  async show(title, sub) {
+  show(title, sub) {
     $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
     $("#ldbar").style.height = "0%"; $("#ldpbar").style.width = "2%"; $("#ldpct").textContent = "0%";
     $("#ldcon").innerHTML = "<div>Preparing…</div>"; $("#ldback").style.display = "none";
     const el = $("#loader"); el.classList.remove("out"); el.classList.add("on");
-    const T = await this.scene();
-    if (T.viz) { T.viz.resize(); T.viz.start(); T.viz.setMode(T.V.readVizPref()); T.viz.push({ stationActivity: 0.3, beat: 1 }); }
+    // The decorative visualizer can wait on GPU initialization. Never hold up the real launch for it.
+    this.scene().then(T => {
+      if (T.viz && el.classList.contains("on") && !el.classList.contains("out")) {
+        T.viz.resize(); T.viz.start(); T.viz.setMode(T.V.readVizPref()); T.viz.push({ stationActivity: 0.3, beat: 1 });
+      }
+    }).catch(() => {});
   },
   progress(pct, msg) {
     const v = Math.max(0, Math.min(100, pct));
@@ -877,7 +887,7 @@ $("#where").onclick = e => { const b = e.target.closest("button"); if (!b) retur
 setTimeout(paintWhere, 300); setInterval(paintWhere, 3000);
 const fitHdr = () => document.documentElement.style.setProperty("--hdr", document.querySelector("header").offsetHeight + "px");
 addEventListener("resize", fitHdr); setTimeout(fitHdr, 100);
-let LOADING = null;                                           // { job, id } while the loader is up
+let LOADING = null, LAST_LAUNCH = null;                        // current and last launch diagnostics
 addEventListener("keydown", e => { if (e.key === "Escape" && LOADING) cancelLoad(); });
 async function cancelLoad() {                                // instant: leave first, clean up behind (works after a failure too)
   const L0 = LOADING; LOADING = null;
@@ -898,21 +908,32 @@ async function play(id, node, debug, boot) {
   // PS3 has no libretro core but runs natively here (RPCS3): keep it on this PC instead of whichever worker answers first
   if (!node && WHERE === "local" && window.GBOX_LOCAL?.worker && (g.core || g.platform === "ps3")) node = window.GBOX_LOCAL.worker;
   if (!node && WHERE === "spark" && g.core) node = "linux";
-  LOADING = { id, job: null };
+  if (debug) node = "linux";
+  LOADING = LAST_LAUNCH = { id, job: null, started: Date.now(), title: g.title, core: g.core || "", node: node || "auto" };
   const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";
-  await loader.show(g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
+  loader.show(g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
   $("#ldcancel").onclick = cancelLoad;
   const canLocal = node === "linux" && window.GBOX_LOCAL?.worker && g.core;
   $("#ldlocal").style.display = canLocal ? "inline-block" : "none";
   $("#ldlocal").onclick = async () => { await cancelLoad(); play(id, window.GBOX_LOCAL.worker); };
-  if (debug) node = "linux";
-  const job = await api(`/api/games/${id}/launch?node=${node || "auto"}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}`, {});
+  let job;
+  try {
+    job = await api(`/api/games/${id}/launch?node=${encodeURIComponent(node || "auto")}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}`, {}, "POST", 30000);
+  } catch (err) {
+    LAST_LAUNCH.error = `Launch request failed before a job was created: ${err.message}`;
+    LOADING = null;
+    loader.fail(LAST_LAUNCH.error);
+    return;
+  }
   if (!LOADING) { await api(`/api/jobs/${job.id}/cancel`, {}).catch(() => {}); return; }   // Esc before the job existed
   LOADING.job = job.id;
   loader.progress(1, `Job ${job.id} queued for ${where}`);
-  for (let i = 0; i < 1800; i++) {
+  for (let i = 0; i < 750; i++) {                         // five minutes maximum before showing a diagnosable timeout
     if (!LOADING || LOADING.job !== job.id) return;            // cancelled
-    const j = await api("/api/jobs/" + job.id);
+    let j;
+    try { j = await api("/api/jobs/" + job.id, undefined, "GET", 15000); }
+    catch (err) { LAST_LAUNCH.error = `Could not read launch job ${job.id}: ${err.message}`;
+      LOADING = null; loader.fail(LAST_LAUNCH.error); return; }
     if (j.progress) loader.progress(j.progress.pct, j.progress.msg);
     else if (j.state === "running") loader.progress(3, "Worker picked up the launch");
     if (j.state === "succeeded") { LOADING = null; loader.progress(100, "Running — opening the stream"); setTimeout(() => loader.hide(), 500);
@@ -920,10 +941,13 @@ async function play(id, node, debug, boot) {
       if (boot.slot !== "" && boot.slot != null)                // start from the chosen save state once the emulator is up
         setTimeout(() => runJob({ tool: "session_op", input: { session_id: nsid, op: "load_state", args: { slot: +boot.slot } }, require_worker: nsid.split("-")[0] }).catch(() => {}), 12000);
       return show("Sessions", nsid); }
-    if (!/queued|running/.test(j.state)) { LOADING = null; return loader.fail(`Launch ${j.state}: ${j.error || "unknown error"}`); }
+    if (!/queued|running/.test(j.state)) { LAST_LAUNCH.error = `Launch ${j.state}: ${j.error || "unknown error"}`;
+      LOADING = null; return loader.fail(LAST_LAUNCH.error); }
     await new Promise(r => setTimeout(r, 400));
   }
-  loader.fail("Timed out waiting for the launch");
+  LOADING = null;
+  LAST_LAUNCH.error = `Launch job ${job.id} has not finished after five minutes`;
+  loader.fail(`${LAST_LAUNCH.error}. Capture this screen to file its diagnostics.`);
 }
 async function details(id) {
   const p = await api("/api/profiles/" + id);

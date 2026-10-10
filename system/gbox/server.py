@@ -2431,14 +2431,14 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
         s_ = store.get("session", r.session_id) or {} if r.session_id else {}
-        game = s_.get("title") or s_.get("game_title") or "no game running"
+        game = s_.get("title") or s_.get("game_title") or r.context.get("game") or "no game running"
         since = (s_.get("started") or s_.get("created") or time.time() - 3600) - 5
         jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id
                        or (s_.get("game_id") and (j.get("input") or {}).get("game_id") == s_.get("game_id") and j.get("created", 0) >= since)),
                       key=lambda j: j.get("created", 0))[-20:] if r.session_id else []
         jobs = [j for j in jobs if j.get("tool") != "get_frame"]          # report/thumbnail pictures, not operator actions
         lines = [f"## What the operator tried\n{r.what}" + (f"\n\n{r.note}" if r.note else ""),
-                 f"## Game\n{game} (game_id {s_.get('game_id', '?')}, {s_.get('platform') or s_.get('system') or '?'}, "
+                 f"## Game\n{game} (game_id {s_.get('game_id') or r.context.get('game_id') or '?'}, {s_.get('platform') or s_.get('system') or '?'}, "
                  f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
         if r.detail:
             lines.append(f"## What gBox showed\n{r.detail}")
@@ -2475,7 +2475,8 @@ def create_app(config: Config) -> FastAPI:
                 pass
         report = req_create(RequestIn(title=(r.title or f"Doesn't work in {game}: {r.what}")[:140], body="\n\n".join(lines), source="app",
                                       kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
-                                      context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id"), "game": game,
+                                      context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id") or r.context.get("game_id"),
+                                                           "game": game,
                                                            "save_state_requested": r.save_state}), actor)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report

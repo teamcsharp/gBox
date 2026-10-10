@@ -29,6 +29,8 @@ Use `start_job` for gBox registry work that may outlast a chat turn, then `get_j
 
 Call `list_workers` and `select_idle_worker` before interactive testing. The selector uses worker-reported Windows input inactivity and the operator's live game to choose the other PC; a recent human input on that PC causes a 409 instead of stealing it. `launch_game(node="idle")` opens a separate session on that PC. `start_job(require_worker="idle")` routes a new job there; after the first job, pin subsequent work to its returned `worker_id`. Session tools already follow the session's worker. Do not reuse an operator-owned live session for agent testing. Binary analysis, mod builds, emulator test iterations, and autoplay can use the other PC when its registry lists the needed tool. Collection operations that write the central character library still run on the Spark.
 
+The `select_idle_worker` `tool` argument must be a native worker tool such as `get_frame` or `launch_game`; `list_workers` is an MCP convenience tool and returns 409 when used there. Call `list_workers` separately when you need the full inventory.
+
 Call `capture_worker_screen` to see the other PC's entire desktop, including gBox, emulator windows, setup steps, and errors. The tool returns a real image and an artifact ID. Pass `request_id`, `text`, and `task_step` to attach important before/after frames to the relevant inbox report. The operator can watch the same desktop through gBox's Other PC picture-in-picture and minimize or expand it. A frame showing a queued job or a loading screen is progress evidence, not proof of success.
 
 Agent jobs on a Windows PC set every active playback output to 2% before running and maintain that volume while an agent-started game is open. If volume enforcement fails, report the failure and do not begin an audible game test on that PC.
@@ -36,6 +38,8 @@ Agent jobs on a Windows PC set every active playback output to 2% before running
 ## Inbox and visual evidence
 
 Use `list_requests` with `status=open,in_progress`, a small limit, and offsets to work through the inbox. Call `get_request` for the complete prompt; call `read_request_artifact` for each relevant screenshot or text attachment. Start with the newest operator request, and distinguish automated child reports from operator prompts. Search knowledge with a narrow game name and `k=2` when needed; broad searches can overwhelm the context.
+
+An image artifact may be returned as `MEDIA:/absolute/path/to/image.png`. When passing it to a local image-analysis tool that accepts a filesystem path, remove only the `MEDIA:` prefix and use the absolute path. If the tool cannot read the file, use the MCP image directly or record that visual inspection was unavailable; do not invent screenshot contents.
 
 Hermes permits exactly one local gBox MCP tool per `tool_call` invocation. Never batch `mcp__gbox__*` calls in one wrapper. For replies pass `{"request_id":"...","text":"..."}`; for usage pass `{"request_id":"...","tokens_in":0,"tokens_out":0,"tokens_detail":{"token_count_unavailable":1}}` when precise token counts are unavailable. Do not try guessed `gbox://operator/...` resources; the inbox is exposed by tools.
 

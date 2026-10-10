@@ -57,3 +57,23 @@ def test_issue_keeps_subject_details_and_arbitrary_attachment_bytes(cfg):
         downloaded = client.get(f"/api/artifacts/{attachment['sha256']}")
         assert downloaded.status_code == 200
         assert downloaded.content == original
+
+
+def test_issue_keeps_game_context_when_launch_never_created_a_session(cfg):
+    client = TestClient(create_app(cfg), headers={"Authorization": f"Bearer {cfg.token()}"})
+    response = client.post("/api/requests/issue", json={
+        "what": "Launch stuck on Preparing", "title": "Issue report: Ocarina of Time",
+        "note": "No launch job submitted after 35 seconds",
+        "context": {"game_id": "ocarina", "game": "Ocarina of Time",
+                    "launch": {"job_id": None, "node": "JAY", "core": "parallel_n64"}},
+        "attachments": [{"name": "launch-diagnostics.json", "type": "application/json",
+                         "b64": base64.b64encode(b'{"job": null}').decode()}],
+    })
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["context"]["game_id"] == "ocarina"
+    assert report["context"]["game"] == "Ocarina of Time"
+    assert report["context"]["session_id"] == ""
+    assert "Ocarina of Time (game_id ocarina" in report["body"]
+    assert "No launch job submitted after 35 seconds" in report["body"]
+    assert report["messages"][0]["attachments"][0]["name"] == "launch-diagnostics.json"
