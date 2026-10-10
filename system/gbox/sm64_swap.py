@@ -25,13 +25,13 @@ import json
 import re
 import shutil
 import time
-import zipfile
 from pathlib import Path
 
 import numpy as np
 
 from . import sm64_mario as sm
 from . import sm64_writer as W
+from . import n64_rom
 
 # Both catalog entries hold the same ROM (NSMP, md5 45676429...: the "(USA)" zip is really the European ROM); the
 # offsets in gbox.sm64_mario / sm64_writer are this ROM's, and check_rom() refuses any other layout.
@@ -48,18 +48,8 @@ PROP_MAX_TRIS = 400                                     # a prop (hat, sword) ke
 
 
 def rom_bytes(path) -> bytes:
-    """.z64 / .v64 / .n64, or a .zip holding one -> big-endian .z64 bytes."""
-    p = Path(path)
-    if p.suffix.lower() == ".zip":
-        with zipfile.ZipFile(p) as z:
-            data = z.read(next(n for n in z.namelist() if n.lower().endswith((".z64", ".n64", ".v64"))))
-    else:
-        data = p.read_bytes()
-    if data[:4] == b"\x37\x80\x40\x12":
-        data = np.frombuffer(data, ">u2").astype("<u2").tobytes()
-    elif data[:4] == b"\x40\x12\x37\x80":
-        data = np.frombuffer(data, ">u4").astype("<u4").tobytes()
-    return data
+    """Read a raw or archived N64 ROM in big-endian byte order."""
+    return n64_rom.read(path)
 
 
 def check_rom(rom: bytes) -> None:

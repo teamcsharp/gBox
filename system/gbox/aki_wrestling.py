@@ -36,10 +36,10 @@ import re
 import shutil
 import struct
 import time
-import zipfile
 from pathlib import Path
 
 import numpy as np
+from . import n64_rom
 
 # ---------------------------------------------------------------- catalog
 
@@ -95,19 +95,7 @@ NM_ALIASES = {"Steve Austin": ["Stone Cold", "Stone Cold Steve Austin", "Austin"
 # ---------------------------------------------------------------- ROM + file table
 
 def rom_bytes(path) -> bytes:
-    p = Path(path)
-    if p.suffix.lower() == ".zip":
-        with zipfile.ZipFile(p) as z:
-            data = z.read(next(n for n in z.namelist() if n.lower().endswith((".z64", ".n64", ".v64"))))
-    else:
-        data = p.read_bytes()
-    if data[:4] == b"\x37\x80\x40\x12":
-        data = np.frombuffer(data, ">u2").astype("<u2").tobytes()
-    elif data[:4] == b"\x40\x12\x37\x80":
-        data = np.frombuffer(data, ">u4").astype("<u4").tobytes()
-    if data[:4] != b"\x80\x37\x12\x40":
-        raise ValueError("not an N64 ROM")
-    return data
+    return n64_rom.read(path)
 
 
 def profile(rom: bytes) -> dict:

@@ -1060,18 +1060,8 @@ def _shenmue_run(ctx, game, e, work):
 
 
 def _sm64_run(ctx, game, e, work):
-    import zipfile
-    from . import sm64_mario as S
-    rom = _rom(ctx, game)
-    if rom.suffix.lower() == ".zip":
-        with zipfile.ZipFile(rom) as z:
-            data = z.read(next(n for n in z.namelist() if n.lower().endswith((".z64", ".n64", ".v64"))))
-    else:
-        data = rom.read_bytes()
-    if data[:4] == b"\x37\x80\x40\x12":                    # .v64: byte-swapped halfwords
-        data = np.frombuffer(data, ">u2").astype("<u2").tobytes()
-    elif data[:4] == b"\x40\x12\x37\x80":                  # .n64: little-endian words
-        data = np.frombuffer(data, ">u4").astype("<u4").tobytes()
+    from . import sm64_mario as S, n64_rom
+    data = n64_rom.read(_rom(ctx, game))
     out = work / "sm64_mario.gltf"
     S.to_gltf(S.extract(data, anim=197), out)
     return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"]}
