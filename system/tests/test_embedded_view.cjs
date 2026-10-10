@@ -89,6 +89,17 @@ test('canceled navigation and iframe failures do not hide a working page', async
   assert.equal(w.dataset.ready, 'true'); assert.equal(x.nodes.get('playhost').hidden, true);
 });
 
+test('overlay iframe loads and in-page navigation leave the game visible', async () => {
+  const x = setup(); await x.load(); const w = x.nodes.get('wv'); await w.events['dom-ready']();
+  w.events['did-start-navigation']({ isMainFrame: false, isInPlace: false });
+  w.events['did-start-navigation']({ isMainFrame: true, isInPlace: true });
+  assert.equal(w.dataset.ready, 'true'); assert.equal(x.nodes.get('playhost').hidden, true);
+  assert.equal(x.timers.size, 0);
+  w.events['did-start-navigation']({ isMainFrame: true, isInPlace: false });
+  assert.equal(w.dataset.ready, 'false'); assert.equal(x.nodes.get('playhost').hidden, false);
+  assert.equal(x.timers.size, 1);
+});
+
 test('an old view failure cannot cover its replacement with an error', async () => {
   const x = setup(); await x.load(); const old = x.nodes.get('wv');
   x.nodes.get('playretry').onclick(); await x.load();

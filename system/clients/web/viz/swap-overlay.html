@@ -3,6 +3,7 @@
 <title>gBox overlay swap</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:transparent}
+html{color-scheme:dark} /* Match the embedded host so Chromium preserves transparency. */
 canvas{display:block;transition:opacity .4s}
 #banner{position:fixed;left:50%;top:14px;transform:translateX(-50%);padding:7px 14px;border-radius:8px;font:600 14px system-ui,sans-serif;
   color:#fff;background:rgba(20,20,26,.82);box-shadow:0 2px 10px rgba(0,0,0,.5);display:none;white-space:nowrap}
@@ -17,6 +18,14 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/+esm";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
 
 const q = new URLSearchParams(location.search);
+if (parent !== window && !window.gboxOverlay) {
+  window.gboxOverlay = {
+    on: fn => addEventListener("message", e => {
+      if (e.source === parent && e.data?.gboxSwap) fn(e.data.gboxSwap);
+    }),
+    status: s => parent.postMessage({ gboxSwapStatus: s }, "*")
+  };
+}
 const cv = document.getElementById("cv"), banner = document.getElementById("banner");
 const R = new THREE.WebGLRenderer({ canvas: cv, alpha: true, antialias: true });
 R.setClearColor(0x000000, 0);

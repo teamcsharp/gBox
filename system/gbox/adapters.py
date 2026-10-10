@@ -268,12 +268,37 @@ def win_send_keys(pid: int, events: list[dict]) -> dict:
     return {"sent": len(seq)}
 
 
+_last_grab = {}
+
+
+def win_grab_state() -> dict:
+    """Capture origin/occlusion for diagnostics; never substitute another app's pixels."""
+    return dict(_last_grab)
+
+
+def _win_title(hwnd):
+    import ctypes
+    title = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetWindowTextW(hwnd, title, 256)
+    return title.value
+
+
 def win_grab(pid: int) -> bytes:
     """PNG of a local emulator window (docked or not), as the screen shows it."""
     import ctypes
     import io
     from ctypes import wintypes
     from PIL import ImageGrab
+    # Chromium captures a composited game's GPU window even when its source is
+    # off-screen. Never return a stale image or a desktop screenshot of other apps.
+    frame_dir = Path(os.environ.get("GBOX_GAME_FRAME_DIR") or Path(os.environ.get("APPDATA", "")) / "gbox-desktop" / "game-frames")
+    frame = frame_dir / f"{int(pid)}.png"
+    if frame.is_file() and 0 <= time.time() - frame.stat().st_mtime < 5:
+        data = frame.read_bytes()
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) < 8 * 1024 * 1024:
+            _last_grab.update(pid=pid, covered=0, covered_titles=[], source="chromium-gpu-surface",
+                              frame_age_s=round(time.time() - frame.stat().st_mtime, 3))
+            return data
     h = _pid_window(pid)
     if not h:
         raise RuntimeError("the game window isn't open")
@@ -286,13 +311,17 @@ def win_grab(pid: int) -> bytes:
     # several points inside the game before accepting the frame.
     user.WindowFromPoint.argtypes = [wintypes.POINT]
     user.WindowFromPoint.restype = wintypes.HWND
-    foreign = 0
+    foreign, titles = 0, []
     for fx, fy in ((.25, .25), (.5, .25), (.75, .25), (.25, .5), (.5, .5), (.75, .5), (.25, .75), (.5, .75), (.75, .75)):
         point = wintypes.POINT(round(r.left + (r.right - r.left) * fx), round(r.top + (r.bottom - r.top) * fy))
         top = user.WindowFromPoint(point)
         owner = wintypes.DWORD()
         if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != pid:
             foreign += 1
+            title = _win_title(top) if top else ""
+            if title and title not in titles:
+                titles.append(title)
+    _last_grab.update(pid=pid, covered=foreign, covered_titles=titles, source="desktop-compositor", frame_age_s=0)
     if foreign >= 3:
         raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
     buf = io.BytesIO()
@@ -366,6 +395,7 @@ def keep_offscreen(pid: int, limit_s: float = 90.0, give_up_s: float = 45.0):
     u32.GetWindowRect.argtypes = [H, ctypes.POINTER(wintypes.RECT)]
     u32.GetWindowLongPtrW.argtypes, u32.GetWindowLongPtrW.restype = [H, ctypes.c_int], ctypes.c_ssize_t
     u32.GetAncestor.argtypes, u32.GetAncestor.restype = [H, wintypes.UINT], H
+    u32.GetPropW.argtypes, u32.GetPropW.restype = [H, wintypes.LPCWSTR], wintypes.HANDLE
     for f in ("IsWindow", "IsWindowVisible", "IsIconic"):
         getattr(u32, f).argtypes = [H]
     u32.GetWindowThreadProcessId.argtypes = [H, ctypes.POINTER(wintypes.DWORD)]
@@ -406,6 +436,8 @@ def keep_offscreen(pid: int, limit_s: float = 90.0, give_up_s: float = 45.0):
         return out
 
     def park(h):
+        if h and u32.GetPropW(h, "GBoxCompositedSurface"):
+            return                                         # the GPU capture helper owns this off-screen window
         if not h or not u32.IsWindow(h) or u32.GetAncestor(h, 2) != h or (u32.GetWindowLongPtrW(h, GWL_STYLE) & WS_CHILD):
             return                                         # GA_ROOT: top-level windows only; docked (child) = leave it
         r = wintypes.RECT()
@@ -432,6 +464,8 @@ def keep_offscreen(pid: int, limit_s: float = 90.0, give_up_s: float = 45.0):
                 for h in [h for h in parked if not u32.IsWindow(h) or (u32.GetWindowLongPtrW(h, GWL_STYLE) & WS_CHILD)]:
                     parked.pop(h, None)                    # docked into gBox (or gone)
                 docked = windows(True)
+                if any(u32.GetPropW(h, "GBoxCompositedSurface") for h in windows(False)):
+                    return                                 # never restore a captured source onto the desktop at 45 s
                 if docked:                                 # docked into gBox: make sure it's opaque (older winembed), done
                     for h in docked:
                         opaque(h)

@@ -20,12 +20,15 @@ WS_EX_APPWINDOW, WS_EX_TOOLWINDOW = 0x00040000, 0x00000080
 SWP_NOZORDER, SWP_FRAMECHANGED, SWP_SHOWWINDOW = 0x0004, 0x0020, 0x0040
 SW_HIDE, SW_SHOW, SW_SHOWNA = 0, 5, 8      # SHOWNA: show without activating (never steal the keyboard)
 u32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+u32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
 u32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 u32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
 u32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
 u32.SetParent.restype = wintypes.HWND
 u32.GetParent.argtypes = [wintypes.HWND]
 u32.GetParent.restype = wintypes.HWND
+u32.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+u32.RemovePropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
 k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
 k32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -43,7 +46,7 @@ def emit(obj):
         sys.stdout.flush()
 
 
-state = {"hwnd": None, "style": None, "exstyle": None, "pid": None, "parent": None, "rect": None, "shown": True}
+state = {"hwnd": None, "style": None, "exstyle": None, "pid": None, "parent": None, "rect": None, "shown": True, "mode": "native"}
 lock = __import__("threading").Lock()
 
 
@@ -71,7 +74,7 @@ def descendants(pid: int) -> set[int]:
     return out
 
 
-def find_window(pid: int, hidden=False):
+def find_window(pid: int, hidden=False, parent=None):
     pids, best = descendants(pid), [None, 0]
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -79,6 +82,9 @@ def find_window(pid: int, hidden=False):
         wpid = wintypes.DWORD()
         u32.GetWindowThreadProcessId(h, ctypes.byref(wpid))
         if wpid.value in pids and (hidden or u32.IsWindowVisible(h)):
+            t = ctypes.create_unicode_buffer(256); u32.GetWindowTextW(h, t, 256)
+            if t.value.startswith(("DIEmWin", "__wgl", "NVOGL", "Default IME", "MSCTFIME")):
+                return True                     # driver/input helper windows are not the game's GPU surface
             r = wintypes.RECT()
             if u32.IsIconic(h):                              # minimized (emulators started minimized): its normal size
                 class WP(ctypes.Structure):
@@ -89,13 +95,14 @@ def find_window(pid: int, hidden=False):
             else:
                 u32.GetWindowRect(h, ctypes.byref(r))
             area = (r.right - r.left) * (r.bottom - r.top)
-            t = ctypes.create_unicode_buffer(256); u32.GetWindowTextW(h, t, 256)
             if " | " in t.value:                             # Dolphin's game window ("Dolphin 2609 | JIT64 DC | ..."), not its menu window
                 area *= 100
             if area > best[1]:
                 best[0], best[1] = h, area
         return True
     u32.EnumWindows(cb, 0)
+    if parent and u32.IsWindow(parent):
+        u32.EnumChildWindows(parent, cb, 0)     # recover a game already docked by an earlier helper
     return best[0]
 
 
@@ -103,12 +110,12 @@ def attach(pid: int, parent: int):
     if not parent or not u32.IsWindow(parent):
         hide()
         return {'ok': False, 'error': 'The gBox parent window is no longer available'}
-    if state["hwnd"] and state["pid"] == pid and u32.IsWindow(state["hwnd"]) and u32.GetParent(state['hwnd']) == parent:
+    if state["hwnd"] and state["pid"] == pid and u32.IsWindow(state["hwnd"]) and u32.GetParent(state['hwnd']) == parent and u32.GetWindowLongPtrW(state['hwnd'], GWL_STYLE) & WS_CHILD:
         return {"ok": True, "hwnd": state["hwnd"], "already": True}
     detach()
     h = None
     for _ in range(150):                                     # the emulator may still be creating its window
-        h = find_window(pid) or find_window(pid, hidden=True)
+        h = find_window(pid, parent=parent) or find_window(pid, hidden=True, parent=parent)
         if h:
             break
         time.sleep(0.1)
@@ -116,8 +123,9 @@ def attach(pid: int, parent: int):
         return {"ok": False, "error": f"no window for pid {pid}"}
     if u32.IsIconic(h):
         u32.ShowWindow(h, 4)                                 # SW_SHOWNOACTIVATE: un-minimize before docking
+    u32.RemovePropW(h, "GBoxCompositedSurface")
     # the emulator starts fully transparent (gBox launches it that way so it never flashes on the desktop): opaque from here
-    state.update(hwnd=h, pid=pid, parent=parent, holes=None, style=u32.GetWindowLongPtrW(h, GWL_STYLE),
+    state.update(hwnd=h, pid=pid, parent=parent, holes=None, mode="native", style=u32.GetWindowLongPtrW(h, GWL_STYLE),
                  exstyle=u32.GetWindowLongPtrW(h, GWL_EXSTYLE) & ~0x00080000)   # WS_EX_LAYERED
     style = (state["style"] & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINMAX)) | WS_CHILD | WS_VISIBLE | 0x04000000   # WS_CLIPSIBLINGS
     u32.SetWindowLongPtrW(h, GWL_STYLE, style)
@@ -134,7 +142,83 @@ def attach(pid: int, parent: int):
     return {"ok": True, "hwnd": h}
 
 
+def capture_position(warm=False):
+    h, parent = state.get("hwnd"), state.get("parent")
+    x, y = -16000, -16000
+    if warm and parent and u32.IsWindow(parent) and not u32.IsIconic(parent):
+        r = wintypes.RECT(); u32.GetWindowRect(parent, ctypes.byref(r))
+        x, y = r.left + 20, r.top + 60
+    if h and u32.IsWindow(h):
+        r = wintypes.RECT(); u32.GetWindowRect(h, ctypes.byref(r))
+        if r.left != x or r.top != y:
+            u32.SetWindowPos(h, 1, x, y, 0, 0, 0x0001 | 0x0010)
+
+
+def captured(pid):
+    if state.get("mode") != "capture" or state.get("pid") != pid:
+        return {"ok": False, "error": "Stale capture source"}
+    state["warm_until"] = 0
+    capture_position()
+    return {"ok": True}
+
+
+def capture(pid: int, parent: int, w=1280, h=960, warm=False):
+    """Keep the GPU window off the desktop; Chromium presents its live captured surface.
+
+    A child HWND cannot be captured by Chromium. Make the source a borderless
+    window off-screen, without changing the emulator's graphics driver or process.
+    Never resize a healthy source when a menu opens or its video element moves.
+    """
+    if not parent or not u32.IsWindow(parent):
+        return {"ok": False, "error": "The gBox window is no longer available"}
+    if state.get("mode") == "capture" and state.get("pid") == pid and state.get("hwnd") and u32.IsWindow(state["hwnd"]):
+        state["shown"] = True
+        if not u32.IsWindowVisible(state["hwnd"]):
+            u32.ShowWindow(state["hwnd"], SW_SHOWNA)
+        if warm:
+            state["warm_until"] = time.monotonic() + 15
+            capture_position(True)
+        return {"ok": True, "hwnd": state["hwnd"], "sourceId": f'window:{state["hwnd"]}:0'}
+    found = state["hwnd"] if state.get("pid") == pid and state["hwnd"] and u32.IsWindow(state["hwnd"]) else None
+    found = found or find_window(pid, hidden=True, parent=parent)
+    if not found:
+        return {"ok": False, "error": f"no capture window for pid {pid}"}
+    if state["hwnd"] and state["hwnd"] != found:
+        detach()
+    if u32.IsIconic(found):
+        u32.ShowWindow(found, 4)                 # a minimized source cannot start a live GPU capture
+    u32.ShowWindow(found, SW_HIDE)
+    style = u32.GetWindowLongPtrW(found, GWL_STYLE)
+    exstyle = u32.GetWindowLongPtrW(found, GWL_EXSTYLE)
+    u32.SetWindowLongPtrW(found, GWL_STYLE, (style & ~(WS_CHILD | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINMAX)) | WS_POPUP | WS_VISIBLE)
+    u32.SetWindowLongPtrW(found, GWL_EXSTYLE, exstyle & ~(WS_EX_APPWINDOW | WS_EX_TOOLWINDOW | 0x00080000))
+    u32.SetParent(found, None)
+    u32.SetWindowRgn(found, None, False)
+    u32.SetPropW(found, "GBoxCompositedSurface", 1)
+    w, h = max(320, min(1920, int(w))), max(240, min(1080, int(h)))
+    # Capture reconnect needs an initial DWM frame. The source fits completely
+    # behind the opaque host at HWND_BOTTOM until both Chromium streams decode.
+    pr = wintypes.RECT(); u32.GetWindowRect(parent, ctypes.byref(pr))
+    w, h = min(w, max(1, pr.right - pr.left - 40)), min(h, max(1, pr.bottom - pr.top - 80))
+    state.update(hwnd=found, pid=pid, parent=parent, style=style, exstyle=exstyle,
+                 mode="capture", holes=None, placed=None, shown=True, rect=(0, 0, w, h),
+                 warm_until=time.monotonic() + 15 if warm else 0)
+    # HWND_BOTTOM + NOACTIVATE: even an interrupted capture cannot cover the app.
+    u32.SetWindowPos(found, 1, -16000, -16000, w, h, SWP_FRAMECHANGED | SWP_SHOWWINDOW | 0x0010)
+    capture_position(warm)
+    if u32.GetParent(found):
+        u32.ShowWindow(found, SW_HIDE)
+        return {"ok": False, "error": "The emulator window could not become a capture source"}
+    return {"ok": True, "hwnd": found, "sourceId": f"window:{found}:0", "width": w, "height": h}
+
+
 def move(x, y, w, h, holes=()):
+    if state.get("mode") == "capture":          # failed media capture: restore the native dock safely
+        pid, parent = state["pid"], state["parent"]
+        state["mode"] = "native"
+        result = attach(pid, parent)
+        if not result.get("ok"):
+            return result
     r = (int(x), int(y), max(1, int(w)), max(1, int(h)))
     moved = r != state.get("placed")
     state.update(rect=(x, y, w, h), shown=True, placed=r)
@@ -175,6 +259,8 @@ def move(x, y, w, h, holes=()):
 
 def focus():
     """Give the docked game the keyboard/controller focus (RetroArch only reads input while its window has focus)."""
+    if state.get("mode") == "capture":
+        return {"ok": True}                    # video input is delivered by the app; keep Chromium's focus
     h = state["hwnd"]
     if not (h and u32.IsWindow(h) and u32.IsWindowVisible(h)):
         return {"ok": False, "error": "not attached"}
@@ -226,7 +312,7 @@ def detach():
         u32.ShowWindow(h, SW_HIDE)
         # Leave it parented: restoring top-level styles lets some emulators show it again.
         # The worker stops old games; releasing a dock must not resurrect their windows.
-    state.update(hwnd=None, pid=None, parent=None, holes=None, placed=None)
+    state.update(hwnd=None, pid=None, parent=None, holes=None, placed=None, mode="native")
     return {"ok": True}
 
 
@@ -237,6 +323,10 @@ def watchdog():
         time.sleep(0.5)
         with lock:
             pid, parent, h = state["pid"], state["parent"], state["hwnd"]
+            if state.get("mode") == "capture":
+                # Source stays below the host during reconnect, then off-screen.
+                capture_position(time.monotonic() < state.get("warm_until", 0))
+                continue                        # a replaced source is recovered by the renderer's media lifecycle
             if h and u32.IsWindow(h) and state["shown"] and state["rect"] and not u32.IsWindowVisible(h):
                 u32.ShowWindow(h, SW_SHOWNA)               # RPCS3 hides its window while it reloads a save state
             if pid and parent and not (h and u32.IsWindow(h)) and find_window(pid):
@@ -373,7 +463,9 @@ for line in sys.stdin:
         m = json.loads(line)
         op = m.get("op")
         with lock:
-            r = (attach(int(m["pid"]), int(m["parent"])) if op == "attach" else move(m["x"], m["y"], m["w"], m["h"], m.get("holes")) if op == "move"
+            r = (capture(int(m["pid"]), int(m["parent"]), m.get("w", 1280), m.get("h", 960), m.get("warm", False)) if op == "capture"
+                 else captured(int(m["pid"])) if op == "captured"
+                 else attach(int(m["pid"]), int(m["parent"])) if op == "attach" else move(m["x"], m["y"], m["w"], m["h"], m.get("holes")) if op == "move"
                  else hide() if op == "hide" else focus() if op == "focus" else kill() if op == "kill" else unfocus() if op == "unfocus" else detach() if op == "detach" else {"ok": False, "error": f"unknown op {op}"})
     except Exception as e:
         r = {"ok": False, "error": f"{type(e).__name__}: {e}"}

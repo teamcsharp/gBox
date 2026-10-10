@@ -1030,6 +1030,8 @@ window.taskVizCreate = canvas => {
 <script src="inbox-view.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
+<script src="../web/viz/gpu-game-surface.js"></script>
+<script src="game-surface.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 const volumeSlider = $("#top-volume input"), volumeLabel = $("#top-volume output");
@@ -1931,7 +1933,8 @@ function loadPlay() {
       if (!wv.isConnected) return;
       generation++; clearTimeout(timeout); wv.dataset.ready = "false"; status(text, true);
     };
-    wv.addEventListener("did-start-loading", loading);
+    // Subframe loads (model/voice overlays) must not hide a healthy game view.
+    wv.addEventListener("did-start-navigation", e => { if (e.isMainFrame && !e.isInPlace) loading(); });
     wv.addEventListener("dom-ready", async () => {
       const revision = generation;
       try {
@@ -2591,7 +2594,7 @@ async function embedTick() {
     const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is
-    if (!mine) { pipHandle(null); EMB.sid = null; EMB.rect = null; if (EMB.pid) { EMB.pid = null; EMB.last = ""; await gbox.embedSync(null); } return; }
+    if (!mine) { if (GPU_GAME.pid) await gpuGameDispose(); pipHandle(null); EMB.sid = null; EMB.rect = null; if (EMB.pid) { EMB.pid = null; EMB.last = ""; await gbox.embedSync(null); } return; }
     if (mine.session_id !== EMB.sid) {
       const wv0 = document.querySelector("#wv");
       if (wv0) wv0.executeJavaScript(`(typeof playing !== "undefined" && playing === ${JSON.stringify(mine.session_id)}) || (typeof LOADING !== "undefined" && LOADING) || show("Sessions", ${JSON.stringify(mine.session_id)})`).catch(() => {});
@@ -2625,6 +2628,8 @@ async function embedTick() {
     const hidden = overlay || EYE.on;
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
+    if (await gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay)) return;
+    if (GPU_GAME.pid) await gpuGameDispose(wv);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
     const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => [...document.querySelectorAll(
       "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]")]
@@ -2655,6 +2660,12 @@ setInterval(() => {                                               // voice overl
   const on = !!(EMB.sid && EMB.rect && (ai || me));
   if (!on && !VOV.on) return;
   VOV.on = on;
+  if (EMB.surface === "gpu") {
+    gbox.vizOverlay?.({ on: false });
+    gpuGameVoice({ on, level: ai ? 0.9 : 0.5, beat: ai && Math.random() < 0.3 });
+    return;
+  }
+  gpuGameVoice({ on: false });
   gbox.vizOverlay?.(on ? { on, rect: EMB.rect, level: ai ? 0.9 : 0.5, beat: ai && Math.random() < 0.3 } : { on: false });
 }, 200);
 document.addEventListener("focusin", e => { if (EMB.sid && e.target.closest?.("input, textarea, select, [contenteditable]")) gbox.appFocus?.(); });
@@ -2809,7 +2820,12 @@ const gameFocus = () => setTimeout(async () => {
   if (!allowed()) return;
   const inPage = await typingInPage();
   // A user can focus an editor while the guest-frame check is awaiting its IPC response.
-  if (!inPage && allowed()) gbox.embedFocus?.();
+  if (!inPage && allowed()) {
+    if (EMB.surface === "gpu") {
+      if (document.querySelector("#gpu-game")?.style.display === "block") window.GBoxGPUVideo.focus();
+      else document.querySelector("#wv")?.executeJavaScript("window.GBoxGPUVideo?.focus()").catch(() => {});
+    } else gbox.embedFocus?.();
+  }
 }, 120);
 gbox.onAppFocus?.(gameFocus);
 // only a click on the game itself hands it the keyboard (clicks in the library, sidebars, search boxes keep it in gBox)
@@ -2888,9 +2904,19 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     if (m.ev === "padscan") syncNativePads();
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
+    else if (m.ev === "gameclick") closePops(null);
+    else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
+    else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
+    else if (m.ev === "gamecontext" || m.ev === "gamepick") {
+      const r = wv.getBoundingClientRect();
+      if (m.ev === "gamecontext") pipMenu(r.left + m.x, r.top + m.y);
+      else eyePoint(r.left + m.x, r.top + m.y);
+    }
     else cardDragMsg(m);
   } catch {} }); } }, 1000);
 gbox.onEmbedEvent?.(async ev => {
+  if (ev.event === "gpu-whip") return gpuGameWhip(ev);
+  if (ev.event === "overlayframe") return gpuGameOverlayEvent(ev.message);
   if (ev.event === "gameup" && CARDDRAG.c && Date.now() - CARDDRAG.t < 60000 && (!CARDDRAG.end || Date.now() - CARDDRAG.end < 1500)) {
     const card = CARDDRAG.c; CARDDRAG.c = null;
     const shot = await gbox.captureOS?.().catch(() => null);
@@ -2903,7 +2929,7 @@ gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === "reset") return document.querySelector("#wv")?.executeJavaScript(          // F5: reset the game being played
     `(s => s && resetGame(s, document.getElementById("resetbtn")))(${JSON.stringify(EMB.sid || "")} || playing || (active && active.sid))`).catch(() => {}); if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
-  if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, video, [contenteditable]")) return;
   if (e.key === "a" || e.key === "A") { e.preventDefault(); gameAction("autoplay"); }   // F2/F3/F4 come from the main process
   if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); eyeStart(); }
 });
@@ -4235,7 +4261,7 @@ async function ovlPoll() {
     Object.assign(OVL, { sid, rev: rec.rev, rec });
     if (!rec.on) { if (prev?.on) await gbox.overlay("stop"); OVL.st = null; ovlBar(); return; }
     await gbox.overlay("start", { sid, pid: EMB.pid, slug: rec.character, name: rec.name, point: rec.point, newTarget: !prev?.on || prev.pick !== rec.pick,
-                                  rect: EMB.rect, visible: EMB.vis, holes: EMB.holes,
+                                  rect: EMB.rect, visible: EMB.vis, holes: EMB.holes, surface: EMB.surface,
                                   set: { scale: rec.scale, dx: rec.dx, dy: rec.dy, backdrop: rec.backdrop, facing: rec.facing } });
     OVL.key = ""; ovlRect(); ovlBar();
   } catch {} finally { ovlPoll.busy = false; }
@@ -4243,8 +4269,8 @@ async function ovlPoll() {
 setInterval(ovlPoll, 1000);
 function ovlRect() {                                          // embedTick: the game moved / resized / got covered (dock, PiP, full screen)
   if (!OVL.rec?.on) return;
-  const key = JSON.stringify([EMB.rect, EMB.vis, EMB.holes]);
-  if (key !== OVL.key) { OVL.key = key; gbox.overlay?.("rect", { rect: EMB.rect, visible: !!EMB.vis, holes: EMB.holes || [] }); ovlBar(); }
+  const key = JSON.stringify([EMB.rect, EMB.vis, EMB.holes, EMB.surface]);
+  if (key !== OVL.key) { OVL.key = key; gbox.overlay?.("rect", { rect: EMB.rect, visible: !!EMB.vis, holes: EMB.holes || [], surface: EMB.surface }); ovlBar(); }
 }
 function ovlBar() {
   const b = $("#ovbar"), on = !!(OVL.rec?.on && EMB.rect && EMB.vis);

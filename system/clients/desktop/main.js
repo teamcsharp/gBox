@@ -30,6 +30,8 @@ const path = require("path");
 
 app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
                                   : path.join(app.getPath("appData"), "gbox-desktop"));   // keep settings where they were (productName = gBox)
+const GAME_FRAME_DIR = path.join(app.getPath("userData"), "game-frames");
+process.env.GBOX_GAME_FRAME_DIR = GAME_FRAME_DIR;                  // worker/tracker also use a standalone profile's capture cache
 const SETTINGS = path.join(app.getPath("userData"), "settings.json");
 const DEFAULTS = {
   sshHost: "spark",                                   // ~/.ssh/config alias (key auth, BatchMode); optional
@@ -69,10 +71,19 @@ const taskLogs = new Map();                           // recent app commands and
 let CONSOLE = "";
 const logPush = (src, text) => { CONSOLE = (CONSOLE + `${new Date().toISOString().slice(11, 23)} [${src}] ${String(text).replace(/\n+$/, "")}\n`).slice(-400000); };
 for (const lv of ["log", "warn", "error"]) { const orig = console[lv].bind(console); console[lv] = (...a) => { logPush("main:" + lv, a.map(String).join(" ")); orig(...a); }; }
-app.on("web-contents-created", (_e, wc) => wc.on("console-message", (ev, level, message, line, source) => {
+app.on("web-contents-created", (_e, wc) => {
+  if (wc.getType() === "webview") {
+    wc.setBackgroundColor?.("#16161a");
+    wc.setBackgroundThrottling(false);
+  }
+  wc.on("console-message", (ev, level, message, line, source) => {
   const m = ev?.message ?? message, lv = ev?.level ?? level, src = ev?.sourceId ?? source, ln = ev?.lineNumber ?? line;
   logPush(`${wc.getType()}:${lv}`, `${m}${src ? `  (${String(src).split("/").pop()}:${ln})` : ""}`);
-}));
+  });
+  wc.on("render-process-gone", (_e, details) => {
+    logPush(`${wc.getType()}:error`, `render-process-gone: reason=${details?.reason} exitCode=${details?.exitCode}`);
+  });
+});
 ipcMain.handle("console:tail", (_e, n = 200000) => CONSOLE.slice(-n));
 const send = (ch, ...a) => {
   if (ch === "task") {
@@ -450,7 +461,7 @@ function embedCmd(cmd) {
   }
   return new Promise(res => { embedQ.push(res); embedder.stdin.write(JSON.stringify(cmd) + "\n"); });
 }
-let embedded = null;                                             // pid currently inside the app
+let embedded = null, gpuSurface = false;                          // active presentation uses Chromium's compositor
 // Pick whip: Alt + drag over the game draws a line from one thing to another; on release the frame (with the line) goes
 // to the chat as "swap this with that". The line lives on a transparent click-through window above the docked game.
 let whipOv = null, whip = null;
@@ -466,6 +477,12 @@ window.L = (ax, ay, bx, by) => { g.clearRect(0, 0, c.width, c.height); g.lineCap
 async function pickWhip(m) {
   if (!win) return;
   const k = screen.getDisplayMatching(win.getBounds()).scaleFactor, cb = win.getContentBounds(), x = m.x / k, y = m.y / k;
+  if (gpuSurface) {
+    if (whipOv && !whipOv.isDestroyed()) whipOv.hide();
+    whip = null;
+    win.webContents.send("embed:event", { ...m, event: "gpu-whip", x, y });
+    return;
+  }
   if (m.phase === "start") {
     if (!whipOv) {
       whipOv = new BrowserWindow({ parent: win, frame: false, transparent: true, show: false, focusable: false, skipTaskbar: true,
@@ -500,8 +517,17 @@ function f3(on) {
         else if (!on && globalShortcut.isRegistered("F3")) Object.keys(keys).forEach(k => globalShortcut.unregister(k)); } catch {}
 }
 let embedSyncQueue = Promise.resolve();
+const syncGameSurface = require("./game-surface-main")({ getWin: () => win, embedCmd,
+  nativeSync: st => { gpuSurface = false; return syncEmbeddedGame(st); }, f3,
+  frameDir: GAME_FRAME_DIR, onCapture: pid => { embedded = pid; gpuSurface = true; },
+  publishFrame: async (sid, png) => {
+    const r = await fetch(settings().apiUrl + `/api/sessions/${encodeURIComponent(sid)}/frame`, {
+      method: "POST", headers: { authorization: `Bearer ${await token()}`, "content-type": "image/jpeg" },
+      body: nativeImage.createFromBuffer(png).toJPEG(90), signal: AbortSignal.timeout(3000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } });
 ipcMain.handle("embed:sync", (_e, st) => {
-  const next = embedSyncQueue.then(() => syncEmbeddedGame(st));
+  const next = embedSyncQueue.then(() => syncGameSurface(st));
   embedSyncQueue = next.catch(() => {});
   return next;
 });
@@ -727,7 +753,7 @@ app.whenReady().then(() => {
     icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     titleBarStyle: "hidden",                                         // custom title bar (capture + eyedropper icons)
     titleBarOverlay: { color: "#111114", symbolColor: "#e8e8ee", height: 36 },
-    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, webviewTag: true },
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, webviewTag: true, backgroundThrottling: false },
   });
   if (process.platform === "win32")                          // pinning the window pins *this* command (exe + app folder), same taskbar slot
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),

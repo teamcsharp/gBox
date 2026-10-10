@@ -21,6 +21,7 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 
 try:
     import cv2
@@ -126,6 +127,15 @@ class Grabber:
         w, hh = r.right, r.bottom
         if w < 16 or hh < 16:
             return None
+        # The browser supplies a small GPU frame while the actual window is off-screen.
+        import os
+        frame_dir = Path(os.environ.get("GBOX_GAME_FRAME_DIR") or Path(os.environ.get("APPDATA", "")) / "gbox-desktop" / "game-frames")
+        frame = frame_dir / f"{self.pid}.track.png"
+        if frame.is_file() and 0 <= time.time() - frame.stat().st_mtime < 2:
+            captured = cv2.imread(str(frame))
+            if captured is not None:
+                self.mode = "gpu-surface"
+                return captured, (w, hh)
         oh = min(out_h, hh)
         ow = max(1, round(w * oh / hh))
         sh, sw = min(hh, oh * 2), min(w, ow * 2)               # GDI shrinks to 2x (nearest), OpenCV area-filters the rest

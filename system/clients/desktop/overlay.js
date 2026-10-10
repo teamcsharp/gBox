@@ -39,7 +39,10 @@ module.exports = function overlaySwap({ app, ipcMain, BrowserWindow, getWin, ven
     send("overlay:status", { sid: st.sid, slug: st.slug, name: st.name, awaiting: !!st.awaiting, set: st.set, ...st.status,
                              fps: st.stats?.fps, cpu: st.stats?.cpu, grab_ms: st.stats?.grab_ms, track_ms: st.stats?.track_ms });
   }
-  const ovSend = m => { if (!ov || ov.isDestroyed()) return; if (ready) ov.webContents.send("ov", m); else queue.push(m); };
+  const ovSend = m => {
+    if (st?.surface === "gpu") return send("embed:event", { event: "overlayframe", message: m });
+    if (!ov || ov.isDestroyed()) return; if (ready) ov.webContents.send("ov", m); else queue.push(m);
+  };
 
   async function ensureWindow() {
     const win = getWin();
@@ -67,7 +70,9 @@ module.exports = function overlaySwap({ app, ipcMain, BrowserWindow, getWin, ven
   // the game picture's rect in the app window (CSS px, from embedTick) minus the gBox panels over it (holes)
   function place() {
     const win = getWin();
-    if (!ov || ov.isDestroyed() || !win || !st) return;
+    if (!win || !st) return;
+    if (st.surface === "gpu") { if (ov && !ov.isDestroyed()) ov.hide(); return; }
+    if (!ov || ov.isDestroyed()) return;
     if (!st.rect || !st.visible || win.isMinimized() || !win.isVisible()) { if (ov.isVisible()) ov.hide(); return; }
     const b = win.getContentBounds(), z = win.webContents.getZoomFactor() || 1, r = st.rect;
     const w = Math.max(1, Math.round(r.w * z)), h = Math.max(1, Math.round(r.h * z));
@@ -110,7 +115,9 @@ module.exports = function overlaySwap({ app, ipcMain, BrowserWindow, getWin, ven
       if (op === "start") {                               // a: {sid, pid, slug, name, point, newTarget, rect, visible, holes, set}
         const fresh = !st || st.sid !== a.sid || st.pid !== a.pid;
         if (fresh) st = { sid: a.sid, pid: a.pid, status: {}, set: {} };
-        await ensureWindow();
+        st.surface = a.surface || "native";
+        if (st.surface === "gpu") { if (ov && !ov.isDestroyed()) ov.destroy(); }
+        else await ensureWindow();
         Object.assign(st, { rect: a.rect || st.rect, visible: a.visible ?? st.visible ?? true, holes: a.holes || st.holes || [] });
         if (a.set) { st.set = { ...st.set, ...a.set }; ovSend({ type: "set", set: st.set }); }
         if (a.slug && a.slug !== st.slug) {
@@ -123,14 +130,37 @@ module.exports = function overlaySwap({ app, ipcMain, BrowserWindow, getWin, ven
         return { ok: true };
       }
       if (!st) return { ok: false, error: "no overlay" };
+      if (op === "surface-status") {
+        if (a.loaded) status({ model: a.loaded, error: "" });
+        if (a.error) status({ state: "error", why: "model: " + a.error });
+        return { ok: true };
+      }
       if (op === "set") { st.set = { ...st.set, ...a }; ovSend({ type: "set", set: st.set }); status({}); return { ok: true }; }
+      if (op === "pick") {
+        if (st.surface !== "gpu" || !st.awaiting || a.sid !== st.sid) return { ok: false, error: "not awaiting this game's target" };
+        if (!Array.isArray(a.point) || a.point.length !== 2 || !a.point.every(n => Number.isFinite(n) && n >= 0 && n <= 1))
+          return { ok: false, error: "target outside game picture" };
+        target(a.point); return { ok: true };
+      }
       if (op === "repick") { target(a.point); return { ok: true }; }
-      if (op === "rect") { st.rect = a.rect; st.visible = !!a.visible; st.holes = a.holes || []; place(); return { ok: true }; }
+      if (op === "rect") {
+        const changed = st.surface !== (a.surface || "native"); st.surface = a.surface || "native";
+        st.rect = a.rect; st.visible = !!a.visible; st.holes = a.holes || [];
+        if (changed) {
+          if (st.surface === "gpu") { if (ov && !ov.isDestroyed()) ov.destroy(); }
+          else await ensureWindow();
+          ovSend({ type: "model", slug: st.slug, api: settings().apiUrl, token: await token() });
+          ovSend({ type: "set", set: st.set });
+          ovSend({ type: "banner", text: st.awaiting ? `Alt+click your character to put ${st.name || 'the model'} over it` : "" });
+        }
+        place(); return { ok: true };
+      }
       if (op === "stop") {
         if (trk) tracker({ op: "stop" });
         const was = st; st = null;
         if (ov && !ov.isDestroyed()) ov.destroy();
         ov = null; ready = false;
+        send("embed:event", { event: "overlayframe", message: { type: "stop" } });
         send("overlay:status", { sid: was.sid, state: "stopped" });
         return { ok: true };
       }

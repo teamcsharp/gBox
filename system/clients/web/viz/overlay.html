@@ -11,4 +11,5 @@ const viz = await createViz(document.getElementById("cv"), { mode: q.get("mode")
 addEventListener("resize", () => viz.resize());
 // the app pushes who's talking + loudness so the visual pulses with the conversation
 window.gboxVoice = s => viz.push({ stationActivity: 0.3 + (s.level || 0) * 0.7, ...(s.beat ? { beat: 1 } : {}) });
+addEventListener("message", e => { if (e.source === parent && e.data?.gboxVoice) window.gboxVoice(e.data.gboxVoice); });
 </script></body></html>
