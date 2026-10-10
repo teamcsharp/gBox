@@ -230,6 +230,7 @@ def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -
     request; the gap report itself is never blocked."""
     out: dict = {"session_id": sid}
     slot = _moment_slot(ctx, api, rid)
+    t0 = time.time()                                               # export_saved rejects a checkpoint older than this
     j = _run_job(ctx, api, "session_op", {"session_id": sid, "op": "save_state", "args": {"slot": slot}}, rid)
     if j.get("state") != "succeeded":
         why = j.get("error") or j.get("state") or "unknown"
@@ -241,8 +242,10 @@ def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -
     out |= {"saved": True, "slot": res.get("slot", slot), "frame": res.get("frame")}
     line = (f"Checkpoint of this moment saved in slot {res.get('slot', slot)}"
             + (f"; frame thumbnail artifact {res['frame']}" if res.get("frame") else "") + ".")
+    # export_saved uploads THAT checkpoint file (exact slot, not older than t0); op=export would save again first,
+    # overwriting the pickwhip moment with a later one and breaking the match with the captured frame
     x = _run_job(ctx, api, "state_transfer",
-                 {"session_id": sid, "op": "export", "slot": res.get("slot", slot)}, rid)
+                 {"session_id": sid, "op": "export_saved", "slot": res.get("slot", slot), "not_before": t0}, rid)
     if x.get("state") == "succeeded":
         r = (x.get("output") or {}).get("result") or {}
         out |= {"artifact": r.get("artifact"), "bytes": r.get("bytes")}

@@ -73,38 +73,30 @@ def test_running_session_preserves_moment(monkeypatch):
     api = API(requests={})
     existing_gap(api)
     api.jobs = {}  # default job replies come from POST handler; script the two tool jobs below
-    seq = [
-        {"id": "j1", "state": "succeeded", "output": {"result": {"slot": 70, "frame": "png1"}}},
-        {"id": "j2", "state": "succeeded", "output": {"result": {"artifact": "abc", "bytes": 9717672,
-                                                                 "file": "Dead or Alive 2.state70"}}},
-    ]
-    made = []
+    dispatched = []
 
-    def post_job(ctx, method, path, **kw):
-        if path == "/api/jobs":
-            j = seq[len(made)] if len(made) < len(seq) else {"id": "jx", "state": "succeeded", "output": {"result": {}}}
-            made.append(kw["json"]["tool"])
-            api.jobs[j["id"]] = j
-            return j
-        return api(ctx, method, path, **kw)
+    def run_job(ctx, a, tool, i, rid, limit=180):
+        dispatched.append((tool, i, rid))
+        if tool == "session_op":                                  # the emulator wrote slot 71, not the requested 70
+            return {"state": "succeeded", "output": {"result": {"slot": 71, "frame": "png1"}}}
+        return {"state": "succeeded", "output": {"result": {"artifact": "abc", "bytes": 9717672,
+                                                            "file": "Dead or Alive 2.state71"}}}
 
-    monkeypatch.setattr(cc, "time", cc.time)  # keep real time
-    api2 = API(requests=api.requests, sessions=api.sessions)
-    api2.__call__ = post_job  # type: ignore[method-assign]
-    api2.calls, api2.requests, api2.sessions, api2.jobs = api.calls, api.requests, api.sessions, api.jobs
-    monkeypatch.setattr(cc, "_run_job", lambda ctx, a, tool, i, rid, limit=180: (
-        {"state": "succeeded", "output": {"result": {"slot": 70, "frame": "png1"}}} if tool == "session_op" else
-        {"state": "succeeded", "output": {"result": {"artifact": "abc", "bytes": 9717672,
-                                                     "file": "Dead or Alive 2.state70"}}}))
+    monkeypatch.setattr(cc, "_run_job", run_job)
     import gbox.overlay_swap as os_
     monkeypatch.setattr(os_, "start", lambda ctx, a, m, sid, x=None, y=None: {"status": "overlay"})
 
-    res = cc.no_writer(CTX, api2, META, GAME, NEED, inp())
+    res = cc.no_writer(CTX, api, META, GAME, NEED, inp())
     assert res["status"] == "overlay"
     p = res["preserved"]
-    assert p["saved"] and p["slot"] == 70 and p["captured"] is True and p["artifact"] == "abc"
-    msgs = api2.requests["r1"]["messages"]
-    assert any("Checkpoint of this moment saved in slot 70" in m["text"] for m in msgs)
+    assert p["saved"] and p["slot"] == 71 and p["captured"] is True and p["artifact"] == "abc"
+    (t1, save, r1), (t2, export, r2) = dispatched
+    assert (t1, save["op"], save["args"]["slot"], r1) == ("session_op", "save_state", 70, "r1")
+    # the exact checkpoint is uploaded (no second save): the ACTUAL slot, guarded against stale files
+    assert (t2, export["op"], export["slot"], r2) == ("state_transfer", "export_saved", 71, "r1")
+    assert export["not_before"] > 0
+    msgs = api.requests["r1"]["messages"]
+    assert any("Checkpoint of this moment saved in slot 71" in m["text"] for m in msgs)
     assert any("Portable export 9717672 bytes" in m["text"] for m in msgs)
     assert any(m.get("attachments") for m in msgs), "the captured frame must be attached to the request"
 
