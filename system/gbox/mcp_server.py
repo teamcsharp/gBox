@@ -37,9 +37,10 @@ CONVENIENCE = {
                                        ["request_id", "session_id", "text"])),
     "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress.",
                           obj({"request_id": S, "status": {"type": "string", "enum": ["open", "in_progress", "done", "blocked"]},
-                               "note": S}, ["request_id", "status"])),
+                               "note": S, "solved_by": obj({"service": S, "model": S, "system": S,
+                                   "verified_by": S, "verification": S, "run_id": S}, ["service", "verification"])}, ["request_id", "status"])),
     "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use one tool call at a time. Fields may be flat or under metrics. Use zero with token_count_unavailable when exact counts are unavailable.",
-                               obj({"request_id": S, "model": S, "tokens_in": I, "tokens_out": I,
+                               obj({"request_id": S, "model": S, "provider": S, "system": S, "tokens_in": I, "tokens_out": I,
                                     "tokens_detail": {"type": "object"}, "tools": {"type": "object"},
                                     "files_changed": {"type": "array", "items": S}, "turns": I,
                                     "metrics": {"type": "object"}}, ["request_id"])),
@@ -142,7 +143,8 @@ def build(base_url: str, token: str) -> Server:
                               {"session_id": a["session_id"], "text": a["text"], "task_step": a.get("task_step", {})})
         if name == "set_request_status":
             return await post(f"/api/requests/{a['request_id']}/status",
-                              {"status": a["status"], "note": a.get("note", "")})
+                              {"status": a["status"], "note": a.get("note", "")} |
+                              ({"solved_by": a["solved_by"]} if a.get("solved_by") else {}))
         if name == "record_request_metrics":
             metrics = {k: v for k, v in a.items() if k not in ("request_id", "metrics")}
             if isinstance(a.get("metrics"), dict):

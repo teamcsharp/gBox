@@ -1001,8 +1001,8 @@ window.taskVizCreate = canvas => {
     </div></section>
     <section id="requests"><div class="pane" style="max-width:1100px">
       <div class="bar"><h2 style="margin:0">Requests</h2><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button><span class="mut" id="reqsum"></span>
-        <button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
-      <p class="mut">Every request you make (here, by screenshot, by eyedropper, or in chat with Claude) is logged with its thread,
+        <button class="act" id="reqbenchmarks" title="Compare verified results by service and model">Solver results</button><button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
+      <p class="mut">Every request you make (here, by screenshot, by eyedropper, or in chat) is logged with its thread,
         status, time to complete, files changed, tokens in/out and tools used.</p>
       <div id="reqlist"></div></div></section>
     <section id="tools"><div class="pane" style="max-width:1400px">
@@ -1022,6 +1022,7 @@ window.taskVizCreate = canvas => {
 </div>
 <script src="floating.js"></script>
 <script src="inbox-view.js"></script>
+<script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -2337,6 +2338,12 @@ $("#reqexport").onclick = async () => {                  // the whole request hi
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
 let requestFilter = localStorage.getItem("gbox_request_filter") || "all";
+let inboxSolverRequests = [];
+$("#reqbenchmarks").onclick = () => GBoxRequestSolvers.show(inboxSolverRequests);
+document.addEventListener('click', e => {
+  const button = e.target.closest('[data-solver-benchmark]'); if (!button) return;
+  e.stopImmediatePropagation(); GBoxRequestSolvers.show(inboxSolverRequests, button.dataset.solverBenchmark);
+});
 if (!["all", "pending", "completed"].includes(requestFilter)) requestFilter = "all";
 $("#reqfilters").addEventListener("click", e => {
   const button = e.target.closest("[data-request-filter]"); if (!button) return;
@@ -2347,6 +2354,7 @@ $("#reqfilters").addEventListener("click", e => {
 async function refreshInbox() {
   const r = await gbox.api("/api/requests"); if (!r.ok) return;
   const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
+  inboxSolverRequests = all;
   const ids = new Set(all.map(x => x.id));
   all.forEach(x => { if (x.parent_request_id && ids.has(x.parent_request_id)) { const list = children.get(x.parent_request_id) || []; list.push(x); children.set(x.parent_request_id, list); } });
   const unresolved = all.filter(x => x.automated && !x.context?.auto_report && (!x.parent_request_id || !ids.has(x.parent_request_id)));
@@ -2381,13 +2389,13 @@ async function refreshInbox() {
       ${x.status === "done" ? `<button class="act reportincomplete" style="float:right;margin:6px">Report incomplete</button>` : ""}
       ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - ${mm.state_slot == null ? "open the mod (no saved moment attached)" : "load the saved moment"}${mm.video ? " (right-click: video)" : ""}">
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}${mm.state_slot == null ? "play mod" : "load moment"}</figcaption></figure>`).join("")}</div>` : ""}
-      <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span><span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
+      <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span>${GBoxRequestSolvers.badge(x)}<span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
       <div class="m">${new Date(x.created * 1000).toLocaleString()} · took ${fmtDur(m.duration_s ?? (x.status === "done" ? null : (Date.now() / 1000 - (x.started || x.created))))}
         · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
-        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Claude" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
           : `<br><a class="att-file" href="#" data-url="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">📎 ${esc(a.name)}${a.size ? ` (${Math.ceil(a.size / 1024)} KB)` : ""}</a>`).join("")}</div>`).join("")}
         ${ms.map(mm => `<details class="howto" open><summary>How gBox does it: ${esc(mm.title)} <span class="mut">(${esc(mm.game_title || "")}, ${mm.verified ? "verified" : "not verified yet"})</span></summary>
           ${mm.calls.map(c => `<div class="howcall"><b>${esc(c.tool)}</b> <span class="mut">${esc((REG.tools?.[c.tool] || "").split("\n")[0].slice(0, 260))}</span><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}
@@ -2546,7 +2554,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || FLOW.on;      // full-window overlays: the game steps aside
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on;      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
     const wv = document.querySelector("#wv");

@@ -154,7 +154,8 @@ def dispatch_request(request_id: str, number: int) -> str:
                   "permanent root cause of the freeze/black screen and implement and test a concrete fix in gBox. "
                   "Use the available cloud reasoning capacity and gBox MCP tools. Preserve the operator's current "
                   "game; use only an idle worker for reproduction and enforce 2% audio. Record each attempt, "
-                  "attach real screenshots and actual token metrics, and mark done only after independent "
+                  "attach real screenshots and actual token metrics with the actual provider/model/system, "
+                  "record solved_by implementation credit separately from its reviewer, and mark done only after independent "
                   "verification. A moving frame after relaunch alone does not prove that the supplied moment "
                   "was restored or that the underlying fault was fixed.")
         args = ['create', '1m', prompt, '--name', name, '--repeat', '1',

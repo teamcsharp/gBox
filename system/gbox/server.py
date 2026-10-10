@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import padstate
@@ -2338,12 +2338,23 @@ def create_app(config: Config) -> FastAPI:
             out.append({"sha256": ref.sha256, "name": name, "type": mt, "size": ref.size})
         return out
 
+    class SolverIn(BaseModel):
+        service: str = Field(min_length=1, max_length=80)
+        model: str = Field(default="", max_length=160)
+        system: str = Field(default="Hermes", max_length=80)
+        verified_by: str = Field(default="", max_length=80)
+        verification: str = Field(min_length=1, max_length=2000)
+        run_id: str | None = Field(default=None, max_length=80)
+
     class StatusIn(BaseModel):
         status: str                        # open | in_progress | done | blocked
         note: str = ""
+        solved_by: SolverIn | None = None  # implementation credit, separate from its reviewer
 
     class MetricsIn(BaseModel):
         model: str | None = None
+        provider: str | None = None
+        system: str | None = None
         tokens_in: int | None = None       # incl. cache reads/writes, from the agent transcript
         tokens_out: int | None = None
         tokens_detail: dict = {}
@@ -2774,6 +2785,9 @@ def create_app(config: Config) -> FastAPI:
             out += [f"## #{r.get('number')} · {when} · {r['source']} · {r['status']}", "",
                     f"Tokens in/out: {m.get('tokens_in', 0):,} / {m.get('tokens_out', 0):,} · model: {m.get('model') or 'n/a'} · "
                     f"time: {m.get('duration_s') or 0:.0f}s · files: {len(m.get('files_changed') or []) if isinstance(m.get('files_changed'), list) else m.get('files_changed', 0)}", ""]
+            if solver := r.get("solved_by"):
+                out += [f"Solver: {solver.get('service')} · {solver.get('model') or 'n/a'} · {solver.get('system') or 'n/a'}",
+                        f"Verified by: {solver.get('verified_by') or 'n/a'} · {solver.get('verification') or 'n/a'}", ""]
             for msg in r.get("messages") or [{"author": r.get("author"), "text": r.get("body") or r.get("title")}]:
                 out += [f"**{msg.get('author')}:**", "", (msg.get("text") or "").strip(), ""]
         return PlainTextResponse("\n".join(out), media_type="text/markdown",
@@ -2928,12 +2942,15 @@ def create_app(config: Config) -> FastAPI:
     def req_status(rid: str, s: StatusIn, actor=Depends(auth)):
         if s.status not in REQ_STATES:
             raise HTTPException(422, f"status must be one of {REQ_STATES}")
+        if s.solved_by and s.status != "done":
+            raise HTTPException(422, "Solver credit is recorded only for a completed, verified request")
         r, now = _req(rid), time.time()
         if s.status == "in_progress" and not r["started"]:
             r["started"] = now
         if s.status == "done":
             r["completed"] = now
             r["metrics"]["duration_s"] = round(now - (r["started"] or r["created"]), 1)
+            r["solved_by"] = s.solved_by.model_dump() if s.solved_by else None
         r["status"] = s.status
         if s.note:
             r["messages"].append({"author": "agent", "text": s.note, "ts": now})
@@ -2948,6 +2965,27 @@ def create_app(config: Config) -> FastAPI:
         mt = r["metrics"]
         if m.model:
             mt["model"] = m.model
+        if m.provider:
+            mt["provider"] = m.provider[:80]
+        if m.system:
+            mt["system"] = m.system[:80]
+        if m.provider and m.model:
+            # A ticket can involve multiple providers and a separate reviewer.
+            # Preserve each provider/model's measured usage for comparison.
+            usage = mt.setdefault("usage_by_solver", [])
+            entry = next((item for item in usage if item.get("provider") == m.provider[:80]
+                          and item.get("model") == m.model and item.get("system") == (m.system or "")), None)
+            if entry is None:
+                entry = {"provider": m.provider[:80], "model": m.model, "system": m.system or "",
+                         "tokens_in": 0, "tokens_out": 0, "agent_seconds": 0, "timed": False,
+                         "token_count_unavailable": 0}
+                usage.append(entry)
+            entry["tokens_in"] += m.tokens_in or 0
+            entry["tokens_out"] += m.tokens_out or 0
+            entry["token_count_unavailable"] += int(bool(m.tokens_detail.get("token_count_unavailable")))
+            if m.duration_s is not None:
+                entry["agent_seconds"] = round(entry["agent_seconds"] + m.duration_s, 1)
+                entry["timed"] = True
         mt["tokens_in"] = (mt.get("tokens_in") or 0) + (m.tokens_in or 0)
         mt["tokens_out"] = (mt.get("tokens_out") or 0) + (m.tokens_out or 0)
         for k, v in m.tokens_detail.items():
