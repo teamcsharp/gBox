@@ -70,3 +70,17 @@ def test_task_mode_surfaces_agent_reported_cron_failure(monkeypatch, tmp_path):
     state = mode.status()
     assert state["last_status"] == "failed"
     assert "No source patch" in state["last_error"]
+
+
+def test_task_mode_does_not_call_a_plain_cron_exit_success(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    output = home / "cron" / "output" / "job-1"
+    output.mkdir(parents=True)
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "job-1", "name": mode.NAME,
+        "enabled": True, "last_status": "ok"}]}))
+    (output / "run.md").write_text("# Cron Job\n## Response\nI plan to patch this later.\n")
+    monkeypatch.setattr(mode, "_home", lambda: home)
+    monkeypatch.setattr(mode, "_cli", lambda: tmp_path / "hermes")
+    state = mode.status()
+    assert state["last_status"] == "unverified"
+    assert "independently verified" in state["last_error"]

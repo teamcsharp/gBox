@@ -36,6 +36,9 @@ def status() -> dict:
     job = _job() or {}
     last_status, last_error = job.get("last_status"), job.get("last_error")
     if job.get("id") and last_status == "ok":
+        # Hermes's "ok" only means its process exited; it does not mean an inbox request was solved.
+        last_status = "unverified"
+        last_error = "Hermes finished, but no completed inbox result has been independently verified."
         output_dir = _home() / "cron" / "output" / job["id"]
         try:
             latest = max(output_dir.glob("*.md"), key=lambda p: p.stat().st_mtime)
