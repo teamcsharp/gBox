@@ -46,8 +46,8 @@ def _model() -> tuple[str | None, str]:
         models = httpx.get("http://127.0.0.1:11434/api/tags", timeout=5).json().get("models", [])
         names = {m.get("name") for m in models}
         available = psutil.virtual_memory().available
-        for name, minimum in (("qwen3.8:27b-mtp-q4_K_M", 30), ("gemma4:12b-it-qat", 15), ("gemma4:12b", 18),
-                              ("gemma4:e4b-it-qat", 12), ("gemma4:e4b", 15), ("qwen3:8b", 12)):
+        for name, minimum in (("gemma4:e4b-it-qat", 12), ("gemma4:e4b", 15),
+                              ("gemma4:12b-it-qat", 15), ("gemma4:12b", 18), ("qwen3:8b", 12)):
             if name in names and available >= minimum * 1024**3:
                 return name, f"{name} selected ({available // 1024**3} GiB available)"
         return None, "No verified installed model fits current memory; using Hermes's configured model"

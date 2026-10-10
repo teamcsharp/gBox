@@ -49,10 +49,10 @@ def test_task_mode_prefers_tool_capable_model_when_memory_allows(monkeypatch):
 
     monkeypatch.setattr(mode.httpx, "get", lambda *a, **kw: Response())
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 78 * 1024**3})())
-    assert mode._model()[0] == "qwen3.8:27b-mtp-q4_K_M"
+    assert mode._model()[0] == "gemma4:e4b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 36 * 1024**3})())
-    assert mode._model()[0] == "qwen3.8:27b-mtp-q4_K_M"
+    assert mode._model()[0] == "gemma4:e4b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 20 * 1024**3})())
-    assert mode._model()[0] == "gemma4:12b-it-qat"
+    assert mode._model()[0] == "gemma4:e4b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 10 * 1024**3})())
     assert mode._model()[0] is None
