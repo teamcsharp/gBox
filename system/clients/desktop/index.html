@@ -780,7 +780,7 @@ window.taskVizCreate = canvas => {
   <main>
     <section id="play" class="on"><div id="playhost" class="pane mut">Connecting to the Spark…</div></section>
     <section id="control"><div class="pane">
-      <div id="rebuild"><iframe src="../web/viz/overlay.html?mode=random" tabindex="-1"></iframe>
+      <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
         <div id="rbflow"></div><aside id="rbside" class="mut">Click a step to see its output.</aside><pre id="rbcon"></pre></div>
       <div class="cards">
@@ -938,6 +938,12 @@ const RB_STEPS = [
 const RB = { on: false, cur: -1, logs: {}, sel: null };
 function rbStart() {
   RB.on = true; RB.cur = -1; RB.logs = {}; RB.sel = null; $("#rbcon").textContent = ""; $("#control").classList.add("rb");
+  // Module scripts do not load reliably from a file:// iframe. The control
+  // plane serves this same visualizer over HTTP, where its imports can run.
+  if (S?.apiUrl) {
+    const viz = new URL("/viz/overlay.html?mode=random", S.apiUrl).href;
+    if ($("#rebuild iframe").src !== viz) $("#rebuild iframe").src = viz;
+  }
   $("#rbflow").innerHTML = RB_STEPS.map(([id, n, sub]) => `<div class="rbn" data-id="${id}">${n}<small>${sub}</small></div>`).join("");
   $("#rbflow").onclick = e => { const n = e.target.closest(".rbn"); if (!n) return; RB.sel = n.dataset.id;
     document.querySelectorAll(".rbn").forEach(x => x.classList.toggle("sel", x === n)); rbSide(); };
