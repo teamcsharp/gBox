@@ -1,4 +1,4 @@
-"""Native player-model disc writer for the US PS1 Metal Gear Solid: VR Missions.
+"""Native player-model disc writer for the US PS1 Metal Gear Solid games.
 
 The input KMD must already be rigged to the game's 16-bone player skeleton.
 This writer keeps the original disc and original KMD size, then rebuilds the
@@ -31,7 +31,7 @@ def _mint(cfg) -> Path:
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
-    raise FileNotFoundError("MetalMintSolid is required to rebuild MGS VR's PS1 stage archive")
+    raise FileNotFoundError("MetalMintSolid is required to rebuild the MGS PS1 stage archive")
 
 
 def _run(mint: Path, *args: str | Path) -> None:
@@ -69,8 +69,8 @@ def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
         stage_dir = original.read("MGS/STAGE.DIR")
     finally:
         original.close()
-    if len(stage_dir) != 72593408:
-        raise ValueError("this VR Missions disc has an unknown STAGE.DIR size")
+    if len(stage_dir) not in (72593408, 71892992):
+        raise ValueError("this MGS PS1 disc has an unknown STAGE.DIR size")
     work_parent = out_bin.parent
     work_parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="mgs_vr_", dir=work_parent) as temp:
@@ -87,8 +87,9 @@ def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
         if not init.is_file():
             raise ValueError("init.stg was absent from the stage directory")
         init_bytes = init.read_bytes()
-        if stage_dir[0x800:0x800 + len(init_bytes)] != init_bytes:
-            raise ValueError("init.stg is not at the verified directory offset")
+        init_offset = stage_dir.find(init_bytes)
+        if init_offset < 0 or init_offset % 2048 or stage_dir.find(init_bytes, init_offset + 1) >= 0:
+            raise ValueError("init.stg does not have one aligned location in the stage directory")
         _run(mint, "stg", "extract", init, work / "init")
         _run(mint, "dar", "extract", work / "init" / "0_0.dar", work / "dar", "--platform", "Psx")
         model = work / "dar" / "39213.kmd"
@@ -113,7 +114,7 @@ def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
         if len(patched_init) != len(init_bytes):
             raise ValueError("replacement init.stg changed its directory allocation")
         changed = bytearray(stage_dir)
-        changed[0x800:0x800 + len(init_bytes)] = patched_init
+        changed[init_offset:init_offset + len(init_bytes)] = patched_init
         progress(65, "Copying the original disc before the sector patch")
         part = out_bin.with_name(out_bin.name + ".part")
         shutil.copyfile(base, part)
@@ -137,13 +138,13 @@ def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
             "sectors_written": sectors, "kmd_sha256": hashlib.sha256(donor).hexdigest()}
 
 
-def _publish(ctx, folder: Path, gid: str) -> None:
+def _publish(ctx, folder: Path, gid: str, mod_name: str = MOD_NAME) -> None:
     """Send a newly built mod to the central collection, including same-size rebuilds."""
     import httpx
 
     if not ctx.server:
         return
-    url = f"{ctx.server}/api/modfiles/{gid}/{MOD_NAME}"
+    url = f"{ctx.server}/api/modfiles/{gid}/{mod_name}"
     response = httpx.get(url, headers=ctx.headers, timeout=60)
     if response.status_code not in (200, 404):
         response.raise_for_status()

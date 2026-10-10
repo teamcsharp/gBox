@@ -1835,6 +1835,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import mgs_vr_swap
     if gid in mgs_vr_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":
         return {"result": out | mgs_vr_swap.use(ctx, meta, game, inp)}
+    from . import mgs1_swap
+    if gid in mgs1_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":
+        return {"result": out | mgs1_swap.use(ctx, meta, game, inp)}
     from . import filemods
     here = {m["name"] for m in filemods.list_mods(ctx.config, gid)}
     built = [t for t in meta.get("targets", {}).get(gid, []) if t.get("mod") and t.get("slot", "player") == inp.slot
