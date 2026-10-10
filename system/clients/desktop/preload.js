@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("gbox", {
   saveSettings: s => ipcRenderer.invoke("settings:save", s),
   token: () => ipcRenderer.invoke("token"),
   api: (path, body) => ipcRenderer.invoke("api", path, body),
+  audioVolume: value => ipcRenderer.invoke("audio:volume", value),
   sparkStatus: () => ipcRenderer.invoke("spark:status"),
   sparkAction: a => ipcRenderer.invoke("spark:action", a),
   winSetup: () => ipcRenderer.invoke("win:setup"),

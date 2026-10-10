@@ -40,6 +40,7 @@ const DEFAULTS = {
   token: "",                                          // optional: paste once if neither share nor SSH is reachable
   workerName: os.hostname(),
   autoStartWorker: true,
+  volume: 30,
 };
 if (STANDALONE) Object.assign(DEFAULTS, { sshHost: "", apiUrl: process.env.GBOX_API_URL || "http://127.0.0.1:8765",
   repoLocal: path.join(STANDALONE, "system"), repoShare: path.join(STANDALONE, "system"), repoRemote: "" });
@@ -132,6 +133,42 @@ async function api(p, body) {
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 }
+
+// Windows keeps one mixer volume per playback session. This helper follows gBox's
+// Electron and emulator processes so the slider also reaches games started later.
+let audioVolumeHelper = null, audioVolumeFailures = 0, quitting = false;
+const volumePercent = value => Math.max(0, Math.min(100, Number.isFinite(+value) ? Math.round(+value) : 30));
+function startAudioVolumeHelper() {
+  if (process.platform !== "win32" || audioVolumeHelper) return !!audioVolumeHelper;
+  const py = venvPython(), s = settings();
+  if (!fs.existsSync(py) || audioVolumeFailures >= 3) return false;
+  const child = spawn(py, ["-u", "-m", "gbox.audio_volume", "--owner-pid", String(process.pid),
+    "--config", path.join(s.repoLocal, "gbox.toml"), "--volume", String(volumePercent(s.volume))],
+  { env: { ...process.env, PYTHONPATH: s.repoLocal }, windowsHide: true });
+  audioVolumeHelper = child;
+  child.stderr.on("data", data => logPush("audio", data.toString()));
+  child.on("error", error => logPush("audio", error.message));
+  child.on("close", code => {
+    audioVolumeHelper = null;
+    if (!quitting && ++audioVolumeFailures < 3) setTimeout(startAudioVolumeHelper, 5000).unref();
+    else if (!quitting) logPush("audio", `volume helper exited ${code}`);
+  });
+  return true;
+}
+ipcMain.handle("audio:volume", (_e, value) => {
+  if (value != null) {
+    const volume = volumePercent(value);
+    const s = settings();
+    fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
+    fs.writeFileSync(SETTINGS, JSON.stringify({ ...s, volume }, null, 1));
+    audioVolumeFailures = 0;
+    if (!audioVolumeHelper) startAudioVolumeHelper();
+    try { audioVolumeHelper?.stdin.write(String(volume) + "\n"); }
+    catch (error) { logPush("audio", error.message); }
+  }
+  return { volume: volumePercent(settings().volume), available: process.platform === "win32" && !!audioVolumeHelper };
+});
+app.on("before-quit", () => { quitting = true; audioVolumeHelper?.kill(); });
 
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
@@ -673,6 +710,7 @@ app.whenReady().then(() => {
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
     if (settings().autoStartWorker) startWorker();
   });
+  startAudioVolumeHelper();
 });
 app.on("window-all-closed", () => {
   if (!FIRST) return app.quit();

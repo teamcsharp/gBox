@@ -78,6 +78,10 @@
   #titlebar .tools button.recording #tb-rec-t { font-size:12px; margin-left:6px; }
   #titlebar .tools button.recording { background:#ff3b3b22; border-color:#ff3b3b; }
   #titlebar .tools button.recording #tb-rec-dot { animation:recblink 1s steps(2) infinite; }
+  #top-volume { display:flex; align-items:center; gap:5px; color:#e8e8ee; font-size:11px; }
+  #top-volume svg { width:17px; height:17px; flex:none; }
+  #top-volume input { width:90px; margin:0; accent-color:var(--acc); cursor:pointer; }
+  #top-volume output { width:30px; text-align:right; font-variant-numeric:tabular-nums; }
   #recmenu { display:none; position:fixed; z-index:70; top:34px; width:250px; padding:10px 12px; background:var(--bg); border:1px solid var(--line);
     border-radius:8px; box-shadow:0 10px 30px #0009; font-size:13px; -webkit-app-region:no-drag; } #recmenu.on { display:block; }
   #recmenu label { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0; }
@@ -582,6 +586,7 @@ window.assetView = async (box, glbUrl) => {
     <button id="tb-recopt" title="Recording size limit and compression" style="min-width:0;padding:0 4px">▾</button>
     <button id="tb-mini" hidden title="Mini mode: shrink gBox to a resizable game window (keeps the game's aspect ratio)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor"/></svg>Mini</button>
+    <div id="top-volume" title="Volume for gBox and its games"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9v6h4l5 4V5L7 9H3zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></svg><input type="range" min="0" max="100" value="30" aria-label="gBox and game volume"><output>30%</output></div>
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
     <button id="tb-reinv" hidden title="Inventory: change the weapons and items of the character you're playing (Resident Evil), live">
@@ -715,6 +720,19 @@ window.assetView = async (box, glbUrl) => {
 <script src="task-activity.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const volumeSlider = $("#top-volume input"), volumeLabel = $("#top-volume output");
+let volumeTimer;
+gbox.audioVolume().then(({ volume, available }) => {
+  volumeSlider.value = volume;
+  volumeLabel.value = `${volume}%`;
+  if (!available) $("#top-volume").title = "gBox audio control is unavailable on this machine";
+});
+volumeSlider.oninput = () => {
+  volumeLabel.value = `${volumeSlider.value}%`;
+  clearTimeout(volumeTimer);
+  volumeTimer = setTimeout(() => gbox.audioVolume(+volumeSlider.value), 80);
+};
+volumeSlider.onchange = () => { clearTimeout(volumeTimer); gbox.audioVolume(+volumeSlider.value); };
 let S, current = null, playLoaded = false;
 var SBX = { api: "", tok: "" };                              // API base + token for <img> links (filled after settings load)
 document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () => {
