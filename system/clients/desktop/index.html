@@ -196,10 +196,58 @@
     border-right-color:transparent; border-radius:50%; animation:bspin .75s linear infinite; }
   #busysteps .st b { display:block; } #busysteps .st .r { color:var(--mut); white-space:pre-wrap; word-break:break-word; max-height:4.5em; overflow:hidden; }
   @keyframes bin { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
-  #taskpanel { position:fixed; right:12px; top:84px; width:min(760px, calc(100vw - 24px)); height:min(680px, calc(100vh - 120px)); max-height:calc(100vh - 120px); overflow-y:auto; overflow-x:hidden; z-index:58;
+  #taskpanel { position:fixed; right:12px; top:84px; width:min(1120px, calc(100vw - 24px)); height:min(760px, calc(100vh - 110px)); max-height:calc(100vh - 110px); overflow:hidden; z-index:58;
     display:none; background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 14px 44px #000b; font-size:12px; }
   #taskpanel.on { display:block; } #taskpanel .th { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line);
-    position:sticky; top:0; background:var(--bg); } #taskpanel .th b { flex:1; font-size:14px; }
+    background:var(--bg); } #taskpanel .th b { flex:1; font-size:14px; }
+  #taskpanel .tk-tabs { display:flex; gap:3px; padding:3px; background:var(--card); border:1px solid var(--line); border-radius:7px; }
+  #taskpanel .tk-tabs button { color:var(--mut); border:0; background:transparent; border-radius:5px; padding:5px 12px; cursor:pointer; font:inherit; }
+  #taskpanel .tk-tabs button[aria-selected=true] { color:#fff; background:#5267ba; }
+  #taskpanel .tk-tab-page { height:calc(100% - 47px); min-height:0; overflow:auto; }
+  #taskpanel .tk-tab-page[hidden] { display:none; }
+  #taskpanel #tk-visual { background:radial-gradient(ellipse at 32% 8%,#263657 0%,#101a2e 43%,#0b1121 100%); color:#e9f0ff; }
+  #taskpanel .tkv-head { padding:17px 20px 12px; display:flex; justify-content:space-between; align-items:end; gap:20px; }
+  #taskpanel .tkv-kicker { text-transform:uppercase; letter-spacing:.16em; color:#86a7f6; font-size:10px; font-weight:700; }
+  #taskpanel .tkv-head h2 { margin:4px 0 2px; font-size:23px; font-weight:650; letter-spacing:-.035em; }
+  #taskpanel .tkv-head p { margin:0; color:#9eafd0; }
+  #taskpanel .tkv-live { display:flex; align-items:center; gap:7px; color:#a5b9d9; white-space:nowrap; }
+  #taskpanel .tkv-live i { width:7px; height:7px; border-radius:50%; background:#57ddbb; box-shadow:0 0 12px #57ddbb; animation:tkv-beat 2s ease-in-out infinite; }
+  @keyframes tkv-beat { 50% { opacity:.35; box-shadow:0 0 3px #57ddbb; } }
+  #taskpanel .tkv-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; padding:0 20px 12px; }
+  #taskpanel .tkv-stat { background:#ffffff0a; border:1px solid #ffffff1b; border-radius:9px; padding:9px 12px; }
+  #taskpanel .tkv-stat strong { display:block; font-size:19px; line-height:1.2; font-variant-numeric:tabular-nums; }
+  #taskpanel .tkv-stat span { color:#94a7ca; font-size:10px; text-transform:uppercase; letter-spacing:.09em; }
+  #taskpanel .tkv-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(260px,32%); height:calc(100% - 139px); min-height:370px; border-top:1px solid #ffffff1b; }
+  #taskpanel .tkv-stage { position:relative; overflow:hidden; background:radial-gradient(ellipse at center,#2336584a,transparent 68%); }
+  #taskpanel .tkv-stage canvas { width:100%; height:100%; display:block; }
+  #taskpanel .tkv-labels { position:absolute; inset:0; pointer-events:none; }
+  #taskpanel .tkv-node-label { position:absolute; transform:translate(-50%,0); max-width:145px; border:1px solid #94aaff70; border-radius:7px; padding:5px 8px; background:#101b31e8; color:#dce9ff; font:inherit; font-size:11px; line-height:1.3; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-shadow:0 5px 20px #0007; pointer-events:auto; cursor:pointer; }
+  #taskpanel .tkv-node-label:hover, #taskpanel .tkv-node-label.selected { border-color:#8bdfff; background:#234266; }
+  #taskpanel .tkv-node-label small { display:block; color:#9faecc; font-size:9px; text-transform:uppercase; letter-spacing:.07em; }
+  #taskpanel .tkv-caption { position:absolute; left:15px; bottom:13px; right:15px; display:flex; gap:12px; flex-wrap:wrap; color:#8da3c5; font-size:10px; pointer-events:none; }
+  #taskpanel .tkv-caption span::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:6px; background:#77cbff; }
+  #taskpanel .tkv-caption .past::before { background:#6c817e; } #taskpanel .tkv-caption .failed::before { background:#ff827c; }
+  #taskpanel .tkv-side { overflow:auto; padding:17px; background:#0e1729e8; border-left:1px solid #ffffff1b; }
+  #taskpanel .tkv-side h3 { font-size:17px; line-height:1.25; margin:5px 0 9px; }
+  #taskpanel .tkv-side p { color:#9bafd0; line-height:1.45; }
+  #taskpanel .tkv-side .tkv-pill { display:inline-block; color:#c2d5ff; border:1px solid #6b91d770; background:#4666a328; border-radius:20px; padding:3px 8px; font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+  #taskpanel .tkv-meter { display:grid; grid-template-columns:74px 1fr auto; align-items:center; gap:7px; margin:9px 0; color:#9eb3d4; font-size:11px; }
+  #taskpanel .tkv-meter .track { height:6px; border-radius:6px; background:#ffffff19; overflow:hidden; }
+  #taskpanel .tkv-meter i { display:block; height:100%; border-radius:6px; background:linear-gradient(90deg,#4c78ff,#60d7e8); transition:width .5s; }
+  #taskpanel .tkv-meter b { color:#dfebff; font-weight:500; font-variant-numeric:tabular-nums; }
+  #taskpanel .tkv-event { border-left:2px solid #5879b1; padding:2px 0 7px 10px; margin:10px 0; color:#b8c7df; }
+  #taskpanel .tkv-side .act { margin:4px 5px 4px 0; }
+  #taskpanel .tkv-side details { border-top:1px solid #ffffff20; padding:8px 0; }
+  #taskpanel .tkv-side details summary { font-size:11px; color:#bed2f4; }
+  #taskpanel .tkv-side pre { color:#9fb4d6; background:#09101f; padding:7px; border-radius:5px; max-height:170px; overflow:auto; font-size:10px; }
+  #taskpanel .tkv-list { border-top:1px solid #ffffff25; margin-top:15px; padding-top:12px; }
+  #taskpanel .tkv-list b { color:#dce9ff; display:block; margin-bottom:7px; }
+  #taskpanel .tkv-list button { display:block; width:100%; text-align:left; border:0; border-radius:5px; background:transparent; color:#acc1df; padding:5px 7px; font:inherit; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #taskpanel .tkv-list button:hover, #taskpanel .tkv-list button.selected { background:#4c76bb42; color:#fff; }
+  #taskpanel .tkv-list button i { display:inline-block; width:6px; height:6px; border-radius:50%; background:#5ad9d0; margin-right:7px; }
+  #taskpanel .tkv-list button.past i { background:#738c8d; }
+  #taskpanel .tkv-empty { display:grid; place-content:center; height:100%; text-align:center; color:#93a7c9; }
+  #taskpanel .tkv-empty b { color:#e3edff; font-size:16px; margin-bottom:5px; }
   #taskpanel .mc { padding:8px 12px; border-bottom:1px solid var(--line); min-width:0; } #taskpanel .mh { display:flex; flex-wrap:wrap; gap:6px 14px; margin-bottom:6px; }
   #taskpanel .mh b { font-size:13px; } #taskpanel table { width:100%; table-layout:fixed; border-collapse:collapse; }
   #taskpanel td, #taskpanel th { padding:4px 6px; text-align:right; white-space:normal; overflow-wrap:anywhere; } #taskpanel td:first-child, #taskpanel th:first-child,
@@ -640,6 +688,114 @@ window.assetView = async (box, glbUrl) => {
   const tris = g.scene.children.reduce((n, o) => { o.traverse(m => { if (m.geometry?.index) n += m.geometry.index.count / 3; }); return n; }, 0);
   return { triangles: tris };
 };
+// Live task map. Stable positions make new work join the mainline while finished work peels away.
+window.taskVisualGraphCreate = (canvas, labels, onPick) => {
+  const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+  renderer.outputColorSpace = T.SRGBColorSpace;
+  const scene = new T.Scene(), camera = new T.PerspectiveCamera(40, 1, .1, 100);
+  camera.position.set(0, 0, 11.5);
+  scene.add(new T.AmbientLight(0xb8ceff, 1.25));
+  const key = new T.PointLight(0x78bfff, 42); key.position.set(-3, 4, 7); scene.add(key);
+  const magenta = new T.PointLight(0xae8aff, 22); magenta.position.set(4, -3, 5); scene.add(magenta);
+  const root = new T.Group(); scene.add(root);
+  const ray = new T.Raycaster(), mouse = new T.Vector2();
+  let nodes = [], links = [], particles = [], streams = [], selected = null, disposed = false, press = null;
+  const material = (color, glow = .32) => new T.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: glow, metalness: .38, roughness: .26 });
+  const addLine = (a, b, color, opacity = .36) => {
+    const line = new T.Line(new T.BufferGeometry().setFromPoints([a, b]),
+      new T.LineBasicMaterial({ color, transparent: true, opacity }));
+    root.add(line); links.push(line);
+  };
+  const clear = () => {
+    root.traverse(o => { o.geometry?.dispose();
+      if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()); });
+    root.clear(); nodes = []; links = []; particles = []; streams = [];
+    labels.replaceChildren();
+  };
+  const update = (items, selectedId) => {
+    const previous = new Map(nodes.map(n => [n.task.id, n.mesh.position.clone()]));
+    selected = selectedId; clear();
+    const active = items.filter(x => x.active).slice(0, 7), past = items.filter(x => !x.active).slice(0, 7);
+    const placed = [...active, ...past];
+    const base = new T.Mesh(new T.BoxGeometry(9.2, .025, .025), material(0x436697, .2));
+    base.position.set(0, -.1, -.95); root.add(base);
+    const rails = [-.92, .92].map(y => new T.Mesh(new T.BoxGeometry(9.2, .012, .012), material(0x234473, .08)));
+    rails.forEach((r, i) => { r.position.set(0, [-.9, .7][i], -1.3); root.add(r); });
+    placed.forEach((task, i) => {
+      const running = task.active, lane = running ? active : past;
+      const laneIndex = running ? i : i - active.length, count = lane.length;
+      const x = count === 1 ? 0 : (laneIndex - (count - 1) / 2) * Math.min(1.85, 9.6 / Math.max(count - 1, 1));
+      const y = running ? 1.0 + Math.sin(i * 1.9) * .45 : -1.8 - (laneIndex % 2) * .4;
+      const z = running ? .35 + (i % 2) * .3 : -.8;
+      const color = task.state === "failed" ? 0xff817e : running ?
+        task.kind === "hermes" ? 0x8e9dff : task.kind === "resolution" ? 0xf9b273 : 0x69d6e7 : 0x688f84;
+      const geo = task.kind === "hermes" ? new T.IcosahedronGeometry(.32, 2) :
+        task.kind === "resolution" ? new T.OctahedronGeometry(.34, 1) : new T.SphereGeometry(.29, 24, 16);
+      const mesh = new T.Mesh(geo, material(color, running ? .42 : .14));
+      mesh.position.copy(previous.get(task.id) || new T.Vector3(x, -.1, -1)); mesh.userData.taskId = task.id; root.add(mesh);
+      const halo = new T.Mesh(new T.TorusGeometry(running ? .48 : .41, .018, 8, 64),
+        new T.MeshBasicMaterial({ color, transparent:true, opacity:running ? .75 : .28 }));
+      halo.position.set(x, y, z); root.add(halo);
+      const stem = new T.Vector3(x, -.1, -1);
+      addLine(stem, mesh.position, color, running ? .37 : .15);
+      if (running && laneIndex) addLine(nodes[nodes.length - 1].mesh.position, mesh.position, 0x79a9e9, .42);
+      if (!running) addLine(new T.Vector3(x, -.1, -1), mesh.position, 0x698b88, .15);
+      const label = document.createElement("button"); label.type = "button";
+      label.className = "tkv-node-label" + (task.id === selected ? " selected" : "");
+      label.setAttribute("aria-label", `${task.name}, ${task.state}`);
+      label.innerHTML = `<small>${task.kind.replace("_", " ")} · ${task.state}</small>${task.name.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]).slice(0, 28)}`;
+      label.onclick = () => onPick(task.id); labels.append(label);
+      nodes.push({ task, mesh, halo, label, x, y, z, running, phase:i * 1.7 });
+    });
+    for (let i = 1; i < active.length; i++) {
+      const spark = new T.Mesh(new T.SphereGeometry(.045, 8, 6), new T.MeshBasicMaterial({ color:0xbbeeff }));
+      root.add(spark); streams.push({mesh:spark, from:nodes[i-1], to:nodes[i], phase:i*.37});
+    }
+    for (let i = 0; i < 38; i++) {
+      const p = new T.Mesh(new T.SphereGeometry(.014, 5, 4), new T.MeshBasicMaterial({ color:i % 4 ? 0x7796c9 : 0x86e5ff, transparent:true, opacity:.6 }));
+      p.position.set((i * 3.7 % 10) - 5, (i * 2.31 % 5) - 2.5, -2.3);
+      root.add(p); particles.push({ mesh:p, origin:p.position.clone(), speed:.25 + i % 4 * .13 });
+    }
+  };
+  const pick = e => {
+    const r = canvas.getBoundingClientRect();
+    mouse.set((e.clientX-r.left)/r.width*2-1, -((e.clientY-r.top)/r.height*2-1));
+    ray.setFromCamera(mouse, camera);
+    const hit = ray.intersectObjects(nodes.map(n => n.mesh))[0];
+    if (hit) onPick(hit.object.userData.taskId);
+  };
+  canvas.addEventListener("pointerdown", e => { press = {x:e.clientX,y:e.clientY}; });
+  canvas.addEventListener("pointerup", e => { if (press && Math.hypot(e.clientX-press.x,e.clientY-press.y)<7) pick(e); press=null; });
+  const clock = new T.Clock();
+  const draw = () => {
+    if (disposed || !canvas.isConnected) { clear(); renderer.dispose(); return; }
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w && h && (canvas.width !== Math.round(w*renderer.getPixelRatio()) || canvas.height !== Math.round(h*renderer.getPixelRatio()))) {
+      renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+    }
+    const t = clock.getElapsedTime();
+    nodes.forEach(n => {
+      const float = n.running ? Math.sin(t*1.35+n.phase)*.075 : Math.sin(t*.45+n.phase)*.025;
+      n.mesh.position.lerp(new T.Vector3(n.x,n.y+float,n.z), .085);
+      n.mesh.rotation.y = t * (n.running ? .45 : .12); n.mesh.rotation.z = t*.13;
+      n.halo.position.copy(n.mesh.position); n.halo.scale.setScalar(n.task.id === selected ? 1.15 + Math.sin(t*2.4)*.055 : 1);
+      const point = n.mesh.position.clone().project(camera), px=(point.x*.5+.5)*w, py=(-point.y*.5+.5)*h;
+      n.label.style.left = `${Math.max(75,Math.min(w-75,px))}px`;
+      const above = n.running && nodes.indexOf(n) % 2 === 1;
+      n.label.style.top = `${py+(above ? -28 : 23)}px`;
+      n.label.style.transform = above ? "translate(-50%,-100%)" : "translate(-50%,0)";
+      n.label.style.opacity = point.z > 1 ? "0" : "1";
+    });
+    streams.forEach(s => { const phase=(t*.45+s.phase)%1;
+      s.mesh.position.copy(s.from.mesh.position).lerp(s.to.mesh.position,phase);
+      s.mesh.scale.setScalar(.65+Math.sin(phase*Math.PI)*.65); });
+    particles.forEach(p => { p.mesh.position.x = ((p.origin.x+5+t*p.speed)%10)-5; });
+    renderer.render(scene,camera); requestAnimationFrame(draw);
+  };
+  draw();
+  return { update, stop: () => { disposed=true; } };
+};
 // The task window uses only progress values and stages reported by the worker.
 window.taskVizCreate = canvas => {
   const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -992,8 +1148,19 @@ setInterval(async () => {
   inp.placeholder = `Ask gBox… e.g. “${HINT.items[HINT.i++ % HINT.items.length]}”`;
 }, 4000);
 // ---- Tasks: every machine's gBox processes + jobs in flight, with what they cost and a hard stop ----
-document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b><span class="mut" id="tk-at"></span>
-  <button class="act" id="tk-close">Close</button></div><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div>`);
+document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b>
+  <div class="tk-tabs" role="tablist" aria-label="Task view"><button type="button" id="tk-visual-tab" role="tab" aria-selected="true" aria-controls="tk-visual">Visual</button>
+  <button type="button" id="tk-technical-tab" role="tab" aria-selected="false" aria-controls="tk-technical">Technical</button></div>
+  <span class="mut" id="tk-at"></span><button class="act" id="tk-close">Close</button></div>
+  <div id="tk-visual" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-visual-tab">
+    <div class="tkv-head"><div><div class="tkv-kicker">Live task network</div><h2>Work in motion</h2><p>Follow each run from active work to its result.</p></div>
+      <span class="tkv-live"><i></i> Refreshes every 5 seconds</span></div>
+    <div class="tkv-stats" id="tkv-stats"></div>
+    <div class="tkv-layout"><div class="tkv-stage"><canvas id="tkv-canvas" aria-label="Interactive 3D task graph"></canvas><div class="tkv-labels" id="tkv-labels"></div>
+      <div class="tkv-caption"><span>Active mainline</span><span class="past">Completed branch</span><span class="failed">Failed branch</span><span>Click a bubble or label to inspect</span></div></div>
+      <aside class="tkv-side" id="tkv-side"><div class="tkv-empty"><b>Choose a task</b><span>Inspect live metrics, attempts and evidence.</span></div></aside></div>
+  </div>
+  <div id="tk-technical" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-technical-tab" hidden><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div></div>`);
 document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="head"><b id="tv-title">Task progress</b><span id="tv-state" class="mut"></span>
   <button class="act" id="tv-close">Back to Tasks</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
   <div id="tv-stages" class="stages"></div></div></div>`);
@@ -1152,7 +1319,112 @@ $("#rp-close").onclick = () => {
   $("#remote-pip").classList.remove("on", "minimized"); $("#rp-image").removeAttribute("src");
   REMOTE.worker = null; clearInterval(REMOTE.timer); clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null;
 };
-const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
+const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
+  expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
+function tkView(view) {
+  TK.view = view;
+  $("#tk-visual").hidden = view !== "visual"; $("#tk-technical").hidden = view !== "technical";
+  $("#tk-visual-tab").setAttribute("aria-selected", String(view === "visual"));
+  $("#tk-technical-tab").setAttribute("aria-selected", String(view === "technical"));
+  if (view === "visual" && !TK.graph && $("#taskpanel").classList.contains("on")) {
+    try { TK.graph = window.taskVisualGraphCreate($("#tkv-canvas"), $("#tkv-labels"), tkVisualSelect); }
+    catch (error) { $("#tkv-side").textContent = `3D task view unavailable: ${error.message}`; }
+  }
+  if (view === "technical") tasksLocalLoad();
+  else TK.graph?.update(TK.visualData, TK.visualSelected);
+}
+function tkVisualItems(d) {
+  const items = [];
+  for (const run of (d.hermes || []).slice(0, 9)) items.push({ id:`hermes:${run.id}`, kind:"hermes", name:run.name || "Hermes run", state:run.state,
+    active:["running","queued"].includes(run.state), data:run });
+  for (const run of (d.resolutions || []).slice(0, 6)) items.push({ id:`resolution:${run.id}`, kind:"resolution", name:`#${run.number} ${run.name}`,
+    state:run.state, active:["running","queued","in_progress"].includes(run.state), data:run });
+  for (const job of (d.jobs || [])) items.push({ id:`job:${job.id}`, kind:"job", name:job.tool || "Worker job", state:job.state,
+    active:true, data:job });
+  for (const m of (d.machines || [])) for (const task of (m.tasks || []).filter(t => t.kind !== "tool" && t.kind !== "ghidra").slice(0, 3))
+    items.push({ id:`process:${m.worker_id}:${task.pid}`, kind:"process", name:`${m.name}: ${task.name}`, state:"running", active:true, data:{...task,machine:m} });
+  for (const job of (d.recent || []).slice(0, 5)) if (!items.some(i => i.id === `job:${job.id}`))
+    items.push({ id:`job:${job.id}`, kind:"job", name:job.tool || "Worker job", state:job.state, active:false, data:job });
+  return items;
+}
+function tkVisualMeter(label, value, max, shown) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, 100 * value / max)) : 0;
+  return `<div class="tkv-meter"><span>${esc(label)}</span><span class="track"><i style="width:${pct.toFixed(1)}%"></i></span><b>${esc(shown)}</b></div>`;
+}
+function tkVisualSelect(id) {
+  TK.visualSelected = id; TK.graph?.update(TK.visualData, id);
+  tkVisualDetail();
+}
+async function tkVisualDetail() {
+  const id = TK.visualSelected, item = TK.visualData.find(i => i.id === id), box = $("#tkv-side");
+  if (!item) { box.innerHTML = '<div class="tkv-empty"><b>Choose a task</b><span>Inspect live metrics, attempts and evidence.</span></div>'; return; }
+  const d = item.data, started = d.started || d.created;
+  let html = `<span class="tkv-pill">${esc(item.kind)} · ${esc(item.state)}</span><h3>${esc(item.name)}</h3>
+    <p>${started ? `Started ${tkAge(started)} ago` : "Live process"}${d.model ? ` · ${esc(d.model)}` : ""}</p>`;
+  if (item.kind === "hermes") {
+    const total = Number(d.tokens_in || 0) + Number(d.tokens_out || 0);
+    html += tkVisualMeter("Input tokens", Number(d.tokens_in || 0), total, Number(d.tokens_in || 0).toLocaleString()) +
+      tkVisualMeter("Output tokens", Number(d.tokens_out || 0), total, Number(d.tokens_out || 0).toLocaleString());
+    html += `<p>${esc(d.progress || "No progress note yet.")}</p><button class="act" data-tkv-evidence="${esc(d.id)}">Open report and attempts</button>`;
+  } else if (item.kind === "process") {
+    const m = d.machine, t = m.totals || {};
+    html += tkVisualMeter("CPU", Number(d.cpu_pct || 0), 100, `${d.cpu_pct || 0}%`) +
+      tkVisualMeter("RAM", Number(d.ram_mb || 0), Number(t.ram_total_mb || 0), `${d.ram_mb || 0} MB`) +
+      tkVisualMeter("GPU", Number(d.gpu_pct || 0), 100, `${d.gpu_pct || 0}%`) +
+      tkVisualMeter("VRAM", Number(d.vram_mb || 0), Number(t.vram_total_mb || 0), `${d.vram_mb || 0} MB`);
+    html += `<p>Worker ${esc(m.name)} · ${d.procs || 1} process${d.procs === 1 ? "" : "es"}</p>`;
+  } else if (item.kind === "job") {
+    html += tkProgress(d.pct, item.active) + `<p>${esc(d.progress || "No worker stage reported yet.")}</p>
+      <button class="act" data-tkv-job="${esc(d.id)}">Open live stages</button>`;
+  } else if (item.kind === "resolution") {
+    html += `<p>${esc(d.progress || "No agent update yet.")}</p><button class="act" data-tkv-request="${esc(d.id)}">Open request and evidence</button>`;
+  }
+  const list = `<div class="tkv-list"><b>All tracked work · ${TK.visualData.length}</b>${TK.visualData.map(x =>
+    `<button type="button" class="${x.active ? "" : "past"} ${x.id === id ? "selected" : ""}" data-tkv-select="${esc(x.id)}" title="${esc(x.name)}"><i></i>${esc(x.name)}</button>`).join("")}</div>`;
+  box.innerHTML = html + '<div id="tkv-detail-events"><p class="mut">Loading task events…</p></div>' + list;
+  const eventBox = $("#tkv-detail-events");
+  const version = ++TK.visualVersion;
+  if (item.kind === "hermes") {
+    const r = await gbox.api(`/api/tasks/hermes/${encodeURIComponent(d.id)}`);
+    if (version !== TK.visualVersion) return;
+    const steps = r.ok ? (r.data.steps || []) : [];
+    const calls = steps.filter(s => s.action === "tool_call" || s.action === "tool").length;
+    const failed = steps.filter(s => s.status === "failed" || s.status === "error").length;
+    eventBox.innerHTML = `<div class="tkv-event"><b>${steps.length} events · ${calls} tool calls · ${failed} failed</b></div>` +
+      steps.slice(-12).map((s,i) => `<details><summary>${steps.length-Math.min(12,steps.length)+i+1}. ${esc(s.action || "step")} · ${esc(s.status || "recorded")}</summary>
+        ${s.input ? `<b>Input</b><pre>${esc(JSON.stringify(s.input,null,2))}</pre>` : ""}<b>Result</b><pre>${esc(String(s.result || "No result recorded."))}</pre></details>`).join("") +
+      (!steps.length ? `<p>${esc(r.ok ? (r.data.output || "No events yet.").slice(-500) : r.error)}</p>` : "");
+  } else if (item.kind === "job") {
+    const r = await gbox.api(`/api/jobs/${encodeURIComponent(d.id)}`);
+    if (version !== TK.visualVersion) return;
+    eventBox.innerHTML = (r.ok ? (r.data.progress_log || []).slice(-8) : [r.error]).map(s => `<div class="tkv-event">${esc(s)}</div>`).join("") || '<p class="mut">No events recorded yet.</p>';
+  } else if (item.kind === "resolution") {
+    eventBox.innerHTML = `<div class="tkv-event">${esc((d.output || "").slice(-500) || "No events recorded yet.")}</div>`;
+  } else {
+    eventBox.innerHTML = '<p class="mut">Resource use is sampled live from the worker.</p>';
+  }
+}
+function tkVisualUpdate(d) {
+  TK.visualData = tkVisualItems(d);
+  const active = TK.visualData.filter(x => x.active), workers = (d.machines || []).filter(m => !m.error);
+  const tokens = (d.hermes || []).reduce((sum,r) => sum + Number(r.tokens_in || 0) + Number(r.tokens_out || 0),0);
+  $("#tkv-stats").innerHTML = [[active.length,"active tasks"],[workers.length,"connected workers"],
+    [(d.hermes || []).filter(r => r.state === "running").length,"Hermes runs"],[tokens.toLocaleString(),"recorded tokens"]]
+    .map(([v,label]) => `<div class="tkv-stat"><strong>${v}</strong><span>${label}</span></div>`).join("");
+  if (TK.view !== "visual") return;
+  if (!TK.visualSelected || !TK.visualData.some(i => i.id === TK.visualSelected)) TK.visualSelected = active[0]?.id || TK.visualData[0]?.id || null;
+  TK.graph?.update(TK.visualData, TK.visualSelected);
+  tkVisualDetail();
+}
+$("#tk-visual-tab").onclick = () => tkView("visual");
+$("#tk-technical-tab").onclick = () => tkView("technical");
+$("#tkv-side").onclick = e => {
+  const b = e.target.closest("[data-tkv-select],[data-tkv-evidence],[data-tkv-job],[data-tkv-request]"); if (!b) return;
+  if (b.dataset.tkvSelect) { tkVisualSelect(b.dataset.tkvSelect); return; }
+  if (b.dataset.tkvEvidence) evRun(b.dataset.tkvEvidence);
+  else if (b.dataset.tkvJob) tvOpen(b.dataset.tkvJob);
+  else if (b.dataset.tkvRequest) evRequest(b.dataset.tkvRequest);
+};
 const EV = { images: [], selected: null, state: null, requestId: null };
 function evSelect(sha) {
   const item = EV.images.find(x => x.sha === sha); if (!item) return;
@@ -1284,13 +1556,14 @@ async function tasksLoad() {
   try { r = await gbox.api("/api/tasks"); } finally { TK.busy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
   if (!r.ok) { $("#tk-body").innerHTML = `<p class="mut" style="padding:12px">${esc(r.error)}</p>`; return; }
-  const panelScroll = $("#taskpanel").scrollTop;
+  const panelScroll = $("#tk-technical").scrollTop;
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre");
     TK.hermesScroll.set(detail.dataset.detailHermes, { top: pre.scrollTop, follow: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20 });
   });
   const d = r.data, kind = k => `<span class="kd ${k === "game" ? "game" : k === "agent test" ? "agent" : ""}">${esc(k)}</span>`;
   $("#tk-at").textContent = "updated " + new Date().toLocaleTimeString();
+  tkVisualUpdate(d);
   $("#tk-body").innerHTML = `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
@@ -1322,7 +1595,7 @@ async function tasksLoad() {
       ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
         <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
         ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`;
-  $("#taskpanel").scrollTop = panelScroll;
+  $("#tk-technical").scrollTop = panelScroll;
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
     pre.scrollTop = position?.follow === false ? position.top : pre.scrollHeight;
@@ -1405,14 +1678,15 @@ function tvClose(back = true) {
   clearInterval(TV.timer); TV.timer = null; TV.id = null; TV.view?.stop(); TV.view = null;
   $("#taskviz").classList.remove("on");
   if (back && TV.returnPanel) {
-    $("#taskpanel").classList.add("on"); tasksLocalLoad(); tasksLoad();
-    TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000);
+    $("#taskpanel").classList.add("on"); tkView(TK.view); tasksLoad();
+    TK.t = setInterval(() => { if (TK.view === "technical") tasksLocalLoad(); tasksLoad(); }, 5000);
   }
   TV.returnPanel = false;
 }
 async function tvOpen(id, kind = "job") {
   tvClose(false); TV.id = id; TV.kind = kind; TV.returnPanel = $("#taskpanel").classList.contains("on");
   $("#taskpanel").classList.remove("on"); clearInterval(TK.t);
+  TK.graph?.stop(); TK.graph = null;
   $("#taskviz").classList.add("on");
   try { TV.view = window.taskVizCreate($("#tv-canvas")); }
   catch (e) { $("#tv-stages").textContent = `3D view unavailable: ${e.message}`; }
@@ -1420,8 +1694,9 @@ async function tvOpen(id, kind = "job") {
 }
 $("#tv-close").onclick = tvClose;
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
-  clearInterval(TK.t); if (on) { tasksLocalLoad(); tasksLoad(); TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000); } };
-$("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); };
+  clearInterval(TK.t); if (on) { tkView(TK.view); tasksLoad(); TK.t = setInterval(() => { if (TK.view === "technical") tasksLocalLoad(); tasksLoad(); }, 5000); }
+  else { TK.graph?.stop(); TK.graph = null; } };
+$("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); TK.graph?.stop(); TK.graph = null; };
 $("#tk-body").onclick = async e => {
   const resolution = e.target.closest("[data-resolution-evidence]");
   if (resolution) {
