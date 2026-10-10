@@ -1319,10 +1319,10 @@ Main Stick/Up = `Left Y+` | `DInput/0/Keyboard Mouse:UP`
 Main Stick/Down = `Left Y-` | `DInput/0/Keyboard Mouse:DOWN`
 Main Stick/Left = `Left X-` | `DInput/0/Keyboard Mouse:LEFT`
 Main Stick/Right = `Left X+` | `DInput/0/Keyboard Mouse:RIGHT`
-C-Stick/Up = `Right Y+`
-C-Stick/Down = `Right Y-`
-C-Stick/Left = `Right X-`
-C-Stick/Right = `Right X+`
+C-Stick/Up = `Right Y+` | `DInput/0/Keyboard Mouse:K`
+C-Stick/Down = `Right Y-` | `DInput/0/Keyboard Mouse:I`
+C-Stick/Left = `Right X-` | `DInput/0/Keyboard Mouse:J`
+C-Stick/Right = `Right X+` | `DInput/0/Keyboard Mouse:L`
 Triggers/L = `Trigger L` | `DInput/0/Keyboard Mouse:Q`
 Triggers/R = `Trigger R` | `DInput/0/Keyboard Mouse:W`
 Triggers/L-Analog = `Trigger L`
@@ -1436,8 +1436,9 @@ D-Pad/Right = `Pad E`
                 "state": "PAUSED" if self.paused_tids else "PLAYING"}
 
     def send_input(self, events: list[dict]) -> dict:
-        keymap = {"a": "x", "b": "z", "x": "s", "y": "a", "l": "q", "r": "w", "z": "e", "start": "Return",
-                  "up": "Up", "down": "Down", "left": "Left", "right": "Right"}
+        # win_send_keys already maps standard pad names to keyboard keys. Translating
+        # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
+        keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l"}
         return win_send_keys(self.proc.pid, [{**e, "key": keymap.get(e["key"], e["key"])} for e in events])
 
     def save_state(self, slot: int | None = None) -> dict:

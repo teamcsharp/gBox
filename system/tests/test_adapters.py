@@ -98,6 +98,18 @@ def test_switch_uses_native_yuzu_on_windows():
     assert ad.get_capabilities()["pause"] == "supported"
 
 
+def test_windows_dolphin_can_scroll_with_c_stick(monkeypatch):
+    ad = adapters.DolphinWinAdapter(Config(), "gamecube")
+    ad.proc = type("Proc", (), {"pid": 123})()
+    sent = []
+    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events: sent.extend(events) or {"sent": len(events)})
+    assert "Keyboard Mouse:I" in ad.PAD_INI_WIN
+    assert ad.send_input([{"key": "cdown", "down": True}, {"key": "cdown", "down": False},
+                          {"key": "a", "down": True}]) == {"sent": 3}
+    assert sent == [{"key": "i", "down": True}, {"key": "i", "down": False},
+                    {"key": "a", "down": True}]
+
+
 def test_command_adapter_missing_exe():
     with pytest.raises(ToolUnavailable):
         adapters.CommandAdapter(EmulatorConfig(adapter="command", executable="definitely-not-here.exe")).launch_game("r")
