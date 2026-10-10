@@ -90,6 +90,14 @@ def test_unconfigured_platform_explicit():
         adapters.for_platform("dreamcast", Config())
 
 
+def test_switch_uses_native_yuzu_on_windows():
+    if adapters.HOST_OS != "windows":
+        pytest.skip("Yuzu is a Windows adapter")
+    ad = adapters.for_game({"platform": "switch", "launch": {"kind": "attract"}}, Config())
+    assert isinstance(ad, adapters.YuzuAdapter)
+    assert ad.get_capabilities()["pause"] == "supported"
+
+
 def test_command_adapter_missing_exe():
     with pytest.raises(ToolUnavailable):
         adapters.CommandAdapter(EmulatorConfig(adapter="command", executable="definitely-not-here.exe")).launch_game("r")

@@ -1553,6 +1553,59 @@ class MameAdapter(StandaloneAdapter):
 DEBUG_ADAPTERS = {"gamecube": DolphinAdapter, "wii": DolphinAdapter, "gba": MgbaAdapter, "psx": DuckStationAdapter, "arcade": MameAdapter}
 
 
+class YuzuAdapter(Adapter):
+    """Launch the operator's portable Yuzu and Switch ROM directly on the Windows worker."""
+    name = "yuzu"
+    supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "pause", "resume"}
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.proc = None
+        self.paused_tids = []
+        self.examine_unavailable_reason = "3D draw-call capture is not integrated with the Yuzu window yet."
+
+    def launch_game(self, rom: str) -> dict:
+        exe = self.config.library("hyperspin").root() / "emulators" / "yuzu" / "yuzu.exe"
+        if HOST_OS != "windows" or not exe.is_file():
+            raise ToolUnavailable(f"portable Yuzu is unavailable on this Windows worker: {exe}")
+        self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start())
+        keep_offscreen(self.proc.pid)
+        for _ in range(60):
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"Yuzu exited before opening the game (code {self.proc.returncode})")
+            if _pid_window(self.proc.pid):
+                break
+            time.sleep(1)
+        else:
+            self.stop_game()
+            raise RuntimeError("Yuzu did not open a game window within 60 seconds")
+        return {"pid": self.proc.pid, "rom": rom, "local_window": True,
+                "worker_name": __import__("platform").node(), "emulator": "yuzu"}
+
+    def stop_game(self) -> dict:
+        if self.paused_tids:
+            self.resume()
+        _kill_tree(self.proc)
+        return {"returncode": self.proc.poll() if self.proc else None}
+
+    def query_runtime(self) -> dict:
+        return {"running": bool(self.proc and self.proc.poll() is None), "paused": bool(self.paused_tids)}
+
+    def get_frame(self) -> bytes:
+        return win_grab(self.proc.pid)
+
+    def pause(self) -> dict:
+        if not self.paused_tids:
+            self.paused_tids = win_suspend_emulation(self.proc.pid)
+        return {"paused": bool(self.paused_tids)}
+
+    def resume(self) -> dict:
+        if self.paused_tids:
+            win_resume_threads(self.paused_tids)
+            self.paused_tids = []
+        return {"paused": False}
+
+
 class RocketLauncherAdapter(Adapter):
     """Windows node: launch any HyperSpin game through the drive's own RocketLauncher + bundled emulators."""
     name = "rocketlauncher"
@@ -1944,6 +1997,8 @@ def for_game(game: dict, config: Config, debug: bool = False) -> Adapter:
     if plat == "xbox360" and HOST_OS == "windows":
         from .xenia import XeniaAdapter
         return XeniaAdapter(config, plat)
+    if plat == "switch" and HOST_OS == "windows":
+        return YuzuAdapter(config)
     if HOST_OS == "windows" and game.get("launch", {}).get("kind") == "attract" and not game.get("core"):
         return RocketLauncherAdapter(config.library(game["library"]).root("windows"))   # no libretro core: drive's own emulators
     if HOST_OS == "linux" and plat in ("gamecube", "wii") and not (override and override.core) \

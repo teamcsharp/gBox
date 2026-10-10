@@ -12,6 +12,7 @@ from gbox.server import create_app
     ("ps2", "linux", "linux"),
     ("ps2", "windows", "windows"),
     ("psp", "auto", "linux"),
+    ("switch", "auto", "windows"),
 ])
 def test_launch_host(tmp_path, platform, node, expected):
     cfg = Config(data_dir=tmp_path)
