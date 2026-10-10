@@ -30,18 +30,19 @@ CONVENIENCE = {
                     obj({"request_id": S}, ["request_id"])),
     "read_request_artifact": ("Read an image or text attachment belonging to an inbox request. Images are returned as image content.",
                               obj({"request_id": S, "sha256": S}, ["request_id", "sha256"])),
-    "reply_request": ("Post an agent reply to an inbox request. State the tested outcome and remaining limitations.",
-                      obj({"request_id": S, "text": S, "task_step": {"type": "object"}}, ["request_id", "text"])),
+    "reply_request": ("Post an agent reply to an inbox request. Use one tool call at a time. State the tested outcome and remaining limitations. text, body, and message are accepted aliases.",
+                      obj({"request_id": S, "text": S, "body": S, "message": S, "task_step": {"type": "object"}}, ["request_id"])),
     "capture_request_screenshot": ("Capture a real frame from a live game session and attach it to an inbox report, with action, attempt, result, and status. Do this after meaningful visual milestones and verification.",
                                    obj({"request_id": S, "session_id": S, "text": S, "task_step": {"type": "object"}},
                                        ["request_id", "session_id", "text"])),
     "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress.",
                           obj({"request_id": S, "status": {"type": "string", "enum": ["open", "in_progress", "done", "blocked"]},
                                "note": S}, ["request_id", "status"])),
-    "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use zero with token_count_unavailable when exact counts are unavailable.",
+    "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use one tool call at a time. Fields may be flat or under metrics. Use zero with token_count_unavailable when exact counts are unavailable.",
                                obj({"request_id": S, "model": S, "tokens_in": I, "tokens_out": I,
                                     "tokens_detail": {"type": "object"}, "tools": {"type": "object"},
-                                    "files_changed": {"type": "array", "items": S}, "turns": I}, ["request_id"])),
+                                    "files_changed": {"type": "array", "items": S}, "turns": I,
+                                    "metrics": {"type": "object"}}, ["request_id"])),
     "list_games": ("Search the game library (title words). Returns game_id, title, platform, system, core.",
                    obj({"query": S, "platform": S, "limit": I}, ["query"])),
     "list_favorites": ("List favorited games, including ROMs queued for background model collection.", obj({"limit": I})),
@@ -123,8 +124,11 @@ def build(base_url: str, token: str) -> Server:
         if name == "get_request":
             return await get(f"/api/requests/{a['request_id']}")
         if name == "reply_request":
+            message = a.get("text") or a.get("body") or a.get("message")
+            if not message:
+                raise ValueError("reply_request requires text, body, or message")
             return await post(f"/api/requests/{a['request_id']}/messages",
-                              {"author": "agent", "text": a["text"]} | ({"task_step": a["task_step"]} if a.get("task_step") else {}))
+                              {"author": "agent", "text": message} | ({"task_step": a["task_step"]} if a.get("task_step") else {}))
         if name == "capture_request_screenshot":
             return await post(f"/api/requests/{a['request_id']}/capture",
                               {"session_id": a["session_id"], "text": a["text"], "task_step": a.get("task_step", {})})
@@ -132,8 +136,9 @@ def build(base_url: str, token: str) -> Server:
             return await post(f"/api/requests/{a['request_id']}/status",
                               {"status": a["status"], "note": a.get("note", "")})
         if name == "record_request_metrics":
+            metrics = a.get("metrics") if isinstance(a.get("metrics"), dict) else a
             return await post(f"/api/requests/{a['request_id']}/metrics",
-                              {k: v for k, v in a.items() if k != "request_id"})
+                              {k: v for k, v in metrics.items() if k != "request_id"})
         if name == "list_games":
             games = await get("/api/catalog/best", q=a["query"], limit=a.get("limit", 20))
             if a.get("platform"):

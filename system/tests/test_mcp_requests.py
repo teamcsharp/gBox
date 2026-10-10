@@ -48,16 +48,22 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
             denied = await client.call_tool("read_request_artifact", {"request_id": "req1", "sha256": "other"})
             assert denied.is_error
             await client.call_tool("reply_request", {"request_id": "req1", "text": "Verified"})
+            await client.call_tool("reply_request", {"request_id": "req1", "body": "Progress"})
+            await client.call_tool("reply_request", {"request_id": "req1", "message": "Result"})
             await client.call_tool("capture_request_screenshot", {"request_id": "req1", "session_id": "s1",
                 "text": "Verified frame", "task_step": {"action": "verify", "attempt": "1", "result": "visible", "status": "finished"}})
             await client.call_tool("record_request_metrics", {"request_id": "req1", "model": "test", "tokens_in": 10, "tokens_out": 2})
+            await client.call_tool("record_request_metrics", {"request_id": "req1", "metrics": {"tokens_in": 3, "tokens_out": 1}})
             await client.call_tool("set_request_status", {"request_id": "req1", "status": "done"})
 
     asyncio.run(check())
     assert posted == [
         ("/api/requests/req1/messages", {"author": "agent", "text": "Verified"}),
+        ("/api/requests/req1/messages", {"author": "agent", "text": "Progress"}),
+        ("/api/requests/req1/messages", {"author": "agent", "text": "Result"}),
         ("/api/requests/req1/capture", {"session_id": "s1", "text": "Verified frame",
             "task_step": {"action": "verify", "attempt": "1", "result": "visible", "status": "finished"}}),
         ("/api/requests/req1/metrics", {"model": "test", "tokens_in": 10, "tokens_out": 2}),
+        ("/api/requests/req1/metrics", {"tokens_in": 3, "tokens_out": 1}),
         ("/api/requests/req1/status", {"status": "done", "note": ""}),
     ]
