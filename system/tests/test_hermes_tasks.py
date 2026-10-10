@@ -21,7 +21,7 @@ def test_running_hermes_run_exposes_expandable_live_tool_output(monkeypatch, tmp
         db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, tool_calls TEXT)")
         db.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?)", (session_id, "cron", 1791589729, "gemma4:e4b", 100, 12))
         db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (1, session_id, "assistant", "", None,
-                   json.dumps([{"function": {"name": "tool_call", "arguments": json.dumps({"calls": [{"name": "mcp__gbox__game_roster", "arguments": {"game_id": "fixture"}}]})}}])))
+                   json.dumps([{"function": {"name": "tool_call", "arguments": json.dumps({"calls": [{"name": "mcp__gbox__game_roster", "arguments": {"game_id": "fixture", "request_id": "ticket42"}}]})}}])))
         db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (2, session_id, "tool", "Native reader missing", "mcp__gbox__game_roster", None))
     monkeypatch.setenv("GBOX_HERMES_HOME", str(home))
 
@@ -36,7 +36,10 @@ def test_running_hermes_run_exposes_expandable_live_tool_output(monkeypatch, tmp
     assert "← mcp__gbox__game_roster: Native reader missing" in detail["output"]
     assert hermes_tasks.get_run("../state.db") is None
     assert detail["steps"] == [{"action": "mcp__gbox__game_roster", "attempt": 1,
-                                "input": {"game_id": "fixture"}, "result": "Native reader missing", "status": "finished"}]
+                                "input": {"game_id": "fixture", "request_id": "ticket42"}, "result": "Native reader missing", "status": "finished"}]
+    assert detail["request_id"] == "ticket42"
+    (cron / "jobs.json").write_text(json.dumps({"jobs": [{"id": job_id, "name": "gBox inbox task mode"}]}))
+    assert hermes_tasks.get_run(run_id)["request_id"] is None
 
 
 def test_missing_hermes_installation_has_no_tasks(monkeypatch, tmp_path):

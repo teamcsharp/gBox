@@ -200,6 +200,12 @@
     display:none; background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 14px 44px #000b; font-size:12px; }
   #taskpanel.on { display:block; } #taskpanel .th { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line);
     background:var(--bg); } #taskpanel .th b { flex:1; font-size:14px; }
+  #taskpanel.visual-mode .th { background:#141e33; color:#e9f0ff; border-bottom-color:#ffffff20; }
+  #taskpanel.visual-mode .th .mut { color:#90a6c9; }
+  #taskpanel.visual-mode .th .act { background:#263855; color:#dceaff; border-color:#ffffff2a; }
+  #taskpanel.visual-mode .tk-tabs { background:#243552; border-color:#ffffff26; }
+  #taskpanel.visual-mode .tk-tabs button { color:#a9bfdf; }
+  #taskpanel.visual-mode .tk-tabs button[aria-selected=true] { color:#fff; background:#5267ba; }
   #taskpanel .tk-tabs { display:flex; gap:3px; padding:3px; background:var(--card); border:1px solid var(--line); border-radius:7px; }
   #taskpanel .tk-tabs button { color:var(--mut); border:0; background:transparent; border-radius:5px; padding:5px 12px; cursor:pointer; font:inherit; }
   #taskpanel .tk-tabs button[aria-selected=true] { color:#fff; background:#5267ba; }
@@ -246,6 +252,23 @@
   #taskpanel .tkv-list button:hover, #taskpanel .tkv-list button.selected { background:#4c76bb42; color:#fff; }
   #taskpanel .tkv-list button i { display:inline-block; width:6px; height:6px; border-radius:50%; background:#5ad9d0; margin-right:7px; }
   #taskpanel .tkv-list button.past i { background:#738c8d; }
+  #taskpanel .tkv-artifacts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin:12px 0; }
+  #taskpanel .tkv-artifacts button { overflow:hidden; min-width:0; padding:0; text-align:left; background:#1b2a43; border:1px solid #ffffff2a; border-radius:7px; color:#c9daf4; cursor:pointer; }
+  #taskpanel .tkv-artifacts button:hover { border-color:#86d7ff; }
+  #taskpanel .tkv-artifacts img, #taskpanel .tkv-artifacts .tkv-glb { display:block; width:100%; height:92px; object-fit:contain; background:#080e1b; }
+  #taskpanel .tkv-artifacts canvas { width:100%; height:100%; }
+  #taskpanel .tkv-artifacts span { display:block; padding:5px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; }
+  #tkv-media { display:none; position:fixed; inset:0; z-index:1250; background:#0a1020; color:#e4efff; }
+  #tkv-media.on { display:flex; flex-direction:column; }
+  #tkv-media header { display:flex; align-items:center; gap:10px; padding:10px 15px; background:#142039; border-bottom:1px solid #ffffff26; }
+  #tkv-media header b { flex:1; font-size:15px; }
+  #tkv-media .body { display:grid; grid-template-columns:minmax(0,1fr) minmax(240px,300px); flex:1; min-height:0; }
+  #tkv-media .stage { display:flex; align-items:center; justify-content:center; gap:8px; min-width:0; min-height:0; padding:12px; background:#070c17; }
+  #tkv-media .stage img, #tkv-media .stage video { max-width:100%; max-height:100%; object-fit:contain; }
+  #tkv-media .stage .model { min-width:0; flex:1; height:90%; border:1px solid #ffffff28; border-radius:7px; }
+  #tkv-media .stage .model canvas { width:100%; height:100%; }
+  #tkv-media aside { overflow:auto; padding:15px; border-left:1px solid #ffffff28; }
+  #tkv-media aside button { display:block; width:100%; padding:8px; margin:5px 0; text-align:left; background:#243656; color:#e4efff; border:1px solid #ffffff30; border-radius:6px; cursor:pointer; }
   #taskpanel .tkv-empty { display:grid; place-content:center; height:100%; text-align:center; color:#93a7c9; }
   #taskpanel .tkv-empty b { color:#e3edff; font-size:16px; margin-bottom:5px; }
   #taskpanel .mc { padding:8px 12px; border-bottom:1px solid var(--line); min-width:0; } #taskpanel .mh { display:flex; flex-wrap:wrap; gap:6px 14px; margin-bottom:6px; }
@@ -713,10 +736,14 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
     root.clear(); nodes = []; links = []; particles = []; streams = [];
     labels.replaceChildren();
   };
-  const update = (items, selectedId) => {
+  const update = (items, selectedId, focus = false, events = []) => {
     const previous = new Map(nodes.map(n => [n.task.id, n.mesh.position.clone()]));
     selected = selectedId; clear();
-    const active = items.filter(x => x.active).slice(0, 7), past = items.filter(x => !x.active).slice(0, 7);
+    const focused = items.find(x => x.id === selectedId);
+    const active = focus && focused ? [{...focused, active:true}, ...events.slice(-6).map((event, i) => ({
+      id:`${selectedId}:step:${i}`, parentId:selectedId, eventIndex:i, kind:"step", name:event.name,
+      state:event.status || "recorded", active:true }))] : items.filter(x => x.active).slice(0, 7);
+    const past = focus ? [] : items.filter(x => !x.active).slice(0, 7);
     const placed = [...active, ...past];
     const base = new T.Mesh(new T.BoxGeometry(9.2, .025, .025), material(0x436697, .2));
     base.position.set(0, -.1, -.95); root.add(base);
@@ -725,15 +752,19 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
     placed.forEach((task, i) => {
       const running = task.active, lane = running ? active : past;
       const laneIndex = running ? i : i - active.length, count = lane.length;
-      const x = count === 1 ? 0 : (laneIndex - (count - 1) / 2) * Math.min(1.85, 9.6 / Math.max(count - 1, 1));
-      const y = running ? 1.0 + Math.sin(i * 1.9) * .45 : -1.8 - (laneIndex % 2) * .4;
+      const pastRow = Math.floor(laneIndex / 4), pastRowCount = Math.min(4, count - pastRow * 4);
+      const x = running ? (count === 1 ? 0 : (laneIndex - (count - 1) / 2) * Math.min(1.85, 9.6 / Math.max(count - 1, 1)))
+        : (laneIndex % 4 - (pastRowCount - 1) / 2) * 2.25;
+      const y = running ? 1.0 + Math.sin(i * 1.9) * .45 : -1.25 - pastRow * 1.5;
       const z = running ? .35 + (i % 2) * .3 : -.8;
-      const color = task.state === "failed" ? 0xff817e : running ?
-        task.kind === "hermes" ? 0x8e9dff : task.kind === "resolution" ? 0xf9b273 : 0x69d6e7 : 0x688f84;
+      const color = task.state === "failed" || task.state === "error" ? 0xff817e : running ?
+        task.kind === "hermes" ? 0x8e9dff : task.kind === "resolution" ? 0xf9b273 :
+        task.kind === "step" ? 0x87c8ff : 0x69d6e7 : 0x688f84;
       const geo = task.kind === "hermes" ? new T.IcosahedronGeometry(.32, 2) :
         task.kind === "resolution" ? new T.OctahedronGeometry(.34, 1) : new T.SphereGeometry(.29, 24, 16);
       const mesh = new T.Mesh(geo, material(color, running ? .42 : .14));
-      mesh.position.copy(previous.get(task.id) || new T.Vector3(x, -.1, -1)); mesh.userData.taskId = task.id; root.add(mesh);
+      mesh.position.copy(previous.get(task.id) || new T.Vector3(x, -.1, -1));
+      mesh.userData.taskId = task.parentId || task.id; mesh.userData.eventIndex = task.eventIndex; root.add(mesh);
       const halo = new T.Mesh(new T.TorusGeometry(running ? .48 : .41, .018, 8, 64),
         new T.MeshBasicMaterial({ color, transparent:true, opacity:running ? .75 : .28 }));
       halo.position.set(x, y, z); root.add(halo);
@@ -745,8 +776,8 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
       label.className = "tkv-node-label" + (task.id === selected ? " selected" : "");
       label.setAttribute("aria-label", `${task.name}, ${task.state}`);
       label.innerHTML = `<small>${task.kind.replace("_", " ")} · ${task.state}</small>${task.name.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]).slice(0, 28)}`;
-      label.onclick = () => onPick(task.id); labels.append(label);
-      nodes.push({ task, mesh, halo, label, x, y, z, running, phase:i * 1.7 });
+      label.onclick = () => onPick(task.parentId || task.id, task.eventIndex); labels.append(label);
+      nodes.push({ task, mesh, halo, label, x, y, z, running, labelAbove:running ? i % 2 === 1 : pastRow === 0, phase:i * 1.7 });
     });
     for (let i = 1; i < active.length; i++) {
       const spark = new T.Mesh(new T.SphereGeometry(.045, 8, 6), new T.MeshBasicMaterial({ color:0xbbeeff }));
@@ -763,7 +794,7 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
     mouse.set((e.clientX-r.left)/r.width*2-1, -((e.clientY-r.top)/r.height*2-1));
     ray.setFromCamera(mouse, camera);
     const hit = ray.intersectObjects(nodes.map(n => n.mesh))[0];
-    if (hit) onPick(hit.object.userData.taskId);
+    if (hit) onPick(hit.object.userData.taskId, hit.object.userData.eventIndex);
   };
   canvas.addEventListener("pointerdown", e => { press = {x:e.clientX,y:e.clientY}; });
   canvas.addEventListener("pointerup", e => { if (press && Math.hypot(e.clientX-press.x,e.clientY-press.y)<7) pick(e); press=null; });
@@ -782,7 +813,7 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
       n.halo.position.copy(n.mesh.position); n.halo.scale.setScalar(n.task.id === selected ? 1.15 + Math.sin(t*2.4)*.055 : 1);
       const point = n.mesh.position.clone().project(camera), px=(point.x*.5+.5)*w, py=(-point.y*.5+.5)*h;
       n.label.style.left = `${Math.max(75,Math.min(w-75,px))}px`;
-      const above = n.running && nodes.indexOf(n) % 2 === 1;
+      const above = n.labelAbove;
       n.label.style.top = `${py+(above ? -28 : 23)}px`;
       n.label.style.transform = above ? "translate(-50%,-100%)" : "translate(-50%,0)";
       n.label.style.opacity = point.z > 1 ? "0" : "1";
@@ -1161,6 +1192,9 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="t
       <aside class="tkv-side" id="tkv-side"><div class="tkv-empty"><b>Choose a task</b><span>Inspect live metrics, attempts and evidence.</span></div></aside></div>
   </div>
   <div id="tk-technical" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-technical-tab" hidden><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div></div>`);
+document.body.insertAdjacentHTML("beforeend", `<div id="tkv-media" role="dialog" aria-modal="true" aria-label="Task artifact">
+  <header><b id="tkv-media-title">Task artifact</b><button class="act" id="tkv-media-close">Close</button></header>
+  <div class="body"><div class="stage" id="tkv-media-stage"></div><aside id="tkv-media-side"></aside></div></div>`);
 document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="head"><b id="tv-title">Task progress</b><span id="tv-state" class="mut"></span>
   <button class="act" id="tv-close">Back to Tasks</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
   <div id="tv-stages" class="stages"></div></div></div>`);
@@ -1320,9 +1354,11 @@ $("#rp-close").onclick = () => {
   REMOTE.worker = null; clearInterval(REMOTE.timer); clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null;
 };
 const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
+  focus: false, focusEvents: [], visualOpenSteps: new Set(), artifacts: [],
   expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
 function tkView(view) {
   TK.view = view;
+  $("#taskpanel").classList.toggle("visual-mode", view === "visual");
   $("#tk-visual").hidden = view !== "visual"; $("#tk-technical").hidden = view !== "technical";
   $("#tk-visual-tab").setAttribute("aria-selected", String(view === "visual"));
   $("#tk-technical-tab").setAttribute("aria-selected", String(view === "technical"));
@@ -1331,7 +1367,7 @@ function tkView(view) {
     catch (error) { $("#tkv-side").textContent = `3D task view unavailable: ${error.message}`; }
   }
   if (view === "technical") tasksLocalLoad();
-  else TK.graph?.update(TK.visualData, TK.visualSelected);
+  else TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
 }
 function tkVisualItems(d) {
   const items = [];
@@ -1351,13 +1387,46 @@ function tkVisualMeter(label, value, max, shown) {
   const pct = max > 0 ? Math.max(0, Math.min(100, 100 * value / max)) : 0;
   return `<div class="tkv-meter"><span>${esc(label)}</span><span class="track"><i style="width:${pct.toFixed(1)}%"></i></span><b>${esc(shown)}</b></div>`;
 }
-function tkVisualSelect(id) {
-  TK.visualSelected = id; TK.graph?.update(TK.visualData, id);
+function tkVisualMediaOpen(index) {
+  const artifact = TK.artifacts[index]; if (!artifact) return;
+  const models = TK.artifacts.filter(a => a.type === "model/gltf-binary");
+  const display = artifact.type === "model/gltf-binary" && models.length > 1 ? models.slice(0, 2) : [artifact];
+  $("#tkv-media-title").textContent = display.length > 1 ? "Character model comparison" : artifact.name;
+  $("#tkv-media-stage").innerHTML = display.map(a => a.type.startsWith("image/") ?
+    `<img src="${esc(a.url)}" alt="${esc(a.name)}">` : a.type.startsWith("video/") ?
+    `<video src="${esc(a.url)}" controls autoplay loop aria-label="${esc(a.name)}"></video>` : a.type === "model/gltf-binary" ?
+    `<div class="model" data-tkv-model="${esc(a.sha256)}" title="${esc(a.name)}"><canvas></canvas></div>` :
+    `<p>${esc(a.name)} is available to download.</p>`).join("");
+  $("#tkv-media-side").innerHTML = `<h3>${esc(artifact.name)}</h3><p>${esc(artifact.type)} · ${Math.ceil((artifact.size || 0)/1024)} KB</p>
+    <button data-tkv-download="${index}">Open original artifact</button><h4>Connected results</h4>` +
+    TK.artifacts.map((a,i) => `<button data-tkv-open="${i}">${esc(a.name)} · ${esc(a.type)}</button>`).join("");
+  $("#tkv-media").classList.add("on");
+  if (window.assetView) $("#tkv-media-stage").querySelectorAll("[data-tkv-model]").forEach(el => {
+    const a = TK.artifacts.find(x => x.sha256 === el.dataset.tkvModel);
+    if (a) window.assetView(el, a.url).catch(() => { el.textContent = "3D preview unavailable"; });
+  });
+}
+$("#tkv-media-close").onclick = () => { $("#tkv-media").classList.remove("on"); $("#tkv-media-stage").replaceChildren(); };
+$("#tkv-media").onclick = e => {
+  const open = e.target.closest("[data-tkv-open]"), download = e.target.closest("[data-tkv-download]");
+  if (open) tkVisualMediaOpen(Number(open.dataset.tkvOpen));
+  if (download) gbox.openExternal(TK.artifacts[Number(download.dataset.tkvDownload)]?.url);
+};
+addEventListener("keydown", e => { if (e.key === "Escape" && $("#tkv-media").classList.contains("on")) $("#tkv-media-close").click(); });
+function tkVisualSelect(id, eventIndex) {
+  if (eventIndex != null && TK.visualSelected === id) {
+    const detail = $("#tkv-step-" + eventIndex); if (detail) { detail.open = true; detail.scrollIntoView({block:"nearest"}); }
+    return;
+  }
+  if (TK.visualSelected !== id) { TK.focus = false; TK.focusEvents = []; TK.visualOpenSteps.clear(); }
+  TK.visualSelected = id; TK.graph?.update(TK.visualData, id, TK.focus, TK.focusEvents);
   tkVisualDetail();
 }
 async function tkVisualDetail() {
   const id = TK.visualSelected, item = TK.visualData.find(i => i.id === id), box = $("#tkv-side");
   if (!item) { box.innerHTML = '<div class="tkv-empty"><b>Choose a task</b><span>Inspect live metrics, attempts and evidence.</span></div>'; return; }
+  const scroll = box.scrollTop;
+  box.querySelectorAll("#tkv-detail-events details[open]").forEach(el => TK.visualOpenSteps.add(el.id));
   const d = item.data, started = d.started || d.created;
   let html = `<span class="tkv-pill">${esc(item.kind)} · ${esc(item.state)}</span><h3>${esc(item.name)}</h3>
     <p>${started ? `Started ${tkAge(started)} ago` : "Live process"}${d.model ? ` · ${esc(d.model)}` : ""}</p>`;
@@ -1379,27 +1448,62 @@ async function tkVisualDetail() {
   } else if (item.kind === "resolution") {
     html += `<p>${esc(d.progress || "No agent update yet.")}</p><button class="act" data-tkv-request="${esc(d.id)}">Open request and evidence</button>`;
   }
+  if (item.kind !== "process") html += `<button class="act" data-tkv-focus="1">${TK.focus ? "Back to task network" : "Explore task stages"}</button>`;
   const list = `<div class="tkv-list"><b>All tracked work · ${TK.visualData.length}</b>${TK.visualData.map(x =>
     `<button type="button" class="${x.active ? "" : "past"} ${x.id === id ? "selected" : ""}" data-tkv-select="${esc(x.id)}" title="${esc(x.name)}"><i></i>${esc(x.name)}</button>`).join("")}</div>`;
   box.innerHTML = html + '<div id="tkv-detail-events"><p class="mut">Loading task events…</p></div>' + list;
+  box.scrollTop = scroll;
   const eventBox = $("#tkv-detail-events");
   const version = ++TK.visualVersion;
   if (item.kind === "hermes") {
     const r = await gbox.api(`/api/tasks/hermes/${encodeURIComponent(d.id)}`);
     if (version !== TK.visualVersion) return;
     const steps = r.ok ? (r.data.steps || []) : [];
-    const calls = steps.filter(s => s.action === "tool_call" || s.action === "tool").length;
+    const calls = steps.length;
     const failed = steps.filter(s => s.status === "failed" || s.status === "error").length;
-    eventBox.innerHTML = `<div class="tkv-event"><b>${steps.length} events · ${calls} tool calls · ${failed} failed</b></div>` +
-      steps.slice(-12).map((s,i) => `<details><summary>${steps.length-Math.min(12,steps.length)+i+1}. ${esc(s.action || "step")} · ${esc(s.status || "recorded")}</summary>
+    TK.focusEvents = steps.slice(-6).map((s,i) => ({name:`${steps.length-Math.min(6,steps.length)+i+1}. ${s.action || "step"}`,status:s.status}));
+    if (TK.focus) TK.graph?.update(TK.visualData, id, true, TK.focusEvents);
+    eventBox.innerHTML = `<div class="tkv-event"><b>${calls} tool calls · ${failed} failed</b></div>` +
+      tkVisualMeter("Tool success", calls-failed, calls, calls ? `${Math.round(100*(calls-failed)/calls)}%` : "—") +
+      steps.slice(-6).map((s,i) => `<details id="tkv-step-${i}" ${TK.visualOpenSteps.has(`tkv-step-${i}`) ? "open" : ""}><summary>${steps.length-Math.min(6,steps.length)+i+1}. ${esc(s.action || "step")} · ${esc(s.status || "recorded")}</summary>
         ${s.input ? `<b>Input</b><pre>${esc(JSON.stringify(s.input,null,2))}</pre>` : ""}<b>Result</b><pre>${esc(String(s.result || "No result recorded."))}</pre></details>`).join("") +
       (!steps.length ? `<p>${esc(r.ok ? (r.data.output || "No events yet.").slice(-500) : r.error)}</p>` : "");
   } else if (item.kind === "job") {
     const r = await gbox.api(`/api/jobs/${encodeURIComponent(d.id)}`);
     if (version !== TK.visualVersion) return;
+    TK.focusEvents = (r.ok ? r.data.progress_log || [] : []).slice(-6).map((s,i) => ({name:`${i+1}. ${String(s).slice(0,36)}`,status:r.data.state}));
+    if (TK.focus) TK.graph?.update(TK.visualData, id, true, TK.focusEvents);
     eventBox.innerHTML = (r.ok ? (r.data.progress_log || []).slice(-8) : [r.error]).map(s => `<div class="tkv-event">${esc(s)}</div>`).join("") || '<p class="mut">No events recorded yet.</p>';
+    if (r.ok && r.data.receipt_id) {
+      const rr = await gbox.api(`/api/receipts/${encodeURIComponent(r.data.receipt_id)}`);
+      if (version !== TK.visualVersion || !rr.ok) return;
+      const token = S.tok || await gbox.token().catch(() => "");
+      if (version !== TK.visualVersion) return;
+      TK.artifacts = (rr.data.artifacts || []).filter(a => /^[0-9a-f]{64}$/.test(a.sha256 || "")).slice(0, 12)
+        .map(a => ({...a, type:a.media_type || "application/octet-stream", name:a.name || a.sha256.slice(0,12),
+          url:`${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(token)}`}));
+      if (TK.artifacts.length) {
+        const holder = document.createElement("div"); holder.className = "tkv-artifacts";
+        holder.innerHTML = TK.artifacts.map((a,i) => `<button type="button" data-tkv-artifact="${i}" title="Open ${esc(a.name)}">
+          ${a.type.startsWith("image/") ? `<img src="${esc(a.url)}" alt="">` : a.type === "model/gltf-binary" ?
+            `<div class="tkv-glb" data-tkv-model="${esc(a.sha256)}"><canvas></canvas></div>` : `<div class="tkv-glb" style="display:grid;place-items:center">${a.type.startsWith("video/") ? "▶ Video" : "◈ File"}</div>`}
+          <span>${esc(a.name)}</span></button>`).join("");
+        eventBox.append(holder);
+        if (window.assetView) holder.querySelectorAll("[data-tkv-model]").forEach(el => {
+          const a = TK.artifacts.find(x => x.sha256 === el.dataset.tkvModel);
+          if (a) window.assetView(el, a.url).catch(() => { el.textContent = "3D preview unavailable"; });
+        });
+      }
+    }
   } else if (item.kind === "resolution") {
-    eventBox.innerHTML = `<div class="tkv-event">${esc((d.output || "").slice(-500) || "No events recorded yet.")}</div>`;
+    const r = await gbox.api(`/api/tasks/resolutions/${encodeURIComponent(d.id)}`);
+    if (version !== TK.visualVersion) return;
+    const steps = r.ok ? r.data.steps || [] : [];
+    TK.focusEvents = steps.slice(-6).map((s,i) => ({name:`${steps.length-Math.min(6,steps.length)+i+1}. ${s.action}`,status:s.status}));
+    if (TK.focus) TK.graph?.update(TK.visualData, id, true, TK.focusEvents);
+    eventBox.innerHTML = steps.slice(-6).map((s,i) => `<details id="tkv-step-${i}" ${TK.visualOpenSteps.has(`tkv-step-${i}`) ? "open" : ""}><summary>${steps.length-Math.min(6,steps.length)+i+1}. ${esc(s.action)} · try ${esc(s.attempt)} · ${esc(s.status)}</summary>
+      <b>Input</b><pre>${esc(JSON.stringify(s.input,null,2))}</pre><b>Result</b><pre>${esc(s.result)}</pre></details>`).join("") ||
+      `<div class="tkv-event">${esc((d.output || "").slice(-500) || "No events recorded yet.")}</div>`;
   } else {
     eventBox.innerHTML = '<p class="mut">Resource use is sampled live from the worker.</p>';
   }
@@ -1409,22 +1513,31 @@ function tkVisualUpdate(d) {
   const active = TK.visualData.filter(x => x.active), workers = (d.machines || []).filter(m => !m.error);
   const tokens = (d.hermes || []).reduce((sum,r) => sum + Number(r.tokens_in || 0) + Number(r.tokens_out || 0),0);
   $("#tkv-stats").innerHTML = [[active.length,"active tasks"],[workers.length,"connected workers"],
-    [(d.hermes || []).filter(r => r.state === "running").length,"Hermes runs"],[tokens.toLocaleString(),"recorded tokens"]]
+    [(d.hermes || []).filter(r => r.state === "running").length,"Hermes runs"],[tokens.toLocaleString(),"recent run tokens"]]
     .map(([v,label]) => `<div class="tkv-stat"><strong>${v}</strong><span>${label}</span></div>`).join("");
   if (TK.view !== "visual") return;
-  if (!TK.visualSelected || !TK.visualData.some(i => i.id === TK.visualSelected)) TK.visualSelected = active[0]?.id || TK.visualData[0]?.id || null;
-  TK.graph?.update(TK.visualData, TK.visualSelected);
+  if (!TK.visualSelected || !TK.visualData.some(i => i.id === TK.visualSelected)) {
+    TK.visualSelected = active[0]?.id || TK.visualData[0]?.id || null; TK.focus = false; TK.focusEvents = []; TK.visualOpenSteps.clear();
+  }
+  TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
   tkVisualDetail();
 }
 $("#tk-visual-tab").onclick = () => tkView("visual");
 $("#tk-technical-tab").onclick = () => tkView("technical");
 $("#tkv-side").onclick = e => {
-  const b = e.target.closest("[data-tkv-select],[data-tkv-evidence],[data-tkv-job],[data-tkv-request]"); if (!b) return;
+  const b = e.target.closest("[data-tkv-select],[data-tkv-evidence],[data-tkv-job],[data-tkv-request],[data-tkv-focus],[data-tkv-artifact]"); if (!b) return;
   if (b.dataset.tkvSelect) { tkVisualSelect(b.dataset.tkvSelect); return; }
+  if (b.dataset.tkvArtifact) { tkVisualMediaOpen(Number(b.dataset.tkvArtifact)); return; }
+  if (b.dataset.tkvFocus) { TK.focus = !TK.focus; TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
+    b.textContent = TK.focus ? "Back to task network" : "Explore task stages"; return; }
   if (b.dataset.tkvEvidence) evRun(b.dataset.tkvEvidence);
   else if (b.dataset.tkvJob) tvOpen(b.dataset.tkvJob);
   else if (b.dataset.tkvRequest) evRequest(b.dataset.tkvRequest);
 };
+$("#tkv-side").addEventListener("toggle", e => {
+  if (!e.target.id?.startsWith("tkv-step-")) return;
+  if (e.target.open) TK.visualOpenSteps.add(e.target.id); else TK.visualOpenSteps.delete(e.target.id);
+}, true);
 const EV = { images: [], selected: null, state: null, requestId: null };
 function evSelect(sha) {
   const item = EV.images.find(x => x.sha === sha); if (!item) return;
@@ -2427,7 +2540,7 @@ async function embedTick() {
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height }; })
       .filter(r => r.w > 0 && r.h > 0))()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
+    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
       ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => ({ left: webOrigin.left + b.x, top: webOrigin.top + b.y,

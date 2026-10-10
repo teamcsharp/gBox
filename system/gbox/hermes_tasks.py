@@ -226,7 +226,9 @@ def get_run(run_id: str) -> dict | None:
                     attempts[action] = attempts.get(action, 0) + 1
                     run["steps"].append({"action": action, "attempt": attempts[action],
                                          "input": call["input"], "result": "Awaiting tool result", "status": "running"})
-                    if isinstance(call["input"], dict):
+                    # The general inbox cron can touch multiple tickets in one
+                    # run. A tool argument is not a reliable run-level report.
+                    if run["name"] != "gBox inbox task mode" and isinstance(call["input"], dict):
                         run["request_id"] = run["request_id"] or call["input"].get("request_id") or call["input"].get("parent_request_id")
             else:
                 result = _tool_text(m["content"] or "")
