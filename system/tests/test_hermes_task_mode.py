@@ -36,6 +36,9 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
     assert [c[0] for c in calls] == ["create", "run"]
     assert client.post("/api/hermes/task-mode", json={"enabled": False}).json()["enabled"] is False
     assert calls[-1] == ("pause", "hermes-job")
+    assert client.post("/api/hermes/task-mode", json={"enabled": True}).json()["enabled"] is True
+    assert [c[0] for c in calls[-3:]] == ["edit", "resume", "run"]
+    assert calls[-3][1:3] == ("hermes-job", "--prompt")
 
 
 def test_task_mode_prefers_available_qwen_with_memory(monkeypatch):

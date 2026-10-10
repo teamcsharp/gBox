@@ -81,6 +81,7 @@ def set_enabled(enabled: bool) -> dict:
             _run("run", result["job_id"])
             return result | {"model_note": note}
         if job and enabled and not job.get("enabled"):
+            _run("edit", job["id"], "--prompt", _PROMPT.read_text(encoding="utf-8"))
             _run("resume", job["id"])
             _run("run", job["id"])
         elif job and not enabled and job.get("enabled"):
