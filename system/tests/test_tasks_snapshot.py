@@ -44,6 +44,17 @@ def test_job_console_log_is_available_for_task_details(cfg):
     assert client.get("/api/jobs/missing/log").status_code == 404
 
 
+def test_tasks_snapshot_exposes_reported_job_progress(cfg):
+    app = create_app(cfg)
+    client = TestClient(app, headers={"authorization": f"Bearer {cfg.token()}"})
+    app.state.store.put("job", "job-progress", {"id": "job-progress", "tool": "scan_library",
+                                                "state": "running", "created": time.time(),
+                                                "progress": {"pct": 37.5, "msg": "Indexing PS1"}})
+    task = next(j for j in client.get("/api/tasks").json()["jobs"] if j["id"] == "job-progress")
+    assert task["pct"] == 37.5
+    assert task["progress"] == "Indexing PS1"
+
+
 def test_worker_subprocess_is_listed_even_without_gbox_in_command(monkeypatch):
     import re
     import psutil

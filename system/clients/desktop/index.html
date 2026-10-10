@@ -204,6 +204,24 @@
   #taskpanel .hermes-run .meta { color:var(--mut); margin:5px 0 0 16px; }
   #taskpanel .hermes-run pre { max-height:360px; margin:8px 0 0; padding:10px; background:var(--card); border-radius:5px;
     font:11px/1.4 ui-monospace,Consolas,monospace; }
+  #taskpanel .task-progress, #taskviz .task-progress { display:flex; align-items:center; gap:7px; margin:5px 0; color:var(--mut); }
+  #taskpanel .task-progress .track, #taskviz .task-progress .track { flex:1; height:6px; overflow:hidden; border-radius:5px; background:var(--card); }
+  #taskpanel .task-progress .fill, #taskviz .task-progress .fill { display:block; height:100%; background:var(--acc); transition:width .4s; }
+  #taskpanel .task-progress .track.indeterminate .fill, #taskviz .task-progress .track.indeterminate .fill {
+    width:32%; animation:task-scan 1.5s ease-in-out infinite alternate; }
+  @keyframes task-scan { from { transform:translateX(-100%); } to { transform:translateX(315%); } }
+  #taskpanel .task-detail { padding:7px 4px; text-align:left; }
+  #taskpanel .task-detail pre { margin:6px 0; padding:8px; background:var(--card); border-radius:5px; }
+  #taskpanel .task-files { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  #taskpanel .task-file { max-width:210px; padding:5px; border:1px solid var(--line); border-radius:5px; }
+  #taskpanel .task-file img { display:block; max-width:190px; max-height:140px; object-fit:contain; margin-bottom:4px; }
+  #taskpanel .task-file .av { width:190px; height:140px; } #taskpanel .task-file canvas { width:100%; height:100%; }
+  #taskviz { display:none; position:fixed; z-index:90; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(680px,calc(100vw - 40px)); max-height:calc(100vh - 60px); overflow:auto; background:var(--bg);
+    border:1px solid var(--line); border-radius:10px; box-shadow:0 16px 55px #000c; }
+  #taskviz.on { display:block; } #taskviz .head { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); }
+  #taskviz .head b { flex:1; } #taskviz canvas { display:block; width:100%; height:270px; background:radial-gradient(ellipse,#242d47,#10131d 72%); }
+  #taskviz .body { padding:10px 14px; } #taskviz .stages { max-height:120px; overflow:auto; color:var(--mut); }
   #titlebar .tools button[hidden] { display:none; }
   #whipmenu { display:none; position:fixed; z-index:90; width:318px; padding:10px; background:var(--bg); border:1px solid var(--line);
     border-radius:10px; box-shadow:0 12px 40px #000b; font-size:13px; } #whipmenu.on { display:block; }
@@ -571,6 +589,47 @@ window.assetView = async (box, glbUrl) => {
   const tris = g.scene.children.reduce((n, o) => { o.traverse(m => { if (m.geometry?.index) n += m.geometry.index.count / 3; }); return n; }, 0);
   return { triangles: tris };
 };
+// The task window uses only progress values and stages reported by the worker.
+window.taskVizCreate = canvas => {
+  const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const scene = new T.Scene(), camera = new T.PerspectiveCamera(42, 1, .1, 100);
+  camera.position.set(0, 0, 9);
+  scene.add(new T.AmbientLight(0xffffff, .8));
+  const light = new T.PointLight(0x9db6ff, 35); light.position.set(1, 3, 5); scene.add(light);
+  const group = new T.Group(); scene.add(group);
+  const base = new T.Mesh(new T.TorusGeometry(2.1, .055, 10, 100), new T.MeshStandardMaterial({ color: 0x4b5577 }));
+  group.add(base);
+  let arc = null, nodes = [], stopped = false, active = false;
+  const update = (pct, stages, running) => {
+    active = running;
+    if (arc) { group.remove(arc); arc.geometry.dispose(); arc.material.dispose(); arc = null; }
+    if (Number.isFinite(pct)) {
+      arc = new T.Mesh(new T.TorusGeometry(2.1, .095, 10, 100, Math.max(.001, Math.PI * 2 * Math.max(0, Math.min(100, pct)) / 100)),
+        new T.MeshStandardMaterial({ color: 0x728cff, emissive: 0x263f9b }));
+      group.add(arc);
+    }
+    for (const n of nodes) { group.remove(n); n.geometry.dispose(); n.material.dispose(); }
+    nodes = (stages || []).slice(-12).map((_, i, arr) => {
+      const angle = -Math.PI / 2 + Math.PI * 2 * i / Math.max(arr.length, 3);
+      const n = new T.Mesh(new T.IcosahedronGeometry(i === arr.length - 1 && running ? .17 : .11, 1),
+        new T.MeshStandardMaterial({ color: i === arr.length - 1 && running ? 0xffbc56 : 0x70d6aa,
+          emissive: i === arr.length - 1 && running ? 0x583515 : 0x17422e }));
+      n.position.set(2.1 * Math.cos(angle), 2.1 * Math.sin(angle), .13); group.add(n); return n;
+    });
+  };
+  const draw = () => {
+    if (stopped || !canvas.isConnected) { renderer.dispose(); return; }
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w && h && (canvas.width !== Math.round(w * renderer.getPixelRatio()) || canvas.height !== Math.round(h * renderer.getPixelRatio()))) {
+      renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+    }
+    if (active) group.rotation.y = Math.sin(performance.now() * .0005) * .2;
+    renderer.render(scene, camera); requestAnimationFrame(draw);
+  };
+  draw();
+  return { update, stop: () => { stopped = true; } };
+};
 </script>
 </head>
 <body>
@@ -875,9 +934,21 @@ setInterval(async () => {
 // ---- Tasks: every machine's gBox processes + jobs in flight, with what they cost and a hard stop ----
 document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b><span class="mut" id="tk-at"></span>
   <button class="act" id="tk-close">Close</button></div><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div>`);
+document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="head"><b id="tv-title">Task progress</b><span id="tv-state" class="mut"></span>
+  <button class="act" id="tv-close">Close</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
+  <div id="tv-stages" class="stages"></div></div></div>`);
 const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
+const TV = { id: null, timer: null, view: null };
 const tkAge = ts => { const s = Math.max(0, Date.now() / 1000 - (ts || 0)); return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; };
 const tkBar = (v, max) => `<span class="bar"><i style="width:${Math.min(100, 100 * v / (max || 100))}%"></i></span>`;
+const tkProgress = (pct, active) => {
+  const known = Number.isFinite(Number(pct)) && pct !== null && pct !== undefined;
+  if (!active && !known) return "";
+  const value = known ? Math.max(0, Math.min(100, Number(pct))) : 0;
+  return `<div class="task-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" ${known ? `aria-valuenow="${value}"` : ""}>
+    <span class="track ${known ? "" : "indeterminate"}"><span class="fill" style="width:${known ? value : 32}%"></span></span>
+    <span>${known ? value.toFixed(0) + "%" : "running"}</span></div>`;
+};
 async function tasksLocalLoad() {
   const tasks = await gbox.taskSnapshot();
   if (!$("#taskpanel").classList.contains("on")) return;
@@ -917,17 +988,18 @@ async function tasksLoad() {
         <td>${tkAge(x.started)}</td><td>${x.killable ? `<button class="x" data-kill="${x.pid}" data-w="${esc(m.worker_id)}" title="Stop it now (and everything it started)">✕ Stop</button>` : '<span class="mut" title="gBox itself">—</span>'}</td></tr>`).join("")
         || '<tr><td colspan="8" class="mut" style="text-align:left">nothing running</td></tr>'}</table></div>`; }).join("") +
     `<div class="mc"><div class="mh"><b>Jobs in flight</b><span class="mut">${d.jobs.length}</span></div><table>
-      ${d.jobs.map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}><summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary><pre>${TK.expanded.has(j.id) ? "Loading task output…" : ""}</pre></details></td><td>${esc(j.worker)}</td>
+      ${d.jobs.map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}><summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary>${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></td><td>${esc(j.worker)}</td>
         <td>${tkAge(j.created)}</td><td><button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></td></tr>`).join("") || '<tr><td class="mut" style="text-align:left">none</td></tr>'}</table></div>` +
     `<div class="mc"><div class="mh"><b>Recent jobs</b><span class="mut">${(d.recent || []).length}</span></div><table>
       ${(d.recent || []).map(j => `<tr><td>${kind(j.state)}</td><td><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
-        <summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary><pre>${TK.expanded.has(j.id) ? "Loading task output…" : ""}</pre></details></td>
+        <summary><span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.progress || "")}</span></summary>${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></td>
         <td>${esc(j.worker)}</td><td>${tkAge(j.created)}</td></tr>`).join("") || '<tr><td class="mut">none</td></tr>'}</table></div>`;
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
     pre.scrollTop = position?.follow === false ? position.top : pre.scrollHeight;
     tkHermesRefresh(detail);
   });
+  $("#tk-body").querySelectorAll("details[data-detail-job][open]").forEach(tkJobRefresh);
 }
 async function tkHermesRefresh(detail) {
   const id = detail.dataset.detailHermes;
@@ -939,10 +1011,75 @@ async function tkHermesRefresh(detail) {
   pre.textContent = output;
   pre.scrollTop = follow ? pre.scrollHeight : top;
 }
+async function tkJobRefresh(detail) {
+  const id = detail.dataset.detailJob;
+  const r = await gbox.api(`/api/jobs/${id}`);
+  if (!detail.isConnected || !detail.open) return;
+  const box = detail.querySelector(".task-detail");
+  if (!r.ok) { box.textContent = r.error; return; }
+  const j = r.data, log = [...(j.progress_log || []), j.error || ""].filter(Boolean).join("\n");
+  const input = JSON.stringify(j.input || {}, null, 2);
+  const output = JSON.stringify(j.output || {}, null, 2);
+  box.innerHTML = `<div class="mut">${esc(j.state)} · ${esc(j.worker_id || j.require_worker || j.require_os || "unassigned")} · ${esc(id)}</div>
+    <button class="act" data-task-visual="${esc(id)}">View live 3D progress</button>
+    <b>Input</b><pre>${esc(input)}</pre><b>Console and progress</b><pre>${esc(log || "No console output yet.")}</pre>
+    ${j.output ? `<b>Result</b><pre>${esc(output.length > 30000 ? output.slice(0, 30000) + "\n…" : output)}</pre>` : ""}
+    <div class="task-files"></div>`;
+  if (j.log_sha) {
+    const lr = await gbox.api(`/api/jobs/${id}/log`);
+    if (detail.isConnected && detail.open && lr.ok && lr.data.log) box.querySelectorAll("pre")[1].textContent = lr.data.log;
+  }
+  if (!j.receipt_id) return;
+  const rr = await gbox.api(`/api/receipts/${j.receipt_id}`);
+  if (!detail.isConnected || !detail.open || !rr.ok) return;
+  const files = rr.data.artifacts || [];
+  if (!files.length) return;
+  const tok = S.tok || await gbox.token().catch(() => "");
+  if (!detail.isConnected || !detail.open) return;
+  const link = sha => `${S.apiUrl}/api/artifacts/${sha}?token=${encodeURIComponent(tok)}`;
+  const holder = box.querySelector(".task-files");
+  holder.innerHTML = files.map(a => {
+    const sha = a.sha256, name = a.name || sha.slice(0, 12), type = a.media_type || "";
+    if (!/^[0-9a-f]{64}$/.test(sha)) return "";
+    const url = link(sha);
+    return `<div class="task-file">${type.startsWith("image/") ? `<img src="${esc(url)}" alt="${esc(name)}">` : ""}
+      ${type === "model/gltf-binary" ? `<div class="av" data-task-model="${sha}"><canvas></canvas></div>` : ""}
+      <a href="#" data-task-file="${esc(url)}">${esc(name)}</a><div class="mut">${esc(type)} · ${Math.ceil((a.size || 0) / 1024)} KB</div></div>`;
+  }).join("");
+  if (window.assetView) holder.querySelectorAll("[data-task-model]").forEach(el => window.assetView(el, link(el.dataset.taskModel)).catch(() => {}));
+}
+async function tvPoll() {
+  if (!TV.id) return;
+  const r = await gbox.api(`/api/jobs/${TV.id}`);
+  if (!r.ok || !TV.id) { $("#tv-state").textContent = r.error || "unavailable"; return; }
+  const j = r.data, p = j.progress || {}, stages = j.progress_log || [];
+  $("#tv-title").textContent = j.tool + " · " + TV.id;
+  $("#tv-state").textContent = j.state;
+  $("#tv-progress").innerHTML = tkProgress(p.pct, j.state === "queued" || j.state === "running") +
+    `<span class="mut">${esc(p.msg || (j.state === "running" ? "Worker has not reported a stage yet." : ""))}</span>`;
+  $("#tv-stages").innerHTML = stages.slice(-12).map((s, i) => `<div>${i + 1}. ${esc(s)}</div>`).join("") ||
+    '<span>No worker stages reported yet.</span>';
+  TV.view?.update(p.pct == null ? NaN : Number(p.pct), stages, j.state === "running");
+}
+function tvClose() {
+  clearInterval(TV.timer); TV.timer = null; TV.id = null; TV.view?.stop(); TV.view = null;
+  $("#taskviz").classList.remove("on");
+}
+async function tvOpen(id) {
+  tvClose(); TV.id = id; $("#taskviz").classList.add("on");
+  try { TV.view = window.taskVizCreate($("#tv-canvas")); }
+  catch (e) { $("#tv-stages").textContent = `3D view unavailable: ${e.message}`; }
+  await tvPoll(); TV.timer = setInterval(tvPoll, 2000);
+}
+$("#tv-close").onclick = tvClose;
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
   clearInterval(TK.t); if (on) { tasksLocalLoad(); tasksLoad(); TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000); } };
 $("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); };
 $("#tk-body").onclick = async e => {
+  const visual = e.target.closest("[data-task-visual]");
+  if (visual) { tvOpen(visual.dataset.taskVisual); return; }
+  const file = e.target.closest("[data-task-file]");
+  if (file) { e.preventDefault(); gbox.openExternal(file.dataset.taskFile); return; }
   const k = e.target.closest("[data-kill]"), j = e.target.closest("[data-job]"); if (!k && !j) return;
   const b = k || j; b.disabled = true; b.textContent = "stopping…";
   const r = k ? await gbox.api("/api/tasks/kill", { worker_id: k.dataset.w, pid: +k.dataset.kill })
@@ -963,14 +1100,7 @@ $("#tk-body").addEventListener("toggle", async e => {
   const id = detail.dataset.detailJob;
   if (!detail.open) { TK.expanded.delete(id); return; }
   TK.expanded.add(id);
-  const r = await gbox.api(`/api/jobs/${id}`);
-  if (!detail.isConnected || !detail.open) return;
-  const lines = r.ok ? [...(r.data.progress_log || []), r.data.error || ""].filter(Boolean).join("\n") : r.error;
-  detail.querySelector("pre").textContent = lines || "No console output yet.";
-  if (r.ok && r.data.log_sha) {
-    const log = await gbox.api(`/api/jobs/${id}/log`);
-    if (detail.isConnected && detail.open && log.ok && log.data.log) detail.querySelector("pre").textContent = log.data.log;
-  }
+  tkJobRefresh(detail);
 }, true);
 $("#tk-local").addEventListener("toggle", e => {
   const detail = e.target.closest?.("[data-local-task]");

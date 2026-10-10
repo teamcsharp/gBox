@@ -1783,7 +1783,8 @@ def create_app(config: Config) -> FastAPI:
         def task_job(j):
             return {"id": j["id"], "tool": j["tool"], "state": j["state"],
                     "worker": names.get(j.get("worker_id") or j.get("require_worker") or "", ""),
-                    "created": j.get("created"), "progress": (j.get("progress") or {}).get("msg", "")}
+                    "created": j.get("created"), "progress": (j.get("progress") or {}).get("msg", ""),
+                    "pct": (j.get("progress") or {}).get("pct")}
         all_jobs = [j for j in store.all("job") if j["tool"] != "tasks"]
         jobs = [task_job(j) for j in all_jobs if j["state"] in ("queued", "running")]
         recent = [task_job(j) for j in all_jobs if j["state"] not in ("queued", "running")][-10:][::-1]
