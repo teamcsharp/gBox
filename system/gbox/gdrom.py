@@ -7,9 +7,84 @@ import struct
 from pathlib import Path
 
 
+class CDIRom:
+    """Read-only ISO9660 filesystem from a DiscJuggler .cdi image (e.g. a DCRES "dummy" repack).
+
+    A .cdi is a run of raw CD sectors behind an optional header and a 150-sector pregap. The ISO9660
+    filesystem's primary volume descriptor (LBA 16, b"\\x01CD001") and the next descriptor one sector
+    later (b"CD001" at LBA 17, the set terminator or a supplementary/boot descriptor) sit exactly one
+    sector apart, so their byte distance is the sector stride and the descriptor's own position gives the
+    LBA-0 user-data base. Sectors are 2048 (cooked), 2336 (Mode 2) or 2352 (Mode 1 raw) bytes; the reader
+    keeps only the 2048-byte user payload, so the stride alone is enough to read any file.
+    """
+
+    def __init__(self, cdi: str | Path):
+        import mmap
+        self.path = Path(cdi)
+        self._fh = open(self.path, "rb")
+        self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+        pvd = self._mm.find(b"\x01CD001")
+        if pvd < 0:
+            raise ValueError("no ISO9660 volume descriptor in this CDI image")
+        nxt = self._mm.find(b"CD001", pvd + 2)          # the next descriptor (terminator/supplementary)
+        if nxt <= pvd:
+            raise ValueError("no second ISO9660 volume descriptor in this CDI image")
+        self.sector_size = nxt - (pvd + 1)              # PVD "CD001" -> next "CD001" is one sector
+        if self.sector_size not in (2048, 2336, 2352):
+            raise ValueError(f"unexpected CDI sector stride {self.sector_size}")
+        self.base = pvd - 16 * self.sector_size         # the PVD is LBA 16: back up to LBA-0 user data
+        pvd_bytes = self.sector(16)
+        if pvd_bytes[1:6] != b"CD001":
+            raise ValueError("no ISO9660 volume in this CDI image")
+        root = pvd_bytes[156:156 + 34]
+        self.files: dict[str, tuple[int, int]] = {}
+        self.records: dict[str, tuple[int, int]] = {}
+        self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
+
+    def sector(self, lba: int) -> bytes:
+        off = self.base + lba * self.sector_size
+        return self._mm[off:off + 2048]
+
+    def _walk(self, lba, size, prefix):
+        data = b"".join(self.sector(lba + i) for i in range((size + 2047) // 2048))
+        o = 0
+        while o < len(data):
+            n = data[o]
+            if n == 0:
+                o = (o // 2048 + 1) * 2048
+                continue
+            ext, ln, flags, nl = struct.unpack_from("<I", data, o + 2)[0], struct.unpack_from("<I", data, o + 10)[0], data[o + 25], data[o + 32]
+            name = data[o + 33:o + 33 + nl].decode("latin-1").split(";")[0]
+            if name not in ("\x00", "\x01"):
+                if flags & 2:
+                    self._walk(ext, ln, f"{prefix}{name}/")
+                else:
+                    self.files[f"{prefix}{name}"] = (ext, ln)
+                    self.records[f"{prefix}{name}"] = (lba + o // 2048, o % 2048)
+            o += n
+
+    def read(self, name: str) -> bytes:
+        lba, size = self.files[name]
+        out = bytearray()
+        for i in range((size + 2047) // 2048):
+            out += self.sector(lba + i)
+        return bytes(out[:size])
+
+
 class GDRom:
     def __init__(self, gdi: str | Path):
         gdi = Path(gdi)
+        if gdi.suffix.lower() == ".cdi":
+            cdi = CDIRom(gdi)
+            self.tracks = [(0, cdi.sector_size, gdi)]
+            self._fh = {}
+            self._mm = cdi._mm
+            self.base = cdi.base
+            self.sector_size = cdi.sector_size
+            self.files, self.records = cdi.files, cdi.records
+            self._cdi = True
+            return
+        self._cdi = False
         lines = gdi.read_text().split("\n")[1:]
         self.tracks = []                        # (start_lba, sector_size, path)
         for ln in lines:
@@ -30,6 +105,9 @@ class GDRom:
         self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
 
     def sector(self, lba: int) -> bytes:
+        if self._cdi:
+            off = self.base + lba * self.sector_size
+            return self._mm[off:off + 2048]
         for start, size, path in reversed(self.tracks):
             if lba >= start:
                 f = self._fh.get(path) or self._fh.setdefault(path, open(path, "rb"))
