@@ -1569,7 +1569,13 @@ class YuzuAdapter(Adapter):
         exe = self.config.library("hyperspin").root() / "emulators" / "yuzu" / "yuzu.exe"
         if HOST_OS != "windows" or not exe.is_file():
             raise ToolUnavailable(f"portable Yuzu is unavailable on this Windows worker: {exe}")
-        self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start())
+        from . import gamepads
+        guid = gamepads.sdl2_xbox_guid(exe.parent / "SDL2.dll")
+        controller_config = exe.parent / "user" / "config" / "qt-config.ini"
+        if guid and controller_config.is_file():
+            gamepads.bind_yuzu_player_one(controller_config, guid)
+        self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(),
+                                     env=gamepads.emulator_environment(os.environ))
         keep_offscreen(self.proc.pid)
         for _ in range(60):
             if self.proc.poll() is not None:
@@ -1580,7 +1586,7 @@ class YuzuAdapter(Adapter):
         else:
             self.stop_game()
             raise RuntimeError("Yuzu did not open a game window within 60 seconds")
-        return {"pid": self.proc.pid, "rom": rom, "local_window": True,
+        return {"pid": self.proc.pid, "rom": rom, "local_window": True, "controller_guid": guid,
                 "worker_name": __import__("platform").node(), "emulator": "yuzu"}
 
     def stop_game(self) -> dict:

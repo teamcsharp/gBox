@@ -39,6 +39,22 @@ def test_exclusions_are_scoped_and_keep_xbox():
     assert env["PATH"] == original["PATH"]
 
 
+def test_yuzu_rebinds_only_player_one_and_keeps_original(tmp_path):
+    ini = tmp_path / "qt-config.ini"
+    old = "0" * 32
+    new = "0300938d5e040000ff02000000007200"
+    body = (f'[Controls]\r\nplayer_0_button_a="engine:sdl,port:0,guid:{old},button:1"\r\n'
+            f'player_0_lstick="axis_x:0,guid:{old},axis_y:1,guid:{old}"\r\n'
+            f'player_1_button_a="engine:sdl,port:1,guid:{old},button:1"\r\n')
+    ini.write_bytes(body.encode())
+    assert gamepads.bind_yuzu_player_one(ini, new)
+    updated = ini.read_bytes().decode()
+    assert updated.count(f"guid:{new}") == 3
+    assert f"player_1_button_a=\"engine:sdl,port:1,guid:{old}" in updated
+    assert ini.with_name("qt-config.ini.gbox-original").read_bytes().decode() == body
+    assert not gamepads.bind_yuzu_player_one(ini, new)
+
+
 def test_sdl3_only_build_installs_normalized_xbox_profile(tmp_path, monkeypatch):
     executable = tmp_path / "retroarch.exe"
     executable.touch()

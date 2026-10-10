@@ -30,6 +30,63 @@ def xinput_devices() -> list[int]:
     return []
 
 
+def sdl2_xbox_guid(dll_path: Path) -> str | None:
+    """SDL GUID for the connected Xbox controller as Yuzu sees it."""
+    if os.name != "nt" or not dll_path.is_file() or not xinput_devices():
+        return None
+    import ctypes
+    class Guid(ctypes.Structure):
+        _fields_ = [("data", ctypes.c_ubyte * 16)]
+    sdl = ctypes.WinDLL(str(dll_path))
+    sdl.SDL_InitSubSystem.argtypes = [ctypes.c_uint32]
+    sdl.SDL_InitSubSystem.restype = ctypes.c_int
+    sdl.SDL_QuitSubSystem.argtypes = [ctypes.c_uint32]
+    sdl.SDL_NumJoysticks.restype = ctypes.c_int
+    sdl.SDL_IsGameController.argtypes = [ctypes.c_int]
+    sdl.SDL_IsGameController.restype = ctypes.c_int
+    sdl.SDL_JoystickNameForIndex.argtypes = [ctypes.c_int]
+    sdl.SDL_JoystickNameForIndex.restype = ctypes.c_char_p
+    sdl.SDL_JoystickGetDeviceGUID.argtypes = [ctypes.c_int]
+    sdl.SDL_JoystickGetDeviceGUID.restype = Guid
+    sdl.SDL_JoystickGetGUIDString.argtypes = [Guid, ctypes.c_char_p, ctypes.c_int]
+    joystick = 0x200
+    if sdl.SDL_InitSubSystem(joystick) != 0:
+        return None
+    try:
+        for index in range(sdl.SDL_NumJoysticks()):
+            name = (sdl.SDL_JoystickNameForIndex(index) or b"").decode(errors="replace").lower()
+            if "xbox" not in name or not sdl.SDL_IsGameController(index):
+                continue
+            buf = ctypes.create_string_buffer(33)
+            sdl.SDL_JoystickGetGUIDString(sdl.SDL_JoystickGetDeviceGUID(index), buf, len(buf))
+            guid = buf.value.decode("ascii").lower()
+            if re.fullmatch(r"[0-9a-f]{32}", guid):
+                return guid
+    finally:
+        sdl.SDL_QuitSubSystem(joystick)
+    return None
+
+
+def bind_yuzu_player_one(config_path: Path, guid: str) -> bool:
+    """Replace stale player-one SDL GUIDs, preserving the original config once."""
+    if not re.fullmatch(r"[0-9a-f]{32}", guid):
+        raise ValueError("invalid SDL controller GUID")
+    original = config_path.read_bytes()
+    body = original.decode("utf-8")
+    changed = "".join(
+        re.sub(r"guid:[0-9a-fA-F]{32}", f"guid:{guid}", line)
+        if line.startswith("player_0_") else line
+        for line in body.splitlines(keepends=True)
+    )
+    if changed == body:
+        return False
+    backup = config_path.with_name(config_path.name + ".gbox-original")
+    if not backup.exists():
+        backup.write_bytes(original)
+    config_path.write_bytes(changed.encode("utf-8"))
+    return True
+
+
 def retroarch_driver(executable: str) -> str:
     path = Path(executable)
     driver = _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)
