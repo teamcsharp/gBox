@@ -1986,6 +1986,10 @@ async function syncNativePads() {
     if (typeof padStatus === "function") padStatus();
     if (typeof cur !== "undefined" && cur === "Controllers") show("Controllers");`).catch(() => {});
 }
+gbox.onPadState?.(pads => {
+  const wv = document.querySelector("#wv");
+  if (wv) wv.executeJavaScript(`window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: ${JSON.stringify(pads)} };`).catch(() => {});
+});
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));

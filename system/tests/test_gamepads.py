@@ -32,6 +32,7 @@ def test_exclusions_are_scoped_and_keep_xbox():
     assert env["SDL_JOYSTICK_DIRECTINPUT"] == "0"
     assert env["SDL_DIRECTINPUT_ENABLED"] == "0"
     assert env["SDL_XINPUT_ENABLED"] == "1"
+    assert env["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] == "1"
     blocked = env["SDL_GAMECONTROLLER_IGNORE_DEVICES"].split(",")
     assert {"0x256f/0xc635", "0xbeef/0x046d", "0x046d/0xc626", "0x1234/0x5678"} <= set(blocked)
     assert not any(device.startswith("0x045e/") for device in blocked)

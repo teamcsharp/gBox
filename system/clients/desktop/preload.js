@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("gbox", {
   winSetup: () => ipcRenderer.invoke("win:setup"),
   winWorker: op => ipcRenderer.invoke("win:worker", op),
   padDevices: () => ipcRenderer.invoke("pad:devices"),
+  onPadState: fn => ipcRenderer.on("pad-state", (_e, state) => fn(state)),
   taskSnapshot: () => ipcRenderer.invoke("task:snapshot"),
   cancel: id => ipcRenderer.invoke("task:cancel", id),
   openExternal: url => ipcRenderer.invoke("open:external", url),

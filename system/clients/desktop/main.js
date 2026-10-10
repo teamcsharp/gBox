@@ -269,6 +269,25 @@ ipcMain.handle("pad:devices", () => new Promise(resolve => {
   });
 }));
 
+let padWatcher = null;
+function startPadWatcher() {
+  if (process.platform !== "win32" || padWatcher) return;
+  const child = spawn(venvPython(), ["-u", "-P", "-m", "gbox.gamepads", "--watch"],
+    { windowsHide: true, env: { ...process.env, PYTHONPATH: settings().repoLocal } });
+  padWatcher = child;
+  let buffer = "";
+  child.stdout.on("data", chunk => {
+    buffer += chunk.toString();
+    let end;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      try { if (win && !win.isDestroyed()) win.webContents.send("pad-state", JSON.parse(line)); } catch {}
+    }
+  });
+  child.on("error", () => {});
+  child.on("close", () => { if (padWatcher === child) padWatcher = null; if (!app.isQuitting) setTimeout(startPadWatcher, 3000); });
+}
+
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
 
 ipcMain.handle("report:clipboard-files", async () => {
@@ -714,6 +733,7 @@ app.whenReady().then(() => {
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
   win.loadFile(path.join(__dirname, "index.html"));
+  startPadWatcher();
   win.on("focus", () => win.webContents.send("app-focus"));   // coming back to gBox: the renderer decides whether the game gets focus
   cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
@@ -722,6 +742,8 @@ app.whenReady().then(() => {
   startAudioVolumeHelper();
 });
 app.on("window-all-closed", () => {
+  app.isQuitting = true;
+  if (padWatcher) { padWatcher.kill(); padWatcher = null; }
   if (!FIRST) return app.quit();
   try { embedder && embedder.stdin.write(JSON.stringify({ op: "detach" }) + "\n"); } catch {}
   for (const p of procs.values()) p.kill();

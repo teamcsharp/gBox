@@ -432,7 +432,26 @@ function ownPressed(gp, c) {
   gp.buttons.forEach((b, i) => { if ((b.pressed || b.value > .5) && c.map[i]) out.add(c.map[i]); });
   return out;
 }
+function nativePressed() {
+  const live = window.GBOX_NATIVE_PAD_STATE;
+  if (!live || Date.now() - live.at > 1000) return null;
+  const pad = live.pads?.find(p => p.slot === 0) || live.pads?.[0];
+  if (!pad) return null;
+  const held = new Set();
+  for (const [bit, key] of [[0x1000, "b"], [0x2000, "a"], [0x4000, "y"], [0x8000, "x"],
+    [0x0100, "l"], [0x0200, "r"], [0x0020, "select"], [0x0010, "start"],
+    [0x0040, "l3"], [0x0080, "r3"], [0x0001, "up"], [0x0002, "down"],
+    [0x0004, "left"], [0x0008, "right"]]) if (pad.buttons & bit) held.add(key);
+  if (pad.lt > 127) held.add("l2");
+  if (pad.rt > 127) held.add("r2");
+  const axis = v => Math.abs(v / 32767) > DZ ? Math.max(-1, Math.min(1, v / 32767)) : 0;
+  const stick = { x: axis(pad.lx), y: -axis(pad.ly) };
+  const rstick = { x: axis(pad.rx), y: -axis(pad.ry) };
+  return { held, stick, rstick };
+}
 function readLocal() {
+  const native = nativePressed();
+  if (native) return native;
   if (typeof API.local === "function") { try { const r = API.local(); return r ? { ...r, held: new Set(r.held || []) } : null; } catch { return null; } }
   let list;
   try { list = typeof pads === "function" ? pads() : [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean); } catch { return null; }
