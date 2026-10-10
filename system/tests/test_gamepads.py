@@ -71,6 +71,21 @@ def test_yuzu_xinput_bridge_bindings_are_scoped_and_backed_up(tmp_path):
     assert not gamepads.bind_yuzu_xinput_bridge(ini)
 
 
+def test_yuzu_mouse_click_enables_handheld_touch_without_changing_ui_mode(tmp_path):
+    ini = tmp_path / "qt-config.ini"
+    body = ('[Controls]\r\nmouse_enabled=true\r\ntouchscreen_enabled=false\r\n'
+            'use_docked_mode\\default=true\r\nuse_docked_mode=true\r\n'
+            '[UI]\r\nuse_docked_mode=true\r\n')
+    ini.write_bytes(body.encode())
+    assert gamepads.enable_yuzu_mouse_touch(ini)
+    updated = ini.read_bytes().decode()
+    assert '[Controls]\r\nmouse_enabled=false\r\ntouchscreen_enabled=true\r\n' in updated
+    assert 'use_docked_mode\\default=false\r\nuse_docked_mode=false\r\n' in updated
+    assert '[UI]\r\nuse_docked_mode=true\r\n' in updated
+    assert ini.with_name("qt-config.ini.gbox-touch-original").read_bytes().decode() == body
+    assert not gamepads.enable_yuzu_mouse_touch(ini)
+
+
 def test_yuzu_xinput_bridge_maps_face_buttons_and_sticks():
     from gbox.yuzu_input import keys_for_pad
     pad = {"buttons": 0x1000 | 0x0010, "lt": 0, "rt": 255,

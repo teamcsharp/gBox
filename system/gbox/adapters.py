@@ -1574,6 +1574,8 @@ class YuzuAdapter(Adapter):
         guid = gamepads.sdl2_xbox_guid(exe.parent / "SDL2.dll")
         controller_config = exe.parent / "user" / "config" / "qt-config.ini"
         bridge = bool(guid and controller_config.is_file())
+        if controller_config.is_file():
+            gamepads.enable_yuzu_mouse_touch(controller_config)
         if bridge:
             gamepads.bind_yuzu_xinput_bridge(controller_config)
         self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(),

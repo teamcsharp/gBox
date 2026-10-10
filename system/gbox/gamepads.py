@@ -156,6 +156,40 @@ def bind_yuzu_xinput_bridge(config_path: Path) -> bool:
     return True
 
 
+def enable_yuzu_mouse_touch(config_path: Path) -> bool:
+    """Make a click on Yuzu's game window a Switch touch at that position.
+
+    Yuzu receives the native mouse event directly. The emulated Switch must be
+    handheld for games that expose touch controls only off the dock.
+    """
+    original = config_path.read_bytes()
+    body = original.decode("utf-8")
+    values = {"mouse_enabled": "false", "touchscreen_enabled": "true",
+              "use_docked_mode": "false", "use_docked_mode\\default": "false"}
+    lines, section, seen = [], "", set()
+    for line in body.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        if bare.startswith("[") and bare.endswith("]"):
+            if section == "Controls":
+                lines.extend(f"{key}={value}\n" for key, value in values.items() if key not in seen)
+            section = bare[1:-1]
+        key = bare.partition("=")[0]
+        if section == "Controls" and key in values:
+            line = f"{key}={values[key]}{line[len(bare):]}"
+            seen.add(key)
+        lines.append(line)
+    if section == "Controls":
+        lines.extend(f"{key}={value}\n" for key, value in values.items() if key not in seen)
+    changed = "".join(lines)
+    if changed == body:
+        return False
+    backup = config_path.with_name(config_path.name + ".gbox-touch-original")
+    if not backup.exists():
+        backup.write_bytes(original)
+    config_path.write_bytes(changed.encode("utf-8"))
+    return True
+
+
 def retroarch_driver(executable: str) -> str:
     path = Path(executable)
     driver = _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)
