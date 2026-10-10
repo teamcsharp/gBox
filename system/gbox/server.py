@@ -1581,7 +1581,7 @@ def create_app(config: Config) -> FastAPI:
             available = {w['id']: w for w in workers() if w['online']}
             for pending in store.all('job'):
                 inp = pending.get('input') or {}
-                wid = _wid(inp.get('session_id', '').split('-')[0])
+                wid = _wid((inp.get('session_id') or '').split('-')[0])
                 worker = available.get(wid) or {}
                 if (pending.get('tool') == 'session_swap' and pending.get('state') in ('queued', 'running')
                     and inp.get('game_id') == gid and (node == 'auto' or node in (wid, worker.get('name'), worker.get('os')))):
