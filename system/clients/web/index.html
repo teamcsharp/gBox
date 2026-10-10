@@ -1138,11 +1138,11 @@ function ssRemember(q, it) {
 function smartSearchHTML() {
   if (!document.getElementById("ss-css")) document.head.insertAdjacentHTML("beforeend", `<style id="ss-css">
     #ss { position:relative; margin-bottom:8px } #ss .row1 { display:flex; gap:4px } #ssq { flex:1; min-width:0 }
-    #ssres { position:absolute; z-index:50; left:0; right:0; top:100%; margin-top:4px; max-height:60vh; overflow:auto; background:var(--panel,#1b1d23);
+    #ssres { position:absolute; z-index:50; left:0; right:0; top:100%; margin-top:4px; max-height:60vh; overflow:auto; background:var(--card); color:var(--fg);
       border:1px solid var(--line,#333); border-radius:8px; box-shadow:0 8px 24px #0008; padding:4px }
     #ssres .it { display:flex; gap:8px; align-items:center; padding:5px 6px; border-radius:6px; cursor:pointer }
     #ssres .it:hover, #ssres .it.sel { background:var(--line,#2a2d36) }
-    #ssres .th { width:36px; height:36px; flex:none; border-radius:4px; background:#26282f center/contain no-repeat; display:grid; place-items:center; font-size:16px }
+    #ssres .th { width:36px; height:36px; flex:none; border-radius:4px; background:var(--bg) center/contain no-repeat; display:grid; place-items:center; font-size:16px }
     #ssres .tx { min-width:0 } #ssres .tx b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px }
     #ssres .tx span { font-size:11px; color:var(--mut,#999) } #ssres .hd { font-size:11px; color:var(--mut,#999); padding:4px 6px 2px }
     .ssflash { outline:2px solid var(--acc,#6cf) !important; outline-offset:2px; transition:outline-color .6s }</style>`);
