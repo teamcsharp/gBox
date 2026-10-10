@@ -970,6 +970,7 @@ async function tasksLoad() {
   try { r = await gbox.api("/api/tasks"); } finally { TK.busy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
   if (!r.ok) { $("#tk-body").innerHTML = `<p class="mut" style="padding:12px">${esc(r.error)}</p>`; return; }
+  const panelScroll = $("#taskpanel").scrollTop;
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre");
     TK.hermesScroll.set(detail.dataset.detailHermes, { top: pre.scrollTop, follow: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20 });
@@ -1001,6 +1002,7 @@ async function tasksLoad() {
       ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
         <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
         ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`;
+  $("#taskpanel").scrollTop = panelScroll;
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
     pre.scrollTop = position?.follow === false ? position.top : pre.scrollHeight;
