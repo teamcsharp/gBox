@@ -60,8 +60,28 @@ def test_retroarch_protocol(ra):
     assert ad.write_memory(4, b"\xde\xad") == {"written": 2, "via": "core_memory_map"} and fake.mem[4:6] == b"\xde\xad"
     assert ad.pause()["state"] == "PAUSED" and ad.pause()["state"] == "PAUSED"   # idempotent
     assert ad.resume()["state"] == "PLAYING"
+    # pause/resume should not issue extra GET_STATUS or PAUSE_TOGGLE when already in the target state
+    assert fake.log.count("GET_STATUS") == 0
     with pytest.raises(RuntimeError, match="no memory map"):
         ad.read_memory(2000, 100)
+
+
+def test_retroarch_pause_resume_latency(ra):
+    """pause/resume must be fire-and-forget: one PAUSE_TOGGLE per call, no GET_STATUS round-trip."""
+    fake, ad = ra
+    fake.log.clear()
+    import time
+    t0 = time.perf_counter()
+    ad.pause()
+    t1 = time.perf_counter()
+    ad.resume()
+    t2 = time.perf_counter()
+    # each call should take well under 100 ms on localhost UDP; the key win is no reply wait
+    assert t1 - t0 < 0.1 and t2 - t1 < 0.1
+    toggles = fake.log.count("PAUSE_TOGGLE")
+    statuses = fake.log.count("GET_STATUS")
+    assert toggles == 2, f"expected 2 PAUSE_TOGGLE, got {toggles}"
+    assert statuses == 0, f"expected 0 GET_STATUS round trips, got {statuses}"
 
 
 def test_ram_fallback_and_address_translation(ra):
@@ -148,6 +168,7 @@ def test_command_adapter_lifecycle(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+@pytest.mark.skipif(adapters.HOST_OS != "windows", reason="x11grab display not available in headless cron")
 def test_get_frame_real_capture(tmp_path):
     from gbox.registry import REGISTRY
     ctx = Ctx(Config(data_dir=tmp_path))
