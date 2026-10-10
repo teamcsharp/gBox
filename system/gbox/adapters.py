@@ -734,6 +734,13 @@ class RetroArchAdapter(CommandAdapter):
         if self.config is not None:
             rom = self._from_lst_zip(self._from_gme(self._from_old_chd(self._from_7z(rom))))
         argv = self._argv(rom)
+        self.examine_unavailable_reason = None
+        if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
+            self.examine_unavailable_reason = (
+                "3D draw-call capture is unavailable for this OpenGL RetroArch session. "
+                "RenderDoc injection prevents this core from opening its game window; "
+                "relaunching with Examine 3D would not fix it. The game remains playable and can be paused."
+            )
         if "-L" in argv:
             try:
                 n = len(self.install_cheats(argv[argv.index("-L") + 1], rom))

@@ -914,6 +914,8 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
     say = progress or (lambda p, m: None)
     proc = getattr(ad, "proc", None)
     if not hooked(proc):
+        if reason := getattr(ad, "examine_unavailable_reason", None):
+            raise Unsupported(reason)
         raise Unsupported("this session was started without Examine 3D (RenderDoc isn't inside the emulator): "
                           "relaunch the game with Examine 3D on (save state first)")
     out_dir = Path(out_dir)

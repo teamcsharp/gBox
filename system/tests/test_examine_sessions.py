@@ -63,6 +63,13 @@ def test_missing_worker_session_has_actionable_error(tmp_path):
         scene.scene_capture(scene.SceneIn(session_id='missing-test-session'), SimpleNamespace())
 
 
+def test_open_gl_capture_explains_why_relaunch_cannot_help(tmp_path):
+    ad = Adapter()
+    ad.examine_unavailable_reason = 'OpenGL capture is unavailable; relaunching would not fix it.'
+    with pytest.raises(Unsupported, match='relaunching would not fix it'):
+        scene.capture_session(ad, tmp_path)
+
+
 def test_scene_publication_failure_resumes_game(monkeypatch, tmp_path):
     from gbox.tools import SESSIONS
     ad = Adapter(paused=True)
