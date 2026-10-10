@@ -46,7 +46,7 @@ def _model() -> tuple[str | None, str]:
         models = httpx.get("http://127.0.0.1:11434/api/tags", timeout=5).json().get("models", [])
         names = {m.get("name") for m in models}
         available = psutil.virtual_memory().available
-        for name, minimum in (("gemma4:31b", 27), ("qwen3.8:38b", 50),
+        for name, minimum in (("gemma4:12b", 12), ("gemma4:31b", 27), ("qwen3.8:38b", 50),
                               ("qwen3.6:35b", 35), ("qwen3.8:27b-mtp-q4_K_M", 27)):
             if name in names and available >= minimum * 1024**3:
                 return name, f"{name} selected ({available // 1024**3} GiB available)"
