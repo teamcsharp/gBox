@@ -58,3 +58,8 @@ def crop_jpeg(image: bytes, rect: tuple[float, float, float, float] | None) -> b
         output = io.BytesIO()
         source.crop(box).save(output, format="JPEG", quality=82)
         return output.getvalue()
+
+
+def frame_for_view(image: bytes, view: str, app_rect: tuple[float, float, float, float] | None) -> bytes | None:
+    """Never substitute the whole desktop for an app-only stream."""
+    return image if view == "desktop" else crop_jpeg(image, app_rect)

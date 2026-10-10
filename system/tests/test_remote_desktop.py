@@ -2,7 +2,7 @@ import io
 
 from PIL import Image
 
-from gbox.remote_desktop import crop_jpeg
+from gbox.remote_desktop import crop_jpeg, frame_for_view
 
 
 def test_app_view_crops_desktop_to_window():
@@ -19,3 +19,5 @@ def test_app_view_crops_desktop_to_window():
 def test_app_view_does_not_expose_desktop_without_window():
     assert crop_jpeg(b"unused", None) is None
     assert crop_jpeg(b"unused", (0, 0, 2, 1)) is None
+    assert frame_for_view(b"desktop pixels", "app", None) is None
+    assert frame_for_view(b"desktop pixels", "desktop", None) == b"desktop pixels"

@@ -1000,7 +1000,7 @@ def create_app(config: Config) -> FastAPI:
         if view not in ("app", "desktop"):
             raise HTTPException(422, "view must be app or desktop")
         def frames():
-            from .remote_desktop import crop_jpeg
+            from .remote_desktop import frame_for_view
             seen = 0
             while True:
                 desktop_watch[wid] = time.time() + 8
@@ -1010,7 +1010,7 @@ def create_app(config: Config) -> FastAPI:
                 if frame.get("seq") == seen or time.time() - frame.get("ts", 0) > 5:
                     continue
                 seen = frame["seq"]
-                image = frame["image"] if view == "desktop" or frame.get("app_rect") is None else crop_jpeg(frame["image"], frame["app_rect"])
+                image = frame_for_view(frame["image"], view, frame.get("app_rect"))
                 if image:
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + image + b"\r\n"
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
