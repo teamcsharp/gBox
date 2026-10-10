@@ -122,6 +122,23 @@ def _tool_calls(raw: str | None) -> list[str]:
         return ["→ tool call (arguments unavailable)"]
 
 
+def _structured_calls(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        calls = json.loads(raw)
+        out = []
+        for call in calls:
+            fn = call.get("function") or {}
+            args = json.loads(fn.get("arguments") or "{}")
+            nested = args.get("calls") if fn.get("name") == "tool_call" else None
+            for item in nested if isinstance(nested, list) else [{"name": fn.get("name"), "arguments": args}]:
+                out.append({"action": item.get("name") or "tool", "input": item.get("arguments") or {}})
+        return out
+    except (TypeError, ValueError, AttributeError):
+        return [{"action": "tool", "input": {"error": "arguments unavailable"}}]
+
+
 def _tool_text(content: str) -> str:
     if content.startswith("<untrusted_tool_result") and "\n\n" in content:
         content = content.split("\n\n", 1)[1].rsplit("</untrusted_tool_result>", 1)[0]
@@ -179,3 +196,45 @@ def get_run(run_id: str) -> dict | None:
                 "output": "\n\n".join(lines)[-70000:] or "Hermes has not emitted output yet."}
     except (OSError, ValueError, sqlite3.Error):
         return None
+
+
+_get_run_output = get_run
+
+
+def get_run(run_id: str) -> dict | None:
+    """Return the transcript plus every individual tool attempt and its result."""
+    run = _get_run_output(run_id)
+    if not run:
+        return None
+    run["steps"], run["request_id"] = [], None
+    if not run["session_id"]:
+        return run
+    try:
+        state = _db(_home() / "state.db")
+        if not state:
+            return run
+        with state:
+            rows = state.execute(
+                "SELECT role,content,tool_name,tool_calls FROM messages WHERE session_id=? "
+                "AND role IN ('assistant','tool') ORDER BY id", (run["session_id"],),
+            ).fetchall()
+        attempts = {}
+        for m in rows:
+            if m["role"] == "assistant":
+                for call in _structured_calls(m["tool_calls"]):
+                    action = call["action"]
+                    attempts[action] = attempts.get(action, 0) + 1
+                    run["steps"].append({"action": action, "attempt": attempts[action],
+                                         "input": call["input"], "result": "Awaiting tool result", "status": "running"})
+                    if isinstance(call["input"], dict):
+                        run["request_id"] = run["request_id"] or call["input"].get("request_id") or call["input"].get("parent_request_id")
+            else:
+                result = _tool_text(m["content"] or "")
+                for step in reversed(run["steps"]):
+                    if step["status"] == "running" and step["action"].replace("mcp__gbox__", "") == (m["tool_name"] or "").replace("mcp__gbox__", ""):
+                        step.update(result=result, status="failed" if '"error"' in result[:200] else "finished")
+                        break
+        state.close()
+    except (OSError, ValueError, sqlite3.Error):
+        pass
+    return run

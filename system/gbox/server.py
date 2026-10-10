@@ -623,6 +623,13 @@ def create_app(config: Config) -> FastAPI:
             with store.lock:
                 store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
                                                                      "error": err})
+            if state == JobState.FAILED and mod:
+                try:
+                    req_auto_mod_failure(AutoFailureIn(session_id=sid, game=sess.get("title") or "", model=mod,
+                        action="apply model mod to running game", target="player", moment="current game moment",
+                        detail=err or "session swap failed", job_id=job.id), "gbox-auto")
+                except Exception as exc:
+                    store.audit("gbox-auto", "request.auto_mod_failure.error", job.id, {"error": str(exc)[:500]})
         threading.Thread(target=go, daemon=True).start()
         return job
 
@@ -999,6 +1006,31 @@ def create_app(config: Config) -> FastAPI:
         j.update(state=state, finished=receipt.finished, output=r.output, error=r.error or ("; ".join(problems) or None),
                  receipt_id=receipt.id)
         store.put("job", j["id"], j)
+        attempt = j.get("input") or {}
+        op = attempt.get("op") or ""
+        mod_attempt = ((t.name == "characters" and op in ("use", "live_use", "swap"))
+                       or (t.name == "mod" and op == "apply")
+                       or (t.name == "file_mod" and op == "build")
+                       or (t.name == "launch_game" and bool(attempt.get("mod")))
+                       or (t.name.endswith("_mods") and op in ("apply", "build", "use", "enable", "swap")))
+        if mod_attempt:
+            outcome = (r.output or {}).get("result") or {}
+            status = str(outcome.get("status") or "") if isinstance(outcome, dict) else ""
+            failed_swap = (state != JobState.SUCCEEDED or status.startswith(("unsupported", "failed", "error"))
+                           or status in ("not_in_collection", "overlay") or (isinstance(outcome, dict) and
+                            (outcome.get("ok") is False or bool(outcome.get("error")))))
+            if failed_swap and not j.get("parent_request_id"):
+                def _report_failed_swap():
+                    try:
+                        i = j.get("input") or {}
+                        req_auto_mod_failure(AutoFailureIn(session_id=i.get("session_id") or "", game=i.get("game") or "",
+                            model=i.get("character") or i.get("name") or "", action=f"{t.name} {i.get('op') or ''}".strip(),
+                            target=i.get("slot") or "", moment=f"x={i.get('x')}, y={i.get('y')}",
+                            detail=j.get("error") or (outcome.get("message") if isinstance(outcome, dict) else "") or status,
+                            job_id=j["id"]), "gbox-auto")
+                    except Exception as exc:
+                        store.audit("gbox-auto", "request.auto_mod_failure.error", j["id"], {"error": str(exc)[:500]})
+                threading.Thread(target=_report_failed_swap, daemon=True).start()
         if state == JobState.SUCCEEDED and (t.name in asset_library.ASSET_TOOLS or t.name == 'blender_copy'):
             app.state.assets.invalidate()
         if state == JobState.SUCCEEDED and t.on_accept:
@@ -1071,6 +1103,20 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if job.state == JobState.REJECTED and not job.parent_request_id and (
+                (t.name == "characters" and inp.get("op") in ("use", "live_use", "swap"))
+                or (t.name == "mod" and inp.get("op") == "apply")
+                or (t.name == "file_mod" and inp.get("op") == "build")
+                or (t.name.endswith("_mods") and inp.get("op") in ("apply", "build", "use", "enable", "swap"))):
+            def _report_rejected_mod():
+                try:
+                    req_auto_mod_failure(AutoFailureIn(session_id=inp.get("session_id") or "", game=inp.get("game") or "",
+                        model=inp.get("character") or inp.get("name") or "", action=f"{t.name} {inp.get('op')}",
+                        target=inp.get("slot") or "", moment=f"x={inp.get('x')}, y={inp.get('y')}",
+                        detail=job.error or "job rejected", job_id=job.id), "gbox-auto")
+                except Exception as exc:
+                    store.audit("gbox-auto", "request.auto_mod_failure.error", job.id, {"error": str(exc)[:500]})
+            threading.Thread(target=_report_rejected_mod, daemon=True).start()
         if t.name == 'characters' and inp.get('op') == 'collect' and inp.get('game_id'):
             with auto_collection.lock:
                 store.put('character_collection', inp['game_id'], {'state': job.state, 'job_id': job.id,
@@ -1788,9 +1834,44 @@ def create_app(config: Config) -> FastAPI:
         all_jobs = [j for j in store.all("job") if j["tool"] != "tasks"]
         jobs = [task_job(j) for j in all_jobs if j["state"] in ("queued", "running")]
         recent = [task_job(j) for j in all_jobs if j["state"] not in ("queued", "running")][-10:][::-1]
+        auto_reports = sorted((r for r in store.all("request") if (r.get("context") or {}).get("resolution_chat_id")),
+                              key=lambda r: r.get("created") or 0, reverse=True)[:20]
+        resolutions = []
+        for report in auto_reports:
+            cid = report["context"]["resolution_chat_id"]
+            chat = store.get("chat", cid) or {}
+            events = chat.get("events") or []
+            latest = next((e for e in reversed(events) if e.get("type") in ("assistant", "tool_call", "tool_result", "error")), {})
+            resolutions.append({"id": report["id"], "number": report["number"], "name": report["title"],
+                                "state": "running" if chat.get("busy") else report["status"], "chat_id": cid,
+                                "progress": (latest.get("text") or latest.get("name") or "Agent is starting")[:160],
+                                "output": "\n".join(f"{e.get('type')}: {e.get('name') or e.get('text') or ''}" for e in events[-25:])[-12000:]})
         from . import hermes_tasks
         return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)),
-                "recent": recent, "hermes": hermes_tasks.list_runs()}
+                "recent": recent, "hermes": hermes_tasks.list_runs(), "resolutions": resolutions}
+
+    @app.get("/api/tasks/resolutions/{rid}")
+    def tasks_resolution(rid: str, actor=Depends(auth)):
+        report = _req(rid)
+        cid = (report.get("context") or {}).get("resolution_chat_id") or _404()
+        chat = store.get("chat", cid) or _404()
+        steps, attempts = [], {}
+        for e in chat.get("events") or []:
+            if e.get("type") == "tool_call":
+                name = e.get("name") or "tool"
+                attempts[name] = attempts.get(name, 0) + 1
+                steps.append({"action": name, "attempt": attempts[name], "input": e.get("args") or {},
+                              "result": "Awaiting tool result", "status": "running"})
+            elif e.get("type") in ("tool_result", "error"):
+                for step in reversed(steps):
+                    if step["status"] == "running" and (step["action"] == e.get("name") or e.get("type") == "error"):
+                        result_text = (e.get("text") or "")[:5000]
+                        failed = (e.get("type") == "error" or '"error"' in result_text[:300]
+                                  or '"state": "failed"' in result_text[:300] or '"status": "unsupported' in result_text[:300])
+                        step.update(result=result_text, status="failed" if failed else "finished")
+                        break
+        return {"request_id": rid, "name": report["title"], "state": "running" if chat.get("busy") else report["status"],
+                "steps": steps, "output": "\n".join(f"{e.get('type')}: {e.get('name') or e.get('text') or ''}" for e in chat.get("events") or [])[-70000:]}
 
     @app.get("/api/tasks/hermes/{run_id}")
     def tasks_hermes_run(run_id: str, actor=Depends(auth)):
@@ -1875,8 +1956,16 @@ def create_app(config: Config) -> FastAPI:
 
     def api_requests(op: str, body: dict):
         try:
+            if op == "get":
+                return store.get("request", body["id"])
             if op == "create":
                 return req_create(RequestIn(**body), "gbox-agent")["id"]
+            if op == "reply":
+                rid = body.pop("id")
+                return req_message(rid, MessageIn(author="agent", **body), "gbox-agent")
+            if op == "capture":
+                rid = body.pop("id")
+                return asyncio.run(req_capture(rid, RequestCaptureIn(**body), "gbox-agent"))
             if op == "metrics":
                 rid = body.pop("id")
                 return req_metrics(rid, MetricsIn(**body), "gbox-agent")
@@ -2109,6 +2198,7 @@ def create_app(config: Config) -> FastAPI:
         author: str                        # operator | agent
         text: str
         attachments: list[dict] = []
+        task_step: dict | None = None       # action, attempt, result, status for report detail
 
     def _attach(rid: str, items: list[dict]) -> list[dict]:
         out = []
@@ -2269,6 +2359,84 @@ def create_app(config: Config) -> FastAPI:
                                     kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
                                     context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id"), "game": game}), actor)
 
+    class AutoFailureIn(BaseModel):
+        session_id: str = ""
+        game: str = ""
+        model: str = ""
+        action: str = "model replacement"
+        target: str = ""
+        moment: str = ""
+        detail: str = ""
+        image_b64: str | None = None
+        job_id: str = ""
+
+    @app.post("/api/requests/auto-mod-failure")
+    def req_auto_mod_failure(f: AutoFailureIn, actor=Depends(auth)):
+        """File visual evidence, preserve the current moment, and dispatch an agent to resolve a failed swap."""
+        s_ = store.get("session", f.session_id) or {} if f.session_id else {}
+        game = f.game or s_.get("title") or s_.get("game_title") or "unknown game"
+        details = (f"Action: {f.action}\nGame: {game} (game_id: {s_.get('game_id') or '?'})\n"
+                   f"Model: {f.model or 'not identified'}\nTarget: {f.target or 'not identified'}\n"
+                   f"Moment: {f.moment or 'current game frame'}\nSession: {f.session_id or 'none'}\n"
+                   f"Failed job: {f.job_id or 'direct action'}\nFailure: {f.detail or 'action did not complete'}")
+        with store.lock:
+            existing = next((x for x in store.all("request") if x.get("source") == "automation"
+                             and (x.get("context") or {}).get("job_id") == f.job_id), None) if f.job_id else None
+            if existing:
+                if f.image_b64 and not existing.get("image"):
+                    existing["messages"].append({"author": "agent", "text": f.detail or "Additional failure screenshot", "ts": time.time(),
+                        "attachments": _attach(existing["id"], [{"name": "failed-moment.png", "type": "image/png", "b64": f.image_b64}])})
+                    store.put("request", existing["id"], existing)
+                return _clean(existing)
+            report = req_create(RequestIn(title=f"Auto report: {f.action} failed in {game}"[:140], body=details,
+                source="automation", kind="screenshot" if f.image_b64 else "text", image_b64=f.image_b64,
+                author="system", automated=True, context={"session_id": f.session_id, "session": f.session_id, "game_id": s_.get("game_id"),
+                                                            "game": game, "model": f.model, "moment": f.moment,
+                                                            "job_id": f.job_id, "auto_report": True}), actor)
+        rid = report["id"]
+        if f.session_id and s_.get("state") == "running":
+            try:
+                slot = 40 + sum(1 for old in store.all("request") if old["id"] != rid and
+                                (old.get("context") or {}).get("session_id") == f.session_id and
+                                (old.get("context") or {}).get("auto_report"))
+                saved = submit(JobRequest(tool="session_op", input={"session_id": f.session_id, "op": "save_state", "args": {"slot": slot}},
+                                          parent_request_id=rid), actor)
+                report["context"]["state_job_id"] = saved.id
+                report["messages"].append({"author": "agent", "text": f"Save state requested for this moment (job {saved.id}, slot {slot}). Its result is shown in the detailed report.",
+                                           "ts": time.time(), "attachments": [], "task_step": {"action": "save game moment", "attempt": "1", "result": saved.state, "status": saved.state}})
+            except Exception as exc:
+                report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
+        store.put("request", rid, report)
+        try:
+            chat = hub.get(new_id())
+            store.put("chat", chat["id"], chat)
+            prompt = (f"Resolve gBox auto report #{report['number']} ({rid}). {details}\n"
+                      "Inspect the exact failure, fix the relevant model writer or mod path, verify the result in the game, "
+                      "attach screenshots to this request, report each attempt and outcome, record actual token usage, "
+                      "and mark the request done only after verification. Preserve the operator's running game and save state.")
+            hub.post(chat["id"], prompt, {"request_id": rid, "session_id": f.session_id,
+                                          "resolve_auto_report": True}, api_requests, None, [])
+            report = store.get("request", rid) or report
+            report["context"]["resolution_chat_id"] = chat["id"]
+            report["status"], report["started"] = "in_progress", time.time()
+            report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
+                                       "task_step": {"action": "dispatch resolution", "attempt": "1", "result": chat["id"], "status": "running"}})
+        except Exception as exc:
+            report = store.get("request", rid) or report
+            report["messages"].append({"author": "agent", "text": f"Resolution dispatch failed: {exc}", "ts": time.time(), "attachments": []})
+        store.put("request", rid, report)
+        store.audit(actor, "request.auto_mod_failure", rid, {"session": f.session_id, "job": f.job_id, "model": f.model})
+        if f.session_id and s_.get("state") == "running" and not f.image_b64:
+            def _capture_later():
+                try:
+                    asyncio.run(req_capture(rid, RequestCaptureIn(session_id=f.session_id,
+                        text="Automatic screenshot of the failed game moment",
+                        task_step={"action": "capture failed moment", "attempt": "1", "result": "game frame attached", "status": "finished"}), "gbox-auto"))
+                except Exception as exc:
+                    store.audit("gbox-auto", "request.capture.error", rid, {"error": str(exc)[:500]})
+            threading.Thread(target=_capture_later, daemon=True).start()
+        return _clean(report)
+
     class ImportItem(BaseModel):
         text: str
         created: float
@@ -2382,12 +2550,40 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/{rid}/messages")
     def req_message(rid: str, m: MessageIn, actor=Depends(auth)):
         r = _req(rid)
-        r["messages"].append({"author": m.author, "text": m.text, "ts": time.time(), "attachments": _attach(rid, m.attachments)})
+        entry = {"author": m.author, "text": m.text, "ts": time.time(), "attachments": _attach(rid, m.attachments)}
+        if m.task_step and m.author == "agent":
+            entry["task_step"] = {k: str(m.task_step.get(k, ""))[:4000] for k in ("action", "attempt", "result", "status")}
+        r["messages"].append(entry)
         if m.author == "operator" and r["status"] == "done":
             r["status"], r["completed"] = "open", None      # a follow-up reopens the request
         store.put("request", rid, r)
         store.audit(actor, "request.message", rid, {"author": m.author, "chars": len(m.text)})
         return _clean(r)
+
+    class RequestCaptureIn(BaseModel):
+        session_id: str
+        text: str = ""
+        task_step: dict = {}
+
+    @app.post("/api/requests/{rid}/capture")
+    async def req_capture(rid: str, c: RequestCaptureIn, actor=Depends(auth)):
+        """Attach a real game frame to a report with the action/result that produced it."""
+        r = _req(rid)
+        session = store.get("session", c.session_id) or _404()
+        if session.get("ended") or session.get("state") != "running":
+            raise HTTPException(409, "session has ended; cannot capture a live frame")
+        png = await asyncio.to_thread(_session_png, c.session_id)
+        if not png.startswith(b"\x89PNG"):
+            raise HTTPException(409, "session did not return a PNG frame")
+        ref = store.put_artifact(png, f"task-{rid}-{int(time.time())}.png", "image/png",
+                                 {"request": rid, "session": c.session_id, "task_evidence": True})
+        entry = {"author": "agent", "text": c.text, "ts": time.time(),
+                 "attachments": [{"sha256": ref.sha256, "name": ref.name, "type": "image/png", "size": ref.size}],
+                 "task_step": {k: str(c.task_step.get(k, ""))[:4000] for k in ("action", "attempt", "result", "status")}}
+        r["messages"].append(entry)
+        store.put("request", rid, r)
+        store.audit(actor, "request.capture", rid, {"session": c.session_id, "artifact": ref.sha256})
+        return _clean(entry)
 
     @app.post("/api/requests/{rid}/status")
     def req_status(rid: str, s: StatusIn, actor=Depends(auth)):

@@ -17,6 +17,8 @@ def normalize(text):
 def parent_for(request, requests):
     by_id = {r["id"]: r for r in requests}
     context = request.get("context") or {}
+    if context.get("auto_report"):
+        return None  # failed-mod reports are first-class inbox jobs, visible without opening a parent thread
     explicit = request.get("parent_request_id") or context.get("parent_request_id") or context.get("request_id")
     if explicit:
         parent = by_id.get(str(explicit)) or next((r for r in requests if str(r.get("number")) == str(explicit)), None)

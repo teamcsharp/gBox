@@ -35,6 +35,8 @@ def test_running_hermes_run_exposes_expandable_live_tool_output(monkeypatch, tmp
     assert "→ mcp__gbox__game_roster" in detail["output"]
     assert "← mcp__gbox__game_roster: Native reader missing" in detail["output"]
     assert hermes_tasks.get_run("../state.db") is None
+    assert detail["steps"] == [{"action": "mcp__gbox__game_roster", "attempt": 1,
+                                "input": {"game_id": "fixture"}, "result": "Native reader missing", "status": "finished"}]
 
 
 def test_missing_hermes_installation_has_no_tasks(monkeypatch, tmp_path):

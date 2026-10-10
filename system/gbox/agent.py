@@ -1458,14 +1458,26 @@ class ChatHub:
 
     def _turn(self, cid, text, context, api_requests):
         c, t0 = self.get(cid), time.time()
-        req = api_requests("create", {"title": text.splitlines()[0][:100], "body": text, "source": "gbox-chat", "kind": "text", "context": context | {"conversation": cid}})
+        reuse = bool(context.get("resolve_auto_report") and context.get("request_id")
+                     and api_requests("get", {"id": context["request_id"]}))
+        req = context["request_id"] if reuse else api_requests("create", {"title": text.splitlines()[0][:100],
+            "body": text, "source": "gbox-chat", "kind": "text", "context": context | {"conversation": cid}})
         context = context | {"request_id": req, "conversation": cid}
+        last_capture = [0.0, 0]
 
         def emit(ev):
             with self.lock:
                 cur = self.get(cid)
                 cur["events"].append(ev | {"ts": time.time()})
                 self.store.put("chat", cid, cur)
+            if (reuse and ev.get("type") == "tool_result" and ev.get("name") in
+                    {"characters", "mod", "file_mod", "session_op", "re_mods", "re6", "re4r", "gta_mods"}
+                    and context.get("session_id") and last_capture[1] < 12 and time.time() - last_capture[0] >= 5):
+                last_capture[0], last_capture[1] = time.time(), last_capture[1] + 1
+                threading.Thread(target=api_requests, args=("capture", {"id": req, "session_id": context["session_id"],
+                    "text": f"Game frame after {ev.get('name')}",
+                    "task_step": {"action": ev.get("name"), "attempt": str(last_capture[1]),
+                                  "result": (ev.get("text") or "")[:2000], "status": "finished"}}), daemon=True).start()
         try:
             agent = self.make_agent(c.get("model"))
             res = agent.run(c["messages"], emit, context)
@@ -1491,4 +1503,13 @@ class ChatHub:
         if req:
             api_requests("metrics", {"id": req, "tokens_in": res["usage"]["in"], "tokens_out": res["usage"]["out"],
                                      "tools": res["tools"], "duration_s": round(time.time() - t0, 1)})
-            api_requests("status", {"id": req, "status": status, "note": note})
+            if reuse:
+                final = next((e.get("text") or "" for e in reversed(self.get(cid).get("events") or [])
+                              if e.get("type") == "assistant"), "")
+                api_requests("reply", {"id": req, "text": final or note or "Resolution attempt ended without a result.",
+                    "task_step": {"action": "automatic resolution attempt", "attempt": "1",
+                                  "result": final or note or "No result", "status": status}})
+                if status == "blocked":
+                    api_requests("status", {"id": req, "status": "in_progress", "note": "Automatic attempt was blocked; further work is needed."})
+            else:
+                api_requests("status", {"id": req, "status": status, "note": note})

@@ -118,8 +118,7 @@
   .att img { height:64px; border:1px solid var(--line); border-radius:6px; } .att button { position:absolute; top:-6px; right:-6px; border-radius:50%;
              width:20px; height:20px; border:0; background:var(--bad); color:#fff; cursor:pointer; font-size:11px; line-height:20px; padding:0; }
   .dropping { outline:2px dashed var(--acc); outline-offset:2px; }
-  .req img.att-img { max-height:180px; border:1px solid var(--line); border-radius:6px; margin:4px 4px 0 0; }
-  .req img.shot { max-width:100%; border:1px solid var(--line); border-radius:6px; margin-top:6px; }
+  .req img.att-img, .req img.shot { width:176px; height:112px; object-fit:contain; border:1px solid var(--line); border-radius:6px; margin:6px 4px 0 0; cursor:zoom-in; background:#090a0e; }
 
   /* --- tools registry --- */
   table.reg { width:100%; border-collapse:collapse; font-size:13px; }
@@ -223,6 +222,24 @@
   #taskpanel .task-file { max-width:210px; padding:5px; border:1px solid var(--line); border-radius:5px; }
   #taskpanel .task-file img { display:block; max-width:190px; max-height:140px; object-fit:contain; margin-bottom:4px; }
   #taskpanel .task-file .av { width:190px; height:140px; } #taskpanel .task-file canvas { width:100%; height:100%; }
+  #task-evidence { display:none; position:fixed; inset:0; z-index:1200; background:var(--bg); color:var(--fg); }
+  #task-evidence.on { display:flex; flex-direction:column; }
+  #task-evidence .ev-head { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); }
+  #task-evidence .ev-head b { flex:1; font-size:15px; }
+  #task-evidence .ev-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(290px,380px); min-height:0; flex:1; }
+  #task-evidence .ev-stage { display:flex; flex-direction:column; min-width:0; min-height:0; background:#090a0e; }
+  #task-evidence .ev-stage > img { flex:1; min-height:0; width:100%; object-fit:contain; }
+  #task-evidence .ev-empty { flex:1; display:grid; place-items:center; color:var(--mut); }
+  #task-evidence .ev-thumbs { display:flex; gap:8px; overflow:auto; padding:9px; border-top:1px solid var(--line); }
+  #task-evidence .ev-thumbs button { flex:none; border:2px solid transparent; background:var(--card); padding:2px; cursor:pointer; }
+  #task-evidence .ev-thumbs button[aria-pressed=true] { border-color:var(--acc); }
+  #task-evidence .ev-thumbs img { width:108px; height:68px; object-fit:contain; }
+  #task-evidence aside { overflow:auto; min-width:0; padding:15px; border-left:1px solid var(--line); }
+  #task-evidence aside details { border:1px solid var(--line); border-radius:6px; padding:9px; margin:8px 0; }
+  #task-evidence aside summary { cursor:pointer; font-weight:600; }
+  #task-evidence aside pre, #task-evidence aside p { white-space:pre-wrap; overflow-wrap:anywhere; }
+  #task-evidence aside pre { max-height:240px; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; }
+  @media(max-width:720px) { #task-evidence .ev-layout { grid-template-columns:1fr; grid-template-rows:minmax(180px,45vh) minmax(0,1fr); } #task-evidence aside { border-left:0; border-top:1px solid var(--line); } }
   #taskviz { display:none; position:fixed; z-index:1000 !important; left:50%; top:50%; transform:translate(-50%,-50%);
     width:min(680px,calc(100vw - 40px)); max-height:calc(100vh - 60px); overflow:auto; background:var(--bg);
     border:1px solid var(--line); border-radius:10px; box-shadow:0 16px 55px #000c; }
@@ -944,7 +961,82 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="t
 document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="head"><b id="tv-title">Task progress</b><span id="tv-state" class="mut"></span>
   <button class="act" id="tv-close">Back to Tasks</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
   <div id="tv-stages" class="stages"></div></div></div>`);
-const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
+document.body.insertAdjacentHTML("beforeend", `<div id="task-evidence" role="dialog" aria-modal="true" aria-label="Task evidence">
+  <div class="ev-head"><b id="ev-title">Task evidence</b><span id="ev-status" class="mut"></span><button class="act" id="ev-close">Close</button></div>
+  <div class="ev-layout"><div class="ev-stage"><div class="ev-empty" id="ev-empty">No screenshots attached yet.</div><img id="ev-image" alt="Task screenshot" hidden><div id="ev-thumbs" class="ev-thumbs"></div></div>
+  <aside><h3>Tasks and attempts</h3><div id="ev-steps"></div></aside></div></div>`);
+const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
+const EV = { images: [], selected: null, state: null };
+function evSelect(sha) {
+  const item = EV.images.find(x => x.sha === sha); if (!item) return;
+  EV.selected = sha;
+  $("#ev-image").src = item.url; $("#ev-image").alt = item.label;
+  $("#ev-image").hidden = false; $("#ev-empty").hidden = true;
+  $("#ev-thumbs").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.evSha === sha)));
+}
+async function evRequest(requestId, selectedSha = null, run = null) {
+  const r = await gbox.api(`/api/requests/${encodeURIComponent(requestId)}`);
+  if (!r.ok) { $("#ev-steps").textContent = r.error; return; }
+  const x = r.data, tok = S.tok || await gbox.token();
+  const images = [];
+  if (x.image) images.push({ sha: x.image, label: "Original report screenshot" });
+  for (const msg of x.messages || []) for (const a of msg.attachments || [])
+    if ((a.type || "").startsWith("image/") && a.sha256) images.push({ sha: a.sha256, label: a.name || msg.text || "Task screenshot" });
+  EV.images = images.map(z => ({ ...z, url: `${S.apiUrl}/api/artifacts/${z.sha}?token=${encodeURIComponent(tok)}` }));
+  $("#ev-title").textContent = `#${x.number} ${x.title}`;
+  $("#ev-status").textContent = `${x.status.replace("_", " ")} · ${EV.images.length} screenshot${EV.images.length === 1 ? "" : "s"}`;
+  $("#ev-thumbs").innerHTML = EV.images.map(z => `<button type="button" data-ev-sha="${esc(z.sha)}" aria-label="Show ${esc(z.label)}" aria-pressed="false"><img src="${esc(z.url)}" alt=""><small>${esc(z.label.slice(0, 30))}</small></button>`).join("");
+  $("#ev-image").hidden = true; $("#ev-empty").hidden = false;
+  if (EV.images.length) evSelect(selectedSha || EV.images[0].sha);
+  const entries = (x.messages || []).filter(m => m.author === "agent" || m.author === "system");
+  const steps = entries.map((m, i) => {
+    const s = m.task_step || {}, title = s.action || `Update ${i + 1}`, result = s.result || m.text || "No result recorded";
+    return `<details ${i === entries.length - 1 ? "open" : ""}><summary>${i + 1}. ${esc(title)} ${s.attempt ? `· try ${esc(s.attempt)}` : ""} ${s.status ? `· ${esc(s.status)}` : ""}</summary>
+      <p>${esc(m.text)}</p><b>Result</b><pre>${esc(result)}</pre>${(m.attachments || []).filter(a => (a.type || "").startsWith("image/")).map(a => `<button class="act" data-ev-sha="${esc(a.sha256)}">Show ${esc(a.name || "screenshot")}</button>`).join("")}</details>`;
+  }).join("");
+  const runSteps = run?.steps?.map((s, i) => `<details><summary>${i + 1}. ${esc(s.action)} · try ${s.attempt} · ${esc(s.status)}</summary>
+    <b>Input</b><pre>${esc(JSON.stringify(s.input, null, 2))}</pre><b>Result</b><pre>${esc(s.result)}</pre></details>`).join("") || "";
+  EV.state = null;
+  let stateHtml = "";
+  if (x.context?.state_job_id) {
+    const sr = await gbox.api(`/api/jobs/${encodeURIComponent(x.context.state_job_id)}`);
+    if (sr.ok) {
+      const job = sr.data, slot = job.output?.result?.slot;
+      EV.state = job.state === "succeeded" ? { sessionId: x.context.session_id, slot } : null;
+      stateHtml = `<details open><summary>Saved game moment · ${esc(job.state)}</summary><p>${job.state === "succeeded" ? `Save state ready${slot == null ? "" : ` in slot ${slot}`}.` : esc(job.error || "Save state is being prepared.")}</p>
+        ${EV.state ? '<button class="act" id="ev-restore">Restore this moment</button>' : ""}</details>`;
+    }
+  }
+  $("#ev-steps").innerHTML = `<p class="mut">${esc(x.body || "No description")}</p>${stateHtml}${runSteps}${steps || (!runSteps ? '<p class="mut">No task attempts recorded yet.</p>' : "")}`;
+  $("#task-evidence").classList.add("on");
+}
+async function evRun(runId) {
+  const r = await gbox.api(`/api/tasks/hermes/${encodeURIComponent(runId)}`);
+  if (!r.ok) return toast(r.error || "Could not load task report");
+  const run = r.data;
+  if (run.request_id) return evRequest(run.request_id, null, run);
+  EV.images = [];
+  $("#ev-image").hidden = true; $("#ev-empty").hidden = false; $("#ev-thumbs").innerHTML = "";
+  $("#ev-title").textContent = run.name || "Hermes run";
+  $("#ev-status").textContent = `${run.state} · ${Number(run.tokens_in || 0).toLocaleString()} in / ${Number(run.tokens_out || 0).toLocaleString()} out`;
+  $("#ev-steps").innerHTML = (run.steps || []).map((s, i) => `<details ${i === run.steps.length - 1 ? "open" : ""}><summary>${i + 1}. ${esc(s.action)} · try ${s.attempt} · ${esc(s.status)}</summary>
+    <b>Input</b><pre>${esc(JSON.stringify(s.input, null, 2))}</pre><b>Result</b><pre>${esc(s.result)}</pre></details>`).join("") || '<p class="mut">No task attempts recorded yet.</p>';
+  $("#task-evidence").classList.add("on");
+}
+$("#ev-close").onclick = () => $("#task-evidence").classList.remove("on");
+$("#task-evidence").addEventListener("click", async e => {
+  const b = e.target.closest("[data-ev-sha]"); if (b) evSelect(b.dataset.evSha);
+  if (e.target.id === "ev-restore" && EV.state) {
+    e.target.disabled = true; e.target.textContent = "Restoring…";
+    try {
+      const r = await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: EV.state.sessionId,
+        op: "load_state", args: EV.state.slot == null ? {} : { slot: EV.state.slot } }, require_worker: EV.state.sessionId.split("-")[0] });
+      if (!r.ok) throw new Error(r.error);
+      e.target.textContent = `Restore job ${r.data.id.slice(0, 8)} ${r.data.state}`;
+    } catch (err) { e.target.textContent = `Restore failed: ${err.message}`; }
+  }
+});
+addEventListener("keydown", e => { if (e.key === "Escape" && $("#task-evidence").classList.contains("on")) $("#task-evidence").classList.remove("on"); });
 const TV = { id: null, kind: "job", timer: null, view: null, returnPanel: false };
 const tkAge = ts => { const s = Math.max(0, Date.now() / 1000 - (ts || 0)); return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; };
 const tkBar = (v, max) => `<span class="bar"><i style="width:${Math.min(100, 100 * v / (max || 100))}%"></i></span>`;
@@ -983,8 +1075,13 @@ async function tasksLoad() {
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
         <div class="meta">${esc(run.model || "Hermes")} · ${Number(run.tokens_in || 0).toLocaleString()} in / ${Number(run.tokens_out || 0).toLocaleString()} out · started ${tkAge(run.started)} ago</div>
+        <button class="act" data-hermes-evidence="${esc(run.id)}">View detailed report</button>
         <button class="act" data-hermes-visual="${esc(run.id)}">View 3D task stages</button>
         <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}</div>` +
+    `<div class="mc"><div class="mh"><b>Automatic resolution jobs</b><span class="mut">${(d.resolutions || []).length}</span></div>
+      ${(d.resolutions || []).map(a => `<div class="hermes-run"><details data-resolution-id="${esc(a.id)}" ${TK.resolutionExpanded.has(a.id) ? "open" : ""}><summary>${kind(a.state)} <span class="nm">#${a.number} ${esc(a.name)}</span> <span class="mut">${esc(a.progress)}</span></summary>
+        <button class="act" data-resolution-evidence="${esc(a.id)}">View screenshots and all attempts</button>
+        <pre>${esc(a.output || "Agent has not emitted output yet.")}</pre></details></div>`).join("") || '<p class="mut">No automatic resolution jobs yet.</p>'}</div>` +
     d.machines.map(m => { const t = m.totals || {};
     return `<div class="mc"><div class="mh"><b>${esc(m.name)}</b>
       <span>CPU ${t.cpu_pct ?? "?"}%${tkBar(t.cpu_pct || 0)}</span>
@@ -1106,6 +1203,15 @@ $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains(
   clearInterval(TK.t); if (on) { tasksLocalLoad(); tasksLoad(); TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000); } };
 $("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); };
 $("#tk-body").onclick = async e => {
+  const resolution = e.target.closest("[data-resolution-evidence]");
+  if (resolution) {
+    const r = await gbox.api(`/api/tasks/resolutions/${encodeURIComponent(resolution.dataset.resolutionEvidence)}`);
+    if (r.ok) evRequest(resolution.dataset.resolutionEvidence, null, r.data);
+    else toast(r.error || "Could not load resolution job");
+    return;
+  }
+  const hermesEvidence = e.target.closest("[data-hermes-evidence]");
+  if (hermesEvidence) { evRun(hermesEvidence.dataset.hermesEvidence); return; }
   const hermesVisual = e.target.closest("[data-hermes-visual]");
   if (hermesVisual) { tvOpen(hermesVisual.dataset.hermesVisual, "hermes"); return; }
   const visual = e.target.closest("[data-task-visual]");
@@ -1120,6 +1226,11 @@ $("#tk-body").onclick = async e => {
   tasksLoad();
 };
 $("#tk-body").addEventListener("toggle", async e => {
+  const resolution = e.target.closest?.("[data-resolution-id]");
+  if (resolution) {
+    (resolution.open ? TK.resolutionExpanded.add(resolution.dataset.resolutionId) : TK.resolutionExpanded.delete(resolution.dataset.resolutionId));
+    return;
+  }
   const hermes = e.target.closest?.("[data-detail-hermes]");
   if (hermes) {
     const id = hermes.dataset.detailHermes;
@@ -1572,10 +1683,10 @@ $("#reqfilters").addEventListener("click", e => {
 });
 async function refreshInbox() {
   const r = await gbox.api("/api/requests"); if (!r.ok) return;
-  const all = r.data, roots = all.filter(x => !x.automated && !x.parent_request_id), children = new Map();
+  const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
   const ids = new Set(all.map(x => x.id));
   all.forEach(x => { if (x.parent_request_id && ids.has(x.parent_request_id)) { const list = children.get(x.parent_request_id) || []; list.push(x); children.set(x.parent_request_id, list); } });
-  const unresolved = all.filter(x => x.automated && (!x.parent_request_id || !ids.has(x.parent_request_id)));
+  const unresolved = all.filter(x => x.automated && !x.context?.auto_report && (!x.parent_request_id || !ids.has(x.parent_request_id)));
   const hasPending = x => x.status !== "done" || (children.get(x.id) || []).some(hasPending);
   const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
@@ -1602,6 +1713,8 @@ async function refreshInbox() {
     const m = x.metrics, tools = Object.entries(m.tools || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join(", ");
     const ms = modsFor(x.number);
     return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
+      ${x.context?.auto_report ? '<span class="chip" style="float:right;margin:6px">Auto report</span>' : ""}
+      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="Open screenshots, tasks, attempts and results">Detailed report</button>
       ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - click to load this moment${mm.video ? " (right-click: video)" : ""}">
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}load</figcaption></figure>`).join("")}</div>` : ""}
       <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span><span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
@@ -1638,7 +1751,7 @@ const REG = {}, MODS = { list: [] };
 async function modRun(c, sid) {
   let j = (await gbox.api("/api/jobs", { tool: c.tool, input: { ...c.input, session_id: sid }, require_worker: sid.split("-")[0] })).data;
   while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 500)); j = (await gbox.api("/api/jobs/" + j.id)).data; }
-  if (j.state !== "succeeded") throw new Error(`${c.tool}: ${j.error || j.state}`);
+  if (j.state !== "succeeded") { const err = new Error(`${c.tool}: ${j.error || j.state}`); err.jobId = j.id; throw err; }
   return j;
 }
 async function modSession(m, launch) {
@@ -1653,14 +1766,22 @@ async function modSession(m, launch) {
   return j.output.session_id;
 }
 async function modPlay(m, how) {
+  let attemptedSid = "";
   try {
     if (how === "video") { const t = await gbox.token(); window.open(`${S.apiUrl}/api/artifacts/${m.video}?token=${encodeURIComponent(t)}`); return; }
     const sid = await modSession(m, how !== "apply");
+    attemptedSid = sid || "";
     if (!sid) { toast(`Start ${m.game_title || "the game"} first`); return; }
     if (how === "apply" || m.state_slot == null) { for (const c of m.calls) await modRun(c, sid); toast(`${m.title}: on`); }
     else { await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid); toast(`${m.title}: loaded`); }
     document.querySelector(`[data-s="play"]`)?.click();             // show the game
-  } catch (err) { toast("⚠ " + err.message); }
+  } catch (err) {
+    const shot = await gbox.captureOS?.().catch(() => null);
+    const report = await gbox.api("/api/requests/auto-mod-failure", { session_id: attemptedSid, game: m.game_title || "",
+      model: m.title || "", action: "apply mod", target: how, moment: "current game moment",
+      detail: err.message, job_id: err.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
+    toast("⚠ " + err.message + (report?.ok ? ` · auto report #${report.data.number}` : ""), 12000);
+  }
 }
 document.addEventListener("click", e => {
   const f = e.target.closest(".reqmod, .modplay, .modapply, .modvideo"); if (!f) return;
@@ -1672,6 +1793,11 @@ document.addEventListener("contextmenu", e => { const f = e.target.closest(".req
 document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
+  if (e.target.closest("[data-report-detail], img.shot, img.att-img")) {
+    const img = e.target.closest("img.shot, img.att-img");
+    const sha = img?.src.match(/\/api\/artifacts\/([0-9a-f]{64})/)?.[1] || null;
+    e.stopPropagation(); evRequest(id, sha); return;
+  }
   if (e.target.closest(".h")) { openThreads.has(id) ? openThreads.delete(id) : openThreads.add(id); card.classList.toggle("open-thread"); }
   if (e.target.classList.contains("send")) {
     const t = card.querySelector(".reply").value.trim(), atts = replyAtt[id] || [];
@@ -1720,7 +1846,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || !!$("#issue-modal") || FLOW.on;      // full-window overlays: the game steps aside
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || FLOW.on;      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
     const wv = document.querySelector("#wv");
@@ -3196,6 +3322,13 @@ async function whipMenu(ev) {
   return whipMenuGame(ev);
 }
 // a character card <-> something in the game: replace that thing with the character (in-game swap, or an overlay now)
+async function autoWhipFailure({ sid, game, model, target, moment, detail, shot, jobId }) {
+  const r = await gbox.api("/api/requests/auto-mod-failure", { session_id: sid || "", game, model,
+    action: "pick whip model replacement", target, moment, detail, job_id: jobId || "",
+    image_b64: shot || null }).catch(() => null);
+  if (r?.ok) { toast(`Auto report #${r.data.number} filed; resolution dispatched`, 12000); refreshInbox(); }
+  else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
+}
 async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
@@ -3221,12 +3354,21 @@ async function whipCardMenu(card, gp, ev) {
         const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
           x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
         toast(res.message || res.status, 12000);
-      } catch (err) { toast(`In-game replacement failed: ${err.message}`, 12000); }
+        if (/unsupported|failed|error|not_in_collection/i.test(res.status || ""))
+          await autoWhipFailure({ sid, game, model: card.name, target: T.name, moment: at,
+            detail: res.message || res.status, shot });
+      } catch (err) {
+        await autoWhipFailure({ sid, game, model: card.name, target: T.name, moment: at,
+          detail: err.message, shot, jobId: err.jobId });
+      }
       return;
     }
     if (bt.dataset.w === "ovl") {
       const res = await ovlPost({ op: "start", character: card.slug, source: "whip", x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
-      if (res?.ok) toast(`◐ ${card.name} is drawn over ${T.name}: an overlay (the game itself is unchanged)`, 6000); return;
+      if (res?.ok) toast(`◐ ${card.name} is drawn over ${T.name}: an overlay (the game itself is unchanged)`, 6000);
+      else await autoWhipFailure({ sid: targetSid, game, model: card.name, target: T.name, moment: at,
+        detail: res?.error || "overlay start failed", shot });
+      return;
     }
     if (shot) CH.imgs = [{ type: "image/png", b64: shot, name: "pick-whip.png" }];
     $("#chatpanel").classList.add("on"); chatImgs();

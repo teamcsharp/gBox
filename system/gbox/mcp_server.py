@@ -5,6 +5,7 @@ Every registry tool is exposed as job_<name> (runs as a gBox job, returns its ou
 stdio by default; serve_http() puts the same server on streamable HTTP behind the control plane's bearer token.
 """
 import asyncio
+import base64
 import hmac
 import json
 import time
@@ -23,6 +24,24 @@ def obj(props, req=()):
 
 
 CONVENIENCE = {
+    "list_requests": ("List inbox requests in a compact page. Use status=open,in_progress for unfinished work; newest first.",
+                      obj({"status": S, "source": S, "limit": I, "offset": I})),
+    "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
+                    obj({"request_id": S}, ["request_id"])),
+    "read_request_artifact": ("Read an image or text attachment belonging to an inbox request. Images are returned as image content.",
+                              obj({"request_id": S, "sha256": S}, ["request_id", "sha256"])),
+    "reply_request": ("Post an agent reply to an inbox request. State the tested outcome and remaining limitations.",
+                      obj({"request_id": S, "text": S, "task_step": {"type": "object"}}, ["request_id", "text"])),
+    "capture_request_screenshot": ("Capture a real frame from a live game session and attach it to an inbox report, with action, attempt, result, and status. Do this after meaningful visual milestones and verification.",
+                                   obj({"request_id": S, "session_id": S, "text": S, "task_step": {"type": "object"}},
+                                       ["request_id", "session_id", "text"])),
+    "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress.",
+                          obj({"request_id": S, "status": {"type": "string", "enum": ["open", "in_progress", "done", "blocked"]},
+                               "note": S}, ["request_id", "status"])),
+    "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use zero with token_count_unavailable when exact counts are unavailable.",
+                               obj({"request_id": S, "model": S, "tokens_in": I, "tokens_out": I,
+                                    "tokens_detail": {"type": "object"}, "tools": {"type": "object"},
+                                    "files_changed": {"type": "array", "items": S}, "turns": I}, ["request_id"])),
     "list_games": ("Search the game library (title words). Returns game_id, title, platform, system, core.",
                    obj({"query": S, "platform": S, "limit": I}, ["query"])),
     "list_favorites": ("List favorited games, including ROMs queued for background model collection.", obj({"limit": I})),
@@ -93,6 +112,28 @@ def build(base_url: str, token: str) -> Server:
                 "choices": [{"question": e["question"], "options": e["options"]} for e in ev if e["type"] == "choices"]}
 
     async def convenience(name, a):
+        if name == "list_requests":
+            rows = await get("/api/requests", status=a.get("status", "open,in_progress"), source=a.get("source", ""))
+            offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
+            return {"total": len(rows), "offset": offset, "items": [
+                {"id": r["id"], "number": r.get("number"), "title": r.get("title"), "status": r.get("status"),
+                 "source": r.get("source"), "automated": r.get("automated"), "parent_request_id": r.get("parent_request_id"),
+                 "created": r.get("created"), "summary": (r.get("body") or "")[:350]}
+                for r in rows[offset:offset + limit]]}
+        if name == "get_request":
+            return await get(f"/api/requests/{a['request_id']}")
+        if name == "reply_request":
+            return await post(f"/api/requests/{a['request_id']}/messages",
+                              {"author": "agent", "text": a["text"]} | ({"task_step": a["task_step"]} if a.get("task_step") else {}))
+        if name == "capture_request_screenshot":
+            return await post(f"/api/requests/{a['request_id']}/capture",
+                              {"session_id": a["session_id"], "text": a["text"], "task_step": a.get("task_step", {})})
+        if name == "set_request_status":
+            return await post(f"/api/requests/{a['request_id']}/status",
+                              {"status": a["status"], "note": a.get("note", "")})
+        if name == "record_request_metrics":
+            return await post(f"/api/requests/{a['request_id']}/metrics",
+                              {k: v for k, v in a.items() if k != "request_id"})
         if name == "list_games":
             games = await get("/api/catalog/best", q=a["query"], limit=a.get("limit", 20))
             if a.get("platform"):
@@ -148,6 +189,25 @@ def build(base_url: str, token: str) -> Server:
     async def call_tool(ctx, params):
         name, a = params.name, dict(params.arguments or {})
         try:
+            if name == "read_request_artifact":
+                req = await get(f"/api/requests/{a['request_id']}")
+                digest = a["sha256"]
+                refs = {req.get("image"), *(att.get("sha256") for msg in req.get("messages", [])
+                                             for att in msg.get("attachments", []))}
+                if digest not in refs:
+                    raise ValueError("artifact does not belong to this request")
+                r = await api.get(f"/api/artifacts/{digest}")
+                r.raise_for_status()
+                media = r.headers.get("content-type", "application/octet-stream").split(";", 1)[0]
+                if media.startswith("image/"):
+                    return T.CallToolResult(content=[T.ImageContent(data=base64.b64encode(r.content).decode(),
+                                                                     mime_type=media)])
+                if media.startswith("text/") or media == "application/json":
+                    body = r.content[:60_000].decode("utf-8", "replace")
+                    if len(r.content) > 60_000:
+                        body += f"\n[truncated; {len(r.content)} bytes total]"
+                    return T.CallToolResult(content=[T.TextContent(text=body)])
+                return T.CallToolResult(content=[T.TextContent(text=f"Attachment {digest}: {media}, {len(r.content)} bytes; binary preview unavailable")])
             if name in CONVENIENCE:
                 out, ok = await convenience(name, a), True
             elif name.startswith(PREFIX):

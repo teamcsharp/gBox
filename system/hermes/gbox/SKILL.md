@@ -24,3 +24,11 @@ When a native reader or writer is missing, work from the exact ROM or executable
 ## Long tasks
 
 Use `start_job` for gBox registry work that may outlast a chat turn, then `get_job` to track it. Supply `parent_request_id` when continuing an inbox report so the job is linked to that request. Use `job_<name>` only when it is useful to wait for the final result in the current turn. State the job ID and its observed state in progress reports; a queued job is not a completed task.
+
+## Inbox and visual evidence
+
+Use `list_requests` with `status=open,in_progress`, a small limit, and offsets to work through the inbox. Call `get_request` for the complete prompt; call `read_request_artifact` for each relevant screenshot or text attachment. Start with the newest operator request, and distinguish automated child reports from operator prompts. Search knowledge with a narrow game name and `k=2` when needed; broad searches can overwhelm the context.
+
+For each material action, post `reply_request` with `task_step={"action":"what was attempted","attempt":"1","result":"observed result","status":"finished|failed|running"}`. When a game is visible, call `capture_request_screenshot` after a meaningful attempt and after verification. Supply the live `session_id`, explanatory text and the same `task_step` fields. Screenshots appear as clickable thumbnails in the inbox's full-screen detailed report. Do not describe a queued save-state or job as completed. If a screenshot cannot be captured, record the reason in a reply and continue work.
+
+For an auto report caused by a failed model replacement or mod application, inspect the model, game, target and moment, the failed job, screenshot, and saved-state job before retrying. Fix the underlying writer or application path and verify the requested replacement in-game. Record each retry and result; do not treat an overlay as an in-engine replacement. Preserve the running game and its save state. Post a final reply with the verified outcome and any limitation, call `record_request_metrics` with actual token/tool/file counts (or `token_count_unavailable` when exact counts are inaccessible), then call `set_request_status(status=done)` only when the whole request is complete. Otherwise leave it `in_progress` with a specific next step.
