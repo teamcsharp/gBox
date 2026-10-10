@@ -168,7 +168,7 @@ ipcMain.handle("audio:volume", (_e, value) => {
   }
   return { volume: volumePercent(settings().volume), available: process.platform === "win32" && !!audioVolumeHelper };
 });
-app.on("before-quit", () => { quitting = true; audioVolumeHelper?.kill(); });
+app.on("before-quit", () => shutdownSessions());
 
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
@@ -646,7 +646,7 @@ ipcMain.handle("app:relaunch", async () => {
   }
   if (worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); worker = null; }
   log("relaunching…\n");
-  setTimeout(() => { app.relaunch(); app.exit(0); }, 800);
+  setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 800);
   return true;
 });
 
@@ -741,14 +741,22 @@ app.whenReady().then(() => {
   });
   startAudioVolumeHelper();
 });
-app.on("window-all-closed", () => {
+let sessionsShutDown = false;
+function shutdownSessions() {
+  if (sessionsShutDown) return;
+  sessionsShutDown = true;
+  quitting = true;
+  audioVolumeHelper?.kill();
   app.isQuitting = true;
   if (padWatcher) { padWatcher.kill(); padWatcher = null; }
-  if (!FIRST) return app.quit();
+  if (!FIRST) return;
   try { embedder && embedder.stdin.write(JSON.stringify({ op: "detach" }) + "\n"); } catch {}
   for (const p of procs.values()) p.kill();
   workerStopRequested = true;
   if (worker) { try { execFileSync("taskkill", ["/T", "/F", "/PID", String(worker.pid)], { windowsHide: true, timeout: 8000 }); } catch {} }
   cleanupSessions(true);                                       // every game this PC was running for gBox closes with it
+}
+app.on("window-all-closed", () => {
+  shutdownSessions();
   app.quit();
 });
