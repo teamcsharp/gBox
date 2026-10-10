@@ -24,8 +24,8 @@ def obj(props, req=()):
 
 
 CONVENIENCE = {
-    "list_requests": ("List inbox requests in a compact page. Use status=open,in_progress for unfinished work; newest first.",
-                      obj({"status": S, "source": S, "limit": I, "offset": I})),
+    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true.",
+                      obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
                     obj({"request_id": S}, ["request_id"])),
     "read_request_artifact": ("Read an image or text attachment belonging to an inbox request. Images are returned as image content.",
@@ -121,6 +121,8 @@ def build(base_url: str, token: str) -> Server:
     async def convenience(name, a):
         if name == "list_requests":
             rows = await get("/api/requests", status=a.get("status", "open,in_progress"), source=a.get("source", ""))
+            if not a.get("include_recurring"):
+                rows = [r for r in rows if not (r.get("title") or "").startswith("gBox request review (recurring")]
             offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
             return {"total": len(rows), "offset": offset, "items": [
                 {"id": r["id"], "number": r.get("number"), "title": r.get("title"), "status": r.get("status"),

@@ -14,13 +14,15 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
     posted = []
     request = {"id": "req1", "number": 42, "title": "Touch game", "body": "Tap the game picture",
                "status": "open", "source": "app", "created": 1, "messages": [], "image": "abc"}
+    recurring = {"id": "recurring", "number": 43, "title": "gBox request review (recurring, scheduled)",
+                 "body": "Review reports", "status": "in_progress", "source": "app", "created": 2}
 
     def handler(req):
         path = req.url.path
         if path == "/api/registry":
             return httpx.Response(200, json={"tools": []})
         if path == "/api/requests":
-            return httpx.Response(200, json=[request])
+            return httpx.Response(200, json=[recurring, request])
         if path == "/api/requests/req1":
             return httpx.Response(200, json=request)
         if path == "/api/artifacts/abc":
@@ -41,6 +43,8 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
                     "set_request_status", "record_request_metrics"} <= names
             page = await client.call_tool("list_requests", {"status": "open", "limit": 1})
             assert json.loads(page.content[0].text)["items"][0]["number"] == 42
+            all_rows = await client.call_tool("list_requests", {"include_recurring": True, "limit": 2})
+            assert json.loads(all_rows.content[0].text)["items"][0]["number"] == 43
             detail = await client.call_tool("get_request", {"request_id": "req1"})
             assert json.loads(detail.content[0].text)["body"] == "Tap the game picture"
             image = await client.call_tool("read_request_artifact", {"request_id": "req1", "sha256": "abc"})
