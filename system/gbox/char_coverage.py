@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import time
 
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
 # read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
@@ -190,13 +191,104 @@ def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 
+def _post_message(ctx, api, rid: str, text: str, step: dict | None = None):
+    """Best-effort agent message on a request (task_step detail when given); never raises."""
+    try:
+        api(ctx, "POST", f"/api/requests/{rid}/messages",
+            json={"author": "agent", "text": text} | ({"task_step": step} if step else {}))
+    except Exception:                                              # noqa: BLE001 - evidence notes must not break the swap answer
+        pass
+
+
+def _run_job(ctx, api, tool: str, inp: dict, rid: str, limit: float = 180) -> dict:
+    """Dispatch one job linked to the request and wait for its terminal state (the job dict)."""
+    j = api(ctx, "POST", "/api/jobs", json={"tool": tool, "input": inp, "parent_request_id": rid})
+    t0 = time.time()
+    while j.get("state") in ("queued", "running") and time.time() - t0 < limit:
+        time.sleep(1.0)
+        j = api(ctx, "GET", f"/api/jobs/{j['id']}")
+    return j
+
+
+def _moment_slot(ctx, api, rid: str) -> int:
+    """A dedicated slot per preserved moment on this request (issue reports use 60+; pickwhips start at 70)."""
+    n = 0
+    try:
+        r = api(ctx, "GET", f"/api/requests/{rid}") or {}
+        n = sum(1 for m in r.get("messages", [])
+                if (m.get("task_step") or {}).get("action") == "preserve pickwhip moment")
+    except Exception:                                              # noqa: BLE001
+        pass
+    return 70 + n
+
+
+def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -> dict:
+    """#1146: keep the exact game moment a pickwhip landed on. Saves a checkpoint (session_op save_state, which
+    reports the slot the emulator ACTUALLY wrote and its frame thumbnail), exports it as a portable artifact
+    (state_transfer export keyed to that slot, so a stale newest-file can't be picked), attaches the live frame
+    to the request (/api/requests/{rid}/capture) and posts the evidence. Every failure degrades to a note on the
+    request; the gap report itself is never blocked."""
+    out: dict = {"session_id": sid}
+    slot = _moment_slot(ctx, api, rid)
+    j = _run_job(ctx, api, "session_op", {"session_id": sid, "op": "save_state", "args": {"slot": slot}}, rid)
+    if j.get("state") != "succeeded":
+        why = j.get("error") or j.get("state") or "unknown"
+        _post_message(ctx, api, rid, f"Save state unavailable for this moment (slot {slot}): {why}.",
+                      {"action": "preserve pickwhip moment", "attempt": "1", "result": f"save_state: {why}",
+                       "status": "failed"})
+        return out | {"saved": False, "error": why}
+    res = (j.get("output") or {}).get("result") or {}
+    out |= {"saved": True, "slot": res.get("slot", slot), "frame": res.get("frame")}
+    line = (f"Checkpoint of this moment saved in slot {res.get('slot', slot)}"
+            + (f"; frame thumbnail artifact {res['frame']}" if res.get("frame") else "") + ".")
+    x = _run_job(ctx, api, "state_transfer",
+                 {"session_id": sid, "op": "export", "slot": res.get("slot", slot)}, rid)
+    if x.get("state") == "succeeded":
+        r = (x.get("output") or {}).get("result") or {}
+        out |= {"artifact": r.get("artifact"), "bytes": r.get("bytes")}
+        line += (f" Portable export {r.get('bytes')} bytes ({r.get('file')}), artifact {r.get('artifact')}:"
+                 " restore it with state_transfer op=import once the writer exists.")
+    else:
+        line += f" Portable export unavailable: {x.get('error') or x.get('state')}."
+    where = f" at ({inp.x:.0%} across, {inp.y:.0%} down)" if getattr(inp, "x", None) is not None else ""
+    try:
+        api(ctx, "POST", f"/api/requests/{rid}/capture", timeout=90,
+            json={"session_id": sid,
+                  "text": f"The frame the operator pickwhipped {meta['name']} onto{where} "
+                          f"({game['title']}): the before-image the swap gets tested against.",
+                  "task_step": {"action": "capture pickwhip frame", "attempt": "1",
+                                "result": "frame attached to the request", "status": "succeeded"}})
+        out["captured"] = True
+        _post_message(ctx, api, rid, line,
+                      {"action": "preserve pickwhip moment", "attempt": "1", "result": line, "status": "succeeded"})
+    except Exception as e:                                         # noqa: BLE001 - e.g. the session ended mid-flow
+        out["captured"] = False
+        _post_message(ctx, api, rid, line + f" Frame capture unavailable: {e}.",
+                      {"action": "preserve pickwhip moment", "attempt": "1", "result": line, "status": "partial"})
+    return out
+
+
 def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
-    """characters op=use on a game without a writer: the overlay now (when a session runs it), plus a gap report."""
+    """characters op=use on a game without a writer: the overlay now (when a session runs it), plus a gap report.
+    A running session also gets its moment preserved on the gap report (#1146): checkpoint, portable export, frame."""
     asked = f"characters op=use character={meta['slug']} game={game['title']} slot={inp.slot}"
     req = gap(ctx, api, meta, game, need, asked)
     res = {"status": "missing", "missing": need, "request": req, "fallback": "overlay"}
     sid = inp.session_id
     if sid:
+        running = False
+        try:                                                       # preserve only a live session; a dead one just reports
+            running = next((s.get("state") == "running" for s in api(ctx, "GET", "/api/sessions")
+                            if s.get("session_id") == sid), False)
+        except Exception:                                          # noqa: BLE001
+            pass
+        if running:
+            try:
+                res["preserved"] = preserve_moment(ctx, api, req["id"], sid, game, meta, inp)
+            except Exception as e:                                 # noqa: BLE001 - the gap report is the deliverable
+                _post_message(ctx, api, req["id"], f"Moment preservation failed: {e}.",
+                              {"action": "preserve pickwhip moment", "attempt": "1", "result": str(e)[:400],
+                               "status": "failed"})
         try:
             from . import overlay_swap
             ov = overlay_swap.start(ctx, api, meta, sid, inp.x, inp.y)
