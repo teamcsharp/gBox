@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>gBox</title>
+<script>
+// The desktop stays dark even when Windows changes its system color scheme.
+if (new URLSearchParams(location.search).has("embedded")) document.documentElement.dataset.embedded = "true";
+</script>
 <link rel="icon" href="/brand/gbox-logo.svg" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico">
 <style>
@@ -11,6 +15,7 @@
 
   :root { --bg:#fff; --fg:#1b1b1f; --mut:#6b6b76; --line:#e3e3e8; --card:#f6f6f8; --acc:#3355dd; --ok:#1a7f37; --bad:#c62828; }
   @media (prefers-color-scheme: dark) { :root { --bg:#16161a; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; } }
+  :root[data-embedded="true"] { color-scheme:dark; --bg:#16161a; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; }
   * { box-sizing:border-box; }
   body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
   header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:25; }
@@ -311,6 +316,14 @@ const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&
 let tok = ""; try { tok = localStorage.getItem("gbox_tok") || ""; } catch {}
 const HASH = new URLSearchParams(location.hash.slice(1));      // deep links: #token=…&session=<sid>&mode=inspect
 if (HASH.get("token")) { tok = HASH.get("token"); try { localStorage.setItem("gbox_tok", tok); } catch {} }
+if (new URLSearchParams(location.search).has("embedded") && HASH.get("worker")) {
+  window.GBOX_LOCAL = { worker: HASH.get("worker"), incidentCapture: true };
+}
+// Keep credentials out of the visible URL and subsequent issue-report context.
+if (HASH.has("token")) {
+  const clean = new URLSearchParams(HASH); clean.delete("token");
+  history.replaceState(null, "", location.pathname + location.search + (clean.size ? "#" + clean : ""));
+}
 const tq = () => "token=" + encodeURIComponent(tok);
 $("#tok").value = tok;
 if (!tok) $("#tok").style.display = "";                    // only a plain browser without a token needs the box
@@ -2967,7 +2980,7 @@ function re6View(v) {
   if (v === "switches") return re6Switches();
   lo ? re6Render() : re6Enemies();
 }
-if (HASH.get("session")) show("Sessions", HASH.get("session"), HASH.get("mode") || undefined); else show(cur);
+window.gboxViewReady = HASH.get("session") ? show("Sessions", HASH.get("session"), HASH.get("mode") || undefined) : show(cur);
 </script>
 <script src="/viz/asset-sidebar.js"></script>
 <script>

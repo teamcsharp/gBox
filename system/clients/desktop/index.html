@@ -8,8 +8,7 @@
   /* no window-level scrollbars: pages still scroll with the wheel / trackpad */
   html, body, section { scrollbar-width:none !important; } html::-webkit-scrollbar, body::-webkit-scrollbar, section::-webkit-scrollbar { display:none; }
 
-  :root { --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341; }
-  @media (prefers-color-scheme: light) { :root { --bg:#fff; --side:#f3f3f6; --fg:#1b1b1f; --mut:#6b6b76; --line:#e3e3e8; --card:#f6f6f8; --acc:#3355dd; --ok:#1a7f37; --bad:#c62828; --warn:#a36b00; } }
+  :root { color-scheme:dark; --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341; }
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; overflow:clip; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif; }
   .app { display:grid; grid-template-columns:200px 1fr; height:100vh; transition:grid-template-columns .15s; }
@@ -28,7 +27,13 @@
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--mut); }
   .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); } .dot.warn { background:var(--warn); }
   section { display:none; height:100vh; overflow:auto; } section.on { display:block; }
-  #play { padding:0; } #play webview { width:100%; height:100vh; border:0; }
+  #play { padding:0; position:relative; background:#16161a; color-scheme:dark; }
+  #play webview { width:100%; height:100vh; border:0; background:#16161a; }
+  #play webview[data-ready="false"] { opacity:0; pointer-events:none; }
+  #playhost { position:absolute; inset:0; z-index:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:12px; background:#16161a; color:#9a9aa6; padding:24px; text-align:center; }
+  #playhost[hidden] { display:none; }
+  #playhost button { background:#1f1f25; color:#e8e8ee; border-color:#2c2c34; }
   .pane { padding:20px; max-width:1200px; }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:14px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }
@@ -970,7 +975,8 @@ window.taskVizCreate = canvas => {
     </div>
   </aside>
   <main>
-    <section id="play" class="on"><div id="playhost" class="pane mut">Connecting to the Spark…</div></section>
+    <section id="play" class="on"><div id="playhost" role="status"><span id="playmessage">Connecting to the Spark…</span>
+      <button id="playretry" class="act" hidden>Retry connection</button></div></section>
     <section id="control"><div class="pane">
       <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
@@ -1898,20 +1904,62 @@ async function refresh() {
   if (st.api && !playLoaded) loadPlay();
 }
 
-// embedded gBox UI with the token injected (no manual token entry)
-async function loadPlay() {
-  const tok = await gbox.token();
-  if (!tok) { $("#playhost").textContent = "No API token: paste it in Settings (it is in ~/gBox/gbox-data/api_token on the Spark), or make the share/SSH reachable."; return; }
-  playLoaded = true;
-  $("#play").innerHTML = `<webview id="wv" src="${esc(S.apiUrl)}/?embedded=1" allowpopups></webview>`;
-  const wv = $("#wv");
-  let injected = false;
-  wv.addEventListener("dom-ready", () => {
-    wv.executeJavaScript(`window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })};`);   // "Play" runs on this PC
-    if (injected) return;
-    injected = true;
-    wv.executeJavaScript(`localStorage.setItem("gbox_tok", ${JSON.stringify(tok)}); location.reload();`);
-  });
+// Authenticate before the first navigation. Worker/status callbacks share one pending load.
+let playLoadPromise = null;
+function loadPlay() {
+  if (playLoadPromise) return playLoadPromise;
+  if (playLoaded) return Promise.resolve();
+  playLoadPromise = Promise.resolve().then(async () => {
+    const panel = $("#playhost"), message = $("#playmessage"), retry = $("#playretry");
+    const status = (text, failed = false) => { panel.hidden = false; message.textContent = text; retry.hidden = !failed; };
+    status("Connecting to the Spark…");
+    retry.onclick = () => { playLoaded = false; loadPlay(); };
+    const tok = await gbox.token();
+    if (!tok) { status("No API token: add it in Settings, or restore the Spark share/SSH connection.", true); return; }
+    const url = new URL(S.apiUrl);
+    url.searchParams.set("embedded", "1");
+    url.hash = new URLSearchParams({ token: tok, worker: S.workerName }).toString();
+    if (typeof EMB !== "undefined" && EMB.sid) url.hash += "&session=" + encodeURIComponent(EMB.sid);
+    const wv = document.createElement("webview");
+    wv.id = "wv"; wv.dataset.ready = "false"; wv.setAttribute("allowpopups", "");
+    let generation = 0, timeout = null;
+    const loading = () => {
+      generation++; wv.dataset.ready = "false"; status("Loading gBox…"); clearTimeout(timeout);
+      timeout = setTimeout(() => failed("The view is taking too long to load. Retry the connection."), 30000);
+    };
+    const failed = text => {
+      if (!wv.isConnected) return;
+      generation++; clearTimeout(timeout); wv.dataset.ready = "false"; status(text, true);
+    };
+    wv.addEventListener("did-start-loading", loading);
+    wv.addEventListener("dom-ready", async () => {
+      const revision = generation;
+      try {
+        await wv.executeJavaScript(`(async () => { window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; })()`);
+        if (!wv.isConnected || revision !== generation) return;
+        clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
+      } catch {
+        if (wv.isConnected && revision === generation) failed("The gBox view could not initialize. Retry the connection.");
+      }
+    });
+    wv.addEventListener("did-fail-load", e => {
+      if (e.isMainFrame === false || e.errorCode === -3) return; // canceled navigation / iframe do not replace a healthy view
+      console.error("gBox view navigation failed", e.errorCode);
+      failed(`The gBox view failed to load (code ${e.errorCode}). Retry the connection.`);
+    });
+    wv.addEventListener("render-process-gone", e => {
+      console.error("gBox view renderer stopped", e.reason);
+      failed("The gBox view stopped displaying. Retry the view; your game keeps running.");
+    });
+    wv.addEventListener("destroyed", () => { generation++; clearTimeout(timeout); });
+    $("#wv")?.remove();
+    loading(); wv.src = url.href; $("#play").prepend(wv); playLoaded = true;
+  }).catch(() => {
+    $("#playhost").hidden = false;
+    $("#playmessage").textContent = "Could not connect to gBox. Check Settings and retry.";
+    $("#playretry").hidden = false;
+  }).finally(() => { playLoadPromise = null; });
+  return playLoadPromise;
 }
 
 // settings
@@ -2554,7 +2602,8 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on;      // full-window overlays: the game steps aside
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on
+      || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
     const wv = document.querySelector("#wv");
