@@ -1727,7 +1727,7 @@ async function embedTick() {
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
+    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
       ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).filter(b => b.width > 0 && b.height > 0)
