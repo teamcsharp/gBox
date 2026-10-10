@@ -943,7 +943,7 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskviz"><div class="hea
   <button class="act" id="tv-close">Back to Tasks</button></div><canvas id="tv-canvas"></canvas><div class="body"><div id="tv-progress"></div>
   <div id="tv-stages" class="stages"></div></div></div>`);
 const TK = { t: null, busy: false, expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
-const TV = { id: null, timer: null, view: null, returnPanel: false };
+const TV = { id: null, kind: "job", timer: null, view: null, returnPanel: false };
 const tkAge = ts => { const s = Math.max(0, Date.now() / 1000 - (ts || 0)); return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; };
 const tkBar = (v, max) => `<span class="bar"><i style="width:${Math.min(100, 100 * v / (max || 100))}%"></i></span>`;
 const tkProgress = (pct, active) => {
@@ -981,6 +981,7 @@ async function tasksLoad() {
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
         <div class="meta">${esc(run.model || "Hermes")} · ${Number(run.tokens_in || 0).toLocaleString()} in / ${Number(run.tokens_out || 0).toLocaleString()} out · started ${tkAge(run.started)} ago</div>
+        <button class="act" data-hermes-visual="${esc(run.id)}">View 3D task stages</button>
         <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}</div>` +
     d.machines.map(m => { const t = m.totals || {};
     return `<div class="mc"><div class="mh"><b>${esc(m.name)}</b>
@@ -1059,8 +1060,19 @@ async function tkJobRefresh(detail) {
 }
 async function tvPoll() {
   if (!TV.id) return;
-  const r = await gbox.api(`/api/jobs/${TV.id}`);
-  if (!r.ok || !TV.id) { $("#tv-state").textContent = r.error || "unavailable"; return; }
+  const id = TV.id, kind = TV.kind;
+  const r = await gbox.api(kind === "hermes" ? `/api/tasks/hermes/${id}` : `/api/jobs/${id}`);
+  if (TV.id !== id || TV.kind !== kind) return;
+  if (!r.ok) { $("#tv-state").textContent = r.error || "unavailable"; return; }
+  if (kind === "hermes") {
+    const run = r.data, stages = (run.output || "").split("\n").filter(s => /^[→←]/.test(s)).slice(-12);
+    $("#tv-title").textContent = run.name || "Hermes run";
+    $("#tv-state").textContent = run.state;
+    $("#tv-progress").textContent = `${Number(run.tokens_in || 0).toLocaleString()} input / ${Number(run.tokens_out || 0).toLocaleString()} output tokens · ${run.progress || ""}`;
+    $("#tv-stages").innerHTML = stages.map(s => `<div>${esc(s.slice(0, 250))}</div>`).join("") || '<span>No tool stages reported yet.</span>';
+    TV.view?.update(NaN, stages, run.state === "running");
+    return;
+  }
   const j = r.data, p = j.progress || {}, stages = j.progress_log || [];
   $("#tv-title").textContent = j.tool + " · " + TV.id;
   $("#tv-state").textContent = j.state;
@@ -1079,8 +1091,8 @@ function tvClose(back = true) {
   }
   TV.returnPanel = false;
 }
-async function tvOpen(id) {
-  tvClose(false); TV.id = id; TV.returnPanel = $("#taskpanel").classList.contains("on");
+async function tvOpen(id, kind = "job") {
+  tvClose(false); TV.id = id; TV.kind = kind; TV.returnPanel = $("#taskpanel").classList.contains("on");
   $("#taskpanel").classList.remove("on"); clearInterval(TK.t);
   $("#taskviz").classList.add("on");
   try { TV.view = window.taskVizCreate($("#tv-canvas")); }
@@ -1092,6 +1104,8 @@ $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains(
   clearInterval(TK.t); if (on) { tasksLocalLoad(); tasksLoad(); TK.t = setInterval(() => { tasksLocalLoad(); tasksLoad(); }, 5000); } };
 $("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); };
 $("#tk-body").onclick = async e => {
+  const hermesVisual = e.target.closest("[data-hermes-visual]");
+  if (hermesVisual) { tvOpen(hermesVisual.dataset.hermesVisual, "hermes"); return; }
   const visual = e.target.closest("[data-task-visual]");
   if (visual) { tvOpen(visual.dataset.taskVisual); return; }
   const file = e.target.closest("[data-task-file]");
