@@ -7,10 +7,6 @@ from pathlib import Path
 import subprocess
 import threading
 
-import httpx
-import psutil
-
-
 NAME = "gBox inbox task mode"
 _LOCK = threading.RLock()
 _PROMPT = Path(__file__).resolve().parent.parent / "hermes" / "gbox" / "TASK_MODE.md"
@@ -56,18 +52,8 @@ def status() -> dict:
 
 
 def _model() -> tuple[str | None, str]:
-    """Prefer a locally installed tool caller that can finish multi-step inbox work."""
-    try:
-        models = httpx.get("http://127.0.0.1:11434/api/tags", timeout=5).json().get("models", [])
-        names = {m.get("name") for m in models}
-        available = psutil.virtual_memory().available
-        for name, minimum in (("gemma4:e4b-it-qat", 12), ("gemma4:e4b", 15),
-                              ("gemma4:12b-it-qat", 15), ("gemma4:12b", 18), ("qwen3:8b", 12)):
-            if name in names and available >= minimum * 1024**3:
-                return name, f"{name} selected ({available // 1024**3} GiB available)"
-        return None, "No verified installed model fits current memory; using Hermes's configured model"
-    except (httpx.HTTPError, ValueError, TypeError):
-        return None, "Ollama model inventory unavailable; using Hermes's configured model"
+    """Follow the operator's Hermes provider/model, including a connected cloud account."""
+    return None, "Following Hermes's configured provider and model"
 
 
 def _run(*args: str) -> None:
@@ -83,6 +69,14 @@ def _run(*args: str) -> None:
 def set_enabled(enabled: bool) -> dict:
     with _LOCK:
         job = _job()
+        # Older gBox jobs were pinned to a local Ollama model when created.
+        # Release only those pins so an account upgrade takes effect on the
+        # next scheduled run without overriding an intentional cloud pin.
+        if enabled and job and job.get("provider") == "custom" and job.get("model") in {
+                "gemma4:e4b-it-qat", "gemma4:e4b", "gemma4:12b-it-qat",
+                "gemma4:12b", "qwen3:8b"}:
+            _run("edit", job["id"], "--unpin")
+            job = _job()
         if enabled and not job:
             model, note = _model()
             args = ["create", "every 10m", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,

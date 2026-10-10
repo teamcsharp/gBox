@@ -41,21 +41,29 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
     assert calls[-3][1:3] == ("hermes-job", "--clear-skills")
 
 
-def test_task_mode_prefers_tool_capable_model_when_memory_allows(monkeypatch):
-    class Response:
-        def json(self):
-            return {"models": [{"name": "gemma4:e4b-it-qat"}, {"name": "gemma4:12b-it-qat"}, {"name": "gemma4:12b"}, {"name": "gemma4:31b"}, {"name": "qwen3.6:35b"},
-                               {"name": "qwen3.8:27b-mtp-q4_K_M"}]}
-
-    monkeypatch.setattr(mode.httpx, "get", lambda *a, **kw: Response())
-    monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 78 * 1024**3})())
-    assert mode._model()[0] == "gemma4:e4b-it-qat"
-    monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 36 * 1024**3})())
-    assert mode._model()[0] == "gemma4:e4b-it-qat"
-    monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 20 * 1024**3})())
-    assert mode._model()[0] == "gemma4:e4b-it-qat"
-    monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 10 * 1024**3})())
+def test_task_mode_follows_connected_provider_and_releases_its_legacy_local_pin(monkeypatch, tmp_path):
     assert mode._model()[0] is None
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    cli = tmp_path / "hermes"
+    cli.write_text("#!/bin/sh\n")
+    job = {"id": "job-1", "name": mode.NAME, "enabled": True,
+           "model": "gemma4:e4b-it-qat", "provider": "custom"}
+    path = home / "cron" / "jobs.json"
+    path.write_text(json.dumps({"jobs": [job]}))
+    monkeypatch.setattr(mode, "_home", lambda: home)
+    monkeypatch.setattr(mode, "_cli", lambda: cli)
+    calls = []
+
+    def fake_run(*args):
+        calls.append(args)
+        if args[0] == "edit" and args[-1] == "--unpin":
+            job.update(model=None, provider=None)
+            path.write_text(json.dumps({"jobs": [job]}))
+
+    monkeypatch.setattr(mode, "_run", fake_run)
+    assert mode.set_enabled(True)["model"] is None
+    assert calls == [("edit", "job-1", "--unpin")]
 
 
 def test_task_mode_surfaces_agent_reported_cron_failure(monkeypatch, tmp_path):
