@@ -1444,7 +1444,8 @@ def _job(ctx, tool_name: str, inp: dict, worker: str | None = None, limit: float
     parent = getattr(ctx, "parent_request_id", None)
     j = _api(ctx, "POST", "/api/jobs", json={"tool": tool_name, "input": inp,
              **({"require_worker": worker} if worker else {}),
-             **({"parent_request_id": parent} if parent else {})})
+             **({"parent_request_id": parent} if parent else {}),
+             "agent_use": bool(getattr(ctx, "agent_use", False))})
     t0 = time.time()
     while j.get("state") in ("queued", "running") and time.time() - t0 < limit:
         time.sleep(1)

@@ -1183,7 +1183,7 @@ def create_app(config: Config) -> FastAPI:
             if not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
-                  parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("mcp", "gbox-agent", "hermes"))
+                  parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes"))
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
@@ -1595,7 +1595,7 @@ def create_app(config: Config) -> FastAPI:
                 current = max(running, key=lambda s: s.get('started') or 0)
                 return swap_job(current['session_id'], mod, '', actor)
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})},
-                         agent_use=actor in ("mcp", "gbox-agent", "hermes"))
+                         agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
         if debug:
             node = "linux"
         if node in ("linux", "windows"):

@@ -54,6 +54,7 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
              active: set, active_agent: set, quiet_sessions: set):
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
+    ctx.agent_use = bool(job.get("agent_use"))
     ctx.server, ctx.headers = server, h
     res = {"job_id": job["id"], "ok": True}
     if job.get("agent_use") and HOST_OS == "windows":
