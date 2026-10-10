@@ -316,7 +316,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
-        if g.platform != "ps3" and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Archives unpack directly into the local cache; PS3 = whole folder
+        if g.platform not in ("ps3", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Switch XCI/NSP streams from the user's share; copying 15+ GB before play stalls launch
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
             last = [0.0]
