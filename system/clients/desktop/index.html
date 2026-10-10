@@ -332,9 +332,14 @@
   #remote-pip .rp-head { display:flex; align-items:center; gap:6px; padding:5px 7px; background:var(--card); cursor:move; }
   #remote-pip .rp-head b { white-space:nowrap; }
   #remote-pip .rp-head select { min-width:0; flex:1; background:var(--bg); color:var(--fg); }
-  #remote-pip .rp-stage { flex:1; min-height:0; overflow:hidden; background:#08090d; touch-action:none; cursor:zoom-in; }
+  #remote-pip .rp-stage { position:relative; flex:1; min-height:0; overflow:hidden; background:#08090d; touch-action:none; cursor:zoom-in; }
   #remote-pip .rp-stage.panning { cursor:grabbing; }
   #remote-pip img { width:100%; height:100%; object-fit:contain; user-select:none; pointer-events:none; }
+  #remote-pip .rp-empty { position:absolute; inset:0; display:grid; align-content:center; justify-items:center; gap:8px; padding:18px;
+    text-align:center; background:#101625; color:#d8e4fb; cursor:default; }
+  #remote-pip .rp-empty[hidden] { display:none; }
+  #remote-pip .rp-empty span { color:#9eafcf; font-size:11px; line-height:1.45; }
+  #remote-pip .rp-empty button { background:#293d66; color:#e5efff; border:1px solid #678bc0; border-radius:6px; padding:6px 9px; cursor:pointer; }
   #remote-pip .rp-foot { padding:5px 8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #remote-pip.minimized .rp-stage, #remote-pip.minimized .rp-foot { display:none; }
   @media(max-width:720px) { #task-evidence .ev-layout { grid-template-columns:1fr; grid-template-rows:minmax(180px,45vh) minmax(0,1fr); } #task-evidence aside { border-left:0; border-top:1px solid var(--line); } }
@@ -1210,7 +1215,9 @@ document.body.insertAdjacentHTML("beforeend", `<div id="remote-pip" aria-label="
     <button class="act" id="rp-view" title="Switch between the gBox window and the full desktop">Desktop</button>
     <button class="act" id="rp-expand" title="Expand view">Expand</button><button class="act" id="rp-min" title="Minimize remote view">Minimize</button>
     <button class="act" id="rp-close" title="Close remote view">Close</button></div>
-  <div id="rp-stage" class="rp-stage" title="Wheel to zoom; middle-drag to pan; double-click to reset"><img id="rp-image" alt="Live view of the selected computer" draggable="false"></div>
+  <div id="rp-stage" class="rp-stage" title="Wheel to zoom; middle-drag to pan; double-click to reset"><img id="rp-image" alt="Live view of the selected computer" draggable="false">
+    <div id="rp-empty" class="rp-empty" hidden><b>gBox window unavailable</b><span id="rp-empty-detail">The other computer has no visible gBox window right now.</span>
+      <button type="button" id="rp-show-desktop">Show full desktop</button></div></div>
   <div id="rp-meta" class="rp-foot mut">Connecting...</div></div>`);
 const REMOTE = { worker: null, timer: null, pollTimer: null, pending: false, opened: 0, quietReady: false,
   view: "app", zoom: 1, panX: 0, panY: 0 };
@@ -1224,6 +1231,7 @@ async function remoteSetStream() {
   $("#rp-view").textContent = REMOTE.view === "app" ? "Desktop" : "gBox";
   $("#rp-view").title = REMOTE.view === "app" ? "Show the full desktop" : "Show only the gBox window";
   $("#rp-image").removeAttribute("src");
+  $("#rp-empty").hidden = true;
   const tok = await gbox.token();
   $("#rp-image").src = `${S.apiUrl}/api/workers/${encodeURIComponent(REMOTE.worker)}/desktop/stream?view=${REMOTE.view}&token=${encodeURIComponent(tok)}&t=${Date.now()}`;
 }
@@ -1245,7 +1253,8 @@ async function remotePollFrame() {
   finally { REMOTE.pending = false; }
 }
 function remoteFallback() {
-  if (REMOTE.view === "app") { $("#rp-meta").textContent = "gBox window unavailable. Choose Desktop to inspect the computer."; return; }
+  if (REMOTE.view === "app") { $("#rp-meta").textContent = "No gBox window is visible on the other computer.";
+    $("#rp-empty").hidden = false; return; }
   if (REMOTE.pollTimer || !REMOTE.worker || !$("#remote-pip").classList.contains("on") ||
       $("#remote-pip").classList.contains("minimized")) return;
   $("#rp-meta").textContent = "Using periodic desktop screenshots until the live worker stream starts";
@@ -1257,6 +1266,7 @@ async function remoteWatch(workerId = null) {
   if (!wr.ok) return toast(wr.error || "Could not list computers");
   const windows = wr.data.filter(w => w.online && w.os === "windows");
   if (!workerId) {
+    REMOTE.view = "app";
     const idle = await gbox.api("/api/workers/idle?tool=get_frame");
     if (idle.ok) workerId = idle.data.id;
     else if (String(idle.error || "").includes("404") && S.workerName)
@@ -1288,7 +1298,10 @@ async function remoteStatus() {
   const active = (jobs.data || []).filter(j => j.state === "running" && j.worker_id === REMOTE.worker).map(j => j.tool);
   const age = status.data?.last_frame_age;
   if (!status.ok || (status.data?.frames === 0 && Date.now() - REMOTE.opened > 8000)) remoteFallback();
-  $("#rp-meta").textContent = `${REMOTE.view === "app" ? (status.data?.app_available ? "gBox" : "Desktop fallback; remote worker update pending") : (game?.title || "Desktop")} · ${active.length ? active.join(", ") : "no running jobs"} · ${age == null ? "waiting for frame" : `frame ${age}s ago`} · ${REMOTE.quietReady ? "agent audio held at 2%" : "2% audio pending worker reload"}`;
+  const appMissing = REMOTE.view === "app" && status.ok && status.data?.app_available === false;
+  $("#rp-empty").hidden = !appMissing;
+  if (appMissing) $("#rp-empty-detail").textContent = `${$("#rp-worker").selectedOptions[0]?.textContent || "Other PC"} has no visible gBox window. Open gBox there, or inspect its full desktop.`;
+  $("#rp-meta").textContent = `${REMOTE.view === "app" ? (appMissing ? "gBox window unavailable" : "gBox") : (game?.title || "Desktop")} · ${active.length ? active.join(", ") : "no running jobs"} · ${age == null ? "waiting for frame" : `frame ${age}s ago`} · ${REMOTE.quietReady ? "agent audio held at 2%" : "2% audio pending worker reload"}`;
 }
 $("#tb-remote").onclick = () => remoteWatch();
 async function refreshTaskMode() {
@@ -1313,6 +1326,7 @@ refreshTaskMode();
 setInterval(refreshTaskMode, 30000);
 $("#rp-worker").onchange = e => remoteWatch(e.target.value);
 $("#rp-view").onclick = async () => { REMOTE.view = REMOTE.view === "app" ? "desktop" : "app"; await remoteSetStream(); remoteStatus(); };
+$("#rp-show-desktop").onclick = () => $("#rp-view").click();
 $("#rp-image").onerror = () => remoteFallback();
 $("#rp-stage").addEventListener("wheel", e => {
   e.preventDefault();
@@ -1351,6 +1365,7 @@ $("#rp-expand").onclick = () => {
 };
 $("#rp-close").onclick = () => {
   $("#remote-pip").classList.remove("on", "minimized"); $("#rp-image").removeAttribute("src");
+  REMOTE.view = "app"; $("#rp-empty").hidden = true;
   REMOTE.worker = null; clearInterval(REMOTE.timer); clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null;
 };
 const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
