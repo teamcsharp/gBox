@@ -1,4 +1,5 @@
 import base64
+import time
 
 from fastapi.testclient import TestClient
 
@@ -62,6 +63,32 @@ def test_auto_mod_failure_offers_saved_state_job_for_live_game(cfg, monkeypatch)
     assert state_job["input"]["op"] == "save_state"
     assert state_job["input"]["args"]["slot"] == 40
     assert state_job["parent_request_id"] == report["id"]
+
+
+def test_auto_failure_keeps_game_frame_even_with_desktop_screenshot(cfg, monkeypatch):
+    monkeypatch.setattr(ChatHub, "post", lambda *args: None)
+    app = create_app(cfg)
+    store = app.state.store
+    store.put("session", "worker-session", {"session_id": "worker-session", "state": "running",
+        "title": "Metal Gear Solid", "game_id": "mgs", "adapter": "unsupported"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    desktop = base64.b64encode(b"\x89PNG\r\n\x1a\ndesktop").decode()
+    report = client.post("/api/requests/auto-mod-failure", json={"session_id": "worker-session",
+        "model": "Ninja", "image_b64": desktop}).json()
+    jid = report["context"]["state_job_id"]
+    frame = b"\x89PNG\r\n\x1a\ngame-frame"
+    ref = store.put_artifact(frame, "state.png", "image/png", {"job": jid})
+    job = store.get("job", jid)
+    store.put("job", jid, job | {"state": "succeeded", "started": time.time(), "output": {"result": {"slot": 40}}})
+    for _ in range(60):
+        latest = store.get("request", report["id"])
+        if any(m.get("attachments") and m["attachments"][0]["sha256"] == ref.sha256
+               for m in latest["messages"]):
+            break
+        time.sleep(.05)
+    else:
+        raise AssertionError("game frame was not attached to auto report")
+    assert latest["image"]  # original desktop screenshot is kept too
 
 
 def test_capture_request_screenshot_attaches_live_frame_with_step(cfg):

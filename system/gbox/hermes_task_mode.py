@@ -41,13 +41,13 @@ def status() -> dict:
 
 
 def _model() -> tuple[str | None, str]:
-    """Prefer the strongest locally verified inbox tool caller that fits available RAM."""
+    """Prefer a responsive local Google tool caller for recurring inbox work."""
     try:
         models = httpx.get("http://127.0.0.1:11434/api/tags", timeout=5).json().get("models", [])
         names = {m.get("name") for m in models}
         available = psutil.virtual_memory().available
-        for name, minimum in (("qwen3.8:38b", 50), ("gemma4:31b", 32), ("qwen3.6:35b", 40),
-                              ("qwen3.8:27b-mtp-q4_K_M", 30), ("gemma4:12b", 15)):
+        for name, minimum in (("gemma4:e4b-it-qat", 12), ("gemma4:e4b", 15),
+                              ("gemma4:12b", 18), ("qwen3:8b", 12)):
             if name in names and available >= minimum * 1024**3:
                 return name, f"{name} selected ({available // 1024**3} GiB available)"
         return None, "No verified installed model fits current memory; using Hermes's configured model"
@@ -72,7 +72,7 @@ def set_enabled(enabled: bool) -> dict:
             model, note = _model()
             args = ["create", "every 10m", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,
                     "--workdir", str(_PROMPT.parents[2]),
-                    "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "high"]
+                    "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "low"]
             if model:
                 args += ["--model", model, "--provider", "custom"]
             _run(*args)

@@ -2848,9 +2848,10 @@ _load_tool_modules()
 
 class StateXIn(BaseModel):
     session_id: str
-    op: str = "export"                      # export: save + upload the state file | import: load an uploaded state
+    op: str = "export"                      # export: save + upload | export_saved: upload an existing checkpoint | import: load
     artifact: str = ""                      # import: digest of the exported state
     slot: int = 9
+    not_before: float = 0                    # export_saved: reject a stale checkpoint
 
 
 class StateXOut(BaseModel):
@@ -2906,8 +2907,10 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
                 return f
             time.sleep(0.2)
         raise RuntimeError("the emulator didn't write a save state")
-    if inp.op == "export":
-        f = save_and_wait()
+    if inp.op in ("export", "export_saved"):
+        f = save_and_wait() if inp.op == "export" else newest()
+        if not f or (inp.op == "export_saved" and f.stat().st_mtime < inp.not_before - 1):
+            raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
         ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"))
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
@@ -2922,7 +2925,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         time.sleep(0.3)
         ad.load_state(ad.slot) if kind == "retroarch" else ad.load_state()
         return {"result": {"loaded": True, "file": f.name, "bytes": len(r.content)}}
-    raise ValueError("op: export | import")
+    raise ValueError("op: export | export_saved | import")
 
 
 # ---- no hidden games left behind: emulators this worker started are recorded; a restarted worker closes the old ones ----

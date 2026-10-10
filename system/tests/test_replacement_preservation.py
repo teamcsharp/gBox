@@ -60,6 +60,27 @@ def test_restore_loads_actual_written_slot_and_ignores_other_games(tmp_path, mon
     assert (states / 'Other.state9').read_bytes() == b'unrelated'
 
 
+def test_export_saved_uses_existing_game_checkpoint_without_resaving(tmp_path, monkeypatch):
+    states = tmp_path / 'states'
+    states.mkdir()
+    saved = states / 'Current.state40'
+    saved.write_bytes(b'exact-failed-moment')
+    (states / 'Other.state99').write_bytes(b'unrelated')
+    def unexpected(*args):
+        pytest.fail('export_saved must not advance the emulated game or overwrite the checkpoint')
+    ad = SimpleNamespace(name='retroarch', save_state=unexpected)
+    monkeypatch.setitem(tools.SESSIONS, 'worker-exact', (ad, {'_rom_path': 'Current.cue', 'game_id': 'g'}))
+    artifacts = []
+    ctx = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), artifact=lambda *args, **kwargs: artifacts.append(args))
+    result = tools.state_transfer(tools.StateXIn(session_id='worker-exact', op='export_saved',
+        slot=40, not_before=saved.stat().st_mtime), ctx)
+    assert result['result']['file'] == 'Current.state40'
+    assert artifacts[0][1] == b'exact-failed-moment'
+    with pytest.raises(RuntimeError, match='no matching saved checkpoint'):
+        tools.state_transfer(tools.StateXIn(session_id='worker-exact', op='export_saved',
+            slot=40, not_before=saved.stat().st_mtime + 60), ctx)
+
+
 def test_bad_checkpoint_never_saves_or_loads(tmp_path, monkeypatch):
     def unexpected(*args):
         pytest.fail('emulator must not change for a corrupt checkpoint')

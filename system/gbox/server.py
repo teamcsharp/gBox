@@ -2587,6 +2587,7 @@ def create_app(config: Config) -> FastAPI:
                 saved = submit(JobRequest(tool="session_op", input={"session_id": f.session_id, "op": "save_state", "args": {"slot": slot}},
                                           parent_request_id=rid), actor)
                 report["context"]["state_job_id"] = saved.id
+                report["context"]["state_slot"] = slot
                 report["messages"].append({"author": "agent", "text": f"Save state requested for this moment (job {saved.id}, slot {slot}). Its result is shown in the detailed report.",
                                            "ts": time.time(), "attachments": [], "task_step": {"action": "save game moment", "attempt": "1", "result": saved.state, "status": saved.state}})
             except Exception as exc:
@@ -2611,15 +2612,75 @@ def create_app(config: Config) -> FastAPI:
             report["messages"].append({"author": "agent", "text": f"Resolution dispatch failed: {exc}", "ts": time.time(), "attachments": []})
         store.put("request", rid, report)
         store.audit(actor, "request.auto_mod_failure", rid, {"session": f.session_id, "job": f.job_id, "model": f.model})
-        if f.session_id and s_.get("state") == "running" and not f.image_b64:
-            def _capture_later():
+        if f.session_id and s_.get("state") == "running":
+            def _preserve_failure():
+                def add(text, action, result, status, attachment=None, **context):
+                    with store.lock:
+                        latest = store.get("request", rid)
+                        if not latest:
+                            return
+                        latest.setdefault("context", {}).update(context)
+                        latest.setdefault("messages", []).append({"author": "agent", "text": text, "ts": time.time(),
+                            "attachments": [attachment] if attachment else [],
+                            "task_step": {"action": action, "attempt": "1", "result": result, "status": status}})
+                        store.put("request", rid, latest)
+
+                def completed(jid, seconds=120):
+                    deadline = time.time() + seconds
+                    while time.time() < deadline:
+                        job = store.get("job", jid) or {}
+                        if job.get("state") not in ("queued", "running"):
+                            return job
+                        time.sleep(.5)
+                    return {"state": "timeout", "error": "checkpoint job timed out"}
+
                 try:
-                    asyncio.run(req_capture(rid, RequestCaptureIn(session_id=f.session_id,
-                        text="Automatic screenshot of the failed game moment",
-                        task_step={"action": "capture failed moment", "attempt": "1", "result": "game frame attached", "status": "finished"}), "gbox-auto"))
+                    saved_id = (store.get("request", rid) or {}).get("context", {}).get("state_job_id")
+                    saved_job = completed(saved_id) if saved_id else {"state": "unavailable"}
+                    frame = next((a for a in store.all("artifact") if (a.get("provenance") or {}).get("job") == saved_id
+                                  and a.get("media_type") == "image/png"), None) if saved_id else None
+                    if frame:
+                        att = {"sha256": frame["sha256"], "name": frame["name"], "type": "image/png", "size": frame["size"]}
+                        add("Game frame captured with the save-state attempt.", "capture failed moment",
+                            "game frame attached", "finished", att)
+                    else:
+                        try:
+                            asyncio.run(req_capture(rid, RequestCaptureIn(session_id=f.session_id,
+                                text="Automatic game screenshot after the failed action",
+                                task_step={"action": "capture failed moment", "attempt": "1",
+                                           "result": "game frame attached", "status": "finished"}), "gbox-auto"))
+                        except Exception as exc:
+                            add(f"Game screenshot unavailable: {exc}", "capture failed moment", str(exc)[:400], "failed")
+                    if saved_job.get("state") != "succeeded":
+                        add(f"Save state failed: {saved_job.get('error') or saved_job.get('state')}",
+                            "save game moment", str(saved_job.get("error") or saved_job.get("state"))[:400], "failed")
+                        return
+                    if (s_.get("adapter") or "").lower() not in ("retroarch", "dolphin"):
+                        add("This emulator cannot export a portable state; the local checkpoint remains available.",
+                            "export game moment", "unsupported emulator", "unavailable")
+                        return
+                    exported = submit(JobRequest(tool="state_transfer", input={"session_id": f.session_id,
+                        "op": "export_saved", "slot": slot, "not_before": saved_job.get("started") or 0},
+                        parent_request_id=rid), "gbox-auto")
+                    add(f"Exporting the exact saved checkpoint (job {exported.id}).", "export game moment",
+                        exported.id, exported.state, state_export_job_id=exported.id)
+                    result = completed(exported.id)
+                    if result.get("state") != "succeeded":
+                        add(f"Portable checkpoint unavailable: {result.get('error') or result.get('state')}",
+                            "export game moment", str(result.get("error") or result.get("state"))[:400], "failed")
+                        return
+                    info = (result.get("output") or {}).get("result") or {}
+                    meta = store.get("artifact", info.get("artifact")) if info.get("artifact") else None
+                    if not meta:
+                        raise RuntimeError("checkpoint export did not upload its artifact")
+                    att = {"sha256": meta["sha256"], "name": meta["name"], "type": meta["media_type"], "size": meta["size"]}
+                    actual_slot = int(info["file"].rsplit(".state", 1)[-1]) if ".state" in info.get("file", "") and info["file"].rsplit(".state", 1)[-1].isdigit() else slot
+                    add(f"Portable save state attached: {info['file']} ({info['bytes']} bytes).",
+                        "export game moment", "checkpoint attached", "finished", att,
+                        state_artifact=meta["sha256"], state_file=info["file"], state_slot=actual_slot)
                 except Exception as exc:
-                    store.audit("gbox-auto", "request.capture.error", rid, {"error": str(exc)[:500]})
-            threading.Thread(target=_capture_later, daemon=True).start()
+                    add(f"Automatic evidence preservation failed: {exc}", "preserve failed moment", str(exc)[:400], "failed")
+            threading.Thread(target=_preserve_failure, daemon=True, name=f"auto-failure-{rid[:8]}").start()
         return _clean(report)
 
     class ImportItem(BaseModel):
