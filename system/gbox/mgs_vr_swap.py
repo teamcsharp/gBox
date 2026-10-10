@@ -192,11 +192,11 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             _publish(ctx, folder, gid)
         chars._api(ctx, "POST", f"/api/characters/hucast/targets", json={"game_id": gid, "slot": "player",
                    "mod": MOD_NAME, "nodes": ["windows"],
-                   "notes": "Native PS1 player KMD; Sneaking Mode / No Weapon / Level 01 verified."})
+                   "notes": "Native PS1 player KMD built; visual gameplay replacement still needs verification."})
         chars._api(ctx, "POST", "/api/mods", json={"title": "HUcast in Metal Gear Solid VR Missions (Sneaking Mode)",
                    "calls": [{"tool": "@launch", "input": {"mod": MOD_NAME}}], "game_id": gid,
-                   "game_title": game["title"], "desc": "Native PS1 player KMD; Sneaking Mode Level 01 verified.",
-                   "verified": True, "requests": [848]})
+                   "game_title": game["title"], "desc": "Experimental native PS1 player KMD. Gameplay appearance is unverified.",
+                   "verified": False, "requests": [848]})
     launched = chars._launch(ctx, gid, MOD_NAME, "windows") if inp.launch else None
     return {"status": "built" if report else "ready", "mod": MOD_NAME, "build": report,
             "launch": launched, "message": "HUcast PS1 player model is selectable for VR Missions."}
