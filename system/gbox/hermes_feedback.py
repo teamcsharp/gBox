@@ -16,7 +16,7 @@ ADVICE = {
     'rate_limit': 'Back off this model and use another connected route; do not repeat the same throttled request.',
     'vision_history': 'Use auxiliary vision returning text. Do not append native image/model history to the failing route.',
     'worker_timeout': 'Check worker health once. Use start_job/get_job and keep the same job ID; continue Git source work while the worker is unavailable.',
-    'permission': 'Use the fixed gBox prepare_task_workspace and publish_task_changes tools. Do not retry a denied shell deployment or push.',
+    'permission': 'Check current task capabilities: historical cron denials do not describe current policy. Use prepare_task_workspace/publish_task_changes for tracked source delivery. Record any remaining exact permission or dependency failure and correct its cause before retrying.',
     'scheduler_claim': 'Use a finite genuine one-shot dispatched by the gateway. Preserve the prior execution; do not run the same occurrence from two launchers.',
     'turn_budget': 'Resume the saved patch at validation/publication. Use high reasoning, focused tests and a 45-tool-call work budget, reserving the final 10 calls for handoff.',
     'no_publication': 'Use a tracked task workspace, validate its patch and publish a draft PR. A canonical-share edit alone is not GitHub delivery.',

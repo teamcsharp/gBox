@@ -83,8 +83,9 @@ def _once() -> str:
 
 
 def _handoff() -> str:
+    from .hermes_capabilities import INSTRUCTIONS
     from .hermes_feedback import brief
-    return (' Prepare or reuse this request\'s isolated Git workspace with prepare_task_workspace before editing. '
+    return (' ' + INSTRUCTIONS + ' Prepare or reuse this request\'s isolated Git workspace with prepare_task_workspace before editing. '
             'Never edit the live canonical share. Use the returned workdir and preserve earlier patches. '
             'Use start_job/get_job for remote operations; keep the same pending job ID, check worker health once, '
             'and continue source work if remote calls time out. Do not test on the operator PC. '
@@ -102,6 +103,7 @@ def _workdir(request_id: str, number: int) -> str:
 
 
 def status() -> dict:
+    from .hermes_capabilities import audit
     from . import hermes_delivery
     job, config = _job() or {}, _config()
     model_config, agent_config, cron = (config.get(k) or {} for k in ('model', 'agent', 'cron'))
@@ -131,6 +133,7 @@ def status() -> dict:
             "max_parallel_jobs": cron.get('max_parallel_jobs'),
             "image_input_mode": agent_config.get('image_input_mode', 'auto'),
             "git_workspace_ready": (hermes_delivery.repository() / '.git').exists(),
+            "capabilities": audit(config),
             "operator_worker": ((config.get('mcp_servers') or {}).get('gbox') or {}).get('env', {}).get('GBOX_OPERATOR_WORKER'),
             "schedule": job.get("schedule_display"),
             "last_run_at": job.get("last_run_at"), "last_status": last_status,
@@ -251,7 +254,7 @@ def dispatch_request(request_id: str, number: int) -> str:
                   "duplicating an active investigation. Work on this report only, checkpoint each material "
                   "attempt in its replies, and reserve the last turns for validation and an honest final result. "
                   "Edit the isolated task workspace with terminal, read_file and patch; "
-                  "execute_code is denied in unattended cron. Read at most 120 nearby source lines per call. "
+                  "Use execute_code for bounded Python orchestration when useful. Read at most 120 nearby source lines per call. "
                   "Use /home/ehm_eckx/gBox/system/.venv-linux-aarch64/bin/python with PYTHONPATH set to your task's system directory for focused tests. Once those pass, "
                   "do not repeat unrelated baseline/headless test failures without a relevant new change. "
                   "A moving frame after relaunch alone does not prove that the supplied moment "
