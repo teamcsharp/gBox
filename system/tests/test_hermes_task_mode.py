@@ -49,7 +49,7 @@ def test_task_mode_prefers_verified_larger_model_when_memory_allows(monkeypatch)
 
     monkeypatch.setattr(mode.httpx, "get", lambda *a, **kw: Response())
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 78 * 1024**3})())
-    assert mode._model()[0] == "qwen3.6:35b"
+    assert mode._model()[0] == "gemma4:31b"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 36 * 1024**3})())
     assert mode._model()[0] == "gemma4:31b"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 20 * 1024**3})())
