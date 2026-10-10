@@ -41,7 +41,7 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
     assert calls[-3][1:3] == ("hermes-job", "--prompt")
 
 
-def test_task_mode_prefers_verified_fast_gemma_with_memory(monkeypatch):
+def test_task_mode_prefers_verified_larger_model_when_memory_allows(monkeypatch):
     class Response:
         def json(self):
             return {"models": [{"name": "gemma4:12b"}, {"name": "gemma4:31b"}, {"name": "qwen3.6:35b"},
@@ -49,7 +49,9 @@ def test_task_mode_prefers_verified_fast_gemma_with_memory(monkeypatch):
 
     monkeypatch.setattr(mode.httpx, "get", lambda *a, **kw: Response())
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 78 * 1024**3})())
-    assert mode._model()[0] == "gemma4:12b"
+    assert mode._model()[0] == "qwen3.6:35b"
+    monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 36 * 1024**3})())
+    assert mode._model()[0] == "gemma4:31b"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 20 * 1024**3})())
     assert mode._model()[0] == "gemma4:12b"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 10 * 1024**3})())
