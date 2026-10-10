@@ -44,15 +44,15 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
 def test_task_mode_prefers_responsive_google_model_when_memory_allows(monkeypatch):
     class Response:
         def json(self):
-            return {"models": [{"name": "gemma4:e4b-it-qat"}, {"name": "gemma4:12b"}, {"name": "gemma4:31b"}, {"name": "qwen3.6:35b"},
+            return {"models": [{"name": "gemma4:e4b-it-qat"}, {"name": "gemma4:12b-it-qat"}, {"name": "gemma4:12b"}, {"name": "gemma4:31b"}, {"name": "qwen3.6:35b"},
                                {"name": "qwen3.8:27b-mtp-q4_K_M"}]}
 
     monkeypatch.setattr(mode.httpx, "get", lambda *a, **kw: Response())
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 78 * 1024**3})())
-    assert mode._model()[0] == "gemma4:e4b-it-qat"
+    assert mode._model()[0] == "gemma4:12b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 36 * 1024**3})())
-    assert mode._model()[0] == "gemma4:e4b-it-qat"
+    assert mode._model()[0] == "gemma4:12b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 20 * 1024**3})())
-    assert mode._model()[0] == "gemma4:e4b-it-qat"
+    assert mode._model()[0] == "gemma4:12b-it-qat"
     monkeypatch.setattr(mode.psutil, "virtual_memory", lambda: type("Memory", (), {"available": 10 * 1024**3})())
     assert mode._model()[0] is None
