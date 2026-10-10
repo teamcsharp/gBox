@@ -2999,7 +2999,14 @@ def create_app(config: Config) -> FastAPI:
         mt["tokens_in"] = (mt.get("tokens_in") or 0) + (m.tokens_in or 0)
         mt["tokens_out"] = (mt.get("tokens_out") or 0) + (m.tokens_out or 0)
         for k, v in m.tokens_detail.items():
-            mt.setdefault("tokens_detail", {})[k] = mt.get("tokens_detail", {}).get(k, 0) + v
+            detail = mt.setdefault("tokens_detail", {})
+            previous = detail.get(k)
+            if isinstance(v, (int, float)):
+                detail[k] = (previous if isinstance(previous, (int, float)) else 0) + v
+            elif v is not None or k not in detail:
+                # SDK details also contain source/status text, nested metadata,
+                # and unavailable (null) costs. Only numbers are counters.
+                detail[k] = v
         for k, v in m.tools.items():
             mt["tools"][k] = mt["tools"].get(k, 0) + v
         mt["files_changed"] = sorted(set(mt["files_changed"]) | set(m.files_changed))

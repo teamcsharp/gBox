@@ -1,7 +1,24 @@
 import json
 import sqlite3
+import pytest
 
 from gbox import hermes_tasks
+
+
+@pytest.mark.parametrize('result, failed', [
+    ({'output': '10 passed', 'exit_code': 0, 'error': None}, False),
+    ({'error': None, 'output': 'Previously reported error: quota'}, False),
+    ({'error': 'Actual failure'}, True),
+    ({'exit_code': 1, 'output': 'Traceback is beyond the first 200 characters'}, True),
+    ({'exit_code': '0'}, False),
+    ({'result': json.dumps({'messages': [{'text': 'Historical error'}]})}, False),
+    ({'result': json.dumps({'error': 'Nested MCP error'})}, True),
+    ({'isError': True}, True),
+    ({'status': 'blocked'}, True),
+])
+def test_attempt_failure_classification_uses_outcome_not_error_field_presence(result, failed):
+    wrapped = '<untrusted_tool_result source="test">\nExternal data\n\n' + json.dumps(result) + '\n</untrusted_tool_result>'
+    assert hermes_tasks._tool_failed(wrapped) is failed
 
 
 def test_running_hermes_run_exposes_expandable_live_tool_output(monkeypatch, tmp_path):

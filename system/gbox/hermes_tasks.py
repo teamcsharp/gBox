@@ -253,6 +253,30 @@ def get_run(run_id: str) -> dict | None:
 _get_run_output = get_run
 
 
+def _tool_failed(content: str) -> bool:
+    """Classify structured outcomes, not mentions of errors in successful output."""
+    if content.startswith('<untrusted_tool_result') and '\n\n' in content:
+        content = content.split('\n\n', 1)[1].rsplit('</untrusted_tool_result>', 1)[0]
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        return content.lstrip().startswith(('BLOCKED:', 'ERROR:'))
+    if not isinstance(data, dict):
+        return False
+    if data.get('error') or data.get('isError') or data.get('is_error'):
+        return True
+    if data.get('exit_code') not in (None, 0, '0'):
+        return True
+    if data.get('status') in ('error', 'failed', 'blocked', 'denied') or data.get('state') == 'failed':
+        return True
+    nested = data.get('result')
+    if isinstance(nested, dict):
+        return _tool_failed(json.dumps(nested))
+    if isinstance(nested, str):
+        return _tool_failed(nested)
+    return False
+
+
 def get_run(run_id: str) -> dict | None:
     """Return the transcript plus every individual tool attempt and its result."""
     run = _get_run_output(run_id)
@@ -296,7 +320,7 @@ def get_run(run_id: str) -> dict | None:
                 result = _tool_text(m["content"] or "")
                 for step in reversed(run["steps"]):
                     if step["status"] == "running" and step["action"].replace("mcp__gbox__", "") == (m["tool_name"] or "").replace("mcp__gbox__", ""):
-                        step.update(result=result, status="failed" if '"error"' in result[:200] else "finished")
+                        step.update(result=result, status="failed" if _tool_failed(m["content"] or '') else "finished")
                         break
         state.close()
     except (OSError, ValueError, sqlite3.Error):
