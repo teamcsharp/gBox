@@ -86,6 +86,13 @@
   #gmenu .gmch input { display:none } #gmenu .gmch img, #gmenu .gmch .nf { width:100%; aspect-ratio:1; object-fit:contain; background:#26282f; border-radius:4px; display:grid; place-items:center; font-size:18px }
   .card .bootmod { position:absolute; left:6px; top:6px; z-index:2; font-size:10px; padding:1px 6px; border-radius:9px; background:var(--acc); color:#000; font-weight:600 }
   #gmenu .gmb { display:flex; gap:6px; margin-top:8px; }
+  .game-models { display:grid; grid-template-columns:minmax(260px,340px) minmax(0,1fr); gap:16px; padding:16px; }
+  .game-model-list { display:grid; gap:8px; align-content:start; max-height:calc(100vh - 205px); overflow:auto; }
+  .game-model-card { display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:inherit; cursor:pointer; }
+  .game-model-card.on { border-color:var(--acc); }
+  .game-model-card img { width:62px; height:62px; object-fit:contain; background:#26282f; border-radius:6px; }
+  .game-model-preview { height:min(55vh,540px); min-height:280px; background:#16181d; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  @media(max-width:800px) { .game-models { grid-template-columns:1fr; } .game-model-list { max-height:220px; } }
   #traypop { position:fixed; top:48px; right:12px; width:320px; max-height:60vh; overflow:auto; display:none; z-index:80; background:var(--bg);
     border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 40px #000a; } #traypop.on { display:block; }
   .tnote { display:grid; gap:2px; padding:8px 10px; border-bottom:1px solid var(--line); cursor:pointer; font-size:12.5px; } .tnote:hover { background:var(--card); }
@@ -466,11 +473,14 @@ async function api(path, body, method, timeoutMs = 0) {
 }
 let cur = "Library", timer = null, viewRevision = 0, sessionMode = null;
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
+const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
 async function show(t, ...args) {
   const revision = ++viewRevision;
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
+  GAME_MODELS.selection++;
+  if (GAME_MODELS.viewer) { GAME_MODELS.viewer.dispose(); GAME_MODELS.viewer = null; }
   cur = t; const sc = document.getElementById("scrub"); if (sc && t !== "Library") sc.style.display = "none"; clearInterval(timer); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
   playing = t === "Sessions" && args[0] ? args[0] : null;          // the session shown full-size, if any
   sessionMode = t === "Sessions" ? args[1] || null : null;
@@ -479,6 +489,69 @@ async function show(t, ...args) {
     $("#view").innerHTML = html; tabs[t].after && tabs[t].after(...args); }
   catch (e) { if (revision === viewRevision) $("#view").innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
 }
+
+// The game's extracted models live here, separate from the boot/mod selector.
+// Added after the header tabs are rendered because this view is opened from a game card.
+tabs.GameModels = async (gid, title) => {
+  const all = await api(`/api/characters?game_id=${encodeURIComponent(gid)}`);
+  const models = all.filter(m => m.source?.game_id === gid);
+  GAME_MODELS.models = models;
+  const tile = m => `<button class="game-model-card" data-model="${esc(m.slug)}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
+  return `<div class="bar"><button class="act" id="models-back">← Library</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span></div>
+    <div class="game-models"><div class="game-model-list" id="game-model-list">${models.length ? models.map(tile).join("") : '<p class="mut">No extracted models for this game yet.</p>'}
+      <button class="act" id="models-collect">Extract this game's models</button><div id="models-collect-status" class="mut"></div></div>
+      <section><div id="game-model-preview" class="game-model-preview"><p class="mut" style="padding:15px">Select a model to inspect it.</p></div>
+        <div id="game-model-detail" style="margin-top:12px"></div></section></div>`;
+};
+tabs.GameModels.after = (gid, title) => {
+  const page = $("#game-model-list"), preview = $("#game-model-preview"), detail = $("#game-model-detail");
+  const revision = viewRevision;
+  const models = GAME_MODELS.models;
+  $("#models-back").onclick = () => show("Library");
+  $("#models-collect").onclick = async e => {
+    e.currentTarget.disabled = true;
+    const status = $("#models-collect-status"); status.textContent = "Submitting extraction task…";
+    try {
+      const job = await api("/api/jobs", { tool: "characters", input: { op: "collect", game_id: gid }, require_os: "linux" });
+      status.textContent = `Task ${job.id} queued. Track it in Jobs; reopen Models when it finishes.`;
+    } catch (err) { status.textContent = err.message; e.currentTarget.disabled = false; }
+  };
+  page.onclick = async ev => {
+    const button = ev.target.closest("[data-model]"); if (!button) return;
+    const model = models.find(m => m.slug === button.dataset.model); if (!model) return;
+    const selection = ++GAME_MODELS.selection;
+    page.querySelectorAll("[data-model]").forEach(b => b.classList.toggle("on", b === button));
+    if (GAME_MODELS.viewer) { GAME_MODELS.viewer.dispose(); GAME_MODELS.viewer = null; }
+    preview.innerHTML = '<p class="mut" style="padding:15px">Loading 3D model…</p>';
+    const modelUrl = `/api/characters/${encodeURIComponent(model.slug)}/model?${tq()}`;
+    const canView = /\.(glb|gltf)$/i.test(model.model || "");
+    detail.innerHTML = `<h3>${esc(model.name)}</h3><p class="mut">${esc(model.source?.game_title || title || "")}</p>
+      <div class="bar"><a class="act" href="${modelUrl}" download="${esc(model.model || model.slug + '.glb')}">Export model</a>
+      <label>Assign to <select id="model-slot"><option value="player">Player</option><option value="enemies">Enemies</option></select></label>
+      <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p>`;
+    if (canView) {
+      try {
+        GAME_MODELS.module ||= await import("/viz/character-model.js");
+        if (revision !== viewRevision || selection !== GAME_MODELS.selection || !preview.isConnected) return;
+        preview.innerHTML = "";
+        const viewer = await GAME_MODELS.module.createCharacterViewer(preview, modelUrl);
+        if (revision !== viewRevision || selection !== GAME_MODELS.selection) viewer.dispose(); else GAME_MODELS.viewer = viewer;
+      } catch (err) { if (revision === viewRevision && selection === GAME_MODELS.selection) preview.innerHTML = `<p class="bad" style="padding:15px">3D preview unavailable: ${esc(err.message)}</p><img style="height:70%;max-width:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; }
+    } else preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`;
+    $("#model-assign").onclick = async e => {
+      const status = $("#model-result"); e.currentTarget.disabled = true; status.textContent = "Building replacement…";
+      try {
+        let job = await api("/api/jobs", { tool: "characters", input: { op: "use", character: model.slug, game_id: gid, slot: $("#model-slot").value, launch: false }, require_os: "linux" });
+        while (/queued|running/.test(job.state)) { await new Promise(r => setTimeout(r, 1200)); job = await api("/api/jobs/" + job.id); if (job.progress?.msg) status.textContent = job.progress.msg; }
+        if (job.state !== "succeeded") throw new Error(job.error || job.state);
+        const result = job.output?.result || {};
+        status.textContent = result.mod ? `Built ${result.mod}. Select it in this game's right-click Play menu.` : (result.message || "No native replacement writer is available for this model and game yet.");
+      } catch (err) { status.textContent = `Replacement failed: ${err.message}`; }
+      finally { e.currentTarget.disabled = false; }
+    };
+  };
+  page.querySelector("[data-model]")?.click();
+};
 
 
 // ---------------- loading screen (three.js particle ribbon, logo-shaped progress bar, console ticker) ----------------
@@ -1946,7 +2019,7 @@ document.addEventListener("contextmenu", async e => {
   const tile = (slug, name, img, mod = "", targetSlot = "") => `<label title="${esc(name)}"><input type="radio" name="gmc" value="${esc(slug)}" data-disc="${esc(mod)}" data-character-slot="${esc(targetSlot)}" ${selectedChar?.slug === slug || (!slug && !b.disc) ? "checked" : ""}>${img ? `<img loading="lazy" alt="" src="${img}?${tq()}">` : `<span class="nf">🎮</span>`}${esc(name)}</label>`;
   const characterNote = (name, targetSlot) => targetSlot && targetSlot !== "player"
     ? `${name} selected: choose ${targetSlot} on the game's character selection screen.` : `${name} selected: every Play of this game uses them.`;
-  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4>
+  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><button class="act" data-models type="button" style="width:100%;margin-bottom:8px">Models · view, assign, export</button>
     <div class="gms"><b>Play as (saved: every Play uses it)</b>
       <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(ch.slug, ch.name, ch.preview_url, readyMod(ch), readyTarget(ch)?.slot)).join("")}</div>
       ${other.length ? `<label><select id="gmbuild"><option value="">+ another character for this game…</option>${other.map(ch => `<option value="${esc(ch.slug)}">${esc(ch.name)}${ch.source?.game_title ? " · " + esc(ch.source.game_title) : ""}</option>`).join("")}</select></label>` : ""}
@@ -2010,7 +2083,8 @@ document.addEventListener("contextmenu", async e => {
       button.disabled = false; status.textContent = `Could not queue extraction: ${err.message}`;
     }
   };
-  el.onclick = ev => { const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");
+  el.onclick = ev => { if (ev.target.closest("[data-models]")) { el.classList.remove("on"); show("GameModels", gid, c.dataset.title); return; }
+    const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");
     const go = g.dataset.go; play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined); };
 });
 document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $("#gmenu")?.classList.remove("on"); });
