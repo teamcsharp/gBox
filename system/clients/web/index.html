@@ -316,28 +316,31 @@ if (!tok) $("#tok").style.display = "";                    // only a plain brows
 
 // ---- header tray: every running session as a clickable icon (yours bright, agents' dimmed) + a bell for notifications ----
 const TRAY = { open: false, notes: [] };
-// where a session runs: on this PC (native window) or remote on the Spark (streamed) - monochrome line icons
+// where a session runs relative to this desktop, including the other Windows PC
 const ICON_LOCAL = '<svg class="where" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><title>Local: running on this PC</title><rect x="2" y="4" width="20" height="13" rx="1"/><path d="M8 21h8M12 17v4"/></svg>';
-const ICON_REMOTE = '<svg class="where" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><title>Remote: streamed from the Spark</title><path d="M17.5 19H8a5 5 0 1 1 .9-9.9A6 6 0 0 1 20 11a4 4 0 0 1-2.5 8z"/></svg>';
+const ICON_REMOTE = '<svg class="where" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><title>Remote: running on another computer</title><path d="M17.5 19H8a5 5 0 1 1 .9-9.9A6 6 0 0 1 20 11a4 4 0 0 1-2.5 8z"/></svg>';
+const sessionWorkerName = s => s.detail?.worker_name || TRAY.names?.[s.session_id.split("-")[0]] || "";
+const sessionIsLocal = s => !!window.GBOX_LOCAL?.worker && sessionWorkerName(s) === window.GBOX_LOCAL.worker;
 async function trayTick() {
   if (!tok) return;
   try {
     const [ss, labels, notes, ws] = await Promise.all([api("/api/sessions"), api("/api/session_labels").catch(() => ({})), api("/api/notify").catch(() => []),
                                                        api("/api/workers").catch(() => [])]);
-    TRAY.ws = ws; TRAY.os = Object.fromEntries((ws || []).map(w => [w.id, w.os])); TRAY.labels = labels;
+    TRAY.ws = ws; TRAY.os = Object.fromEntries((ws || []).map(w => [w.id, w.os]));
+    TRAY.names = Object.fromEntries((ws || []).map(w => [w.id, w.name])); TRAY.labels = labels;
     const online = new Set((ws || []).filter(w => w.online).map(w => w.id));
     const run = ss.filter(x => x.state === "running" && (!ws?.length || online.has(x.session_id.split("-")[0])));   // stale ones (worker restarted) are gone
     TRAY.notes = notes;
     const unread = notes.filter(n => !n.read).length, cur = (window.active || {}).sid;
     const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent";
       return `<button class="tchip${agent ? " agent" : ""}${x.session_id === cur ? " cur" : ""}" data-sid="${esc(x.session_id)}"
-        title="${esc((l.label ? l.label + " · " : "") + (x.title || "") + (agent ? " (an agent's test session)" : "") + " · " + x.session_id)}">
+        title="${esc((l.label ? l.label + " · " : "") + (x.title || "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + " · " + x.session_id)}">
         <img alt="" src="/api/sessions/${encodeURIComponent(x.session_id)}/frame.jpg?${tq()}&t=${Math.floor(Date.now() / 15000)}" onload="this.style.visibility='visible'" onerror="this.style.visibility='hidden'">
-        ${TRAY.os?.[x.session_id.split("-")[0]] === "linux" ? ICON_REMOTE : ICON_LOCAL}
+        ${sessionIsLocal(x) ? ICON_LOCAL : ICON_REMOTE}
         <span>${esc((l.label || x.title || "game").replace(/\s*\(.*$/, "").slice(0, 14))}</span>${agent ? '<i>agent</i>' : ""}</button>`; };
     run.sort((a, b) => ((labels[a.session_id] || {}).owner === "agent") - ((labels[b.session_id] || {}).owner === "agent"));
     const signature = JSON.stringify(run.map(x => [x.session_id, x.title, labels[x.session_id]?.label, labels[x.session_id]?.owner,
-      x.session_id === cur, TRAY.os?.[x.session_id.split("-")[0]]]));
+      x.session_id === cur, sessionWorkerName(x), sessionIsLocal(x)]));
     const tray = $("#tray"), frameKey = Math.floor(Date.now() / 15000);
     if (TRAY.signature !== signature) {
       tray.innerHTML = run.map(chip).join("") +
