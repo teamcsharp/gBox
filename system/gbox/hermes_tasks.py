@@ -47,7 +47,7 @@ def _session(db: sqlite3.Connection, job_id: str, started: float | None):
     # An unsuccessful scheduler claim has no Hermes conversation. A real run
     # creates a session within seconds of its execution start.
     rows = db.execute(
-        "SELECT id, started_at, model, input_tokens, output_tokens FROM sessions "
+        "SELECT * FROM sessions "
         "WHERE source='cron' AND id LIKE ? ORDER BY started_at DESC LIMIT 10",
         (f"cron_{job_id}_%",),
     ).fetchall()
@@ -69,6 +69,27 @@ def _last_action(db: sqlite3.Connection, session_id: str) -> str:
     return "Hermes is using a tool" if row["tool_calls"] else "Hermes is working"
 
 
+def _owned_requests(db: sqlite3.Connection, session_id: str) -> list[str]:
+    """Progress replies and jobs claim work; merely reading a ticket does not."""
+    owned = set()
+    rows = db.execute("SELECT tool_calls FROM messages WHERE session_id=? AND role='assistant' "
+                      "AND tool_calls IS NOT NULL ORDER BY id", (session_id,)).fetchall()
+    for row in rows:
+        for call in _structured_calls(row['tool_calls']):
+            if not call['action'].endswith(('reply_request', 'set_request_status', 'start_job')):
+                continue
+            args = call['input']
+            if not isinstance(args, dict):
+                continue
+            for values in (args, args.get('inputs') or {}):
+                if not isinstance(values, dict):
+                    continue
+                rid = values.get('request_id') or values.get('parent_request_id')
+                if isinstance(rid, str) and rid:
+                    owned.add(rid)
+    return sorted(owned)
+
+
 def list_runs(limit: int = 8) -> list[dict]:
     """Return actual Hermes agent runs, omitting scheduler claims that never started."""
     home = _home()
@@ -82,7 +103,8 @@ def list_runs(limit: int = 8) -> list[dict]:
         with db:
             rows = db.execute(
                 "SELECT id,job_id,status,started_at,finished_at,error FROM executions "
-                "WHERE started_at IS NOT NULL ORDER BY started_at DESC LIMIT ?", (max(1, min(limit, 20)),),
+                "WHERE started_at IS NOT NULL ORDER BY CASE WHEN status='running' "
+                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(1, min(limit, 20)),),
             ).fetchall()
         names = _jobs(home)
         out = []
@@ -92,8 +114,11 @@ def list_runs(limit: int = 8) -> list[dict]:
             out.append({"id": r["id"], "job_id": r["job_id"], "name": names.get(r["job_id"], r["job_id"]),
                         "state": r["status"], "started": started, "finished": _stamp(r["finished_at"]),
                         "model": session["model"] if session else None,
+                        "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                         "tokens_in": session["input_tokens"] if session else 0,
                         "tokens_out": session["output_tokens"] if session else 0,
+                        "request_ids": _owned_requests(state, session['id'])
+                                       if session and r['status'] in ('claimed', 'running') else [],
                         "progress": _last_action(state, session["id"]) if session else "Hermes is starting",
                         "error": r["error"]})
         db.close()
@@ -191,6 +216,7 @@ def get_run(run_id: str) -> dict | None:
         return {"id": run_id, "job_id": r["job_id"], "name": _jobs(home).get(r["job_id"], r["job_id"]),
                 "state": r["status"], "started": started, "finished": _stamp(r["finished_at"]),
                 "session_id": session["id"] if session else None, "model": session["model"] if session else None,
+                "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                 "tokens_in": session["input_tokens"] if session else 0,
                 "tokens_out": session["output_tokens"] if session else 0,
                 "output": "\n\n".join(lines)[-70000:] or "Hermes has not emitted output yet."}
@@ -208,6 +234,16 @@ def get_run(run_id: str) -> dict | None:
         return None
     run["steps"], run["request_id"] = [], None
     if not run["session_id"]:
+        # Script-only maintenance runs have no LLM session. Their report is the
+        # durable progress stream, identified by the job's explicit prompt.
+        try:
+            jobs = json.loads((_home() / 'cron/jobs.json').read_text()).get('jobs', [])
+            job = next((j for j in jobs if j.get('id') == run['job_id']), {})
+            match = re.search(r'\brequest_id=([0-9a-f]{16})\b', job.get('prompt') or '')
+            if match:
+                run['request_id'] = match[1]
+        except (OSError, ValueError):
+            pass
         return run
     try:
         state = _db(_home() / "state.db")

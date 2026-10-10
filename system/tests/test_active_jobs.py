@@ -36,3 +36,22 @@ def test_unrunnable_queued_jobs_leave_active_queue(cfg):
     assert [j["id"] for j in active] == ["recent-worker"]
     assert "session ended" in store.get("job", "old-session")["error"]
     assert "worker" in store.get("job", "gone-worker")["error"]
+
+
+def test_stalled_snapshot_fails_without_retiring_live_capture_or_emulation(cfg):
+    app = create_app(cfg)
+    client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    store = app.state.store
+    now = time.time()
+    for jid, tool, age in [('stalled', 'get_frame', 180), ('fresh', 'get_frame', 5),
+                            ('launch', 'launch_game', 180), ('state', 'session_op', 180)]:
+        store.put('job', jid, {'id': jid, 'tool': tool, 'state': 'running', 'worker_id': 'worker',
+                               'created': now - 200, 'started': now - age, 'input': {}})
+    store.put('session', 'game', {'session_id': 'game', 'state': 'running', 'detail': {'pid': 123}})
+    assert {j['id'] for j in client.get('/api/jobs?state=running').json()} == {'fresh', 'launch', 'state'}
+    failed = store.get('job', 'stalled')
+    assert failed['state'] == 'failed' and 'no screenshot' in failed['error'] and failed['cancel']
+    assert store.get('session', 'game')['detail']['pid'] == 123
+    late = client.post('/api/workers/worker/result', json={'job_id': 'stalled', 'ok': True, 'output': {}})
+    assert late.status_code == 409
+    assert store.get('job', 'stalled')['state'] == 'failed'

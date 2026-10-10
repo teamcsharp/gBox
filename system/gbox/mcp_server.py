@@ -24,6 +24,8 @@ def obj(props, req=()):
 
 
 CONVENIENCE = {
+    "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
+                   obj({"include_finished": B})),
     "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true.",
                       obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
@@ -120,6 +122,13 @@ def build(base_url: str, token: str) -> Server:
                 "choices": [{"question": e["question"], "options": e["options"]} for e in ev if e["type"] == "choices"]}
 
     async def convenience(name, a):
+        if name == "list_tasks":
+            snapshot = await get('/api/tasks')
+            hermes = snapshot.get('hermes', [])
+            if not a.get('include_finished'):
+                hermes = [r for r in hermes if r.get('state') in ('claimed', 'running')]
+            return {'jobs': snapshot.get('jobs', []), 'hermes': hermes,
+                    'completion_note': 'Hermes run completion is separate from verified inbox completion.'}
         if name == "list_requests":
             rows = await get("/api/requests", status=a.get("status", "open,in_progress"), source=a.get("source", ""))
             if not a.get("include_recurring"):

@@ -1260,6 +1260,8 @@ def create_app(config: Config) -> FastAPI:
 
     def retire_unrunnable_jobs():
         """Keep dead sessions and long-gone workers out of the visible active queue."""
+        from .job_maintenance import retire_stalled_snapshots
+        retire_stalled_snapshots(store)
         now = time.time()
         with store.lock:
             available = {key for w in workers() if w["online"] for key in (w["id"], w["name"])}
@@ -2006,7 +2008,15 @@ def create_app(config: Config) -> FastAPI:
     def tasks_hermes_run(run_id: str, actor=Depends(auth)):
         """Live Hermes turn and tool output for an expandable Tasks entry."""
         from . import hermes_tasks
-        return hermes_tasks.get_run(run_id) or _404()
+        run = hermes_tasks.get_run(run_id) or _404()
+        if not run.get('session_id') and run.get('request_id'):
+            report = store.get('request', run['request_id']) or {}
+            messages = [m for m in report.get('messages', [])
+                        if (m.get('task_step') or {}).get('action') == 'activate Hermes bridge safely']
+            run['steps'] = [m['task_step'] for m in messages]
+            if messages:
+                run['output'] = '\n\n'.join(m.get('text', '') for m in messages)
+        return run
 
     class TaskKill(BaseModel):
         worker_id: str

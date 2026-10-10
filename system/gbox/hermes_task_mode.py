@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import threading
 import time
 
@@ -21,16 +23,19 @@ def _cli() -> Path:
     return Path.home() / ".local" / "bin" / "hermes"
 
 
-def _job() -> dict | None:
+def _jobs() -> list[dict]:
     try:
         data = json.loads((_home() / "cron" / "jobs.json").read_text(encoding="utf-8"))
-        return next((j for j in data.get("jobs", []) if j.get("name") == NAME), None)
+        return data.get("jobs", [])
     except (OSError, ValueError, TypeError):
-        return None
+        return []
 
 
-def status() -> dict:
-    job = _job() or {}
+def _job() -> dict | None:
+    return next((j for j in _jobs() if j.get("name") == NAME), None)
+
+
+def _config() -> dict:
     try:
         import yaml
         try:
@@ -41,7 +46,45 @@ def status() -> dict:
         config = {}
     if not isinstance(config, dict):
         config = {}
-    model_config, agent_config = config.get('model') or {}, config.get('agent') or {}
+    return config
+
+
+def _active(job_id: str) -> bool:
+    """One-shots are disabled at dispatch, while their execution may still be running."""
+    path = _home() / 'cron' / 'executions.db'
+    if not path.is_file():
+        return False
+    try:
+        db = sqlite3.connect(f'file:{path.as_posix()}?mode=ro', uri=True, timeout=1)
+        try:
+            return db.execute("SELECT 1 FROM executions WHERE job_id=? AND status IN "
+                              "('claimed','running') LIMIT 1", (job_id,)).fetchone() is not None
+        finally:
+            db.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError('Cannot check Hermes executions safely; dispatch was deferred') from exc
+
+
+def _route_args(job: dict) -> list[str]:
+    # A job pin disables Hermes's fallback chain. A configured cron cloud route
+    # already overrides the interactive local model without disabling recovery.
+    cron = _config().get('cron') or {}
+    if cron.get('model') and cron.get('model_provider'):
+        return []
+    if job.get('model') and job.get('provider'):
+        return ['--model', job['model'], '--provider', job['provider']]
+    return []
+
+
+def _once() -> str:
+    # Hermes parses "1m" as an interval, even with --repeat 1. Its atomic
+    # re-arm command requires a genuine one-shot schedule.
+    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=1)).isoformat()
+
+
+def status() -> dict:
+    job, config = _job() or {}, _config()
+    model_config, agent_config, cron = (config.get(k) or {} for k in ('model', 'agent', 'cron'))
     last_status, last_error = job.get("last_status"), job.get("last_error")
     if job.get("id") and last_status == "ok":
         # Hermes's "ok" only means its process exited; it does not mean an inbox request was solved.
@@ -58,12 +101,15 @@ def status() -> dict:
         except (OSError, ValueError):
             pass
     return {"enabled": bool(job.get("enabled")), "available": _cli().is_file(),
-            "job_id": job.get("id"), "model": job.get("model") or model_config.get('default'),
-            "provider": job.get('provider') or model_config.get('provider'),
+            "job_id": job.get("id"), "model": job.get("model") or cron.get('model') or model_config.get('default'),
+            "provider": job.get('provider') or cron.get('model_provider') or model_config.get('provider'),
             "reasoning_effort": job.get('reasoning_effort') or agent_config.get('reasoning_effort'),
             "max_turns": agent_config.get('max_turns'),
             "fallback_providers": [{'provider': item.get('provider'), 'model': item.get('model')}
                                    for item in config.get('fallback_providers') or [] if isinstance(item, dict)],
+            "fallback_enabled": not any(job.get(k) for k in ('model', 'provider', 'base_url')),
+            "max_parallel_jobs": cron.get('max_parallel_jobs'),
+            "image_input_mode": agent_config.get('image_input_mode', 'auto'),
             "schedule": job.get("schedule_display"),
             "last_run_at": job.get("last_run_at"), "last_status": last_status,
             "last_error": last_error}
@@ -87,12 +133,16 @@ def _run(*args: str) -> None:
 def _kickoff(job: dict) -> None:
     # `hermes cron run` waits for the entire agent run, so it can time out the
     # checkbox API. Let the gateway launch a one-shot job on its next tick.
-    args = ['create', '1m', _PROMPT.read_text(encoding='utf-8'), '--name',
+    if job.get('id') and _active(job['id']):
+        return
+    if any((j.get('enabled') or _active(j['id'])) for j in _jobs()
+           if j.get('name', '').startswith(NAME + ' activation ')):
+        return
+    args = ['create', _once(), _PROMPT.read_text(encoding='utf-8'), '--name',
             NAME + ' activation ' + str(time.time_ns()), '--repeat', '1',
             '--workdir', str(_PROMPT.parents[2]), '--deliver', 'local',
             '--failure-deliver', 'local', '--reasoning-effort', 'max']
-    if job.get('model') and job.get('provider'):
-        args += ['--model', job['model'], '--provider', job['provider']]
+    args += _route_args(job)
     _run(*args)
 
 
@@ -140,13 +190,27 @@ def dispatch_request(request_id: str, number: int) -> str:
     """Queue a cloud investigation after the incident's immediate recovery finishes."""
     with _LOCK:
         name = f"gBox emulation investigation #{number}"
-        try:
-            jobs = json.loads((_home() / "cron/jobs.json").read_text()).get("jobs", [])
-        except (OSError, ValueError):
-            jobs = []
-        existing = next((j for j in jobs if j.get('name') == name), None)
+        jobs = _jobs()
+        existing = next((j for j in reversed(jobs) if j.get('name') == name
+                         or j.get('name', '').startswith(name + ' retry ')), None)
+        previous = None
         if existing:
-            return existing['id']
+            if (existing.get('enabled', True) or _active(existing['id'])
+                    or existing.get('last_status') != 'error'):
+                return existing['id']
+            if (existing.get('schedule') or {}).get('kind') == 'once':
+                # Hermes locks and resets the genuine one-shot occurrence itself.
+                args = ['edit', existing['id'], '--continuity']
+                if not _route_args(_job() or {}):
+                    args += ['--unpin']
+                _run(*args)
+                _run('resume', existing['id'], '--run-now')
+                return existing['id']
+            # Hermes cannot re-arm an exhausted legacy interval, or convert its
+            # terminal schedule through edit. Keep that history and create one
+            # identifiable replacement occurrence for the same report.
+            previous = existing['id']
+            name += ' retry ' + previous
         prompt = (f"Investigate and resolve gBox emulation report #{number}, request_id={request_id}. "
                   "Your first substantive action is mcp_gbox_get_request for this request ID. "
                   "If the report is already done, verify its completion reply and finish without reopening it. "
@@ -156,14 +220,24 @@ def dispatch_request(request_id: str, number: int) -> str:
                   "game; use only an idle worker for reproduction and enforce 2% audio. Record each attempt, "
                   "attach real screenshots and actual token metrics with the actual provider/model/system, "
                   "record solved_by implementation credit separately from its reviewer, and mark done only after independent "
-                  "verification. A moving frame after relaunch alone does not prove that the supplied moment "
+                  "verification. Before editing, inspect list_tasks and the report's latest replies to avoid "
+                  "duplicating an active investigation. Work on this report only, checkpoint each material "
+                  "attempt in its replies, and reserve the last turns for validation and an honest final result. "
+                  "Edit the canonical /home/ehm_eckx/gBox/system source with terminal, read_file and patch; "
+                  "execute_code is denied in unattended cron. Read at most 120 nearby source lines per call. "
+                  "Use .venv-linux-aarch64/bin/python for focused tests of the changed behavior. Once those pass, "
+                  "do not repeat unrelated baseline/headless test failures without a relevant new change. "
+                  "A moving frame after relaunch alone does not prove that the supplied moment "
                   "was restored or that the underlying fault was fixed.")
-        args = ['create', '1m', prompt, '--name', name, '--repeat', '1',
+        if previous:
+            prompt += (f" This resumes failed Hermes job {previous}. Read the report's previous replies "
+                       "and existing source before changing anything; preserve already-applied fixes. "
+                       "The old failed run remains available in Tasks for its evidence and token accounting.")
+        args = ['create', _once(), prompt, '--name', name, '--repeat', '1',
                 '--workdir', str(_PROMPT.parents[2]), '--deliver', 'local', '--failure-deliver', 'local',
                 '--reasoning-effort', 'max']
         inbox = _job() or {}
-        if inbox.get('model') and inbox.get('provider'):
-            args += ['--model', inbox['model'], '--provider', inbox['provider']]
+        args += _route_args(inbox)
         _run(*args)
         jobs = json.loads((_home() / 'cron/jobs.json').read_text()).get('jobs', [])
         job = next((j for j in jobs if j.get('name') == name), None)

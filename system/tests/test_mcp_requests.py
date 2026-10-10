@@ -23,6 +23,10 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
             return httpx.Response(200, json={"tools": []})
         if path == "/api/requests":
             return httpx.Response(200, json=[recurring, request])
+        if path == '/api/tasks':
+            return httpx.Response(200, json={'jobs': [{'id': 'worker-job', 'state': 'running'}], 'hermes': [
+                {'id': 'live-run', 'name': 'Investigation #42', 'state': 'running'},
+                {'id': 'old-run', 'state': 'completed'}]})
         if path == "/api/requests/req1":
             return httpx.Response(200, json=request)
         if path == "/api/artifacts/abc":
@@ -41,6 +45,11 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
             names = {t.name for t in (await client.list_tools()).tools}
             assert {"list_requests", "get_request", "read_request_artifact", "reply_request", "capture_request_screenshot",
                     "set_request_status", "record_request_metrics"} <= names
+            active = json.loads((await client.call_tool('list_tasks', {})).content[0].text)
+            assert active['hermes'] == [{'id': 'live-run', 'name': 'Investigation #42', 'state': 'running'}]
+            assert active['jobs'][0]['id'] == 'worker-job'
+            history = json.loads((await client.call_tool('list_tasks', {'include_finished': True})).content[0].text)
+            assert len(history['hermes']) == 2
             page = await client.call_tool("list_requests", {"status": "open", "limit": 1})
             assert json.loads(page.content[0].text)["items"][0]["number"] == 42
             all_rows = await client.call_tool("list_requests", {"include_recurring": True, "limit": 2})
