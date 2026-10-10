@@ -50,24 +50,55 @@ of polling. Repeated identical active jobs reuse their ID. Explicit offline or
 saturated targets fail before another job is queued. Agents continue independent
 source work rather than repeatedly consuming five-minute calls.
 
-Hermes's gBox MCP environment protects JAYBUILTFINALE using
-`GBOX_OPERATOR_WORKER`. Idle selection excludes that PC even when it owns no
+Hermes's gBox MCP environment protects the operator's selected PC using
+`GBOX_OPERATOR_WORKER` (currently i9-NUC; JAYBUILTFINALE is the test PC).
+Idle selection excludes that PC even when it owns no
 live game or has been idle while the operator reads. A test launch also preserves
 an existing game on the other PC. Windows agent jobs retain 2% audio enforcement.
 Workers register a heartbeat every ten seconds independently of occupied job
 slots. Running old worker processes require a safe refresh to load that change.
 
-At audit time i9-NUC was reachable on the network but its gBox worker was offline;
+Initially i9-NUC was reachable on the network but its gBox worker was offline;
 its administrative share rejected access and SSH/WinRM were unavailable. Pending
 live acceptance therefore remains visible rather than being claimed complete.
 Spark continues source analysis, focused tests and Git publication while that
-client is unavailable. The existing live emulator is preserved.
+client is unavailable. It subsequently reconnected and a real desktop capture
+passed and was attached to the report. The operator then selected i9-NUC as the
+protected PC. JAY's idle worker was refreshed without a local emulator running.
 
 ## Verification
 
-Thirty focused checks passed on Windows and Spark. They cover actual Git
+Thirty-two focused checks passed on Windows and Spark. They cover actual Git
 worktree reuse, failed-test publication refusal, a pushed commit before PR
 creation, durable model cooldowns and restoration, exclusion of quoted errors,
 pending MCP jobs and retry deduplication, operator-PC protection, and heartbeat
 recovery with all worker execution slots occupied. Existing FastAPI deprecation
 warnings remain unrelated to this change.
+
+## First real GitHub handoff
+
+Hermes OpenRouter `anthropic/claude-opus-5.5` completed source handoff job
+`306979feeae9`, execution `977b763d342f43ac9d0db47bade4d99b`. It reviewed the
+previous OoT skip patch, corrected unsafe button handling and unsupported memory
+assumptions, wrote focused tests, and published
+[draft PR #1](https://github.com/teamcsharp/gBox/pull/1), commit
+`74354d51b6cd543983282f6a846118ffe89caeeb`. Forty-two offline checks passed.
+Report #1119 remains in progress until the saved conversation moment is tested
+visually on the idle test PC.
+
+The first publication attempt exposed a workspace-relative state lookup. Hermes
+reused the existing record and completed publication. MCP now uses Python `-P`,
+canonical PYTHONPATH and an explicit shared GBOX_HERMES_DISPATCH_STATE so a task's
+working directory cannot shadow the MCP implementation or its state. That
+failure is also included in durable dispatch lessons.
+
+The task panel now includes cache reads and writes in total input, with their
+breakdown, actual API calls and separately labelled recorded/estimated cost.
+Hermes's canonical input counter excludes cached tokens; the former display
+understated total context usage. Subscription quota balance is not inferred from
+these counters.
+
+Repeated successful maintenance occurrences are collapsed to the latest one per
+job in the task list so they cannot hide completed cloud work. Expanded script
+runs show their actual saved stdout instead of a perpetual starting message.
+The updated visibility/output checks passed on both machines.

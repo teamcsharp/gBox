@@ -90,6 +90,26 @@ def _owned_requests(db: sqlite3.Connection, session_id: str) -> list[str]:
     return sorted(owned)
 
 
+def _usage(session) -> dict:
+    def value(key, default=0):
+        return session[key] if session and key in session.keys() and session[key] is not None else default
+    # Hermes CanonicalUsage.input_tokens excludes cache reads and writes.
+    # Its prompt_tokens property is the sum of all three input categories.
+    detail = {k: value(k) for k in ('input_tokens', 'cache_read_tokens', 'cache_write_tokens',
+                                  'reasoning_tokens', 'api_call_count')}
+    detail.update({k: value(k, None) for k in ('actual_cost_usd', 'estimated_cost_usd', 'cost_status')})
+    return {'tokens_in': sum(detail[k] for k in ('input_tokens', 'cache_read_tokens', 'cache_write_tokens')),
+            'tokens_out': value('output_tokens'), 'tokens_detail': detail}
+
+
+def _script_output(home, job_id, finished):
+    if not finished:
+        return ''
+    files = list((home / 'cron/output' / job_id).glob('*.md'))
+    nearest = min(files, key=lambda p: abs(p.stat().st_mtime - finished)) if files else None
+    return nearest.read_text(encoding='utf-8')[-70000:] if nearest and abs(nearest.stat().st_mtime - finished) < 120 else ''
+
+
 def list_runs(limit: int = 8) -> list[dict]:
     """Return actual Hermes agent runs, omitting scheduler claims that never started."""
     home = _home()
@@ -104,27 +124,32 @@ def list_runs(limit: int = 8) -> list[dict]:
             rows = db.execute(
                 "SELECT id,job_id,status,started_at,finished_at,error FROM executions "
                 "WHERE started_at IS NOT NULL ORDER BY CASE WHEN status='running' "
-                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(1, min(limit, 20)),),
+                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(40, min(limit, 20) * 10),),
             ).fetchall()
         names = _jobs(home)
-        out = []
+        out, terminal_scripts = [], set()
         for r in rows:
             started = _stamp(r["started_at"])
             session = _session(state, r["job_id"], started) if state else None
+            if not session and r['status'] not in ('claimed', 'running'):
+                if r['job_id'] in terminal_scripts:
+                    continue
+                terminal_scripts.add(r['job_id'])
             out.append({"id": r["id"], "job_id": r["job_id"], "name": names.get(r["job_id"], r["job_id"]),
                         "state": r["status"], "started": started, "finished": _stamp(r["finished_at"]),
                         "model": session["model"] if session else None,
                         "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
-                        "tokens_in": session["input_tokens"] if session else 0,
-                        "tokens_out": session["output_tokens"] if session else 0,
+                        **_usage(session),
                         "request_ids": _owned_requests(state, session['id'])
                                        if session and r['status'] in ('claimed', 'running') else [],
-                        "progress": _last_action(state, session["id"]) if session else "Hermes is starting",
+                        "progress": _last_action(state, session["id"]) if session else
+                                    ('Maintenance is running' if r['status'] in ('claimed', 'running') else
+                                     'Completed without inference' if r['status'] == 'completed' else 'Run failed before inference'),
                         "error": r["error"]})
         db.close()
         if state:
             state.close()
-        return out
+        return out[:max(1, min(limit, 20))]
     except (OSError, ValueError, sqlite3.Error):
         return []
 
@@ -211,14 +236,15 @@ def get_run(run_id: str) -> dict | None:
             state.close()
         elif state:
             state.close()
+        if not session:
+            lines.append(_script_output(home, r['job_id'], _stamp(r['finished_at'])))
         if r["error"]:
             lines.append("Error: " + r["error"])
         return {"id": run_id, "job_id": r["job_id"], "name": _jobs(home).get(r["job_id"], r["job_id"]),
                 "state": r["status"], "started": started, "finished": _stamp(r["finished_at"]),
                 "session_id": session["id"] if session else None, "model": session["model"] if session else None,
                 "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
-                "tokens_in": session["input_tokens"] if session else 0,
-                "tokens_out": session["output_tokens"] if session else 0,
+                **_usage(session),
                 "output": "\n\n".join(lines)[-70000:] or "Hermes has not emitted output yet."}
     except (OSError, ValueError, sqlite3.Error):
         return None

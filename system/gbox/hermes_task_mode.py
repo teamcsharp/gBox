@@ -102,6 +102,7 @@ def _workdir(request_id: str, number: int) -> str:
 
 
 def status() -> dict:
+    from . import hermes_delivery
     job, config = _job() or {}, _config()
     model_config, agent_config, cron = (config.get(k) or {} for k in ('model', 'agent', 'cron'))
     last_status, last_error = job.get("last_status"), job.get("last_error")
@@ -129,6 +130,8 @@ def status() -> dict:
             "fallback_enabled": not any(job.get(k) for k in ('model', 'provider', 'base_url')),
             "max_parallel_jobs": cron.get('max_parallel_jobs'),
             "image_input_mode": agent_config.get('image_input_mode', 'auto'),
+            "git_workspace_ready": (hermes_delivery.repository() / '.git').exists(),
+            "operator_worker": ((config.get('mcp_servers') or {}).get('gbox') or {}).get('env', {}).get('GBOX_OPERATOR_WORKER'),
             "schedule": job.get("schedule_display"),
             "last_run_at": job.get("last_run_at"), "last_status": last_status,
             "last_error": last_error}

@@ -1618,6 +1618,15 @@ async function evRequest(requestId, selectedSha = null, run = null) {
   $("#ev-steps").innerHTML = `<p class="mut">${esc(x.body || "No description")}</p>${stateHtml}${runSteps}${steps || (!runSteps ? '<p class="mut">No task attempts recorded yet.</p>' : "")}`;
   $("#task-evidence").classList.add("on");
 }
+function tkTokenSummary(run) {
+  const d = run.tokens_detail || {}, n = x => Number(x || 0).toLocaleString();
+  let text = `${n(run.tokens_in)} in / ${n(run.tokens_out)} out`;
+  if (d.cache_read_tokens || d.cache_write_tokens) text += ` · ${n(d.cache_read_tokens)} cache read / ${n(d.cache_write_tokens)} cache write`;
+  if (d.api_call_count) text += ` · ${n(d.api_call_count)} API calls`;
+  if (d.actual_cost_usd != null) text += ` · $${Number(d.actual_cost_usd).toFixed(2)} recorded cost`;
+  else if (d.cost_status === "estimated" && d.estimated_cost_usd != null) text += ` · $${Number(d.estimated_cost_usd).toFixed(2)} estimated cost`;
+  return text;
+}
 async function evRun(runId) {
   const r = await gbox.api(`/api/tasks/hermes/${encodeURIComponent(runId)}`);
   if (!r.ok) return toast(r.error || "Could not load task report");
@@ -1627,7 +1636,7 @@ async function evRun(runId) {
   EV.images = [];
   $("#ev-image").hidden = true; $("#ev-empty").hidden = false; $("#ev-thumbs").innerHTML = "";
   $("#ev-title").textContent = run.name || "Hermes run";
-  $("#ev-status").textContent = `${run.state} · ${Number(run.tokens_in || 0).toLocaleString()} in / ${Number(run.tokens_out || 0).toLocaleString()} out`;
+  $("#ev-status").textContent = `${run.state} · ${tkTokenSummary(run)}`;
   $("#ev-steps").innerHTML = (run.steps || []).map((s, i) => `<details ${i === run.steps.length - 1 ? "open" : ""}><summary>${i + 1}. ${esc(s.action)} · try ${s.attempt} · ${esc(s.status)}</summary>
     <b>Input</b><pre>${esc(JSON.stringify(s.input, null, 2))}</pre><b>Result</b><pre>${esc(s.result)}</pre></details>`).join("") || '<p class="mut">No task attempts recorded yet.</p>';
   $("#task-evidence").classList.add("on");
@@ -1704,7 +1713,7 @@ async function tasksLoad() {
   $("#tk-body").innerHTML = `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
-        <div class="meta">${esc(run.model || "Hermes")} · ${Number(run.tokens_in || 0).toLocaleString()} in / ${Number(run.tokens_out || 0).toLocaleString()} out · started ${tkAge(run.started)} ago</div>
+        <div class="meta">${esc(run.provider || "")} ${esc(run.model || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
         <button class="act" data-hermes-evidence="${esc(run.id)}">View detailed report</button>
         <button class="act" data-hermes-visual="${esc(run.id)}">View 3D task stages</button>
         <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}</div>` +
@@ -1797,7 +1806,7 @@ async function tvPoll() {
     const run = r.data, stages = (run.output || "").split("\n").filter(s => /^[→←]/.test(s)).slice(-12);
     $("#tv-title").textContent = run.name || "Hermes run";
     $("#tv-state").textContent = run.state;
-    $("#tv-progress").textContent = `${Number(run.tokens_in || 0).toLocaleString()} input / ${Number(run.tokens_out || 0).toLocaleString()} output tokens · ${run.progress || ""}`;
+    $("#tv-progress").textContent = `${tkTokenSummary(run)} · ${run.progress || ""}`;
     $("#tv-stages").innerHTML = stages.map(s => `<div>${esc(s.slice(0, 250))}</div>`).join("") || '<span>No tool stages reported yet.</span>';
     TV.view?.update(NaN, stages, run.state === "running");
     return;

@@ -57,6 +57,18 @@ def test_running_hermes_run_exposes_expandable_live_tool_output(monkeypatch, tmp
                     '2026-10-09T18:49:48-06:00', None))
     # A stream of short terminal runs must not hide an older live investigation.
     assert hermes_tasks.list_runs(limit=1)[0]['id'] == run_id
+    with sqlite3.connect(home / 'state.db') as db:
+        db.execute('ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER')
+        db.execute('ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER')
+        db.execute('ALTER TABLE sessions ADD COLUMN estimated_cost_usd REAL')
+        db.execute('ALTER TABLE sessions ADD COLUMN cost_status TEXT')
+        db.execute('UPDATE sessions SET cache_read_tokens=900,cache_write_tokens=20,estimated_cost_usd=0.1,cost_status="estimated"')
+    actual = hermes_tasks.get_run(run_id)
+    assert actual['tokens_in'] == 1020 and actual['tokens_out'] == 12
+    assert actual['tokens_detail']['cache_read_tokens'] == 900
+    assert actual['tokens_detail']['estimated_cost_usd'] == 0.1
+    assert actual['tokens_detail']['actual_cost_usd'] is None
+    assert hermes_tasks.list_runs()[0]['tokens_in'] == 1020
 
 
 def test_missing_hermes_installation_has_no_tasks(monkeypatch, tmp_path):
@@ -78,3 +90,15 @@ def test_script_only_hermes_run_links_its_explicit_progress_report(monkeypatch, 
     monkeypatch.setenv('GBOX_HERMES_HOME', str(home))
     run = hermes_tasks.get_run('a' * 32)
     assert run['session_id'] is None and run['request_id'] == '0123456789abcdef'
+    import os
+    with sqlite3.connect(cron / 'executions.db') as db:
+        db.execute("UPDATE executions SET status='completed',finished_at='2026-10-10T13:01:00-06:00'")
+        db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)',
+                   ('b' * 32, 'script', 'completed', '2026-10-10T13:05:00-06:00', '2026-10-10T13:06:00-06:00', None))
+    output = cron / 'output/script/result.md';output.parent.mkdir(parents=True)
+    output.write_text('Actual script output: canonical MCP paths repaired')
+    finished = hermes_tasks._stamp('2026-10-10T13:06:00-06:00');os.utime(output, (finished, finished))
+    runs = hermes_tasks.list_runs()
+    assert len(runs) == 1 and runs[0]['id'] == 'b' * 32
+    assert runs[0]['progress'] == 'Completed without inference'
+    assert 'canonical MCP paths repaired' in hermes_tasks.get_run('b' * 32)['output']

@@ -20,12 +20,15 @@ ADVICE = {
     'scheduler_claim': 'Use a finite genuine one-shot dispatched by the gateway. Preserve the prior execution; do not run the same occurrence from two launchers.',
     'turn_budget': 'Resume the saved patch at validation/publication. Use high reasoning, focused tests and a 45-tool-call work budget, reserving the final 10 calls for handoff.',
     'no_publication': 'Use a tracked task workspace, validate its patch and publish a draft PR. A canonical-share edit alone is not GitHub delivery.',
+    'workspace_state': 'Use the canonical gBox MCP process with Python -P and the shared GBOX_HERMES_DISPATCH_STATE. Reuse the saved workspace record instead of creating another branch.',
     'other': 'Read the prior failure and saved patch; change the failed step before retrying and report an observable result.',
 }
 
 
 def classify(error: str) -> str:
     text = error.lower()
+    if 'filenotfounderror' in text and 'hermes-dispatch' in text:
+        return 'workspace_state'
     if 'usage limit' in text or 'quota' in text or 'insufficient credits' in text:
         return 'quota'
     if '429' in text or 'rate limit' in text:
@@ -59,7 +62,8 @@ def tool_error(content: str) -> str:
     if not isinstance(result, dict):
         return ''
     if isinstance(result.get('error'), str):
-        return result['error']
+        # Hermes sometimes wraps an MCP error's JSON as an error string.
+        return tool_error(result['error']) or result['error']
     if result.get('isError'):
         return ' '.join(c.get('text', '') for c in result.get('content', []) if isinstance(c, dict))
     return ''
@@ -147,8 +151,31 @@ def brief() -> str:
     return '\nLessons from actual previous runs: ' + ' '.join(ADVICE[c] for c in sorted(categories))
 
 
+def canonical_mcp(config):
+    mcp = (config.get('mcp_servers') or {}).get('gbox')
+    if not mcp or not Path(mcp.get('command', '')).name.lower().startswith('python'):
+        return None
+    args = list(mcp.get('args') or [])
+    if not any(args[i:i + 2] == ['-m', 'gbox'] for i in range(len(args))):
+        return None
+    if '-P' not in args:
+        args.insert(0, '-P')
+    env = dict(mcp.get('env') or {})
+    env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+               GBOX_HERMES_DISPATCH_STATE=str(hermes_delivery.state_dir()))
+    fixed = mcp | {'args': args, 'env': env}
+    return fixed if fixed != mcp else None
+
+
 def adjust_routes() -> dict:
     data, config = scan(), hermes_task_mode._config()
+    cli = str(hermes_task_mode._cli())
+    repaired = canonical_mcp(config)
+    if repaired:
+        result = subprocess.run([cli, 'config', 'set', 'mcp_servers.gbox', json.dumps(repaired)],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError('Hermes canonical MCP configuration update failed')
     cron = config.get('cron') or {}
     routes = data.get('routes') or [{'provider': x.get('provider'), 'model': x.get('model')}
                                   for x in config.get('fallback_providers', []) if x.get('provider') and x.get('model')]
@@ -164,7 +191,6 @@ def adjust_routes() -> dict:
     if primary not in eligible or (data.get('rotation_pending') and not busy):
         index = eligible.index(primary) if primary in eligible else -1
         chosen = eligible[(index + 1) % len(eligible)]
-    cli = str(hermes_task_mode._cli())
     changes = {'cron.model_provider': chosen['provider'], 'cron.model': chosen['model'],
                'fallback_providers': [r for r in eligible if r != chosen]}
     for key, value in changes.items():
@@ -181,4 +207,5 @@ def adjust_routes() -> dict:
         if chosen != primary or not busy:
             saved['rotation_pending'] = False
         path.write_text(json.dumps(saved, indent=2))
-    return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy}
+    return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
+            'repairs': ['canonical_mcp_workspace'] if repaired else []}

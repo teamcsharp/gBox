@@ -19,8 +19,9 @@ def idle_reason(chats: list[dict], tasks: dict, sessions: list[dict]) -> str:
     return ''
 
 
-def verify_activation(policy: dict, before: list[dict], after: list[dict]) -> None:
-    if not {'fallback_enabled', 'max_parallel_jobs', 'image_input_mode'} <= policy.keys():
+def verify_activation(policy: dict, before: list[dict], after: list[dict], expected_fields=None) -> None:
+    required = expected_fields or {'fallback_enabled', 'max_parallel_jobs', 'image_input_mode'}
+    if not set(required) <= policy.keys():
         raise RuntimeError('The updated Hermes bridge is not loaded.')
     pids = {s['session_id']: (s.get('detail') or {}).get('pid') for s in after if s.get('state') == 'running'}
     for s in before:
@@ -29,7 +30,8 @@ def verify_activation(policy: dict, before: list[dict], after: list[dict]) -> No
             raise RuntimeError('A previously running game has not reappeared with its original PID.')
 
 
-def activate(root: Path, request_id: str, verification_run: str, timeout: int = 3300) -> None:
+def activate(root: Path, request_id: str, verification_run: str, timeout: int = 3300, *,
+             expected_fields=None, verification_summary=None, complete=True) -> None:
     token = (root / 'gbox-data/api_token').read_text().strip()
     base = 'http://127.0.0.1:8765'
 
@@ -66,16 +68,18 @@ def activate(root: Path, request_id: str, verification_run: str, timeout: int = 
             last_error = None
             for _ in range(30):
                 try:
-                    verify_activation(api('/api/hermes/task-mode'), sessions, api('/api/sessions'))
+                    verify_activation(api('/api/hermes/task-mode'), sessions, api('/api/sessions'), expected_fields)
                     break
                 except (OSError, ValueError, RuntimeError) as exc:
                     last_error = type(exc).__name__
                     time.sleep(2)
             else:
                 raise RuntimeError('Backend activation verification failed: ' + str(last_error))
-            step('Updated Hermes bridge loaded. Cloud policy fields are visible and running Windows games retained their PIDs. '
+            step(verification_summary or ('Updated Hermes bridge loaded. Cloud policy fields are visible and running Windows games retained their PIDs. '
                  'The repair passed 19 focused tests and independent cloud screenshot/MCP verification. '
-                 'Investigations #1071, #1093 and #1081 retain their own acceptance checks.', 'finished')
+                 'Investigations #1071, #1093 and #1081 retain their own acceptance checks.'), 'finished')
+            if not complete:
+                return  # Deployment is a task step, not automatic acceptance.
             api('/api/requests/' + request_id + '/status', {'status': 'done',
                 'note': 'Hermes reliability repair verified and activated; screenshots, checks and actual cloud usage are attached.',
                 'solved_by': {'service': 'codex', 'model': 'GPT-6', 'system': 'Codex',

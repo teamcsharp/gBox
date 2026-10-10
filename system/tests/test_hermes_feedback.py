@@ -9,6 +9,19 @@ def test_only_actual_tool_errors_change_dispatch_feedback():
     assert not hermes_feedback.tool_error(json.dumps({'messages': [{'text': 'last worker timed out'}]}))
     wrapped = '<untrusted_tool_result>Warning text\n\n' + json.dumps({'error': 'MCP call timed out after 300s'}) + '\n</untrusted_tool_result>'
     assert hermes_feedback.classify(hermes_feedback.tool_error(wrapped)) == 'worker_timeout'
+    failure = {'error': json.dumps({'error': "FileNotFoundError: '/worktree/gbox-data/hermes-dispatch/ticket.json'"})}
+    assert hermes_feedback.classify(hermes_feedback.tool_error(json.dumps(failure))) == 'workspace_state'
+
+
+def test_mcp_repair_prevents_worktree_shadowing_without_changing_operator_choice(monkeypatch, tmp_path):
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
+    original = {'command': '/venv/bin/python', 'args': ['-m', 'gbox', 'mcp'],
+                'env': {'PYTHONPATH': '/worktree', 'GBOX_OPERATOR_WORKER': 'i9-NUC'}, 'tools': {'include': ['get_request']}}
+    fixed = hermes_feedback.canonical_mcp({'mcp_servers': {'gbox': original}})
+    assert fixed['args'][0] == '-P'
+    assert fixed['env']['GBOX_HERMES_DISPATCH_STATE'] == str(tmp_path)
+    assert fixed['env']['GBOX_OPERATOR_WORKER'] == 'i9-NUC' and fixed['tools'] == original['tools']
+    assert hermes_feedback.canonical_mcp({'mcp_servers': {'gbox': fixed}}) is None
 
 
 def test_failure_lessons_are_durable_idempotent_and_model_specific(monkeypatch, tmp_path):

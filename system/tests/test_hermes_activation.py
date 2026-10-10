@@ -22,3 +22,9 @@ def test_activation_requires_loaded_bridge_and_original_emulator_process():
         verify_activation(policy, before, [])
     with pytest.raises(RuntimeError, match='original PID'):
         verify_activation(policy, [{'session_id': 'windows-game', 'state': 'running'}], [])
+
+
+def test_later_activation_can_require_its_own_loaded_policy_fields():
+    with pytest.raises(RuntimeError, match='not loaded'):
+        verify_activation({'fallback_enabled': True}, [], [], {'git_workspace_ready'})
+    verify_activation({'git_workspace_ready': True}, [], [], {'git_workspace_ready'})

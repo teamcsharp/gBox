@@ -44,7 +44,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
         reason = t.unavailable_reason(config)
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    features = ["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else []
+    features = ['independent_heartbeat'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     if wid:
         info.id = wid
