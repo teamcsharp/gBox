@@ -688,7 +688,7 @@ window.taskVizCreate = canvas => {
   <img src="../../assets/brand/gbox-logo.svg" alt=""><span class="ttl">gBox</span><button id="tb-file" title="File">File ▾</button>
   <div class="tools">
     <button id="tb-capture" title="Capture the app, sketch on it and file a report to the inbox">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 4 4 4-4"/><rect x="2" y="7" width="20" height="14" rx="2"/><rect x="5" y="10" width="12" height="8" rx="1"/><path d="M19 12h.01M19 16h.01"/></svg>Capture</button>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>Capture</button>
     <button id="tb-pick" title="System eyedropper: pick any element (window, panel, button, row…) and report on it">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>Eyedropper</button>
     <button id="tb-rec" title="Record the app with playback audio (click to stop; right-click for gameplay only)">
@@ -699,7 +699,8 @@ window.taskVizCreate = canvas => {
     <div id="top-volume" title="Volume for gBox and its games"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9v6h4l5 4V5L7 9H3zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></svg><input type="range" min="0" max="100" value="30" aria-label="gBox and game volume"><output>30%</output></div>
     <button id="tb-tasks" title="Tasks: everything gBox is running on each machine, what it costs (RAM / CPU / GPU / VRAM), with a hard stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tasks</button>
-    <button id="tb-remote" title="Watch the other computer's desktop while it tests games and tasks">Other PC</button>
+    <button id="tb-remote" title="Watch the other computer's desktop while it tests games and tasks">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 4 4 4-4"/><rect x="2" y="7" width="20" height="14" rx="2"/><rect x="5" y="10" width="12" height="8" rx="1"/><path d="M19 12h.01M19 16h.01"/></svg>Other PC</button>
     <label id="tb-task-mode-label" title="Let Hermes work through unresolved inbox requests on the DGX Spark"><input id="tb-task-mode" type="checkbox" aria-label="Task mode"></label>
     <button id="tb-reinv" hidden title="Inventory: change the weapons and items of the character you're playing (Resident Evil), live">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 12h16"/></svg>Inventory</button>
