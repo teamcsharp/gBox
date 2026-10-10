@@ -184,7 +184,7 @@
     border-right-color:transparent; border-radius:50%; animation:bspin .75s linear infinite; }
   #busysteps .st b { display:block; } #busysteps .st .r { color:var(--mut); white-space:pre-wrap; word-break:break-word; max-height:4.5em; overflow:hidden; }
   @keyframes bin { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
-  #taskpanel { position:fixed; right:12px; top:84px; width:min(760px, calc(100vw - 24px)); max-height:calc(100vh - 120px); overflow-y:auto; overflow-x:hidden; z-index:58;
+  #taskpanel { position:fixed; right:12px; top:84px; width:min(760px, calc(100vw - 24px)); height:min(680px, calc(100vh - 120px)); max-height:calc(100vh - 120px); overflow-y:auto; overflow-x:hidden; z-index:58;
     display:none; background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 14px 44px #000b; font-size:12px; }
   #taskpanel.on { display:block; } #taskpanel .th { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line);
     position:sticky; top:0; background:var(--bg); } #taskpanel .th b { flex:1; font-size:14px; }
@@ -216,7 +216,7 @@
   #taskpanel .task-file { max-width:210px; padding:5px; border:1px solid var(--line); border-radius:5px; }
   #taskpanel .task-file img { display:block; max-width:190px; max-height:140px; object-fit:contain; margin-bottom:4px; }
   #taskpanel .task-file .av { width:190px; height:140px; } #taskpanel .task-file canvas { width:100%; height:100%; }
-  #taskviz { display:none; position:fixed; z-index:90; left:50%; top:50%; transform:translate(-50%,-50%);
+  #taskviz { display:none; position:fixed; z-index:1000 !important; left:50%; top:50%; transform:translate(-50%,-50%);
     width:min(680px,calc(100vw - 40px)); max-height:calc(100vh - 60px); overflow:auto; background:var(--bg);
     border:1px solid var(--line); border-radius:10px; box-shadow:0 16px 55px #000c; }
   #taskviz.on { display:block; } #taskviz .head { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); }
@@ -3771,7 +3771,7 @@ statusRight(); setInterval(statusRight, 5000);
 window.onFloatingMove = () => {
   if (EMB.sid && !EMB.busy) { EMB.busy = true; embedTick().finally(() => EMB.busy = false); }
 };
-floating($("#taskpanel"), $("#taskpanel .th"), "tasks");
+floating($("#taskpanel"), $("#taskpanel .th"), "tasks2");
 floating($("#chatpanel"), $("#chathead"), "chat");
 floating($("#auditpanel"), $("#auditpanel .ah"), "audit");
 floating($("#live"), $("#live .hd"), "talk");
