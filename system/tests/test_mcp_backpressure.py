@@ -2,9 +2,16 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from mcp.client import Client
 from gbox import mcp_server
+
+
+@pytest.fixture(autouse=True)
+def isolate_machine_preferences(monkeypatch):
+    monkeypatch.delenv('GBOX_OPERATOR_WORKER', raising=False)
+    monkeypatch.delenv('GBOX_TEST_WORKER', raising=False)
 
 
 def test_mcp_returns_pending_job_and_deduplicates_a_retry(monkeypatch):
@@ -86,4 +93,24 @@ def test_idle_selection_never_uses_protected_pc_even_when_other_pc_is_offline(mo
         async with Client(mcp_server.build('http://fixture', 'fixture')) as client:
             result = await client.call_tool('launch_game', {'game_id': 'test', 'node': 'idle'})
             assert result.is_error and 'protected operator PC' in result.content[0].text
+    asyncio.run(check())
+
+
+def test_explicit_test_pc_choice_takes_precedence_over_recent_input_telemetry(monkeypatch):
+    monkeypatch.setenv('GBOX_OPERATOR_WORKER', 'i9-NUC')
+    monkeypatch.setenv('GBOX_TEST_WORKER', 'JAYBUILTFINALE')
+    def handler(req):
+        if req.url.path == '/api/registry': return httpx.Response(200, json={'tools': []})
+        if req.url.path == '/api/workers': return httpx.Response(200, json=[
+            {'id': 'operator', 'name': 'i9-NUC', 'os': 'windows', 'online': True, 'idle_seconds': 500, 'tools': ['get_frame']},
+            {'id': 'test', 'name': 'JAYBUILTFINALE', 'os': 'windows', 'online': True, 'idle_seconds': 0, 'tools': ['get_frame']}])
+        raise AssertionError(str(req.url))
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda *a, **kw: original(*a, **kw, transport=httpx.MockTransport(handler)))
+    async def check():
+        async with Client(mcp_server.build('http://fixture', 'fixture')) as client:
+            result = await client.call_tool('select_idle_worker', {'tool': 'get_frame'})
+            assert not result.is_error
+            body = json.loads(result.content[0].text)
+            assert body['id'] == 'test' and body['selection'] == 'configured test PC'
     asyncio.run(check())

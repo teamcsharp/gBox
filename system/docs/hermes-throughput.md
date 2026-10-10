@@ -65,6 +65,10 @@ Spark continues source analysis, focused tests and Git publication while that
 client is unavailable. It subsequently reconnected and a real desktop capture
 passed and was attached to the report. The operator then selected i9-NUC as the
 protected PC. JAY's idle worker was refreshed without a local emulator running.
+The operator's explicit test-PC assignment is stored in GBOX_TEST_WORKER.
+It takes precedence over recent-input telemetry, while offline/saturated checks
+and preservation of an existing game remain enforced. Unassigned selection
+still requires idle telemetry.
 
 ## Verification
 

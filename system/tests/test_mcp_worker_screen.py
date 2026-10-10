@@ -7,6 +7,8 @@ import pytest
 
 
 def test_hermes_can_select_other_pc_and_read_its_desktop(monkeypatch):
+    monkeypatch.delenv('GBOX_OPERATOR_WORKER', raising=False)
+    monkeypatch.delenv('GBOX_TEST_WORKER', raising=False)
     pytest.importorskip("mcp")
     from mcp.client import Client
     from gbox.mcp_server import build

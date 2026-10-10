@@ -120,19 +120,21 @@ def build(base_url: str, token: str) -> Server:
 
     async def select_background_worker(tool):
         protected = os.environ.get('GBOX_OPERATOR_WORKER')
+        assigned = os.environ.get('GBOX_TEST_WORKER')
         if not protected:
             return await get('/api/workers/idle', tool=tool)
         candidates = [w for w in await get('/api/workers') if w.get('online') and w.get('os') == 'windows'
                       and protected not in (w.get('id'), w.get('name')) and tool in w.get('tools', [])
-                      and w.get('idle_seconds') is not None and w['idle_seconds'] >= 60
+                      and ((assigned and assigned in (w.get('id'), w.get('name'))) or
+                           (not assigned and w.get('idle_seconds') is not None and w['idle_seconds'] >= 60))
                       and w.get('active_jobs', 0) < 4]
         if not candidates:
             raise RuntimeError('No idle test worker is available outside the protected operator PC. Continue source work.')
-        chosen = max(candidates, key=lambda w: w['idle_seconds'])
+        chosen = max(candidates, key=lambda w: w.get('idle_seconds') or 0)
         if tool == 'launch_game' and any((s.get('session_id') or '').startswith(chosen['id'] + '-')
                                         for s in await sessions()):
             raise RuntimeError('The test PC already has a live game; preserve it and continue source work.')
-        return chosen | {'operator_worker_id': protected, 'selection': 'protected operator PC excluded'}
+        return chosen | {'operator_worker_id': protected, 'selection': 'configured test PC' if assigned else 'protected operator PC excluded'}
 
     async def start_background(body):
         if body.get('require_worker') in ('idle', 'other'):
