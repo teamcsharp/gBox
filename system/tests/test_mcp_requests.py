@@ -54,6 +54,9 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
                 "text": "Verified frame", "task_step": {"action": "verify", "attempt": "1", "result": "visible", "status": "finished"}})
             await client.call_tool("record_request_metrics", {"request_id": "req1", "model": "test", "tokens_in": 10, "tokens_out": 2})
             await client.call_tool("record_request_metrics", {"request_id": "req1", "metrics": {"tokens_in": 3, "tokens_out": 1}})
+            await client.call_tool("record_request_metrics", {"request_id": "req1", "metrics": {},
+                "model": "test", "tokens_in": 4, "tokens_out": 2,
+                "tokens_detail": {"token_count_unavailable": 1}, "tools": {"chat_review": 1}})
             await client.call_tool("set_request_status", {"request_id": "req1", "status": "done"})
 
     asyncio.run(check())
@@ -65,5 +68,7 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
             "task_step": {"action": "verify", "attempt": "1", "result": "visible", "status": "finished"}}),
         ("/api/requests/req1/metrics", {"model": "test", "tokens_in": 10, "tokens_out": 2}),
         ("/api/requests/req1/metrics", {"tokens_in": 3, "tokens_out": 1}),
+        ("/api/requests/req1/metrics", {"model": "test", "tokens_in": 4, "tokens_out": 2,
+            "tokens_detail": {"token_count_unavailable": 1}, "tools": {"chat_review": 1}}),
         ("/api/requests/req1/status", {"status": "done", "note": ""}),
     ]

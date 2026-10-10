@@ -136,9 +136,11 @@ def build(base_url: str, token: str) -> Server:
             return await post(f"/api/requests/{a['request_id']}/status",
                               {"status": a["status"], "note": a.get("note", "")})
         if name == "record_request_metrics":
-            metrics = a.get("metrics") if isinstance(a.get("metrics"), dict) else a
+            metrics = {k: v for k, v in a.items() if k not in ("request_id", "metrics")}
+            if isinstance(a.get("metrics"), dict):
+                metrics.update(a["metrics"])
             return await post(f"/api/requests/{a['request_id']}/metrics",
-                              {k: v for k, v in metrics.items() if k != "request_id"})
+                              metrics)
         if name == "list_games":
             games = await get("/api/catalog/best", q=a["query"], limit=a.get("limit", 20))
             if a.get("platform"):
