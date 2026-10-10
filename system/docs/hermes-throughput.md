@@ -4,7 +4,7 @@ Tracking report: #1132 (`6d7a1986e8034411`), 2026-10-10.
 
 Cloud inference was running, but delivery was incomplete. The canonical Spark
 runtime is not a Git checkout. Completed agents edited it without publishing
-commits. The latest Kimi run consumed 509,687 input / 16,956 output tokens and
+commits. The audited Kimi run consumed 509,687 uncached input / 16,956 output tokens and
 150 calls; repeated 300-second calls to the offline i9 worker left its patch
 without tests or a GitHub handoff. A DeepSeek investigation used 124,085 output
 tokens before reaching the same limit. These are actual session records, not
@@ -87,7 +87,7 @@ previous OoT skip patch, corrected unsafe button handling and unsupported memory
 assumptions, wrote focused tests, and published
 [draft PR #1](https://github.com/teamcsharp/gBox/pull/1), commit
 `74354d51b6cd543983282f6a846118ffe89caeeb`. Forty-two offline checks passed.
-Report #1119 remains in progress until the saved conversation moment is tested
+Report #1119 remains unfinished until the saved conversation moment is tested
 visually on the idle test PC.
 
 The first publication attempt exposed a workspace-relative state lookup. Hermes
@@ -106,3 +106,27 @@ Repeated successful maintenance occurrences are collapsed to the latest one per
 job in the task list so they cannot hide completed cloud work. Expanded script
 runs show their actual saved stdout instead of a perpetual starting message.
 The updated visibility/output checks passed on both machines.
+
+## Further autonomous delivery
+
+DeepSeek finished the saved-slot source handoff for #1106 in
+[draft PR #2](https://github.com/teamcsharp/gBox/pull/2), commit
+`241023b7f9c9b6d226174f752841ffef53cdb3c8`, with nine focused checks passing.
+It remains in progress for deployment and exact saved-moment acceptance on JAY.
+
+The recurring inbox dispatcher subsequently used DeepSeek to investigate #1130
+and delivered [draft PR #3](https://github.com/teamcsharp/gBox/pull/3), commit
+`2adf113c02f53a6de17c4bbeb132bc2b8b4004c7`. Its endpoint checks passed; the
+agent also ran nineteen related checks. The patch reuses an in-flight capture
+report instead of stacking another save job. Live acceptance remains pending.
+Review must additionally check that separate issue descriptions and new
+screenshots are preserved when a save capture is still pending; the draft's
+early return currently discards those new inputs. This is a review finding,
+not a completed capture-system fix.
+
+All three are actual open draft PRs, verified through GitHub. The source fixes
+have not been merged by the dispatch repair. Full measured session usage,
+including cache reads/writes, is recorded once on the associated inbox tickets.
+Report #1132 is complete with implementation, patch, screenshot and usage
+attachments. Codex's unavailable session token count is explicitly marked
+unavailable rather than estimated.
