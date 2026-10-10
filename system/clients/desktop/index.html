@@ -2134,8 +2134,12 @@ async function embedTick() {
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => [...document.querySelectorAll("#gmenu.on")]
-      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height }; }))()`).catch(() => []) : [];
+    const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => [...document.querySelectorAll(
+      "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]")]
+      .filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" &&
+        +s.opacity !== 0 && s.pointerEvents !== "none"; })
+      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height }; })
+      .filter(r => r.w > 0 && r.h > 0))()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
     const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
       ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
