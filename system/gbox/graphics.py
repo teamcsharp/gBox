@@ -19,6 +19,26 @@ FIELDS = {
 }
 DEFAULT = {"res_scale": 100, "msaa": "auto", "aniso": 0, "upscaler": "bilinear", "sharpen": 50, "post_aa": "none", "vsync": True}
 
+# These are the controls gBox actually writes into each emulator's launch config.
+# A stored preference for one runtime must never be presented as an active
+# setting in another runtime.
+EMULATOR_FIELDS = {
+    "rpcs3": ("res_scale", "msaa", "aniso", "upscaler", "sharpen"),
+    "retroarch": ("upscaler", "post_aa", "vsync"),
+}
+
+
+def choices_for(emulator: str) -> dict:
+    return {key: FIELDS[key] for key in EMULATOR_FIELDS.get(emulator, ())}
+
+
+def note_for(emulator: str) -> str:
+    if emulator == "rpcs3":
+        return "RPCS3 settings are written to this game's config and apply on the next launch."
+    if emulator == "retroarch":
+        return "RetroArch shader, filtering and VSync settings apply on the next launch."
+    return f"gBox does not yet control {emulator or 'this emulator'} graphics settings. Configure them in the emulator."
+
 
 def best_for_gpu(vram_mb: int) -> dict:
     """A strong preset for the installed GPU (8 GB class: ~4K internal from 720p, 4x MSAA, 16x AF, FSR)."""

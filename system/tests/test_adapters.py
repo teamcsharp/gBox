@@ -110,6 +110,28 @@ def test_windows_dolphin_can_scroll_with_c_stick(monkeypatch):
                     {"key": "a", "down": True}]
 
 
+def test_graphics_panel_uses_active_emulator(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from gbox import graphics, tools
+    from gbox.registry import REGISTRY
+
+    monkeypatch.setattr(graphics, "gpu", lambda: {"name": "Test GPU", "vram_mb": 8192})
+    sid = "worker-session"
+    monkeypatch.setitem(tools.SESSIONS, sid, (SimpleNamespace(name="yuzu"), {"game_id": "switch-game"}))
+    ctx = Ctx(Config(data_dir=tmp_path))
+    run = REGISTRY["graphics"].fn
+    result = run(tools.GraphicsIn(game_id="switch-game", session_id=sid), ctx)["result"]
+    assert result["emulator"] == "yuzu" and result["choices"] == {} and result["prefs"] == {}
+    assert "RPCS3" not in result["notes"]
+    with pytest.raises(Unsupported, match="does not yet control yuzu"):
+        run(tools.GraphicsIn(game_id="switch-game", session_id=sid, op="set", prefs={"res_scale": 200}), ctx)
+
+    monkeypatch.setitem(tools.SESSIONS, sid, (SimpleNamespace(name="rpcs3"), {"game_id": "ps3-game"}))
+    result = run(tools.GraphicsIn(game_id="ps3-game", session_id=sid), ctx)["result"]
+    assert set(result["choices"]) == {"res_scale", "msaa", "aniso", "upscaler", "sharpen"}
+    assert "post_aa" not in result["choices"] and "vsync" not in result["choices"]
+
+
 def test_command_adapter_missing_exe():
     with pytest.raises(ToolUnavailable):
         adapters.CommandAdapter(EmulatorConfig(adapter="command", executable="definitely-not-here.exe")).launch_game("r")

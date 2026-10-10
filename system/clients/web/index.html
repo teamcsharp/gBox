@@ -1283,7 +1283,7 @@ async function examineRelaunch(sid) {                       // save state -> res
 const GFX_LABEL = { res_scale: "Internal resolution", msaa: "MSAA", aniso: "Anisotropic filtering", upscaler: "Upscaler",
                     sharpen: "Sharpening", post_aa: "Post anti-aliasing", vsync: "VSync" };
 async function gfxJob(el, op, prefs) {
-  const j = await runJob({ tool: "graphics", input: { game_id: el.dataset.gid, op, prefs: prefs || {} }, require_worker: el.dataset.sid.split("-")[0] });
+  const j = await runJob({ tool: "graphics", input: { game_id: el.dataset.gid, session_id: el.dataset.sid, op, prefs: prefs || {} }, require_worker: el.dataset.sid.split("-")[0] });
   if (j.state !== "succeeded") throw new Error(j.error || j.state);
   return j.output.result;
 }
@@ -1292,7 +1292,11 @@ async function gfxInit() {
   const label = (k, o) => k === "res_scale" ? (o > 100 ? `${o}% (${o / 100}× native)` : "100% (native)") : k === "aniso" ? (o ? o + "×" : "off")
     : k === "msaa" ? (o === "auto" ? "on (4×)" : "off") : k === "vsync" ? (o ? "on" : "off") : String(o);
   const draw = r => {
-    el.innerHTML = `<h4>Graphics <span class="mut">· ${esc(r.gpu.name)} (${Math.round(r.gpu.vram_mb / 1024)} GB)</span></h4>
+    if (!Object.keys(r.choices || {}).length) {
+      el.innerHTML = `<h4>Graphics <span class="mut">· ${esc(r.emulator || "emulator")}</span></h4><p class="mut">${esc(r.notes)}</p>`;
+      return;
+    }
+    el.innerHTML = `<h4>Graphics <span class="mut">· ${esc(r.emulator || "emulator")} · ${esc(r.gpu.name)} (${Math.round(r.gpu.vram_mb / 1024)} GB)</span></h4>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center;font-size:13px">
       ${Object.entries(r.choices).map(([k, opts]) => `<label for="gx_${k}">${GFX_LABEL[k] || k}</label>
         <select id="gx_${k}" data-k="${k}">${opts.map(o => `<option value='${JSON.stringify(o)}' ${JSON.stringify(o) === JSON.stringify(r.prefs[k]) ? "selected" : ""}>${esc(label(k, o))}</option>`).join("")}</select>`).join("")}

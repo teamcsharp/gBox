@@ -2144,6 +2144,7 @@ def rom_export(inp: RomExportIn, ctx: Ctx):
 
 class GraphicsIn(BaseModel):
     game_id: str
+    session_id: str = ""                  # prefer the emulator that is actually running
     op: str = "get"                        # get | set | best (strongest preset for this node's GPU)
     prefs: dict = {}
 
@@ -2154,19 +2155,37 @@ class GraphicsOut(BaseModel):
 @tool("graphics", "1.0", GraphicsIn, GraphicsOut, capabilities=["runtime"],
       side_effects=["writes data_dir/graphics.json (applied at the game's next launch)"])
 def graphics_tool(inp: GraphicsIn, ctx: Ctx):
-    """Per-game graphics settings on this node: internal resolution scale, MSAA, anisotropic filtering, FSR upscaling +
-    sharpening, post-process AA, vsync. Emulators read them at launch, so changes need a game restart."""
+    """Show and save only graphics controls that this game's active emulator actually consumes."""
     from . import graphics
+    if inp.session_id and inp.session_id in SESSIONS:
+        ad, running_game = SESSIONS[inp.session_id]
+        if running_game.get("game_id") != inp.game_id:
+            raise ValueError("graphics session does not match the selected game")
+    else:
+        r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
+        r.raise_for_status()
+        ad = adapters.for_game(r.json(), ctx.config)
+    emulator = ad.name
+    choices = graphics.choices_for(emulator)
     gp = graphics.gpu()
     if inp.op == "set":
+        if not choices:
+            raise Unsupported(graphics.note_for(emulator))
+        unsupported = set(inp.prefs) - set(choices)
+        if unsupported:
+            raise ValueError(f"{emulator} does not use graphics controls: {', '.join(sorted(unsupported))}")
         p = graphics.save(ctx.config, inp.game_id, inp.prefs)
     elif inp.op == "best":
-        p = graphics.save(ctx.config, inp.game_id, graphics.best_for_gpu(gp["vram_mb"]))
-    else:
+        if not choices:
+            raise Unsupported(graphics.note_for(emulator))
+        p = graphics.save(ctx.config, inp.game_id,
+                          {k: v for k, v in graphics.best_for_gpu(gp["vram_mb"]).items() if k in choices})
+    elif inp.op == "get":
         p = graphics.get(ctx.config, inp.game_id)
-    return {"result": {"prefs": p, "gpu": gp, "choices": graphics.FIELDS, "restart_needed": inp.op != "get",
-                       "notes": "PS3 (RPCS3): resolution, MSAA, AF, FSR/sharpening. RetroArch: post-AA shader (FXAA/advanced), "
-                                "FSR shader, vsync. Temporal AA isn't offered by these emulators."}}
+    else:
+        raise ValueError(f"unknown graphics operation {inp.op}")
+    return {"result": {"emulator": emulator, "prefs": {k: p[k] for k in choices}, "gpu": gp,
+                       "choices": choices, "restart_needed": inp.op != "get", "notes": graphics.note_for(emulator)}}
 
 
 class ModIn(BaseModel):
