@@ -492,13 +492,13 @@ async function show(t, ...args) {
 
 // The game's extracted models live here, separate from the boot/mod selector.
 // Added after the header tabs are rendered because this view is opened from a game card.
+const gameModelTile = m => `<button class="game-model-card" data-model="${esc(m.slug)}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
 tabs.GameModels = async (gid, title) => {
   const all = await api(`/api/characters?game_id=${encodeURIComponent(gid)}`);
   const models = all.filter(m => m.source?.game_id === gid);
   GAME_MODELS.models = models;
-  const tile = m => `<button class="game-model-card" data-model="${esc(m.slug)}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
   return `<div class="bar"><button class="act" id="models-back">← Library</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span></div>
-    <div class="game-models"><div class="game-model-list" id="game-model-list">${models.length ? models.map(tile).join("") : '<p class="mut">No extracted models for this game yet.</p>'}
+    <div class="game-models"><div class="game-model-list" id="game-model-list">${models.length ? models.map(gameModelTile).join("") : '<p class="mut">No extracted models for this game yet.</p>'}
       <button class="act" id="models-collect">Extract this game's models</button><div id="models-collect-status" class="mut"></div></div>
       <section><div id="game-model-preview" class="game-model-preview"><p class="mut" style="padding:15px">Select a model to inspect it.</p></div>
         <div id="game-model-detail" style="margin-top:12px"></div></section></div>`;
@@ -522,9 +522,18 @@ tabs.GameModels.after = (gid, title) => {
       }
       if (job.state !== "succeeded") throw new Error(job.error || job.state);
       const result = job.output?.result || {};
-      status.textContent = result.status === "unsupported" || result.status === "missing"
-        ? (result.message || "This game has no native model reader yet.")
-        : (result.message || `Extraction finished. Reopen Models to view the collection.`);
+      if (result.status === "unsupported" || result.status === "missing") {
+        status.textContent = result.message || "This game has no native model reader yet.";
+      } else {
+        const fresh = (await api(`/api/characters?game_id=${encodeURIComponent(gid)}`))
+          .filter(m => m.source?.game_id === gid);
+        models.splice(0, models.length, ...fresh);
+        page.querySelectorAll(".game-model-card").forEach(card => card.remove());
+        page.querySelector("p.mut")?.remove();
+        button.insertAdjacentHTML("beforebegin", fresh.map(gameModelTile).join(""));
+        const count = $("#view .bar .mut"); if (count) count.textContent = `${fresh.length} extracted`;
+        status.textContent = result.message || `${result.collected || 0} model(s) extracted. Select a model to inspect it.`;
+      }
     } catch (err) { status.textContent = `Extraction failed: ${err.message}`; }
     finally { button.disabled = false; }
   };
