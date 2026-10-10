@@ -278,7 +278,23 @@ def win_grab(pid: int) -> bytes:
     if not h:
         raise RuntimeError("the game window isn't open")
     r = wintypes.RECT()
-    ctypes.windll.user32.GetWindowRect(h, ctypes.byref(r))
+    user = ctypes.windll.user32
+    user.GetWindowRect(h, ctypes.byref(r))
+    # ImageGrab reads the compositor, not the emulator's back buffer. When a
+    # browser covers the game, an unguarded capture looks like that browser and
+    # a vision model can mistake it for gameplay. Check the visible window at
+    # several points inside the game before accepting the frame.
+    user.WindowFromPoint.argtypes = [wintypes.POINT]
+    user.WindowFromPoint.restype = wintypes.HWND
+    foreign = 0
+    for fx, fy in ((.25, .25), (.5, .25), (.75, .25), (.25, .5), (.5, .5), (.75, .5), (.25, .75), (.5, .75), (.75, .75)):
+        point = wintypes.POINT(round(r.left + (r.right - r.left) * fx), round(r.top + (r.bottom - r.top) * fy))
+        top = user.WindowFromPoint(point)
+        owner = wintypes.DWORD()
+        if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != pid:
+            foreign += 1
+    if foreign >= 3:
+        raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
     buf = io.BytesIO()
     ImageGrab.grab((r.left, r.top, r.right, r.bottom), all_screens=True).save(buf, "PNG")
     return buf.getvalue()
