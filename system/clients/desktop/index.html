@@ -1979,8 +1979,18 @@ function cardDragMsg(m) {                                    // from the webview
   if (m.ev === "carddrag") Object.assign(CARDDRAG, { c: { slug: m.slug, name: m.name }, t: Date.now(), end: 0 });
   else if (m.ev === "carddragend") CARDDRAG.end = Date.now();
 }
+async function syncNativePads() {
+  const slots = await gbox.padDevices().catch(() => []);
+  const wv = document.querySelector("#wv");
+  if (wv) wv.executeJavaScript(`window.GBOX_NATIVE_XINPUT = ${JSON.stringify(slots)};
+    if (typeof padStatus === "function") padStatus();
+    if (typeof cur !== "undefined" && cur === "Controllers") show("Controllers");`).catch(() => {});
+}
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
-  wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try { cardDragMsg(JSON.parse(e.message.slice(5))); } catch {} }); } }, 1000);
+  wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
+    const m = JSON.parse(e.message.slice(5));
+    if (m.ev === "padscan") syncNativePads(); else cardDragMsg(m);
+  } catch {} }); } }, 1000);
 gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameup" && CARDDRAG.c && Date.now() - CARDDRAG.t < 60000 && (!CARDDRAG.end || Date.now() - CARDDRAG.end < 1500)) {
     const card = CARDDRAG.c; CARDDRAG.c = null;

@@ -2065,6 +2065,13 @@ const xboxPad = gp => /xbox|xinput|vendor:\s*045e|045e[-:]/i.test(gp.id);
 const padKey = gp => `${gp.id}#${gp.index}`;
 const pads = () => [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(gp => gp && gp.connected !== false && !blockedPad(gp))
   .sort((a, b) => (xboxPad(a) ? 0 : a.mapping === "standard" ? 1 : 2) - (xboxPad(b) ? 0 : b.mapping === "standard" ? 1 : 2) || a.index - b.index);
+const nativeXboxSlots = () => Array.isArray(window.GBOX_NATIVE_XINPUT) ? window.GBOX_NATIVE_XINPUT : [];
+let nativePadScanAt = 0;
+function requestNativePadScan(force = false) {
+  if (!window.GBOX_LOCAL || (!force && Date.now() - nativePadScanAt < 3000)) return;
+  nativePadScanAt = Date.now();
+  console.log('GBOX:' + JSON.stringify({ ev: 'padscan' }));
+}
 let primaryPad = null;
 try { primaryPad = JSON.parse(localStorage.getItem("gbox_primary_pad") || "null"); } catch {}
 function padBase(gp) {
@@ -2098,8 +2105,8 @@ function padPickerHTML() {
     ${option("", "Automatic — prefer Xbox")}${option("none", active?.local ? "Forwarded input off" : "Off")}
     ${ps.map(gp => option(JSON.stringify({id:gp.id,index:gp.index}), gp.id + " · slot " + gp.index)).join("")}
     ${primaryPad?.id && !ps.some(gp => gp.id === primaryPad.id && gp.index === primaryPad.index) ? option(value, primaryPad.id + (selected ? " · reconnected" : " · disconnected")) : ""}</select></label>
-    <p class="mut" style="font-size:11px">${selected ? "Connected: " + esc(selected.id) : primaryPad === "none" ? "Controller forwarding is off." : primaryPad?.id ? "Reconnect " + esc(primaryPad.id) + " or choose another controller." : "Press a button on your Xbox controller to discover it."}<br>SpaceMouse and 3Dconnexion devices are always excluded.${active?.local ? "<br>This selects forwarded input. Native emulators also read their connected controllers directly." : ""}</p>
-    <button class="act" onclick="padStatus(); if (cur === 'Controllers') show('Controllers')">Refresh devices</button> <button class="act" onclick="show('Controllers')">Button mapping</button>`;
+    <p class="mut" style="font-size:11px">${selected ? "Connected: " + esc(selected.id) : primaryPad === "none" ? "Controller forwarding is off." : primaryPad?.id ? "Reconnect " + esc(primaryPad.id) + " or choose another controller." : nativeXboxSlots().length ? `Xbox controller connected on XInput slot ${nativeXboxSlots()[0]}. Press a button once to enable browser mapping.` : "Press a button on your Xbox controller to discover it."}<br>SpaceMouse and 3Dconnexion devices are always excluded.${active?.local ? "<br>This selects forwarded input. Native emulators also read their connected controllers directly." : ""}</p>
+    <button class="act" onclick="requestNativePadScan(true); padStatus(); if (cur === 'Controllers') show('Controllers')">Refresh devices</button> <button class="act" onclick="show('Controllers')">Button mapping</button>`;
 }
 function togglePadPicker() {
   const el = $("#padpicker"); if (!el) return;
@@ -2151,7 +2158,7 @@ addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controlle
 addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 function padStatus() {
   const el = $("#padstat"), gp = selectedPad();
-  if (el) { el.textContent = "🎮 " + (gp ? gp.id + " → Player 1" : primaryPad === "none" ? "Controller forwarding off" : primaryPad?.id ? primaryPad.id + " · disconnected" : "Connect Xbox controller") + " · Change…";
+  if (el) { el.textContent = "🎮 " + (gp ? gp.id + " → Player 1" : primaryPad === "none" ? "Controller forwarding off" : primaryPad?.id ? primaryPad.id + " · disconnected" : nativeXboxSlots().length ? `Xbox controller (XInput ${nativeXboxSlots()[0]}) connected` : "Connect Xbox controller") + " · Change…";
     el.title = "Choose the controller for Player 1"; }
   const picker = $("#padpicker"); if (picker && !picker.hidden) picker.innerHTML = padPickerHTML();
 }
@@ -2178,6 +2185,7 @@ function setPlayer(key, p) {
 function resetPad(key) { padCfg[key].map = { ...XBOX_DEFAULT }; savePads(); show("Controllers"); }
 function toggleStick(key) { padCfg[key].stick = !padCfg[key].stick; savePads(); show("Controllers"); }
 async function controllersView() {
+  requestNativePadScan();
   const ps = pads();
   timer = setInterval(() => { if (cur === "Controllers" && !remap) document.querySelectorAll("[data-live]").forEach(el => {
     const gp = pads().find(g => `${g.id}#${g.index}` === el.dataset.live); el.innerHTML = gp ? [...pressed(gp, cfgFor(gp))].map(b => `<span class="pill on">${b}</span>`).join(" ") || '<span class="mut">press buttons to test</span>' : ""; }); }, 100);
@@ -2193,7 +2201,8 @@ async function controllersView() {
       ${remap && remap.key === key ? `<p id="remapmsg">${remapPrompt()}</p>` : ""}
       <div data-live="${esc(key)}" style="min-height:24px"></div>
       <details><summary class="mut">Button map</summary><p>${mapping}</p></details></div>`;
-  }).join("") : `<p class="mut">No controller detected. Connect an Xbox (or any XInput/standard) controller and press a button — browsers only report a controller after it is used.</p>`;
+  }).join("") : nativeXboxSlots().length ? `<p class="mut">Xbox controller connected on XInput slot ${nativeXboxSlots().join(", ")}. Native emulators can use it now. Press a controller button once to make its browser mapping available here.</p>`
+    : `<p class="mut">No controller detected. Connect an Xbox (or any XInput/standard) controller and press a button — browsers only report a controller after it is used.</p>`;
   return `<h3>Controllers</h3><p class="mut">Controllers drive whichever game is open or in picture-in-picture${active ? `: <b>${esc(active.title)}</b>` : " (none right now)"}.
     Xbox layout works out of the box; mappings are saved on this computer.</p><div class="padrow">${padPickerHTML()}</div>` + body;
 }

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("gbox", {
   sparkAction: a => ipcRenderer.invoke("spark:action", a),
   winSetup: () => ipcRenderer.invoke("win:setup"),
   winWorker: op => ipcRenderer.invoke("win:worker", op),
+  padDevices: () => ipcRenderer.invoke("pad:devices"),
   taskSnapshot: () => ipcRenderer.invoke("task:snapshot"),
   cancel: id => ipcRenderer.invoke("task:cancel", id),
   openExternal: url => ipcRenderer.invoke("open:external", url),

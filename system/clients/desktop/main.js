@@ -260,6 +260,15 @@ ipcMain.handle("win:worker", (_e, op) => {
   return { running: !!worker };
 });
 
+ipcMain.handle("pad:devices", () => new Promise(resolve => {
+  if (process.platform !== "win32") return resolve([]);
+  execFile(venvPython(), ["-P", "-m", "gbox.gamepads"],
+    { windowsHide: true, timeout: 5000, env: { ...process.env, PYTHONPATH: settings().repoLocal } }, (error, stdout) => {
+    if (error) return resolve([]);
+    try { resolve(JSON.parse(stdout.trim())); } catch { resolve([]); }
+  });
+}));
+
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
 
 ipcMain.handle("report:clipboard-files", async () => {

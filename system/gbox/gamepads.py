@@ -1,11 +1,33 @@
 """Windows emulator gamepad discovery without 3Dconnexion navigation devices."""
 import os
+import json
 import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
 
 from .registry import ToolUnavailable
+
+
+def xinput_devices() -> list[int]:
+    """Connected Xbox/XInput slots, independent of browser gamepad activation."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    class Gamepad(ctypes.Structure):
+        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
+                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
+    class State(ctypes.Structure):
+        _fields_ = [("packet", ctypes.c_uint), ("gamepad", Gamepad)]
+    for name in ("xinput1_4", "xinput9_1_0"):
+        try:
+            dll = getattr(ctypes.windll, name)
+        except OSError:
+            continue
+        dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(State)]
+        dll.XInputGetState.restype = ctypes.c_uint
+        return [slot for slot in range(4) if dll.XInputGetState(slot, ctypes.byref(State())) == 0]
+    return []
 
 
 def retroarch_driver(executable: str) -> str:
@@ -75,3 +97,7 @@ def emulator_environment(source: dict[str, str]) -> dict[str, str]:
     env["SDL_GAMECONTROLLER_IGNORE_DEVICES"] = ",".join(filter(None, [
         env.get("SDL_GAMECONTROLLER_IGNORE_DEVICES", ""), *blocked]))
     return env
+
+
+if __name__ == "__main__":
+    print(json.dumps(xinput_devices()))
