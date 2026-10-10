@@ -2541,7 +2541,10 @@ def create_app(config: Config) -> FastAPI:
                     if current.get("state") != "succeeded":
                         return
                     try:
-                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id, "op": "export", "slot": slot},
+                        # the checkpoint job reports the slot the emulator ACTUALLY wrote; export that one
+                        saved_slot = (((current or {}).get("output") or {}).get("result") or {}).get("slot", slot)
+                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id,
+                                                     "op": "export", "slot": saved_slot},
                                                      parent_request_id=rid), actor)
                         with store.lock:
                             latest = store.get("request", rid) or {}
@@ -2680,8 +2683,10 @@ def create_app(config: Config) -> FastAPI:
                         add("This emulator cannot export a portable state; the local checkpoint remains available.",
                             "export game moment", "unsupported emulator", "unavailable")
                         return
+                    # the checkpoint job reports the slot the emulator ACTUALLY wrote; export exactly that file
+                    saved_slot = (((saved_job or {}).get("output") or {}).get("result") or {}).get("slot", slot)
                     exported = submit(JobRequest(tool="state_transfer", input={"session_id": f.session_id,
-                        "op": "export_saved", "slot": slot, "not_before": saved_job.get("started") or 0},
+                        "op": "export_saved", "slot": saved_slot, "not_before": saved_job.get("started") or 0},
                         parent_request_id=rid), "gbox-auto")
                     add(f"Exporting the exact saved checkpoint (job {exported.id}).", "export game moment",
                         exported.id, exported.state, state_export_job_id=exported.id)
@@ -2695,7 +2700,10 @@ def create_app(config: Config) -> FastAPI:
                     if not meta:
                         raise RuntimeError("checkpoint export did not upload its artifact")
                     att = {"sha256": meta["sha256"], "name": meta["name"], "type": meta["media_type"], "size": meta["size"]}
-                    actual_slot = int(info["file"].rsplit(".state", 1)[-1]) if ".state" in info.get("file", "") and info["file"].rsplit(".state", 1)[-1].isdigit() else slot
+                    actual_slot = (info.get("slot")
+                                   or (int(info["file"].rsplit(".state", 1)[-1])
+                                       if ".state" in info.get("file", "") and info["file"].rsplit(".state", 1)[-1].isdigit()
+                                       else slot))
                     add(f"Portable save state attached: {info['file']} ({info['bytes']} bytes).",
                         "export game moment", "checkpoint attached", "finished", att,
                         state_artifact=meta["sha256"], state_file=info["file"], state_slot=actual_slot)

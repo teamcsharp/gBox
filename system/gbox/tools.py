@@ -2885,18 +2885,25 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
     else:
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
 
-    def newest():
+    def newest(slot=None):
         fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
         if kind == 'retroarch' and g.get('_rom_path'):
             prefix = Path(g['_rom_path']).stem + '.'
             fs = [f for f in fs if f.name.startswith(prefix) and re.search(r'\.state\d*$', f.name)]
+        if kind == 'retroarch' and slot is not None:
+            # save_state now reports the slot the emulator ACTUALLY wrote: prefer exactly that file,
+            # so a portable attachment never claims a slot the disk disagrees with
+            exact = [f for f in fs if f.name.endswith(f'.state{slot}')]
+            if exact:
+                return max(exact, key=lambda f: f.stat().st_mtime)
         return max(fs, key=lambda f: f.stat().st_mtime) if fs else None
 
     def save_and_wait():
         t0 = time.time()
-        ad.save_state(inp.slot) if kind == "retroarch" else ad.save_state()
+        res = ad.save_state(inp.slot) if kind == "retroarch" else ad.save_state()
+        want = res.get("slot") if isinstance(res, dict) else None
         for _ in range(100):                                   # RetroArch writes the file asynchronously
-            f = newest()
+            f = newest(want if kind == 'retroarch' else None)
             if f and f.stat().st_mtime >= t0 - 1 and f.stat().st_size > 0:
                 time.sleep(0.5)
                 if kind == 'retroarch':
@@ -2908,13 +2915,15 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
             time.sleep(0.2)
         raise RuntimeError("the emulator didn't write a save state")
     if inp.op in ("export", "export_saved"):
-        f = save_and_wait() if inp.op == "export" else newest()
+        f = save_and_wait() if inp.op == "export" else newest(inp.slot if kind == 'retroarch' else None)
         if not f or (inp.op == "export_saved" and f.stat().st_mtime < inp.not_before - 1):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
         ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"))
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
-        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name}}
+        m = re.search(r'\.state(\d+)$', f.name)
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name,
+                           "slot": int(m.group(1)) if m else None}}   # the attachment names its actual slot
     if inp.op == "import":
         r = httpx.get(f"{ctx.server}/api/artifacts/{inp.artifact}", headers=ctx.headers, timeout=120)
         r.raise_for_status()
