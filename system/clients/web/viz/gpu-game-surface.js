@@ -104,7 +104,7 @@
       let incoming;
       try {
         const opening = env.navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
-          chromeMediaSource: "desktop", chromeMediaSourceId: st.sourceId, minFrameRate: 30, maxFrameRate: 60 } } });
+          chromeMediaSource: "desktop", chromeMediaSourceId: st.sourceId, minFrameRate: 60, maxFrameRate: 60 } } });
         // A canceled/timed-out request may resolve later; stop those tracks too.
         opening.then(s => { if (revision !== generation) s.getTracks().forEach(t => t.stop()); }, () => {});
         incoming = await deadline(opening, "source");
@@ -179,7 +179,7 @@
     await peer.setRemoteDescription(description);
     const sender = peer.getSenders()[0], params = sender.getParameters();
     if (params.encodings?.length) {
-      for (const encoding of params.encodings) { encoding.maxBitrate = 16000000; encoding.maxFramerate = 60; }
+      for (const encoding of params.encodings) { encoding.maxBitrate = 16000000; encoding.maxFramerate = 60; encoding.priority = "high"; }
       params.degradationPreference = "maintain-framerate";
       await sender.setParameters(params);
     }

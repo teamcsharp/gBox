@@ -135,6 +135,18 @@ def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
         donor = replacement_kmd.read_bytes()
         if not donor or len(donor) > len(own_kmd):
             raise ValueError(f"replacement KMD exceeds its {len(own_kmd)}-byte disc budget")
+        if donor == own_kmd:
+            raise ValueError("replacement KMD is identical to the original player model")
+        # Structural validation: MetalMintSolid must be able to decode the donor as a PS1 KMD.
+        # A malformed KMD passes the size check but will hang the game's loader (black screen / hung core).
+        progress(33, "Validating replacement KMD structure")
+        validate_glb = work / "validate.glb"
+        try:
+            _run(mint, "kmd", "decode", replacement_kmd, validate_glb)
+        except RuntimeError as exc:
+            raise ValueError(f"replacement KMD failed KMD decode validation: {exc}") from exc
+        if not validate_glb.is_file() or validate_glb.read_bytes()[:4] != b"glTF":
+            raise ValueError("replacement KMD decoded to an invalid GLB")
         model.write_bytes(donor.ljust(len(own_kmd), b"\0"))
         order = work / "dar" / "order.txt"
         if not order.is_file():

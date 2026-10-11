@@ -15,6 +15,7 @@ const context = vm.createContext({
   $: key => nodes.get(key), cur: 'Sessions', active: {sid: 'first'}, show() {},
   esc: value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char])),
 });
+context.window = context;
 vm.runInContext(source, context);
 const run = code => vm.runInContext(code, context);
 const pad = (id, index, mapping='standard') => ({id,index,mapping,connected:true,axes:[0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0}))});

@@ -5,13 +5,85 @@ after every Claude Code request (Stop hook) from the session transcripts and the
 Tokens: in = input incl. cached context read per model call (summed over the request), out = generated tokens.
 Time = prompt → last reply before the next prompt. Files = distinct files written in that window.
 
-Total prompts: 460
+Total prompts: 463
+
+## 463. 10-08-26 / 12:58 AM CDT · inbox #608 (gap)
+
+* Tokens in / out: 0 / 0
+* Model: n/a
+* Time to execute: 0m 00s
+* Files adjusted: 0
+
+```text
+## What the operator asked
+characters op=use character=hucast game=Crazy Taxi (USA) slot=player
+
+## Context
+game: Crazy Taxi (USA) (bc02bb68790ce2e7, gamecube) · character: HUcast ('hucast', from Phantasy Star Online Ver. 2 (USA))
+
+## What gBox tried
+- `characters op=use`: no swap writer is routed for this game (characters op=coverage)
+
+## What failed
+- no writer; what it needs: {"target": "the game's player model", "format": "unknown for gamecube", "steps": ["find the character model files and their format (reader)", "a writer for that format", "a bone map from the library rig onto the game's skeleton"], "have": "nothing for this game yet"}
+
+## For Claude
+Build the writer for this game like gbox/pe_swap.py / ff7_swap.py / sm64_swap.py (read the player model, rigid retarget with sm64_swap.retarget + a role map onto the game's skeleton, fit the game's budgets, rebuild the file/disc as a file mod), route it in characters_tool, add it to char_coverage.WRITERS, verify in an emulator on the Spark and reply here. Meanwhile the operator has the overlay (characters op=overlay).
+```
+
+## 462. 10-07-26 / 11:24 PM CDT · inbox #588 (gap)
+
+* Tokens in / out: 0 / 0
+* Model: n/a
+* Time to execute: 0m 00s
+* Files adjusted: 0
+
+```text
+## What the operator asked
+characters op=use character=ff7_cid_field game=Clay Fighter: Sculptor's Cut (USA) slot=player
+
+## Context
+game: Clay Fighter: Sculptor's Cut (USA) (f87ec3e2f6b266a1, n64) · character: Cid Highwind (field) ('ff7_cid_field', from Final Fantasy VII (USA) (Disc 1))
+
+## What gBox tried
+- `characters op=use`: no swap writer is routed for this game (characters op=coverage)
+
+## What failed
+- no writer; what it needs: {"target": "the game's player model", "format": "unknown for n64", "steps": ["find the character model files and their format (reader)", "a writer for that format", "a bone map from the library rig onto the game's skeleton"], "have": "nothing for this game yet"}
+
+## For Claude
+Build the writer for this game like gbox/pe_swap.py / ff7_swap.py / sm64_swap.py (read the player model, rigid retarget with sm64_swap.retarget + a role map onto the game's skeleton, fit the game's budgets, rebuild the file/disc as a file mod), route it in characters_tool, add it to char_coverage.WRITERS, verify in an emulator on the Spark and reply here. Meanwhile the operator has the overlay (characters op=overlay).
+```
+
+## 461. 10-07-26 / 11:02 PM CDT · inbox #585 (gap)
+
+* Tokens in / out: 0 / 0
+* Model: n/a
+* Time to execute: 0m 00s
+* Files adjusted: 0
+
+```text
+## What the operator asked
+characters op=use character=cloud game=WWF SmackDown! 2 - Know Your Role (USA) slot=player
+
+## Context
+game: WWF SmackDown! 2 - Know Your Role (USA) (276334ad218ffb46, psx) · character: Cloud Strife ('cloud', from Final Fantasy VII (USA) (Disc 1))
+
+## What gBox tried
+- `characters op=use`: no swap writer is routed for this game (characters op=coverage)
+
+## What failed
+- no writer; what it needs: {"target": "the game's player model", "format": "unknown for psx", "steps": ["find the character model files and their format (reader)", "a writer for that format", "a bone map from the library rig onto the game's skeleton"], "have": "nothing for this game yet"}
+
+## For Claude
+Build the writer for this game like gbox/pe_swap.py / ff7_swap.py / sm64_swap.py (read the player model, rigid retarget with sm64_swap.retarget + a role map onto the game's skeleton, fit the game's budgets, rebuild the file/disc as a file mod), route it in characters_tool, add it to char_coverage.WRITERS, verify in an emulator on the Spark and reply here. Meanwhile the operator has the overlay (characters op=overlay).
+```
 
 ## 460. 10-07-26 / 06:37 PM CDT · direct
 
-* Tokens in / out: 4,940,370 / 13,088
+* Tokens in / out: 16,622,977 / 23,261
 * Model: claude-opus-5-5
-* Time to execute: 16m 55s
+* Time to execute: 7h 53m 52s
 * Files adjusted: 0
 
 ```text
