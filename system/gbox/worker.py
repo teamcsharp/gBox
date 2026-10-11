@@ -99,26 +99,51 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     _deliver_finished(outbox, client, wid, res, active, active_agent)
 
 
+def _release_settled(outbox, active, active_agent, job_ids):
+    """Free the parallel-job slot of every finished job the control plane answered for.
+
+    A result the Spark refused (4xx, e.g. an older server that already recorded
+    the job and answers a redelivery with 409) is kept in the outbox and never
+    resent, but its tool is no longer running. Holding its slot would saturate the
+    worker after MAX_PARALLEL refusals, so it stops claiming and every new launch
+    on that PC stays queued forever (#1295).
+    """
+    for jid in tuple(job_ids):
+        try:
+            settled = outbox.settled(jid)
+        except (OSError, ValueError, RuntimeError):
+            continue                                  # unreadable record: stay busy, never rerun
+        if settled:
+            if jid in active:
+                print(f"result for job {jid} was answered by the control plane; its job slot is free", flush=True)
+            active.discard(jid)
+            active_agent.discard(jid)
+
+
 def _deliver_finished(outbox, client, wid, result, active, active_agent):
     try:
         outbox.save(wid, result)  # artifact bytes are fsynced before the first request
-        if outbox.deliver(client, result['job_id']):
-            active.discard(result['job_id'])
-            active_agent.discard(result['job_id'])
+        outbox.deliver(client, result['job_id'])
     except (OSError, ValueError, RuntimeError) as exc:
         # Keep the job busy on persistence failures. Never rerun its tool.
         print(f"result delivery held for {result['job_id']}: {type(exc).__name__}", flush=True)
+        return
+    _release_settled(outbox, active, active_agent, [result['job_id']])
+
+
+def _deliver_ready(outbox, client, active, active_agent):
+    """One delivery pass: resend due results, then free slots of settled ones."""
+    try:
+        outbox.send_ready(client)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"durable result delivery held: {type(exc).__name__}", flush=True)
+    _release_settled(outbox, active, active_agent, active)
 
 
 def _result_delivery_loop(stop, outbox, active, active_agent, server, headers):
     with httpx.Client(base_url=server, headers=headers, timeout=20) as client:
         while not stop.wait(2):
-            try:
-                for jid in outbox.send_ready(client):
-                    active.discard(jid)
-                    active_agent.discard(jid)
-            except (OSError, ValueError, RuntimeError) as exc:
-                print(f"durable result delivery held: {type(exc).__name__}", flush=True)
+            _deliver_ready(outbox, client, active, active_agent)
 
 
 def _quiet_volume_loop(stop: threading.Event, active_agent: set, quiet_sessions: set):

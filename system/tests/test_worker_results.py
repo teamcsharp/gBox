@@ -669,3 +669,81 @@ def test_malformed_durable_identity_is_refused_before_transport(cfg, mutate):
     with pytest.raises((RuntimeError, ValueError), match='Invalid'):
         outbox.reconcile_ready(NoPost())
     assert path.exists() and not list(outbox.archive.glob('*.json'))
+
+class LegacyServer:
+    """The deployed (older) Spark: records the first result with a {state, receipt}
+    reply, then refuses any redelivery of that finished job with 409 (#1295)."""
+    def __init__(self):
+        self.calls = []
+
+    def post(self, path, json=None, **_):
+        self.calls.append(json['job_id'])
+        request = httpx.Request('POST', 'http://fixture' + path)
+        if self.calls.count(json['job_id']) == 1:
+            return httpx.Response(200, json={'state': 'succeeded', 'receipt': 'legacy-' + json['job_id']}, request=request)
+        return httpx.Response(409, json={'detail': 'job is not running'}, request=request)
+
+
+def test_settled_is_true_only_after_the_control_plane_answered(cfg):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    assert not outbox.settled('launch')                       # tool still running: no saved result
+    outbox.save('old-worker', launch_result())
+    assert not outbox.settled('launch')                       # saved, never answered
+    class Timeout:
+        def post(self, *_a, **_k):
+            raise httpx.ReadTimeout('no answer')
+    outbox.deliver(Timeout(), 'launch')
+    assert not outbox.settled('launch')                       # uncertain transport stays pending
+    class Refuse:
+        def post(self, path, **_):
+            return httpx.Response(409, request=httpx.Request('POST', 'http://fixture' + path))
+    outbox.deliver(Refuse(), 'launch', force=True)
+    assert outbox.settled('launch') and outbox.records()[0]['status'] == 'rejected'
+    _app, plane = control(cfg, 'another')
+    outbox.save('old-worker', launch_result('another'))
+    assert outbox.deliver(plane, 'another') and outbox.settled('another')
+
+
+def test_refused_result_frees_its_slot_but_is_kept_and_never_resent(cfg):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    calls = []
+    class Refuse:
+        def post(self, path, **_):
+            calls.append(path)
+            return httpx.Response(409, request=httpx.Request('POST', 'http://fixture' + path))
+    active, agent = {'launch', 'still-running'}, {'launch'}
+    worker._deliver_finished(outbox, Refuse(), 'old-worker', launch_result(), active, agent)
+    assert active == {'still-running'} and agent == set()
+    assert len(outbox.records()) == 1 and outbox.records()[0]['status'] == 'rejected'
+    worker._deliver_ready(outbox, Refuse(), active, agent)
+    assert len(calls) == 1 and active == {'still-running'}    # never resent, running job keeps its slot
+
+
+def test_pending_result_keeps_its_slot_until_answered(cfg):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    class Down:
+        def post(self, *_a, **_k):
+            raise httpx.ConnectError('Spark restarting')
+    active, agent = {'launch'}, set()
+    worker._deliver_finished(outbox, Down(), 'old-worker', launch_result(), active, agent)
+    worker._deliver_ready(outbox, Down(), active, agent)
+    assert active == {'launch'} and outbox.records()[0]['status'] == 'pending'
+
+
+def test_worker_keeps_claiming_against_the_older_spark_reply_format(cfg, monkeypatch):
+    """Before the fix the 4th legacy-acknowledged job saturated MAX_PARALLEL forever."""
+    clock = [1000.0]
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker', clock=lambda: clock[0])
+    spark = LegacyServer()
+    active, agent = set(), set()
+    for n in range(worker.MAX_PARALLEL + 2):
+        assert len(active) < worker.MAX_PARALLEL, f'worker saturated before job {n}'
+        jid = f'job{n}'
+        active.add(jid)
+        worker._deliver_finished(outbox, spark, 'old-worker', launch_result(jid), active, agent)
+        assert jid in active                                 # legacy reply is not verified completion
+        clock[0] += 61                                       # past the retry backoff
+        worker._deliver_ready(outbox, spark, active, agent)
+        assert jid not in active                             # the Spark's 409 settled it
+    assert all(r['status'] == 'rejected' for r in outbox.records())
+    assert len(spark.calls) == 2 * (worker.MAX_PARALLEL + 2)

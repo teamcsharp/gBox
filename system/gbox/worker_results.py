@@ -272,6 +272,20 @@ class ResultOutbox:
                 acknowledged.append(record['result']['job_id'])
         return acknowledged
 
+    def settled(self, job_id: str) -> bool:
+        """True once the control plane answered for this finished result.
+
+        Acknowledged and explicitly refused results are never resent, so the
+        worker must not count them as running. A job with no saved result (its
+        tool is still running) or a pending one is not settled.
+        """
+        with self.lock:
+            path = self._path(job_id)
+            for candidate in (path, self.archive / path.name):
+                if candidate.exists():
+                    return self._read(candidate)['status'] in {'acknowledged', 'rejected'}
+        return False
+
     def send_ready(self, client, *, maximum=4, force=False):
         acknowledged = []
         candidates = [r for r in self.records() if r['status'] == 'pending'
