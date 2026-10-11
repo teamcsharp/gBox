@@ -1384,7 +1384,8 @@ $("#rp-close").onclick = () => {
 };
 const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
   focus: false, focusEvents: [], visualOpenSteps: new Set(), artifacts: [],
-  expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map() };
+  expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map(),
+  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0 };
 function tkView(view) {
   TK.view = view;
   $("#taskpanel").classList.toggle("visual-mode", view === "visual");
@@ -1691,14 +1692,61 @@ const tkProgress = (pct, active) => {
     <span class="track ${known ? "" : "indeterminate"}"><span class="fill" style="width:${known ? value : 32}%"></span></span>
     <span>${known ? value.toFixed(0) + "%" : "running"}</span></div>`;
 };
+// Keep the reader's place when the Technical task list refreshes (#1289). The 5 s poll used to
+// replace the whole list, which threw the panel and every open log back to the top.
+const TK_OWNER = "[data-detail-hermes],[data-resolution-id],[data-detail-job],[data-local-task],[data-tk-key]";
+function tkKey(el, host) {
+  const owner = el.parentElement?.closest(TK_OWNER), scope = owner && host.contains(owner) ? owner : host;
+  const id = scope === host ? "" : [...scope.attributes].filter(a => a.name.startsWith("data-")).map(a => `${a.name}=${a.value}`).join("&");
+  return `${id}|${[...scope.querySelectorAll("pre")].indexOf(el)}`;
+}
+function tkSnap(host) {
+  const pres = new Map(), open = new Set();
+  host.querySelectorAll("pre").forEach(el => pres.set(tkKey(el, host), { top: el.scrollTop,
+    follow: el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 20 }));
+  host.querySelectorAll("details[data-tk-key][open]").forEach(el => open.add(el.dataset.tkKey));
+  return { pres, open };
+}
+function tkRestore(host, snap) {
+  host.querySelectorAll("details[data-tk-key]").forEach(el => { if (snap.open.has(el.dataset.tkKey)) el.open = true; });
+  host.querySelectorAll("pre").forEach(el => {
+    const p = snap.pres.get(tkKey(el, host));
+    if (p) el.scrollTop = p.follow ? el.scrollHeight : p.top;
+  });
+}
+// The reader is busy: dragging a scrollbar, mid-scroll, or holding a text selection in this list.
+function tkReading(host) {
+  const now = Date.now();
+  if (TK.pointerDown && now - TK.pointerDown < 10000) return true;
+  if (now - TK.scrolledAt < 1200) return true;
+  const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+  return !!(sel && !sel.isCollapsed && sel.rangeCount && host.contains(sel.getRangeAt(0).commonAncestorContainer));
+}
+// Replace host's markup only when it changed, keeping the scroll pane, open logs and keyed details where they were.
+function tkRender(host, html, pane) {
+  if (host.tkHtml === html) return false;
+  if (host.tkHtml !== undefined && tkReading(host)) {
+    host.tkWait ||= Date.now();
+    if (Date.now() - host.tkWait < 30000) return false;
+  }
+  host.tkWait = 0;
+  const snap = tkSnap(host), top = pane ? pane.scrollTop : 0;
+  host.innerHTML = html; host.tkHtml = html;
+  tkRestore(host, snap);
+  if (pane) pane.scrollTop = top;
+  return true;
+}
 async function tasksLocalLoad() {
   const tasks = await gbox.taskSnapshot();
   if (!$("#taskpanel").classList.contains("on")) return;
-  $("#tk-local").innerHTML = `<div class="mc"><div class="mh"><b>Desktop commands</b><span class="mut">${tasks.length}</span></div>
+  const pane = $("#tk-technical"), body = $("#tk-body"), before = body.offsetTop, top = pane.scrollTop;
+  const html = `<div class="mc"><div class="mh"><b>Desktop commands</b><span class="mut">${tasks.length}</span></div>
     ${tasks.length ? tasks.map(t => `<div class="mc"><details data-local-task="${esc(t.id)}" ${TK.localExpanded.has(t.id) ? "open" : ""}>
       <summary>${esc(t.id)} · ${esc(t.state)} · ${tkAge(t.started)}</summary><pre>${esc(t.output || "No console output yet.")}</pre></details>
       ${t.state === "running" ? `<button class="x" data-local-stop="${esc(t.id)}">✕ Cancel</button>` : `<span class="mut">exit ${esc(t.exit_code ?? "unknown")}</span>`}</div>`).join("")
       : '<span class="mut">No desktop commands running or recently completed.</span>'}</div>`;
+  // Commands listed above the jobs grow and shrink; keep the job the reader is looking at in place.
+  if (tkRender($("#tk-local"), html, pane) && top > 0 && top >= before) pane.scrollTop = top + body.offsetTop - before;
 }
 async function tasksLoad() {
   if (TK.busy) return;
@@ -1706,8 +1754,7 @@ async function tasksLoad() {
   let r;
   try { r = await gbox.api("/api/tasks"); } finally { TK.busy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
-  if (!r.ok) { $("#tk-body").innerHTML = `<p class="mut" style="padding:12px">${esc(r.error)}</p>`; return; }
-  const panelScroll = $("#tk-technical").scrollTop;
+  if (!r.ok) { tkRender($("#tk-body"), `<p class="mut" style="padding:12px">${esc(r.error)}</p>`, $("#tk-technical")); return; }
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre");
     TK.hermesScroll.set(detail.dataset.detailHermes, { top: pre.scrollTop, follow: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20 });
@@ -1715,7 +1762,7 @@ async function tasksLoad() {
   const d = r.data, kind = k => `<span class="kd ${k === "game" ? "game" : k === "agent test" ? "agent" : ""}">${esc(k)}</span>`;
   $("#tk-at").textContent = "updated " + new Date().toLocaleTimeString();
   tkVisualUpdate(d);
-  $("#tk-body").innerHTML = `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
+  tkRender($("#tk-body"), `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
         <div class="meta">${esc(run.provider || "")} ${esc(run.model || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
@@ -1733,20 +1780,19 @@ async function tasksLoad() {
       ${t.gpu ? `<span>${esc(t.gpu)} ${t.gpu_pct}%${tkBar(t.gpu_pct)}</span><span>VRAM ${((t.vram_used_mb || 0) / 1024).toFixed(1)} / ${((t.vram_total_mb || 0) / 1024).toFixed(0)} GB${tkBar(t.vram_used_mb, t.vram_total_mb)}</span>` : ""}
       ${m.error ? `<span style="color:var(--bad)">${esc(m.error)}</span>` : m.collecting ? `<span class="mut">updating…</span>` : ""}</div>
       <table><tr><th>What</th><th>Name</th><th>RAM</th><th>CPU</th><th>GPU</th><th>VRAM</th><th>Age</th><th></th></tr>
-      ${(m.tasks || []).map(x => `<tr><td>${kind(x.kind)}</td><td><details><summary><span class="nm">${esc(x.name)}</span></summary><pre>${esc(x.cmd || "No command line available")}</pre></details>${x.procs > 1 ? ` <span class="mut">+${x.procs - 1}</span>` : ""}</td>
+      ${(m.tasks || []).map(x => `<tr><td>${kind(x.kind)}</td><td><details data-tk-key="cmd:${esc(m.worker_id)}:${esc(x.pid ?? x.name)}"><summary><span class="nm">${esc(x.name)}</span></summary><pre>${esc(x.cmd || "No command line available")}</pre></details>${x.procs > 1 ? ` <span class="mut">+${x.procs - 1}</span>` : ""}</td>
         <td>${x.ram_mb >= 1024 ? (x.ram_mb / 1024).toFixed(1) + " GB" : x.ram_mb + " MB"}</td><td>${x.cpu_pct}%</td><td>${x.gpu_pct}%</td><td>${x.vram_mb} MB</td>
         <td>${tkAge(x.started)}</td><td>${x.killable ? `<button class="x" data-kill="${x.pid}" data-w="${esc(m.worker_id)}" title="Stop it now (and everything it started)">✕ Stop</button>` : '<span class="mut" title="gBox itself">—</span>'}</td></tr>`).join("")
         || '<tr><td colspan="8" class="mut" style="text-align:left">nothing running</td></tr>'}</table></div>`; }).join("") +
     `<div class="mc"><div class="mh"><b>Jobs in flight</b><span class="mut">${d.jobs.length}</span></div>
       ${d.jobs.map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
         <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
-        ${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details>
+        ${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? TK.jobDetail.get(j.id) || "Loading task details…" : ""}</div></details>
         <button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></div>`).join("") || '<span class="mut">none</span>'}</div>` +
     `<div class="mc"><div class="mh"><b>Recent jobs</b><span class="mut">${(d.recent || []).length}</span></div>
       ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
         <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
-        ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`;
-  $("#tk-technical").scrollTop = panelScroll;
+        ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? TK.jobDetail.get(j.id) || "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`, $("#tk-technical"));
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
     pre.scrollTop = position?.follow === false ? position.top : pre.scrollHeight;
@@ -1769,19 +1815,25 @@ async function tkJobRefresh(detail) {
   const r = await gbox.api(`/api/jobs/${id}`);
   if (!detail.isConnected || !detail.open) return;
   const box = detail.querySelector(".task-detail");
-  if (!r.ok) { box.textContent = r.error; return; }
+  if (!r.ok) { box.textContent = r.error; box.tkMain = undefined; return; }
   const j = r.data, log = [...(j.progress_log || []), j.error || ""].filter(Boolean).join("\n");
   const input = JSON.stringify(j.input || {}, null, 2);
   const output = JSON.stringify(j.output || {}, null, 2);
-  box.innerHTML = `<div class="mut">${esc(j.state)} · ${esc(j.worker_id || j.require_worker || j.require_os || "unassigned")} · ${esc(id)}</div>
+  const snap = tkSnap(box);
+  const main = `<div class="mut">${esc(j.state)} · ${esc(j.worker_id || j.require_worker || j.require_os || "unassigned")} · ${esc(id)}</div>
     <button class="act" data-task-visual="${esc(id)}">View live 3D progress</button>
     <b>Input</b><pre>${esc(input)}</pre><b>Console and progress</b><pre>${esc(log || "No console output yet.")}</pre>
     ${j.output ? `<b>Result</b><pre>${esc(output.length > 30000 ? output.slice(0, 30000) + "\n…" : output)}</pre>` : ""}
     <div class="task-files"></div>`;
+  // Only rebuild when the job changed, so open logs and loaded previews keep their place (#1289).
+  if (box.tkMain !== main) { box.innerHTML = main; box.tkMain = main; tkRestore(box, snap); }
   if (j.log_sha) {
-    const lr = await gbox.api(`/api/jobs/${id}/log`);
-    if (detail.isConnected && detail.open && lr.ok && lr.data.log) box.querySelectorAll("pre")[1].textContent = lr.data.log;
+    const lr = await gbox.api(`/api/jobs/${id}/log`), pre = box.querySelectorAll("pre")[1];
+    if (detail.isConnected && detail.open && lr.ok && lr.data.log && pre && pre.textContent !== lr.data.log) {
+      pre.textContent = lr.data.log; tkRestore(box, snap);
+    }
   }
+  if (detail.isConnected) TK.jobDetail.set(id, box.innerHTML);
   if (!j.receipt_id) return;
   const rr = await gbox.api(`/api/receipts/${j.receipt_id}`);
   if (!detail.isConnected || !detail.open || !rr.ok) return;
@@ -1791,7 +1843,7 @@ async function tkJobRefresh(detail) {
   if (!detail.isConnected || !detail.open) return;
   const link = sha => `${S.apiUrl}/api/artifacts/${sha}?token=${encodeURIComponent(tok)}`;
   const holder = box.querySelector(".task-files");
-  holder.innerHTML = files.map(a => {
+  const filesHtml = files.map(a => {
     const sha = a.sha256, name = a.name || sha.slice(0, 12), type = a.media_type || "";
     if (!/^[0-9a-f]{64}$/.test(sha)) return "";
     const url = link(sha);
@@ -1799,6 +1851,9 @@ async function tkJobRefresh(detail) {
       ${type === "model/gltf-binary" ? `<div class="av" data-task-model="${sha}"><canvas></canvas></div>` : ""}
       <a href="#" data-task-file="${esc(url)}">${esc(name)}</a><div class="mut">${esc(type)} · ${Math.ceil((a.size || 0) / 1024)} KB</div></div>`;
   }).join("");
+  if (!holder || holder.tkHtml === filesHtml) return;
+  holder.innerHTML = filesHtml; holder.tkHtml = filesHtml;
+  TK.jobDetail.set(id, box.innerHTML);
   if (window.assetView) holder.querySelectorAll("[data-task-model]").forEach(el => window.assetView(el, link(el.dataset.taskModel)).catch(() => {}));
 }
 async function tvPoll() {
@@ -1847,6 +1902,9 @@ $("#tv-close").onclick = tvClose;
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
   clearInterval(TK.t); if (on) { tkView(TK.view); tasksLoad(); TK.t = setInterval(() => { if (TK.view === "technical") tasksLocalLoad(); tasksLoad(); }, 5000); }
   else { TK.graph?.stop(); TK.graph = null; } };
+$("#taskpanel").addEventListener("pointerdown", () => { TK.pointerDown = Date.now(); }, true);
+for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { TK.pointerDown = 0; }, true);
+$("#taskpanel").addEventListener("scroll", () => { TK.scrolledAt = Date.now(); }, true);
 $("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); TK.graph?.stop(); TK.graph = null; };
 $("#tk-body").onclick = async e => {
   const resolution = e.target.closest("[data-resolution-evidence]");
@@ -1887,7 +1945,7 @@ $("#tk-body").addEventListener("toggle", async e => {
   const detail = e.target.closest?.("[data-detail-job]");
   if (!detail) return;
   const id = detail.dataset.detailJob;
-  if (!detail.open) { TK.expanded.delete(id); return; }
+  if (!detail.open) { TK.expanded.delete(id); TK.jobDetail.delete(id); return; }
   TK.expanded.add(id);
   tkJobRefresh(detail);
 }, true);
