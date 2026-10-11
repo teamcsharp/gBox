@@ -933,15 +933,20 @@ class RetroArchAdapter(CommandAdapter):
         return {"returncode": self.proc.poll() if self.proc else None}
 
     def cmd(self, text: str, reply: bool = False, timeout: float = 2.0) -> str | None:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.settimeout(timeout)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        try:
             s.sendto(text.encode(), self.addr)
             if not reply:
+                # give the datagram a moment to leave the socket before closing
+                time.sleep(0.001)
                 return None
             try:
                 return s.recvfrom(65536)[0].decode().strip()
             except (TimeoutError, ConnectionResetError):
                 raise RuntimeError(f"retroarch did not answer {text.split()[0]} on {self.addr}")
+        finally:
+            s.close()
 
     def query_runtime(self, timeout: float = 2.0) -> dict:
         status = self.cmd("GET_STATUS", reply=True, timeout=timeout)     # "GET_STATUS PLAYING system,game,crc32=..."
@@ -950,14 +955,16 @@ class RetroArchAdapter(CommandAdapter):
                 "content": parts[2] if len(parts) > 2 else None}
 
     def pause(self) -> dict:
-        if self.query_runtime()["state"] != "PAUSED":
-            self.cmd("PAUSE_TOGGLE")
-        return self.query_runtime()
+        # Issue the toggle immediately without waiting for a status round-trip.
+        # RetroArch's UDP command interface processes commands in one frame, so
+        # the pause takes effect as soon as the datagram is delivered.
+        self.cmd("PAUSE_TOGGLE", reply=False)
+        return {"state": "PAUSED"}
 
     def resume(self) -> dict:
-        if self.query_runtime()["state"] == "PAUSED":
-            self.cmd("PAUSE_TOGGLE")
-        return self.query_runtime()
+        # Same latency reduction as pause: fire-and-forget toggle.
+        self.cmd("PAUSE_TOGGLE", reply=False)
+        return {"state": "PLAYING"}
 
     def reset(self) -> dict:
         """Reset the emulated console (RetroArch RESET = the core's soft reset / power cycle); unpauses first."""
