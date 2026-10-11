@@ -122,14 +122,25 @@ def test_mcp_preserves_union_contract_and_routes_worker(monkeypatch):
     info = REGISTRY["rea_project_managed_application_graph"].info().model_dump(mode="json")
     assert "anyOf" in info["input_schema"]
     submitted = []
+    preflight = []
 
     def handler(request):
         if request.url.path == "/api/registry":
             return httpx.Response(200, json={"tools": [info | {"workers": ["fixture-worker"]}]})
-        if request.url.path == "/api/jobs":
+        if request.method == "GET" and request.url.path == "/api/jobs":
+            assert request.url.params["state"] == "queued,running"
+            assert request.url.params["limit"] == "100"
+            preflight.append("jobs")
+            return httpx.Response(200, json=[])
+        if request.method == "GET" and request.url.path == "/api/workers":
+            preflight.append("workers")
+            return httpx.Response(200, json=[{"id": "fixture-worker", "name": "Fixture PC",
+                "online": True, "active_jobs": 0}])
+        if request.method == "POST" and request.url.path == "/api/jobs":
+            assert preflight == ["jobs", "workers"]
             submitted.append(json.loads(request.content))
             return httpx.Response(200, json={"id": "fixture-job", "state": "succeeded", "worker_id": "fixture-worker"})
-        raise AssertionError(request.url)
+        raise AssertionError((request.method, request.url))
 
     original = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: original(*args, **kwargs, transport=httpx.MockTransport(handler)))
@@ -142,7 +153,9 @@ def test_mcp_preserves_union_contract_and_routes_worker(monkeypatch):
             exposed = next(t for t in listed.tools if t.name == "job_" + info["name"])
             assert exposed.input_schema["properties"]["input"] == info["input_schema"]
             result = await client.call_tool(exposed.name, {"input": arguments, "require_os": "windows", "require_worker": "fixture-worker", "parent_request_id": "711"})
-            assert not result.is_error
+            assert not result.is_error, result.content
+            receipt = json.loads(result.content[0].text)
+            assert receipt["id"] == "fixture-job" and receipt["worker_id"] == "fixture-worker"
 
     asyncio.run(check())
     assert submitted == [{"tool": info["name"], "input": arguments, "require_os": "windows", "require_worker": "fixture-worker", "parent_request_id": "711", "agent_use": True}]
