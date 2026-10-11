@@ -187,18 +187,27 @@ class PrepareModIn(BaseModel):
 class PrepareModOut(BaseModel):
     ready: bool
     mod: str = ""                          # the folder to launch: the mod name, or <mod>~<build> when the running game holds the old copy open
+    source_mod: str = ""                   # the canonical collection name; staged metadata retains this identity
 
 
-@tool('prepare_mod', '1.0', PrepareModIn, PrepareModOut, capabilities=['runtime'], permissions=[P.EXECUTE], timeout_s=1800)
+@tool('prepare_mod', '1.1', PrepareModIn, PrepareModOut, capabilities=['runtime'], permissions=[P.EXECUTE], timeout_s=1800)
 def prepare_mod(inp: PrepareModIn, ctx: Ctx):
     """Stage replacement files on the target worker without closing or changing its running game."""
     from . import filemods
     name = inp.mod
     if ctx.server:
         name = filemods.stage(ctx.config, ctx.server, ctx.headers, inp.game.game_id, inp.mod, ctx.progress)
-    if not (filemods.mod_dir(ctx.config, inp.game.game_id, name) / '.gbox-mod.json').exists():
+    folder = filemods.mod_dir(ctx.config, inp.game.game_id, name)
+    marker = filemods._file_path(folder, '.gbox-mod.json')
+    if not marker.exists():
         raise RuntimeError('Replacement preparation did not complete')
-    return {'ready': True, 'mod': name}
+    meta = json.loads(marker.read_text())
+    if not isinstance(meta, dict) or (meta.get('name') and meta['name'] != inp.mod) or (
+            meta.get('game_id') and meta['game_id'] != inp.game.game_id):
+        raise RuntimeError('Prepared replacement metadata belongs to another mod or game')
+    if meta.get('image') and not filemods._file_path(folder, meta['image']).is_file():
+        raise RuntimeError('Prepared replacement image is missing')
+    return {'ready': True, 'mod': name, 'source_mod': inp.mod}
 
 
 class LaunchIn(BaseModel):
@@ -221,8 +230,12 @@ def _launch_accept(store, out: LaunchOut, actor: str):
             store.put('session', old_sid, old | {'state': 'ended', 'ended': time.time(),
                       'checkpoint': checkpoint['artifact'], 'exit': {'via': 'single_game', 'to': out.session_id}})
     g = out.detail.get("_game", {})
+    actual_mod = out.detail.get("mod") or ""
+    collection_mod = out.detail.get("collection_mod") or actual_mod
+    prepared = ({"collection_mod": collection_mod, "staged_mod": actual_mod, "launch_mod": actual_mod}
+                if collection_mod != actual_mod else {})
     store.put("session", out.session_id, {"session_id": out.session_id, "game_id": g.get("game_id"), "title": g.get("title"),
-                                          "mod": out.detail.get("mod") or "",
+                                          "mod": collection_mod, **prepared,
                                           "adapter": out.adapter, "capabilities": out.capabilities, "state": "running",
                                           "started": time.time(), "detail": {k: v for k, v in out.detail.items() if k != "_game"}})
     if g.get("game_id"):
@@ -285,6 +298,7 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
 
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
+    launch_mod = inp.mod
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
     ad.progress = ctx.progress
@@ -313,9 +327,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             from . import filemods
             if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
-                filemods.fetch(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
-            src = filemods.launch_path(ctx.config, g.game_id, src, inp.mod)
-            ctx.progress(28, f"Mod: {inp.mod}")
+                launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
+            src = filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
+            ctx.progress(28, f"Mod: {launch_mod}")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
@@ -358,7 +372,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if ctx.server and (not isinstance(ad, adapters.SteamAdapter) or ad.install_dir):     # live channel (input, inspector RPCs, exit) even without video
         threading.Thread(target=_pump, args=(sid, ad, ctx.server, ctx.headers), daemon=True).start()
     detail["_game"] = {"game_id": g.game_id, "title": g.title}
-    detail["mod"] = inp.mod or ""                              # a "move to this PC" relaunches with the same mod
+    detail["mod"] = launch_mod or ""                           # the actual prepared folder used by this process
+    if launch_mod != inp.mod:
+        detail["collection_mod"] = inp.mod
     detail['previous_checkpoints'] = checkpoints
     if sys.platform == "win32" and getattr(ad, "name", "") == "retroarch":
         threading.Thread(target=_ff_ramp, args=(sid, ad), daemon=True).start()

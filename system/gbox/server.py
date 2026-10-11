@@ -530,8 +530,18 @@ def create_app(config: Config) -> FastAPI:
             say(2, "Preparing replacement files; your current game keeps running")
             staged = _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
                               progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+            if isinstance(staged, dict) and (staged.get('ready') is False or
+                    (staged.get('source_mod') and staged['source_mod'] != mod)):
+                raise HTTPException(409, 'Prepared replacement does not identify the requested mod')
             if isinstance(staged, dict) and staged.get('mod'):
                 launch_mod = staged['mod']                 # <mod>~<build>: the running game holds the old copy open (#1270)
+                from . import filemods
+                try:
+                    filemods.mod_dir(config, game['game_id'], launch_mod)
+                except ValueError as error:
+                    raise HTTPException(409, 'Prepared replacement returned an invalid cache folder') from error
+                if launch_mod != mod and not launch_mod.startswith(mod + filemods.STAGED_SEP):
+                    raise HTTPException(409, 'Prepared replacement returned another mod folder')
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
@@ -556,7 +566,8 @@ def create_app(config: Config) -> FastAPI:
             if running and not alive:
                 say(60, "That didn't start: putting your game back")
                 try:
-                    back = _run_job("launch_game", {"game": game, "mod": sess.get("mod") or ""}, actor, worker=old_w, wait=900)
+                    back = _run_job("launch_game", {"game": game,
+                        "mod": sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or ""}, actor, worker=old_w, wait=900)
                     if art:
                         time.sleep(6)
                         _run_job("state_transfer", {"session_id": back["session_id"], "op": "import", "artifact": art}, actor,
@@ -569,8 +580,10 @@ def create_app(config: Config) -> FastAPI:
             raise
         nsid = new["session_id"]
         if launch_mod != mod and store.get("session", nsid):
-            store.put("session", nsid, store.get("session", nsid) | {"mod": mod, "staged_mod": launch_mod})
-            notes.append(f"The running game had {mod} open, so the new build was staged as {launch_mod}.")
+            with store.lock:
+                store.put("session", nsid, store.get("session", nsid) | {
+                    "mod": mod, "collection_mod": mod, "staged_mod": launch_mod, "launch_mod": launch_mod})
+            notes.append(f"The previous {mod} copy was preserved; the new build was staged as {launch_mod}.")
         loaded = False
         if art:
             say(70, "Loading your moment into it")
@@ -586,7 +599,8 @@ def create_app(config: Config) -> FastAPI:
                 if old_w == tw['id']:
                     say(75, 'State restore failed; recovering the original game and checkpoint')
                     try:
-                        back = _run_job('launch_game', {'game': game, 'mod': sess.get('mod') or ''}, actor, worker=old_w, wait=900)
+                        back = _run_job('launch_game', {'game': game,
+                            'mod': sess.get('launch_mod') or sess.get('staged_mod') or sess.get('mod') or ''}, actor, worker=old_w, wait=900)
                         time.sleep(6)
                         _run_job('state_transfer', {'session_id': back['session_id'], 'op': 'import', 'artifact': art}, actor, worker=old_w, wait=90)
                         store.put('session', sid, (store.get('session', sid) or {}) | {'state': 'ended', 'replaced_by': back['session_id']})
@@ -615,7 +629,8 @@ def create_app(config: Config) -> FastAPI:
             if luma and all(v is not None and v <= 3 for v in luma):
                 notes.append("The restored frame is dark. Your state was preserved; use Inspect or return to Play to check it.")
         store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid, "state_loaded": loaded})
-        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod, "state_loaded": loaded, "notes": notes}
+        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod,
+                "launch_mod": launch_mod, "state_loaded": loaded, "notes": notes}
 
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
@@ -1833,10 +1848,10 @@ def create_app(config: Config) -> FastAPI:
 
     def _mod_root(gid: str, name: str) -> Path:
         from . import filemods
-        d = filemods.mod_dir(config, gid, name).resolve()
-        if not str(d).startswith(str((Path(config.cache) / "mods").resolve())) or "/" in gid + name or "\\" in gid + name:
-            raise HTTPException(400, "bad mod name")
-        return d
+        try:
+            return filemods.mod_dir(config, gid, name).resolve()
+        except ValueError as error:
+            raise HTTPException(400, "bad mod name") from error
 
     @app.get("/api/modfiles/{gid}/{name}")
     def modfiles(gid: str, name: str, actor=Depends(auth)):
@@ -1850,8 +1865,12 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/modfiles/{gid}/{name}/file/{path:path}")
     def modfile_get(gid: str, name: str, path: str, actor=Depends(auth)):
         d = _mod_root(gid, name)
-        f = (d / path).resolve()
-        if not str(f).startswith(str(d)) or not f.is_file():
+        from . import filemods
+        try:
+            f = filemods._file_path(d, path)
+        except ValueError as error:
+            raise HTTPException(404, "no such file") from error
+        if not f.is_file():
             raise HTTPException(404, "no such file")
         return FileResponse(f)
 
@@ -1859,11 +1878,13 @@ def create_app(config: Config) -> FastAPI:
     async def modfile_put(gid: str, name: str, path: str, request: Request, actor=Depends(auth)):
         """A machine that built a mod hands it to the collection (streamed to disk; .part until complete)."""
         d = _mod_root(gid, name)
-        f = (d / path).resolve()
-        if not str(f).startswith(str(d)):
-            raise HTTPException(400, "bad path")
+        from . import filemods
+        try:
+            f = filemods._file_path(d, path)
+            tmp = filemods._file_path(d, path + ".part")
+        except ValueError as error:
+            raise HTTPException(400, "bad path") from error
         f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_name(f.name + ".part")
         with open(tmp, "wb") as fh:
             async for chunk in request.stream():
                 fh.write(chunk)

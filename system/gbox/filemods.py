@@ -10,7 +10,9 @@ import shutil
 import time
 import threading
 import hashlib
-from pathlib import Path
+import re
+import uuid
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 _FETCH_LOCKS = {}
 _FETCH_GUARD = threading.Lock()
@@ -30,7 +32,14 @@ def base_dir(cfg, game_id: str) -> Path:
 
 
 def mod_dir(cfg, game_id: str, name: str) -> Path:
-    return Path(cfg.cache) / "mods" / game_id / name
+    for value in (game_id, name):
+        if not isinstance(value, str) or not value or value in (".", "..") or any(c in value for c in "/\\:\0"):
+            raise ValueError("game and mod names must be single cache-folder components")
+    root = (Path(cfg.cache) / "mods").resolve()
+    out = root / game_id / name
+    if not out.resolve().is_relative_to(root / game_id):
+        raise ValueError("mod folder must stay inside its game cache")
+    return out
 
 
 def ensure_base(cfg, game_id: str, rom: Path, progress=None) -> Path:
@@ -171,11 +180,12 @@ def build_image(cfg, game_id: str, rom: Path, name: str, changes: dict, progress
 
 def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     out = mod_dir(cfg, game_id, name)
-    if not (out / ".gbox-mod.json").exists():
+    marker = _file_path(out, ".gbox-mod.json")
+    if not marker.exists():
         raise ValueError(f"no built mod {name!r} for this game")
-    meta = json.loads((out / ".gbox-mod.json").read_text())
+    meta = json.loads(marker.read_text())
     if meta.get("image"):
-        return out / meta["image"]
+        return _file_path(out, meta["image"])
     return out / Path(rom).relative_to(game_root(rom))
 
 
@@ -210,67 +220,117 @@ def fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
 
 
 def _build_key(files: list[dict]) -> str:
-    h = hashlib.sha256()
-    for f in sorted(files, key=lambda f: f["path"]):
-        if f["path"] != ".gbox-mod.json":
-            h.update(f"{f['path']}\0{f['size']}\0{f.get('sha256', '')}\n".encode())
-    return h.hexdigest()[:10]
+    # Metadata is part of a build: equal track bytes with a different image or
+    # provenance must never reuse the previous manifest.
+    return hashlib.sha256(json.dumps(sorted(files, key=lambda f: f["path"]),
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:20]
+
+
+def _file_path(root: Path, path: str) -> Path:
+    if (not isinstance(path, str) or not path or "\\" in path or ":" in path or "\0" in path or
+            PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute() or
+            any(p in ("", ".", "..") for p in path.split("/"))):
+        raise ValueError("mod file must stay inside its cache folder")
+    out = root / path
+    if not out.resolve().is_relative_to(root.resolve()) or out.is_symlink():
+        raise ValueError("mod file must stay inside its cache folder")
+    return out
+
+
+def _manifest(files, out: Path) -> list[dict]:
+    if not isinstance(files, list):
+        raise ValueError("mod collection must provide a file manifest")
+    clean, seen = [], set()
+    for row in files:
+        if not isinstance(row, dict):
+            raise ValueError("invalid mod file manifest")
+        path, size, digest = row.get("path"), row.get("size"), row.get("sha256")
+        _file_path(out, path)
+        key = path.casefold()  # Workers can have case-insensitive filesystems.
+        if key in seen or path == STAGED_MARK or path.endswith(".part"):
+            raise ValueError("duplicate or reserved mod manifest path")
+        if type(size) is not int or size < 0 or not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest):
+            raise ValueError("mod manifest requires exact sizes and SHA256 hashes")
+        seen.add(key)
+        clean.append({"path": path, "size": size, "sha256": digest})
+    if ".gbox-mod.json" not in {f["path"] for f in clean}:
+        raise ValueError("mod collection omitted its completed metadata marker")
+    return clean
+
+
+def _matches(out: Path, files: list[dict]) -> bool:
+    expected = {row["path"].casefold() for row in files}
+    actual = set()
+    for path in out.rglob("*"):
+        if path.is_symlink():
+            return False
+        if path.is_file():
+            relative = path.relative_to(out).as_posix()
+            if relative == STAGED_MARK or relative.endswith(".part"):
+                continue  # Local provenance/resumable downloads are not game assets.
+            actual.add(relative.casefold())
+    if actual != expected:
+        return False
+    for row in files:
+        path = _file_path(out, row["path"])
+        if not path.is_file() or path.stat().st_size != row["size"] or _sha(path) != row["sha256"]:
+            return False
+    return True
 
 
 def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=None) -> str:
-    """Make mod `name` launchable on this machine and return the folder name to launch. Normally that is `name`. When the
-    running game holds the old build open (a same-name rebuild while it plays: WinError 5 on .part -> .bin, #1270), the
-    new build goes to `name~<build>` with the same file names, so the swap can still close the old game and start it."""
-    try:
-        if fetch(cfg, server, headers, game_id, name, progress):
-            _drop_stale_staged(cfg, game_id, name, keep="")
-            return name
-        return name                                        # not in the collection: the caller's marker check reports it
-    except ModInUse as e:
-        busy = e
+    """Prepare a pinned build without modifying any existing game copy or checkpoint.
+
+    Changed builds go beside the previous folder on every OS, before probing any
+    file lock. Old stages are retained because an open handle cannot prove that a
+    game, rollback, or another worker no longer needs them.
+    """
     import httpx
-    r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
-    r.raise_for_status()
-    alias = f"{name}{STAGED_SEP}{_build_key(r.json()['files'])}"
-    out = mod_dir(cfg, game_id, alias)
-    if progress:
-        progress(20, f"{busy.filename and Path(busy.filename).name or name} is open in the running game: staging the new build as {alias}")
-    out.mkdir(parents=True, exist_ok=True)
-    (out / STAGED_MARK).write_text(name)
     src = mod_dir(cfg, game_id, name)
-    for f in r.json()["files"]:                            # reuse what is already here instead of downloading a GD-ROM twice
-        have, part, dst = src / f["path"], src / (f["path"] + ".part"), out / f["path"]
-        if f["path"] == ".gbox-mod.json" or dst.exists() or not dst.resolve().is_relative_to(out.resolve()):
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if part.exists() and part.stat().st_size == f["size"]:
-                os.replace(part, dst.with_name(dst.name + ".part"))     # the finished download that couldn't be swapped in
-            elif have.exists() and have.stat().st_size == f["size"] and f.get("sha256") and _sha(have) == f["sha256"]:
-                os.link(have, dst)                         # unchanged file only: a changed one may be the open, locked copy
-        except OSError:
-            pass
-    if not fetch(cfg, server, headers, game_id, name, progress, dest=out):
-        raise RuntimeError(f"mod {name!r} disappeared from the collection while staging")
-    _drop_stale_staged(cfg, game_id, name, keep=alias)
-    return alias
+    key = str(src.resolve())
+    with _FETCH_GUARD:
+        lock = _FETCH_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        if r.status_code == 404:
+            return name  # Local-only mods still have a local completed marker.
+        r.raise_for_status()
+        files = _manifest(r.json().get("files"), src)
+        if src.exists() and _matches(src, files):
+            return name
+        alias = f"{name}{STAGED_SEP}{_build_key(files)}" if src.exists() else name
+        out = mod_dir(cfg, game_id, alias)
+        if out.exists():
+            if ((out / STAGED_MARK).is_file() and (out / STAGED_MARK).read_text() == name and _matches(out, files)):
+                return alias
+            # A partial/corrupt/colliding folder may also be live; never repair it
+            # in place or erase its metadata. Claim a fresh exclusive sibling.
+            alias += "-" + uuid.uuid4().hex[:12]
+            out = mod_dir(cfg, game_id, alias)
+        out.mkdir(parents=True, exist_ok=False)
+        if alias != name:
+            (out / STAGED_MARK).write_text(name)
+        if progress:
+            progress(20, f"Preserving the existing game copy: staging the new build as {alias}")
+        for row in files:
+            if row["path"] == ".gbox-mod.json":
+                continue
+            have, dst = _file_path(src, row["path"]), _file_path(out, row["path"])
+            if have.is_file() and have.stat().st_size == row["size"] and _sha(have) == row["sha256"]:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(have, dst)  # No hard-link alias to an independently rebuilt source.
+                except OSError:
+                    pass  # The pinned download can still supply a read-locked resource.
+        _fetch(cfg, server, headers, game_id, name, progress, dest=out, files=files)
+        if not _matches(out, files):
+            raise RuntimeError("prepared mod does not match its pinned build manifest")
+        return alias
 
 
 def _sha(p: Path) -> str:
     with p.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _drop_stale_staged(cfg, game_id: str, name: str, keep: str):
-    root = Path(cfg.cache) / "mods" / game_id
-    for d in root.glob(f"{name}{STAGED_SEP}*") if root.exists() else ():
-        if d.name != keep and (d / STAGED_MARK).exists():
-            gone = d.with_name(d.name + ".drop")
-            try:
-                os.rename(d, gone)                         # fails while a game holds a file open: that copy stays intact
-            except OSError:
-                continue
-            shutil.rmtree(gone, ignore_errors=True)
 
 
 def _replace(tmp: Path, dst: Path, out: Path):
@@ -279,28 +339,29 @@ def _replace(tmp: Path, dst: Path, out: Path):
     except PermissionError as e:
         if not dst.exists():
             raise
-        try:
-            (out / ".gbox-mod.json").unlink(missing_ok=True)   # half updated: never launch this folder as a finished mod
-        except OSError:
-            pass
         raise ModInUse(e.errno, f"{dst.name} is open in a running game", str(dst)) from e
 
 
-def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, retry=True, dest: Path | None = None) -> bool:
+def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, retry=True, dest: Path | None = None,
+           files: list[dict] | None = None) -> bool:
     """A mod built elsewhere: download it from the central collection (the Spark) into this machine's cache. Resumable:
     files already here with the right size are kept. Returns False if the collection doesn't have it either."""
     import httpx
-    r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
-    if r.status_code == 404:
-        return False
-    r.raise_for_status()
-    files, out = r.json()["files"], dest or mod_dir(cfg, game_id, name)
+    out = dest or mod_dir(cfg, game_id, name)
+    if files is None:
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        files = r.json()["files"]
+    # Check every path before creating even the first partial download.
+    for row in files:
+        dst = _file_path(out, row["path"])
+        _file_path(out, row["path"] + ".part")
     total, done = sum(f["size"] for f in files) or 1, 0
     reported = 0
     for f in sorted(files, key=lambda f: f["path"] == ".gbox-mod.json"):    # the marker last: a half copy isn't a mod
-        dst = out / f["path"]
-        if not dst.resolve().is_relative_to(out.resolve()):
-            raise ValueError('mod file must stay inside its cache folder')
+        dst = _file_path(out, f["path"])
         if dst.exists() and dst.stat().st_size == f["size"]:
             with dst.open('rb') as stream:
                 valid = not f.get('sha256') or hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
@@ -338,7 +399,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
             with tmp.open('rb') as stream: valid = hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
             if not valid:
                 tmp.unlink()
-                if retry: return _fetch(cfg, server, headers, game_id, name, progress, retry=False, dest=dest)
+                if retry: return _fetch(cfg, server, headers, game_id, name, progress, retry=False, dest=dest, files=files)
                 raise ValueError(f"Mod checksum mismatch: {f['path']}")
         _replace(tmp, dst, out)
     return (out / ".gbox-mod.json").exists()
