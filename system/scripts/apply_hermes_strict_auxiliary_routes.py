@@ -253,7 +253,8 @@ def apply_runtime(runtime, *, apply=False):
             if path.read_bytes() != before[rel]:
                 raise UnsupportedRuntime('Runtime changed during patch preparation')
         for rel, path in paths.items():
-            os.replace(temporary.pop(rel), path)
+            os.replace(temporary[rel], path)
+            temporary.pop(rel)
             replaced.append(rel)
     except BaseException:
         for rel in reversed(replaced):
