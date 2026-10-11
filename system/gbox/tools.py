@@ -223,10 +223,18 @@ class LaunchOut(BaseModel):
     detail: dict
 
 def _launch_accept(store, out: LaunchOut, actor: str):
+    existing = store.get('session', out.session_id)
+    expected = {'game_id': (out.detail.get('_game') or {}).get('game_id'), 'adapter': out.adapter,
+                'pid': out.detail.get('pid')}
+    if existing:
+        observed = {'game_id': existing.get('game_id'), 'adapter': existing.get('adapter'),
+                    'pid': (existing.get('detail') or {}).get('pid')}
+        if observed != expected:
+            raise RuntimeError('This launch result conflicts with the already registered native session')
     for checkpoint in out.detail.get('previous_checkpoints', []):
         old_sid = checkpoint['session_id']
         old = store.get('session', old_sid)
-        if old:
+        if old and old.get('state') != 'ended':
             store.put('session', old_sid, old | {'state': 'ended', 'ended': time.time(),
                       'checkpoint': checkpoint['artifact'], 'exit': {'via': 'single_game', 'to': out.session_id}})
     g = out.detail.get("_game", {})
@@ -234,13 +242,15 @@ def _launch_accept(store, out: LaunchOut, actor: str):
     collection_mod = out.detail.get("collection_mod") or actual_mod
     prepared = ({"collection_mod": collection_mod, "staged_mod": actual_mod, "launch_mod": actual_mod}
                 if collection_mod != actual_mod else {})
-    store.put("session", out.session_id, {"session_id": out.session_id, "game_id": g.get("game_id"), "title": g.get("title"),
+    if not existing:
+        store.put("session", out.session_id, {"session_id": out.session_id, "game_id": g.get("game_id"), "title": g.get("title"),
                                           "mod": collection_mod, **prepared,
                                           "adapter": out.adapter, "capabilities": out.capabilities, "state": "running",
                                           "started": time.time(), "detail": {k: v for k, v in out.detail.items() if k != "_game"}})
     if g.get("game_id"):
         e = store.catalog_get(g["game_id"]) or {}
-        upd = {"playable": f"launches ({out.adapter})", "last_played": time.time()}
+        registered = existing or store.get('session', out.session_id)
+        upd = {"playable": f"launches ({out.adapter})", "last_played": registered['started']}
         if out.detail.get("staged_on"):
             upd["cached_on"] = sorted(set(e.get("cached_on") or []) | {out.detail["staged_on"]})
         store.catalog_update(g["game_id"], **upd)

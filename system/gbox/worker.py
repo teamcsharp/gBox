@@ -11,6 +11,7 @@ from . import tools as _builtin  # noqa: F401  (registers tools)
 from .config import Config
 from .models import WorkerInfo
 from .registry import HOST_OS, REGISTRY, Ctx, execute
+from .worker_results import ResultOutbox
 
 MAX_PARALLEL = 4          # long jobs (library scans) must not block short ones (stop_game) on the same node
 REDESCRIBE_S = 60         # re-check tool availability (e.g. after provisioning installed ghidra)
@@ -44,7 +45,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
         reason = t.unavailable_reason(config)
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    features = ['independent_heartbeat'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
+    features = ['independent_heartbeat', 'durable_result_delivery'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     if wid:
         info.id = wid
@@ -52,7 +53,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
 
 
 def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client,
-             active: set, active_agent: set, quiet_sessions: set):
+             active: set, active_agent: set, quiet_sessions: set, outbox: ResultOutbox):
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
@@ -69,11 +70,7 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
                 res.update(ok=False, error=f"Cannot keep this PC at 2% volume: {exc}")
     if not res["ok"]:
         res["artifacts"], res["log"] = [], ctx.log
-        try:
-            client.post(f"/api/workers/{wid}/result", json=res, timeout=30).raise_for_status()
-        finally:
-            active.discard(job["id"])
-            active_agent.discard(job["id"])
+        _deliver_finished(outbox, client, wid, res, active, active_agent)
         return
     for attempt in (0, 1):
         try:
@@ -99,11 +96,29 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     res["log"] = ctx.log
     if job.get("agent_use") and res["ok"] and job["tool"] == "launch_game" and (res.get("output") or {}).get("session_id"):
         quiet_sessions.add(res["output"]["session_id"])
+    _deliver_finished(outbox, client, wid, res, active, active_agent)
+
+
+def _deliver_finished(outbox, client, wid, result, active, active_agent):
     try:
-        client.post(f"/api/workers/{wid}/result", json=res, timeout=600).raise_for_status()
-    finally:
-        active.discard(job["id"])
-        active_agent.discard(job["id"])
+        outbox.save(wid, result)  # artifact bytes are fsynced before the first request
+        if outbox.deliver(client, result['job_id']):
+            active.discard(result['job_id'])
+            active_agent.discard(result['job_id'])
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Keep the job busy on persistence failures. Never rerun its tool.
+        print(f"result delivery held for {result['job_id']}: {type(exc).__name__}", flush=True)
+
+
+def _result_delivery_loop(stop, outbox, active, active_agent, server, headers):
+    with httpx.Client(base_url=server, headers=headers, timeout=20) as client:
+        while not stop.wait(2):
+            try:
+                for jid in outbox.send_ready(client):
+                    active.discard(jid)
+                    active_agent.discard(jid)
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"durable result delivery held: {type(exc).__name__}", flush=True)
 
 
 def _quiet_volume_loop(stop: threading.Event, active_agent: set, quiet_sessions: set):
@@ -186,6 +201,15 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     stop = stop or threading.Event()
     h = {"authorization": f"Bearer {token}"}
     name = name or platform.node()
+    outbox = ResultOutbox(config.runtime, server, name)
+    # Drain the previous worker's exact finished results BEFORE registering a new
+    # identity; registration would otherwise retire its unfinished jobs.
+    with httpx.Client(base_url=server, headers=h, timeout=20) as delivery_client:
+        outbox.send_ready(delivery_client, force=True)
+    if outbox.pending_count():
+        raise RuntimeError('Worker activation held: finished results still await verified delivery')
+    if outbox.protected_sessions(_builtin._running_file(config)):
+        raise RuntimeError('Worker activation held: a delivered native launch still has an owned PID record; no emulator was stopped')
     info = describe(config, name)
     def _push():                                    # mods built on this machine join the central collection on the Spark
         try:
@@ -196,16 +220,13 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         except Exception as e:
             print(f"mod upload skipped: {e}", flush=True)
     threading.Thread(target=_push, daemon=True).start()
-    try:                                            # close games a previous run of this worker left running in the background
-        from .tools import reap_orphans
-        gone = reap_orphans(config)
-        if gone:
-            print(f"closed {len(gone)} leftover emulator(s) from the previous worker run: {gone}", flush=True)
-    except Exception as e:
-        print(f"orphan cleanup skipped: {e}", flush=True)
+    # Live owned PIDs were checked above. Startup never kills a surviving game,
+    # including a launch whose completion delivery was lost by an older worker.
     active: set[str] = set()
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
+    def current_info():
+        return info.model_copy(update={'pending_results': outbox.pending_count()})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
@@ -215,13 +236,14 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
         threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True).start()
-        threading.Thread(target=_heartbeat_loop, args=(stop, lambda: info, active, server, h), daemon=True).start()
+        threading.Thread(target=_heartbeat_loop, args=(stop, current_info, active, server, h), daemon=True).start()
+        threading.Thread(target=_result_delivery_loop, args=(stop, outbox, active, active_agent, server, h), daemon=True).start()
         described = time.time()
         while not stop.is_set():
             if time.time() - described > REDESCRIBE_S:
                 try:
                     info = describe(config, name, info.id)
-                    c.post("/api/workers/register", json=info.model_dump(), timeout=60).raise_for_status()
+                    c.post("/api/workers/register", json=current_info().model_copy(update={'active_jobs': len(active)}).model_dump(), timeout=60).raise_for_status()
                     described = time.time()
                 except (httpx.HTTPError, OSError) as exc:
                     print(f"worker registration retry: {exc}", flush=True)
@@ -238,7 +260,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 continue
             if r.status_code == 404:                               # server restarted with fresh state
                 try:
-                    c.post("/api/workers/register", json=info.model_dump(), timeout=60).raise_for_status()
+                    c.post("/api/workers/register", json=current_info().model_copy(update={'active_jobs': len(active)}).model_dump(), timeout=60).raise_for_status()
                 except httpx.HTTPError:
                     stop.wait(poll_s * 5)
                 continue
@@ -254,4 +276,4 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             active.add(job["id"])
             if job.get("agent_use"):
                 active_agent.add(job["id"])
-            threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions), daemon=True).start()
+            threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox), daemon=True).start()

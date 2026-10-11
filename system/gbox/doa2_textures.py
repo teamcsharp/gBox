@@ -26,15 +26,44 @@ class Texture:
     capacity: int
     descriptor_offset: int
 
+    @property
+    def payload_size(self) -> int:
+        """Native image chain, excluding its trailing BIN alignment bytes."""
+        return texture_payload_size(self.width, self.height, self.pixel, self.format)
 
-def texture_size(width: int, height: int, pixel: int, fmt: int) -> int:
+
+def base_level_offset(width: int, height: int, fmt: int) -> int:
+    """Offsets from Flycast's OtherMipPoint and VQMipPoint layouts.
+
+    Raw 16-bit mips start with SIX reserved bytes before the 1x1 level.
+    VQ 1x1 and 2x2 each consume one index byte after the 2048-byte book.
+    Mipmapped PVR images are square; rectangular chains are not inferred.
+    """
+    if fmt not in (2, 4):
+        return 2048 if fmt == 3 else 0
+    if width != height or width <= 0 or width & (width - 1):
+        raise ValueError('Native mipmapped textures must be square powers of two')
+    offset = 6 if fmt == 2 else 2048
+    side = 1
+    while side < width:
+        offset += 2 * side * side if fmt == 2 else max(1, (side // 2) ** 2)
+        side *= 2
+    return offset
+
+
+def texture_payload_size(width: int, height: int, pixel: int, fmt: int) -> int:
     if pixel not in (0, 1, 2):
         raise ValueError(f"Unsupported native pixel format {pixel:#x}")
-    if fmt == 3:
-        return 2048 + width * height // 4
-    if fmt in (1, 0x0D):
-        return 2 * width * height
+    if fmt in (3, 4):
+        return base_level_offset(width, height, fmt) + max(1, width * height // 4)
+    if fmt in (1, 2, 0x0D):
+        return base_level_offset(width, height, fmt) + 2 * width * height
     raise ValueError(f"Unsupported native texture format {fmt:#x}")
+
+
+def texture_size(width: int, height: int, pixel: int, fmt: int) -> int:
+    size = texture_payload_size(width, height, pixel, fmt)
+    return (size + 31) & ~31 if fmt in (2, 4) else size
 
 
 def descriptors(chr_data: bytes, bin_data: bytes | int) -> list[Texture]:
@@ -63,8 +92,8 @@ def descriptors(chr_data: bytes, bin_data: bytes | int) -> list[Texture]:
 
 def pvr_chunk(tex: Texture, bin_data: bytes) -> bytes:
     """Supply the omitted PVRT header, leaving native image bytes unchanged."""
-    body = bin_data[tex.offset:tex.offset + tex.size]
-    if len(body) != tex.size:
+    body = bin_data[tex.offset:tex.offset + tex.payload_size]
+    if len(body) != tex.payload_size:
         raise ValueError("Truncated BIN texture")
     return b"PVRT" + struct.pack("<IBBHHH", len(body) + 8, tex.pixel, tex.format, 0, tex.width, tex.height) + body
 

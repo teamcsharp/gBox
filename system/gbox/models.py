@@ -100,6 +100,7 @@ class WorkerInfo(BaseModel):
     last_seen: float = Field(default_factory=time.time)
     idle_seconds: float | None = None  # time since local user input; unknown on headless workers
     active_jobs: int = 0
+    pending_results: int = 0       # executed once; delivery is unresolved, so maintenance must wait
     features: list[str] = []
 
 

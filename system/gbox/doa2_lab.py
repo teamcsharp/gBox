@@ -13,7 +13,7 @@ from .registry import tool
 
 
 class Doa2In(BaseModel):
-    op: Literal["inspect", "decompose", "build", "motions", "native_cache"] = "inspect"
+    op: Literal["inspect", "decompose", "build", "motions", "native_cache", "environments"] = "inspect"
     game_id: str = "1de2e7634f3161ff"
     fighter: str = "Kasumi"               # fighter name/family; decompose also supports all
     costume: str = "00"                  # decompose also supports all
@@ -24,6 +24,8 @@ class Doa2In(BaseModel):
     native_cache: str = "native-cloth-cache"  # relative to this game's analysis directory
     cache_action: Literal["prepare", "run", "verify"] = "verify"
     include_details: bool = False        # full provenance is always attached as doa2-details.json
+    environment: str = "all"            # environments: STAGE03 (archive, not inferred arena name)
+    environment_action: Literal["inspect", "decompose"] = "inspect"
 
 
 class Doa2Out(BaseModel):
@@ -144,14 +146,14 @@ def compact_report(value, key=''):
         return {k: compact_report(v, k) for k, v in value.items()}
     if isinstance(value, list):
         if key in ('provenance', 'clips', 'tracks', 'records', 'vertices', 'aliases',
-                   'cells', 'uv_sequence_proofs', 'files') and len(value) > 16:
+                   'cells', 'uv_sequence_proofs', 'files', 'textures', 'parts') and len(value) > 16:
             return {'count': len(value), 'details_artifact': 'doa2-details.json',
                     'preview': [compact_report(v) for v in value[:2]]}
         return [compact_report(v) for v in value]
     return value
 
 
-@tool("doa2_assets", "1.1", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
+@tool("doa2_assets", "1.2", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
       permissions=[P.READ, P.STAGE, P.EXECUTE], timeout_s=3600,
       side_effects=["writes decomposed assets and modified disc copies into the cache/analysis folders"],
       artifacts=["doa2-report.json", "doa2-details.json"], validation="native archive validation and operation report match",
@@ -162,6 +164,9 @@ def doa2_assets(inp: Doa2In, ctx):
     Inspect/decompose supports fighter=all costume=all. Native_cache prepare/run/verify reproduces original
     SH4 cloth generation with Ghidra. Complete decomposition requires its verified cache. Build preserves
     mapped weights in native SUP, retains original motion/actor initialization and disables stale APV/ACS.
+    Environments inspects/decomposes environment=all or an explicit STAGE## archive using
+    environment_action=inspect/decompose. Exports editable, unassembled parts plus native CHR/BIN
+    and full PVR mip chains. Stage placement, animation, collision and native reimport remain unverified.
     """
     from . import characters as C, doa2_chars, doa2_geometry as G, doa2_textures as T, doa2_swap as S
     from .gdrom import GDRom
@@ -175,12 +180,41 @@ def doa2_assets(inp: Doa2In, ctx):
     executable_sha = hashlib.sha256(executable).hexdigest()
     if executable_sha != S.EXECUTABLE_SHA256:
         raise ValueError("Unsupported executable identity")
-    selected = [] if inp.op in ("motions", "native_cache") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
+    selected = [] if inp.op in ("motions", "native_cache", "environments") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
     analysis = Path(ctx.config.data_dir) / "analysis" / "doa2" / inp.game_id
     cache = cache_directory(analysis, inp.native_cache)
     if inp.op == 'native_cache':
         result = {'op': inp.op, 'action': inp.cache_action, 'game_id': inp.game_id,
                   'cache': str(cache), 'verification': run_cache(ctx, disc, analysis, cache, inp.cache_action)}
+    elif inp.op == 'environments':
+        from . import doa2_environments as E
+        import uuid
+        entries = []
+        stages = E.select(disc.files, inp.environment)
+        for index, row in enumerate(stages):
+            ctx.progress(5 + 90 * index / len(stages), f"Environment source: {row['name']}")
+            try:
+                if not row['available']:
+                    raise ValueError('Corresponding native BIN is absent')
+                chr_data, bin_data = disc.read(row['geometry']), disc.read(row['textures'])
+                if inp.environment_action == 'decompose':
+                    output = analysis / 'environments' / (row['name'] + '-' + uuid.uuid4().hex[:12])
+                    entry = E.export_assets(chr_data, bin_data, output, row['name'],
+                                            source={'game_id': inp.game_id, 'executable_sha256': executable_sha})
+                else:
+                    entry = E.inspect_archive(chr_data, bin_data, row['name'])
+                entries.append(entry)
+            except ValueError as error:
+                entries.append({'name': row['name'], 'status': 'unsupported_source', 'reason': str(error)})
+        result = {'op': inp.op, 'action': inp.environment_action, 'game_id': inp.game_id,
+                  'executable_sha256': executable_sha, 'environments': entries,
+                  'inventory_archives': len(E.inventory(disc.files)),
+                  'available_archives': sum(row['available'] for row in E.inventory(disc.files)),
+                  'selected_archives': len(stages),
+                  'verified_archives': sum(e['status'] == 'source_records_verified' for e in entries),
+                  'unsupported_archives': sum(e['status'] == 'unsupported_source' for e in entries),
+                  'gameplay_verified': False, 'native_reimport_supported': False,
+                  'assembly': 'unassembled native stage parts; arena selection and scene placement not inferred'}
     elif inp.op == "motions":
         from . import doa2_motion
         names=sorted(name for name in disc.files if name.endswith('.MOT'))
