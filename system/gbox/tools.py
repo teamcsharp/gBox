@@ -3000,7 +3000,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         if saved.get('verified') is True:
             raise RuntimeError('the adapter reported a verified checkpoint without its native path')
         for _ in range(100):                                   # RetroArch writes the file asynchronously
-            f = newest()
+            f = newest(want if kind == 'retroarch' else None)
             if f and f.stat().st_mtime >= t0 - 1 and f.stat().st_size > 0:
                 time.sleep(0.5)
                 if kind == 'retroarch':

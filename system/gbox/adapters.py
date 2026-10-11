@@ -838,6 +838,7 @@ class RetroArchAdapter(CommandAdapter):
         if self.config is not None:
             rom = self._from_lst_zip(self._from_gme(self._from_old_chd(self._from_7z(rom))))
         argv = self._argv(rom)
+        self.state_stem = Path(rom).stem                # RetroArch names state files "<content label>.state<slot>"
         self.examine_unavailable_reason = None
         if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
             self.examine_unavailable_reason = (
@@ -984,6 +985,14 @@ class RetroArchAdapter(CommandAdapter):
             self.cmd("FRAMEADVANCE")
         return {"stepped": n}
 
+    # RetroArch's network interface only steps slots one at a time (STATE_SLOT_PLUS/MINUS); a step command
+    # arriving while the previous one is still being processed is dropped, so incremental walks lose steps
+    # at low frame rate (VR Missions: slot 91 requested, state89 written). The gBox Windows runtime
+    # (Game.exe) adds direct SAVE_STATE_SLOT <n> / LOAD_STATE_SLOT <n> commands with an exact-slot ack.
+    # This adapter probes for them once per session and falls back to stepping on legacy builds. Every
+    # result reports the slot the emulator ACTUALLY used, taken from evidence (direct-command ack, emulator
+    # log line, and the written state file) -- never the requested number on faith. RetroArch writes state
+    # files asynchronously, so save_state also waits for the file to land on disk before returning.
     def _slot(self, slot):
         cur = getattr(self, "slot", 0)
         if slot is not None:                               # the network commands only step slots up/down
@@ -992,6 +1001,139 @@ class RetroArchAdapter(CommandAdapter):
                 time.sleep(0.05)                           # one command per frame: back-to-back steps get dropped
             self.slot = cur = int(slot)
         return cur
+
+    def _states_dir(self):
+        """RetroArch's savestate directory (None when this adapter has no runtime Config)."""
+        return self.config.runtime / "states" if getattr(self, "config", None) else None
+
+    def _slot_files(self, slot: int) -> list[Path]:
+        """The state files for a slot on disk; exact matches for the launched content win over other games'."""
+        states = self._states_dir()
+        if states is None or not states.is_dir():
+            return []
+        found = [f for f in states.rglob(f"*.state{slot}") if f.is_file() and f.suffix.lower() != ".png"]
+        stem = getattr(self, "state_stem", None)
+        if stem:
+            exact = [f for f in found if f.name == f"{stem}.state{slot}"]
+            if exact:
+                return exact
+        return found
+
+    def _log_pos(self) -> int:
+        try:
+            return self.log_path.stat().st_size
+        except (OSError, AttributeError):
+            return 0
+
+    def _log_after(self, pos: int) -> str:
+        """Emulator log text appended since byte offset pos ('' when the log is unavailable)."""
+        try:
+            with open(self.log_path, "rb") as fh:
+                fh.seek(pos)
+                return fh.read().decode(errors="replace")
+        except (OSError, TypeError):
+            return ""
+
+    def _log_slot(self, pos: int, verb: str) -> int | None:
+        """The slot named in the first emulator log line about `verb` ("sav"/"load") after byte offset pos.
+        Lines reporting a failure never count as evidence of a completed save/load."""
+        for line in self._log_after(pos).splitlines():
+            m = re.search(r"\.state(\d+)", line)
+            if m and re.search(rf"\b{verb}", line, re.I) and not re.search(r"\b(failed|unable|couldn't|error)\b", line, re.I):
+                return int(m.group(1))
+        return None
+
+    def _wait_log_slot(self, pos: int, verb: str, timeout: float = 1.5) -> int | None:
+        """The log is the emulator's own stdout; its line for a command lands a few ms after the UDP
+        round trip (longer at low frame rate). Poll briefly instead of reading once and giving up."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            slot = self._log_slot(pos, verb)
+            if slot is not None:
+                return slot
+            time.sleep(0.05)
+        return None
+
+    def _direct_slots(self) -> bool:
+        """Probe once per session whether this runtime honours SAVE_STATE_SLOT <n> / LOAD_STATE_SLOT <n>
+        (gBox Game.exe, acked). The probe loads a slot chosen to hold no state file on disk, which makes
+        it a no-op for the running game: RetroArch only shows "failed to load" and keeps playing."""
+        known = getattr(self, "_direct_known", None)
+        if known is not None:
+            return known
+        probe = 4000 + (getattr(self, "addr", ("127.0.0.1", 0))[1] % 1000)
+        for _ in range(200):                               # skip probe slots that already hold a state
+            if not self._slot_files(probe):
+                break
+            probe += 1
+        try:
+            ack = self.cmd(f"LOAD_STATE_SLOT {probe}", reply=True, timeout=0.8)
+        except RuntimeError:
+            ack = None
+        ok = bool(ack and ack.upper().startswith("LOAD_STATE_SLOT"))
+        if ok:
+            self.slot = probe                              # the runtime really is on the probe slot now
+        self._direct_known = ok
+        return ok
+
+    def _save_once(self, slot: int, pos: int) -> tuple[int | None, str | None, int]:
+        """One save attempt: the direct slot command when the runtime supports it, else incremental steps.
+        Returns (actual_slot, evidence, window_pos); actual_slot is None when nothing proves what happened.
+        window_pos is the log offset just before the save command, so the caller's completion wait and any
+        stale async lines from earlier attempts stay outside the evidence window."""
+        if self._direct_slots():
+            pos = self._log_pos()                          # fresh window: the probe may have logged its own failed load
+            try:
+                ack = self.cmd(f"SAVE_STATE_SLOT {slot}", reply=True, timeout=1.5)
+            except RuntimeError:
+                ack = None
+            if ack and ack.upper().startswith("SAVE_STATE_SLOT"):
+                m = re.search(r"SAVE_STATE_SLOT\s+(\d+)", ack, re.I)
+                actual = int(m.group(1)) if m else slot
+                self.slot = actual
+                return actual, f"direct command ack '{ack.strip()}'", pos
+            logged = self._wait_log_slot(pos, "sav")       # ack lost: the emulator log still proves the save
+            if logged is not None:
+                self.slot = logged
+                return logged, "emulator log after direct save (ack lost)", pos
+            self._direct_known = False                     # the command did not run at all: legacy build
+        self._slot(slot)
+        pos = self._log_pos()                              # steps take ~0.05 s each: an earlier attempt's async
+        self.cmd("SAVE_STATE")                             # completion line lands before this window opens
+        actual = self._wait_log_slot(pos, "sav")
+        if actual is not None:
+            self.slot = actual
+        return actual, ("emulator log after stepped save" if actual is not None else None), pos
+
+    def _await_write(self, slot: int, pos: int, before: dict, timeout: float | None = None) -> dict:
+        """Wait for RetroArch's asynchronous state write to complete. verified is True only when the
+        state file itself changed on disk after the save command; the log's "save task COMPLETED"
+        line is captured as corroborating evidence."""
+        timeout = timeout if timeout is not None else getattr(self, "_save_timeout", 12.0)
+        deadline = time.time() + timeout
+        logged = None
+        while time.time() < deadline:
+            for line in self._log_after(pos).splitlines():
+                # gBox Game.exe: "save task COMPLETED for slot 89, path "...state89" (N bytes)."
+                # upstream RetroArch: "save task COMPLETED for slot 0, path "...state91" (N bytes)."
+                # (its slot field is the task index). The path's slot number is authoritative.
+                m = re.search(r'save task COMPLETED(?: for slot (\d+))?.*?path\s+"([^"]*\.state(\d+))"\s*\((\d+) bytes\)', line)
+                if m and (int(m.group(3)) == slot or (m.group(1) and int(m.group(1)) == slot)):
+                    logged = (slot, int(m.group(4)))
+            for f in self._slot_files(slot):
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                prev = before.get(str(f))
+                if st.st_size > 0 and (prev is None or (st.st_mtime_ns, st.st_size) != prev):
+                    return {"slot": slot, "file": str(f), "bytes": st.st_size, "verified": True,
+                            "log_bytes": logged[1] if logged else None}
+            time.sleep(0.25)
+        return {"slot": slot, "verified": False,
+                "detail": f"no changed state file appeared on disk within {timeout:.0f} s"
+                          + (f" (emulator log reports {logged[1]} bytes)" if logged else ""),
+                "log_bytes": logged[1] if logged else None}
 
     def save_state(self, slot: int | None = None) -> dict:
         with self._state_lock:
@@ -1039,9 +1181,19 @@ class RetroArchAdapter(CommandAdapter):
             raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed' + detail)
 
     def load_state(self, slot: int | None = None) -> dict:
-        slot = self._slot(slot)
-        self.cmd("LOAD_STATE")
-        return {"slot": slot}
+        """Load a checkpoint, retrying the remaining slot delta when a legacy step was dropped, and report
+        the slot the emulator actually loaded (direct-command ack or emulator log)."""
+        requested = int(slot) if slot is not None else getattr(self, "slot", 0)
+        actual, evidence = None, ""
+        for _ in range(3):                                 # dropped steps: re-aim and re-load, then report
+            actual, evidence = self._load_once(requested, self._log_pos())
+            if actual == requested:
+                break
+        if actual is None:
+            # a legacy build with no load logging: nothing proves which slot was loaded
+            return {"slot": requested, "requested": requested, "verified": False,
+                    "detail": "the emulator gave no evidence of the loaded slot"}
+        return {"slot": actual, "requested": requested, "verified": True, "evidence": evidence}
 
     def debugger(self):
         from .debug import CPUS, MemoryDebugger
