@@ -1032,6 +1032,7 @@ window.taskVizCreate = canvas => {
 <script src="inbox-view.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
+<script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
@@ -4838,7 +4839,7 @@ document.body.insertAdjacentHTML("beforeend", `<div id="statusbar">
   <span id="sb-mid"><button id="sb-chat" title="Chat with gBox">💬 Chat</button><button id="sb-eye" title="Game eyedropper (Ctrl+I): point at anything in the game to grab it as an asset">✏</button></span><div id="sb-right"></div></div>
   <div id="auditpanel"><div class="ah"><b>Audit</b><span class="mut" id="au-n"></span><input id="au-q" placeholder="filter: actor, action, subject, details…">
     <button class="act" id="au-close">✕</button></div><div id="auditlist"></div></div>`);
-(async () => { const s = await gbox.settings(); SBX.api = s.apiUrl; SBX.tok = await gbox.token(); })();
+const SBX_READY = (async () => { const s = await gbox.settings(); SBX.api = s.apiUrl; SBX.tok = await gbox.token(); })();
 const AUD = { rows: [], after: 0 };
 const activityHost = document.createElement("div"); activityHost.id = "background-activity";
 $("#sb-audit").before(activityHost); activity = new TaskActivity(activityHost);
@@ -4846,10 +4847,19 @@ const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|de
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
 const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
+let PROCESS_POPUP = null;
+async function processPopupSync(jobs) {
+  if (!window.GBoxProcessPopup) return;
+  await SBX_READY;                                                          // first job must not cache a failed file:// / unauthenticated model load
+  if (!PROCESS_POPUP) PROCESS_POPUP = window.GBoxProcessPopup.mount({
+    assetUrl: p => `${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
+  });
+  PROCESS_POPUP.sync(jobs);
+}
 function auditPoll(explicit = true) { return pollAudit(explicit); }
 const pollAudit = singleFlightPoll(async () => {
   const [r, jobs] = await pollTogether([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
-  if (jobs.ok) activity?.remote(jobs.data); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
+  if (jobs.ok) { activity?.remote(jobs.data); await processPopupSync(jobs.data); } if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;

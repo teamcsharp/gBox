@@ -807,3 +807,18 @@ def test_owned_beat_mipmapped_body_texture_reencodes_inside_its_extent():
     assert encoded[end:] == texture[end:]
     decoded = np.frombuffer(pvr_decode(encoded)[2], np.uint8).reshape(height, width, 4)
     assert np.abs(decoded[..., :3].astype(int) - np.asarray(image)[..., :3].astype(int)).mean() < 16
+
+
+def test_single_root_writer_cache_builds_a_new_identity_and_keeps_old_files(cache_case):
+    from gbox.characters import CharIn
+    case = cache_case
+    previous = dict(case.identity, schema=2)
+    old_name = jgr._mod_name(case.meta, 4, previous)
+    folder = _cached(case, identity=previous, name=old_name)
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    result = jgr.use(case.ctx, case.meta, case.game,
+                     CharIn(op="use", character="amy", slot="id:0", launch=False))
+    assert result["mod"] != old_name and result["status"] == "built"
+    assert case.calls["build"][0]["identity"]["schema"] == 3
+    assert before == {p.name: p.read_bytes() for p in folder.iterdir()}
+    assert result["runtime_verified"] is False

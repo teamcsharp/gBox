@@ -32,14 +32,36 @@ class CDIRom:
         self._fh = open(self.path, "rb")
         try:
             self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
-        except ValueError as e:                         # empty file
-            raise ValueError("empty CDI image") from e
+        except (ValueError, OSError) as e:
+            self._fh.close()
+            raise ValueError("cannot map CDI image") from e
+        try:
+            self._load()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        mm = getattr(self, "_mm", None)
+        if mm is not None:
+            mm.close()
+        self._fh.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def _load(self):
+        self._data_end = len(self._mm)
         # (start_lba, length, file offset of start_lba's user data, sector stride)
         self._track_map: list[tuple[int, int, int, int]] = []
         try:
             self.tracks_info = self._parse_footer()
         except (struct.error, ValueError, IndexError):
             self.tracks_info = []
+            self._data_end = len(self._mm)
         pos = 0
         for t in self.tracks_info:
             if t["mode"] in (1, 2):
@@ -47,16 +69,17 @@ class CDIRom:
                 self._track_map.append((t["start_lba"], t["length"],
                                         pos + t["pregap"] * t["sector_size"] + user, t["sector_size"]))
             pos += t["total_length"] * t["sector_size"]
-        if pos > len(self._mm):                         # footer disagrees with the file: don't trust it
-            self._track_map = []
+        if pos > self._data_end:
+            raise ValueError("CDI tracks extend into the footer or beyond the image")
         self.files: dict[str, tuple[int, int]] = {}
+        self.metadata_ranges = []
+        self._active_directories = set()
         self.records: dict[str, tuple[int, int]] = {}
         if self._track_map:
             for start, _length, _off, _ss in self._track_map:
                 pvd = self.sector(start + 16)
                 if pvd[:6] == b"\x01CD001":
-                    root = pvd[156:156 + 34]
-                    self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
+                    self._volume(pvd, start)
         if not self.files:
             self._track_map = []
             self._heuristic_layout()
@@ -76,7 +99,16 @@ class CDIRom:
             raise ValueError(f"unexpected CDI sector stride {stride}")
         base = pvd - 16 * stride                        # the PVD is LBA 16: back up to LBA-0 user data
         self._track_map = [(0, (len(self._mm) - base) // stride + 1, base, stride)]
-        root = self.sector(16)[156:156 + 34]
+        self._volume(self.sector(16), 0)
+
+    def _volume(self, pvd, start):
+        self.metadata_ranges.append((start, start + 18))
+        path_sectors = (struct.unpack_from("<I", pvd, 132)[0] + 2047) // 2048
+        for offset, endian in ((140, "<"), (144, "<"), (148, ">"), (152, ">")):
+            location = struct.unpack_from(endian + "I", pvd, offset)[0]
+            if location and path_sectors:
+                self.metadata_ranges.append((location, location + path_sectors))
+        root = pvd[156:190]
         self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
 
     def _parse_footer(self) -> list[dict]:
@@ -87,6 +119,8 @@ class CDIRom:
         off = size - hoff if version == 0x80000006 else hoff
         if not 0 <= off < size - 8:
             raise ValueError("CDI footer offset out of range")
+
+        self._data_end = off
 
         def u(fmt):
             nonlocal off
@@ -114,8 +148,8 @@ class CDIRom:
                 start_lba, total_length = u("<I"), u("<I")
                 off += 16
                 ss = self._SECTOR_SIZES.get(u("<I"))
-                if ss is None or mode > 2:
-                    raise ValueError("unsupported CDI track")
+                if ss is None or mode > 2 or not length or total_length < pregap + length:
+                    raise ValueError("unsupported or inconsistent CDI track")
                 off += 29
                 if version != 0x80000004:
                     off += 5
@@ -129,7 +163,10 @@ class CDIRom:
     def _offset(self, lba: int) -> int:
         for start, length, file_off, ss in self._track_map:
             if start <= lba < start + length:
-                return file_off + (lba - start) * ss
+                off = file_off + (lba - start) * ss
+                if off < 0 or off + 2048 > self._data_end:
+                    raise ValueError("CDI user sector outside the image")
+                return off
         raise ValueError(f"LBA {lba} not in any CDI data track")
 
     def sector(self, lba: int) -> bytes:
@@ -137,22 +174,36 @@ class CDIRom:
         return self._mm[off:off + 2048]
 
     def _walk(self, lba, size, prefix):
-        data = b"".join(self.sector(lba + i) for i in range((size + 2047) // 2048))
-        o = 0
-        while o < len(data):
-            n = data[o]
-            if n == 0:
-                o = (o // 2048 + 1) * 2048
-                continue
-            ext, ln, flags, nl = struct.unpack_from("<I", data, o + 2)[0], struct.unpack_from("<I", data, o + 10)[0], data[o + 25], data[o + 32]
-            name = data[o + 33:o + 33 + nl].decode("latin-1").split(";")[0]
-            if name not in ("\x00", "\x01"):
-                if flags & 2:
-                    self._walk(ext, ln, f"{prefix}{name}/")
-                else:
-                    self.files[f"{prefix}{name}"] = (ext, ln)
-                    self.records[f"{prefix}{name}"] = (lba + o // 2048, o % 2048)
-            o += n
+        if type(size) is not int or not 0 < size <= len(self._mm):
+            raise ValueError("invalid CDI directory size")
+        if lba in self._active_directories or len(self._active_directories) >= 128:
+            raise ValueError("cyclic or excessive CDI directory depth")
+        self.metadata_ranges.append((lba, lba + (size + 2047) // 2048))
+        self._active_directories.add(lba)
+        try:
+            data = b"".join(self.sector(lba + i) for i in range((size + 2047) // 2048))[:size]
+            o = 0
+            while o < len(data):
+                n = data[o]
+                if n == 0:
+                    o = (o // 2048 + 1) * 2048
+                    continue
+                if n < 34 or o + n > len(data) or o % 2048 + n > 2048:
+                    raise ValueError("truncated CDI directory record")
+                ext, ln = struct.unpack_from("<I", data, o + 2)[0], struct.unpack_from("<I", data, o + 10)[0]
+                flags, nl = data[o + 25], data[o + 32]
+                if not nl or nl > n - 33:
+                    raise ValueError("invalid CDI directory filename")
+                name = data[o + 33:o + 33 + nl].decode("latin-1").split(";")[0]
+                if name not in ("\x00", "\x01"):
+                    if flags & 2:
+                        self._walk(ext, ln, f"{prefix}{name}/")
+                    else:
+                        self.files[f"{prefix}{name}"] = (ext, ln)
+                        self.records[f"{prefix}{name}"] = (lba + o // 2048, o % 2048)
+                o += n
+        finally:
+            self._active_directories.remove(lba)
 
     def read(self, name: str) -> bytes:
         lba, size = self.files[name]
@@ -173,6 +224,7 @@ class GDRom:
             self.base = cdi.base
             self.sector_size = cdi.sector_size
             self.files, self.records = cdi.files, cdi.records
+            self.metadata_ranges = cdi.metadata_ranges
             self._cdi = cdi
             return
         self._cdi = False
@@ -301,6 +353,9 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
     import os
     import shutil
     src_gdi, out_dir = Path(src_gdi), Path(out_dir)
+    if src_gdi.suffix.lower() != ".gdi":
+        raise ValueError("Native disc writing requires a GDI with verified raw tracks; CDI support is read-only. "
+                         "Supply an owned GDI extraction before building a replacement.")
     name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)   # GDI lines are whitespace-separated
     disc = GDRom(src_gdi)
     order = sorted(l for l, _s in disc.files.values())

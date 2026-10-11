@@ -66,3 +66,54 @@ def test_scan_matches_doa2_chr_model_table():
     found = naomilib.scan(data)
     assert [m['offset'] for m in found] == expected
     assert all(m['triangle_count'] > 0 for m in found)
+
+
+@pytest.mark.parametrize("cut", [0, 12, 24, 90, -4])
+def test_decoder_rejects_truncated_native_model(cut):
+    data = _model()
+    truncated = data[:cut] if cut else b""
+    with pytest.raises(ValueError):
+        naomilib.decode_model(truncated, 0)
+
+
+@pytest.mark.parametrize("fault", ["forward_reference", "fan", "nonfinite", "mesh_extent"])
+def test_decoder_refuses_unsupported_or_corrupt_records(fault):
+    data = bytearray(_model())
+    poly = 24 + 80
+    if fault == "forward_reference":
+        ref = poly + 8 + 3 * 32
+        struct.pack_into("<i", data, ref + 4, 32)
+    elif fault == "fan":
+        struct.pack_into("<I", data, poly, 1)
+    elif fault == "nonfinite":
+        struct.pack_into("<f", data, poly + 8, float("nan"))
+    else:
+        struct.pack_into("<I", data, 24 + 76, len(data))
+    with pytest.raises(ValueError):
+        naomilib.decode_model(data, 0)
+    assert naomilib.scan(data) == []
+
+
+@pytest.mark.parametrize("shader", [-2, -3])
+def test_native_extended_and_packed_vertices_keep_normals_and_uv(shader):
+    vertices = []
+    for x, y, u, v in [(0, 0, 0.25, 0.75), (1, 0, 0.5, 0.25), (0, 1, 0.75, 0.5)]:
+        size = 56 if shader == -2 else 32
+        raw = bytearray(size)
+        struct.pack_into("<3f", raw, 0, x, y, 0)
+        if shader == -3:
+            struct.pack_into("<3b", raw, 12, 0, -128, 127)
+        else:
+            struct.pack_into("<3f", raw, 12, 0, -1, 1)
+        struct.pack_into("<2f", raw, size - 8, u, v)
+        vertices.append(raw)
+    poly = struct.pack("<2I", 0x0a, 1) + b"".join(vertices)
+    header = bytearray(80)
+    struct.pack_into("<I", header, 0, 0x80000000)
+    struct.pack_into("<2i", header, 32, 2, shader)
+    struct.pack_into("<I", header, 76, len(poly))
+    data = struct.pack("<2I4f", 1, 1, 0.5, 0.5, 0, 1) + header + poly + struct.pack("<2I", 0, 3)
+    model = naomilib.decode_model(data, 0)
+    mesh = model["meshes"][0]
+    assert mesh["triangles"] == [(1, 0, 2)]
+    assert mesh["vertices"][0][3:] == (0, -1, 1, 0.25, 0.75)

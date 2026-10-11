@@ -39,7 +39,7 @@
       .asset-dialog .as-dialog-bar { display:flex; gap:8px; align-items:center; margin-bottom:10px; } .asset-dialog .as-dialog-bar b { flex:1; }
       .asset-dialog button,.asset-dialog a { font:inherit; color:var(--fg); border:1px solid var(--line); background:var(--card); border-radius:5px; padding:6px 10px; text-decoration:none; cursor:pointer; }
     `; document.head.append(css);
-    const $ = selector => root.querySelector(selector), state = { items: [], textures: new Map(), groups: new Map(), revision: 0, busy: false, signature: '', disposed: false };
+    const $ = selector => root.querySelector(selector), state = { items: [], textures: new Map(), groups: new Map(), revision: 0, busy: false, polling: false, signature: '', disposed: false };
     let prefs = {}; try { prefs = JSON.parse(localStorage.getItem('gbox_asset_sidebar') || '{}'); } catch {}
     const expanded = new Set(prefs.expanded || []);
     root.innerHTML = `<div class="as-head"><b>Assets</b><button class="as-refresh" title="Refresh extracted assets" aria-label="Refresh extracted assets">↻</button><button class="as-toggle" aria-expanded="true" title="Collapse asset sidebar">›</button></div>
@@ -57,10 +57,13 @@
     const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1000 ? (n / 1000).toFixed(1) + ' KB' : n + ' B';
     const date = ts => ts ? new Date(ts * 1000).toLocaleString() : '';
     function row(a) {
-      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count ? textureTree(a) : ''}</div></div>`;
+      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count || a.file_count ? textureTree(a) : ''}</div></div>`;
     }
-    // Textures stay collapsed under their character/model; their rows are fetched only when expanded.
-    function textureTree(a) { return `<details class="as-tex" data-owner="${esc(a.id)}"><summary>Textures (${a.texture_count})</summary><div class="as-tex-rows"></div></details>`; }
+    // Model companions stay collapsed; fetch their rows only when expanded.
+    function textureTree(a) {
+      const labels = [a.texture_count ? `Textures (${a.texture_count})` : '', a.file_count ? `Files (${a.file_count})` : ''].filter(Boolean);
+      return `<details class="as-tex" data-owner="${esc(a.id)}"><summary>${labels.join(' / ')}</summary><div class="as-tex-rows"></div></details>`;
+    }
     async function loadTextures(element) {
       if (element.dataset.loaded) return; element.dataset.loaded = '1';
       const owner = element.dataset.owner, revision = state.revision, rows = element.querySelector('.as-tex-rows');
@@ -73,8 +76,11 @@
           items.push(...page.items); if (!page.has_more) break;
         }
         for (const t of items) state.textures.set(t.id, t);
-        rows.innerHTML = items.length ? items.map(row).join('') : '<div class="as-sub">No textures</div>';
-      } catch (e) { delete element.dataset.loaded; rows.innerHTML = `<div class="as-sub">Textures failed to load: ${esc(e.message)}</div>`; }
+        rows.innerHTML = items.length ? items.map(row).join('') : '<div class="as-sub">No companion files</div>';
+      } catch (e) {
+        if (revision !== state.revision || state.disposed || !element.isConnected) return;
+        delete element.dataset.loaded; rows.innerHTML = `<div class="as-sub">Files failed to load: ${esc(e.message)}</div>`;
+      }
     }
     function query(game, offset = 0) { return (game === undefined ? '/api/asset-groups?' : '/api/assets?') + new URLSearchParams({ q: $('.as-search').value, sort: $('.as-sort').value, kind: $('.as-kind').value, game: game ?? $('.as-game').value, offset, limit: 60 }); }
     const signature = page => JSON.stringify([page.total, page.nested, page.hidden_assets, page.hidden_textures, page.groups.map(g => [g.title, g.count, g.copied, g.added])]);
@@ -111,7 +117,7 @@
         $('.as-list').scrollTop = 0;
         facets('.as-kind', page.kinds, 'All types', prefs.kind); facets('.as-game', page.games, 'All games', prefs.game);
         prefs = {}; $('.as-changed').hidden = true; state.signature = signature(page);
-        $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.nested ? ` · ${page.nested} textures inside` : ''}${page.total + (page.hidden_assets ?? page.hidden_textures ?? 0) !== page.total_all ? ` · ${page.total_all} total` : ''}`;
+        $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.nested ? ` · ${page.nested} files inside` : ''}${page.total + (page.hidden_assets ?? page.hidden_textures ?? 0) !== page.total_all ? ` · ${page.total_all} total` : ''}`;
         if (!page.total) $('.as-rows').innerHTML = '<p>No assets match these filters.</p>';
         await Promise.all(page.groups.filter(g => expanded.has(g.title)).map(g => loadGroup(g.title))); save();
       } catch (e) { if (revision === state.revision) $('.as-message').textContent = 'Could not load assets: ' + e.message; }
@@ -154,11 +160,14 @@
       if (button.dataset.action === 'view') preview(a); else if (button.dataset.action === 'copy') copy(a, button); else download(a);
     };
     const interval = setInterval(async () => {
-      if (state.busy || state.disposed || root.classList.contains('closed') || (document.hidden && !options.backgroundUpdates)) return;
+      if (state.busy || state.polling || state.disposed || root.classList.contains('closed') || (document.hidden && !options.backgroundUpdates)) return;
+      state.polling = true;
       try {
-        const revision = state.revision, page = await options.api(query()); if (revision !== state.revision) return;
+        const revision = state.revision, page = await options.api(query());
+        if (revision !== state.revision || state.disposed || root.classList.contains('closed')) return;
         if (signature(page) !== state.signature) { if ($('.as-list').scrollTop < 40 && state.items.length <= 60) load(true); else $('.as-changed').hidden = false; }
       } catch { /* Keep the current list during a reconnect; manual refresh exposes the error. */ }
+      finally { state.polling = false; }
     }, 10000);
     // Apply saved filters before the first query, then expand them from server facets.
     for (const [selector, value] of [['.as-kind', prefs.kind], ['.as-game', prefs.game]]) if (value) $(selector).insertAdjacentHTML('beforeend', `<option value="${esc(value)}" selected>${esc(value)}</option>`);

@@ -144,3 +144,56 @@ def test_real_jgr_cdi_reads_real_files():
     assert player[:4] == b"AFS\x00"
     ini = cdi.read("DP2.INI")
     assert ini.startswith(b"#\n# dp2.ini")
+
+
+@pytest.mark.parametrize("suffix", [".cdi", ".CDI", ".chd"])
+def test_native_disc_patch_refuses_unverified_container_before_output(tmp_path, suffix):
+    from gbox.gdrom import patch_gdi
+    out = tmp_path / "native-output"
+    source = tmp_path / ("missing" + suffix)
+    with pytest.raises(ValueError, match="GDI.*CDI support is read-only"):
+        patch_gdi(source, out, "candidate", {"1ST_READ.BIN": b"new"}, reuse_modified_slack=True)
+    assert not out.exists() and not source.exists()
+
+
+def test_cdi_metadata_is_retained_for_readers(tmp_path):
+    source = _write(tmp_path, make_cdi())
+    with CDIRom(source) as disc:
+        assert (0, 18) in disc.metadata_ranges and (18, 19) in disc.metadata_ranges
+        assert disc.read("HELLO.TXT") == HELLO
+    assert disc._mm.closed and disc._fh.closed
+    wrapper = GDRom(source)
+    try:
+        assert wrapper.metadata_ranges == wrapper._cdi.metadata_ranges
+    finally:
+        wrapper._cdi.close()
+
+
+@pytest.mark.parametrize("failure", ["short_record", "cycle"])
+def test_malformed_cdi_directory_is_rejected(tmp_path, failure):
+    data = bytearray(make_cdi())
+    directory = (150 + 18) * 2336 + 8
+    if failure == "short_record":
+        data[directory] = 1
+    else:
+        record = _dir_record(18, 2048, 2, "LOOP")
+        data[directory:directory + len(record)] = record
+    with pytest.raises(ValueError, match="directory"):
+        CDIRom(_write(tmp_path, data))
+
+
+def test_cdi_read_rejects_a_truncated_user_sector(tmp_path):
+    with CDIRom(_write(tmp_path, make_cdi(footer=False)[:-400])) as disc:
+        with pytest.raises(ValueError, match="user sector outside"):
+            disc.read("HELLO.TXT")
+
+
+
+def test_cdi_footer_track_extent_cannot_cover_footer_bytes(tmp_path):
+    data = make_cdi()
+    original = _track_block(150, 20, 2, 0, 2336)
+    invalid = _track_block(150, 200, 2, 0, 2336)
+    assert data.count(original) == 1
+    data = data.replace(original, invalid)
+    with pytest.raises(ValueError, match="tracks extend into the footer"):
+        CDIRom(_write(tmp_path, data))

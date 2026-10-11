@@ -142,11 +142,11 @@ class AssetLibrary:
             try:
                 m = json.loads(manifest.read_text()); folder = manifest.parent.resolve(); source = m.get('source', {})
                 game = source_title(source)
-                # The package itself is one model, plus independently usable texture/audio files.
+                # The package itself is one model, plus bounded supported companion files.
                 add(f'package:{folder.name}', manifest, m.get('name', folder.name), 'model', game,
                     manifest.stat().st_mtime, folder / 'preview.png', aliases=(folder.name,), origin='package', package=folder.name, format='UAP')
                 for path in folder.rglob('*'):
-                    if path.suffix.lower() in IMAGE_EXT | {'.wav', '.ogg', '.mp3'} and path.name != 'preview.png' and path.resolve().is_relative_to(folder):
+                    if path.suffix.lower() in (ASSET_EXT - MODEL_EXT) and path.name != 'preview.png' and path.resolve().is_relative_to(folder):
                         add(f'package-file:{folder.name}:{path.relative_to(folder)}', path, path.name, file_kind(path), game, origin='package-file', package=folder.name)
             except (OSError, ValueError, TypeError):
                 continue
@@ -188,7 +188,7 @@ class AssetLibrary:
         canonical = {a['game'].strip().casefold(): a['game'].strip() for a in entries.values() if a['origin'] == 'collection'}
         for item in entries.values():
             item['game'] = canonical.get(item['game'].strip().casefold(), item['game'].strip())
-        # Textures that ship with a character, environment or package belong to that model.
+        # Textures, raw data and audio shipped with a model belong to that model.
         # The sidebar lists them in a collapsed tree under the owner instead of as top-level cards.
         owners = {}
         for item in entries.values():
@@ -197,7 +197,7 @@ class AssetLibrary:
             elif item['origin'] == 'package':
                 owners[('package', item['package'])] = item['id']
         for item in entries.values():
-            if item['kind'] != 'texture':
+            if item['kind'] not in NESTED_KINDS:
                 continue
             key = (('collection', item['collection'], item['slug']) if item['origin'] == 'collection'
                    else ('package', item.get('package')) if item['origin'] == 'package-file' else None)
@@ -219,15 +219,16 @@ class AssetLibrary:
         pool = [a for a in all_items if (not game or a['game'] == game) and (not owner or a.get('owner') == owner)
                 and all(w in f"{a['name']} {a['game']} {a['kind']} {a['format']}".casefold() for w in words)]
         items = [a for a in pool if not kind or a['kind'] == kind]
-        counts, hidden, nested_count = {}, set(), 0
+        counts, file_counts, hidden, nested_count = {}, {}, set(), 0
         if nest and not owner:
-            # A texture is nested when its owner is listed. Explicit texture searches
-            # and filters still expose standalone results, including unowned files.
-            # The owner's count ignores the type filter so a character keeps its texture tree.
+            # Companions are nested when their owner is listed; explicit file filters
+            # and searches still expose standalone results. Owner counts use the
+            # entire index so a model search retains its complete companion tree.
             listed = {a['id'] for a in items}
             nested = [a for a in all_items if a.get('owner') in listed]
             for a in nested:
-                counts[a['owner']] = counts.get(a['owner'], 0) + 1
+                target = counts if a['kind'] == 'texture' else file_counts
+                target[a['owner']] = target.get(a['owner'], 0) + 1
             nested_ids = {a['id'] for a in nested}
             hidden = {a['id'] for a in items if a['id'] in nested_ids}
             nested_count = len(nested_ids)
@@ -245,7 +246,8 @@ class AssetLibrary:
             hidden_textures=sum(a['id'] in hidden and a['kind'] == 'texture' for a in all_items), hidden_assets=len(hidden),
             offset=offset, has_more=offset + limit < len(items),
             kinds=sorted({a['kind'] for a in all_items}), games=sorted({a['game'] for a in all_items}),
-            items=[{**{k: v for k, v in a.items() if not k.startswith('_')}, **({'texture_count': counts[a['id']]} if a['id'] in counts else {})}
+            items=[{**{k: v for k, v in a.items() if not k.startswith('_')}, **({'texture_count': counts[a['id']]} if a['id'] in counts else {}),
+                      **({'file_count': file_counts[a['id']]} if a['id'] in file_counts else {})}
                    for a in items[offset:offset + limit]])
 
     def file(self, item):

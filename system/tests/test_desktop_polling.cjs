@@ -48,7 +48,7 @@ function setup(visible = false) {
     S: { apiUrl: 'https://fixture.invalid' }, REG: { tools: {} }, MODS: { list: [] },
     GBoxRequestSolvers: { badge: () => '' }, fmtDur: String, fmtTok: String,
     updateInboxView(host, key, render) { renders++; host.innerHTML = render(); host.key = key; },
-    AUD: { rows: [], after: 0 }, activity: { remote() {} },
+    AUD: { rows: [], after: 0 }, activity: { remote() {} }, processPopupSync() {},
     AU_ACTION: [], AU_ACTOR: [], auIcon: () => '*', auBadge: () => '',
     auGroup: rows => rows.map(row => [row]), auditRender: () => { auditRenders++; }, EMU_ICON: {}
   });
@@ -64,8 +64,9 @@ function request(status = 'open') {
     created: 1, automated: false, messages: [], metrics: { tokens_in: 0, tokens_out: 0, tools: {}, files_changed: [] } };
 }
 
-test('every inline desktop script still parses', () => {
-  const blocks = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+test('every inline desktop and web script still parses', () => {
+  const web = fs.readFileSync(path.join(__dirname, '../clients/web/index.html'), 'utf8');
+  const blocks = [...(html + '\n' + web).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
   assert.ok(blocks.length);
   for (const [, attributes, source] of blocks) {
     if (attributes.includes('src=')) continue;
@@ -172,6 +173,31 @@ test('audit waits for a pending sibling after rejection and never reopens a clos
   assert.equal(x.auditRenders(), 0); assert.equal(x.node('#auditpanel').classes.has('on'), false);
   assert.equal(x.context.AUD.after, 1);
   assert.equal(x.maximum.get('/api/jobs?state=queued,running&limit=100'), 1);
+});
+
+test('desktop popup receives the shared jobs result without introducing a second poller', async () => {
+  const x = setup(), received = [];
+  x.context.processPopupSync = jobs => received.push(jobs);
+  const p = x.run('auditPoll(false)'); await tick();
+  for (let i = 0; i < 30; i++) x.run('auditPoll(false)');
+  const jobs = [{ id: 'model', state: 'running', tool: 'characters' }];
+  x.request('/api/jobs?state=queued,running&limit=100').resolve({ ok: true, data: jobs });
+  x.request('/api/audit?tail=500').resolve({ ok: true, data: [] }); await p;
+  assert.deepEqual(received, [jobs]);
+  assert.equal(x.count('/api/jobs?state=queued,running&limit=100'), 1);
+});
+
+test('desktop waits for its API credentials before creating the donor preview URL', async () => {
+  const ready = deferred(), received = []; let options, mounts = 0;
+  const context = vm.createContext({ SBX_READY: ready.promise, SBX: { api: '', tok: '' }, encodeURIComponent,
+    window: { GBoxProcessPopup: { mount(opts) { mounts++; options = opts; return { sync: jobs => received.push(jobs) }; } } } });
+  vm.runInContext(between('let PROCESS_POPUP = null;', 'function auditPoll(explicit'), context);
+  const pending = vm.runInContext('processPopupSync([{id:"model"}])', context); await tick();
+  assert.equal(mounts, 0, 'first job cannot load before credentials resolve');
+  context.SBX.api = 'https://fixture.invalid'; context.SBX.tok = 'fixture token'; ready.resolve(); await pending;
+  assert.equal(mounts, 1);
+  assert.equal(options.assetUrl('/api/characters/amy/model'), 'https://fixture.invalid/api/characters/amy/model?token=fixture%20token');
+  assert.equal(received[0][0].id, 'model');
 });
 
 test('status ticks cannot duplicate an unsettled workers or sessions fetch', async () => {

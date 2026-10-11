@@ -95,6 +95,21 @@
     return 0.5;
   }
 
+  // Dispose resources from replaced or late GLTF results, including shared materials/textures.
+  function disposeObject(object) {
+    const resources = new Set();
+    object.traverse(o => {
+      if (o.geometry) resources.add(o.geometry);
+      for (const material of (Array.isArray(o.material) ? o.material : [o.material])) {
+        if (!material) continue;
+        resources.add(material);
+        for (const value of Object.values(material)) if (value && value.isTexture) resources.add(value);
+      }
+      if (o.skeleton && o.skeleton.boneTexture) resources.add(o.skeleton.boneTexture);
+    });
+    for (const resource of resources) if (resource.dispose) resource.dispose();
+  }
+
   // ---- VCR close effect: tracking static, then the picture collapses to a line ------------
   const VCR_TRACKING_MS = 700, VCR_COLLAPSE_MS = 260, VCR_HOLD_MS = 60;
   function createVcr(now) {
@@ -120,9 +135,9 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
-      lastMsgs = [], dead = false;
+      lastMsgs = [], dead = false, polling = null;
 
     const style = doc.createElement("style");
     style.textContent = [
@@ -150,6 +165,8 @@
     function build() {
       root = doc.createElement("div");
       root.className = "gbox-pp";
+      root.setAttribute("role", "dialog");
+      root.setAttribute("aria-label", "Background 3D task");               // native emulator cutouts recognize non-modal dialogs
       const head = doc.createElement("div"); head.className = "pp-h";
       titleEl = doc.createElement("b");
       stateEl = doc.createElement("span"); stateEl.className = "pp-chip";
@@ -168,9 +185,9 @@
       msgEl = doc.createElement("div"); msgEl.className = "pp-msg";
       meta.append(barEl, msgEl);
       logEl = doc.createElement("div"); logEl.className = "pp-log";
-      const foot = doc.createElement("div"); foot.className = "pp-f";
-      foot.textContent = "Background 3D task · window closes itself when the work finishes";
-      root.append(head, stage, meta, logEl, foot);
+      footEl = doc.createElement("div"); footEl.className = "pp-f";
+      footEl.textContent = "Progress illustration · following the worker's reported stage";
+      root.append(head, stage, meta, logEl, footEl);
       doc.body.append(root);
     }
 
@@ -200,6 +217,7 @@
     }
 
     function update(job) {
+      current = job;                                                        // pending module imports must use the newest model/stage
       const p = job.progress || {};
       if (typeof p.pct === "number") barEl.firstChild.style.width = Math.max(0, Math.min(100, p.pct)) + "%";
       if (p.msg && p.msg !== msgEl.textContent) msgEl.textContent = p.msg;
@@ -227,19 +245,22 @@
       three = holder;                                                       // placeholder until the real viewer is ready
       let made = null;
       try {
-        if (opts.now === undefined) {                                       // real browser: try WebGL + CDN modules
-          const T = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/+esm");
-          const L = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm");
+        if (opts.loadModules || opts.now === undefined) {                   // injectable modules also exercise the real viewer offline
+          const modules = opts.loadModules ? await opts.loadModules() : {
+            THREE: await import("https://cdn.jsdelivr.net/npm/three@0.160.0/+esm"),
+            GLTFLoader: (await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm")).GLTFLoader,
+          };
           if (!root || three !== holder) return;                            // closed while loading
-          let S = null;
-          try { S = (await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/modifiers/SimplifyModifier.js/+esm")).SimplifyModifier; }
+          let S = modules.SimplifyModifier || null;
+          try { if (!opts.loadModules) S = (await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/modifiers/SimplifyModifier.js/+esm")).SimplifyModifier; }
           catch (e) { /* no simplifier: decimation is shown with a thinned wireframe instead */ }
-          if (!root || three !== holder) return;
-          made = makeThree(T, L.GLTFLoader, job, S);
+          if (!root || three !== holder || !current) return;
+          made = makeThree(modules.THREE, modules.GLTFLoader, current, S);
         }
       } catch (e) { if (made) { try { made.dispose(); } catch (e2) {} made = null; } }
       if (!root || three !== holder) { if (made) made.dispose(); return; }
-      three = made || make2D(job);
+      three = made || make2D(current || job);
+      if (current && three.setJob) three.setJob(current);
       if (root && stage.firstChild !== overlay) stage.insertBefore(overlay, stage.firstChild);
     }
 
@@ -255,10 +276,13 @@
       const sun = new THREE.DirectionalLight(0xffffff, 1.8); sun.position.set(3, 5, 4); scene.add(sun);
       const camera = new THREE.PerspectiveCamera(40, 390 / 250, 0.01, 100);
       let group = new THREE.Group(); scene.add(group);
-      const wire = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(1, 1)),
+      const placeholder = new THREE.IcosahedronGeometry(1, 1);
+      const wire = new THREE.LineSegments(new THREE.EdgesGeometry(placeholder),
         new THREE.LineBasicMaterial({ color: 0x4f8cff }));
+      placeholder.dispose();
       group.add(wire);
-      let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0;
+      let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
+        loadGeneration = 0, raf = 0, stop = false;
       const swapIn = gltf => {
         // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
         gltf.scene.updateMatrixWorld(true);
@@ -271,17 +295,24 @@
         const k = 1.6 / s;                                                  // centre in scaled units so the whole model is in frame
         gltf.scene.scale.setScalar(k); gltf.scene.position.copy(c).multiplyScalar(-k);
         const old = group.userData.model;
-        if (old) group.remove(old);
+        clearFx();
+        if (old) { group.remove(old); disposeObject(old); }
         group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
+        footEl.textContent = "Donor model preview · stage effects illustrate reported progress";
         fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
       };
       const safeLoad = p => {
+        const generation = ++loadGeneration;
         if (!loader) loader = new GLTFLoader();
-        try { loader.load(assetUrl(p), swapIn, undefined, () => {}); } catch (e) { /* offline/404: keep the wire placeholder */ }
+        try { loader.load(assetUrl(p), gltf => {
+          if (stop || generation !== loadGeneration || path !== p) { disposeObject(gltf.scene); return; }
+          swapIn(gltf);
+        }, undefined, () => {
+          if (!stop && generation === loadGeneration) footEl.textContent = "Progress illustration · donor model preview unavailable";
+        }); } catch (e) { footEl.textContent = "Progress illustration · donor model preview unavailable"; }
       };
-      if (path) safeLoad(path);
       const clearFx = () => {
-        for (const o of fxObjs) { if (o.parent) o.parent.remove(o); if (o.geometry) o.geometry.dispose(); }
+        for (const o of fxObjs) { if (o.parent) o.parent.remove(o); disposeObject(o); }
         fxObjs = [];
         const model = group.userData.model;
         if (model) model.traverse(o => { if (o.isMesh && o.userData.ppMat) {
@@ -314,15 +345,18 @@
           let g = null;
           const verts = o.geometry.attributes.position.count;
           if (Simplify && verts <= 20000) {                                 // …the decimated mesh draws over it
+            let src = null, simplified = null;
             try {
-              const src = new THREE.BufferGeometry();
+              src = new THREE.BufferGeometry();
               src.setAttribute("position", o.geometry.attributes.position.clone());
               if (o.geometry.index) src.setIndex(o.geometry.index.clone());
               const pa = src.attributes.position.array, seen = new Set();   // the modifier welds seams first:
               for (let v = 0; v < pa.length; v += 3) seen.add(`${pa[v].toFixed(5)},${pa[v + 1].toFixed(5)},${pa[v + 2].toFixed(5)}`);
-              g = new THREE.WireframeGeometry(new Simplify().modify(src, Math.floor(seen.size * (1 - keep))));  // remove a share of welded verts
+              simplified = new Simplify().modify(src, Math.floor(seen.size * (1 - keep)));
+              g = new THREE.WireframeGeometry(simplified);                  // remove a share of welded verts
               if (g.attributes.position.count < 2) { g.dispose(); g = null; }
             } catch (e) { g = null; }
+            finally { if (simplified && simplified !== src) simplified.dispose(); if (src) src.dispose(); }
           }
           if (!g) {                                                         // big mesh: thin the wireframe to the kept share
             g = new THREE.WireframeGeometry(o.geometry);
@@ -334,7 +368,6 @@
         }
       };
       camera.position.set(0, 0.7, 3.1); camera.lookAt(0, 0, 0);
-      let raf = 0, stop = false;
       const tick = () => {
         if (stop) return;
         raf = (env.requestAnimationFrame || (f => env.setTimeout(f, 33)))(tick);
@@ -346,19 +379,28 @@
         renderer.render(scene, camera);
         drawOverlay();
       };
+      if (path) safeLoad(path);
       tick();
       return {
         canvas,
         setJob(j) {
           const p = modelPath(j);
-          if (p && p !== path) { path = p; safeLoad(p); }                   // the job switched (or first named) its model
+          if (p !== path) {
+            path = p; ++loadGeneration; clearFx();
+            const old = group.userData.model;
+            if (old) { group.remove(old); disposeObject(old); delete group.userData.model; }
+            group.add(wire); fxKey = "";
+            footEl.textContent = "Progress illustration · following the worker's reported stage";
+            if (path) safeLoad(path);
+          }
           const next = stageEffect((j.progress || {}).msg);
           if (next || (j.progress || {}).msg) { fx = next; if (!fx) pulse = 0; applyFx(); }
         },
         get state() { return { path, fx, fxObjs: fxObjs.length, pulse,
           lineVerts: fxObjs.reduce((n, o) => n + (o.isLineSegments && !o.isSkeletonHelper ? o.geometry.attributes.position.count : 0), 0) }; },
-        dispose() { stop = true; clearFx(); (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
-          renderer.dispose(); canvas.remove(); },
+        dispose() { stop = true; ++loadGeneration; clearFx(); (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
+          if (group.userData.model) disposeObject(group.userData.model);
+          disposeObject(wire); renderer.dispose(); canvas.remove(); },
       };
     }
 
@@ -444,9 +486,14 @@
     }
 
     if (fetchJobs) {
-      const poll = async () => {
-        if (dead) return;
-        try { sync(await fetchJobs()); } catch (e) { /* server blip: keep the current window as-is */ }
+      const poll = () => {
+        if (dead || polling) return polling;
+        polling = Promise.resolve().then(async () => {
+          try { const jobs = await fetchJobs(); if (!dead) sync(jobs); }
+          catch (e) { /* server blip: keep the current window as-is */ }
+          finally { polling = null; }
+        });
+        return polling;
       };
       poll();
       pollTimer = env.setInterval(poll, pollMs);
@@ -458,7 +505,7 @@
       dispose() {
         dead = true;
         if (pollTimer) (env.clearInterval || (t => env.clearTimeout(t)))(pollTimer);
-        remove();
+        remove(); style.remove();
       },
     };
   }

@@ -7,6 +7,7 @@ import hmac
 import httpx
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -58,6 +59,25 @@ class Evaluation(BaseModel):
     passed: bool
     metrics: dict[str, float] = {}
     notes: str = ""
+
+
+def _checkpoint_slot(result: dict, adapter: str) -> int:
+    """Use native checkpoint evidence, never the slot requested before a dropped command."""
+    if result.get("verified") is False:
+        raise RuntimeError("the emulator did not verify the captured checkpoint")
+    slot = result.get("slot")
+    path = str(result.get("path") or result.get("file") or "")
+    match = re.search(r"\.state(-?\d+)?$", path)
+    native = (int(match[1] or 0) if match and adapter == "retroarch" else
+              (1 if adapter == "dolphin" and path.endswith(".s01") else None))
+    if adapter == "dolphin" and slot is not None and slot != 1:
+        raise RuntimeError("Dolphin's captured checkpoint does not identify native slot 1")
+    if slot is not None and (type(slot) is not int or (native is not None and native != slot)):
+        raise RuntimeError("the captured checkpoint slot disagrees with its native filename")
+    actual = slot if slot is not None else native
+    if actual is None:
+        raise RuntimeError("the captured checkpoint did not identify its actual native slot")
+    return actual
 
 
 def create_app(config: Config) -> FastAPI:
@@ -2599,7 +2619,7 @@ def create_app(config: Config) -> FastAPI:
             store.put("request", rid, report)
 
             # Supported cores can also export a portable artifact for Hermes or a client on another PC.
-            # Wait for the local checkpoint first; the export tool takes its own adjacent checkpoint.
+            # Upload the existing checkpoint; saving again would capture a later game moment.
             if (s_.get("adapter") or "").lower() in ("retroarch", "dolphin"):
                 def export_issue_state():
                     deadline = time.time() + 120
@@ -2612,15 +2632,18 @@ def create_app(config: Config) -> FastAPI:
                         return
                     try:
                         # the checkpoint job reports the slot the emulator ACTUALLY wrote; export that one
-                        saved_slot = (((current or {}).get("output") or {}).get("result") or {}).get("slot", slot)
+                        saved_slot = _checkpoint_slot((current.get("output") or {}).get("result") or {},
+                                                      (s_.get("adapter") or "").lower())
                         exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id,
-                                                     "op": "export", "slot": saved_slot},
+                                                     "op": "export_saved", "slot": saved_slot,
+                                                     "not_before": current.get("started") or current.get("created") or 0},
                                                      parent_request_id=rid), actor)
                         with store.lock:
                             latest = store.get("request", rid) or {}
                             if not latest:
                                 return
-                            latest.setdefault("context", {})["state_export_job_id"] = exported.id
+                            latest.setdefault("context", {}).update(state_export_job_id=exported.id,
+                                state_slot=saved_slot, state_requested_slot=slot)
                             latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable save-state export queued (job {exported.id}).",
                                 "ts": time.time(), "attachments": [], "task_step": {"action": "export reported game moment",
                                 "attempt": "1", "result": exported.state, "status": exported.state}})
@@ -2754,12 +2777,14 @@ def create_app(config: Config) -> FastAPI:
                             "export game moment", "unsupported emulator", "unavailable")
                         return
                     # the checkpoint job reports the slot the emulator ACTUALLY wrote; export exactly that file
-                    saved_slot = (((saved_job or {}).get("output") or {}).get("result") or {}).get("slot", slot)
+                    saved_slot = _checkpoint_slot((saved_job.get("output") or {}).get("result") or {},
+                                                  (s_.get("adapter") or "").lower())
                     exported = submit(JobRequest(tool="state_transfer", input={"session_id": f.session_id,
                         "op": "export_saved", "slot": saved_slot, "not_before": saved_job.get("started") or 0},
                         parent_request_id=rid), "gbox-auto")
                     add(f"Exporting the exact saved checkpoint (job {exported.id}).", "export game moment",
-                        exported.id, exported.state, state_export_job_id=exported.id)
+                        exported.id, exported.state, state_export_job_id=exported.id,
+                        state_slot=saved_slot, state_requested_slot=slot)
                     result = completed(exported.id)
                     if result.get("state") != "succeeded":
                         add(f"Portable checkpoint unavailable: {result.get('error') or result.get('state')}",
@@ -2770,10 +2795,9 @@ def create_app(config: Config) -> FastAPI:
                     if not meta:
                         raise RuntimeError("checkpoint export did not upload its artifact")
                     att = {"sha256": meta["sha256"], "name": meta["name"], "type": meta["media_type"], "size": meta["size"]}
-                    actual_slot = (info.get("slot")
-                                   or (int(info["file"].rsplit(".state", 1)[-1])
-                                       if ".state" in info.get("file", "") and info["file"].rsplit(".state", 1)[-1].isdigit()
-                                       else slot))
+                    actual_slot = _checkpoint_slot(info, (s_.get("adapter") or "").lower())
+                    if actual_slot != saved_slot:
+                        raise RuntimeError("the portable export belongs to a different saved moment")
                     add(f"Portable save state attached: {info['file']} ({info['bytes']} bytes).",
                         "export game moment", "checkpoint attached", "finished", att,
                         state_artifact=meta["sha256"], state_file=info["file"], state_slot=actual_slot)

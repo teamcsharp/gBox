@@ -56,6 +56,7 @@ const text = menu => menu.children.map(child => child.innerHTML + child.textCont
 
 test('both clients carry the same helper and every recording path uses the saved input', () => {
   assert.equal(extract(desktop), extract(web));
+  for (const source of [desktop, web]) assert.equal((source.match(/window\.gboxMicAudio =/g) || []).length, 1, "one authoritative helper per shell");
   for (const source of [desktop, web]) {
     const recording = source.replace(extract(source), '');
     const calls = [...recording.matchAll(/navigator\.mediaDevices\.getUserMedia\(([^;]+)\);/g)];

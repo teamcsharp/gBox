@@ -651,7 +651,7 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     return int(digits)
 
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3  # Multi-root writer invalidates prior single-root caches.
 
 
 def donor_fingerprint(model, roles: dict, scale=None) -> str:
@@ -779,6 +779,39 @@ def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = No
     raise first
 
 
+def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
+    """Other textured full-body groups with exactly equivalent native bind state.
+
+    Parent counts alone cannot establish interchangeable local model coordinates.
+    Refuse a matching body graph with different transforms/evaluation flags before
+    fitting or rewriting. Selection of these groups remains runtime-unverified.
+    """
+    from . import ninja
+    primary = ninja.tree_nodes(buf, root)
+    parents = lambda nodes: [n["parent"] if n["parent"] is not None else -1 for n in nodes]
+    if parents(primary) != BODY_PARENTS:
+        raise ValueError("Primary JGR body does not match the verified 20-node graph")
+    out = {}
+    for candidate in play_model_roots(data, play):
+        if candidate == root:
+            continue
+        try:
+            nodes = ninja.tree_nodes(buf, candidate)
+            if parents(nodes) != BODY_PARENTS:
+                continue
+            geometry = play_model(buf, candidate)
+        except (ValueError, struct.error, IndexError, RecursionError) as error:
+            raise ValueError(f"Cannot classify JGR draw group {candidate:#x}") from error
+        if not any(texture >= 0 and faces for texture, faces in geometry.tris.items()):
+            continue
+        if any(a["trs"] != b["trs"] or (a["flags"] & ~8) != (b["flags"] & ~8)
+               for a, b in zip(primary, nodes)):
+            raise ValueError(f"JGR body group {candidate:#x} has a different native bind/evaluation state; "
+                             "independent retargeting is required before rewriting it")
+        out[candidate] = nodes
+    return out
+
+
 def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
     from .sa2_chars import _first_material
     mat, tiny, texfl, strip = _first_material(buf, nodes)
@@ -809,10 +842,12 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     if len(nodes) != len(BODY_PARENTS):
         raise ValueError(f"PLAY {index:02d} body has {len(nodes)} nodes, expected {len(BODY_PARENTS)}")
     mat, tiny_fl, tex_fl, strip_fl = _material(buf, nodes)
-    mine = {nd["off"] for nd in nodes}
+    twins = body_twins(buf, data, play, root)
+    twin_nodes = [nd for group in twins.values() for nd in group]
+    mine = {nd["off"] for nd in nodes + twin_nodes}
     others = []
     for r in play_model_roots(data, play):
-        if r == root:
+        if r == root or r in twins:
             continue
         try:
             others += [nd for nd in ninja.tree_nodes(buf, r) if nd["off"] not in mine]
@@ -823,21 +858,29 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         rs = []
         for nd in nds:
             if nd["model"]:
+                if not 0 <= nd["model"] <= len(buf) - 24:
+                    raise ValueError("JGR model struct extends outside its PLAY entry")
                 vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
                 rs.append((nd["model"], nd["model"] + 24))
                 if vl:
                     rs.append((vl, vl + ninja.chunk_list_len(buf, vl, "v")))
                 if pl_:
                     rs.append((pl_, pl_ + ninja.chunk_list_len(buf, pl_, "p")))
+        if any(not 0 <= a < b <= len(buf) for a, b in rs):
+            raise ValueError("JGR model lists extend outside their PLAY entry")
         return rs
     body = bytearray(buf)
-    for a_, b_ in model_ranges(nodes):
+    for a_, b_ in model_ranges(nodes + twin_nodes):
         body[a_:b_] = bytes(b_ - a_)
     shared = model_ranges(others)
+    # Object structs are live selectors/animation data, never allocation holes.
+    shared += [(nd["off"], nd["off"] + 52) for nd in nodes + twin_nodes + others]
+    if any(not 0 <= a < b <= len(buf) for a, b in shared):
+        raise ValueError("JGR draw-node structure extends outside its PLAY entry")
     for a_, b_ in shared:                                  # still drawn by another tree: keep
         body[a_:b_] = buf[a_:b_]
     freed = np.zeros(len(buf), bool)
-    mine_r = sorted(model_ranges(nodes))
+    mine_r = sorted(model_ranges(nodes + twin_nodes))
     for a_, b_ in mine_r:
         freed[a_:b_] = True
     # the alignment padding between one node's lists (plist | 2 bytes | vlist | model) is dead too: without it
@@ -920,6 +963,10 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         for j, nd in enumerate(nodes):
             flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
             struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
+        for group in twins.values():
+            for j, nd in enumerate(group):
+                flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
+                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
         if len(out) > room:
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)
@@ -939,7 +986,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     rep = r["report"] | {"character": f"{index:02d}", "archive_index": index,
                          "native_id": native_id_for_archive(data, index),
                          "source_afs_sha256": hashlib.sha256(data).hexdigest(),
-                         "body_root": f"{root:#x}", "body_selection": "max_triangles_unverified",
+                         "body_root": f"{root:#x}", "body_groups": [f"{r:#x}" for r in [root, *twins]],
+                         "body_selection": "max_triangles_unverified",
                          "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
                          "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}

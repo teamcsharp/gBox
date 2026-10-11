@@ -270,3 +270,44 @@ def test_legacy_package_and_edited_model_keep_their_source_title(assets):
     page = client.get('/api/asset-groups').json()
     assert {g['title']: g['count'] for g in page['groups']} == {
         'Final Fantasy VII (USA) (Disc 1)': 2, 'Phantasy Star Online Ver. 2 (USA)': 2}
+
+
+def test_model_companions_include_raw_animation_audio_and_texture_with_separate_counts(assets):
+    app, client, cfg = assets
+    folder = collection(cfg, 'ein', 'Ein C1', 'DOA2')
+    for name in ('body.bin', 'idle.anim', 'voice.flac', 'skin.png'):
+        (folder / name).write_bytes(name.encode())
+    page = client.get('/api/assets').json()
+    assert page['total'] == 1 and page['total_all'] == 5
+    assert page['nested'] == page['hidden_assets'] == 4 and page['hidden_textures'] == 1
+    model = page['items'][0]
+    assert model['texture_count'] == 1 and model['file_count'] == 3
+    tree = client.get('/api/assets', params={'owner': model['id'], 'sort': 'name'}).json()
+    assert {a['format'] for a in tree['items']} == {'BIN', 'ANIM', 'FLAC', 'PNG'}
+    assert all(a['owner'] == model['id'] for a in tree['items'])
+    for kind, expected in [('data', 2), ('audio', 1), ('texture', 1)]:
+        direct = client.get('/api/assets', params={'kind': kind}).json()
+        assert direct['total'] == expected
+        assert all('texture_count' not in a and 'file_count' not in a for a in direct['items'])
+    assert client.get('/api/assets?nest=false').json()['total'] == 5
+
+
+def test_package_raw_audio_companions_follow_owner_search_and_type_filters(assets):
+    app, client, cfg = assets
+    package = cfg.data_dir / 'uap' / 'blade'; package.mkdir(parents=True)
+    (package / 'manifest.json').write_text(json.dumps({'name': 'Named Sword', 'source': {'game_title': 'Zelda'}}))
+    for name in ('mesh.bin', 'swing.anim', 'sound.flac', 'surface.png'):
+        (package / name).write_bytes(name.encode())
+    # Unrelated unsupported file and a directory with a supported suffix are not indexed.
+    (package / 'private.txt').write_text('private')
+    (package / 'directory.bin').mkdir()
+    page = client.get('/api/assets', params={'q': 'Named Sword', 'kind': 'model'}).json()
+    assert page['total'] == 1 and page['total_all'] == 5 and page['nested'] == 4
+    owner = page['items'][0]
+    assert owner['texture_count'] == 1 and owner['file_count'] == 3
+    tree = client.get('/api/assets', params={'owner': owner['id']}).json()
+    assert {a['name'] for a in tree['items']} == {'mesh.bin', 'swing.anim', 'sound.flac', 'surface.png'}
+    found = client.get('/api/assets?q=swing.anim').json()
+    assert [a['name'] for a in found['items']] == ['swing.anim']
+    default = client.get('/api/asset-groups').json()
+    assert default['groups'][0]['count'] == 1 and default['hidden_assets'] == 4

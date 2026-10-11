@@ -740,60 +740,7 @@ const loader = {
 const STT = async buf => { const r = await fetch("/api/stt", { method: "POST", body: buf, headers: { authorization: "Bearer " + tok, "content-type": "audio/webm" } });
   if (!r.ok) throw new Error(await r.text()); return (await r.json()).text; };
 const SPARK_OK = async () => { try { return (await fetch("/api/health")).ok; } catch { return false; } };
-// ---- microphone device: right-click any 🎤 to pick the default input (persisted) ----
-(() => {
-  const KEY = "gbox_mic_device";
-  const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  let menu = null;
-  const close = () => { if (menu) { menu.remove(); menu = null; } };
-  const style = document.createElement("style");
-  style.textContent = `.micmenu{position:fixed;z-index:2147483647;background:var(--card,#1c1f26);border:1px solid var(--line,#343a45);border-radius:8px;box-shadow:0 10px 28px #000a;min-width:230px;max-width:340px;padding:4px 0;font:13px/1.4 system-ui,sans-serif;color:var(--fg,#e8eaf0)}
-.micmenu-head{font-size:11px;color:var(--mut,#8a93a3);padding:5px 12px 3px;text-transform:uppercase;letter-spacing:.04em}
-.micmenu-item{display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;white-space:nowrap}
-.micmenu-item:hover{background:var(--hover,#2a2f3a)}
-.micmenu-item .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.micmenu-item .id{color:var(--mut,#8a93a3);font-size:11px}
-.micmenu-item .chk{color:var(--acc,#4da3ff);font-weight:bold;margin-left:auto}`;
-  document.head.append(style);
-  window.gboxMicDevice = () => { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } };
-  window.gboxMicAudio = extra => {
-    const id = window.gboxMicDevice();
-    return id ? { audio: { deviceId: { exact: id }, ...(extra || {}) } } : (extra ? { audio: { ...extra } } : { audio: true });
-  };
-  window.gboxMicMenu = async (anchor, ev) => {
-    ev.preventDefault(); ev.stopPropagation(); close();
-    const inputs = () => navigator.mediaDevices.enumerateDevices().catch(() => [])
-      .then(a => a.filter(d => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default"));
-    let devs = await inputs();
-    if (!devs.length) {   // first use: request mic permission so real device labels are visible
-      let s = null;
-      try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
-      if (s) { s.getTracks().forEach(t => t.stop()); devs = await inputs(); }
-    }
-    const cur = window.gboxMicDevice();
-    const m = document.createElement("div"); m.className = "micmenu";
-    const hd = document.createElement("div"); hd.className = "micmenu-head"; hd.textContent = "Default microphone";
-    m.append(hd);
-    const add = (label, id, isDef) => {
-      const d = document.createElement("div"); d.className = "micmenu-item";
-      d.innerHTML = `<span class="lbl">${escHtml(label)}</span>${isDef ? "" : `<span class="id">${escHtml(id.slice(0, 8))}…</span>`}${id === cur ? `<span class="chk">✓</span>` : ""}`;
-      d.onclick = () => { try { localStorage.setItem(KEY, id); } catch {} close(); };
-      m.append(d);
-    };
-    add("System default", "", true);
-    devs.forEach((d, i) => add(d.label || `Microphone ${i + 1}`, d.deviceId, false));
-    if (!devs.length) { const x = document.createElement("div"); x.className = "micmenu-item"; x.innerHTML = `<span class="lbl">No microphones found</span>`; m.append(x); }
-    document.body.append(m);
-    const r = anchor.getBoundingClientRect(), w = m.offsetWidth || 230, h = m.offsetHeight || 120;
-    let x = r.right - w, y = r.bottom + 6;
-    if (x < 8) x = 8; if (y + h > innerHeight - 8) y = r.top - h - 6; if (y < 8) y = 8;
-    m.style.left = x + "px"; m.style.top = y + "px";
-    menu = m;
-  };
-  document.addEventListener("pointerdown", e => { if (menu && !menu.contains(e.target)) close(); }, true);
-  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); }, true);
-  window.addEventListener("resize", close);
-})();
+
 
 // ---------------- dictation: 🎤 on every text box, transcribed by the Spark's faster-whisper ----------------
 (() => {
@@ -3157,6 +3104,16 @@ if (!new URLSearchParams(location.search).has('embedded')) {
   document.head.append(style);
   new ResizeObserver(() => document.body.style.setProperty('--assets-top', document.querySelector('header').getBoundingClientRect().bottom + 'px')).observe(document.querySelector('header'));
   window.assetSidebar = GBoxAssets.mount({ host: document.body, api, url: path => path + (path.includes('?') ? '&' : '?') + tq() });
+}
+</script>
+<script src="/viz/process-popup.js"></script>
+<script>
+if (!new URLSearchParams(location.search).has('embedded')) {
+  window.GBOX_PROCESS_POPUP = GBoxProcessPopup.mount({
+    fetchJobs: () => api('/api/jobs?state=queued,running&limit=100'),
+    assetUrl: p => p + (p.includes('?') ? '&' : '?') + tq(),
+  });
+  window.addEventListener('pagehide', () => window.GBOX_PROCESS_POPUP.dispose(), { once: true });
 }
 </script>
 <script src="/viz/emulation-issue.js"></script>

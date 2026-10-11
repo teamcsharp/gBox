@@ -157,14 +157,16 @@ test('VCR effect runs tracking static, collapse to a line, then finishes', () =>
 });
 
 // ---------- the popup window lifecycle: open on a job, live updates, VCR close, reopen ----------
-function setup() {
+function setup(options = {}) {
   const timers = [];
+  const intervals = [];
   let id = 0;
   const elements = [];
   function element(tag) {
     const el = {
       tagName: tag.toUpperCase(), className: '', textContent: '', innerHTML: '', style: {},
-      children: [], width: 0, height: 0, firstChild: null,
+      children: [], width: 0, height: 0, firstChild: null, attributes: {},
+      setAttribute(k, v) { this.attributes[k] = String(v); },
       classList: {
         add(...cs) { const s = new Set(el.className.split(/\s+/).filter(Boolean)); cs.forEach(c => s.add(c)); el.className = [...s].join(' '); },
         remove(...cs) { const s = new Set(el.className.split(/\s+/).filter(Boolean)); cs.forEach(c => s.delete(c)); el.className = [...s].join(' '); },
@@ -187,16 +189,16 @@ function setup() {
   const env = {
     document: { createElement, head, body },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return ++id; },
-    clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+    clearTimeout: () => {}, setInterval: fn => { intervals.push(fn); return ++id; }, clearInterval: () => {},
     requestAnimationFrame: fn => { timers.push({ fn, ms: 33 }); return ++id; },
     cancelAnimationFrame: () => {},
     Math, now: () => t,
   };
   // headless: pass a fake clock so the module skips the dynamic-import viewer and
   // uses the dependency-free 2D orbit fallback; the env supplies document/timers.
-  const win = createPopup(env).mount({ now: () => t });
+  const win = createPopup(env).mount({ now: () => t, ...options });
   const runTimers = n => { for (let i = 0; i < n; i++) { const tm = timers.shift(); if (!tm) break; t += tm.ms || 33; tm.fn(); } };
-  return { env, body, elements, timers, win, element, advance: ms => { t += ms; }, runTimers };
+  return { env, body, elements, timers, intervals, win, element, advance: ms => { t += ms; }, runTimers };
 }
 
 test('popup opens for a 3D job, follows its progress and closes via the VCR effect', async () => {
@@ -207,6 +209,7 @@ test('popup opens for a 3D job, follows its progress and closes via the VCR effe
   x.win.sync([j]);
   const root = x.body.children.find(c => c.className === 'gbox-pp');
   assert.ok(root, 'window mounted in the page');
+  assert.equal(root.attributes.role, 'dialog', 'native surface cutouts can discover the popup');
   const deep = (el) => [el, ...el.children.flatMap(deep)];               // all descendants
   const title = deep(root).find(c => c.tagName === 'B');
   assert.equal(title.textContent, 'characters · use · amy');
@@ -281,4 +284,150 @@ test('desktop and web both include process-popup.js', () => {
   assert.ok(web.includes('/viz/process-popup.js'), 'web script tag');
   assert.ok(desktop.includes('processPopupSync'), 'desktop feeds the popup from its existing jobs poll');
   assert.ok(web.includes('GBoxProcessPopup.mount'), 'web mounts the popup');
+});
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+test('the shared jobs poll coalesces slow ticks, retries rejection and ignores disposed results', async () => {
+  const requests = [];
+  const x = setup({ fetchJobs: () => { const d = deferred(); requests.push(d); return d.promise; } });
+  await tick();
+  for (let i = 0; i < 30; i++) x.intervals[0]();
+  assert.equal(requests.length, 1);
+  requests[0].reject(new Error('offline')); await tick();
+  x.intervals[0](); await tick();
+  assert.equal(requests.length, 2, 'failed fetch released the gate');
+  x.win.dispose();
+  requests[1].resolve([job('characters', { character: 'late' })]); await tick();
+  assert.equal(x.body.children.length, 0, 'late result did not reopen a disposed popup');
+  assert.ok(x.env.document.head.children.every(e => e.removed), 'dispose removes its stylesheet');
+});
+
+// Browser-shaped Three.js fixture; tests use the real asynchronous viewer and GLTF callbacks.
+function viewerFixture() {
+  const loads = [], rendered = [], scenes = [];
+  class Vector {
+    constructor() { this.x = 1; }
+    set() { return this; } setScalar(v) { this.x = v; return this; }
+    copy() { return this; } multiplyScalar() { return this; } length() { return 2; }
+  }
+  class Object3D {
+    constructor() { this.children = []; this.userData = {}; this.position = new Vector(); this.scale = new Vector(); this.rotation = { x: 0, y: 0 }; }
+    add(o) { if (o.parent) o.parent.remove(o); o.parent = this; this.children.push(o); }
+    remove(o) { this.children = this.children.filter(c => c !== o); o.parent = null; }
+    traverse(fn) { fn(this); for (const c of this.children) c.traverse(fn); }
+    updateMatrixWorld() {}
+  }
+  class Scene extends Object3D { constructor() { super(); scenes.push(this); } }
+  class Box {
+    union() { return this; } copy() { return this; } applyMatrix4() { return this; }
+    isEmpty() { return false; } getCenter(v) { return v; } getSize(v) { return v; }
+  }
+  class Geometry {
+    constructor() { this.attributes = { position: { count: 12 } }; this.disposals = 0; this.boundingBox = {}; }
+    dispose() { this.disposals++; } setDrawRange() {} computeBoundingBox() {}
+  }
+  class Material {
+    constructor() { this.disposals = 0; this.opacity = 1; this.transparent = false; this.depthWrite = true; this.color = { set() {} }; }
+    dispose() { this.disposals++; }
+  }
+  class Line extends Object3D { constructor(g, m) { super(); this.geometry = g; this.material = m; this.isLineSegments = true; } }
+  class Camera extends Object3D { lookAt() {} }
+  const THREE = {
+    Scene, Group: Object3D, HemisphereLight: Object3D, DirectionalLight: Object3D,
+    PerspectiveCamera: Camera, Box3: Box, Vector3: Vector,
+    EdgesGeometry: Geometry, IcosahedronGeometry: Geometry, WireframeGeometry: Geometry,
+    LineBasicMaterial: Material, LineSegments: Line,
+    WebGLRenderer: class {
+      constructor() { this.domElement = { style: {}, remove() { this.removed = true; } }; }
+      setPixelRatio() {} setSize() {} dispose() {}
+      render(scene) { rendered.push(scene); }
+    },
+  };
+  class GLTFLoader { load(path, callback) { loads.push({ path, callback }); } }
+  function model(name) {
+    const scene = new Object3D(), mesh = new Object3D();
+    const geometry = new Geometry(), material = new Material();
+    const texture = { isTexture: true, disposals: 0, dispose() { this.disposals++; } };
+    material.map = texture; material.normalMap = texture;
+    mesh.isMesh = true; mesh.geometry = geometry; mesh.material = [material, material];
+    scene.name = name; scene.add(mesh);
+    return { scene, mesh, geometry, material, texture };
+  }
+  return { modules: { THREE, GLTFLoader }, loads, rendered, scenes, model,
+    current: () => scenes.at(-1)?.children.find(c => c.userData.model)?.userData.model || null };
+}
+
+test('module imports use the latest same-job model and stage; closed imports never mount', async () => {
+  const v = viewerFixture(), modules = deferred();
+  const x = setup({ loadModules: () => modules.promise });
+  x.win.sync([job('characters', { character: 'old' }, { id: 'same' })]);
+  x.win.sync([job('characters', { character: 'new' }, { id: 'same', progress: { msg: 'Rescaling the model' } })]);
+  modules.resolve(v.modules); await tick();
+  assert.deepEqual(v.loads.map(l => l.path), ['/api/characters/new/model']);
+  assert.equal(x.win.viewer().fx.kind, 'rescale');
+  x.win.dispose();
+
+  const late = deferred(), y = setup({ loadModules: () => late.promise });
+  y.win.sync([job('characters', { character: 'closed' })]); y.win.dispose();
+  late.resolve(v.modules); await tick();
+  assert.equal(v.loads.length, 1, 'closed import never constructs another viewer');
+});
+
+test('out-of-order models, replacements and close dispose real resources without stale presentation', async () => {
+  const v = viewerFixture(), x = setup({ loadModules: async () => v.modules });
+  const j = (name, msg = '') => job('characters', { character: name }, { progress: { msg } });
+  x.win.sync([j('A')]); await tick();
+  x.win.sync([j('B', 'Decimating 12 -> 6 triangles')]);
+  const A = v.model('A'), B = v.model('B');
+  v.loads[1].callback(B); v.loads[0].callback(A);
+  assert.equal(v.current(), B.scene, 'latest B remains displayed after A finishes');
+  assert.equal(A.geometry.disposals, 1); assert.equal(A.material.disposals, 1); assert.equal(A.texture.disposals, 1);
+  assert.equal(B.material.opacity, 0.22, 'live decimation preview applied');
+  const footer = x.elements.find(e => e.className === 'pp-f');
+  assert.equal(footer.textContent, 'Donor model preview · stage effects illustrate reported progress');
+  x.win.sync([j('C')]);
+  assert.equal(B.material.opacity, 1, 'preview material restored before disposal');
+  assert.equal(B.geometry.disposals, 1); assert.equal(B.material.disposals, 1); assert.equal(B.texture.disposals, 1);
+  const C = v.model('C'); x.win.dispose(); v.loads[2].callback(C);
+  assert.equal(C.geometry.disposals, 1); assert.equal(C.material.disposals, 1); assert.equal(C.texture.disposals, 1);
+  assert.equal(x.body.children.length, 0, 'late callback cannot reopen a closed window');
+});
+
+test('a job with no model clears its predecessor instead of mislabelling the old model', async () => {
+  const v = viewerFixture(), x = setup({ loadModules: async () => v.modules });
+  x.win.sync([job('characters', { character: 'A' })]); await tick();
+  const A = v.model('A'); v.loads[0].callback(A);
+  x.win.sync([job('asset_convert', {}, { id: 'unknown-model' })]);
+  assert.equal(x.win.viewer().path, null); assert.equal(v.current(), null);
+  assert.match(x.elements.find(e => e.className === 'pp-f').textContent, /^Progress illustration/);
+  assert.equal(A.geometry.disposals, 1);
+  x.win.dispose();
+});
+
+test('web owns one authenticated popup poller and embedded pages leave ownership to desktop', () => {
+  const vm = require('node:vm');
+  const web = fs.readFileSync(require.resolve('../clients/web/index.html'), 'utf8');
+  const start = web.indexOf('<script>', web.indexOf('<script src="/viz/process-popup.js"></script>')) + '<script>'.length;
+  const script = web.slice(start, web.indexOf('</script>', start));
+  for (const embedded of [false, true]) {
+    let mounts = 0, disposed = 0, options, pagehide;
+    const ctx = { location: { search: embedded ? '?embedded=1' : '' }, URLSearchParams,
+      window: { addEventListener(name, fn) { assert.equal(name, 'pagehide'); pagehide = fn; } },
+      GBoxProcessPopup: { mount(opts) { mounts++; options = opts; return { dispose() { disposed++; } }; } },
+      api: path => path, tq: () => 'token=fixture-token' };
+    vm.runInNewContext(script, ctx);
+    assert.equal(mounts, embedded ? 0 : 1);
+    if (!embedded) {
+      assert.equal(options.fetchJobs(), '/api/jobs?state=queued,running&limit=100');
+      assert.equal(options.assetUrl('/api/characters/amy/model'), '/api/characters/amy/model?token=fixture-token');
+      assert.equal(options.assetUrl('/model?x=1'), '/model?x=1&token=fixture-token');
+      pagehide(); assert.equal(disposed, 1);
+    }
+  }
 });
