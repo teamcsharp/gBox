@@ -89,7 +89,23 @@ Encoding requires the optional `zstandard` package. The CLI validates exact inpu
 
 Final production preparation passes all 79 available Amy targets, including the explicit `LOR`, `MAM`, `PDG` and `WBA` variants. All retain 1,384 triangles without downscaling or geometry reduction. All-target allocation validation is separate from gameplay acceptance.
 
-Native rendering, smooth joint continuity, playable attacks and save-state restoration are established for Amy-to-Ein and Gen-Fu-to-Leifang-C6. Complete fighter/costume source exports and all-fighter retarget fitting are verified separately. Other target/donor gameplay combinations require their own acceptance; unverified builds do not inherit a success claim from these tests. Stage extraction, arbitrary game formats, native animation round-trip equivalence and universal unlock profiles remain outside this verified writer scope.
+Native rendering, smooth joint continuity, playable attacks and save-state restoration are established for Amy-to-Ein and Gen-Fu-to-Leifang-C6. Complete fighter/costume source exports and all-fighter retarget fitting are verified separately. Other target/donor gameplay combinations require their own acceptance; unverified builds do not inherit a success claim from these tests. Native stage reintegration, arbitrary game formats, native animation round-trip equivalence and universal unlock profiles remain outside this verified writer scope.
+
+## Read-only environment decomposition
+
+The public `doa2_assets` operation now accepts `op=environments`, `environment=all` or an explicit archive such as `STAGE03`, and `environment_action=inspect|decompose`. These identifiers are archive names, not guessed arena names or executable stage-selection IDs. The owned executable identity guard still applies. Environment operations do not request a fighter skeleton or a native cloth cache. Missing BIN pairs and unsupported records are reported individually; they are not counted as verified archives.
+
+The owned disc contains **46 STAGE00..STAGE45 CHR/BIN pairs**. Independent read-only validation with the new reader verifies all 46 CHR identity reconstructions, **413,867 triangles** and **2,443 decoded base-level images**. This extends source extraction, not fighter replacement or gameplay acceptance.
+
+Formats 2 and 4 are native mipmapped twiddled and VQ textures. Their allocation is rounded up to 32 bytes; padding is at the end of the image chain. For raw 16-bit format 2, the chain has **six reserved bytes before 1x1**. The 64x64 base starts at byte 2,736 and ends at byte 10,928 within its 10,944-byte allocation. Summing only mip pixels would start the image six bytes early. VQ uses the 2,048-byte codebook followed by native mip indices; 1x1 and 2x2 each consume one byte. The offsets follow [Flycast's OtherMipPoint and VQMipPoint tables](https://github.com/flyinghead/flycast/blob/master/core/rend/TexCache.cpp). Descriptor records expose allocation, unpadded payload and base-level offsets separately. Existing non-mip encoding remains unchanged; native mip replacements are explicitly refused rather than silently dropping levels.
+
+STAGE03 has sixteen 32-byte inline records in model 33, mesh 0, with V word `0x7fbfffff`. Only the original CHR SHA-256 `fb739149dcd3150d2e28de8c003c3780656f91845da9bb6b135b1031e5b64a82` receives its exact sixteen-offset preview policy. The finite display value zero is recorded as a substitution, not decoded runtime semantics. All original record bytes remain intact and reconstruct exactly. Changed archives, other NaNs, nonfinite positions/normals/U and mismatched offsets remain errors. Ordinary fighter parsing and authored geometry remain strict.
+
+Decomposition creates a new package containing editable `.gltf` and self-contained `.glb` part geometry, PNG base-image previews, all native CHR/BIN bytes, complete PVRT-wrapped mip payloads, a UAP manifest and per-model/material provenance. It refuses an existing destination. Repeated public exports use distinct directories. Model IDs, material headers, polygon flags, bounding spheres and source hashes accompany the export. Three representative packages (STAGE00, STAGE03 and STAGE12) are independently checked in Blender; this is an interchange inspection, not an emulator test.
+
+Parts retain their stored coordinates. No inferred game placement or selection, collision, stage transitions, animation, procedural effects or native stage writer is attached. Alpha previews and two-sided materials are approximate; native lighting/blending headers are preserved for later RE. STAGE03's sentinel UV preview is explicitly partial. Native source files support subsequent investigation without claiming the exported scene recreates every runtime draw.
+
+Private evidence lives under `gbox-data/inbox-continuation-20261011/native-audit`; owned game data and generated stage packages are not included in Git.
 
 ## Primary format references
 

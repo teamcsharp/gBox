@@ -47,7 +47,18 @@ def _triangles(flags: int, indices: list[int]) -> list[tuple[int, int, int]]:
     return [t for t in triples if len(set(t)) == 3]
 
 
-def decode_chr(data: bytes) -> dict:
+def decode_chr(data: bytes, *, preview_v_sentinel_offsets: Iterable[int] = ()) -> dict:
+    """Decode strictly, optionally displaying pinned native V sentinels as zero.
+
+    The opt-in is for source previews, not a claim about runtime UV generation.
+    Every supplied offset must be a 32-byte inline record with V word 7fbfffff;
+    all other attributes remain finite and its original record is retained.
+    Ordinary fighter decoding and authored geometry keep their strict policy.
+    """
+    allowed = set(preview_v_sentinel_offsets)
+    if any(type(offset) is not int or offset < 0 for offset in allowed):
+        raise ValueError('invalid preview V sentinel offset')
+    substitutions = []
     if len(data) < 24 or _u32(data, 0) != 24:
         raise ValueError('not a DOA2 CHR archive')
     table, texture_table, count, texture_count = struct.unpack_from('<4I', data, 4)
@@ -124,6 +135,13 @@ def decode_chr(data: bytes) -> dict:
                         else:
                             normal = struct.unpack_from('<3f', raw, 12)
                             uv = struct.unpack_from('<2f', raw, size-8)
+                        if position in allowed:
+                            if size != 32 or raw[28:32] != b'\xff\xff\xbf\x7f':
+                                raise ValueError('preview V sentinel does not match its pinned record')
+                            uv = (uv[0], 0.0)
+                            substitutions.append({'model': model_id, 'mesh': len(meshes),
+                                                  'offset': position, 'vertex': len(vertices),
+                                                  'source_word': '7fbfffff', 'preview_v': 0.0})
                         if not all(math.isfinite(v) for v in (*xyz, *normal, *uv)):
                             raise ValueError('non-finite decoded vertex')
                         idx = len(vertices)
@@ -151,10 +169,12 @@ def decode_chr(data: bytes) -> dict:
         models.append({'id': model_id, 'offset': start, 'global_flags': (gp0, gp1),
                        'centroid': centroid, 'meshes': meshes, 'vertex_count': vertex_total,
                        'end_offset': cursor+8, 'padding': gap})
+    if allowed != {row['offset'] for row in substitutions}:
+        raise ValueError('preview V sentinel offset is not an inline vertex')
     textures = [struct.unpack_from('<3I', data, texture_table+12*k) for k in range(texture_count)]
     return {'header': data[:24], 'pointer_base': base, 'model_table_offset': table,
             'texture_table_offset': texture_table, 'pointers': pointers,
-            'models': models, 'textures': textures,
+            'models': models, 'textures': textures, 'preview_uv_substitutions': substitutions,
             'table_padding': data[table+4*count:texture_table],
             'trailing': data[texture_table+12*texture_count:]}
 
