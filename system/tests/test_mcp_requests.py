@@ -85,3 +85,233 @@ def test_mcp_inbox_round_trip_and_request_image(monkeypatch):
             "tokens_detail": {"token_count_unavailable": 1}, "tools": {"chat_review": 1}}),
         ("/api/requests/req1/status", {"status": "done", "note": ""}),
     ]
+
+
+def test_advertised_metrics_schema_types_dynamic_tool_counts_and_nested_fields(monkeypatch):
+    pytest.importorskip("mcp")
+    from jsonschema import Draft202012Validator
+    from mcp.client import Client
+    from gbox.mcp_server import build
+
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"tools": []}))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: original(*a, **kw, transport=transport))
+
+    async def check():
+        async with Client(build("http://fixture", "fixture")) as client:
+            tool = next(t for t in (await client.list_tools()).tools if t.name == "record_request_metrics")
+            schema = tool.input_schema
+            props = schema["properties"]
+            assert props["tools"]["additionalProperties"] == {"type": "integer", "minimum": 0}
+            assert props["metrics"]["properties"]["tools"] == props["tools"]
+            validator = Draft202012Validator(schema)
+            token_metadata = {"source": "SDK", "cost": None, "nested": {"cache": 3},
+                              "token_count_unavailable": 1}
+            for nested in (False, True):
+                fields = {"tools": {"ghidra_http_scripted_queries": 8000, "unused": 0},
+                          "tokens_detail": token_metadata, "duration_s": 1.25}
+                valid = {"request_id": "req1", **({"metrics": fields} if nested else fields)}
+                assert not list(validator.iter_errors(valid))
+                for bad in ("~8000 (bulk read-only)", -1, True, None, {"count": 1}):
+                    fields = {"tools": {"ghidra_http_scripted_queries": bad}}
+                    invalid = {"request_id": "req1", **({"metrics": fields} if nested else fields)}
+                    assert list(validator.iter_errors(invalid))
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("bad", ["~8000 (bulk read-only)", "8000", -1, True, 1.5, 1.0, None, []])
+@pytest.mark.parametrize("nested", [False, True])
+def test_metrics_counter_validation_is_early_and_names_the_bad_field(bad, nested):
+    pytest.importorskip("mcp")
+    from gbox.mcp_server import _request_metrics
+
+    fields = {"tools": {"ghidra_http_scripted_queries": bad}}
+    arguments = {"request_id": "req1", **({"metrics": fields} if nested else fields)}
+    with pytest.raises(ValueError, match="tools.ghidra_http_scripted_queries.*nonnegative integer"):
+        _request_metrics(arguments)
+
+
+@pytest.mark.parametrize("arguments", [
+    {"request_id": "req1", "metrics": []},
+    {"request_id": "req1", "metrics": None},
+    {"request_id": "req1", "tools": []},
+    {"request_id": "req1", "metrics": {"tools": None}},
+    # Do not silently hide an invalid flat counter behind a nested override.
+    {"request_id": "req1", "tools": {"ghidra": "unknown"}, "metrics": {"tools": {"ghidra": 3}}},
+])
+def test_metrics_validation_rejects_bad_containers_and_overridden_bad_counts(arguments):
+    pytest.importorskip("mcp")
+    from gbox.mcp_server import _request_metrics
+
+    with pytest.raises(ValueError):
+        _request_metrics(arguments)
+
+
+def test_real_failed_counter_submission_does_not_reach_http(monkeypatch):
+    pytest.importorskip("mcp")
+    from mcp.client import Client
+    from gbox.mcp_server import build
+
+    posted = []
+
+    def handler(req):
+        if req.url.path == "/api/registry":
+            return httpx.Response(200, json={"tools": []})
+        posted.append(req.url.path)
+        return httpx.Response(200, json={"ok": True})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: original(*a, **kw, transport=httpx.MockTransport(handler)))
+
+    async def check():
+        async with Client(build("http://fixture", "fixture")) as client:
+            for nested in (False, True):
+                fields = {"tools": {"ghidra_http_scripted_queries": "~8000 (bulk read-only)"}}
+                result = await client.call_tool("record_request_metrics", {
+                    "request_id": "req1", **({"metrics": fields} if nested else fields)})
+                assert result.is_error
+                assert "ghidra_http_scripted_queries" in result.content[0].text
+                assert "integer" in result.content[0].text
+
+    asyncio.run(check())
+    assert posted == []
+
+
+def test_mutation_receipts_keep_actual_message_attachments_and_metrics_without_history(monkeypatch):
+    pytest.importorskip("mcp")
+    from mcp.client import Client
+    from gbox.mcp_server import build
+
+    historical = "OLD REPORT CONTENT " * 4000
+    report = {"id": "req1", "number": 1216, "status": "in_progress", "body": historical,
+              "messages": [{"author": "operator", "text": historical}],
+              "metrics": {"tokens_in": 100, "tokens_out": 5, "tools": {"ghidra": 2}}}
+    step = {"action": "inspect", "attempt": "R5", "result": "producer still unresolved", "status": "in_progress"}
+    attachment = {"name": "trace.json", "sha256": "abc", "type": "application/json", "size": 8}
+    posted_message = {"author": "agent", "text": "Verified trace correction", "ts": 42,
+                      "task_step": step, "attachments": [attachment]}
+    token_metadata = {"source": "SDK", "cost": None, "nested": {"cached_tokens": 9}}
+    posted = []
+
+    def handler(req):
+        path = req.url.path
+        if path == "/api/registry":
+            return httpx.Response(200, json={"tools": []})
+        if path == "/api/requests/req1":
+            return httpx.Response(200, json=report)
+        body = json.loads(req.content)
+        posted.append((path, body))
+        if path == "/api/requests/req1/messages":
+            report["messages"].append(posted_message)
+        elif path == "/api/requests/req1/metrics":
+            report["metrics"] = {"tokens_in": 103, "tokens_out": 6, "tools": {"ghidra": 8002},
+                                 "tokens_detail": token_metadata, "model": "test", "provider": "nous"}
+        else:
+            raise AssertionError(path)
+        return httpx.Response(200, json=report)
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: original(*a, **kw, transport=httpx.MockTransport(handler)))
+
+    async def check():
+        async with Client(build("http://fixture", "fixture")) as client:
+            reply = await client.call_tool("reply_request", {"request_id": "req1", "body": "Verified trace correction", "task_step": step})
+            assert not reply.is_error
+            receipt = json.loads(reply.content[0].text)
+            assert receipt == {"ok": True, "request_id": "req1", "id": "req1", "number": 1216,
+                               "status": "in_progress", "message_count": 2, "posted_message": posted_message}
+            assert len(reply.content[0].text) < 2000 and "OLD REPORT CONTENT" not in reply.content[0].text
+            metrics = await client.call_tool("record_request_metrics", {"request_id": "req1", "tokens_in": 3,
+                "tokens_out": 1, "model": "test", "provider": "nous", "metrics": {
+                    "tools": {"ghidra": 8000}, "tokens_detail": token_metadata}})
+            assert not metrics.is_error
+            receipt = json.loads(metrics.content[0].text)
+            assert receipt["metrics"] == report["metrics"]
+            assert receipt["metrics"]["tools"]["ghidra"] == 8002  # Stored aggregate, not an echo of 8000.
+            assert receipt["status"] == "in_progress"
+            assert len(metrics.content[0].text) < 2000 and "OLD REPORT CONTENT" not in metrics.content[0].text
+            full = await client.call_tool("get_request", {"request_id": "req1"})
+            assert json.loads(full.content[0].text) == report
+            assert len(full.content[0].text) > 65_000
+
+    asyncio.run(check())
+    assert posted == [("/api/requests/req1/messages", {"author": "agent", "text": "Verified trace correction", "task_step": step}),
+                      ("/api/requests/req1/metrics", {"tokens_in": 3, "tokens_out": 1, "model": "test", "provider": "nous",
+                        "tools": {"ghidra": 8000}, "tokens_detail": token_metadata})]
+
+
+def test_failed_mutation_never_returns_success_receipt(monkeypatch):
+    pytest.importorskip("mcp")
+    from mcp.client import Client
+    from gbox.mcp_server import build
+
+    def handler(req):
+        if req.url.path == "/api/registry":
+            return httpx.Response(200, json={"tools": []})
+        return httpx.Response(422, json={"detail": "rejected by server"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: original(*a, **kw, transport=httpx.MockTransport(handler)))
+
+    async def check():
+        async with Client(build("http://fixture", "fixture")) as client:
+            for tool, args in (("reply_request", {"text": "Progress"}),
+                               ("record_request_metrics", {"tools": {"ghidra": 1}})):
+                result = await client.call_tool(tool, {"request_id": "req1", **args})
+                assert result.is_error
+                receipt = json.loads(result.content[0].text)
+                assert "422" in receipt["error"] and "ok" not in receipt
+
+    asyncio.run(check())
+
+
+def test_mcp_compact_receipts_match_actual_http_persistence(tmp_path, monkeypatch):
+    pytest.importorskip("mcp")
+    from fastapi.testclient import TestClient
+    from mcp.client import Client
+    from gbox.config import Config
+    from gbox.mcp_server import build
+    from gbox.server import create_app
+
+    cfg = Config(data_dir=tmp_path)
+    with TestClient(create_app(cfg), headers={"Authorization": "Bearer " + cfg.token()}) as backend:
+        report = backend.post("/api/requests", json={"title": "Trace review", "body": "Original instructions",
+                                                    "source": "api"}).json()
+        rid = report["id"]
+        backend.post(f"/api/requests/{rid}/metrics", json={"tokens_in": 100, "tools": {"ghidra": 2}}).raise_for_status()
+
+        def handler(req):
+            response = backend.request(req.method, req.url.path, content=req.content,
+                                       headers={"content-type": "application/json"})
+            return httpx.Response(response.status_code, content=response.content,
+                                  headers={"content-type": "application/json"})
+
+        original = httpx.AsyncClient
+        monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: original(*a, **kw, transport=httpx.MockTransport(handler)))
+
+        async def check():
+            async with Client(build("http://fixture", "fixture")) as client:
+                reply = await client.call_tool("reply_request", {"request_id": rid, "text": "Result still pending",
+                    "task_step": {"action": "trace", "status": "in_progress"}})
+                assert not reply.is_error, reply.content[0].text
+                receipt = json.loads(reply.content[0].text)
+                stored = backend.get(f"/api/requests/{rid}").json()
+                assert receipt["posted_message"] == stored["messages"][-1]
+                assert receipt["id"] == rid and receipt["number"] == stored["number"]
+                assert "messages" not in receipt and "body" not in receipt
+                result = await client.call_tool("record_request_metrics", {"request_id": rid,
+                    "metrics": {"tokens_in": 3, "tools": {"ghidra": 4},
+                                "tokens_detail": {"source": "SDK", "cost": None}}})
+                assert not result.is_error
+                receipt = json.loads(result.content[0].text)
+                stored = backend.get(f"/api/requests/{rid}").json()
+                assert receipt["metrics"] == stored["metrics"]
+                assert receipt["metrics"]["tools"]["ghidra"] == 6
+                assert receipt["metrics"]["tokens_in"] == 103
+                assert receipt["metrics"]["tokens_detail"] == {"source": "SDK", "cost": None}
+                assert receipt["status"] == stored["status"] == "open"
+                # The HTTP API continues returning full reports; compaction is MCP-only.
+                assert stored["body"] == "Original instructions" and len(stored["messages"]) == 2
+
+        asyncio.run(check())

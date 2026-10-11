@@ -50,6 +50,25 @@ def test_credit_requires_verification_and_usage_is_separated_by_provider(client)
     assert metrics['usage_by_solver'][1]['tokens_in'] == 30
 
 
+def test_metrics_ledger_only_zero_turns_preserves_default_and_explicit_counts(client):
+    rid = client.post('/api/requests', json={'title': 'Usage reconciliation', 'source': 'api'}).json()['id']
+    path = f'/api/requests/{rid}/metrics'
+    # Reconciliation records actual usage without inventing an inference turn.
+    response = client.post(path, json={'turns': 0, 'tools': {'ghidra': 3}})
+    assert response.status_code == 200
+    assert response.json()['metrics']['turns'] == 0
+    assert response.json()['metrics']['tools']['ghidra'] == 3
+    response = client.post(path, json={'tokens_in': 4})
+    assert response.status_code == 200
+    assert response.json()['metrics']['turns'] == 1  # Omitted still means one agent turn.
+    response = client.post(path, json={'turns': 2})
+    assert response.status_code == 200
+    assert response.json()['metrics']['turns'] == 3
+    response = client.post(path, json={'turns': None})
+    assert response.status_code == 200
+    assert response.json()['metrics']['turns'] == 4  # Preserve the existing nullable API default.
+
+
 def test_mcp_forwards_solver_credit_and_provider_usage(monkeypatch):
     pytest.importorskip('mcp')
     from mcp.client import Client

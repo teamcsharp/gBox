@@ -3080,7 +3080,7 @@ def create_app(config: Config) -> FastAPI:
         for k, v in m.tools.items():
             mt["tools"][k] = mt["tools"].get(k, 0) + v
         mt["files_changed"] = sorted(set(mt["files_changed"]) | set(m.files_changed))
-        mt["turns"] = (mt.get("turns") or 0) + (m.turns or 1)
+        mt["turns"] = (mt.get("turns") or 0) + (m.turns if m.turns is not None else 1)
         if m.duration_s is not None:
             mt["agent_seconds"] = round(mt.get("agent_seconds", 0) + m.duration_s, 1)
         store.put("request", rid, r)
