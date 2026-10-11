@@ -555,6 +555,45 @@ def _examine_ok(proc) -> bool:
     return bool(info) and "error" not in info
 
 
+def _state_file_identity(stat) -> tuple:
+    # Windows Python 3.12 path.stat/fstat expose different legacy ctime
+    # semantics. Device/inode bind the file; size/mtime bind its write state.
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _validate_completed_state_file(path: Path, expected_stat) -> None:
+    """Require a stable, complete recognized container without inspecting a core layout.
+
+    Raw core snapshots keep their existing handling. A temporarily stable file
+    may still contain an unfinished RZIP header/chunk, so its envelope must be
+    complete before capture reports verified success.
+    """
+    expected = _state_file_identity(expected_stat)
+    with path.open('rb') as stream:
+        if _state_file_identity(os.fstat(stream.fileno())) != expected:
+            raise ValueError('saved checkpoint changed before validation')
+        header = stream.read(8)
+        if not header:
+            raise ValueError('saved checkpoint is empty')
+        if header.startswith((b'#RZIPv', b'RASTATE')):
+            from .flycast_state import MAX_RZIP_CHUNK, MAX_STATE_BYTES, unpack
+            # Bound the encoded read as well as unpack's decoded/chunk budgets.
+            limit = MAX_STATE_BYTES + MAX_RZIP_CHUNK
+            if expected_stat.st_size > limit:
+                raise ValueError('saved checkpoint container exceeds inspection budget')
+            # Read only the observed file plus one growth-detection byte; using
+            # the full global budget here would allocate hundreds of MiB even
+            # for a tiny unfinished checkpoint on every polling attempt.
+            data = header + stream.read(expected_stat.st_size + 1 - len(header))
+            if len(data) != expected_stat.st_size or len(data) > limit:
+                raise ValueError('saved checkpoint changed or exceeded budget during read')
+            if not unpack(data):
+                raise ValueError('saved checkpoint contains no core state')
+        if (_state_file_identity(os.fstat(stream.fileno())) != expected
+                or _state_file_identity(path.stat()) != expected):
+            raise ValueError('saved checkpoint changed during validation')
+
+
 class RetroArchAdapter(CommandAdapter):
     """RetroArch + libretro core, controlled through RetroArch's UDP network command interface.
 
@@ -962,6 +1001,7 @@ class RetroArchAdapter(CommandAdapter):
             self.cmd("SAVE_STATE")
             deadline = time.monotonic() + 12
             previous = None
+            validation_error = None
             while time.monotonic() < deadline:
                 with self.log_path.open('rb') as stream:
                     stream.seek(max(offset, self.log_path.stat().st_size - 65536))
@@ -975,9 +1015,15 @@ class RetroArchAdapter(CommandAdapter):
                             stat = path.stat()
                         except OSError:
                             stat = None
-                        current = (str(path), stat.st_size, stat.st_mtime_ns) if stat else None
+                        current = (str(path), *_state_file_identity(stat)) if stat else None
                         if (stat and stat.st_size > 0 and stat.st_mtime_ns >= started
                                 and current == previous):
+                            try:
+                                _validate_completed_state_file(path, stat)
+                            except (OSError, ValueError) as error:
+                                validation_error = str(error)
+                                time.sleep(.1)
+                                continue
                             actual = int(match[1] or 0)
                             self.slot = actual
                             result = {'slot': actual, 'requested_slot': requested,
@@ -989,7 +1035,8 @@ class RetroArchAdapter(CommandAdapter):
                             return result
                         previous = current
                 time.sleep(.1)
-            raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed')
+            detail = f'; last container validation: {validation_error}' if validation_error else ''
+            raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed' + detail)
 
     def load_state(self, slot: int | None = None) -> dict:
         slot = self._slot(slot)
