@@ -809,7 +809,7 @@ def _gc_iso(ctx, game) -> Path:
 def _dc_gdi(ctx, game) -> Path:
     import subprocess
     rom = _rom(ctx, game)
-    if rom.suffix.lower() == ".gdi":
+    if rom.suffix.lower() in (".gdi", ".cdi"):
         return rom
     d = Path(ctx.config.cache) / "dc" / game["game_id"]
     if (d / "disc.gdi").exists():
