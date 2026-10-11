@@ -30,6 +30,21 @@ NO_REWIND = {"gamecube", "wii", "ps2", "3ds", "wiiu", "switch",
 COARSE_REWIND = {"n64", "n64dd", "psx", "dreamcast", "naomi", "saturn", "psp", "segacd", "pcecd", "3do", "jaguar", "neocd", "cdi", "pcfx"}
 # Pads whose games actually use L2/R2 (triggers): never steal those for rewind / fast-forward.
 TRIGGERS_USED = {"psx", "ps2", "dreamcast", "naomi", "gamecube", "wii", "n64", "n64dd", "3ds", "wiiu", "switch"}
+# Flycast (libretro, option prefix "reicast_") owns these systems.
+FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
+# Flycast options forced for every session so a save state reproduces the picture it was taken from:
+# - threaded rendering off: the state can grow between the size query and the write ("Serializer buffer overflow").
+# - copy rendered textures to VRAM (RTT buffer) on: by default a render-to-texture result exists only in the GPU
+#   texture cache, never in emulated VRAM, so it is missing from the state. LOAD_STATE resets that cache and the
+#   texture is rebuilt from VRAM garbage; a screen that draws its RTT once (DOA2 Survival Ranking, #1216) then stays
+#   striped/mosaic after a same-moment save+load while ordinary textures (portraits) are fine.
+FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+
+
+def _set_core_opts(path: Path, values: dict[str, str]) -> None:
+    """Force key = "value" lines in a RetroArch core-options file, keeping every other line."""
+    lines = [l for l in (path.read_text().splitlines() if path.exists() else []) if l.split(" =")[0].strip() not in values]
+    path.write_text("\n".join(lines + [f'{k} = "{v}"' for k, v in values.items()]) + "\n")
 
 
 class Adapter:
@@ -598,9 +613,8 @@ class RetroArchAdapter(CommandAdapter):
             set_opt = {"parallel-n64-gfxplugin": "angrylion"}             # draw at launch size -> squeezed/cropped picture;
             lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if l.split(" =")[0] not in set_opt]   # software
             co.write_text("\n".join(lines + [f'{k} = "{v}"' for k, v in set_opt.items()]) + "\n")                        # output scales
-        if (self.platform or "") in ("dreamcast", "naomi", "atomiswave"):   # query and the write ("Serializer buffer overflow")
-            lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if not l.startswith("reicast_threaded_rendering")]
-            co.write_text("\n".join(lines + ['reicast_threaded_rendering = "disabled"']) + "\n")
+        if (self.platform or "") in FLYCAST_PLATFORMS:                    # query and the write ("Serializer buffer overflow")
+            _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
             opts["rewind_enable"] = "false"
         if self.rewind_on:
