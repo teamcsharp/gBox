@@ -700,3 +700,110 @@ def test_jgr_coverage_advertises_explicit_ids_and_native_verification_limit():
                                       "platform": "dreamcast"})
     assert writer["routed"] and "id:N" in writer["slots"]
     assert "unverified" in writer["replaces"]
+
+
+def _named_afs(names=None):
+    data, _ = _binding_afs()
+    blob = bytearray(data)
+    count, offsets, sizes = jgr.afs_entries(blob)
+    directory = len(blob)
+    blob.extend(bytes(count * 48))
+    struct.pack_into("<II", blob, min(offsets) - 8, directory, count * 48)
+    names = names or [name + suffix for name in jgr.ARCHIVE_NAMES for suffix in ("dat.bin", "txr.bin")]
+    for index, (name, size) in enumerate(zip(names, sizes)):
+        raw = name.encode("ascii")
+        blob[directory + 48 * index:directory + 48 * index + len(raw)] = raw
+        struct.pack_into("<I", blob, directory + 48 * index + 44, size)
+    return blob, directory
+
+
+def test_names_resolve_verified_resources_and_reordered_archive(monkeypatch):
+    for name, index in {"beat": 4, "ereki": 4, "erekidat.bin": 4, "bis": 0, "gum": 6, "combo": 2,
+                        "conpo": 2, "nuts": 7, "pench": 8, "yo_yo": 15, "Rival-NTank": 12}.items():
+        assert jgr.swap_index(name) == index
+    data, _ = _named_afs()
+    assert jgr.character_names(data) == jgr.ARCHIVE_NAMES
+    assert jgr.swap_index("beat", data) == 4
+    monkeypatch.setattr(jgr, "character_names", lambda data: list(reversed(jgr.ARCHIVE_NAMES)))
+    monkeypatch.setattr(jgr, "native_ids", lambda data: list(reversed(USA_NATIVE_IDS)))
+    loads = []
+    assert jgr.swap_index("beat", lambda: loads.append(1) or data) == 11 and loads == [1]
+
+
+def test_named_roster_preserves_slugs_without_claiming_active_player():
+    rows = jgr.roster()
+    assert [row["slug"] for row in rows] == [f"jgr_char{i:02d}" for i in range(16)]
+    assert rows[4]["name"] == "Beat (JGR ereki, ID 0)" and rows[4]["native_id"] == 0
+    assert "JGR character 0" in rows[0]["aliases"] and "BIS" in rows[0]["aliases"]
+    with pytest.raises(ValueError, match="active native character ID is unknown"):
+        jgr.swap_index("player", lambda: pytest.fail("Unknown player must not read the archive"))
+    with pytest.raises(ValueError, match="no JGR character has that name"):
+        jgr.swap_index("sonic")
+
+
+@pytest.mark.parametrize("failure", ["size", "extent", "non_ascii", "truncated_entry", "bad_filename", "duplicate"])
+def test_named_archive_rejects_invalid_or_ambiguous_directory(failure):
+    data, directory = _named_afs()
+    _, offsets, _ = jgr.afs_entries(data)
+    if failure == "size":
+        struct.pack_into("<I", data, directory + 44, 1)
+    elif failure == "extent":
+        struct.pack_into("<I", data, min(offsets) - 4, len(data) + 1)
+    elif failure == "non_ascii":
+        data[directory] = 0xff
+    elif failure == "truncated_entry":
+        struct.pack_into("<I", data, 12, len(data) + 1)
+    elif failure == "bad_filename":
+        data[directory:directory + 32] = b"../../bisdat.bin".ljust(32, b"\0")
+    elif failure == "duplicate":
+        data[directory + 2 * 48:directory + 2 * 48 + 32] = b"bisdat.bin".ljust(32, b"\0")
+    with pytest.raises(ValueError):
+        jgr.swap_index("beat", data)
+
+
+def test_names_reject_conflicting_native_alias_and_invalid_id_map():
+    names = list(jgr.ARCHIVE_NAMES)
+    names[4] = "gum"  # Native Beat label would otherwise silently mask another entry's resource name.
+    with pytest.raises(ValueError, match="ambiguous"):
+        jgr.character_aliases(names, USA_NATIVE_IDS)
+    with pytest.raises(ValueError, match="permutation"):
+        jgr.character_aliases(jgr.ARCHIVE_NAMES, [True] + USA_NATIVE_IDS[1:])
+
+
+def test_owned_directory_names_match_native_executable_debug_table():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    disc = GDRom(str(gdi))
+    data = disc.read(jgr.PLAYER_AFS)
+    assert jgr.character_names(data) == jgr.ARCHIVE_NAMES
+    assert jgr.native_ids(data) == jgr.USA_NATIVE_IDS
+    exe, base = disc.read("1ST_READ.BIN"), 0x8c010000
+    labels = []
+    for index in range(15):
+        ptr = struct.unpack_from("<I", exe, 0x8c10df40 - base + 4 * index)[0] - base
+        labels.append(exe[ptr:exe.index(b"\0", ptr)].decode("ascii"))
+    assert labels[:10] + labels[13:] == [name for name in jgr.NATIVE_DEBUG_NAMES if name]
+    assert jgr.swap_index("beat", data) == 4 and jgr.swap_index("gum", data) == 6
+
+
+def test_owned_beat_mipmapped_body_texture_reencodes_inside_its_extent():
+    import numpy as np
+    from PIL import Image
+    from gbox.ninja import pvr_like, pvr_decode
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    _, ptex = jgr.character_pair(data, jgr.swap_index("beat", data))
+    texture = jgr.ptex_textures(data, ptex)[jgr.ATLAS_TEXTURE]["bytes"]
+    q = texture.find(b"PVRT")
+    assert texture[q + 9] == 4
+    width, height, rgba, _ = pvr_decode(texture)
+    image = Image.frombytes("RGBA", (width, height), rgba)
+    encoded = pvr_like(texture, image)
+    assert len(encoded) == len(texture) and encoded[:q + 16] == texture[:q + 16]
+    end = q + 8 + struct.unpack_from("<I", texture, q + 4)[0]
+    assert encoded[end:] == texture[end:]
+    decoded = np.frombuffer(pvr_decode(encoded)[2], np.uint8).reshape(height, width, 4)
+    assert np.abs(decoded[..., :3].astype(int) - np.asarray(image)[..., :3].astype(int)).mean() < 16

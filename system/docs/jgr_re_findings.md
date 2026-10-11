@@ -125,6 +125,32 @@ detection or proof of the drawn model. When the ID is unknown, omit it: the requ
 reading, building, or launching. `id:N` targets native ID N; `NN`, `char:NN`, and `jgr_charNN` name
 archive positions instead.
 
+Named slots also accept the verified USA archive resource names and native debug labels, for example
+`beat`, `ereki`, `gum`, `combo`, `nuts`, `pench` and `yo_yo`. The names come from the AFS attribute
+directory's 48-byte records, checked against each entry's size; native labels come from the executable
+pointer table at `0x8c10df40`. `beat` / `ereki` resolve to archive04 and native ID0. This is resource
+identification, not a claim about the current player or a restored checkpoint. With archive data,
+resolution uses that archive's actual directory order and native-ID permutation; without it, the
+verified USA table is used. Missing, truncated or ambiguous directories/aliases are refused. Collection
+slugs retain their archive indexes. The static named roster has been verified only against the owned
+USA disc, not other releases routed to the reader.
+
+## Mipmapped VQ texture writing
+
+`ninja.pvr_vq(..., mips=true)` writes PVRT format4 and `pvr_like` can replace Beat's native mipmapped
+body texture. All levels share a 256-entry codebook. Their byte offsets match Flycast's `VQMipPoint` in
+`core/rend/TexCache.cpp`: 1x1/2x2/4x4/8x8/16x16/32x32/64x64 start at index offsets
+`0/1/2/6/0x16/0x56/0x156` after the 2048-byte codebook. The 1x1 level samples the referenced
+codeword's bottom-right pixel. Training includes mip-level block patterns; six fixed coarse averages
+prevent the smallest levels from collapsing into full-resolution block patterns. Matching runs in
+bounded batches, and ARGB1555/ARGB4444 alpha is retained.
+
+Format4 replacement preserves the original GBIX, PVRT header and trailing bytes and refuses a body
+that would cross the declared PVRT extent, even if other buffer bytes follow. Unsupported pixel
+formats and mipmapped small VQ (0x11) are refused. Checks independently decode every mip level at the
+native offsets and re-encode the owned Beat texture without changing the source archive. These
+offline format checks do not prove that a rewritten body is selected or visible in native gameplay.
+
 ## Integrated experimental writer and cache safeguards
 
 The USA-disc reader and offline writer are now routed through `characters`. Coverage advertises

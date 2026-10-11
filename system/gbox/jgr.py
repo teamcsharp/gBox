@@ -48,6 +48,38 @@ def afs_entries(data: bytes) -> tuple[int, list[int], list[int]]:
     return count, list(pairs[0::2]), list(pairs[1::2])
 
 
+def afs_names(data: bytes) -> list[str]:
+    """Read the bounded CRI AFS filename directory, checking each recorded entry size."""
+    count, offsets, sizes = afs_entries(data)
+    if not count:
+        return []
+    table_end = 8 + 8 * count
+    if any(off < table_end or off + size > len(data) for off, size in zip(offsets, sizes)):
+        raise ValueError("AFS entry extends outside the archive")
+    found = []
+    for at in dict.fromkeys((min(offsets) - 8, table_end)):
+        if at < table_end or at + 8 > len(data):
+            continue
+        off, size = struct.unpack_from("<II", data, at)
+        if off < table_end or size < 48 * count or off + size > len(data):
+            continue
+        records = [data[off + 48 * i:off + 48 * (i + 1)] for i in range(count)]
+        if not all(struct.unpack_from("<I", record, 44)[0] == sizes[i]
+                   for i, record in enumerate(records)):
+            continue
+        try:
+            names = [record[:32].split(b"\0", 1)[0].decode("ascii") for record in records]
+        except UnicodeDecodeError:
+            continue
+        if all(names):
+            found.append(names)
+    if not found:
+        raise ValueError("AFS archive has no file-name directory matching its entry table")
+    if any(names != found[0] for names in found[1:]):
+        raise ValueError("AFS archive has ambiguous file-name directories")
+    return found[0]
+
+
 _CHUNK_KINDS = {PLAY_MAGIC: "play", PTEX_MAGIC: "ptex", MAIN_MAGIC: "main", EFTX_MAGIC: "eftx"}
 
 
@@ -393,15 +425,73 @@ PLAYER_AFS = "JETRADIO/PLAYER.AFS"
 CHARACTER_COUNT = 16
 
 
-def roster() -> list[dict]:
-    """The 16 PLAY/PTEX character pairs of PLAYER.AFS, in archive order.
+# Verified USA PLAYER.AFS directory order and 1ST_READ debug labels at 0x8c10df40.
+# These labels identify resources; they do not identify the currently controlled actor.
+ARCHIVE_NAMES = ["bis", "code", "conpo", "corn", "ereki", "goji", "gum", "nat", "plug", "pots", "reco",
+                 "rival_lshocker", "rival_ntank", "rival_pjam", "rival_snpjam", "yoyo"]
+NATIVE_DEBUG_NAMES = ["BEAT(EREKI)", "GUM", "CORN", "COMBO", "CODE", "NUTS", "RECO", "BIS", "YO_YO",
+                      "PLUG(PENCH)", None, None, None, "GOJI", "POTS", None]
+USA_NATIVE_IDS = [7, 4, 3, 2, 0, 13, 1, 5, 9, 14, 6, 11, 12, 10, 15, 8]
 
-    Character names are not read from the disc yet, so entries use their archive index; aliases
-    carry the index so a pick-whip label such as "JGR character 3" still resolves.
-    """
-    return [{"key": f"{i:02d}", "slug": f"jgr_char{i:02d}", "name": f"Jet Grind Radio character {i:02d}",
-             "aliases": [f"JGR character {i}", f"JGR char {i:02d}", f"PLAYER.AFS PLAY {i}"], "kind": "character"}
-            for i in range(CHARACTER_COUNT)]
+
+def _slot_key(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def character_aliases(names: list[str] | None = None, ids: list[int] | None = None) -> dict[str, int]:
+    """Resolve archive filenames and native debug labels without silently choosing an ambiguous alias."""
+    if names is None:
+        names = ARCHIVE_NAMES
+        if ids is None:
+            ids = USA_NATIVE_IDS
+    if len(names) != CHARACTER_COUNT or any(not isinstance(n, str) or not _slot_key(n) for n in names):
+        raise ValueError("JGR character names must identify all 16 archive entries")
+    if ids is not None and (len(ids) != CHARACTER_COUNT or any(type(n) is not int for n in ids)
+                            or sorted(ids) != list(range(CHARACTER_COUNT))):
+        raise ValueError("JGR native IDs must be a permutation of integers 0-15")
+    out = {}
+    for index, name in enumerate(names):
+        aliases = [name, name + "dat.bin"]
+        label = NATIVE_DEBUG_NAMES[ids[index]] if ids is not None else None
+        if label:
+            aliases.extend(label.replace(")", "").split("("))
+        for alias in aliases:
+            key = _slot_key(alias)
+            if key in out and out[key] != index:
+                raise ValueError(f"JGR character alias {alias!r} is ambiguous")
+            out[key] = index
+    return out
+
+
+def character_names(data: bytes) -> list[str]:
+    """Internal PLAY resource names from this archive's directory, in its actual entry order."""
+    names = afs_names(data)
+    _, offsets, _ = afs_entries(data)
+    out = []
+    for name, off in zip(names, offsets):
+        if data[off:off + 4] != PLAY_MAGIC:
+            continue
+        if not name.endswith("dat.bin") or "/" in name or "\\" in name:
+            raise ValueError(f"PLAY directory name {name!r} is not a character dat.bin resource")
+        out.append(name[:-len("dat.bin")])
+    character_aliases(out)  # Check normalized filenames before adding native-label aliases.
+    return out
+
+
+def roster() -> list[dict]:
+    """The verified USA resource names; collection slugs keep their archive positions."""
+    out = []
+    for index, name in enumerate(ARCHIVE_NAMES):
+        native = USA_NATIVE_IDS[index]
+        label = NATIVE_DEBUG_NAMES[native]
+        title = (label.split("(")[0].replace("_", "-").title() if label else name.replace("_", " ").title())
+        aliases = [f"JGR character {index}", f"JGR char {index:02d}", f"PLAYER.AFS PLAY {index}",
+                   name, name + "dat.bin"]
+        if label:
+            aliases.append(label)
+        out.append({"key": f"{index:02d}", "slug": f"jgr_char{index:02d}", "kind": "character",
+                    "name": f"{title} (JGR {name}, ID {native})", "aliases": aliases, "native_id": native})
+    return out
 
 
 def character_pair(data: bytes, index: int) -> tuple[int, int]:
@@ -523,7 +613,8 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     """characters op=use slot -> PLAYER.AFS archive index.
 
     'NN', 'jgr_charNN' or 'char:NN' name an archive position; 'id:N' names the game's native character ID (needs
-    `data`, the PLAYER.AFS bytes or a callable returning them). 'player' (the default) resolves only through a known
+    `data`, the PLAYER.AFS bytes or a callable returning them). Names such as 'beat' / 'ereki' use archive filenames
+    and verified native debug labels (the USA table when no data is supplied). 'player' resolves only through a known
     active native character ID: archive 00 is not the default player, so it is never guessed."""
     s = (slot or "player").strip().lower()
     load = (lambda: data() if callable(data) else data)
@@ -544,9 +635,18 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
         if buf is None:
             raise ValueError(f"slot {slot!r}: resolving a native character ID needs the PLAYER.AFS data")
         return archive_index_for_native_id(buf, int(num))
+    key = _slot_key(s)
+    if key and not key.isdigit() and not key.startswith(("jgrchar", "char")):
+        buf = load() if data is not None else None
+        names, ids = (character_names(buf), native_ids(buf)) if buf is not None else (ARCHIVE_NAMES, USA_NATIVE_IDS)
+        aliases = character_aliases(names, ids)
+        if key in aliases:
+            return aliases[key]
+        raise ValueError(f"slot {slot!r}: no JGR character has that name; names on this disc: {', '.join(names)}")
     digits = s.rsplit("char", 1)[-1].lstrip(":_ ")
     if not digits.isdigit() or not 0 <= int(digits) < CHARACTER_COUNT:
-        raise ValueError(f"slot {slot!r}: use 'id:N' (native character ID), 'player' with a known active ID, or a "
+        raise ValueError(f"slot {slot!r}: use a resource name such as 'beat', 'id:N' (native character ID), "
+                         "'player' with a known active ID, or a "
                          f"JGR archive index 00-{CHARACTER_COUNT - 1:02d}")
     return int(digits)
 
