@@ -1161,6 +1161,34 @@ async function cancelLoad() {                                // instant: leave f
                runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {}); }
   }).catch(() => {});
 }
+// #1293: a launch for a PC whose gBox worker stopped checking in waits in the queue until that worker
+// reconnects (the server hands it over then). Say which worker and how long it's been, not just "queued".
+function launchWaitNote(job, workers, node, now) {
+  if (!job || job.state !== "queued" || !Array.isArray(workers)) return "";
+  const ago = w => { const s = Math.max(0, Math.round(now / 1000 - (+w.last_seen || 0)));
+    return s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+  const waited = Math.max(0, now / 1000 - (+job.created || now / 1000));
+  const want = job.require_worker || (node && !["auto", "linux", "windows"].includes(node) ? node : "");
+  if (want) {
+    const w = workers.find(x => x.id === want) || workers.find(x => x.name === want)
+      || (node && workers.find(x => x.name === node));
+    if (!w) return `This launch is waiting for a worker named ${want}, which isn't connected to the Spark. ` +
+      `Start gBox on that PC, or press Esc to cancel.`;
+    if (!w.online) return `${w.name}'s gBox worker is offline: it last checked in ${ago(w)} ago. ` +
+      `The game starts by itself when it reconnects. If it doesn't, restart gBox on ${w.name}, or press Esc to cancel.`;
+    if (waited >= 15 && +w.active_jobs > 0) return `${w.name} is online but still busy with ${w.active_jobs} other ` +
+      `job${+w.active_jobs === 1 ? "" : "s"}; this launch starts when it's free. Press Esc to cancel.`;
+    return "";
+  }
+  const os = job.require_os, pool = workers.filter(w => !os || w.os === os);
+  if (!pool.some(w => w.online)) {
+    const last = pool.slice().sort((a, b) => (+b.last_seen || 0) - (+a.last_seen || 0))[0];
+    return `No ${os === "windows" ? "Windows " : os === "linux" ? "Linux " : ""}gBox worker is online` +
+      (last ? ` (${last.name} last checked in ${ago(last)} ago)` : "") +
+      `. The game starts by itself when one reconnects, or press Esc to cancel.`;
+  }
+  return "";
+}
 const DEBUG_EMU = { gamecube: "Dolphin", wii: "Dolphin", gba: "mGBA", psx: "DuckStation", arcade: "MAME" };
 async function play(id, node, debug, boot) {
   const g = await api("/api/catalog/" + id).catch(() => ({ title: "Game" }));
@@ -1189,12 +1217,23 @@ async function play(id, node, debug, boot) {
   if (!LOADING) { await api(`/api/jobs/${job.id}/cancel`, {}).catch(() => {}); return; }   // Esc before the job existed
   LOADING.job = job.id;
   loader.progress(1, `Job ${job.id} queued for ${where}`);
+  let waitNote = "", waitAt = 0;
   for (let i = 0; i < 750; i++) {                         // five minutes maximum before showing a diagnosable timeout
     if (!LOADING || LOADING.job !== job.id) return;            // cancelled
     let j;
     try { j = await api("/api/jobs/" + job.id, undefined, "GET", 15000); }
     catch (err) { LAST_LAUNCH.error = `Could not read launch job ${job.id}: ${err.message}`;
       LOADING = null; loader.fail(LAST_LAUNCH.error); return; }
+    if (j.state === "queued" && Date.now() - waitAt >= 4000) {  // still queued: is its worker even connected? (#1293)
+      waitAt = Date.now();
+      const ws = await api("/api/workers", undefined, "GET", 10000).catch(() => null);
+      if (!LOADING || LOADING.job !== job.id) return;
+      if (ws) { const note = launchWaitNote(j, ws, node, Date.now());
+        if (note !== waitNote) loader.progress(1, note || `Job ${job.id} queued for ${where}`);
+        waitNote = LAST_LAUNCH.wait = note; }
+    }
+    if (waitNote && j.state === "queued") i = 0;               // explained wait (worker offline/busy): don't time out, Esc cancels
+    if (j.state !== "queued") waitNote = "";
     if (j.progress) loader.progress(j.progress.pct, j.progress.msg);
     else if (j.state === "running") loader.progress(3, "Worker picked up the launch");
     if (j.state === "succeeded") { LOADING = null; loader.progress(100, "Running — opening the stream"); setTimeout(() => loader.hide(), 500);
@@ -1207,7 +1246,8 @@ async function play(id, node, debug, boot) {
     await new Promise(r => setTimeout(r, 400));
   }
   LOADING = null;
-  LAST_LAUNCH.error = `Launch job ${job.id} has not finished after five minutes`;
+  LAST_LAUNCH.error = waitNote ? `Launch job ${job.id} is still queued after five minutes. ${waitNote}`
+    : `Launch job ${job.id} has not finished after five minutes`;
   loader.fail(`${LAST_LAUNCH.error}. Capture this screen to file its diagnostics.`);
 }
 async function details(id) {
