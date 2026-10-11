@@ -147,6 +147,39 @@ class TestTextures:
         with pytest.raises(ValueError):
             doa2_chars.texture_size(64, 64, 1, 9)                       # unknown format
 
+    def test_mipped_size_formulas_match_disc_allocations(self):
+        # real-disc allocations (owned GDI, all 129 CHR+BIN pairs sum exactly):
+        # 16-bit + full mip chain, 32-B aligned: 64x64=10944, 128x128=43712, 32x32=2752
+        assert doa2_chars.texture_size(64, 64, 1, 2) == 10944
+        assert doa2_chars.texture_size(128, 128, 1, 2) == 43712
+        assert doa2_chars.texture_size(32, 32, 1, 2) == 2752
+        assert doa2_chars.texture_size(16, 16, 1, 2) == 704
+        # VQ + full mip chain, 32-B aligned: 64x64=3424, 128x128=7520, 256x256=23904, 512x512=89440
+        assert doa2_chars.texture_size(64, 64, 1, 4) == 3424
+        assert doa2_chars.texture_size(128, 128, 1, 4) == 7520
+        assert doa2_chars.texture_size(256, 256, 1, 4) == 23904
+        assert doa2_chars.texture_size(512, 512, 1, 4) == 89440
+
+    def test_mipped_payload_vs_allocation(self):
+        # chain bytes are unpadded; the allocation adds up to 31 alignment bytes (STAGE12[0]
+        # 64x64 fmt2: chain 10922, allocation 10944)
+        info = doa2_chars.parse_chr(synth_chr(n_tex=1))
+        b = bytearray(synth_chr(n_tex=1))
+        struct.pack_into("<HHBBHI", b, info["texture_table"], 64, 64, 1, 2, 0, 0x1000)
+        # single texture: first addr is the base -> offset 0, capacity == bin_size
+        texs = doa2_chars.parse_textures(bytes(b), 10944)
+        assert texs[0]["size"] == 10944 and texs[0]["payload"] == 10922
+        assert texs[0]["capacity"] == 10944
+        # two adjacent mipped textures: capacity of the first = delta to the second
+        b2 = bytearray(synth_chr(n_tex=2))
+        info2 = doa2_chars.parse_chr(synth_chr(n_tex=2))
+        struct.pack_into("<HHBBHI", b2, info2["texture_table"], 64, 64, 1, 2, 0, 0x1000)
+        struct.pack_into("<HHBBHI", b2, info2["texture_table"] + 12, 64, 64, 1, 2, 0,
+                         0x1000 + 10944)
+        texs2 = doa2_chars.parse_textures(bytes(b2), 2 * 10944)
+        assert texs2[0]["capacity"] == 10944 and texs2[1]["capacity"] == 10944
+        assert texs2[0]["payload"] == texs2[1]["payload"] == 10922
+
     def test_rejects_non_pow2(self):
         b = bytearray(synth_chr())
         # descriptor 0 word: width/height packed at texture_table; set 48x48
@@ -189,6 +222,30 @@ class TestMeshDecode:
         assert t8 == [(0, 1, 2)]
         swapped = doa2_chars._triangles(2, [0, 1, 2])                  # cull 2: swap winding
         assert swapped == [(1, 0, 2)]
+
+    def test_v_sentinel_decodes_and_counts(self):
+        # STAGE03 model 33 submesh 0 (owned disc): 16 of its 54 vertex records carry the
+        # constant 0x7fbfffff word at +28 (float NaN) while u steps normally; the walk and
+        # end-marker counts stay exact. The sentinel must decode (v=0) not abort the mesh.
+        b = bytearray(synth_chr())
+        info = doa2_chars.parse_chr(bytes(b))
+        # first inline vertex of model 1: v word at objects[1]+24+80+8+28
+        v_off = info["objects"][1] + 24 + 80 + 8 + 28
+        b[v_off:v_off + 4] = b"\xff\xff\xbf\x7f"
+        m = doa2_chars.parse_meshes(bytes(b))
+        assert m["sentinel_v_vertices"] == 1
+        v = m["models"][1]["meshes"][0]["vertices"][0]
+        assert v[7] == 0.0 and v[6] == pytest.approx(0.1, abs=1e-6)    # u untouched, v = 0
+        assert m["models"][1]["vertex_count"] == 3                     # walk still exact
+
+    def test_real_nonfinite_still_rejected(self):
+        b = bytearray(synth_chr())
+        info = doa2_chars.parse_chr(bytes(b))
+        # a genuine NaN in the POSITION (not the v-sentinel word) must still reject
+        x_off = info["objects"][1] + 24 + 80 + 8
+        b[x_off:x_off + 4] = b"\xff\xff\xff\x7f"                       # +inf
+        with pytest.raises(ValueError, match="non-finite"):
+            doa2_chars.parse_meshes(bytes(b))
 
 
 class TestRoster:

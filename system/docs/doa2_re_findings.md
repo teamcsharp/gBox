@@ -197,10 +197,49 @@ pose: channel→joint retargeting is not claimed until the native mixer layout (
 each of the 44 channels drives per actor state) is mapped. Real-disc e2e through `export()`
 verified for KAS c0 (1,004 clips) and GEN c0 (1,000 clips) on the extracted owned GDI.
 
+## Slice 6 (commit pending): full-disc geometry/texture coverage — mipped formats + stage archives
+
+A disc-wide sweep (every `DOA2/*.CHR` + paired `.BIN`, 129 archives) against the slice-2/4 readers
+found two real gaps, both fixed and verified on the owned GDI:
+
+1. **Mipped texture formats 2 and 4 were rejected** (`unsupported texture format 0x2/0x4`),
+   blocking all 27 STAGE* archives plus EFC0/EFC1 (98/129 decoded before). Descriptor
+   address deltas across the whole disc pin the native size formulas exactly:
+   - fmt 2 = 16-bit pixels + **full mip chain** (down to 1x1), allocation 32-byte aligned:
+     `align32(2 * mip_chain_pixels)` — 16x16=704, 32x32=2752, 64x64=10944, 128x128=43712.
+   - fmt 4 = **VQ + full mip chain**: `align32(2048 + mip_chain_vq_bytes)` — 64x64=3424,
+     128x128=7520, 256x256=23904, 512x512=89440.
+   - Validation: with these formulas the descriptor sizes sum to the `.BIN` length **exactly
+     for all 129 CHR+BIN pairs** (0 mismatches); format census fmt1x1514, fmt2x70, fmt3x2248,
+     fmt4x1205, fmtDx630 (5,470 textures).
+   - The 32-byte allocation pad sits **after the mip chain** (A/B-decoded STAGE12[0] 64x64:
+     padded decode corrupts the base level because the PVR twiddle reader slices the base
+     level from the body end; chain-only decode is pixel-coherent). `decode_texture` now
+     trims the pad; `parse_textures` reports both `size` (allocation) and `payload` (chain).
+   - Visual evidence: VQ+mip (STAGE00 snow/rock cliff set) and twiddle+mip (STAGE01
+     architectural/foliage/glow set) contact sheets decode with zero Morton/VQ artifacts.
+2. **STAGE03 model 33 carried 16 vertex records with the constant word `0x7fbfffff` (float
+   NaN) at +28** while u steps normally — a native v-sentinel in one stage submesh, not
+   corruption (walk and end-marker counts stay exact; disc-wide scan: 16/1,114,762 inline
+   records, STAGE03 only). The reader now decodes it as v=0 and counts it
+   (`sentinel_v_vertices` diagnostic); genuine non-finite positions still reject.
+
+`export()` now tolerates missing SUP/MOT (stages have none) and states provenance only for
+files present. Real-disc e2e: STAGE00 exports 80/80 textures as PNGs (both mipped formats
+included) + textured glTF + honest manifest (skeleton/skin_weights/animations correctly
+`missing` — stages have no rig); a top-down software raster of all 14,508 STAGE00 triangles
+shows a coherent stage layout (circular boundary, orthogonal structures, textured surfaces).
+Post-fix disc totals: **129/129 archives, 4,476 stage/system models, 1,627,996 vertices,
+1,138,700 triangles, all 5,470 textures decode to RGBA.**
+
 ## Not yet done (next slice, in order)
 
 1. Channel→joint retargeting for an animated skinned export (map the 44 MOT channels onto
-   the 17-joint reader rig via the native mixer tables FUN_8c0e89c2/8ad8/8bc0).
+   the 17-joint reader rig via the native mixer tables FUN_8c0e89c2/8ad8/8bc0 — structure
+   mapped this run: FUN_8c0e8484 calls mixer-1(89c2) on 5 head params + per-group vec3,
+   mixer-2(8ad8) on pairs, mixer-3(8bc0) on pairs; FUN_8c0dd826 emits the 15 joint matrices
+   from a per-actor 15-byte joint-id table @0x8c2ad5c0 + 0x400 param block @0x8c23c92c
+   indexed by the same joint ids as the SUP seam graph; writer-lane profiles agree).
 2. Reader-route parity with the writer lane (PR #8): fold the corrected SUP layout into
    `doa2_morphs.inspect_sup` assumptions when that branch merges.
 3. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay

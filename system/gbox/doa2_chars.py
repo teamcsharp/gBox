@@ -20,8 +20,10 @@ the owned KAS00/AYA00/GEN00 archives):
   or 8-B back-references {0x5ff000xx tag, i32 rel} to an earlier inline record in the same submesh.
   Texture descriptors (12 B each): [u16 width, u16 height][u8 pixel, u8 format, u16 pad][u32 address];
   addresses are relative to the first texture's address and index the costume .BIN payload
-  (sizes sum exactly to the BIN length: KAS00 55 textures -> 332,800 B).  pixel 0/1/2 =
-  ARGB1555/RGB565/ARGB4444; format 1/0xD = twiddled 16-bit, 3 = 8-bit VQ (256-entry codebook).
+  (sizes sum exactly to the BIN length for all 129 CHR+BIN pairs on the owned disc).  pixel 0/1/2 =
+  ARGB1555/RGB565/ARGB4444; format 1/0xD = twiddled 16-bit, 2 = twiddled + full mip chain, 3 = 8-bit
+  VQ (256-entry codebook), 4 = VQ + full mip chain; mipped allocations are 32-byte aligned with the
+  pad AFTER the chain (base level must be sliced from the chain end, not the allocation end).
 
 This module is the READER: parse and decode read-only (owned disc, never written). The native writer
 route lives in the doa2_swap stack (PR #8); the rig/skeleton is NOT in CHR (SUP/ACS carry it).
@@ -72,12 +74,40 @@ def parse_chr(data: bytes) -> dict:
             "model0_sphere": [round(f32(data, 32 + 4 * k), 5) for k in range(4)]}
 
 
+def _mip_chain_pixels(w: int, h: int) -> int:
+    """Total pixels over the full mip chain (1x1 included), native PVR layout."""
+    total = 0
+    while True:
+        total += w * h
+        if w == 1 and h == 1:
+            return total
+        w, h = max(1, w // 2), max(1, h // 2)
+
+
+def _mip_chain_vq_bytes(w: int, h: int) -> int:
+    """Total VQ index bytes over the full mip chain (each level max(level//2)^2, min 1)."""
+    total = 0
+    while True:
+        total += (w * h + 3) // 4
+        if w == 1 and h == 1:
+            return total
+        w, h = max(1, w // 2), max(1, h // 2)
+
+
 def texture_size(width: int, height: int, pixel: int, fmt: int) -> int:
-    """Native BIN payload size for one texture (VQ carries a 256-entry codebook)."""
+    """Native BIN payload size for one texture (VQ carries a 256-entry codebook).
+
+    Mipped formats (2 = 16-bit + full mip chain, 4 = VQ + full mip chain) are allocated
+    32-byte aligned (validated: sums match the .BIN lengths exactly on all 129 owned
+    CHR+BIN pairs)."""
     if pixel not in (0, 1, 2):
         raise ValueError(f"unsupported pixel format {pixel:#x}")
     if fmt == 3:
         return 2048 + width * height // 4
+    if fmt == 4:                                          # VQ + mip chain
+        return (2048 + _mip_chain_vq_bytes(width, height) + 31) & ~31
+    if fmt == 2:                                          # 16-bit + mip chain
+        return (2 * _mip_chain_pixels(width, height) + 31) & ~31
     if fmt in (1, 0x0D):
         return 2 * width * height
     raise ValueError(f"unsupported texture format {fmt:#x}")
@@ -101,8 +131,15 @@ def parse_textures(chr_data: bytes, bin_size: int) -> list[dict]:
         end = (raw[i + 1][2] - base) if i + 1 < len(raw) else bin_size
         if off < 0 or end < off or end > bin_size or off + size > end:
             raise ValueError(f"texture {i} exceeds its BIN allocation")
+        # payload bytes (mip chain, unpadded) vs allocation (chain + up-to-31-B alignment pad)
+        if fmt == 4:
+            chain = 2048 + _mip_chain_vq_bytes(w, h)
+        elif fmt == 2:
+            chain = 2 * _mip_chain_pixels(w, h)
+        else:
+            chain = size
         out.append({"index": i, "width": w, "height": h, "pixel": pixel, "format": fmt,
-                    "offset": off, "size": size, "capacity": end - off})
+                    "offset": off, "size": size, "capacity": end - off, "payload": chain})
     return out
 
 
@@ -652,6 +689,7 @@ def parse_meshes(chr_data: bytes) -> dict:
         sphere = struct.unpack_from("<4f", chr_data, start + 8)
         cursor = start + 24
         meshes, vertex_total, tri_total = [], 0, 0
+        sentinel_v = 0
         while cursor + 4 <= limit and u32(chr_data, cursor):
             if cursor + 80 > limit:
                 raise ValueError(f"truncated submesh header at {cursor:#x}")
@@ -701,6 +739,12 @@ def parse_meshes(chr_data: bytes) -> dict:
                         else:
                             normal = struct.unpack_from("<3f", raw, 12)
                             uv = struct.unpack_from("<2f", raw, size - 8)
+                        # 0x7fbfffff: constant native v-sentinel (float NaN word). Stage submeshes
+                        # use it where a strip shares one v (found on STAGE03 model 33: 16 records,
+                        # u still stepped; the walk and end-marker counts stay exact). Treat as v=0.
+                        if size == 32 and raw[28:32] == b"\xff\xff\xbf\x7f":   # 0x7fbfffff LE
+                            uv = (uv[0], 0.0)
+                            sentinel_v += 1
                         if not all(math.isfinite(v) for v in (*xyz, *normal, *uv)):
                             raise ValueError(f"non-finite vertex at {position:#x}")
                         registered[position] = len(vertices)
@@ -721,17 +765,23 @@ def parse_meshes(chr_data: bytes) -> dict:
         if declared != vertex_total:
             raise ValueError(f"model {mid} end-marker count {declared} != walked {vertex_total}")
         models.append({"id": mid, "offset": start, "global_flags": (gp0, gp1), "sphere": sphere,
-                       "meshes": meshes, "vertex_count": vertex_total, "triangle_count": tri_total})
+                       "meshes": meshes, "vertex_count": vertex_total, "triangle_count": tri_total,
+                       "sentinel_v_vertices": sentinel_v})
     total_v = sum(m["vertex_count"] for m in models)
     total_t = sum(m["triangle_count"] for m in models)
     return {"n_models": len(models), "n_submeshes": sum(len(m["meshes"]) for m in models),
-            "n_vertices": total_v, "n_triangles": total_t, "models": models, **info}
+            "n_vertices": total_v, "n_triangles": total_t, "models": models,
+            "sentinel_v_vertices": sum(m["sentinel_v_vertices"] for m in models), **info}
 
 
 # --------------------------------------------------------------------------- textures
 def pvr_wrap(tex: dict, body: bytes) -> bytes:
-    """Synthesize the PVRT chunk header the native BIN omits (payload bytes unchanged)."""
-    if len(body) != tex["size"]:
+    """Synthesize the PVRT chunk header the native BIN omits (payload bytes unchanged).
+
+    Mipped allocations (formats 2/4) carry up to 31 trailing alignment bytes: the chain
+    starts at the allocation and the pad sits at its END (verified on STAGE12[0] 64x64:
+    decoding the padded allocation shifts the base level, trimming it is pixel-exact)."""
+    if len(body) not in (tex["size"], tex.get("payload", tex["size"])):
         raise ValueError("texture body/descriptor size mismatch")
     return (b"PVRT" + struct.pack("<IBBHHH", len(body) + 8, tex["pixel"], tex["format"],
                                   0, tex["width"], tex["height"]) + body)
@@ -741,7 +791,7 @@ def decode_texture(tex: dict, bin_data: bytes):
     """One native BIN texture -> (width, height, RGBA bytes, description) via gbox.ninja."""
     from .ninja import pvr_decode
     body = bin_data[tex["offset"]:tex["offset"] + tex["size"]]
-    return pvr_decode(pvr_wrap(tex, body))
+    return pvr_decode(pvr_wrap(tex, body[:tex["payload"]]))
 
 
 # costume prefix -> (display name, aliases). Confirmed against the disc's arts_*.bin / *.mot tables
@@ -956,6 +1006,10 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
         else:
             exe = None
     for ext in ("BIN", "CHR", "SUP"):
+        if f"DOA2/{stem}.{ext}" not in disc.files:         # stages/system archives have no SUP
+            if ext == "SUP":
+                continue
+            raise KeyError(f"DOA2/{stem}.{ext} not on disc")
         data = disc.read(f"DOA2/{stem}.{ext}")
         (out / f"{stem}.{ext}").write_bytes(data)
         files.append(f"{stem}.{ext}")
@@ -969,9 +1023,10 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
     r = export_assets(disc.read(f"DOA2/{stem}.CHR"), disc.read(f"DOA2/{stem}.BIN"), str(out),
                       f"doa2_{key.lower()}_{costume}", rig=rig, emit=emit, mot_data=mot_data)
     manifest = r["manifest"]
+    present = [e for e in ("BIN", "CHR", "SUP") if f"DOA2/{stem}.{e}" in disc.files]
     manifest["provenance"] = [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f"DOA2/{stem}.{e}"))}
-                              for e in ("BIN", "CHR", "SUP")]
+                              for e in present]
     if mot_data is not None:
-        manifest["source"]["resource_ids"] = [f"DOA2/{stem}.{e}" for e in ("BIN", "CHR", "SUP")] + [f"DOA2/{mot}.MOT"]
+        manifest["source"]["resource_ids"] = [f"DOA2/{stem}.{e}" for e in present] + [f"DOA2/{mot}.MOT"]
     (out / "manifest.json").write_text(__import__("json").dumps(manifest, indent=1))
     return {"files": files + r["files"], "manifest": manifest}
