@@ -15,6 +15,8 @@ import zlib
 import httpx
 
 from .models import new_id
+from .agent_contracts import (native_swap_outcome, native_swap_result, require_character,
+                              resolve_read_session, validate_cheat_call)
 
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
 You can search the web, find and launch games, inspect and edit live emulator memory, extract sprites/tiles to Blender,
@@ -243,8 +245,9 @@ def tool_specs() -> list[dict]:
            "(press trigger_key, or waits for the game), decompiles the function with Ghidra, validates with a breakpoint and "
            "records a knowledge edge. Needs a debugger session (launch_game debug=true). Takes several minutes.",
            {"session_id": s, "address": s, "length": i, "trigger_key": s, "label": s}, ["session_id", "address", "label"]),
-        fn("cheats", "Cheat codes for a live session. op=list (optionally query=text to filter), enable/disable (index), "
-           "add (codes=['ADDR VALUE', ...] Gecko/Action Replay raw or plain address/value lines, desc). Emulator-engine codes "
+        fn("cheats", "Cheat codes for a live session. op=list (optionally query=text to filter), enable/disable requires an existing index from list, "
+           "add requires codes=['ADDR VALUE', ...] and enables those new lines immediately; do not send codes with op=enable. "
+           "Gecko/Action Replay raw or plain address/value lines, desc. Emulator-engine codes "
            "(GameShark/Game Genie/CodeBreaker from the bundled database) toggle live; added codes are held by gBox until disabled.",
            {"session_id": s, "op": s, "index": i, "codes": {"type": "array", "items": s}, "desc": s, "query": s}, ["session_id", "op"]),
         fn("offer_controls", "Give the operator live controls in the chat instead of a one-off change: sliders/toggles that run a "
@@ -503,7 +506,9 @@ def tool_specs() -> list[dict]:
            "a loader or dump a table. Returns the script log.", {"binary_path": s, "script": s, "args": {"type": "array", "items": s},
            "processor": s}, ["binary_path", "script"]),
         fn("characters", "collect (game): extract the supported native character roster without vision calls; returns verified models, mapped rig readiness and individual failures. gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
-           "reusable in any game. op=list | get (character) | environments | extract (character = what to extract, kind = "
+           "reusable in any game. use/live_use/overlay/place require a nonempty character copied from the operator's exact slug/name. "
+           "Overlay/missing/pending results do not complete a native swap; keep the request pending until native verification. "
+           "op=list | get (character) | environments | extract (character = what to extract, kind = "
            "character|vehicle|object|environment, session_id or game, x/y = its point on the picture 0..1): returns it if it's "
            "already collected, else runs the game's own extractor, else cuts it out of a RenderDoc capture of the frame "
            "(environment = whole scene minus HUD), else says what's missing and files a request; result has status, checked "
@@ -717,6 +722,9 @@ class Agent:
 
     def re_study(self, game="", source="auto", session_id="", analyze=True):
         gid = self._re_gid(game)
+        if source == "ram" and session_id:
+            session_id = resolve_read_session(session_id, gid, self.api.get("/api/sessions").json(),
+                                              getattr(self, "context_session_id", ""))
         d = self.api.get(f"/api/re/dossier/{gid}").json()
         ex = d.get("executable")
         if not ex or source == "ram":
@@ -844,6 +852,7 @@ class Agent:
         return r
 
     def cheats(self, session_id, op="list", index=None, codes=None, desc="", query=""):
+        validate_cheat_call(op, index, codes)
         j = self.api.post("/api/jobs", json={"tool": "cheats", "require_worker": session_id.split("-")[0],   # the session's worker
                                              "input": {"session_id": session_id, "op": op, "index": index, "codes": codes or [],
                                                        "desc": desc, "query": query}}).json()
@@ -1114,8 +1123,9 @@ class Agent:
 
     def characters(self, op="list", character="", session_id="", game="", slot="player", kind="", x=None, y=None,
                    from_clipboard=False, a="", b="", one_way=False, near="", size=0.0):
-        if session_id and self._live_session(session_id):  # placeholder / mistyped id: fall back to the game itself
-            session_id = ""
+        require_character(op, character)
+        if session_id and (bad := self._live_session(session_id)):
+            return bad  # preserve the requested live target; never silently relaunch a different session
         if not session_id and not game and op in ("collect", "extract", "use", "add", "swap", "place", "unplace"):   # the chat's game
             game = getattr(self, "context_game", "") or ""
         inp = {"op": op, "character": character, "session_id": session_id, "game": game, "slot": slot,
@@ -1123,7 +1133,13 @@ class Agent:
                "a": str(a or ""), "b": str(b or ""), "one_way": bool(one_way), "near": near or "", "size": float(size or 0)}
         # extract / add / blender write the collection: they run where it lives (the Spark)
         j = self._job("characters", inp, limit=14400 if op == "collect" else 3600, node=None if op == "use" and session_id else "linux")
-        return (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
+        result = (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
+        if op in ("use", "live_use"):
+            outcome = native_swap_result({"state": j.get("state"), "error": j.get("error"), "result": result})
+            result = result | {"native_swap_verified": outcome["verified"]}
+            if not outcome["verified"]:
+                result["next"] = outcome["reason"]
+        return result
 
     def rea_tools(self, query="", name=""):
         from .rea_tool import discover, DiscoverIn
@@ -1181,6 +1197,7 @@ class Agent:
                                 break
             except Exception:
                 pass
+        self.context_session_id = context.get("session_id") or ""
         tools, usage, used = tool_specs(), {"in": 0, "out": 0}, {}
         self.recipes = {}
         try:                                                   # learned tools for this game (and any-game ones)
@@ -1476,8 +1493,10 @@ class ChatHub:
             "body": text, "source": "gbox-chat", "kind": "text", "context": context | {"conversation": cid}})
         context = context | {"request_id": req, "conversation": cid}
         last_capture = [0.0, 0]
+        turn_events = []
 
         def emit(ev):
+            turn_events.append(ev)
             with self.lock:
                 cur = self.get(cid)
                 cur["events"].append(ev | {"ts": time.time()})
@@ -1495,6 +1514,9 @@ class ChatHub:
             res = agent.run(c["messages"], emit, context)
             launched = [a for a in getattr(agent, "launched", [])]
             status, note = "done", ""
+            native = native_swap_outcome(turn_events)
+            if native["required"] and not native["verified"]:
+                status, note = "in_progress", native["reason"]
         except Exception as e:
             emit({"type": "error", "text": f"{type(e).__name__}: {e}"})
             res, status, note = {"usage": {"in": 0, "out": 0}, "tools": {}}, "blocked", str(e)
@@ -1521,7 +1543,7 @@ class ChatHub:
                 api_requests("reply", {"id": req, "text": final or note or "Resolution attempt ended without a result.",
                     "task_step": {"action": "automatic resolution attempt", "attempt": "1",
                                   "result": final or note or "No result", "status": status}})
-                if status == "blocked":
-                    api_requests("status", {"id": req, "status": "in_progress", "note": "Automatic attempt was blocked; further work is needed."})
+                if status in ("blocked", "in_progress"):
+                    api_requests("status", {"id": req, "status": "in_progress", "note": note or "Automatic attempt was blocked; further work is needed."})
             else:
                 api_requests("status", {"id": req, "status": status, "note": note})

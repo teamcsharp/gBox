@@ -35,14 +35,23 @@ def parent_for(request, requests):
         matches = [r for r in roots if normalize(r.get("body") or r.get("title")) == prompt]
         if matches:
             return max(matches, key=lambda r: r.get("created", 0))["id"]
+    if body.lstrip().startswith("gBox request review"):
+        # Recurring reviews reuse the originating conversation for months. Its
+        # latest prompt can be unrelated (a thumbnail request, for example).
+        # Only the exact standing instruction quoted by the review is evidence
+        # of a parent; an absent original instruction leaves the review unlinked.
+        first_line = body.lstrip().splitlines()[0]
+        standing = re.search(r"operator['’]s request:\s*[\"“](.*?)[\"”]", first_line)
+        if standing:
+            instruction = normalize(standing[1])
+            matches = [r for r in roots if instruction and normalize(r.get("body") or r.get("title")) == instruction]
+            if matches:
+                return max(matches, key=lambda r: r.get("created", 0))["id"]
+        return None
     conversation_key = "conversation" if context.get("conversation") else "session"
     conversation = context.get(conversation_key)
     if conversation:
         matches = [r for r in roots if (r.get("context") or {}).get(conversation_key) == conversation]
-        if matches:
-            return max(matches, key=lambda r: r.get("created", 0))["id"]
-    if body.lstrip().startswith("gBox request review"):
-        matches = [r for r in roots if "examine the requests" in normalize(r.get("body") or r.get("title"))]
         if matches:
             return max(matches, key=lambda r: r.get("created", 0))["id"]
     return None

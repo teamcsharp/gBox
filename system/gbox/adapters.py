@@ -31,6 +31,17 @@ NO_REWIND = {"gamecube", "wii", "ps2", "3ds", "wiiu", "switch",
 COARSE_REWIND = {"n64", "n64dd", "psx", "dreamcast", "naomi", "saturn", "psp", "segacd", "pcecd", "3do", "jaguar", "neocd", "cdi", "pcfx"}
 # Pads whose games actually use L2/R2 (triggers): never steal those for rewind / fast-forward.
 TRIGGERS_USED = {"psx", "ps2", "dreamcast", "naomi", "gamecube", "wii", "n64", "n64dd", "3ds", "wiiu", "switch"}
+FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
+# Keep rendered textures in emulated VRAM, so future states can include them.
+# Unthreaded rendering also keeps serialization size stable between query/write.
+FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+
+
+def _set_core_opts(path: Path, values: dict[str, str]) -> None:
+    """Replace exact option keys while preserving every unrelated setting."""
+    lines = [line for line in (path.read_text().splitlines() if path.exists() else [])
+             if line.split("=", 1)[0].strip() not in values]
+    path.write_text("\n".join(lines + [f'{key} = "{value}"' for key, value in values.items()]) + "\n")
 
 
 class Adapter:
@@ -600,9 +611,8 @@ class RetroArchAdapter(CommandAdapter):
             set_opt = {"parallel-n64-gfxplugin": "angrylion"}             # draw at launch size -> squeezed/cropped picture;
             lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if l.split(" =")[0] not in set_opt]   # software
             co.write_text("\n".join(lines + [f'{k} = "{v}"' for k, v in set_opt.items()]) + "\n")                        # output scales
-        if (self.platform or "") in ("dreamcast", "naomi", "atomiswave"):   # query and the write ("Serializer buffer overflow")
-            lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if not l.startswith("reicast_threaded_rendering")]
-            co.write_text("\n".join(lines + ['reicast_threaded_rendering = "disabled"']) + "\n")
+        if (self.platform or "") in FLYCAST_PLATFORMS:
+            _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
             opts["rewind_enable"] = "false"
         if self.rewind_on:

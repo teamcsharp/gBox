@@ -2845,12 +2845,102 @@ gbox.onAppFocus?.(gameFocus);
 document.addEventListener("pointerup", e => { const r = EMB.rect;
   if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
       && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatresize, #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble, #report, #whipmenu")) gameFocus(); });
+// ---- microphone device: right-click any mic to pick the default input (persisted) ----
+(() => {
+  const KEY = "gbox_mic_device";
+  const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let menu = null, revision = 0;
+  const close = () => { revision++; if (menu) { menu.remove(); menu = null; } };
+  const style = document.createElement("style");
+  style.textContent = `.micmenu{position:fixed;z-index:2147483647;background:var(--card,#1c1f26);border:1px solid var(--line,#343a45);border-radius:8px;box-shadow:0 10px 28px #000a;width:300px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;padding:4px 0;font:13px/1.4 system-ui,sans-serif;color:var(--fg,#e8eaf0)}
+.micmenu-head{font-size:11px;color:var(--mut,#8a93a3);padding:5px 12px 3px;text-transform:uppercase;letter-spacing:.04em}
+.micmenu-item{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;color:inherit;text-align:left;padding:7px 12px;cursor:pointer;font:inherit;box-sizing:border-box}
+.micmenu-item:hover,.micmenu-item:focus-visible{background:var(--hover,#2a2f3a)}
+.micmenu-item .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.micmenu-item .id,.micmenu-note{color:var(--mut,#8a93a3);font-size:11px}
+.micmenu-note{padding:7px 12px}
+.micmenu-item .chk{color:var(--acc,#4da3ff);font-weight:bold;margin-left:auto}`;
+  document.head.append(style);
+  window.gboxMicDevice = () => { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } };
+  window.gboxMicAudio = extra => {
+    const id = window.gboxMicDevice();
+    return id ? { audio: { ...(extra || {}), deviceId: { exact: id } } } : (extra ? { audio: { ...extra } } : { audio: true });
+  };
+  window.gboxMicMenu = async (anchor, ev) => {
+    ev.preventDefault(); ev.stopPropagation(); close();
+    const request = revision, media = navigator.mediaDevices;
+    let devs = [], failure = "";
+    if (!media?.enumerateDevices) failure = "Microphones are unavailable in this browser context.";
+    else try { devs = (await media.enumerateDevices()).filter(d => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default"); }
+    catch (error) { failure = "Unable to list microphones: " + error.message; }
+    if (request !== revision) return;
+    const cur = window.gboxMicDevice();
+    const m = document.createElement("div"); m.className = "micmenu";
+    m.setAttribute("role", "menu"); m.setAttribute("aria-label", "Default microphone");
+    const hd = document.createElement("div"); hd.className = "micmenu-head"; hd.textContent = "Default microphone"; m.append(hd);
+    const add = (label, id, isDefault) => {
+      const d = document.createElement("button"); d.type = "button"; d.className = "micmenu-item";
+      d.title = label;
+      d.setAttribute("role", "menuitemradio"); d.setAttribute("aria-checked", String(id === cur));
+      d.innerHTML = `<span class="lbl">${escHtml(label)}</span>${isDefault ? "" : `<span class="id">${escHtml(id.slice(0, 8))}…</span>`}${id === cur ? `<span class="chk">✓</span>` : ""}`;
+      d.onclick = () => { try { localStorage.setItem(KEY, id); } catch {} close(); }; m.append(d);
+    };
+    add("System default", "", true);
+    devs.forEach((d, i) => add(d.label || `Microphone ${i + 1}`, d.deviceId, false));
+    const note = text => { const x = document.createElement("div"); x.className = "micmenu-note"; x.textContent = text; m.append(x); return x; };
+    if (cur && !devs.some(d => d.deviceId === cur)) note("The selected microphone is unavailable. Choose another input or System default.");
+    if (failure) note(failure);
+    else if (!devs.length || devs.some(d => !d.label)) {
+      const d = document.createElement("button"); d.type = "button"; d.className = "micmenu-item";
+      d.setAttribute("role", "menuitem"); d.textContent = "Allow microphone access to list device names";
+      d.onclick = async () => {
+        d.disabled = true; let stream = null;
+        try {
+          stream = await media.getUserMedia({ audio: true });
+          stream.getTracks().forEach(t => t.stop()); stream = null;
+          if (menu === m) await window.gboxMicMenu(anchor, { preventDefault() {}, stopPropagation() {} });
+        } catch (error) { if (menu === m) { note("Microphone access failed: " + error.message); d.disabled = false; } }
+        finally { stream?.getTracks().forEach(t => t.stop()); }
+      }; m.append(d);
+      if (!devs.length) note("No microphones found. You can keep using System default.");
+    }
+    m.onpointerup = e => e.stopPropagation(); // a menu over the game keeps the click in gBox
+    document.body.append(m); menu = m;
+    const r = anchor.getBoundingClientRect(), w = m.offsetWidth || 300, h = m.offsetHeight || 120;
+    let x = Math.max(8, Math.min(r.right - w, innerWidth - w - 8));
+    let y = r.bottom + 6; if (y + h > innerHeight - 8) y = r.top - h - 6;
+    y = Math.max(8, Math.min(y, innerHeight - h - 8));
+    const game = document.getElementById?.("nativeslot"), native = typeof EMB !== "undefined" ? EMB.rect : null;
+    const g = game?.getBoundingClientRect() || (native ? { left:native.x, top:native.y, right:native.x+native.w, bottom:native.y+native.h } : null);
+    // Prefer available sidebar space to keep every choice clickable while the
+    // embedded native window updates its popup cutouts. Keep the usual anchor
+    // placement when it already clears the game.
+    if (g && g.right > g.left && g.bottom > g.top && x < g.right && x+w > g.left && y < g.bottom && y+h > g.top) {
+      if (g.right+8+w <= innerWidth-8) x = g.right+8;
+      else if (g.left-w-8 >= 8) x = g.left-w-8;
+      else if (g.top-h-8 >= 8) y = g.top-h-8;
+      else if (g.bottom+8+h <= innerHeight-8) y = g.bottom+8;
+    }
+    m.style.left = x + "px"; m.style.top = y + "px";
+    m.onkeydown = e => {
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      e.preventDefault(); const items = [...m.querySelectorAll("button:not(:disabled)")], i = items.indexOf(document.activeElement);
+      const next = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    };
+  };
+  document.addEventListener("pointerdown", e => { if (!menu || !menu.contains(e.target)) close(); }, true);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); }, true);
+  navigator.mediaDevices?.addEventListener?.("devicechange", close);
+  window.addEventListener("resize", close);
+})();
+
 // ---------------- hold ~ : push-to-talk to the active conversation, the reply is spoken ----------------
 const PTT = { rec: null, chunks: [], down: false };
 async function pttDown() {
   if (PTT.down) return; PTT.down = true;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio());
     PTT.chunks = []; PTT.rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
     PTT.rec.ondataavailable = e => e.data.size && PTT.chunks.push(e.data);
     PTT.rec.start(); document.body.classList.add("talking"); toast("🎙 Listening… (release ~ to send)", 60000);
@@ -3754,7 +3844,7 @@ async function talkLoop() {
   }
 }
 async function talkStart() {
-  try { TALK.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  try { TALK.stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio({ echoCancellation: true, noiseSuppression: true })); }
   catch (e) { return alert("Microphone unavailable: " + e.message); }
   TALK.ctx = new AudioContext(); TALK.on = true;
   $("#talkbtn").classList.add("on"); $("#live").classList.add("on"); document.body.classList.add("talking"); EMB.last = "";
@@ -3768,6 +3858,7 @@ function talkStop() {
   $("#talkbtn").classList.remove("on"); $("#live").classList.remove("on"); document.body.classList.remove("talking"); liveStatus("Idle"); EMB.last = "";
 }
 $("#talkbtn").onclick = () => TALK.on ? talkStop() : talkStart();
+$("#talkbtn").oncontextmenu = e => window.gboxMicMenu($("#talkbtn"), e);
 // The title-bar logo is a push-to-talk toggle; the speech-bar logo opens Play & Library.
 document.querySelectorAll("#titlebar > img").forEach(img => {
   img.title = "Talk to gBox about the game you're playing (click again to stop)";
@@ -3792,7 +3883,7 @@ const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() 
   async function toggle(btn, field) {
     if (rec) { rec.stop(); return; }
     let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
+    try { stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio()); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
     const chunks = [], mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
     mr.ondataavailable = e => e.data.size && chunks.push(e.data);
     mr.onstop = async () => {
@@ -3828,7 +3919,8 @@ const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() 
       if (!held) return;                                   // a quick click: keep recording until the next click
       if (rec) rec.stop(); else b._ptt = "release";        // getUserMedia still opening: stop as soon as it starts
     };
-    b.title = "Dictate: click to start/stop, or hold to talk (Spark speech-to-text)";
+    b.title = "Dictate: click to start/stop, or hold to talk (Spark speech-to-text). Right-click to choose microphone.";
+    b.oncontextmenu = e => window.gboxMicMenu(b, e);
   }
   const skip = el => el.type === "password" || el.closest(".micwrap") || el.dataset.nomic !== undefined || el.offsetParent === null && el.type === "hidden";
   function decorate(root) {

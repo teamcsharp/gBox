@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
+
+from .agent_contracts import validate_cheat_call
 
 from . import adapters, catalog, provision, uap
 from .models import CatalogEntry, Permission as P
@@ -822,10 +824,18 @@ GCHEATS: dict[str, list[dict]] = {}
 class CheatIn(BaseModel):
     session_id: str
     op: str = "list"                       # list | enable | disable | add | remove | search
-    index: int | None = None               # cheat number (from list)
-    codes: list[str] = []                  # add: code lines ("ADDR VALUE", Gecko/AR raw)
+    index: int | None = Field(default=None, description="Required for enable/disable: a nonnegative integer cheat index from list. To apply new code lines, use add instead.")
+    codes: list[str] = Field(default_factory=list, description="Required for add: nonempty code lines. Add enables the new code immediately. Do not send codes with enable/disable; those operations use index.")
     desc: str = ""
     query: str = ""                        # search: filter descriptions
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_operation_arguments(cls, values):
+        # Validate before coercion so booleans cannot become cheat index 0/1.
+        if isinstance(values, dict):
+            validate_cheat_call(values.get("op", "list"), values.get("index"), values.get("codes", []))
+        return values
 
 class CheatOut(BaseModel):
     result: dict

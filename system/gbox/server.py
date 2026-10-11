@@ -259,9 +259,17 @@ def create_app(config: Config) -> FastAPI:
 
     def _session_png(sid: str) -> bytes:
         """Current picture of a session: the live stream frame when fresh, else ask its worker for one (native windows)."""
+        from .session_images import SessionImageError, as_png
+
+        def normalize(frame: bytes) -> bytes:
+            try:
+                return as_png(frame)
+            except SessionImageError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
         lv = live.get(sid) or {}
         if lv.get("frame") and time.time() - lv.get("ts", 0) < 5:
-            return lv["frame"]
+            return normalize(lv["frame"])
         j = submit(JobRequest(tool="get_frame", input={"session_id": sid}), "mods")
         t0 = time.time()
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 45:
@@ -271,7 +279,7 @@ def create_app(config: Config) -> FastAPI:
         o = jj["output"]
         if (o.get("mean_luma") or 0) < 6:
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
-        return store.read_artifact(o["sha256"]) or b""
+        return normalize(store.read_artifact(o["sha256"]) or b"")
 
     def _mod_picture(m: dict) -> dict:
         """Discard missing or tiny artifacts left by the old JSON-body capture path."""

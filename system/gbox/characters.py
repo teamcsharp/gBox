@@ -24,7 +24,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
+
+from .agent_contracts import require_character
 
 LICENCE = "extracted from the operator's own copy, local use only"
 RE4GC = {"78ab9efa2e310db4": "Resident Evil 4 (USA) (Disc 1)", "e42c9b780c07c437": "Resident Evil 4 (USA) (Disc 2)"}
@@ -517,7 +519,7 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 class CharIn(BaseModel):
     op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
-    character: str = ""                    # slug, name or alias ("leon", "Aya", "my PSO character"); extract: what to extract
+    character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
@@ -545,6 +547,11 @@ class CharIn(BaseModel):
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
     pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+
+    @model_validator(mode="after")
+    def require_named_character(self):
+        require_character(self.op, self.character)
+        return self
 
 
 class CharOut(BaseModel):

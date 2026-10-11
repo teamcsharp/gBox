@@ -119,3 +119,51 @@ def test_script_only_hermes_run_links_its_explicit_progress_report(monkeypatch, 
     assert len(runs) == 1 and runs[0]['id'] == 'b' * 32
     assert runs[0]['progress'] == 'Completed without inference'
     assert 'canonical MCP paths repaired' in hermes_tasks.get_run('b' * 32)['output']
+
+
+@pytest.mark.parametrize('status', ['completed', 'failed'])
+def test_terminal_inbox_runs_retain_ticket_history_without_active_reservations(monkeypatch, tmp_path, status):
+    from gbox import hermes_recovery
+    home = tmp_path / '.hermes'
+    cron = home / 'cron'
+    cron.mkdir(parents=True)
+    run_id, job_id = 'd' * 32, 'inbox'
+    started = '2026-10-11T00:22:40-06:00'
+    session_id = 'cron_inbox_20261011_002240'
+    claimed = ['0123456789abcdef', 'fedcba9876543210']
+    read_only = '1111111111111111'
+    (cron / 'jobs.json').write_text(json.dumps({'jobs': [{'id': job_id, 'name': 'gBox inbox task mode'}]}))
+    with sqlite3.connect(cron / 'executions.db') as db:
+        db.execute('CREATE TABLE executions (id TEXT, job_id TEXT, status TEXT, started_at TEXT, finished_at TEXT, error TEXT)')
+        db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)',
+                   (run_id, job_id, status, started, '2026-10-11T00:25:40-06:00', None))
+    with sqlite3.connect(home / 'state.db') as db:
+        db.execute('CREATE TABLE sessions (id TEXT, source TEXT, started_at REAL, model TEXT, input_tokens INT, output_tokens INT)')
+        db.execute('CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, tool_calls TEXT)')
+        db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?)',
+                   (session_id, 'cron', hermes_tasks._stamp(started), 'fixture-model', 1200, 300))
+        actions = [
+            ('mcp__gbox__get_request', {'request_id': read_only}),
+            ('mcp__gbox__reply_request', {'request_id': claimed[0]}),
+            ('mcp__gbox__start_job', {'inputs': {'parent_request_id': claimed[1]}}),
+            ('mcp__gbox__set_request_status', {'request_id': claimed[0], 'status': 'done'}),
+        ]
+        calls = [{'function': {'name': 'tool_call', 'arguments': json.dumps({'calls': [
+            {'name': action, 'arguments': args} for action, args in actions]})}}]
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
+                   (1, session_id, 'assistant', 'Native verification finished.', None, json.dumps(calls)))
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(home))
+    monkeypatch.setattr(hermes_recovery.hermes_task_mode, '_home', lambda: home)
+    run = hermes_tasks.list_runs()[0]
+    assert run['state'] == status and run['request_ids'] == sorted(claimed)
+    assert run['tokens_in'] == 1200 and run['tokens_out'] == 300
+    detail = hermes_tasks.get_run(run_id)
+    assert detail['request_ids'] == sorted(claimed)
+    assert detail['request_id'] is None  # A multi-ticket inbox run has no single report.
+    assert read_only not in detail['request_ids']
+    assert hermes_recovery._active_requests() == set()
+    # Same claims reserve the tickets only while the execution is active.
+    with sqlite3.connect(cron / 'executions.db') as db:
+        db.execute("UPDATE executions SET status='running',finished_at=NULL")
+    assert hermes_recovery._active_requests() == set(claimed)
+    assert hermes_tasks.list_runs()[0]['request_ids'] == sorted(claimed)

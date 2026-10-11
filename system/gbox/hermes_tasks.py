@@ -141,7 +141,7 @@ def list_runs(limit: int = 8) -> list[dict]:
                         "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                         **_usage(session),
                         "request_ids": _owned_requests(state, session['id'])
-                                       if session and r['status'] in ('claimed', 'running') else [],
+                                       if session else [],
                         "progress": _last_action(state, session["id"]) if session else
                                     ('Maintenance is running' if r['status'] in ('claimed', 'running') else
                                      'Completed without inference' if r['status'] == 'completed' else 'Run failed before inference'),
@@ -220,6 +220,7 @@ def get_run(run_id: str) -> dict | None:
         started = _stamp(r["started_at"])
         state = _db(home / "state.db")
         session = _session(state, r["job_id"], started) if state else None
+        request_ids = _owned_requests(state, session['id']) if session else []
         lines = []
         if session:
             messages = state.execute(
@@ -245,6 +246,7 @@ def get_run(run_id: str) -> dict | None:
                 "session_id": session["id"] if session else None, "model": session["model"] if session else None,
                 "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                 **_usage(session),
+                "request_ids": request_ids,
                 "output": "\n\n".join(lines)[-70000:] or "Hermes has not emitted output yet."}
     except (OSError, ValueError, sqlite3.Error):
         return None
