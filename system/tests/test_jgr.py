@@ -89,6 +89,42 @@ def test_afs_entries_rejects_non_archive():
         jgr.afs_entries(b"\x00" * 64)
 
 
+def test_play_subobjects_record_table_sorted_by_address_and_contiguous():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    count, offsets, sizes = jgr.afs_entries(data)
+    play_off = next(off for kind, off in jgr.chunks(data) if kind == "play")
+    afs_size = sizes[offsets.index(play_off)]
+    subs = jgr.play_subobjects(data, play_off, afs_size=afs_size)
+    by_rel = sorted(subs, key=lambda s: s["relative"])
+    for a, b in zip(by_rel, by_rel[1:]):
+        assert a["offset"] + a["length"] == b["offset"]
+
+
+def test_decode_submesh_produces_indexed_triangle_list_for_small_record():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    count, offsets, sizes = jgr.afs_entries(data)
+    play_off = next(off for kind, off in jgr.chunks(data) if kind == "play")
+    afs_size = sizes[offsets.index(play_off)]
+    subs = jgr.play_subobjects(data, play_off, afs_size=afs_size)
+    # Pick the kind==1 record at relative offset 0x1b8d4 (observed to be self-contained).
+    mesh = next(s for s in subs if s["kind"] == 1 and s["relative"] == 0x1B8D4)
+    indices, verts = jgr.decode_submesh(mesh["bytes"])
+    assert indices
+    assert verts
+    assert max(indices) < len(verts)
+    assert len(indices) % 3 == 0
+    xs, ys, zs = zip(*verts)
+    assert max(xs) - min(xs) < 2.0
+    assert max(ys) - min(ys) < 3.0
+    assert max(zs) - min(zs) < 2.0
+
+
 def test_container_header_rejects_unknown_magic():
     with pytest.raises(ValueError):
         jgr.container_header(b"XXXX" + struct.pack("<I", 3) + b"\x00" * 24, 0)
