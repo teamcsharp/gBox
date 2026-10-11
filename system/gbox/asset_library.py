@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 MODEL_EXT = {'.glb', '.gltf', '.obj', '.fbx', '.abc', '.dae', '.ply', '.stl', '.usd', '.usdz'}
 IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.dds', '.tga', '.bmp', '.ktx', '.ktx2'}
 ASSET_EXT = MODEL_EXT | IMAGE_EXT | {'.wav', '.ogg', '.mp3', '.flac', '.anim', '.bin'}
+NESTED_KINDS = {'texture', 'audio', 'data'}
 ASSET_TOOLS = {'characters', 'scene_capture', 'export_asset', 'asset_convert', 'rom_export',
                'extract_pso_model', 'extract_pso_area', 'oot_models', 'pick'}
 
@@ -156,8 +157,9 @@ class AssetLibrary:
             canonical = {a['game'].strip().casefold(): a['game'].strip() for a in entries.values() if a['origin'] == 'collection'}
             for item in entries.values():
                 item['game'] = canonical.get(item['game'].strip().casefold(), item['game'].strip())
-            # Textures that ship with a character, environment or package belong to that model.
-            # The sidebar lists them in a collapsed tree under the owner instead of as top-level cards.
+            # Textures and raw companion files (.bin/.anim/audio) that ship with a character, environment
+            # or package belong to that model. The sidebar lists them in a collapsed tree under the owner,
+            # so the top level shows only characters, models and environments.
             owners = {}
             for item in entries.values():
                 if item['origin'] == 'collection' and item.get('primary'):
@@ -165,7 +167,7 @@ class AssetLibrary:
                 elif item['origin'] == 'package':
                     owners[('package', item['package'])] = item['id']
             for item in entries.values():
-                if item['kind'] != 'texture':
+                if item['kind'] not in NESTED_KINDS:
                     continue
                 key = (('collection', item['collection'], item['slug']) if item['origin'] == 'collection'
                        else ('package', item.get('package')) if item['origin'] == 'package-file' else None)
@@ -188,14 +190,15 @@ class AssetLibrary:
         pool = [a for a in all_items if (not game or a['game'] == game) and (not owner or a.get('owner') == owner)
                 and all(w in f"{a['name']} {a['game']} {a['kind']} {a['format']}".casefold() for w in words)]
         items = [a for a in pool if not kind or a['kind'] == kind]
-        counts, hidden = {}, set()
+        counts, files, hidden = {}, {}, set()
         if nest and not owner:
             # A texture is nested only when its owner is listed; otherwise it stays visible on its own.
             # The owner's count ignores the type filter so a character keeps its texture tree.
             listed = {a['id'] for a in items}
             nested = [a for a in pool if a.get('owner') in listed]
             for a in nested:
-                counts[a['owner']] = counts.get(a['owner'], 0) + 1
+                tally = counts if a['kind'] == 'texture' else files
+                tally[a['owner']] = tally.get(a['owner'], 0) + 1
             hidden = {a['id'] for a in nested}
             items = [a for a in items if a['id'] not in hidden]
         key = {'newest': lambda a: (-a['added'], a['id']), 'oldest': lambda a: (a['added'], a['id']),
@@ -205,7 +208,8 @@ class AssetLibrary:
         items.sort(key=key)
         return dict(total=len(items), total_all=len(all_items), nested=len(hidden), offset=offset, has_more=offset + limit < len(items),
             kinds=sorted({a['kind'] for a in all_items}), games=sorted({a['game'] for a in all_items}),
-            items=[{**{k: v for k, v in a.items() if not k.startswith('_')}, **({'texture_count': counts[a['id']]} if a['id'] in counts else {})}
+            items=[{**{k: v for k, v in a.items() if not k.startswith('_')}, **({'texture_count': counts[a['id']]} if a['id'] in counts else {}),
+                      **({'file_count': files[a['id']]} if a['id'] in files else {})}
                    for a in items[offset:offset + limit]])
 
     def file(self, item):

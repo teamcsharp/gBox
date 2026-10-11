@@ -57,10 +57,11 @@
     const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1000 ? (n / 1000).toFixed(1) + ' KB' : n + ' B';
     const date = ts => ts ? new Date(ts * 1000).toLocaleString() : '';
     function row(a) {
-      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count ? textureTree(a) : ''}</div></div>`;
+      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count || a.file_count ? textureTree(a) : ''}</div></div>`;
     }
-    // Textures stay collapsed under their character/model; their rows are fetched only when expanded.
-    function textureTree(a) { return `<details class="as-tex" data-owner="${esc(a.id)}"><summary>Textures (${a.texture_count})</summary><div class="as-tex-rows"></div></details>`; }
+    // Textures and raw companion files stay collapsed under their character/model; their rows are fetched only when expanded.
+    function treeLabel(a) { return [a.texture_count ? `Textures (${a.texture_count})` : '', a.file_count ? `Files (${a.file_count})` : ''].filter(Boolean).join(' · '); }
+    function textureTree(a) { return `<details class="as-tex" data-owner="${esc(a.id)}"><summary>${treeLabel(a)}</summary><div class="as-tex-rows"></div></details>`; }
     async function loadTextures(element) {
       if (element.dataset.loaded) return; element.dataset.loaded = '1';
       const owner = element.dataset.owner, revision = state.revision, rows = element.querySelector('.as-tex-rows');
@@ -111,7 +112,7 @@
         $('.as-list').scrollTop = 0;
         facets('.as-kind', page.kinds, 'All types', prefs.kind); facets('.as-game', page.games, 'All games', prefs.game);
         prefs = {}; $('.as-changed').hidden = true; state.signature = signature(page);
-        $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.nested ? ` · ${page.nested} textures inside` : ''}${page.total + (page.nested || 0) !== page.total_all ? ` · ${page.total_all} total` : ''}`;
+        $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.nested ? ` · ${page.nested} nested under models` : ''}${page.total + (page.nested || 0) !== page.total_all ? ` · ${page.total_all} total` : ''}`;
         if (!page.total) $('.as-rows').innerHTML = '<p>No assets match these filters.</p>';
         await Promise.all(page.groups.filter(g => expanded.has(g.title)).map(g => loadGroup(g.title))); save();
       } catch (e) { if (revision === state.revision) $('.as-message').textContent = 'Could not load assets: ' + e.message; }
