@@ -9,6 +9,16 @@ from pathlib import Path
 from .models import ArtifactRef
 
 
+# Request contexts are arbitrary JSON. Match the old Python truthiness filter,
+# including empty containers, without treating literal strings '[]'/'{}' as empty.
+_RESOLUTION_ID_TRUTHY = (
+    "CASE json_type(body,'$.context.resolution_chat_id') "
+    "WHEN 'array' THEN json_array_length(body,'$.context.resolution_chat_id') > 0 "
+    "WHEN 'object' THEN json_extract(body,'$.context.resolution_chat_id') != '{}' "
+    "ELSE json_extract(body,'$.context.resolution_chat_id') NOT IN ('',0) END"
+)
+
+
 def sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -18,16 +28,19 @@ def canon(obj) -> bytes:
 
 
 class Store:
-    # ponytail: small kinds (jobs, receipts, edges...) are JSON docs filtered in Python; the catalog has its own indexed table.
     def __init__(self, data_dir: Path):
         self.dir = Path(data_dir)
         (self.dir / "artifacts").mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.dir / "gbox.sqlite3", check_same_thread=False)
         self.lock = threading.RLock()
-        self.db.executescript("""
+        self.db.executescript(f"""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS docs(kind TEXT, id TEXT, body TEXT, PRIMARY KEY(kind, id));
+            CREATE INDEX IF NOT EXISTS docs_kind ON docs(kind);
             CREATE INDEX IF NOT EXISTS docs_queued_jobs ON docs(json_extract(body,'$.state')) WHERE kind='job';
+            CREATE INDEX IF NOT EXISTS docs_resolution_requests_created
+                ON docs(COALESCE(json_extract(body,'$.created'),0) DESC)
+                WHERE kind='request' AND {_RESOLUTION_ID_TRUTHY};
             CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY, ts REAL, actor TEXT, action TEXT,
                                              subject TEXT, data TEXT, prev TEXT, hash TEXT);
             CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
@@ -202,10 +215,56 @@ class Store:
             row = self.db.execute("SELECT body FROM docs WHERE kind=? AND id=?", (kind, id)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def all(self, kind: str) -> list[dict]:
+    def all(self, kind: str, *, reverse: bool = False) -> list[dict]:
         with self.lock:
-            rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
+            rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "
+                                   + ("DESC" if reverse else "ASC"), (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    def jobs(self, *, states: tuple[str, ...] | None = None, exclude_states: tuple[str, ...] = (),
+             exclude_tool: str | None = None, limit: int = 0, reverse: bool = False) -> list[dict]:
+        """Filter and bound job documents before decoding their often large results.
+
+        With reverse=True, limit has the historic /api/jobs slice semantics:
+        positive returns the newest N, zero returns all, negative omits the
+        oldest abs(N) matches. Ascending queries use the same selected rows.
+        """
+        where, args = ["kind='job'"], []
+        if states is not None:
+            if not states:
+                return []
+            where.append("json_extract(body,'$.state') IN (" + ",".join("?" for _ in states) + ")")
+            args.extend(states)
+        if exclude_states:
+            where.append("(json_extract(body,'$.state') IS NULL OR json_extract(body,'$.state') NOT IN ("
+                         + ",".join("?" for _ in exclude_states) + "))")
+            args.extend(exclude_states)
+        if exclude_tool is not None:
+            where.append("(json_extract(body,'$.tool') IS NULL OR json_extract(body,'$.tool') != ?)")
+            args.append(exclude_tool)
+        # ORDER BY rowid can otherwise persuade SQLite to scan the kind index
+        # and evaluate state on every historical job for a multi-state poll.
+        source = "docs INDEXED BY docs_queued_jobs" if states is not None else "docs"
+        query = "SELECT rowid,body FROM " + source + " WHERE " + " AND ".join(where)
+        if limit < 0:
+            query += " ORDER BY rowid ASC LIMIT -1 OFFSET ?"
+            args.append(-limit)
+        elif limit > 0:
+            query += " ORDER BY rowid DESC LIMIT ?"
+            args.append(limit)
+        query = "SELECT body FROM (" + query + ") ORDER BY rowid " + ("DESC" if reverse else "ASC")
+        with self.lock:
+            rows = self.db.execute(query, args).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def resolution_requests(self, limit: int = 20) -> list[dict]:
+        """Newest auto-resolution reports, without decoding unrelated inbox threads."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM docs INDEXED BY docs_resolution_requests_created WHERE kind='request' AND "
+                                   + _RESOLUTION_ID_TRUTHY
+                                   + " ORDER BY COALESCE(json_extract(body,'$.created'),0) DESC,rowid ASC LIMIT ?",
+                                   (limit,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
     def queued_jobs(self) -> list[dict]:
         """Claim only queued work, in submission order, without decoding every completed job."""

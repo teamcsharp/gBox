@@ -23,6 +23,7 @@ from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
 from .store import Store, canon, sha256
+from .worker_results import result_digest
 
 WORKER_TTL = 30.0
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
@@ -1076,6 +1077,10 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/workers/register")
     def register(w: WorkerInfo, actor=Depends(auth)):
+        with store.lock:
+            return _register(w, actor)
+
+    def _register(w, actor):
         w.last_seen = time.time()
         prev = store.get("worker", w.id)
         if prev and (prev.get("tools"), prev.get("unavailable")) == (w.tools, w.unavailable):
@@ -1122,10 +1127,101 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/workers/{wid}/result")
     def result(wid: str, r: JobResult, actor=Depends(auth)):
+        # Admission, cancellation, acceptance callbacks and duplicate delivery
+        # share the Store lock. Never race two on_accept calls for one result.
+        with store.lock:
+            return _accept_result(wid, r, actor)
+
+    def _result_ack(wid, job, receipt):
+        return {'state': job['state'], 'receipt': receipt.id, 'accepted': True,
+                'job_id': job['id'], 'worker_id': wid, 'result_sha256': job['result_sha256']}
+
+    def _result_docs(job, receipt, *, admission=False, terminal_audit=None):
+        # The result identity, pending job and provisional receipt become durable
+        # together. Callback completion is a separate explicit durable phase.
+        try:
+            store.db.execute('BEGIN IMMEDIATE')
+            if admission:
+                changed = store.db.execute("UPDATE docs SET body=? WHERE kind='job' AND id=? "
+                    "AND json_extract(body,'$.state')='running' AND json_extract(body,'$.worker_id')=? "
+                    "AND coalesce(json_extract(body,'$.cancel'),0)=0",
+                    (json.dumps(job), job['id'], job['worker_id'])).rowcount
+                if changed != 1:
+                    raise HTTPException(409, 'job result admission changed; result not accepted')
+            else:
+                changed = store.db.execute("UPDATE docs SET body=? WHERE kind='job' AND id=? "
+                    "AND json_extract(body,'$.result_sha256')=? "
+                    "AND json_extract(body,'$.result_acceptance')='pending' "
+                    "AND json_extract(body,'$.worker_id')=? AND json_extract(body,'$.state')=?",
+                    (json.dumps(job), job['id'], job['result_sha256'], job['worker_id'], JobState.RUNNING)).rowcount
+                if changed != 1:
+                    raise HTTPException(409, 'result completion changed; result not acknowledged')
+            if terminal_audit is not None:
+                actor, data = terminal_audit
+                action, subject, ts = f"job.{job['state']}", job['id'], time.time()
+                previous = store.db.execute('SELECT hash FROM audit ORDER BY seq DESC LIMIT 1').fetchone()
+                prev = previous[0] if previous else '0' * 64
+                digest = sha256(prev.encode() + canon({'ts': ts, 'actor': actor, 'action': action,
+                                                       'subject': subject, 'data': data}))
+                receipt.audit_seq = store.db.execute('INSERT INTO audit(ts,actor,action,subject,data,prev,hash) '
+                    'VALUES(?,?,?,?,?,?,?)', (ts, actor, action, subject, json.dumps(data), prev, digest)).lastrowid
+            store.db.execute('INSERT OR REPLACE INTO docs(kind,id,body) VALUES(?,?,?)',
+                             ('receipt', receipt.id, receipt.model_dump_json()))
+            store.db.commit()
+        except BaseException:
+            store.db.rollback()
+            raise
+
+    def _accept_result(wid: str, r: JobResult, actor):
         j = store.get("job", r.job_id)
-        if not j or j["worker_id"] != wid or j["state"] != JobState.RUNNING:
+        if not j or j.get("worker_id") != wid or j.get('cancel'):
             raise HTTPException(409, "job not running on this worker")
+        identity = result_digest(r.model_dump())
         t = REGISTRY[j["tool"]]
+        recovering = bool(j.get('result_sha256')) or j['state'] != JobState.RUNNING
+        if recovering:
+            saved = store.get('receipt', j.get('receipt_id') or '')
+            if (j.get('result_sha256') != identity or not saved
+                    or saved.get('worker_id') != wid or saved.get('job_id') != r.job_id):
+                raise HTTPException(409, 'finished job does not verify this exact worker result')
+            receipt = Receipt.model_validate(saved)
+            if j.get('result_acceptance') == 'complete':
+                return _result_ack(wid, j, receipt)
+            # Known local callbacks can resume after an interrupted admission.
+            # Unknown callbacks need review; a terminal job alone is not an ACK.
+            state = j.get('result_state')
+            callback = t.on_accept if state == JobState.SUCCEEDED else t.on_fail
+            safe = {_builtin._launch_accept, _builtin._hash_accept, _builtin._session_accept, _builtin._launch_fail}
+            if (j.get('result_acceptance') != 'pending' or j['state'] != JobState.RUNNING
+                    or state not in {JobState.SUCCEEDED, JobState.FAILED, JobState.INVALID}
+                    or receipt.tool_version != t.version
+                    or (callback and callback not in safe)):
+                raise HTTPException(409, 'result acceptance was interrupted; callback recovery needs review')
+            out = t.Out.model_validate(r.output) if state == JobState.SUCCEEDED else None
+            refs, problems = receipt.artifacts, receipt.validation_problems
+        else:
+            receipt, out, state, refs, problems = _admit_result(wid, r, j, t, identity)
+        try:
+            if state == JobState.SUCCEEDED and t.on_accept:
+                t.on_accept(store, out, actor)
+            elif state != JobState.SUCCEEDED and t.on_fail:
+                t.on_fail(store, j, actor)
+        except BaseException:
+            # Admission is already durable. Discard any uncommitted callback
+            # transaction so the same result can safely resume known callbacks.
+            store.db.rollback()
+            raise
+        if state == JobState.SUCCEEDED and (t.name in asset_library.ASSET_TOOLS or t.name == 'blender_copy'):
+            app.state.assets.invalidate()
+        j['result_acceptance'] = 'complete'
+        j.update(state=state, finished=receipt.finished)
+        j.pop('result_state', None)
+        _result_docs(j, receipt, terminal_audit=(actor, {
+            "receipt": receipt.id, "artifacts": [a.sha256 for a in refs], "problems": problems, "error": r.error}))
+        _result_followups(j, r, t, state, actor)
+        return _result_ack(wid, j, receipt)
+
+    def _admit_result(wid, r, j, t, identity):
         refs, blobs = [], {}
         for a in r.artifacts:
             data = base64.b64decode(a.b64)
@@ -1145,14 +1241,15 @@ def create_app(config: Config) -> FastAPI:
                           output_sha256=sha256(canon(r.output)) if r.output is not None else None,
                           artifacts=refs, started=j["started"], finished=time.time(),
                           validation_ok=state == JobState.SUCCEEDED, validation_problems=problems)
-        receipt.audit_seq = store.audit(actor, f"job.{state}", j["id"], {
-            "receipt": receipt.id, "artifacts": [a.sha256 for a in refs], "problems": problems, "error": r.error})
-        store.put("receipt", receipt.id, receipt.model_dump())
         if r.log:
             j["log_sha"] = store.put_artifact("\n".join(r.log).encode(), "worker.log", "text/plain", {"job": j["id"]}).sha256
-        j.update(state=state, finished=receipt.finished, output=r.output, error=r.error or ("; ".join(problems) or None),
-                 receipt_id=receipt.id)
-        store.put("job", j["id"], j)
+        j.update(state=JobState.RUNNING, result_state=state, output=r.output,
+                 error=r.error or ("; ".join(problems) or None), receipt_id=receipt.id,
+                 result_sha256=identity, result_acceptance='pending')
+        _result_docs(j, receipt, admission=True)
+        return receipt, out, state, refs, problems
+
+    def _result_followups(j, r, t, state, actor):
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         mod_attempt = ((t.name == "characters" and op in ("use", "live_use", "swap"))
@@ -1178,12 +1275,6 @@ def create_app(config: Config) -> FastAPI:
                     except Exception as exc:
                         store.audit("gbox-auto", "request.auto_mod_failure.error", j["id"], {"error": str(exc)[:500]})
                 threading.Thread(target=_report_failed_swap, daemon=True).start()
-        if state == JobState.SUCCEEDED and (t.name in asset_library.ASSET_TOOLS or t.name == 'blender_copy'):
-            app.state.assets.invalidate()
-        if state == JobState.SUCCEEDED and t.on_accept:
-            t.on_accept(store, out, actor)
-        elif state != JobState.SUCCEEDED and t.on_fail:
-            t.on_fail(store, j, actor)
         if state == JobState.SUCCEEDED and t.name == 'launch_game':
             try:
                 auto_collection.after_launch(j, r.output or {},
@@ -1191,7 +1282,6 @@ def create_app(config: Config) -> FastAPI:
             except Exception as exc:
                 # Extraction scheduling must never turn a successful gameplay launch into a worker retry.
                 store.audit(actor, 'characters.auto_collect_failed', j['id'], {'error': str(exc)})
-        return {"state": state, "receipt": receipt.id}
 
     # --- jobs ---
     @app.post("/api/jobs")
@@ -1307,17 +1397,24 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.cancel", jid, {"state": j["state"]})
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
-    def retire_unrunnable_jobs():
+    def retire_unrunnable_jobs(worker_snapshot=None):
         """Keep dead sessions and long-gone workers out of the visible active queue."""
         from .job_maintenance import retire_stalled_snapshots
         retire_stalled_snapshots(store)
         now = time.time()
         with store.lock:
-            available = {key for w in workers() if w["online"] for key in (w["id"], w["name"])}
+            available = {key for w in (workers() if worker_snapshot is None else worker_snapshot)
+                         if w["online"] for key in (w["id"], w["name"])}
+            session_snapshot, worker_ids = {}, {}
             for job in store.queued_jobs():
                 sid = (job.get("input") or {}).get("session_id")
-                session = store.get("session", sid) if sid else None
-                worker_id = _wid(job.get("require_worker")) if job.get("require_worker") else None
+                if sid and sid not in session_snapshot:
+                    session_snapshot[sid] = store.get("session", sid)
+                session = session_snapshot.get(sid)
+                assigned = job.get("require_worker")
+                if assigned and assigned not in worker_ids:
+                    worker_ids[assigned] = _wid(assigned)
+                worker_id = worker_ids.get(assigned)
                 reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running")
                           else "assigned worker is no longer available" if worker_id and now - (job.get("created") or now) > 3600
                           and worker_id not in available else None)
@@ -1330,13 +1427,12 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/jobs")
     def list_jobs(limit: int = 100, state: str = "", actor=Depends(auth)):
         retire_unrunnable_jobs()
-        jobs = store.all("job")
+        states = None
         if state:
             states = set(state.split(","))
             if not states <= {s.value for s in JobState}:
                 raise HTTPException(422, "unknown job state")
-            jobs = [job for job in jobs if job.get("state") in states]
-        return jobs[-limit:][::-1]
+        return store.jobs(states=tuple(sorted(states)) if states is not None else None, limit=limit, reverse=True)
 
     @app.get("/api/jobs/{jid}")
     def get_job(jid: str, actor=Depends(auth)):
@@ -1687,10 +1783,11 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/sessions")
     def sessions(actor=Depends(auth)):
         out = []
-        for s_ in store.all("session"):
+        now = time.time()
+        for s_ in store.all("session", reverse=True):
             lv = live.get(s_["session_id"], {})
-            out.append(s_ | {"last_frame_age": round(time.time() - lv["ts"], 1) if lv.get("ts") else None})
-        return out[::-1]
+            out.append(s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None})
+        return out
 
     class LiveModelIn(BaseModel):
         mod: str = ""
@@ -1980,8 +2077,10 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/tasks")
     def tasks_all(actor=Depends(auth)):
         """Return the latest machine readings without waiting for slow GPU/process counters."""
-        retire_unrunnable_jobs()
-        ws = [w for w in workers() if w["online"] and "tasks" in (w.get("tools") or [])]
+        with store.lock:
+            worker_snapshot = workers()
+            retire_unrunnable_jobs(worker_snapshot)
+        ws = [w for w in worker_snapshot if w["online"] and "tasks" in (w.get("tools") or [])]
         machines = []
         with task_cache_lock:  # concurrent UI polls must not create duplicate inventory jobs
             now = time.time()
@@ -2011,17 +2110,17 @@ def create_app(config: Config) -> FastAPI:
                                  "updated": cached.get("updated"),
                                  "error": cached.get("error") if not cached.get("result") else None,
                                  "collecting": bool(cached.get("job_id"))})
-        names = {w["id"]: w["name"] for w in workers()}
+        names = {w["id"]: w["name"] for w in worker_snapshot}
         def task_job(j):
             return {"id": j["id"], "tool": j["tool"], "state": j["state"],
                     "worker": names.get(j.get("worker_id") or j.get("require_worker") or "", ""),
                     "created": j.get("created"), "progress": (j.get("progress") or {}).get("msg", ""),
                     "pct": (j.get("progress") or {}).get("pct")}
-        all_jobs = [j for j in store.all("job") if j["tool"] != "tasks"]
-        jobs = [task_job(j) for j in all_jobs if j["state"] in ("queued", "running")]
-        recent = [task_job(j) for j in all_jobs if j["state"] not in ("queued", "running")][-10:][::-1]
-        auto_reports = sorted((r for r in store.all("request") if (r.get("context") or {}).get("resolution_chat_id")),
-                              key=lambda r: r.get("created") or 0, reverse=True)[:20]
+        with store.lock:  # one consistent job snapshot across the two visible groups
+            jobs = [task_job(j) for j in store.jobs(states=("queued", "running"), exclude_tool="tasks")]
+            recent = [task_job(j) for j in store.jobs(exclude_states=("queued", "running"),
+                                                   exclude_tool="tasks", limit=10, reverse=True)]
+        auto_reports = store.resolution_requests()
         resolutions = []
         for report in auto_reports:
             cid = report["context"]["resolution_chat_id"]

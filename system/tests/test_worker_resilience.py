@@ -39,6 +39,7 @@ def test_worker_recovers_after_periodic_registration_timeout(monkeypatch, cfg):
     monkeypatch.setattr(worker, "describe", lambda _config, name, wid=None: worker.WorkerInfo(name=name, os="linux", tools=["scan_library"], id=wid or "worker1"))
     monkeypatch.setattr(worker, "REDESCRIBE_S", -1)
     monkeypatch.setattr(worker, '_heartbeat_loop', lambda *_: None)
+    monkeypatch.setattr(worker, '_result_delivery_loop', lambda *_: None)
     monkeypatch.setattr(worker._builtin, "reap_orphans", lambda *_: [])
     monkeypatch.setattr("gbox.filemods.push_missing", lambda *_: [])
     worker.run("http://127.0.0.1:8765", "token", cfg, "test", stop=Stop(), poll_s=0.001)
