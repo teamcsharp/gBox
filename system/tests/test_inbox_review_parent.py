@@ -64,3 +64,20 @@ def test_non_review_automated_task_keeps_conversation_fallback():
     root = operator('last', 'Actual operator extraction request', 9)
     task = {'id': 'extraction', 'created': 10, 'source': 'characters', 'body': 'Extraction follow-up', 'context': {'session': 'same'}}
     assert parent_for(task, [root, task]) == 'last'
+
+
+def test_curly_quoted_standing_instruction_links_in_list_and_single_lookup():
+    # /api/requests uses organize(); request creation uses parent_for(). Both
+    # must read the curly quotes the review writer can produce.
+    r = review(body=f'gBox request review (recurring, set up at the operator\u2019s request: \u201c{STANDING}\u201d).\nRun review.')
+    rows = [operator(), operator('thumbnail', 'Make the thumbnail popup larger', 9), r]
+    assert parent_for(r, rows) == 'standing'
+    assert organize(rows)[-1]['parent_request_id'] == 'standing'
+
+
+def test_question_mark_inside_standing_instruction_is_not_a_closing_quote():
+    question = 'can gBox examine the requests I give it?'
+    r = review(body=f'gBox request review (recurring, set up at the operator\'s request: "{question}").\nRun review.')
+    rows = [operator(body=question), r]
+    assert parent_for(r, rows) == 'standing'
+    assert organize(rows)[-1]['parent_request_id'] == 'standing'

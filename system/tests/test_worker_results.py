@@ -383,3 +383,43 @@ def test_failed_callback_rolls_back_open_transaction_before_safe_retry(cfg, monk
     monkeypatch.setattr(store, 'catalog_update', update)
     assert plane.post('/api/workers/old-worker/result', json=result).json()['accepted'] is True
     assert store.get('session', 'old-worker-launch') == session
+
+
+@pytest.mark.parametrize("already_ended", [False, True])
+def test_interrupted_stop_acceptance_preserves_ended_session_metadata(cfg, monkeypatch, already_ended):
+    from types import SimpleNamespace
+    app, plane = control(cfg, jid="stop", tool="session_op")
+    store = app.state.store
+    sid = "old-worker-preserved-session"
+    initial = {"session_id": sid, "game_id": "fixture", "adapter": "retroarch",
+               "state": "ended" if already_ended else "running", "started": 111,
+               "custom": {"operator_note": "preserve this", "nested": [1, 2]}}
+    if already_ended:
+        initial.update(ended=222, exit={"reason": "previous verified stop"})
+    store.put("session", sid, initial)
+    output = {"session_id": sid, "ended": True, "result": {"native_stopped": True}}
+    payload = {"job_id": "stop", "ok": True, "output": output, "log": [], "artifacts": []}
+    monkeypatch.setattr(tools, "time", SimpleNamespace(time=lambda: 1001))
+    store.db.execute("CREATE TRIGGER reject_stop_completion BEFORE UPDATE ON docs WHEN NEW.kind='job' "
+                     "AND json_extract(NEW.body,'$.result_acceptance')='complete' "
+                     "BEGIN SELECT RAISE(ABORT,'fixture interrupted stop completion'); END")
+    store.db.commit()
+    first = plane.post("/api/workers/old-worker/result", json=payload)
+    assert first.status_code == 500
+    assert store.get("job", "stop")["result_acceptance"] == "pending"
+    expected = initial if already_ended else initial | {"state": "ended", "ended": 1001, "exit": output["result"]}
+    assert store.get("session", sid) == expected
+    assert not [e for e in store.audit_log() if e["action"] == "job.succeeded"]
+    # The callback's first write committed before the terminal transaction failed.
+    # Recovery at a different time must preserve that existing native-stop record.
+    monkeypatch.setattr(tools, "time", SimpleNamespace(time=lambda: 2002))
+    store.db.execute("DROP TRIGGER reject_stop_completion"); store.db.commit()
+    second = plane.post("/api/workers/old-worker/result", json=payload)
+    assert second.status_code == 200 and second.json()["accepted"] is True
+    assert store.get("session", sid) == expected
+    third = plane.post("/api/workers/old-worker/result", json=payload)
+    assert third.status_code == 200 and third.json()["receipt"] == second.json()["receipt"]
+    assert store.get("session", sid) == expected
+    assert len(store.all("receipt")) == 1
+    assert len([e for e in store.audit_log() if e["action"] == "job.succeeded"]) == 1
+    assert store.verify_audit()[0]
