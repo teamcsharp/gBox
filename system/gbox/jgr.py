@@ -476,7 +476,8 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
 
 
 # ---- native swap writer: a library character -> one PLAYER.AFS body (gbox.ninja_swap pipeline, as gbox.sa2_chars) ----
-BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300)
+BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300, 270, 240, 200)   # char 00's 5 big lists need 4 holes:
+# at 300 triangles two of them overshoot the biggest hole by 28 bytes, so smaller steps follow (#1155)
 ATLAS_TEXTURE = 0                       # the PTEX texture the new strips draw (it's replaced by the character's atlas)
 HEAD_NODES = {10, 11}
 
@@ -511,6 +512,50 @@ def replace_entries(data: bytes, new: dict[int, bytes]) -> bytes:
         out[off:off + room] = blob + bytes(room - len(blob))
         struct.pack_into("<I", out, 8 + 8 * offsets.index(off) + 4, len(blob))
     return bytes(out)
+
+
+def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = None, tries: int = 0) -> dict:
+    """Best-fit-decreasing placement of 4-byte-aligned blobs into free [start, end) holes -> {key: offset}.
+    home {key: offset}: first try each blob (largest first) in the hole holding that offset (a node's lists go
+    back where its old lists were), then best-fit the rest. tries: when that fails, this many seeded random
+    restarts (each blob into a random hole it fits, largest blobs first) before giving up - the holes sit
+    between fixed node structs, so plain best fit can strand one big list a few bytes short. Raises ValueError
+    (with free/needed totals and the first blob that found no hole) when they don't fit."""
+    import random
+    need = {k: (s + 3) & ~3 for k, s in sizes.items()}
+    order = sorted(sizes, key=lambda k: (-need[k], str(k)))
+    home = home or {}
+
+    def attempt(rng=None):
+        free = sorted([[h[0], h[1], h[0]] for h in holes if h[1] > h[0]])   # [next free, end, original start]
+        at = {}
+        for k in order if home and rng is None else ():
+            h = next((h for h in free if k in home and h[2] <= home[k] < h[1]), None)
+            if h is not None and h[1] - h[0] >= need[k]:
+                at[k], h[0] = h[0], h[0] + need[k]
+        for k in order:
+            if k in at:
+                continue
+            fits = [h for h in free if h[1] - h[0] >= need[k]]
+            if not fits:
+                big = max((h[1] - h[0] for h in free), default=0)
+                raise ValueError(f"{sum(need.values())} bytes of lists need placing, "
+                                 f"{sum(h[1] - h[0] for h in holes)} bytes are free; {k} ({need[k]} bytes) "
+                                 f"found no hole (largest left {big} bytes)")
+            h = min(fits, key=lambda h: (h[1] - h[0], h[0])) if rng is None else rng.choice(fits)
+            at[k], h[0] = h[0], h[0] + need[k]
+        return at
+    try:
+        return attempt()
+    except ValueError as e:
+        first = e
+    rng = random.Random(1155)
+    for _ in range(tries):
+        try:
+            return attempt(rng)
+        except ValueError:
+            continue
+    raise first
 
 
 def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
@@ -571,8 +616,14 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     for a_, b_ in shared:                                  # still drawn by another tree: keep
         body[a_:b_] = buf[a_:b_]
     freed = np.zeros(len(buf), bool)
-    for a_, b_ in model_ranges(nodes):
+    mine_r = sorted(model_ranges(nodes))
+    for a_, b_ in mine_r:
         freed[a_:b_] = True
+    # the alignment padding between one node's lists (plist | 2 bytes | vlist | model) is dead too: without it
+    # every node's room splits in two and the kept vertex lists no longer fit beside their new chunks (#1155)
+    for (_a, b_), (c_, _d) in zip(mine_r, mine_r[1:]):
+        if 0 < c_ - b_ < 4 and not any(buf[b_:c_]):
+            freed[b_:c_] = True
     for a_, b_ in shared:
         freed[a_:b_] = False
     holes, i = [], 0
@@ -587,6 +638,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
             i = j
         else:
             i += 1
+    tail = (len(buf) + 3) & ~3
+    spare = [(tail, room)] if room - tail >= 4 else []     # the AFS padding after the entry: a last resort
 
     def orig_vlist(nd):
         if not nd["model"]:
@@ -594,64 +647,58 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         vl = struct.unpack_from("<I", buf, nd["model"])[0]
         return buf[vl:vl + ninja.chunk_list_len(buf, vl, "v") - 4] if vl else b""
     vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
-
-    def home_of(nd):                                      # the freed hole that held this node's own lists
-        if not nd["model"]:
-            return None
-        vl = struct.unpack_from("<I", buf, nd["model"])[0] or nd["model"]
-        return next((k for k, h in enumerate(holes) if h[0] <= vl < h[1]), None)
+    homes = {}                                             # where each node's old vlist / plist / model sat
+    for j, nd in enumerate(nodes):
+        if nd["model"]:
+            vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
+            homes.update({("v", j): vl or nd["model"], ("p", j): pl_ or nd["model"], ("m", j): nd["model"]})
 
     def encode(geo):
-        out = bytearray(body)
-        out += bytes((-len(out)) % 32)
-        padded = len(out)
-        free = [h[:] for h in holes]
-
-        def alloc(blob, home=None):                         # the node's own hole first (each node's lists sit
-            size = (len(blob) + 3) & ~3                     # between node structs), else best fit, else the end
-            if home is not None and free[home][1] - free[home][0] >= size:
-                h = free[home]
-            else:
-                fits = [h for h in free if h[1] - h[0] >= size]
-                h = min(fits, key=lambda h: h[1] - h[0]) if fits else None
-            if h is not None:
-                o, h[0] = h[0], h[0] + size
-            else:
-                o = len(out)
-                out.extend(bytes(size))
-            out[o:o + len(blob)] = blob
-            return o
-        # vertex lists first, each into its node's hole (they hold the kept original chunks, the biggest part)
-        built, vls = {}, {}
+        # every blob (vertex lists, which carry the kept original chunks, poly lists, model structs) is sized
+        # first, then packed into the freed holes + the entry's AFS padding together (pack_blobs), so a node
+        # whose new lists outgrow its own hole no longer spills past the entry while other holes sit empty
+        built, blobs = {}, {}
         for j, nd in enumerate(nodes):
             keep = orig_vlist(nd)
             if j in geo:
                 P, N, T = geo[j]
                 built[j] = ninja.cnk_model_lists(P, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
                                                  base=vbase, keep_vlist=keep)
-                vls[j] = alloc(built[j][0], home_of(nd))
+                blobs[("v", j)] = built[j][0]
+                blobs[("p", j)] = built[j][1]
             elif keep:
-                vls[j] = alloc(keep + struct.pack("<I", 0xFF), home_of(nd))
-        ep, lists = None, {}
-        for j in sorted(range(len(nodes)), key=lambda j: -len(built[j][1]) if j in built else 0):
-            nd = nodes[j]
-            if j in built:
-                _vl, pl_, c, r = built[j]
-                lists[j] = (vls[j], alloc(pl_, home_of(nd)), c, r)
-            elif nd["model"]:
-                if ep is None:
-                    ep = alloc(struct.pack("<HH", 0xFF, 0))
-                c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
-                lists[j] = (vls.get(j, 0), ep, list(c_r[:3]), c_r[3])
+                blobs[("v", j)] = keep + struct.pack("<I", 0xFF)
+            if nd["model"]:
+                blobs[("m", j)] = bytes(24)
+        if any(nd["model"] and j not in built for j, nd in enumerate(nodes)):
+            blobs[("e", 0)] = struct.pack("<HH", 0xFF, 0)
+        sizes = {k: len(v) for k, v in blobs.items()}
+        at, err = None, None
+        for hs in ([tuple(h) for h in holes], [tuple(h) for h in holes] + spare):   # inside the old entry first
+            for hm in (homes, None):                        # node lists back home first, else pure best fit
+                try:
+                    at = pack_blobs(hs, sizes, hm, 0 if hm else 2000)
+                    break
+                except ValueError as e:
+                    err = err or e
+            if at is not None:
+                break
+        if at is None:
+            raise ValueError(f"PLAY {index:02d}: {err}")
+        out = bytearray(body)
+        out += bytes(max(0, max(at[k] + len(v) for k, v in blobs.items()) - len(out)))
         for j, nd in enumerate(nodes):
-            mo = 0
-            if j in lists:
-                vo, po, c, r = lists[j]
-                mo = alloc(struct.pack("<II4f", vo, po, *c, r), home_of(nd))
+            if j in built:
+                _vl, _pl, c, r = built[j]
+                blobs[("m", j)] = struct.pack("<II4f", at[("v", j)], at[("p", j)], *c, r)
+            elif nd["model"]:
+                c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
+                blobs[("m", j)] = struct.pack("<II4f", at.get(("v", j), 0), at[("e", 0)], *c_r)
+        for k, v in blobs.items():
+            out[at[k]:at[k] + len(v)] = v
+        for j, nd in enumerate(nodes):
             flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
-            struct.pack_into("<II", out, nd["off"], flags, mo)
-        if len(out) == padded:                              # nothing landed at the end: keep the old length
-            del out[len(buf):]
+            struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
         if len(out) > room:
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)

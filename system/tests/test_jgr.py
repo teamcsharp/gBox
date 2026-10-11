@@ -358,3 +358,34 @@ def test_replace_entries_in_place_keeps_length_and_other_entries():
     assert new[offs[1] + 4004:offs[2]] == bytes(offs[2] - offs[1] - 4004)
     with pytest.raises(ValueError):
         jgr.replace_entries(data, {offs[0]: b"PLAY" + b"x" * 0x800})
+
+
+def test_pack_blobs_places_without_overlap_and_prefers_home():
+    from gbox import jgr
+    holes = [(0x100, 0x200), (0x400, 0x480), (0x800, 0x900)]
+    sizes = {("v", 1): 0xF0, ("p", 1): 0x30, ("v", 2): 0x7E, ("m", 1): 24, ("m", 2): 24}
+    at = jgr.pack_blobs(holes, sizes, {("v", 2): 0x400})
+    assert at[("v", 2)] == 0x400                          # back in the hole its old list held
+    spans = sorted((at[k], at[k] + ((s + 3) & ~3)) for k, s in sizes.items())
+    for a, b in spans:
+        assert any(h0 <= a and b <= h1 for h0, h1 in holes)
+    for (_, b), (c, _) in zip(spans, spans[1:]):
+        assert b <= c                                      # no two blobs share bytes
+
+
+def test_pack_blobs_reports_stranded_list():
+    # JGR character 00 at 300 triangles: five lists over 2.8 KB, four holes big enough, and the two smallest of
+    # them overshoot the biggest hole by 28 bytes. The error names the stranded list and both totals (#1155).
+    import pytest
+    from gbox import jgr
+    holes, o = [], 0
+    for n in (5652, 5296, 4256, 4244, 2788):
+        holes.append((o, o + n))
+        o += n + 0x34                                      # a node struct between every hole
+    sizes = {("v", 15): 4340, ("v", 10): 3500, ("v", 11): 3396, ("v", 4): 2852, ("v", 7): 2828}
+    with pytest.raises(ValueError, match=r"found no hole") as e:
+        jgr.pack_blobs(holes, sizes, tries=500)
+    assert "16916 bytes of lists need placing, 22236 bytes are free" in str(e.value)
+    sizes[("v", 7)] = 2800                                 # two fewer vertices: 2852 + 2800 fits the 5652 hole
+    at = jgr.pack_blobs(holes, sizes, tries=500)
+    assert len(at) == 5

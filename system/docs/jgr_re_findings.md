@@ -117,3 +117,20 @@ same fixture pattern as the DOA2 suite.
 - PLAYER.AFS fills its disc extent (6906 sectors, PROMO.AFS follows). Each PLAY's AFS room is its size plus 52–2036 bytes of padding, so the new body must fit inside the bytes the old body frees.
 - Character 00's body (root +0x15450) frees 42,634 bytes: model structs 456, vertex lists 27,036, strips 15,142. No other root shares those offsets exactly. The kept vertex lists take 27,036 of that. Amy Rose at 299 triangles adds 10,780 bytes (measured with `cnk_model_lists`), so the totals should fit.
 - Measured result: the encode still comes out 13–14 KB over the room (826,992 > 813,056) even at 300 triangles. Next step: log the holes `encode` computes against these totals. Most likely another root's lists partly overlap the body's ranges, and `shared` then re-protects them. It could also be fragmentation around the node structs. Fix that before routing `use` (the routing patch is kept at `~/.hermes/cache/scratch/jgr_use_routing.patch`). Use `/usr/bin/blender` (arm64) for decimation: `/usr/local/bin/blender` is x86-64.
+
+## Swap writer: space allocation fixed (#1155, run 3)
+
+- Cause of the 13.9 KB overflow: each node's lists were placed in their own hole first, and the 2-byte
+  padding between a node's plist and vlist split every hole in two. Anything that didn't fit was appended
+  past the entry, where PLAY 00 has only 152 bytes of AFS padding (812,904 bytes used of 813,056 room).
+- `pack_blobs` now sizes every blob first, merges the padding gaps, and places blobs home-first, then
+  best-fit-decreasing, then 2000 seeded random restarts. The AFS padding is used only as a last resort.
+- Character 00 has 20 holes totalling 42,672 bytes (largest 5652/5296/4256/4244). At 300 triangles, five lists
+  are over 2.8 KB but only four holes can take them, and the smallest pair (2852 + 2828) misses the 5652 hole
+  by 28 bytes. That is why BUDGETS now continues 270/240/200.
+- Owned-disc result: Amy Rose fits at 269 triangles. The PLAY entry stays at 812,904 bytes, PLAYER.AFS keeps
+  its length and offsets, only entries 0 and 1 (PLAY/PTEX 00) change, and the patched GD-ROM re-reads
+  byte-equal. Root 0x15450 decodes with 20 bones and 269 triangles (originally 2054).
+- Caveat for in-game checks: on the modded data `body_root` picks tree 0x9c7c (1834 triangles, untouched).
+  That is a second full-size body in PLAY 00. If gameplay draws 0x9c7c instead of 0x15450, the swap won't
+  show, and 0x9c7c needs the same treatment.
