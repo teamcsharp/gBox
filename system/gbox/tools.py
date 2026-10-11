@@ -686,6 +686,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
             raise
         res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
     if inp.op == "save_state" and isinstance(res, dict):            # thumbnail for the save-state film strip
+        if getattr(ad, 'name', '') == 'retroarch' and res.get('path'):
+            _validate_state_container(Path(res['path']).read_bytes(), 'retroarch')
         try:
             png = ad.get_frame()
             ctx.artifact("state.png", png, "image/png", session=inp.session_id, slot=res.get("slot"))
@@ -2885,6 +2887,28 @@ class StateXOut(BaseModel):
 _STATE_TRANSFER_LOCK = threading.RLock()
 
 
+def _validate_state_container(data: bytes, adapter_name: str) -> None:
+    """Check recognized RetroArch envelopes only, without interpreting a core's MEM layout.
+
+    Nonempty raw core states and other adapters retain their existing handling. Container
+    decoding is bounded by flycast_state.unpack's RZIP/RASTATE limits; its
+    Flycast serializer, Maple and PVR inspectors are deliberately not called.
+    This proves container completeness, not that a game will restore correctly.
+    """
+    if adapter_name != 'retroarch':
+        return
+    if not data:
+        raise RuntimeError('Saved checkpoint is empty')
+    if not data.startswith((b'#RZIPv', b'RASTATE')):
+        return
+    from .flycast_state import unpack
+    try:
+        if not unpack(data):
+            raise ValueError('empty decoded checkpoint')
+    except ValueError as error:
+        raise RuntimeError(f'Saved checkpoint container could not be validated: {error}') from error
+
+
 @tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
     with _STATE_TRANSFER_LOCK:
@@ -2998,6 +3022,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
                 f.stat().st_size <= 0 or f.stat().st_mtime < inp.not_before - 1)):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
+        _validate_state_container(data, kind)
         ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
         return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
@@ -3006,6 +3031,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         r.raise_for_status()
         if sha256(r.content) != inp.artifact:
             raise ValueError('Saved-state download did not match the preserved checkpoint')
+        _validate_state_container(r.content, kind)              # refuse before even creating the native placeholder
         f, details = save_and_wait()                            # this machine's verified state file for the game
         f.write_bytes(r.content)
         time.sleep(0.3)
