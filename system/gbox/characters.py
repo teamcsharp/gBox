@@ -524,6 +524,8 @@ class CharIn(BaseModel):
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only)
+    active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
+                                 description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
     launch: bool = True                    # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
@@ -1177,6 +1179,9 @@ DEDICATED = [
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
+    ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
+     lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.jgr", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("doa2", lambda t, p: "dead or alive 2" in t and p == "dreamcast", _doa2_roster, _doa2_run),
     ("shenmue", lambda t, p: re.match(r"shenmue(?! ii)", t) is not None and p == "dreamcast",
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
@@ -1917,6 +1922,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import sa2_chars
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
+    from . import jgr
+    if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
+        return {"result": out | jgr.use(ctx, meta, game, inp)}
     from . import pso_player
     if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
