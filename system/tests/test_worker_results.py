@@ -20,7 +20,16 @@ def control(cfg, jid='launch', *, tool='launch_game', state='running', cancel=Fa
     client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'}, raise_server_exceptions=False)
     app.state.store.put('job', jid, {'id': jid, 'tool': tool, 'input': {}, 'state': state,
         'worker_id': 'old-worker', 'started': time.time(), 'created': time.time(), 'cancel': cancel})
-    return app, client
+    # Installed Starlette may return httpx2.Response; real worker transport uses
+    # httpx.Response. Preserve actual route status/body while exercising the
+    # worker client's exception contract, rather than mixing exception types.
+    class Wire:
+        def post(self, path, **kwargs):
+            response = client.post(path, **kwargs)
+            return httpx.Response(response.status_code, content=response.content,
+                                  headers=response.headers,
+                                  request=httpx.Request('POST', 'http://fixture' + path))
+    return app, Wire()
 
 
 def launch_result(jid='launch'):
@@ -90,7 +99,7 @@ def test_artifact_bytes_fsynced_before_first_transport_and_restart_retry(cfg):
     assert app.state.store.read_artifact(receipt['artifacts'][0]['sha256']) == b'actual finished bytes'
 
 
-@pytest.mark.parametrize('status', [400, 401, 403, 404, 409, 422])
+@pytest.mark.parametrize('status', [400, 404, 409, 422])
 def test_rejected_result_stays_pending_and_never_blindly_retries(cfg, status):
     outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
     outbox.save('old-worker', launch_result())
@@ -423,3 +432,240 @@ def test_interrupted_stop_acceptance_preserves_ended_session_metadata(cfg, monke
     assert len(store.all("receipt")) == 1
     assert len([e for e in store.audit_log() if e["action"] == "job.succeeded"]) == 1
     assert store.verify_audit()[0]
+
+
+@pytest.mark.parametrize('status', [401, 403])
+def test_auth_failure_is_not_a_verdict_on_the_result(cfg, status):
+    # A wrong token says nothing about the result: keep it pending so it can still be delivered (#1296).
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Denied:
+        def post(self, path, **_):
+            return httpx.Response(status, request=httpx.Request('POST', 'http://fixture' + path))
+    assert not outbox.deliver(Denied(), 'launch')
+    assert outbox.records()[0]['status'] == 'pending'
+    assert outbox.send_ready(plane, force=True) == ['launch']
+
+
+class _PlaneClient:
+    plane = None
+    def __init__(self, **_): pass
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
+    def post(self, path, **kwargs): return self.plane.post(path, **kwargs)
+
+
+class _Registered(Exception):
+    pass
+
+
+def test_refused_result_without_ack_still_holds_worker_activation(cfg, monkeypatch):
+    # A server refusal is not delivery acceptance, even after reconnect.
+    app, plane = control(cfg, state='succeeded')
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Refuse:
+        def post(self, path, **_):
+            return httpx.Response(409, request=httpx.Request('POST', 'http://fixture' + path))
+    assert not outbox.deliver(Refuse(), 'launch')
+    saved = next(outbox.directory.glob('*.json')).read_bytes()
+    monkeypatch.setattr(_PlaneClient, 'plane', plane)
+    monkeypatch.setattr(worker.httpx, 'Client', _PlaneClient)
+    monkeypatch.setattr(ResultOutbox, 'protected_sessions', lambda *_: [])
+    def describe(*_):
+        raise _Registered()
+    monkeypatch.setattr(worker, 'describe', describe)
+    with pytest.raises(RuntimeError, match='activation held.*job launch rejected'):
+        worker.run('http://fixture', 'secret', cfg, 'owned-worker', stop=threading.Event(), reconcile_results=True)
+    fresh = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    assert fresh.pending_count() == 1 and fresh.held()[0]['status'] == 'rejected'
+    kept = list((fresh.directory / 'refused-evidence').glob('*.json'))
+    assert len(kept) == 1 and kept[0].read_bytes() == saved
+    assert not (fresh.directory / 'rejected').exists()
+
+
+def test_uncertain_result_still_holds_activation_and_names_the_job(cfg, monkeypatch):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Down:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def post(self, path, **_): raise httpx.ConnectError('spark unreachable')
+    monkeypatch.setattr(worker.httpx, 'Client', Down)
+    monkeypatch.setattr(worker, 'describe', lambda *_: pytest.fail('registered while a result was uncertain'))
+    with pytest.raises(RuntimeError, match=r'activation held.*job launch pending after 1 attempt\(s\) \(ConnectError\)'):
+        worker.run('http://fixture', 'secret', cfg, 'owned-worker', stop=threading.Event())
+    assert outbox.pending_count() == 1
+
+
+def refuse(outbox):
+    class Refuse:
+        def post(self, path, **_):
+            return httpx.Response(409, request=httpx.Request('POST', 'http://fixture' + path))
+    assert not outbox.deliver(Refuse(), 'launch')
+    return next(outbox.directory.glob('*.json')).read_bytes()
+
+
+def test_explicit_reconciliation_requires_exact_real_ack_and_preserves_refusal(cfg):
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    result = launch_result()
+    outbox.save('old-worker', result)
+    original = refuse(outbox)
+    assert outbox.send_ready(plane, force=True) == []
+    assert app.state.store.all('receipt') == []
+    assert outbox.reconcile_ready(plane) == ['launch']
+    archived = outbox.records(include_acknowledged=True)[0]
+    assert archived['result'] == worker_results.normalized_result(result)
+    assert archived['acknowledgement']['result_sha256'] == result_digest(result)
+    assert outbox.pending_count() == 0
+    assert (outbox.directory / archived['refused_evidence'][0]).read_bytes() == original
+    assert len(app.state.store.all('receipt')) == len(app.state.store.all('session')) == 1
+    assert outbox.reconcile_ready(plane) == []
+
+
+@pytest.mark.parametrize('ack', [
+    {}, {'accepted': False}, {'accepted': True, 'job_id': 'foreign'},
+    {'accepted': True, 'worker_id': 'foreign'}, {'accepted': True, 'result_sha256': '0'*64},
+    {'accepted': True, 'receipt': 1}, {'accepted': True, 'state': []},
+    {'accepted': True, 'state': 'running'},
+])
+def test_explicit_reconciliation_never_releases_missing_foreign_or_malformed_ack(cfg, ack):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    original = refuse(outbox)
+    expected = {'accepted': True, 'job_id': 'launch', 'worker_id': 'old-worker',
+                'result_sha256': result_digest(launch_result()), 'state': 'succeeded', 'receipt': 'actual'}
+    # {} and False model wholly missing/refused acknowledgements; other rows
+    # corrupt one field of an otherwise exact identity.
+    body = ack if not ack or ack.get('accepted') is False else expected | ack
+    class Reply:
+        def post(self, path, **_):
+            return httpx.Response(200, json=body, request=httpx.Request('POST', 'http://fixture' + path))
+    assert outbox.reconcile_ready(Reply()) == []
+    assert outbox.pending_count() == 1 and outbox.records()[0]['status'] == 'rejected'
+    assert len(list((outbox.directory / 'refused-evidence').glob('*.json'))) == 1
+    assert next((outbox.directory / 'refused-evidence').glob('*.json')).read_bytes() == original
+    assert not list(outbox.archive.glob('*.json'))
+
+
+@pytest.mark.parametrize('problem', ['missing_job', 'foreign_worker', 'cancelled'])
+def test_real_control_plane_refusal_keeps_exact_result_held(cfg, problem):
+    app, plane = control(cfg)
+    if problem == 'missing_job':
+        app.state.store.delete('job', 'launch')
+    else:
+        job = app.state.store.get('job', 'launch')
+        job['worker_id' if problem == 'foreign_worker' else 'cancel'] = 'another-worker' if problem == 'foreign_worker' else True
+        app.state.store.put('job', 'launch', job)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    refuse(outbox)
+    assert outbox.reconcile_ready(plane) == []
+    assert outbox.pending_count() == 1 and outbox.records()[0]['status'] == 'rejected'
+    assert app.state.store.all('session') == app.state.store.all('receipt') == []
+
+
+def test_lost_reconciliation_ack_keeps_refused_result_and_accepts_once(cfg):
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    refuse(outbox)
+    client = LostAcknowledgement(plane)
+    assert outbox.reconcile_ready(client) == []
+    assert outbox.pending_count() == 1
+    receipt = app.state.store.get('job', 'launch')['receipt_id']
+    assert outbox.send_ready(client, force=True) == []
+    assert client.calls == 1
+    assert outbox.reconcile_ready(client) == ['launch']
+    assert client.calls == 2 and outbox.pending_count() == 0
+    assert app.state.store.get('job', 'launch')['receipt_id'] == receipt
+    assert len(app.state.store.all('receipt')) == len(app.state.store.all('session')) == 1
+
+
+def test_explicit_startup_ack_does_not_reap_a_live_native_game(cfg, monkeypatch):
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    refuse(outbox)
+    monkeypatch.setattr(_PlaneClient, 'plane', plane)
+    monkeypatch.setattr(worker.httpx, 'Client', _PlaneClient)
+    monkeypatch.setattr(ResultOutbox, 'protected_sessions', lambda *_: ['old-worker-launch'])
+    monkeypatch.setattr(worker, 'describe', lambda *_: pytest.fail('Live native game admitted a fresh worker'))
+    monkeypatch.setattr(tools, 'reap_orphans', lambda *_: pytest.fail('Reconciliation must not kill natives'))
+    monkeypatch.setattr(worker, 'execute', lambda *_: pytest.fail('A result was replayed as a tool'))
+    with pytest.raises(RuntimeError, match='owned PID record'):
+        worker.run('http://fixture', 'secret', cfg, 'owned-worker', reconcile_results=True)
+    assert ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker').pending_count() == 0
+    assert app.state.store.get('session', 'old-worker-launch')['detail']['pid'] == 4321
+
+
+def test_acknowledged_frozen_record_requires_a_string_receipt(cfg):
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    assert outbox.deliver(plane, 'launch')
+    path = next(outbox.archive.glob('*.json'))
+    record = json.loads(path.read_text())
+    record['acknowledgement']['receipt'] = 1
+    path.write_text(json.dumps(record))
+    with pytest.raises(RuntimeError, match='Invalid durable acknowledgement'):
+        outbox.records(include_acknowledged=True)
+
+
+def test_legacy_quarantined_refusal_cannot_disappear_from_admission(cfg):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    refuse(outbox)
+    quarantined = outbox.directory / 'rejected'
+    quarantined.mkdir()
+    source = next(outbox.directory.glob('*.json'))
+    frozen = source.read_bytes()
+    source.rename(quarantined / source.name)
+    with pytest.raises(RuntimeError, match='outside the delivery queue'):
+        outbox.pending_count()
+    assert next(quarantined.glob('*.json')).read_bytes() == frozen
+
+
+def test_explicit_reconciliation_attempts_at_most_four_retained_results(cfg):
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    for k in range(5):
+        result = launch_result('extra-' + str(k))
+        job = app.state.store.get('job', 'launch') | {'id': result['job_id']}
+        app.state.store.put('job', result['job_id'], job)
+        outbox.save('old-worker', result)
+    assert len(outbox.reconcile_ready(plane)) == 4
+    assert outbox.pending_count() == 1 and len(app.state.store.all('receipt')) == 4
+    assert len(outbox.reconcile_ready(plane)) == 1
+    assert outbox.pending_count() == 0 and len(app.state.store.all('receipt')) == 5
+
+
+@pytest.mark.parametrize('maximum', [True, 0, -1, 5])
+def test_invalid_reconciliation_bound_cannot_expand_transport(cfg, maximum):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    class NoPost:
+        def post(self, *_args, **_kwargs): pytest.fail('Invalid bound reached transport')
+    with pytest.raises(ValueError, match='bounded'):
+        outbox.reconcile_ready(NoPost(), maximum=maximum)
+
+
+@pytest.mark.parametrize('mutate', ['boolean_version', 'missing_worker', 'numeric_worker', 'missing_job', 'numeric_ok'])
+def test_malformed_durable_identity_is_refused_before_transport(cfg, mutate):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    path = next(outbox.directory.glob('*.json'))
+    value = json.loads(path.read_text())
+    if mutate == 'boolean_version': value['version'] = True
+    if mutate == 'missing_worker': value['worker_id'] = ''
+    if mutate == 'numeric_worker': value['worker_id'] = 1
+    if mutate == 'missing_job': value['result']['job_id'] = None
+    if mutate == 'numeric_ok': value['result']['ok'] = 1
+    path.write_text(json.dumps(value))
+    class NoPost:
+        def post(self, *_args, **_kwargs): pytest.fail('Invalid durable identity reached transport')
+    with pytest.raises((RuntimeError, ValueError), match='Invalid'):
+        outbox.reconcile_ready(NoPost())
+    assert path.exists() and not list(outbox.archive.glob('*.json'))

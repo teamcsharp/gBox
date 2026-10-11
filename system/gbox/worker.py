@@ -197,7 +197,7 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
 
 
 def run(server: str, token: str, config: Config, name: str | None = None,
-        stop: threading.Event | None = None, poll_s: float = 1.0):
+        stop: threading.Event | None = None, poll_s: float = 1.0, *, reconcile_results: bool = False):
     stop = stop or threading.Event()
     h = {"authorization": f"Bearer {token}"}
     name = name or platform.node()
@@ -205,9 +205,19 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     # Drain the previous worker's exact finished results BEFORE registering a new
     # identity; registration would otherwise retire its unfinished jobs.
     with httpx.Client(base_url=server, headers=h, timeout=20) as delivery_client:
-        outbox.send_ready(delivery_client, force=True)
-    if outbox.pending_count():
-        raise RuntimeError('Worker activation held: finished results still await verified delivery')
+        if reconcile_results:
+            outbox.reconcile_ready(delivery_client)
+        else:
+            outbox.send_ready(delivery_client, force=True)
+    held = outbox.held()
+    if held:
+        def why(e):
+            return f" ({' '.join(str(v) for v in (e.get('kind'), e.get('status')) if v)})" if e else ''
+        detail = '; '.join(f"job {r['job_id']} {r['status']} after {r['attempts']} attempt(s){why(r['last_error'])}"
+                           for r in held)
+        raise RuntimeError('Worker activation held: finished results still await verified delivery: '
+                           f'{detail}. Check that {server} is reachable and runs the same gBox version, '
+                           'then reconnect this worker.')
     if outbox.protected_sessions(_builtin._running_file(config)):
         raise RuntimeError('Worker activation held: a delivered native launch still has an owned PID record; no emulator was stopped')
     info = describe(config, name)
