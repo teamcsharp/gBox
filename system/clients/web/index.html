@@ -613,7 +613,7 @@ tabs.GameModels.after = (gid, title) => {
 
 // ---------------- loading screen (three.js particle ribbon, logo-shaped progress bar, console ticker) ----------------
 const loader = {
-  three: null, raf: 0,
+  three: null, raf: 0, generation: 0,
   async scene() {                                             // the 10-mode visualizer (/viz): random per title, right-click to choose
     if (this.three) return this.three;
     try {
@@ -626,6 +626,7 @@ const loader = {
   },
   frame() {},
   show(title, sub) {
+    this.generation++;
     $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
     $("#ldbar").style.height = "0%"; $("#ldpbar").style.width = "2%"; $("#ldpct").textContent = "0%";
     $("#ldcon").innerHTML = "<div>Preparing…</div>"; $("#ldback").style.display = "none";
@@ -644,7 +645,10 @@ const loader = {
     if (msg && $("#ldcon").firstChild?.textContent !== msg) $("#ldcon").innerHTML = `<div>${esc(msg)}</div>`;
   },
   fail(msg) { $("#ldcon").innerHTML = `<div class="err">${esc(msg)}</div>`; $("#ldback").style.display = "block"; },
-  hide() { const el = $("#loader"); el.classList.add("out"); setTimeout(() => { el.classList.remove("on", "out"); this.three?.viz?.stop(); }, 600); },
+  hide() { const generation = this.generation, el = $("#loader"); el.classList.add("out"); setTimeout(() => {
+    if (generation !== this.generation) return;
+    el.classList.remove("on", "out"); this.three?.viz?.stop();
+  }, 600); },
 };
 
 // ---- microphone device: right-click any mic to pick the default input (persisted) ----
@@ -1153,24 +1157,56 @@ addEventListener("keydown", e => { if (e.key === "Escape" && LOADING) cancelLoad
 async function cancelLoad() {                                // instant: leave first, clean up behind (works after a failure too)
   const L0 = LOADING; LOADING = null;
   loader.hide(); show("Library");
-  if (!L0?.job) return;
-  api(`/api/jobs/${L0.job}/cancel`, {}).catch(() => {});
-  api("/api/jobs/" + L0.job).then(j => {                      // it got as far as starting the emulator: close that too
+  if (L0?.job) cancelLaunchJob(L0.job);
+}
+function cancelLaunchJob(jid) {
+  api(`/api/jobs/${jid}/cancel`, {}).catch(() => {});
+  api("/api/jobs/" + jid).then(j => {                      // it got as far as starting the emulator: close that too
     const sid = j?.output?.session_id;
     if (sid) { api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "cancel" }).catch(() => {});
                runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {}); }
   }).catch(() => {});
 }
+// #1293: a launch for a PC whose gBox worker stopped checking in waits in the queue until that worker
+// reconnects (the server hands it over then). Say which worker and how long it's been, not just "queued".
+function launchWaitNote(job, workers, node, now) {
+  if (!job || job.state !== "queued" || !Array.isArray(workers)) return "";
+  const ago = w => { const s = Math.max(0, Math.round(now / 1000 - (+w.last_seen || 0)));
+    return s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+  const waited = Math.max(0, now / 1000 - (+job.created || now / 1000));
+  const want = job.require_worker || (node && !["auto", "linux", "windows"].includes(node) ? node : "");
+  if (want) {
+    const w = workers.find(x => x.id === want) || workers.find(x => x.name === want);
+    if (!w) return `This launch is waiting for a worker named ${want}, which isn't connected to the Spark. ` +
+      `Start gBox on that PC, or press Esc to cancel.`;
+    if (!w.online) return `${w.name}'s gBox worker is offline: it last checked in ${ago(w)} ago. ` +
+      `The game starts by itself when it reconnects. If it doesn't, restart gBox on ${w.name}, or press Esc to cancel.`;
+    if (waited >= 15 && +w.active_jobs > 0) return `${w.name} is online but still busy with ${w.active_jobs} other ` +
+      `job${+w.active_jobs === 1 ? "" : "s"}; this launch is still queued. Press Esc to cancel.`;
+    return "";
+  }
+  const os = job.require_os, pool = workers.filter(w => !os || w.os === os);
+  if (!pool.some(w => w.online)) {
+    const last = pool.slice().sort((a, b) => (+b.last_seen || 0) - (+a.last_seen || 0))[0];
+    return `No ${os === "windows" ? "Windows " : os === "linux" ? "Linux " : ""}gBox worker is online` +
+      (last ? ` (${last.name} last checked in ${ago(last)} ago)` : "") +
+      `. The game starts by itself when one reconnects, or press Esc to cancel.`;
+  }
+  return "";
+}
 const DEBUG_EMU = { gamecube: "Dolphin", wii: "Dolphin", gba: "mGBA", psx: "DuckStation", arcade: "MAME" };
 async function play(id, node, debug, boot) {
+  if (LOADING?.job) cancelLaunchJob(LOADING.job);
+  const launch = LOADING = LAST_LAUNCH = { id, job: null, started: Date.now() };
   const g = await api("/api/catalog/" + id).catch(() => ({ title: "Game" }));
+  if (LOADING !== launch) return;
   boot = boot || bootGet(id);
   // default from the toggle: THIS PC (native, full FPS, zero input lag) when the system has a core, else the Spark
   // PS3 has no libretro core but runs natively here (RPCS3): keep it on this PC instead of whichever worker answers first
   if (!node && WHERE === "local" && window.GBOX_LOCAL?.worker && (g.core || g.platform === "ps3")) node = window.GBOX_LOCAL.worker;
   if (!node && WHERE === "spark" && g.core) node = "linux";
   if (debug) node = "linux";
-  LOADING = LAST_LAUNCH = { id, job: null, started: Date.now(), title: g.title, core: g.core || "", node: node || "auto" };
+  Object.assign(launch, { title: g.title, core: g.core || "", node: node || "auto" });
   const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";
   loader.show(g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
   $("#ldcancel").onclick = cancelLoad;
@@ -1181,34 +1217,55 @@ async function play(id, node, debug, boot) {
   try {
     job = await api(`/api/games/${id}/launch?node=${encodeURIComponent(node || "auto")}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}`, {}, "POST", 30000);
   } catch (err) {
-    LAST_LAUNCH.error = `Launch request failed before a job was created: ${err.message}`;
-    LOADING = null;
-    loader.fail(LAST_LAUNCH.error);
+    if (LOADING !== launch) return;
+    launch.error = `Could not confirm the launch request: ${err.message}`;
+    loader.fail(launch.error);
     return;
   }
-  if (!LOADING) { await api(`/api/jobs/${job.id}/cancel`, {}).catch(() => {}); return; }   // Esc before the job existed
-  LOADING.job = job.id;
+  if (LOADING !== launch) { cancelLaunchJob(job.id); return; }   // Esc or a newer launch while the request was pending
+  launch.job = job.id;
   loader.progress(1, `Job ${job.id} queued for ${where}`);
+  let waitNote = "", waitAt = 0;
   for (let i = 0; i < 750; i++) {                         // five minutes maximum before showing a diagnosable timeout
-    if (!LOADING || LOADING.job !== job.id) return;            // cancelled
+    if (LOADING !== launch) return;                           // cancelled or superseded
     let j;
     try { j = await api("/api/jobs/" + job.id, undefined, "GET", 15000); }
-    catch (err) { LAST_LAUNCH.error = `Could not read launch job ${job.id}: ${err.message}`;
-      LOADING = null; loader.fail(LAST_LAUNCH.error); return; }
-    if (j.progress) loader.progress(j.progress.pct, j.progress.msg);
+    catch (err) { if (LOADING !== launch) return;
+      launch.error = `Could not read launch job ${job.id}: ${err.message}. Press Esc to cancel the pending launch`;
+      loader.fail(launch.error); return; }
+    if (LOADING !== launch) return;
+    if (j.state === "queued" && Date.now() - waitAt >= 4000) {  // still queued: is its worker even connected? (#1293)
+      waitAt = Date.now();
+      const ws = await api("/api/workers", undefined, "GET", 10000).catch(() => null);
+      if (LOADING !== launch) return;
+      if (ws) { const note = launchWaitNote(j, ws, node, Date.now());
+        if (note !== waitNote) loader.progress(1, note || `Job ${job.id} queued for ${where}`);
+        waitNote = launch.wait = note; }
+      else { waitNote = launch.wait = ""; }
+    }
+    if (waitNote && j.state === "queued") i = 0;               // explained wait (worker offline/busy): don't time out, Esc cancels
+    if (j.state !== "queued") waitNote = launch.wait = "";
+    if (j.state === "queued" && waitNote) loader.progress(1, waitNote);
+    else if (j.progress) loader.progress(j.progress.pct, j.progress.msg);
     else if (j.state === "running") loader.progress(3, "Worker picked up the launch");
-    if (j.state === "succeeded") { LOADING = null; loader.progress(100, "Running — opening the stream"); setTimeout(() => loader.hide(), 500);
-      const nsid = j.output.session_id;
+    if (j.state === "succeeded") {
+      const nsid = j.output?.session_id;
+      if (typeof nsid !== "string" || !nsid.trim()) {
+        launch.error = `Launch job ${job.id} returned no valid game session. Press Esc to cancel or capture this screen for investigation`;
+        return loader.fail(launch.error);
+      }
+      LOADING = null; loader.progress(100, "Running — opening the stream");
+      setTimeout(() => { if (LAST_LAUNCH === launch && !LOADING) loader.hide(); }, 500);
       if (boot.slot !== "" && boot.slot != null)                // start from the chosen save state once the emulator is up
         setTimeout(() => runJob({ tool: "session_op", input: { session_id: nsid, op: "load_state", args: { slot: +boot.slot } }, require_worker: nsid.split("-")[0] }).catch(() => {}), 12000);
       return show("Sessions", nsid); }
-    if (!/queued|running/.test(j.state)) { LAST_LAUNCH.error = `Launch ${j.state}: ${j.error || "unknown error"}`;
-      LOADING = null; return loader.fail(LAST_LAUNCH.error); }
+    if (!["queued", "running"].includes(j.state)) { launch.error = `Launch ${j.state}: ${j.error || "unknown error"}`;
+      return loader.fail(launch.error); }
     await new Promise(r => setTimeout(r, 400));
   }
-  LOADING = null;
-  LAST_LAUNCH.error = `Launch job ${job.id} has not finished after five minutes`;
-  loader.fail(`${LAST_LAUNCH.error}. Capture this screen to file its diagnostics.`);
+  launch.error = waitNote ? `Launch job ${job.id} is still queued after five minutes. ${waitNote}`
+    : `Launch job ${job.id} has not finished after five minutes`;
+  loader.fail(`${launch.error}. Press Esc to cancel the pending launch, or capture this screen to file its diagnostics.`);
 }
 async function details(id) {
   const p = await api("/api/profiles/" + id);
