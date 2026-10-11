@@ -153,6 +153,12 @@ def parse_sup(data: bytes) -> dict:
 EXE_LOAD = 0x8C010000
 EXE_SHA256 = "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1"
 REST_TABLE = 0x8C1949A0                      # 25 u32 slot pointers -> 51f (17 joints x xyz)
+SCRIPT_TABLE = 0x8C1C85F4                    # 25 u32 pointers -> per-slot costume script tables
+FILE_TABLE = 0x8C17F5F4                      # 250-B stride: 5 filename ids per slot/costume
+FILE_NAMES = 0x8C17E774                      # u32[] -> resource filename strings
+# render-script section bytes (verified against FUN_8c0dd826/FUN_8c0dd906 matrix consumers)
+SCRIPT_SECTIONS = {0xFE: "primary", 0xFC: "skip", 0xFB: "shadow", 0xFD: "secondary",
+                   0xFA: "accessory", 0xF9: "extra"}
 JOINT_PARENTS = [2, 0, -1, 7, 8, 4, 2, 6, 0, 13, 14, 10, 2, 12, 0, 1, 1]   # root = 2 (pelvis)
 JOINT_ROLES = ["chest", "head", "pelvis", "left_foot", "left_elbow", "left_hand", "left_thigh",
                "left_shin", "left_shoulder", "right_foot", "right_elbow", "right_hand",
@@ -261,6 +267,123 @@ def build_rig(exe: bytes, sup_files: dict[str, bytes], fighter_slot: int,
             "seam_sources": sorted(set(r["name"] for r in records)),
             "note": "world rest pose from native rest vectors + SUP seam bases; skin weights are "
                     "NOT in CHR/SUP (the render-script emit map is the writer lane's next slice)"}
+
+
+def parse_render_scripts(exe: bytes, exe_sha256: str = EXE_SHA256) -> list[dict]:
+    """Reader-side decode of the native render scripts (table 0x8c1c85f4).
+
+    Each of the 25 render slots points at a per-costume table of script entries; each entry
+    walks commands (mode-0: part-list pointer; modes 1..4: single argument) and each part
+    list is a byte stream: section markers FE/FD/FC/FB/FA/F9 then model ids until FF.
+    The 15 primary + 2 extra parts per costume ARE the model->joint emit map: primary[i]
+    follows joint i for the 15 matrices of FUN_8c0dd826 and the extras follow the two
+    breast matrices of FUN_8c0dd906 (geometrically verified: head-above-chest, exact
+    left/right mirror of the assembled world-space part centers; a scrambled assignment
+    is incoherent). Refuses any executable other than the pinned owned build."""
+    import hashlib
+
+    if exe_sha256 != "any" and hashlib.sha256(exe).hexdigest() != exe_sha256:
+        raise ValueError("executable is not the verified DOA2 LE JP 1ST_READ.BIN")
+
+    def word(addr: int) -> int:
+        if addr < EXE_LOAD or addr + 4 > EXE_LOAD + len(exe):
+            raise ValueError(f"script pointer {addr:#x} outside the executable")
+        return struct.unpack_from("<I", exe, addr - EXE_LOAD)[0]
+
+    def filename(idx: int) -> str:
+        start = word(FILE_NAMES + idx * 4) - EXE_LOAD
+        end = exe.find(b"\0", start, start + 256)
+        if end < 0:
+            raise ValueError("resource name has no terminator")
+        return exe[start:end].decode("ascii")
+
+    slots = []
+    for slot in range(25):
+        ptr = word(SCRIPT_TABLE + slot * 4)
+        record = {"slot": slot, "table_address": ptr, "costumes": []}
+        if not ptr:
+            slots.append(record)
+            continue
+        for costume in range(32):
+            entry = word(ptr + costume * 4)
+            if not entry:
+                break
+            sections = {name: [] for name in SCRIPT_SECTIONS.values()}
+            commands = []
+            cursor = entry
+            for _ in range(128):
+                command = word(cursor)
+                cursor += 4
+                if not command:
+                    break
+                mode = 0
+                if command & 0xFFFF0000 == 0xFFFF0000:
+                    mode = (command & 0xFFFF) // 0x1000
+                    if mode not in range(1, 5) or command & 0xFFF:
+                        raise ValueError(f"unknown script command {command:#x}")
+                    command = word(cursor)
+                    cursor += 4
+                commands.append({"mode": mode, "argument": command})
+                if mode == 0 and command:
+                    i = command - EXE_LOAD
+                    section = "primary"
+                    for _ in range(1024):
+                        value = exe[i]
+                        i += 1
+                        if value == 0xFF:
+                            break
+                        if value in SCRIPT_SECTIONS:
+                            section = SCRIPT_SECTIONS[value]
+                        else:
+                            sections[section].append(value)
+                    else:
+                        raise ValueError("part list has no terminator")
+            else:
+                raise ValueError("script has no terminator")
+            primary, extra = sections["primary"], sections["extra"]
+            if primary and len(primary) != 15:
+                raise ValueError(f"slot {slot} costume {costume}: {len(primary)} primary parts")
+            if extra and len(extra) != 2:
+                raise ValueError(f"slot {slot} costume {costume}: {len(extra)} extra parts")
+            ids = struct.unpack_from("<5H", exe, FILE_TABLE + costume * 250 + slot * 10 - EXE_LOAD)
+            files = dict(zip(("control", "textures", "geometry", "morph", "skin"),
+                             (filename(i) for i in ids)))
+            record["costumes"].append({
+                "costume": costume, "script_address": entry, "files": files,
+                "sections": sections, "commands": commands,
+                "emit_models": primary + extra})
+        slots.append(record)
+    return slots
+
+
+def emit_skin_map(exe: bytes, slot: int, costume: int, n_models: int,
+                  exe_sha256: str = EXE_SHA256) -> dict:
+    """Model -> joint emit assignment for one native slot/costume (the render-script fact
+    geometry cannot supply). Rigid: primary[i] and extra[i] bind joint 0..16 in order;
+    accessories bind the chest (their world centers sit within ~4 cm of the chest origin);
+    shadow parts are depth-projected blobs left unskinned; seam/bridge models are not
+    emitted by the render script at all. Returns {model_id: joint} plus diagnostics."""
+    records = parse_render_scripts(exe, exe_sha256)[slot]["costumes"]
+    if costume >= len(records) or not records[costume]["sections"]["primary"]:
+        raise ValueError(f"native slot {slot} costume {costume} has no verified body emit map")
+    rec = records[costume]
+    bind: dict[int, int] = {}
+    for joint, model in enumerate(rec["sections"]["primary"] + rec["sections"]["extra"]):
+        if model >= n_models:
+            raise ValueError(f"emit part {model} outside the costume's {n_models} models")
+        bind[model] = joint
+    for model in rec["sections"]["accessory"]:
+        if model >= n_models:
+            raise ValueError(f"accessory part {model} outside the costume's {n_models} models")
+        bind[model] = 0                                        # chest (geometric nearest-joint)
+    shadows = [m for m in rec["sections"]["shadow"] if m < n_models]
+    unskinned = sorted(set(shadows + rec["sections"]["skip"] + rec["sections"]["secondary"])
+                       - set(bind))
+    return {"slot": slot, "costume": costume, "script_address": rec["script_address"],
+            "files": rec["files"], "bind": bind, "shadow_models": sorted(set(shadows)),
+            "unskinned_models": unskinned,
+            "n_seam_models": n_models - len(bind) - len(set(unskinned)),
+            "source": "render scripts 0x8c1c85f4 (FUN_8c0dd826/FUN_8c0dd906 matrix consumers)"}
 
 
 def parse_mot_table(data: bytes) -> dict:
@@ -458,11 +581,14 @@ def roster(disc_files: dict | None = None) -> list[dict]:
 
 # --------------------------------------------------------------------------- export
 def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
-                  sup_data: bytes | None = None, rig: dict | None = None) -> dict:
+                  sup_data: bytes | None = None, rig: dict | None = None,
+                  emit: dict | None = None) -> dict:
     """Decode one costume's CHR + BIN into a UAP manifest, per-texture PNGs and a .gltf.
     Textures attached by native texture id. With `rig` (build_rig output) the glTF carries the
-    real 17-joint native skeleton (rest pose from the EXE rest table + SUP seam bases); skin
-    weights stay zeroed — the model->joint emit map is a render-script fact, not CHR data."""
+    real 17-joint native skeleton (rest pose from the EXE rest table + SUP seam bases); with
+    `emit` (emit_skin_map output) body parts carry rigid model->joint weights from the
+    render-script emit order (primary[i]->joint i, extras->breast joints 15/16, accessories
+    ->chest); shadow/projected parts stay unskinned (joint 0, weight 0)."""
     import json as _json
 
     import numpy as np
@@ -484,6 +610,9 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
         fn = f"{name}_tex{tex['index']:02d}_{w}x{h}.png"
         (out / fn).write_bytes(png_bytes(w, h, rgba))
         files.append(fn)
+    bind = emit["bind"] if emit else {}
+    shadow = set(emit.get("shadow_models", [])) if emit else set()
+    worlds = ([np.asarray(m, np.float32) for m in rig["world"]] if rig is not None else None)
     prims = []
     for model in meshes["models"]:
         groups: dict[int, dict] = {}
@@ -497,10 +626,21 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
             if not g["tris"]:
                 continue
             n = len(g["pos"])
+            joint = bind.get(model["id"], 0)
+            weighted = model["id"] in bind and model["id"] not in shadow
+            pos = np.array(g["pos"], np.float32)
+            nrm = np.array(g["nrm"], np.float32)
+            if weighted and worlds is not None:
+                # write_gltf expects world-rest-pose vertices (its inverse binds are
+                # translation-only): move bound parts into their joint's world frame
+                M = worlds[joint]
+                pos = pos @ M[:3, :3].T + M[:3, 3]
+                nrm = nrm @ M[:3, :3].T
             prims.append({"name": f"{name}_m{model['id']:02d}_t{tid}",
-                          "pos": np.array(g["pos"], np.float32), "nrm": np.array(g["nrm"], np.float32),
+                          "pos": pos, "nrm": nrm,
                           "uv": np.array(g["uv"], np.float32), "tris": np.array(g["tris"], np.int32),
-                          "J": np.zeros((n, 4), np.uint16), "W": np.tile([1.0, 0, 0, 0], (n, 1)).astype(np.float32),
+                          "J": np.full((n, 4), joint, np.uint16),
+                          "W": np.tile([1.0 if weighted else 0.0, 0, 0, 0], (n, 1)).astype(np.float32),
                           "tex": arrays.get(tid)})
     gltf = out / f"{name}.gltf"
     if rig is not None:
@@ -523,11 +663,19 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
                           "formats": sorted({(t["pixel"], t["format"]) for t in textures}),
                           "bin_bytes": sum(t["capacity"] for t in textures)},
         "skeleton_note": ("rig decoded: 17-joint native hierarchy from the EXE rest-vector table "
-                          "0x8c1949a0 + disc-wide SUP seam bases; skin weights are NOT in CHR/SUP "
-                          "(the model->joint emit map lives in the render scripts)")
+                          "0x8c1949a0 + disc-wide SUP seam bases; model->joint assignment from the "
+                          "render-script emit map 0x8c1c85f4 (rigid per part)")
         if rig is not None else
         "rig is NOT stored in CHR (word[4] is the texture count; bones live in the "
         "SUP/ACS supplement route) - weights intentionally absent from the glTF",
+        "skin_facts": ({"method": "render-script emit order", "table": "0x8c1c85f4",
+                        "slot": emit["slot"], "costume": emit["costume"],
+                        "script_address": emit["script_address"],
+                        "n_bound_models": len(emit["bind"]),
+                        "n_shadow_models": len(emit["shadow_models"]),
+                        "n_unskinned_models": len(emit["unskinned_models"]),
+                        "n_seam_models": emit["n_seam_models"]}
+                       if emit is not None else None),
         "skeleton_facts": ({"n_joints": 17, "parents": rig["parents"], "roles": rig["roles"],
                             "rest_address": rig["rest_address"], "fighter_slot": rig["fighter_slot"],
                             "n_seam_records": rig["n_seam_records"],
@@ -536,7 +684,7 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
         "confidence": {"entity": "verified", "geometry": "verified", "materials": "verified",
                        "textures": "verified",
                        "skeleton": "verified" if rig is not None else "missing",
-                       "skin_weights": "missing",
+                       "skin_weights": "verified" if emit is not None else "missing",
                        "animations": "missing", "source_identity": "verified"},
     }
     (out / "manifest.json").write_text(_json.dumps(manifest, indent=1))
@@ -557,6 +705,7 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
     files = []
     sups = None
     rig = None
+    emit = None
     slot = FIGHTER_SLOTS.get(key)
     if slot is not None:
         try:
@@ -566,12 +715,20 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
             rig = build_rig(exe, sups, slot)
         except ValueError:
             rig = None                                    # non-pinned executable: rig stays off
+        if rig is not None:
+            try:
+                emit = emit_skin_map(exe, slot, int(costume) % 32,
+                                     parse_chr(disc.read(f"DOA2/{stem}.CHR"))["n_objects"])
+            except ValueError:
+                emit = None                               # costume without a verified emit map
+        else:
+            exe = None
     for ext in ("BIN", "CHR", "SUP"):
         data = disc.read(f"DOA2/{stem}.{ext}")
         (out / f"{stem}.{ext}").write_bytes(data)
         files.append(f"{stem}.{ext}")
     r = export_assets(disc.read(f"DOA2/{stem}.CHR"), disc.read(f"DOA2/{stem}.BIN"), str(out),
-                      f"doa2_{key.lower()}_{costume}", rig=rig)
+                      f"doa2_{key.lower()}_{costume}", rig=rig, emit=emit)
     manifest = r["manifest"]
     manifest["provenance"] = [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f"DOA2/{stem}.{e}"))}
                               for e in ("BIN", "CHR", "SUP")]

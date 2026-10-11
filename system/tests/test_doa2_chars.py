@@ -290,7 +290,119 @@ class TestRig:
             doa2_chars.parse_rest_rig(b"\0" * 0x100000)
 
 
-class TestExportAssets:
+class TestRenderScripts:
+    def _synth_exe(_self=None):
+        """Miniature EXE with the render-script grammar at the pinned addresses: slot 5 -> a
+        costume table whose entry 0 walks {partlist, mode-2 cmd, 0}; the part list carries
+        15 primary + 3 accessory + 15 shadow + 2 extra parts (real Kasumi c0 shape)."""
+        exe = bytearray(0x1D0000)
+        base = doa2_chars.EXE_LOAD
+
+        def put(addr, data):
+            exe[addr - base:addr - base + len(data)] = data
+
+        # filename table: 3 names
+        put(0x8C100000, b"kasumi.bin\0")
+        put(0x8C100040, b"kas00.bin\0")
+        put(0x8C100080, b"kas00.chr\0")
+        put(0x8C1000C0, b"kas00.apv\0")
+        put(0x8C100100, b"kas00.sup\0")
+        for i, a in enumerate((0x8C100000, 0x8C100040, 0x8C100080, 0x8C1000C0, 0x8C100100)):
+            put(doa2_chars.FILE_NAMES + 4 * i, struct.pack("<I", a))
+        # file table row: 5 ids for slot 5 costume 0
+        put(doa2_chars.FILE_TABLE + 250 * 0 + 5 * 10, struct.pack("<5H", 0, 1, 2, 3, 4))
+        # part list: primary 0..14(=joint ids 0..14 mapping), accessory 3 ids, shadow 15, extra 2
+        parts = bytes([0xFE] + list(range(15)) + [0xFA, 20, 21, 22]
+                      + [0xFB] + list(range(30, 45)) + [0xF9, 15, 16, 0xFF])
+        put(0x8C100200, parts)
+        # script entry 0: partlist ptr, mode-2 command, terminator
+        put(0x8C100300, struct.pack("<III", 0x8C100200, 0xFFFF2000, 0))
+        # costume table + slot table
+        put(0x8C100400, struct.pack("<II", 0x8C100300, 0))
+        put(doa2_chars.SCRIPT_TABLE + 5 * 4, struct.pack("<I", 0x8C100400))
+        return bytes(exe)
+
+    def test_decode_kasumi_shaped_script(self):
+        slots = doa2_chars.parse_render_scripts(self._synth_exe(), exe_sha256="any")
+        assert len(slots) == 25 and slots[5]["table_address"] == 0x8C100400
+        c0 = slots[5]["costumes"][0]
+        assert len(slots[5]["costumes"]) == 1
+        assert c0["sections"]["primary"] == list(range(15))
+        assert c0["sections"]["extra"] == [15, 16]
+        assert c0["sections"]["accessory"] == [20, 21, 22]
+        assert c0["sections"]["shadow"] == list(range(30, 45))
+        assert c0["files"]["geometry"] == "kas00.chr" and c0["files"]["skin"] == "kas00.sup"
+        assert c0["emit_models"] == list(range(15)) + [15, 16]
+        assert {"mode": 2, "argument": 0} in c0["commands"]
+
+    def test_real_disc_anchor_bytes(self):
+        # exact bytes of the owned EXE: script-table head + the real Kasumi c0 script entry
+        exe = bytearray(0x1D0000)
+        base = doa2_chars.EXE_LOAD
+
+        def put(addr, data):
+            exe[addr - base:addr - base + len(data)] = data
+
+        put(doa2_chars.SCRIPT_TABLE, bytes.fromhex(
+            "0c981c8c1c961c8c2c8e1c8c5c911c8c98941c8c2c901c8c308b1c8cc88c1c8c"
+            "e0891c8cc0881c8c78931c8c00000000ec921c8ce0871c8cd4961c8c00000000"
+            "3c931c8ca4961c8c00000000e0891c8ce0891c8ce0891c8ce0891c8c34991c8c"))
+        # slot 5's costume table (real pointer 0x8c1c902c) -> entry 0
+        put(0x8C1C902C, struct.pack("<II", 0x8C1C8E6C, 0))
+        put(0x8C1C8E6C, struct.pack("<III", 0x8C1C8E44, 0xFFFF2000, 0))
+        put(0x8C1C8E44, bytes.fromhex(
+            "fe0004050d0e0f1115161d1e1f212526fa010203fb292a2b2c2d2e2f30313233"
+            "34353637f90c1cff"))
+        # FILE_TABLE row for slot 5 costume 0 (real row indexes 5 filename ids) and the
+        # names themselves; zeros elsewhere are intentionally invalid and unused
+        put(doa2_chars.FILE_TABLE + 5 * 10, struct.pack("<5H", 0, 1, 2, 3, 4))
+        for i, name in enumerate((b"kasumi.bin\0", b"kas00.bin\0", b"kas00.chr\0",
+                                   b"kas00.apv\0", b"kas00.sup\0")):
+            put(0x8C100000 + 0x40 * i, name)
+            put(doa2_chars.FILE_NAMES + 4 * i, struct.pack("<I", 0x8C100000 + 0x40 * i))
+        slots = doa2_chars.parse_render_scripts(bytes(exe), exe_sha256="any")
+        c0 = slots[5]["costumes"][0]
+        assert c0["sections"]["primary"] == [0, 4, 5, 13, 14, 15, 17, 21, 22, 29, 30, 31, 33, 37, 38]
+        assert c0["sections"]["extra"] == [12, 28]
+        assert c0["sections"]["shadow"] == list(range(41, 56))
+        assert c0["sections"]["accessory"] == [1, 2, 3]
+
+    def test_rejects_foreign_exe(self):
+        with pytest.raises(ValueError, match="verified DOA2"):
+            doa2_chars.parse_render_scripts(b"\0" * 64)
+
+    def test_rejects_wrong_primary_count(self):
+        exe = bytearray(self._synth_exe())
+        base = doa2_chars.EXE_LOAD
+        # drop one primary part byte (model 14) from the part list at 0x8C100200
+        body = bytes(exe[0x8C100200 - base:0x8C100200 - base + 40])
+        fixed = body[:14] + body[15:]                              # remove one primary id
+        exe[0x8C100200 - base:0x8C100200 - base + len(fixed)] = fixed
+        with pytest.raises(ValueError, match="primary parts"):
+            doa2_chars.parse_render_scripts(bytes(exe), exe_sha256="any")
+
+
+class TestEmitSkinMap:
+    def test_bind_and_diagnostics(self):
+        exe = TestRenderScripts._synth_exe(None)
+        m = doa2_chars.emit_skin_map(exe, 5, 0, 56, exe_sha256="any")
+        assert m["bind"] == {**{i: i for i in range(15)}, 15: 15, 16: 16, 20: 0, 21: 0, 22: 0}
+        assert m["shadow_models"] == list(range(30, 45))
+        assert m["n_seam_models"] == 56 - 20 - 15                  # bound + shadow + seams
+        assert m["source"].startswith("render scripts")
+
+    def test_rejects_emit_part_outside_model_count(self):
+        exe = TestRenderScripts._synth_exe(None)
+        with pytest.raises(ValueError, match="outside the costume"):
+            doa2_chars.emit_skin_map(exe, 5, 0, 10, exe_sha256="any")
+
+    def test_rejects_costume_without_body(self):
+        exe = bytearray(TestRenderScripts._synth_exe(None))
+        # blank slot 6 has no table: costume 0 unverified
+        with pytest.raises(ValueError, match="no verified body emit map"):
+            doa2_chars.emit_skin_map(bytes(exe), 6, 0, 56, exe_sha256="any")
+
+
     def test_gltf_png_manifest(self, tmp_path):
         r = doa2_chars.export_assets(synth_chr(), synth_bin(), str(tmp_path), "unit")
         names = [Path(f).name for f in r["files"]]
@@ -301,9 +413,61 @@ class TestExportAssets:
         assert m["texture_facts"]["n_textures"] == 2
         assert m["confidence"]["geometry"] == "verified"
         assert m["confidence"]["skeleton"] == "missing"               # no rig passed
+        assert m["confidence"]["skin_weights"] == "missing"           # no emit map passed
+        assert m["skin_facts"] is None
         gltf = json.load(open(tmp_path / "unit.gltf"))
         assert gltf["asset"]["version"] == "2.0"
         assert gltf["images"] and len(gltf["materials"]) >= 1
+
+    def test_gltf_with_rig_and_emit_weights(self, tmp_path):
+        """Rig + emit map: body parts get rigid per-joint weights; bound parts are baked into
+        their joint's world rest frame (write_gltf inverse binds are translation-only)."""
+        import numpy as np
+        parents = doa2_chars.JOINT_PARENTS
+        vec = [[0.0, 0.18, 0.0]] + [[0.0, 0.1, 0.0]] * 16
+        pos = {2: np.zeros(3)}
+        for _ in range(17):
+            for j, p in enumerate(parents):
+                if j not in pos and (p == -1 or p in pos):
+                    pos[j] = (np.zeros(3) if p == -1 else pos[p]) + np.asarray(vec[j])
+        world = []
+        for j in range(17):
+            M = np.eye(4)
+            M[:3, 3] = pos[j]
+            world.append(M.tolist())
+        rig = {"parents": parents, "roles": doa2_chars.JOINT_ROLES, "world": world,
+               "rest_address": "0x8c193fe0", "fighter_slot": 5, "n_seam_records": 2,
+               "seam_sources": ["DOA2/SYNTH.SUP"]}
+        emit = {"slot": 5, "costume": 0, "script_address": 0x8C1C8E6C,
+                "files": {}, "bind": {1: 1},                     # synth model 1 -> head
+                "shadow_models": [], "unskinned_models": [2], "n_seam_models": 0,
+                "source": "render scripts 0x8c1c85f4"}
+        r = doa2_chars.export_assets(synth_chr(), synth_bin(), str(tmp_path), "skinned", rig=rig, emit=emit)
+        m = r["manifest"]
+        assert m["confidence"]["skeleton"] == "verified"
+        assert m["confidence"]["skin_weights"] == "verified"
+        assert m["skin_facts"]["n_bound_models"] == 1 and m["skin_facts"]["slot"] == 5
+        gltf = json.load(open(tmp_path / "skinned.gltf"))
+        assert len(gltf["skins"]) == 1 and len(gltf["skins"][0]["joints"]) == 17
+        # model 1's vertices: JOINTS_0 == 1 (head) with weight 1; positions offset by head world pos
+        import base64
+        buf = base64.b64decode(gltf["buffers"][0]["uri"].split(",", 1)[1])
+        found = False
+        for mesh in gltf["meshes"]:
+            for prim in mesh["primitives"]:
+                ja = gltf["accessors"][prim["attributes"]["JOINTS_0"]]
+                wa = gltf["accessors"][prim["attributes"]["WEIGHTS_0"]]
+                pa = gltf["accessors"][prim["attributes"]["POSITION"]]
+                n = ja["count"]
+                j = np.frombuffer(buf, np.uint16, n * 4, gltf["bufferViews"][ja["bufferView"]]["byteOffset"]).reshape(n, 4)
+                w = np.frombuffer(buf, np.float32, n * 4, gltf["bufferViews"][wa["bufferView"]]["byteOffset"]).reshape(n, 4)
+                p = np.frombuffer(buf, np.float32, n * 3, gltf["bufferViews"][pa["bufferView"]]["byteOffset"]).reshape(n, 3)
+                if (w[:, 0] > 0).any():
+                    found = True
+                    assert set(j[w[:, 0] > 0, 0]) == {1}              # bound to the head joint
+                    # head world position = sum of chain offsets (pelvis 0 + chest .18 + head .1)
+                    assert np.allclose(p[:, 1].min() >= 0.28, True)   # baked above pelvis
+        assert found, "no weighted vertices in the glTF"
 
     def test_gltf_with_rig(self, tmp_path):
         # synthetic rig in the native 17-joint shape: parents from the EXE rest table, world

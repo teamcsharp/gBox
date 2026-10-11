@@ -122,12 +122,45 @@ skinned-shape glTF (17 named joints chest/head/pelvis/…/right_breast_16 + skin
 manifest confidence `skeleton: verified`, `skin_weights: missing` (the model→joint emit map is a
 render-script fact — geometry alone cannot derive it: rotation-invariant pivot test failed 0/56).
 
+## Slice 4 (commit pending): render-script emit map -> rigid skin weights
+
+The model→joint assignment (the fact geometry alone cannot supply — slice 3's rotation-invariant
+pivot test failed 0/56) is in the **native render scripts**: table `0x8c1c85f4` (25 slot
+pointers → per-slot costume tables → script entries). Reader decode in
+`gbox/doa2_chars.py::parse_render_scripts` (independent re-derivation; grammar agrees with the
+writer lane's `doa2_bindings`):
+
+- Script entry = command list: `{partlist_ptr}`, optional `0xFFFFn000` mode words (mode 1..4),
+  terminated by 0. Part list = byte stream with section markers `FE` primary / `FD` secondary /
+  `FC` skip / `FB` shadow / `FA` accessory / `F9` extra, then model ids, terminated `FF`.
+- Per costume the FILE_TABLE row (`0x8c17f5f4`, 250-B stride) gives the 5 resource filenames
+  (control/textures/geometry/morph/skin) — Kasumi c0: kasumi.bin/kas00.bin/**kas00.chr**/
+  kas00.apv/**kas00.sup**, confirming the CHR/SUP pairing from the executable side.
+- **15 primary + 2 extra parts per costume = the emit map**: primary[i] is drawn with joint
+  matrix i of FUN_8c0dd826 (0..14) and the extras with the two breast matrices of
+  FUN_8c0dd906 (15/16). Geometrically verified on KAS00: assembling part k at joint k's world
+  rest matrix yields a coherent T-pose (head y 0.596 > chest 0.361; exact L/R mirror ±0.653
+  hands, ±0.073 feet; pelvis between feet and chest) while a scrambled assignment is
+  incoherent. Verified part centers per joint: head 1936 v, hands 545/545, feet 185/195,
+  breasts 96/96.
+- Kasumi c0 sections: primary [0,4,5,13,14,15,17,21,22,29,30,31,33,37,38], extra [12,28]
+  (breast joints), shadow 41–55 (15 projected blobs — not joint-transformable, left
+  unskinned), accessory [1,2,3] (world centers within 1.1–3.9 cm of the chest origin → bound
+  to chest). The KAS00.SUP seam model_ids {10,11,18,19,23,26,27,34,35,40} appear in NO emit
+  list — they are the physics bridge meshes (21 models = 56 − 20 bound − 15 shadow).
+- `emit_skin_map()` returns the rigid model→joint bind + diagnostics; `export_assets` now
+  emits real per-part weights (joint k, weight 1; shadows weight 0) with bound parts baked
+  into their joint's world rest frame. Manifest `skin_weights: verified`. Software raster of
+  the result shows a fully assembled T-pose Kasumi (textured) — the slice-2/3 "gray slab" is
+  gone; the remaining untextured vertical piece is the hair seam mesh (correctly unbound:
+  hair is SUP-physics driven, not joint-driven).
+
+
 ## Not yet done (next slice, in order)
 
-1. Skin weights via the render-script emit map (`0x8c1c85f4` table; PR #8's
-   `doa2_bindings.render_part_mapping` route) — then weights can attach to the reader rig.
-2. MOT clip decode (1004 Kasumi clips) still open.
-3. Reader-route parity with the writer lane (PR #8): fold the corrected SUP layout into
+1. MOT clip decode (1004 Kasumi clips) still open — with the emit map + rig done, animation
+   is the last missing piece of a fully skinned animated reader export.
+2. Reader-route parity with the writer lane (PR #8): fold the corrected SUP layout into
    `doa2_morphs.inspect_sup` assumptions when that branch merges.
-4. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay
+3. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay
    acceptance on JAYBUILTFINALE remains the gate for #1140.
