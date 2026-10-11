@@ -535,3 +535,56 @@ def test_pack_blobs_reports_stranded_list():
     sizes[("v", 7)] = 2800                                 # two fewer vertices: 2852 + 2800 fits the 5652 hole
     at = jgr.pack_blobs(holes, sizes, tries=500)
     assert len(at) == 5
+
+
+def test_body_twins_finds_every_textured_body_on_owned_disc():
+    """Beat's PLAY holds four textured 20-node bodies; gameplay drew a stock one in the new atlas when only the
+    largest was rewritten (#1155 run 5). body_twins must name the other three and skip the untextured tree and
+    the 4-node sub-tree."""
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    play, _ = jgr.character_pair(data, jgr.swap_index("beat", data))
+    buf = jgr.play_bytes(data, play)
+    root = jgr.body_root(data, play)
+    assert root == 0x13CF4
+    assert sorted(jgr.body_twins(buf, data, play, root)) == [0x8DA4, 0x19BA8, 0x2039C]
+    for i in range(jgr.CHARACTER_COUNT):                     # every character: twins share the body tree
+        pl, _ = jgr.character_pair(data, i)
+        b = jgr.play_bytes(data, pl)
+        for nds in jgr.body_twins(b, data, pl, jgr.body_root(data, pl)).values():
+            assert [-1 if n["parent"] is None else n["parent"] for n in nds] == jgr.BODY_PARENTS
+
+
+def test_build_swap_writes_every_body_on_owned_disc(tmp_path, monkeypatch):
+    """Without Blender: a stand-in fit hands build_swap's encoder one triangle per node and returns its PLAY.
+    Every textured body must then decode to the same new triangles, drawing only the atlas texture."""
+    from PIL import Image
+    from gbox import ninja_swap
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    seen = {}
+
+    def fake_fit(model, roles, tgt, work, name, budgets, blender, encode, size, scale, progress):
+        tri = [((0, 1, 2), ((0, 0), (1, 0), (0, 1)))]
+        geo = {j: ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], [[0, 0, 1]] * 3, tri) for j in range(1, 20)}
+        seen["geo"] = geo
+        return {"data": encode(geo), "atlas": Image.new("RGB", (256, 256), (255, 0, 128)),
+                "rigged": str(tmp_path / "r.gltf"), "report": {"triangles": 19}}
+    monkeypatch.setattr(ninja_swap, "fit", fake_fit)
+    b = jgr.build_swap(gdi, tmp_path / "m.glb", {"hip": "x"}, tmp_path, "T", 4)
+    assert b["report"]["bodies"] == ["0x13cf4", "0x8da4", "0x2039c", "0x19ba8"]
+    old = _player_afs(gdi)
+    new = b["files"][jgr.PLAYER_AFS]
+    assert len(new) == len(old)
+    play, _ = jgr.character_pair(new, 4)
+    buf = jgr.play_bytes(new, play)
+    for rt in (0x13CF4, 0x8DA4, 0x2039C, 0x19BA8):
+        nj = jgr.play_model(buf, rt)
+        assert sorted(nj.tris) == [jgr.ATLAS_TEXTURE], hex(rt)
+        assert sum(len(t) for t in nj.tris.values()) == 19, hex(rt)
+    for rt in (0x1AD70, 0x97B4):                                 # not bodies: untouched
+        a = jgr.play_model(jgr.play_bytes(old, jgr.character_pair(old, 4)[0]), rt)
+        assert sum(map(len, a.tris.values())) == sum(map(len, jgr.play_model(buf, rt).tris.values()))

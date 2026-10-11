@@ -693,6 +693,28 @@ def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = No
     raise first
 
 
+def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
+    """{root: nodes} of every other textured body in the PLAY with the shared 20-node tree (BODY_PARENTS).
+    Beat's PLAY has four (0x13cf4 1796 tris, 0x8da4 1588, 0x19ba8 942, 0x2039c 838), all drawing PTEX texture 0;
+    rewriting only the largest (0x13cf4) left gameplay drawing a stock Beat mesh in the new atlas while the new body
+    showed only on TIME OVER (#1155 run 5), so the writer points every twin's nodes at the new models too.
+    Trees without triangles (0x1ad70) and sub-trees (0x97b4) are not bodies and keep their own data."""
+    from . import ninja
+    out = {}
+    for r in play_model_roots(data, play):
+        if r == root:
+            continue
+        try:
+            nds = ninja.tree_nodes(buf, r)
+            if [nd["parent"] if nd["parent"] is not None else -1 for nd in nds] != BODY_PARENTS:
+                continue
+            if sum(len(t) for t in play_model(buf, r).tris.values()):
+                out[r] = nds
+        except Exception:                                  # noqa: BLE001 - a non-tree record
+            continue
+    return out
+
+
 def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
     from .sa2_chars import _first_material
     mat, tiny, texfl, strip = _first_material(buf, nodes)
@@ -723,10 +745,11 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     if len(nodes) != len(BODY_PARENTS):
         raise ValueError(f"PLAY {index:02d} body has {len(nodes)} nodes, expected {len(BODY_PARENTS)}")
     mat, tiny_fl, tex_fl, strip_fl = _material(buf, nodes)
-    mine = {nd["off"] for nd in nodes}
+    twins = body_twins(buf, data, play, root)
+    mine = {nd["off"] for nd in nodes} | {nd["off"] for tw in twins.values() for nd in tw}
     others = []
     for r in play_model_roots(data, play):
-        if r == root:
+        if r == root or r in twins:
             continue
         try:
             others += [nd for nd in ninja.tree_nodes(buf, r) if nd["off"] not in mine]
@@ -744,14 +767,15 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                 if pl_:
                     rs.append((pl_, pl_ + ninja.chunk_list_len(buf, pl_, "p")))
         return rs
+    twin_nodes = [nd for tw in twins.values() for nd in tw]
     body = bytearray(buf)
-    for a_, b_ in model_ranges(nodes):
+    for a_, b_ in model_ranges(nodes + twin_nodes):
         body[a_:b_] = bytes(b_ - a_)
     shared = model_ranges(others)
     for a_, b_ in shared:                                  # still drawn by another tree: keep
         body[a_:b_] = buf[a_:b_]
     freed = np.zeros(len(buf), bool)
-    mine_r = sorted(model_ranges(nodes))
+    mine_r = sorted(model_ranges(nodes + twin_nodes))
     for a_, b_ in mine_r:
         freed[a_:b_] = True
     # the alignment padding between one node's lists (plist | 2 bytes | vlist | model) is dead too: without it
@@ -834,6 +858,10 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         for j, nd in enumerate(nodes):
             flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
             struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
+        for tw in twins.values():                          # the other bodies draw the same new models (#1155)
+            for j, nd in enumerate(tw):
+                flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
+                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
         if len(out) > room:
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)
@@ -851,7 +879,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
     afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
     rep = r["report"] | {"character": f"{index:02d}", "native_id": native_id_for_archive(data, index),
-                         "body_root": f"{root:#x}", "play_bytes": len(r["data"]), "play_room": room,
+                         "body_root": f"{root:#x}", "bodies": [f"{o:#x}" for o in [root, *twins]],
+                         "play_bytes": len(r["data"]), "play_room": room,
                          "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
@@ -910,7 +939,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                               "preview targets/jgr_preview.png"})
     who = f"JGR character {index:02d} '{ARCHIVE_NAMES[index]}' (native ID {USA_NATIVE_IDS[index]})"
     out = {"mod": name, "build": built,
-           "replaces": f"{who} (high-detail body; skeleton, motions and lower-detail bodies stay)"}
+           "replaces": f"{who} (every textured body: gameplay, menu and lower-detail; skeleton and motions stay)"}
     if not getattr(inp, "launch", False):
         return out | {"status": "built" if built else "ready"}
     l = C._launch(ctx, gid, name, C.HOST_OS)
