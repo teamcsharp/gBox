@@ -58,6 +58,9 @@ test('DOM readiness reveals the initialized page without a reload', async () => 
   assert.equal(w.dataset.ready, 'true'); assert.equal(x.nodes.get('playhost').hidden, true);
   assert.equal(x.timers.size, 0); assert.equal(x.navigations.length, 1);
   assert.equal(x.scripts.some(s => /reload|localStorage/.test(s)), false);
+  assert.match(x.scripts[0], /dataset\.embedded = "true"/);
+  assert.match(x.scripts[0], /colorScheme = "dark"/);
+  assert.match(x.scripts[0], /requestAnimationFrame/);
 });
 
 test('renderer failures show retry and cannot be hidden by an earlier ready response', async () => {

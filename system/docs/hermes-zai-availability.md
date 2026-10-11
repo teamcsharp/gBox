@@ -28,18 +28,40 @@ failure to a paid generic API endpoint.
 
 Credit/token windows gate inference. An exhausted five-hour or weekly window
 waits for the reported epoch-millisecond reset; both must be available.
+The no-agent watcher still rechecks the account endpoint every five minutes
+while waiting or during a long run. It sends no inference probe while a known
+quota is exhausted, and no additional probe while the work job is active.
+This can detect quota reset cards or plan changes before a previously reported
+deadline. Existing watcher state is migrated to the same cheap recheck cadence.
 Exhausted MCP/tool windows do not incorrectly disable inference. Missing reset
 metadata triggers a cheap five-minute quota recheck, instead of guessing another
 five-hour delay. Authentication probe failures back off fifteen minutes.
-An exhausted quota never triggers a completion. Success requires a real model
+Malformed or missing quota measurements remain unknown; nonfinite values and
+opaque fields are excluded. An exhausted quota never triggers a completion. Success requires a real model
 response before work is re-armed and the old route cooldown is cleared.
+Model-probe 429 failures retain numeric business codes and observed Retry-After
+metadata, and cool the route as well as the watcher. Quota codes 1308, 1310 and
+1316–1321 are distinguished from transient request throttling. Unobserved retry
+times are bounded scheduler backoff, never claimed account reset times. The
+credential resolver restores its prior endpoint environment after the check.
 
 The same work job is reused; queued/running occurrences are not duplicated.
 Pending Ghidra/character analysis pauses further inference until it settles.
-After each terminal session the watcher retains actual request ownership and
-records its measured tokens, caches, API/tool counts and elapsed time once on
-the primary report, respecting the session marker and prior reported usage.
+After each terminal session the watcher uses the shared finalized usage
+accountant. It confirms ownership from successful tool receipts and records
+measured primary and helper-model tokens, including caches, once on the report.
+Existing tool counts, turns and elapsed time are preserved. The ordinary
+feedback supervisor also runs this accountant even while another agent is busy
+or every provider is cooling down. See `hermes-job-reliability.md` for evidence
+and retry rules.
 Global Hermes parallelism remains two. Native work uses durable gBox job IDs.
+
+Unpinned request investigations also use the shared provider recovery queue in
+`hermes_recovery`. Intentional Z.AI benchmark/work pins retain their existing
+availability watcher instead of silently borrowing another service. A provider
+failure checkpoint preserves the actual session and request ownership; it does
+not invent a completion or token balance. See `hermes-throughput.md` for the
+bounded failover rules and status fields.
 
 ## Work and acceptance
 

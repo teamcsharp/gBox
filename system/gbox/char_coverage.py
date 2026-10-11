@@ -11,10 +11,12 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import time
 
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
 # read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
 WRITERS = [
+    ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
@@ -26,6 +28,10 @@ WRITERS = [
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
+    ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
+     "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
+    ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
+    ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
@@ -38,7 +44,7 @@ DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("R
              ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto III", "ps2"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
              ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
-             ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp")]
+             ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
 
 
 def _mod(name):
@@ -85,8 +91,12 @@ def coverage(ctx, api) -> dict:
     """The rip / reimport matrix over every game gBox has studied: games with a writer, games the collection came from,
     and the games docs/model_swaps.md discusses."""
     from . import characters as C
+    from . import game_capabilities as GC
+    from .favorite_capabilities import read_favorites
     chars = api(ctx, "GET", "/api/characters")
     ids: dict[str, dict] = {}
+    favorites, catalog = read_favorites(ctx, api)
+    ids.update((g['game_id'], g) for g in favorites)
 
     def game(gid):
         if gid not in ids:
@@ -123,7 +133,10 @@ def coverage(ctx, api) -> dict:
         missing = [r["name"] for r in roster if r["slug"] not in slugs]
         tools = sorted({m.get("extraction_tool") or "" for m in have} - {""})
         w = writer_for(g)
+        capabilities = GC.describe(g, chars, extractor=ex, roster=roster, writer=w)
         rows.append({"game_id": gid, "title": g.get("title"), "platform": g.get("platform"),
+                     "favorite": bool(g.get('favorite')), "library": g.get('library'),
+                     "capabilities": capabilities, "backlog": GC.backlog(capabilities),
                      "rip": {"extractor": ex or (tools[0] if tools else None), "roster": len(roster),
                              "in_collection": sorted(slugs), "usable": sorted(m["slug"] for m in have
                                                                              if (m.get("rig") or {}).get("roles")),
@@ -132,7 +145,11 @@ def coverage(ctx, api) -> dict:
                      {"writer": (w or {}).get("writer"), "routed": False, "slots": [],
                       "fallback": "overlay (characters op=overlay: drawn over the player in the desktop app)"}})
     rows.sort(key=lambda r: (not r["reimport"]["routed"], not r["rip"]["in_collection"], r["title"] or ""))
-    return {"games": rows, "summary": {"games": len(rows), "rip": sum(bool(r["rip"]["extractor"]) for r in rows),
+    return {"games": rows, "favorite_catalog": catalog,
+            "summary": {"games": len(rows), "favorites": len(favorites),
+                                       "complete_sources_verified": sum(r['capabilities']['complete_source_verified'] for r in rows),
+                                       "verified_fighter_costume_sources": sum(bool(r['capabilities']['verified_fighter_costume_source']) for r in rows),
+                                       "rip": sum(bool(r["rip"]["extractor"]) for r in rows),
                                        "reimport": sum(r["reimport"]["routed"] for r in rows),
                                        "both": sum(bool(r["rip"]["extractor"]) and r["reimport"]["routed"] for r in rows),
                                        "collection": len([m for m in chars if m.get("kind", "character") == "character"])}}
@@ -190,13 +207,107 @@ def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 
+def _post_message(ctx, api, rid: str, text: str, step: dict | None = None):
+    """Best-effort agent message on a request (task_step detail when given); never raises."""
+    try:
+        api(ctx, "POST", f"/api/requests/{rid}/messages",
+            json={"author": "agent", "text": text} | ({"task_step": step} if step else {}))
+    except Exception:                                              # noqa: BLE001 - evidence notes must not break the swap answer
+        pass
+
+
+def _run_job(ctx, api, tool: str, inp: dict, rid: str, limit: float = 180) -> dict:
+    """Dispatch one job linked to the request and wait for its terminal state (the job dict)."""
+    j = api(ctx, "POST", "/api/jobs", json={"tool": tool, "input": inp, "parent_request_id": rid})
+    t0 = time.time()
+    while j.get("state") in ("queued", "running") and time.time() - t0 < limit:
+        time.sleep(1.0)
+        j = api(ctx, "GET", f"/api/jobs/{j['id']}")
+    return j
+
+
+def _moment_slot(ctx, api, rid: str) -> int:
+    """A dedicated slot per preserved moment on this request (issue reports use 60+; pickwhips start at 70)."""
+    n = 0
+    try:
+        r = api(ctx, "GET", f"/api/requests/{rid}") or {}
+        n = sum(1 for m in r.get("messages", [])
+                if (m.get("task_step") or {}).get("action") == "preserve pickwhip moment")
+    except Exception:                                              # noqa: BLE001
+        pass
+    return 70 + n
+
+
+def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -> dict:
+    """#1146: keep the exact game moment a pickwhip landed on. Saves a checkpoint (session_op save_state, which
+    reports the slot the emulator ACTUALLY wrote and its frame thumbnail), exports it as a portable artifact
+    (state_transfer export keyed to that slot, so a stale newest-file can't be picked), attaches the live frame
+    to the request (/api/requests/{rid}/capture) and posts the evidence. Every failure degrades to a note on the
+    request; the gap report itself is never blocked."""
+    out: dict = {"session_id": sid}
+    slot = _moment_slot(ctx, api, rid)
+    t0 = time.time()                                               # export_saved rejects a checkpoint older than this
+    j = _run_job(ctx, api, "session_op", {"session_id": sid, "op": "save_state", "args": {"slot": slot}}, rid)
+    if j.get("state") != "succeeded":
+        why = j.get("error") or j.get("state") or "unknown"
+        _post_message(ctx, api, rid, f"Save state unavailable for this moment (slot {slot}): {why}.",
+                      {"action": "preserve pickwhip moment", "attempt": "1", "result": f"save_state: {why}",
+                       "status": "failed"})
+        return out | {"saved": False, "error": why}
+    res = (j.get("output") or {}).get("result") or {}
+    out |= {"saved": True, "slot": res.get("slot", slot), "frame": res.get("frame")}
+    line = (f"Checkpoint of this moment saved in slot {res.get('slot', slot)}"
+            + (f"; frame thumbnail artifact {res['frame']}" if res.get("frame") else "") + ".")
+    # export_saved uploads THAT checkpoint file (exact slot, not older than t0); op=export would save again first,
+    # overwriting the pickwhip moment with a later one and breaking the match with the captured frame
+    x = _run_job(ctx, api, "state_transfer",
+                 {"session_id": sid, "op": "export_saved", "slot": res.get("slot", slot), "not_before": t0}, rid)
+    if x.get("state") == "succeeded":
+        r = (x.get("output") or {}).get("result") or {}
+        out |= {"artifact": r.get("artifact"), "bytes": r.get("bytes")}
+        line += (f" Portable export {r.get('bytes')} bytes ({r.get('file')}), artifact {r.get('artifact')}:"
+                 " restore it with state_transfer op=import once the writer exists.")
+    else:
+        line += f" Portable export unavailable: {x.get('error') or x.get('state')}."
+    where = f" at ({inp.x:.0%} across, {inp.y:.0%} down)" if getattr(inp, "x", None) is not None else ""
+    try:
+        api(ctx, "POST", f"/api/requests/{rid}/capture", timeout=90,
+            json={"session_id": sid,
+                  "text": f"The frame the operator pickwhipped {meta['name']} onto{where} "
+                          f"({game['title']}): the before-image the swap gets tested against.",
+                  "task_step": {"action": "capture pickwhip frame", "attempt": "1",
+                                "result": "frame attached to the request", "status": "succeeded"}})
+        out["captured"] = True
+        _post_message(ctx, api, rid, line,
+                      {"action": "preserve pickwhip moment", "attempt": "1", "result": line, "status": "succeeded"})
+    except Exception as e:                                         # noqa: BLE001 - e.g. the session ended mid-flow
+        out["captured"] = False
+        _post_message(ctx, api, rid, line + f" Frame capture unavailable: {e}.",
+                      {"action": "preserve pickwhip moment", "attempt": "1", "result": line, "status": "partial"})
+    return out
+
+
 def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
-    """characters op=use on a game without a writer: the overlay now (when a session runs it), plus a gap report."""
+    """characters op=use on a game without a writer: the overlay now (when a session runs it), plus a gap report.
+    A running session also gets its moment preserved on the gap report (#1146): checkpoint, portable export, frame."""
     asked = f"characters op=use character={meta['slug']} game={game['title']} slot={inp.slot}"
     req = gap(ctx, api, meta, game, need, asked)
     res = {"status": "missing", "missing": need, "request": req, "fallback": "overlay"}
     sid = inp.session_id
     if sid:
+        running = False
+        try:                                                       # preserve only a live session; a dead one just reports
+            running = next((s.get("state") == "running" for s in api(ctx, "GET", "/api/sessions")
+                            if s.get("session_id") == sid), False)
+        except Exception:                                          # noqa: BLE001
+            pass
+        if running:
+            try:
+                res["preserved"] = preserve_moment(ctx, api, req["id"], sid, game, meta, inp)
+            except Exception as e:                                 # noqa: BLE001 - the gap report is the deliverable
+                _post_message(ctx, api, req["id"], f"Moment preservation failed: {e}.",
+                              {"action": "preserve pickwhip moment", "attempt": "1", "result": str(e)[:400],
+                               "status": "failed"})
         try:
             from . import overlay_swap
             ov = overlay_swap.start(ctx, api, meta, sid, inp.x, inp.y)

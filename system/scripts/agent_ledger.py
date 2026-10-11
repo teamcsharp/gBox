@@ -29,6 +29,23 @@ STATE = HOME / "ledger_state.json"
 INBOX = HOME / "inbox"
 SKIP_DIRS = {"gbox-data", "node_modules", "__pycache__", ".pytest_cache", ".git", "gbox.egg-info"}
 
+# This exact scheduled harness instruction is a review trigger, not a new
+# operator request. Keep other review prompts and actual review findings in the
+# ledger. Unknown/changed templates deliberately retain the ordinary behavior.
+_RECURRING_REVIEW = (
+    'gBox request review (recurring, set up at the operator\'s request: "examine the requests I give gBox and how it responds; make sure it has the means to accomplish them").',
+    '1. Run: cd //10.89.1.246/ehm_eckx/gBox/system && python scripts/chat_review.py --hours 0.25 --full  (only requests from the last 15 minutes).',
+    '2. If there are no new requests, stop quietly with a one-line note.',
+    '3. For each new request: judge whether gBox\'s agent understood the goal, used the right tools, verified, and answered. For every failure, find the root cause (missing tool/capability, bad tool output, prompt rule gap, crash, wrong model behaviour) and fix it in the canonical code on the share (never C:\\_tools\\gBox directly; write patch scripts with the Write tool; validate with ast.parse / jscheck.py). Prefer making the tool capable over adding prompt text. If a fix needs gbox.service restarted, only restart when no chat is busy and no agent/test session needs the Spark (check /api/chat busy flags and running sessions); Windows-worker code changes need the scratchpad sync.ps1 and a worker restart (kill the `-m gbox ... worker` python; the gBox.exe watchdog respawns it) only when the operator isn\'t mid-request.',
+    '4. If gBox gave the operator a wrong or empty result, and the fix is in place, you may re-run the operator\'s request on their live session ONLY when it\'s harmless and clearly what they asked for; otherwise just report.',
+    '5. Report briefly: requests seen, what failed, what you fixed.',
+)
+
+
+def recurring_review_prompt(prompt: str) -> bool:
+    """Recognize only the observed scheduled instruction, never its findings."""
+    return tuple(prompt.strip().splitlines()) == _RECURRING_REVIEW
+
 
 def token() -> str:
     if t := os.environ.get("GBOX_TOKEN"):
@@ -104,6 +121,12 @@ def hook_prompt(ev: dict):
     st = load_state()
     sess = st.setdefault(ev.get("session_id", "default"), {})
     prompt = (ev.get("prompt") or "").strip()
+    if recurring_review_prompt(prompt):
+        # Do not leave the previous operator request or its explicit claims as
+        # this automation turn's usage target. A real issue can still be claimed
+        # explicitly during the review and measured from this fresh window.
+        sess.update(chat_request=None, since=time.time(), claimed=[])
+        prompt = ""
     if prompt.startswith(("<task-notification>", "<system-reminder>")):   # harness events, not operator requests
         prompt = ""
     if prompt:
@@ -190,6 +213,10 @@ def hook_stop(ev: dict):
     since = sess.get("since")
     if not since or not ev.get("transcript_path"):
         return
+    targets = sess.get("claimed") or [sess.get("chat_request")]
+    targets = [t for t in targets if t]
+    if not targets:
+        return                                      # no request was worked on in this automation turn
     u = turn_usage(ev["transcript_path"], since)
     files = changed_files(since)                       # repo files only (scratch/tool files outside the repo don't count)
     for f in u["files"]:
@@ -197,8 +224,6 @@ def hook_stop(ev: dict):
             files.add(Path(f).resolve().relative_to(REPO.resolve()).as_posix())
         except (ValueError, OSError):
             pass
-    targets = sess.get("claimed") or [sess.get("chat_request")]
-    targets = [t for t in targets if t]
     for i, rid in enumerate(targets):                  # split the turn across the requests worked on
         share = 1 / len(targets)
         api(f"/api/requests/{rid}/metrics", {"tokens_in": int(u["tokens_in"] * share), "tokens_out": int(u["tokens_out"] * share),

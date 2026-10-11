@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "games": {
+    "1de2e7634f3161ff": {
+      "native_fighter_costumes": {
+        "result": "passed",
+        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
+        "source_identity": "Owned Dead or Alive 2 LE Japan native executable",
+        "artifact_sha256": [
+          "ff4c9454a74406542ed75a97456489feecf472d64177349e3afe125f2b386e48",
+          "5c5c585e0217121d0bb45613a57dec049a686b48266c20077847f3d37ecf5488",
+          "1f63b8d16d5c30cc6ea739492bd66e1799d690c32d44984d2ad63606bfeb2354",
+          "6df175448b7870f3a4c6f2b99f9dfa8ecf9cdd6b810ad9376058c74aefc87e18",
+          "c88555e3f369af1425afb24820f6b9a46dfbe069412dc448a62330d839e4fd6f",
+          "b7ee3e86248e3d3506425a7cc9be65d3d35ce136c07fa3eed55dcb197fef1c5f",
+          "5fbdea77b70399eab920549b62b1671aa62a73c53b96f2dcb844d96fc3c61169",
+          "2f3218a25c7b044a0641d66c0f9d1a8e25e71d69033f028b72d62b8218997e12",
+          "5195bc071a768bf0bda634254db0a4ae50413515ad383166a076b25aad34d413",
+          "de0ad6abdd013ed766cad3538f8f5bd8cbba809d1bfc8c0c968e8d1b8e2c970b",
+          "ae5a7e48c676a8a6566fff17ce0de98179acaffc24f0b40e3c2f21b89429082a",
+          "a8acc35cd09505168a3a9000e8048fb0f04b8e08a27010d9fb2a5ee71c5ddb14",
+          "f97a58a16fcef75ae0602a650fb5c36578526e6a7c4cc346cabd59a4216fe35d",
+          "9850ffa8f63d037c8717a25691e8f110a3b2926f887a441867fcf7201e3015d8",
+          "09e5fe758b390804ab532e9260b591383ff4430e6574ba85c64e3567f0eccf5f",
+          "48b24aa2ec75dbd8ba1197b71d892ed69c96bfd5da886fe3db2f3333f31f6602",
+          "2fd6740a2794444a2c9715e30ba2f36aba525bbb30efb19a66b9d6d4df5a5cd6",
+          "c333ad58e914d8a96ed234d0500f70f9c87c39efc42e272f90f542b143bfa857",
+          "e20de3328298a5a88a0095bb906baee898f5f28745054e41bc00ef083e0b34a2",
+          "6d388d630b49a7fc1f635c9f5af1516e3ea9fb98265b054c7d273263fcdd487a",
+          "29b6d66db69b76a1c6dd670ed8e0629ab089d98bbc0f1abd0ae257ea9329035d",
+          "a0c596b64d5bae36d742a5a2f202e71c34f81fe01fac0b934cf70ef74ab5e908",
+          "a2639152b23eeb944e1313d0f2d4231ff9a39a8479698ff67d3f11f49ae96444",
+          "4d06012ae74ff36467a5487cdc3a69c00574b5a7490c5aa1271ba6540e299583",
+          "517cb3806baed4a211e08a79e231a704aa93314a027e6f839fbe390b654b7dff",
+          "68066671d2d1d01b7704ad8855ba9ebc946ee262048e2d627fb84d3d72aa0dcc",
+          "ac4e033e367548afc3133e8fe02c72da4dd1e460906f0b9659cee982a0708bfd",
+          "8e79851f69a7f348b3c7dbd8dae12239339c30f4318f8f798c07d614bcc2883b",
+          "92b7df22ab21a91fc76c69f4b577b46bf482efc39114da1122c44341e39b0d7d",
+          "6c9bf94452e9631f8008d0e4232b8899c13648c311ddb81dfe2885c2802c2092",
+          "a712dc2af48094395994116119b6f259be3d0638b71c4c3ca48caa2bad938185",
+          "3344e30dec9157c7f2fb7326d1d7858e49e3e409ae2c4fcb81692e294a0a2ab4",
+          "dcfc98590d63cb02274150b0c61c71d4e69696f0faa238abcd8d8d07de2dd20e",
+          "e068a86537cfe613a7c6fc297355f52693021caf76036a72c80265697af4c2cd",
+          "8ce8d69e22e6152cba3c940330c9ca81197a683f2c4a436d7776b6f9912990c6",
+          "dd72304c8df3159e13de7204da728249a0dc1aff0665bc60cad75edf417f3476",
+          "7e035e90b067db67d32f5be47bd12a1eac4251e804bed74762162fbf56097350",
+          "98932ed240d3d108aa80e25934e21b980b151f464c998646c85619e0f9b44d91",
+          "5f46a366b8718dc1937c1d022a0ed81b007720397e9a5374721fa5ccde76598f",
+          "361221a5d7736fcb6c0f0a77e5d35c0f4717986e9e4cb66b191020df9e48027c",
+          "d72cc8384715f3d0aafdff6ccf7598fb9ae64681ac85d9522261e3fff74ebfd5",
+          "4f91ad133cab43bb67a995921fd26f9a4b0d9d69a269fa6c9db6a2c543224732",
+          "03d5258dcff5989f14bfcb4b14c917fdde18eebdbd54898037327a37e4c9f9a0",
+          "8caa1b4396a1e36fb4d810bacd31aedbf3013e642476c2d90227c7a4582942c5",
+          "cfaf04726f2db159090b6a6baeb44fabf2953e80a613d6a9e9e8e6becf7f0aa0",
+          "fbb944a037d48be16ea883855a0f7ce9741f41c301d0e9ed884b68f1c5496922",
+          "d7b4fd8c1a564dba98f323e6f1853aed98e298dc4dc2f5fbdebfe59cc04a48b3",
+          "5ec7ac872500d1212c5ca338b9976b2619207df07c525cb1de66674a453f278b",
+          "482e77cc04c4a12a07057978dbf3daef15a1c3d5f20bdd74c98d8b96683e56bb",
+          "4fbacbd59e24a09e2f735c515b44974d901a0d1458aca6c6b9bdc1b5d348e69b",
+          "dc245718b8bacc9edce1715ab22dff3c3495de086412ffa0150014f048fbac83",
+          "d367aa962ead718a8ee0f3ddf7d5dfb1046b179f852977b7ffae992b08756a0d",
+          "3d54262c622b7294760f456513a6ceac059330027b107ec61b7f1fefabf178f2",
+          "35872074a74fe03a3656e0ae07b9f57405996cfbcfd40546b3bd83c3d6f98d9f",
+          "5018e1496ff115cd28d100baa41cc6ede8c2698de7df08946480200aa358edde",
+          "ae136949279d62f94a4b5d3ce680383194b7b44bb1799f2ecbd4680b3ccabf13",
+          "79069eadba131106d6bf8f4c3ca5b8c80ce23c6cd12c875131a362b0658eba52",
+          "f0cfcc84fbb46984cae9ba893c80728e56d8a15fae96cb86d44cfa2d260f8d47",
+          "c254a788e9f4bef81633ff90557843d29af7541577c989e9a40b389dd47c6710",
+          "555ff3190ac08cb1f3c38fd9af4e253620721843bff7626cb04036a83049b1d3",
+          "95ef43697d178b771dd80307c01ce97390e7d31de86bec134b8c42845fa453c8",
+          "632d79f7e9f42addde3a60d99f854a47778f6227486e2c2297aff2bbf3153f9c",
+          "b7838db4b58b38a706f4470d94f93ba32f65ba63c8d5fa5bf906575753a269da",
+          "06f44e99ad0a178001723d9e46b7dabc335bb07d9e29f7ec718100b8c752c12d",
+          "d342a662edfa983f162bb33e301c584603337eb1d0b4e22f3586d51440d785a7",
+          "1cf38e921cff7a084625c50dd6ebd9b9dd1e71736589f0bbc40b2642a8edcdb3",
+          "6af46bbb6c055610bd477b83bb0aef8e54de8d38f4a9d070dd0fc51106651447",
+          "e927b3c45af1f93cbdb79c7a40c39a36e0b53e0f691c55eef8b89b1337f15e02",
+          "cbaa9e74f322045d7ca599834599a5789503e473c923b47bd62ed1f3bec7d05c",
+          "ea8a2e479d261d74277cc72b62f9a10def814bcaf72fdea538ff2e431e3b1aa8",
+          "2d1d08733dcf455b6c7db010623ffdfd4f57990101ac2e7399d7d629f127e4d2",
+          "55e387091d99046205959145eeae86897a86f081b3c6ffa4caa69fed842e2e21",
+          "3437840f5f06e9355210116dab27ca1529fecfeac34413fd720698f14b92734e",
+          "f6f7c6b5bac479f9576227f96a2a06cb37fb13fc312a7731c299ad462663ef44",
+          "fbc974e49088e90acfb7915b8c2fd80a57deeab16e7a9bf0128ecdec2da660b5",
+          "6f826e1f2d51eff31a55cbf058d327fd2510faf60b904ca64e6fafd2b4a2ec52",
+          "58144025182022b70f6593ea53ea73e30208392ba028202750a83295dfdef82a",
+          "fc32f822228649226bac4331729723dbf1c0dafa3aab47b2d9c0109a194856ec",
+          "89f099276ebfaa791080abc616745483cb0fbc5ab5700603740901ece52ecab1",
+          "c2fb88309fd6cef573984829820f69ba9ba671f1ce3793ba26840127b33b7263",
+          "c07bbfc843345f809169f672300eb3df6982fbeb5ee5a04f572eb2be14414ca9"
+        ],
+        "scope": "available_native_fighter_costumes_complete_neutral_source",
+        "expected": 79,
+        "verified": 79,
+        "inventory_authoritative": true,
+        "native_declared": 80,
+        "unavailable_native_sources": [
+          {
+            "stem": "BAY02",
+            "missing_sources": [
+              "bay02.chr"
+            ]
+          }
+        ],
+        "triangles": 653970,
+        "vertices": 475055,
+        "accessory_draws": 320,
+        "chains": 114,
+        "cloth_grids": 93,
+        "source_reports": [
+          "doa2-re/rig/native_bound_exports_verification.json",
+          "doa2-re/rig/native_bound_resource_inventory.json"
+        ],
+        "exclusions": [
+          "stages",
+          "effects",
+          "whole-game decomposition",
+          "universal donor gameplay verification"
+        ],
+        "runtime_verified": false
+      },
+      "native_reimport": {
+        "result": "passed",
+        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
+        "artifact_sha256": [
+          "75ca71e86207dc9f5fe09545cfc66592914478ca3f8bf038e4a868590f904580",
+          "c398d36b4db048e14d097fd1b9b908722949110b1e0e9e8c0b0871d96b2ba1a1",
+          "cd4fb44df092feb17b31e7b3680c9fc06bf2a5f5a9f26aa737b06b75b4562ff8",
+          "0026a87089b6efd11e563225e08f814c76673dd17bf980c8d101f80d3eeb9c31"
+        ],
+        "scope": "Amy -> Ein C1 and native GenFu -> Leifang C6 only",
+        "runtime_verified": true,
+        "cases": [
+          {
+            "donor": "sa2_amy_rose",
+            "target": "KTE01",
+            "verified_attack_damage": 30
+          },
+          {
+            "donor": "GEN00",
+            "target": "LEI05",
+            "verified_attack_damage": 28
+          }
+        ],
+        "exclusions": [
+          "Universal donor/slot gameplay",
+          "stages",
+          "effects",
+          "unavailable source costumes"
+        ],
+        "source_executable_unchanged": true
+      },
+      "mod_launch": {
+        "result": "passed",
+        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
+        "artifact_sha256": [
+          "75ca71e86207dc9f5fe09545cfc66592914478ca3f8bf038e4a868590f904580",
+          "c398d36b4db048e14d097fd1b9b908722949110b1e0e9e8c0b0871d96b2ba1a1",
+          "cd4fb44df092feb17b31e7b3680c9fc06bf2a5f5a9f26aa737b06b75b4562ff8",
+          "0026a87089b6efd11e563225e08f814c76673dd17bf980c8d101f80d3eeb9c31"
+        ],
+        "scope": "Amy -> Ein C1 and native GenFu -> Leifang C6 only",
+        "runtime_verified": true,
+        "cases": [
+          {
+            "donor": "sa2_amy_rose",
+            "target": "KTE01",
+            "verified_attack_damage": 30
+          },
+          {
+            "donor": "GEN00",
+            "target": "LEI05",
+            "verified_attack_damage": 28
+          }
+        ],
+        "exclusions": [
+          "Universal donor/slot gameplay",
+          "stages",
+          "effects",
+          "unavailable source costumes"
+        ],
+        "source_executable_unchanged": true
+      }
+    }
+  }
+}

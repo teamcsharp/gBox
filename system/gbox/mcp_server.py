@@ -25,6 +25,43 @@ def obj(props, req=()):
     return {"type": "object", "properties": props, "required": list(req)}
 
 
+METRIC_FIELDS = {
+    "model": S, "provider": S, "system": S, "tokens_in": I, "tokens_out": I,
+    # SDK token metadata also contains strings, nested objects and null costs.
+    "tokens_detail": {"type": "object", "additionalProperties": True},
+    "tools": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0},
+              "description": "Tool name -> exact nonnegative integer call count. Omit unknown counts; do not use estimates or descriptive strings."},
+    "files_changed": {"type": "array", "items": S}, "turns": I,
+    "duration_s": {"type": "number"},
+}
+
+
+def _request_metrics(arguments):
+    """Merge supported flat/nested forms, rejecting invalid counters before HTTP."""
+    nested = arguments.get("metrics", {})
+    if not isinstance(nested, dict):
+        raise ValueError("metrics must be an object")
+    for source, prefix in ((arguments, ""), (nested, "metrics.")):
+        if "tools" not in source:
+            continue
+        tools = source["tools"]
+        if not isinstance(tools, dict):
+            raise ValueError(f"{prefix}tools must be an object of exact nonnegative integer call counts")
+        for name, count in tools.items():
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise ValueError(f"{prefix}tools.{name} must be an exact nonnegative integer call count; "
+                                 "omit unavailable counts instead of estimating")
+    metrics = {k: v for k, v in arguments.items() if k not in ("request_id", "metrics")}
+    metrics.update(nested)
+    return metrics
+
+
+def _request_receipt(report, request_id):
+    """Keep the mutation acknowledgement without re-feeding request history."""
+    return {"ok": True, "request_id": request_id, "id": report.get("id", request_id),
+            "number": report.get("number"), "status": report.get("status")}
+
+
 CONVENIENCE = {
     "prepare_task_workspace": ("Create or reuse an isolated Git worktree for this inbox request. Edit the returned workdir, preserving earlier patches. Never edit the shared runtime source concurrently.",
                                obj({'request_id': S}, ['request_id'])),
@@ -40,7 +77,7 @@ CONVENIENCE = {
                     obj({"request_id": S}, ["request_id"])),
     "read_request_artifact": ("Read an image or text attachment belonging to an inbox request. Images are returned as image content.",
                               obj({"request_id": S, "sha256": S}, ["request_id", "sha256"])),
-    "reply_request": ("Post an agent reply to an inbox request. Use one tool call at a time. State the tested outcome and remaining limitations. text, body, and message are accepted aliases.",
+    "reply_request": ("Post an agent reply to an inbox request. Use one tool call at a time. State the tested outcome and remaining limitations. text, body, and message are accepted aliases. Returns a compact receipt with the posted message; use get_request for full history.",
                       obj({"request_id": S, "text": S, "body": S, "message": S, "task_step": {"type": "object"}}, ["request_id"])),
     "capture_request_screenshot": ("Capture a real frame from a live game session and attach it to an inbox report, with action, attempt, result, and status. Do this after meaningful visual milestones and verification.",
                                    obj({"request_id": S, "session_id": S, "text": S, "task_step": {"type": "object"}},
@@ -49,11 +86,9 @@ CONVENIENCE = {
                           obj({"request_id": S, "status": {"type": "string", "enum": ["open", "in_progress", "done", "blocked"]},
                                "note": S, "solved_by": obj({"service": S, "model": S, "system": S,
                                    "verified_by": S, "verification": S, "run_id": S}, ["service", "verification"])}, ["request_id", "status"])),
-    "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use one tool call at a time. Fields may be flat or under metrics. Use zero with token_count_unavailable when exact counts are unavailable.",
-                               obj({"request_id": S, "model": S, "provider": S, "system": S, "tokens_in": I, "tokens_out": I,
-                                    "tokens_detail": {"type": "object"}, "tools": {"type": "object"},
-                                    "files_changed": {"type": "array", "items": S}, "turns": I,
-                                    "metrics": {"type": "object"}}, ["request_id"])),
+    "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use one tool call at a time. Fields may be flat or under metrics. tools values must be exact nonnegative integer call counts; omit unavailable counts. Use zero token counts with tokens_detail.token_count_unavailable when exact tokens are unavailable. Returns a compact receipt with stored metrics; use get_request for full history.",
+                               obj({"request_id": S, **METRIC_FIELDS,
+                                    "metrics": obj(METRIC_FIELDS)}, ["request_id"])),
     "list_games": ("Search the game library (title words). Returns game_id, title, platform, system, core.",
                    obj({"query": S, "platform": S, "limit": I}, ["query"])),
     "list_workers": ("List all gBox computers, online state, idle time, current agent jobs, and available tools.", obj({})),
@@ -217,8 +252,11 @@ def build(base_url: str, token: str) -> Server:
             message = a.get("text") or a.get("body") or a.get("message")
             if not message:
                 raise ValueError("reply_request requires text, body, or message")
-            return await post(f"/api/requests/{a['request_id']}/messages",
-                              {"author": "agent", "text": message} | ({"task_step": a["task_step"]} if a.get("task_step") else {}))
+            report = await post(f"/api/requests/{a['request_id']}/messages",
+                                {"author": "agent", "text": message} | ({"task_step": a["task_step"]} if a.get("task_step") else {}))
+            messages = report.get("messages") or []
+            return _request_receipt(report, a["request_id"]) | {
+                "message_count": len(messages), "posted_message": messages[-1] if messages else None}
         if name == "capture_request_screenshot":
             return await post(f"/api/requests/{a['request_id']}/capture",
                               {"session_id": a["session_id"], "text": a["text"], "task_step": a.get("task_step", {})})
@@ -227,11 +265,9 @@ def build(base_url: str, token: str) -> Server:
                               {"status": a["status"], "note": a.get("note", "")} |
                               ({"solved_by": a["solved_by"]} if a.get("solved_by") else {}))
         if name == "record_request_metrics":
-            metrics = {k: v for k, v in a.items() if k not in ("request_id", "metrics")}
-            if isinstance(a.get("metrics"), dict):
-                metrics.update(a["metrics"])
-            return await post(f"/api/requests/{a['request_id']}/metrics",
-                              metrics)
+            metrics = _request_metrics(a)
+            report = await post(f"/api/requests/{a['request_id']}/metrics", metrics)
+            return _request_receipt(report, a["request_id"]) | {"metrics": report.get("metrics")}
         if name == "list_games":
             games = await get("/api/catalog/best", q=a["query"], limit=a.get("limit", 20))
             if a.get("platform"):

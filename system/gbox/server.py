@@ -7,6 +7,7 @@ import hmac
 import httpx
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -58,6 +59,25 @@ class Evaluation(BaseModel):
     passed: bool
     metrics: dict[str, float] = {}
     notes: str = ""
+
+
+def _checkpoint_slot(result: dict, adapter: str) -> int:
+    """Use native checkpoint evidence, never the slot requested before a dropped command."""
+    if result.get("verified") is False:
+        raise RuntimeError("the emulator did not verify the captured checkpoint")
+    slot = result.get("slot")
+    path = str(result.get("path") or result.get("file") or "")
+    match = re.search(r"\.state(-?\d+)?$", path)
+    native = (int(match[1] or 0) if match and adapter == "retroarch" else
+              (1 if adapter == "dolphin" and path.endswith(".s01") else None))
+    if adapter == "dolphin" and slot is not None and slot != 1:
+        raise RuntimeError("Dolphin's captured checkpoint does not identify native slot 1")
+    if slot is not None and (type(slot) is not int or (native is not None and native != slot)):
+        raise RuntimeError("the captured checkpoint slot disagrees with its native filename")
+    actual = slot if slot is not None else native
+    if actual is None:
+        raise RuntimeError("the captured checkpoint did not identify its actual native slot")
+    return actual
 
 
 def create_app(config: Config) -> FastAPI:
@@ -259,9 +279,17 @@ def create_app(config: Config) -> FastAPI:
 
     def _session_png(sid: str) -> bytes:
         """Current picture of a session: the live stream frame when fresh, else ask its worker for one (native windows)."""
+        from .session_images import SessionImageError, as_png
+
+        def normalize(frame: bytes) -> bytes:
+            try:
+                return as_png(frame)
+            except SessionImageError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
         lv = live.get(sid) or {}
         if lv.get("frame") and time.time() - lv.get("ts", 0) < 5:
-            return lv["frame"]
+            return normalize(lv["frame"])
         j = submit(JobRequest(tool="get_frame", input={"session_id": sid}), "mods")
         t0 = time.time()
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 45:
@@ -271,7 +299,7 @@ def create_app(config: Config) -> FastAPI:
         o = jj["output"]
         if (o.get("mean_luma") or 0) < 6:
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
-        return store.read_artifact(o["sha256"]) or b""
+        return normalize(store.read_artifact(o["sha256"]) or b"")
 
     def _mod_picture(m: dict) -> dict:
         """Discard missing or tiny artifacts left by the old JSON-body capture path."""
@@ -497,10 +525,23 @@ def create_app(config: Config) -> FastAPI:
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         old_w, tw = sid.split("-")[0], _swap_target(sid.split("-")[0], to)
         running, art, notes, old_luma = sess.get("state") == "running", None, [], None
+        launch_mod = mod
         if mod:
             say(2, "Preparing replacement files; your current game keeps running")
-            _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
-                     progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+            staged = _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
+                              progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+            if isinstance(staged, dict) and (staged.get('ready') is False or
+                    (staged.get('source_mod') and staged['source_mod'] != mod)):
+                raise HTTPException(409, 'Prepared replacement does not identify the requested mod')
+            if isinstance(staged, dict) and staged.get('mod'):
+                launch_mod = staged['mod']                 # <mod>~<build>: the running game holds the old copy open (#1270)
+                from . import filemods
+                try:
+                    filemods.mod_dir(config, game['game_id'], launch_mod)
+                except ValueError as error:
+                    raise HTTPException(409, 'Prepared replacement returned an invalid cache folder') from error
+                if launch_mod != mod and not launch_mod.startswith(mod + filemods.STAGED_SEP):
+                    raise HTTPException(409, 'Prepared replacement returned another mod folder')
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
@@ -513,7 +554,7 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
         try:
-            new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=tw["id"], wait=900)
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900)
         except HTTPException as e:
             # a modded launch closes the same console's game on that PC first: if the new one didn't start, bring the old back
             alive = True
@@ -525,7 +566,8 @@ def create_app(config: Config) -> FastAPI:
             if running and not alive:
                 say(60, "That didn't start: putting your game back")
                 try:
-                    back = _run_job("launch_game", {"game": game, "mod": sess.get("mod") or ""}, actor, worker=old_w, wait=900)
+                    back = _run_job("launch_game", {"game": game,
+                        "mod": sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or ""}, actor, worker=old_w, wait=900)
                     if art:
                         time.sleep(6)
                         _run_job("state_transfer", {"session_id": back["session_id"], "op": "import", "artifact": art}, actor,
@@ -537,6 +579,11 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, f"the mod '{mod}' isn't built for {tw['name']} yet (rebuild it), then try again")
             raise
         nsid = new["session_id"]
+        if launch_mod != mod and store.get("session", nsid):
+            with store.lock:
+                store.put("session", nsid, store.get("session", nsid) | {
+                    "mod": mod, "collection_mod": mod, "staged_mod": launch_mod, "launch_mod": launch_mod})
+            notes.append(f"The previous {mod} copy was preserved; the new build was staged as {launch_mod}.")
         loaded = False
         if art:
             say(70, "Loading your moment into it")
@@ -552,7 +599,8 @@ def create_app(config: Config) -> FastAPI:
                 if old_w == tw['id']:
                     say(75, 'State restore failed; recovering the original game and checkpoint')
                     try:
-                        back = _run_job('launch_game', {'game': game, 'mod': sess.get('mod') or ''}, actor, worker=old_w, wait=900)
+                        back = _run_job('launch_game', {'game': game,
+                            'mod': sess.get('launch_mod') or sess.get('staged_mod') or sess.get('mod') or ''}, actor, worker=old_w, wait=900)
                         time.sleep(6)
                         _run_job('state_transfer', {'session_id': back['session_id'], 'op': 'import', 'artifact': art}, actor, worker=old_w, wait=90)
                         store.put('session', sid, (store.get('session', sid) or {}) | {'state': 'ended', 'replaced_by': back['session_id']})
@@ -581,7 +629,8 @@ def create_app(config: Config) -> FastAPI:
             if luma and all(v is not None and v <= 3 for v in luma):
                 notes.append("The restored frame is dark. Your state was preserved; use Inspect or return to Play to check it.")
         store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid, "state_loaded": loaded})
-        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod, "state_loaded": loaded, "notes": notes}
+        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod,
+                "launch_mod": launch_mod, "state_loaded": loaded, "notes": notes}
 
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
@@ -1799,10 +1848,10 @@ def create_app(config: Config) -> FastAPI:
 
     def _mod_root(gid: str, name: str) -> Path:
         from . import filemods
-        d = filemods.mod_dir(config, gid, name).resolve()
-        if not str(d).startswith(str((Path(config.cache) / "mods").resolve())) or "/" in gid + name or "\\" in gid + name:
-            raise HTTPException(400, "bad mod name")
-        return d
+        try:
+            return filemods.mod_dir(config, gid, name).resolve()
+        except ValueError as error:
+            raise HTTPException(400, "bad mod name") from error
 
     @app.get("/api/modfiles/{gid}/{name}")
     def modfiles(gid: str, name: str, actor=Depends(auth)):
@@ -1816,8 +1865,12 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/modfiles/{gid}/{name}/file/{path:path}")
     def modfile_get(gid: str, name: str, path: str, actor=Depends(auth)):
         d = _mod_root(gid, name)
-        f = (d / path).resolve()
-        if not str(f).startswith(str(d)) or not f.is_file():
+        from . import filemods
+        try:
+            f = filemods._file_path(d, path)
+        except ValueError as error:
+            raise HTTPException(404, "no such file") from error
+        if not f.is_file():
             raise HTTPException(404, "no such file")
         return FileResponse(f)
 
@@ -1825,11 +1878,13 @@ def create_app(config: Config) -> FastAPI:
     async def modfile_put(gid: str, name: str, path: str, request: Request, actor=Depends(auth)):
         """A machine that built a mod hands it to the collection (streamed to disk; .part until complete)."""
         d = _mod_root(gid, name)
-        f = (d / path).resolve()
-        if not str(f).startswith(str(d)):
-            raise HTTPException(400, "bad path")
+        from . import filemods
+        try:
+            f = filemods._file_path(d, path)
+            tmp = filemods._file_path(d, path + ".part")
+        except ValueError as error:
+            raise HTTPException(400, "bad path") from error
         f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_name(f.name + ".part")
         with open(tmp, "wb") as fh:
             async for chunk in request.stream():
                 fh.write(chunk)
@@ -2421,24 +2476,49 @@ def create_app(config: Config) -> FastAPI:
         kept_mods: list[str] = []          # mod ids the operator keeps on for this game
 
     def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
-        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here."""
-        try:
-            j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
-                                  require_worker=sid.split("-")[0]), "issue")
-            t0 = time.time()
-            while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
-                time.sleep(0.4)
-            if jj["state"] == "succeeded":
-                res = (jj.get("output") or {}).get("result") or {}
-                if res.get("log"):
-                    return res["log"], res.get("path") or ""
-                why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
-            else:
-                why = f"log_tail: {jj.get('error') or jj['state']}"
-                if jj["state"] in ("queued", "running"):
-                    job_cancel(j.id, actor="issue")
-        except Exception as e:                        # noqa: BLE001
-            why = f"log_tail: {e}"
+        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here.
+
+        An offline worker gets no log_tail job at all, and a job the worker did not pick up within 15 s is
+        retired with an honest reason. Earlier, every capture-icon click while the worker was offline queued
+        a job, waited 15 s, and recorded it as "failed: cancelled by the operator", so repeated reports stacked
+        those failures (#1130)."""
+        wid = _wid(sid.split("-")[0])
+        w = store.get("worker", wid) or {}
+        age = time.time() - float(w.get("last_seen") or 0)
+        if not w or age >= WORKER_TTL:
+            why = (f"log_tail skipped: worker {w.get('name') or wid} is offline"
+                   + (f" (last seen {int(age)} s ago)" if w.get("last_seen") else "") + "; no log job queued")
+        else:
+            try:
+                j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
+                                      require_worker=wid), "issue")
+                with store.lock:
+                    cur = store.get("job", j.id)
+                    store.put("job", j.id, cur | {"issue_internal": True})
+                t0 = time.time()
+                while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
+                    time.sleep(0.4)
+                if jj["state"] == "succeeded":
+                    res = (jj.get("output") or {}).get("result") or {}
+                    if res.get("log"):
+                        return res["log"], res.get("path") or ""
+                    why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
+                elif jj["state"] in ("queued", "running"):
+                    why = f"log_tail: worker {w.get('name') or wid} did not answer within 15 s"
+                    with store.lock:
+                        cur = store.get("job", j.id) or jj
+                        if cur["state"] == JobState.QUEUED:
+                            cur.update(state=JobState.FAILED, finished=time.time(), issue_internal=True,
+                                       error="issue report stopped waiting for the log (worker busy); not an operator cancel")
+                        elif cur["state"] == JobState.RUNNING:
+                            # A running read can finish normally. Cancelling it would
+                            # recreate the misleading operator-cancel failure.
+                            cur.update(issue_internal=True, issue_log_wait_expired=True)
+                        store.put("job", j.id, cur)
+                else:
+                    why = f"log_tail: {jj.get('error') or jj['state']}"
+            except Exception as e:                        # noqa: BLE001
+                why = f"log_tail: {e}"
         f = Path(str((s_.get("detail") or {}).get("log") or ""))
         try:
             if f.name and f.is_file():
@@ -2464,12 +2544,48 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
         s_ = store.get("session", r.session_id) or {} if r.session_id else {}
+        capture_key = json.dumps({k: getattr(r, k) for k in (
+            "what", "detail", "note", "title", "element", "mods_on", "kept_mods")}, sort_keys=True)
+        if r.save_state and r.session_id:
+            # Repeated capture-icon clicks while a save-state capture is already in flight
+            # stacked duplicate reports and jobs (the "failing endlessly" pileup). Reuse the
+            # newest in-flight report for this session instead of creating another one.
+            pending = None
+            for old in store.all("request"):
+                ctx = old.get("context") or {}
+                if (ctx.get("session_id") != r.session_id or not ctx.get("state_job_id")
+                        or ctx.get("issue_capture_key") != capture_key or old.get("status") == "done"):
+                    continue
+                job = store.get("job", ctx["state_job_id"])
+                if job and job.get("state") in ("queued", "running"):
+                    if pending is None or old.get("created", 0) > pending.get("created", 0):
+                        pending = old
+            if pending:
+                rid, now = pending["id"], time.time()
+                # Reuse the pending save job, while preserving every subsequent capture's
+                # screenshot, diagnostics and context. A distinct issue gets a new report.
+                attachments = _attach(rid, r.attachments)
+                if r.image_b64:
+                    attachments += _attach(rid, [{"name": "repeat-capture.png", "type": "image/png",
+                                                   "b64": r.image_b64}])
+                snapshot = r.model_dump(exclude={"image_b64", "attachments"}) | {"captured_at": now, "session": s_}
+                ref = store.put_artifact(json.dumps(snapshot, ensure_ascii=False, indent=2).encode(),
+                                         "repeat-capture-context.json", "application/json", {"request": rid})
+                attachments.append({"sha256": ref.sha256, "name": ref.name, "type": "application/json", "size": ref.size})
+                with store.lock:
+                    latest = store.get("request", rid) or pending
+                    latest.setdefault("messages", []).append({"author": "operator",
+                        "text": f"Repeated capture: {r.what}" + (f"\n{r.detail}" if r.detail else "")
+                                + (f"\n{r.note}" if r.note else ""), "ts": now, "attachments": attachments})
+                    store.put("request", rid, latest)
+                    store.audit(actor, "request.capture_reused", rid, {"state_job_id": latest["context"]["state_job_id"]})
+                    return _clean(latest)
         game = s_.get("title") or s_.get("game_title") or r.context.get("game") or "no game running"
         since = (s_.get("started") or s_.get("created") or time.time() - 3600) - 5
         jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id
                        or (s_.get("game_id") and (j.get("input") or {}).get("game_id") == s_.get("game_id") and j.get("created", 0) >= since)),
-                      key=lambda j: j.get("created", 0))[-20:] if r.session_id else []
-        jobs = [j for j in jobs if j.get("tool") != "get_frame"]          # report/thumbnail pictures, not operator actions
+                      key=lambda j: j.get("created", 0)) if r.session_id else []
+        jobs = [j for j in jobs if j.get("tool") != "get_frame" and not j.get("issue_internal")][-20:]
         lines = [f"## What the operator tried\n{r.what}" + (f"\n\n{r.note}" if r.note else ""),
                  f"## Game\n{game} (game_id {s_.get('game_id') or r.context.get('game_id') or '?'}, {s_.get('platform') or s_.get('system') or '?'}, "
                  f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
@@ -2510,7 +2626,8 @@ def create_app(config: Config) -> FastAPI:
                                       kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
                                       context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id") or r.context.get("game_id"),
                                                            "game": game,
-                                                           "save_state_requested": r.save_state}), actor)
+                                                           "save_state_requested": r.save_state,
+                                                           "issue_capture_key": capture_key}), actor)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
@@ -2529,7 +2646,7 @@ def create_app(config: Config) -> FastAPI:
             store.put("request", rid, report)
 
             # Supported cores can also export a portable artifact for Hermes or a client on another PC.
-            # Wait for the local checkpoint first; the export tool takes its own adjacent checkpoint.
+            # Upload the existing checkpoint; saving again would capture a later game moment.
             if (s_.get("adapter") or "").lower() in ("retroarch", "dolphin"):
                 def export_issue_state():
                     deadline = time.time() + 120
@@ -2541,13 +2658,19 @@ def create_app(config: Config) -> FastAPI:
                     if current.get("state") != "succeeded":
                         return
                     try:
-                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id, "op": "export", "slot": slot},
+                        # the checkpoint job reports the slot the emulator ACTUALLY wrote; export that one
+                        saved_slot = _checkpoint_slot((current.get("output") or {}).get("result") or {},
+                                                      (s_.get("adapter") or "").lower())
+                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id,
+                                                     "op": "export_saved", "slot": saved_slot,
+                                                     "not_before": current.get("started") or current.get("created") or 0},
                                                      parent_request_id=rid), actor)
                         with store.lock:
                             latest = store.get("request", rid) or {}
                             if not latest:
                                 return
-                            latest.setdefault("context", {})["state_export_job_id"] = exported.id
+                            latest.setdefault("context", {}).update(state_export_job_id=exported.id,
+                                state_slot=saved_slot, state_requested_slot=slot)
                             latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable save-state export queued (job {exported.id}).",
                                 "ts": time.time(), "attachments": [], "task_step": {"action": "export reported game moment",
                                 "attempt": "1", "result": exported.state, "status": exported.state}})
@@ -2680,11 +2803,15 @@ def create_app(config: Config) -> FastAPI:
                         add("This emulator cannot export a portable state; the local checkpoint remains available.",
                             "export game moment", "unsupported emulator", "unavailable")
                         return
+                    # the checkpoint job reports the slot the emulator ACTUALLY wrote; export exactly that file
+                    saved_slot = _checkpoint_slot((saved_job.get("output") or {}).get("result") or {},
+                                                  (s_.get("adapter") or "").lower())
                     exported = submit(JobRequest(tool="state_transfer", input={"session_id": f.session_id,
-                        "op": "export_saved", "slot": slot, "not_before": saved_job.get("started") or 0},
+                        "op": "export_saved", "slot": saved_slot, "not_before": saved_job.get("started") or 0},
                         parent_request_id=rid), "gbox-auto")
                     add(f"Exporting the exact saved checkpoint (job {exported.id}).", "export game moment",
-                        exported.id, exported.state, state_export_job_id=exported.id)
+                        exported.id, exported.state, state_export_job_id=exported.id,
+                        state_slot=saved_slot, state_requested_slot=slot)
                     result = completed(exported.id)
                     if result.get("state") != "succeeded":
                         add(f"Portable checkpoint unavailable: {result.get('error') or result.get('state')}",
@@ -2695,7 +2822,9 @@ def create_app(config: Config) -> FastAPI:
                     if not meta:
                         raise RuntimeError("checkpoint export did not upload its artifact")
                     att = {"sha256": meta["sha256"], "name": meta["name"], "type": meta["media_type"], "size": meta["size"]}
-                    actual_slot = int(info["file"].rsplit(".state", 1)[-1]) if ".state" in info.get("file", "") and info["file"].rsplit(".state", 1)[-1].isdigit() else slot
+                    actual_slot = _checkpoint_slot(info, (s_.get("adapter") or "").lower())
+                    if actual_slot != saved_slot:
+                        raise RuntimeError("the portable export belongs to a different saved moment")
                     add(f"Portable save state attached: {info['file']} ({info['bytes']} bytes).",
                         "export game moment", "checkpoint attached", "finished", att,
                         state_artifact=meta["sha256"], state_file=info["file"], state_slot=actual_slot)
@@ -3010,7 +3139,7 @@ def create_app(config: Config) -> FastAPI:
         for k, v in m.tools.items():
             mt["tools"][k] = mt["tools"].get(k, 0) + v
         mt["files_changed"] = sorted(set(mt["files_changed"]) | set(m.files_changed))
-        mt["turns"] = (mt.get("turns") or 0) + (m.turns or 1)
+        mt["turns"] = (mt.get("turns") or 0) + (m.turns if m.turns is not None else 1)
         if m.duration_s is not None:
             mt["agent_seconds"] = round(mt.get("agent_seconds", 0) + m.duration_s, 1)
         store.put("request", rid, r)

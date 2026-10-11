@@ -101,7 +101,7 @@ test('voice overlay waits for navigation and replays the latest level once loade
   assert.equal(x.frames[0].messages.length, 1);
 });
 test('main process serializes window transitions and rejects stale/invalid cached frames', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbox-surface-')), commands = [], native = [];
+  const dir = fs.mkdtempSync(path.join(process.env.GBOX_TEST_TMP || os.tmpdir(), 'gbox-surface-')), commands = [], native = [];
   const sync = createMain({ getWin: () => ({ isDestroyed: () => false, getNativeWindowHandle: () => Buffer.from([1,0,0,0,0,0,0,0]) }),
     f3() {}, frameDir: dir, embedCmd: async m => { commands.push(m); return { ok: true, sourceId: 'window:456:0' }; },
     nativeSync: async st => { native.push(st); return { ok: true }; } });
@@ -121,7 +121,7 @@ test('main process serializes window transitions and rejects stale/invalid cache
 });
 
 test('slow monitoring cannot block display changes and retains only the latest pending frame', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbox-publish-')), sent = []; let release;
+  const dir = fs.mkdtempSync(path.join(process.env.GBOX_TEST_TMP || os.tmpdir(), 'gbox-publish-')), sent = []; let release;
   const sync = createMain({ getWin: () => ({ isDestroyed: () => false, getNativeWindowHandle: () => Buffer.alloc(8) }),
     f3() {}, frameDir: dir, embedCmd: async () => ({ ok: true, sourceId: st.sourceId }), nativeSync: async () => ({ ok: true }),
     publishFrame: async sid => { sent.push(sid); if (sent.length === 1) await new Promise(r => { release = r; }); } });

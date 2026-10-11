@@ -38,8 +38,9 @@ def test_failure_lessons_are_durable_idempotent_and_model_specific(monkeypatch, 
             ('claim-run', 'missing', 'failed', None, None, 'Fire claim ownership lost')])
     first = hermes_feedback.scan(home=home, now=1000)
     assert first['new_lessons'] == 3
-    assert first['cooldowns']['zai/glm'] == 19000
-    assert first['cooldowns']['openrouter/google/flash'] == 1900
+    assert first['cooldowns']['zai/glm'] == 1300
+    assert first['cooldowns']['openrouter/google/flash'] == 1060
+    assert first['cooldown_details']['zai/glm']['source'] == 'scheduler_backoff'
     assert 'openrouter/anthropic/opus' not in first['cooldowns']
     assert {l['category'] for l in first['lessons']} == {'quota', 'rate_limit', 'scheduler_claim'}
     second = hermes_feedback.scan(home=home, now=1100)
@@ -78,15 +79,73 @@ def test_route_rotation_waits_for_running_agent_and_restores_expired_routes(monk
         else: config['cron'][key.split('.')[1]] = value
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(hermes_feedback, 'scan', scan)
+    finalized = []
+    def finalize():
+        finalized.append(True)
+        return {'checked_runs': 1, 'tokens_in_added': 42, 'tokens_out_added': 3}
+    monkeypatch.setattr(hermes_feedback, 'finalize_usage', finalize)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_config', lambda: config)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [{'id': 'live'}])
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_active', lambda _: busy[0])
     monkeypatch.setattr(hermes_feedback.subprocess, 'run', run)
-    assert hermes_feedback.adjust_routes()['route'] == routes[0]
+    held = hermes_feedback.adjust_routes()
+    assert held['route'] == routes[0]
+    assert finalized == [True] and held['completed_usage']['tokens_in_added'] == 42
+    assert json.loads(path.read_text())['completed_usage'] == held['completed_usage']
     assert json.loads(path.read_text())['rotation_pending']
-    assert config['fallback_providers'] == [routes[1]]
+    assert config['fallback_providers'] == routes[1:]
     busy[0] = False
     assert hermes_feedback.adjust_routes()['route'] == routes[1]
+    assert routes[2] not in config['fallback_providers']
     data.update(cooldowns={}, rotation_pending=False)
     hermes_feedback.adjust_routes()
     assert routes[2] in config['fallback_providers']
+
+
+def test_accounting_transport_failure_does_not_interrupt_dispatch_monitor(monkeypatch):
+    from gbox import hermes_accounting
+    def fail(**_kwargs):
+        raise OSError('private transport information must remain private')
+    monkeypatch.setattr(hermes_accounting, 'reconcile_completed', fail)
+    assert hermes_feedback.finalize_usage() == {'status': 'deferred', 'error_type': 'OSError'}
+
+
+def test_native_capture_and_checkpoint_failures_have_distinct_recovery_lessons():
+    failures = {
+        'RuntimeError: the game window is covered by another app; bring gBox forward': 'capture_occlusion',
+        "RuntimeError: the game window isn't open": 'capture_occlusion',
+        'NotReadableError: Could not start video source': 'capture_occlusion',
+        'Saved checkpoint container could not be validated: truncated RZIP frame': 'checkpoint_container',
+        'saved checkpoint container exceeds inspection budget': 'checkpoint_container',
+        'saved checkpoint contains no core state': 'checkpoint_container',
+        'saved checkpoint is empty': 'checkpoint_container',
+    }
+    for error, category in failures.items():
+        assert hermes_feedback.classify(error) == category
+        assert category in hermes_feedback.ADVICE
+    assert not hermes_feedback.tool_error(json.dumps({'output': list(failures), 'error': None}))
+    assert hermes_feedback.classify('NotReadableError: microphone is busy') == 'other'
+    # Provider errors keep their existing measured cooldown policy.
+    assert hermes_feedback.classify('HTTP 429 rate limit: game window is covered by another app') == 'rate_limit'
+
+
+def test_native_failure_lessons_do_not_cool_down_the_inference_provider(monkeypatch, tmp_path):
+    home = tmp_path / 'home'
+    (home / 'cron').mkdir(parents=True)
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path / 'feedback'))
+    (home / 'cron/jobs.json').write_text(json.dumps({'jobs': [
+        {'id': 'capture', 'provider': 'nous', 'model': 'opus'},
+        {'id': 'checkpoint', 'provider': 'zai', 'model': 'glm'}]}))
+    with sqlite3.connect(home / 'cron/executions.db') as db:
+        db.execute('CREATE TABLE executions (id TEXT,job_id TEXT,status TEXT,started_at TEXT,finished_at TEXT,error TEXT)')
+        db.executemany('INSERT INTO executions VALUES (?,?,?,?,?,?)', [
+            ('capture-run', 'capture', 'failed', None, None,
+             'RuntimeError: the game window is covered by another app'),
+            ('checkpoint-run', 'checkpoint', 'failed', None, None,
+             'Saved checkpoint container could not be validated: truncated RZIP frame')])
+    first = hermes_feedback.scan(home=home, now=1000)
+    assert first['cooldowns'] == {}
+    assert {lesson['category'] for lesson in first['lessons']} == {'capture_occlusion', 'checkpoint_container'}
+    assert all('operator PC' in lesson['advice'] or 'original' in lesson['advice'] for lesson in first['lessons'])
+    second = hermes_feedback.scan(home=home, now=1100)
+    assert second['new_lessons'] == 0 and len(second['lessons']) == 2

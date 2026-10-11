@@ -61,24 +61,105 @@ marked done for its emulation recovery; this does not verify a character swap.
 DeepSeek save-state investigation #1106 also retains its separate acceptance
 criteria. A completed Hermes execution does not automatically complete a ticket.
 
+## Finalized model usage
+
+`hermes_accounting` reads ended cron executions, complete tool transcripts and
+the `session_model_usage` ledger. The feedback supervisor and Z.AI availability
+watcher share this implementation. Maintenance-only executions do not consume
+the bounded inference-run scan. The accountant performs no inference, task
+dispatch or provider change, and runs independently of provider cooldowns and
+other active work.
+
+Ticket ownership requires successful, call-ID-matched mutation receipts.
+Reading a ticket, quoting its ID or attempting a rejected operation cannot
+reserve it. Mixed ownership and incomplete transcripts defer accounting rather
+than allocate tokens by guesswork. Hermes's empty primary-task label is
+normalized to `primary`; helper tasks retain their own model and provider.
+Input includes uncached, cache-read and cache-write tokens. Reasoning remains
+part of output rather than being counted again.
+
+Successful earlier metric snapshots and verified manual final records are
+credited once. Per-model and aggregate markers preserve exact provenance.
+Unknown historical credits are left unchanged. API writes first persist a
+write intent, then verify the returned counters and markers. Lost responses
+are resolved by reading the ticket; unresolved writes are not replayed blindly.
+Tools, turns, elapsed time, ticket status and completion credit are unchanged.
+Measured costs are distinct from estimates, and subscription credits are not
+inferred from tokens. Accounting a run does not establish gameplay acceptance.
+
+## Native capture and checkpoint failure feedback
+
+The feedback scanner distinguishes a covered or unavailable emulator window
+from a failed emulator. It keeps the rejected capture, refreshes session
+identity, and requests one bounded retry using only the owned test window or
+its current GPU surface. Desktop pixels cannot establish gameplay acceptance,
+and occlusion checks remain enabled. The operator PC is protected.
+
+Rejected, empty or unfinished checkpoint containers have a separate lesson:
+preserve the original and its hash, validate the complete bounded container,
+and obtain a separate completed native save only from a still-live owned test
+session. An older checkpoint cannot be labelled the same reported moment.
+These local failures do not create an inference-provider cooldown. Repeated
+maintenance scans do not duplicate the lessons.
+
 ## Backend activation
 
-Hermes maintenance job `8e210aab9898`, **Activate Hermes bridge safely #1109**,
-runs the tested activation script outside Codex. It waits for active gBox
-conversations and worker jobs to finish and for Spark game sessions to end.
-It restarts only `gbox.service`, verifies the new policy fields and original
-Windows emulator PIDs, then posts a final reply and completes #1109 with
-implementation and verifier credit recorded separately. Its progress is stored
-on the report and exposed in the expanded task output after activation.
+The guard reads active worker jobs and Hermes claims from their canonical
+read-only databases. It also checks gBox conversations, worker/session/PID
+identity and enabled cron schedules that are overdue or due within 60 seconds.
+Unknown or changing snapshots defer activation. It rechecks immediately before
+the backend refresh, including after its progress reply. It does not call
+`GET /api/tasks`, which can enqueue inventory jobs while collecting a snapshot.
 
-At this report's preparation, cloud configuration and source changes were
-deployed, while backend activation awaited active model-swap jobs. The ticket's
-latest maintenance reply is the authority for subsequent activation success or
-failure. The watcher has a bounded deadline and reports failure explicitly.
-An earlier manually dispatched maintenance occurrence lost its scheduler claim;
-its failed execution remains in history. Its replacement is a finite genuine
-one-shot dispatched by the gateway.
+These checks do not reserve admission to the scheduler: a new run can still
+begin after the final observation. A separate external maintenance reservation
+is required before using the activation function. Do not invoke it inside a
+claimed Hermes cron execution; that execution deliberately blocks the guard.
+Installing this source neither restarts the backend nor activates a Windows
+worker. Existing games and tasks remain separate acceptance requirements.
+
+Historical maintenance job `8e210aab9898` handled the earlier #1109 bridge
+activation. Its original receipts, including a failed claim occurrence, remain
+in the report. They do not prove activation of subsequent source changes.
 
 Attached evidence includes the original screenshot regression, independent
 verification screenshots, an allowlisted audit, exact source patch and actual
 session metrics. No account credentials are included.
+
+## Recurring review prompts
+
+The Claude ledger hook recognizes only the exact observed six-line scheduled
+review instruction. That reminder continues to run and discover app/gap issues,
+but does not create another persistent inbox request. It resets the active
+usage target and explicit claims for that turn, preserving the originating
+operator request. A review can explicitly claim and meter a real issue.
+Changed templates, operator requests for reviews, actual findings and automatic
+issue reports retain their ordinary logging. This does not disable a schedule,
+discard report history or mark a substantive request complete.
+
+## Provider isolation for screenshot helpers
+
+A cron job's main provider pin does not pin `vision_analyze`. The helper can
+inherit a separate global provider and use its own fallback ladder. Read the
+`session_model_usage` ledger as well as the main session counters; record helper
+usage separately and do not treat an unpriced cost of zero as a measured bill.
+
+`scripts/apply_hermes_strict_auxiliary_routes.py` installs an optional,
+context-local vision policy on the supported Hermes runtime. An opted-in job
+has `auxiliary_routes.vision` containing an explicit `provider`, `model` and
+`strict: true`. The policy ignores unrelated global helper credentials and
+routes, blocks automatic and cross-provider fallback, and preserves retries on
+the chosen provider. Unsupported runtime functions or incomplete patches are
+rejected before writing. Source backups and before/after hashes are produced.
+
+Disable the target job before applying, then confirm it starts through a fresh
+external cron worker before resuming. The external worker loads the patched
+source without restarting the gateway or other active jobs. Cached in-process
+workers need a controlled restart to activate it. Jobs without the optional
+field retain their existing routing. The scope resets on completion or error
+and propagates through the existing cron and tool thread contexts.
+
+The portable fixture suite checks conflicting routes, unavailable clients,
+quota errors, nested and concurrent contexts, worker propagation, attribution,
+idempotence and rejection of unknown runtime source. A real image call and its
+separate provider ledger must still verify the deployed task's route.

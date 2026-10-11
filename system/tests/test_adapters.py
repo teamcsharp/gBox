@@ -58,10 +58,30 @@ def test_retroarch_protocol(ra):
     fake, ad = ra
     assert ad.read_memory(0x10, 600) == bytes(fake.mem[0x10:0x10 + 600])     # chunked over several datagrams
     assert ad.write_memory(4, b"\xde\xad") == {"written": 2, "via": "core_memory_map"} and fake.mem[4:6] == b"\xde\xad"
-    assert ad.pause()["state"] == "PAUSED" and ad.pause()["state"] == "PAUSED"   # idempotent
-    assert ad.resume()["state"] == "PLAYING"
+    assert ad.pause()["state"] == "PAUSED" and fake.paused
+    assert ad.pause()["state"] == "PAUSED" and fake.paused  # actual state, not just returned labels
+    assert ad.resume()["state"] == "PLAYING" and not fake.paused
+    assert fake.log.count("PAUSE_TOGGLE") == 2
     with pytest.raises(RuntimeError, match="no memory map"):
         ad.read_memory(2000, 100)
+
+
+def test_retroarch_pause_resume_keeps_native_state_idempotent(ra):
+    """An existing pause/resume state must survive repeated calls and resetting a playing game."""
+    fake, ad = ra
+    fake.log.clear()
+    ad.pause()
+    assert fake.paused
+    ad.pause()
+    assert fake.paused
+    ad.resume()
+    assert not fake.paused
+    ad.resume()
+    assert not fake.paused
+    assert fake.log.count("PAUSE_TOGGLE") == 2
+    ad.reset()
+    assert not fake.paused
+    assert fake.log.count("PAUSE_TOGGLE") == 2
 
 
 def test_ram_fallback_and_address_translation(ra):
@@ -148,6 +168,7 @@ def test_command_adapter_lifecycle(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+@pytest.mark.skipif(adapters.HOST_OS != "windows", reason="x11grab display not available in headless cron")
 def test_get_frame_real_capture(tmp_path):
     from gbox.registry import REGISTRY
     ctx = Ctx(Config(data_dir=tmp_path))
