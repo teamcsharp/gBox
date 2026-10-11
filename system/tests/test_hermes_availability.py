@@ -97,6 +97,57 @@ def test_probe_exception_never_exposes_credentials(lane, monkeypatch):
     assert result['status'] == 'monitor_error' and 'private-secret-value' not in json.dumps(result)
 
 
+def test_quota_get_rechecks_reset_card_without_calling_exhausted_model(lane, monkeypatch):
+    _, _, calls = lane
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 200, quota({'type': 'CREDIT_LIMIT', 'remaining': 0, 'nextResetTime': 5000000})
+    monkeypatch.setattr(availability, '_zai', respond)
+    assert availability.tick(1000)['status'] == 'quota_wait'
+    assert availability.tick(1300)['status'] == 'quota_wait'
+    assert kinds == ['quota', 'quota'] and not calls
+
+
+def test_running_work_refreshes_account_quota_without_a_probe_or_duplicate(lane, monkeypatch):
+    path, job, calls = lane
+    job['enabled'] = True
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 200, quota({'type': 'CREDIT_LIMIT', 'remaining': 12})
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'work_queued_or_running' and result['quota_status'] == 'quota_available'
+    assert kinds == ['quota'] and not calls
+    assert availability.tick(1100)['status'] == 'work_queued_or_running'
+    assert kinds == ['quota'] and json.loads(path.read_text())['checked_at'] == 1000
+
+
+def test_failed_quota_get_cannot_mark_previous_account_balance_fresh(lane, monkeypatch):
+    path, _, _ = lane
+    state = json.loads(path.read_text())
+    state.update(checked_at=1, windows=[{'type': 'CREDIT_LIMIT', 'remaining': 2000}])
+    path.write_text(json.dumps(state))
+    monkeypatch.setattr(availability, '_zai', lambda *a: (503, {}))
+    availability.tick(1000)
+    state = json.loads(path.read_text())
+    assert state['windows'] == [] and not state['quota_balance_known']
+
+
+def test_old_probe_success_is_not_reported_as_part_of_a_new_exhausted_quota_check(lane, monkeypatch):
+    path, _, calls = lane
+    state = json.loads(path.read_text())
+    state.update(probe_http=200, probe_usage={'prompt_tokens': 15}, dispatched_at=100)
+    path.write_text(json.dumps(state))
+    monkeypatch.setattr(availability, '_zai', lambda *args: (
+        200, quota({'type': 'CREDIT_LIMIT', 'remaining': 0})))
+    result = availability.tick(1000)
+    assert result['status'] == 'quota_wait' and result['probe_http'] is None
+    assert result['probe_usage'] == {} and not calls
+    assert json.loads(path.read_text())['last_probe']['checked_at'] == 100
+
+
 def test_completed_usage_tracks_actual_owner_cache_and_records_once(tmp_path, monkeypatch):
     import sqlite3
     from gbox import hermes_tasks

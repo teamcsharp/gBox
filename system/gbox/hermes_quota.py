@@ -1,0 +1,113 @@
+"""Observed provider limits and conservative retry policy, without balance guesses."""
+from __future__ import annotations
+
+import datetime as dt
+from email.utils import parsedate_to_datetime
+import json
+import math
+import re
+
+
+def number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def route(item):
+    """Persist only public provider/model identifiers, never route credentials."""
+    if not isinstance(item, dict):
+        return None
+    values = [item.get(k) for k in ('provider', 'model')]
+    if not all(isinstance(v, str) and v.strip() and len(v) <= 200 for v in values):
+        return None
+    return dict(zip(('provider', 'model'), (v.strip() for v in values)))
+
+
+def routes(config, saved=()):
+    cron = config.get('cron') or {}
+    candidates = [{'provider': cron.get('model_provider'), 'model': cron.get('model')},
+                  *(config.get('fallback_providers') or []), *saved]
+    result = []
+    for item in candidates:
+        clean = route(item)
+        if clean and clean not in result:
+            result.append(clean)
+    return result
+
+
+def retry_after(value, now):
+    delay = number(value)
+    if delay is not None:
+        return now + max(0, delay)
+    if isinstance(value, str):
+        try:
+            return parsedate_to_datetime(value).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return None
+
+
+def reset_at(value):
+    stamp = number(value)
+    if stamp is not None:
+        return stamp / 1000 if stamp > 100_000_000_000 else stamp
+    if isinstance(value, str):
+        try:
+            when = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+            return when.timestamp() if when.tzinfo else None
+        except (ValueError, OverflowError):
+            pass
+    return None
+
+
+def failure_wait(error, category, now, *, attempt=1):
+    """Use structured reset/Retry-After only; 'five hour limit' is not a reset."""
+    payload = error if isinstance(error, dict) else None
+    if isinstance(error, str):
+        try:
+            payload = json.loads(error)
+        except ValueError:
+            # Hermes can deliver a bounded context after a leading exception name.
+            offset = error.find('{')
+            if offset >= 0:
+                try:
+                    payload, _ = json.JSONDecoder().raw_decode(error[offset:])
+                except ValueError:
+                    pass
+    times = []
+    if isinstance(payload, dict):
+        containers = [payload]
+        containers += [payload[k] for k in ('error', 'context', 'headers') if isinstance(payload.get(k), dict)]
+        for part in containers:
+            for key in ('reset_at', 'resets_at', 'nextResetTime', 'x-ratelimit-reset'):
+                value = part.get(key)
+                stamp = number(value) / 1000 if key == 'nextResetTime' and number(value) is not None else reset_at(value)
+                if stamp is not None and now <= stamp <= now + 31 * 86400:
+                    times.append(stamp + 10)
+            for key in ('retry_after', 'Retry-After', 'retry-after'):
+                stamp = retry_after(part.get(key), now)
+                if stamp is not None and now <= stamp <= now + 31 * 86400:
+                    times.append(stamp + 1)
+    if times:
+        return {'until': max(times), 'source': 'provider_retry_metadata', 'quota_balance_known': False}
+    # Bounded scheduler backoff is policy, not the subscription reset time.
+    base = 300 if category == 'quota' else 60
+    delay = min(base * 2 ** min(max(int(attempt) - 1, 0), 4), 3600)
+    return {'until': now + delay, 'source': 'scheduler_backoff', 'quota_balance_known': False}
+
+
+def provider_failure(error):
+    text = str(error or '').lower()
+    if any(word in text for word in ('insufficient_quota', 'usage limit', 'usage_limit',
+                                    'quota exceeded', 'quota exhausted', 'quota limit',
+                                    'insufficient credits', 'credit balance')) or re.search(
+            r'["\'](?:error_code|code)["\']\s*:\s*["\']?(?:1113|1308|1310|131[6-9]|132[01])\b', text):
+        return 'quota'
+    if re.search(r'\b429\b', text) or any(word in text for word in ('rate limit', 'rate_limit', 'too many requests')):
+        return 'rate_limit'
+    return None

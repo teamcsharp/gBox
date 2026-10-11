@@ -92,7 +92,12 @@ def _handoff() -> str:
             'Use a 45-tool-call work budget with the final 10 calls reserved for focused tests, '
             'publish_task_changes, evidence and a final reply. Publish explicit source files and focused tests '
             'through publish_task_changes to produce a real commit and draft GitHub PR even if deployment '
-            'must wait. A pending PR or screenshot alone does not complete the ticket.' + brief())
+            'must wait. A pending PR or screenshot alone does not complete the ticket. '
+            'Checkpoint each material step to the report before another long operation: include the saved workspace, '
+            'exact pending job IDs, changed files, passing/failing checks and the next acceptance step. '
+            'If the provider reaches a quota, preserve the transcript and patch; an unpinned genuine one-shot '
+            'can be resumed by the quota supervisor with continuity on an available configured route. '
+            'Never infer subscription allowance from token counters or repeatedly retry an exhausted route.' + brief())
 
 
 def _workdir(request_id: str, number: int) -> str:
@@ -104,7 +109,7 @@ def _workdir(request_id: str, number: int) -> str:
 
 def status() -> dict:
     from .hermes_capabilities import audit
-    from . import hermes_delivery
+    from . import hermes_delivery, hermes_feedback, hermes_recovery
     job, config = _job() or {}, _config()
     model_config, agent_config, cron = (config.get(k) or {} for k in ('model', 'agent', 'cron'))
     last_status, last_error = job.get("last_status"), job.get("last_error")
@@ -134,6 +139,8 @@ def status() -> dict:
             "image_input_mode": agent_config.get('image_input_mode', 'auto'),
             "git_workspace_ready": (hermes_delivery.repository() / '.git').exists(),
             "capabilities": audit(config),
+            "provider_limits": hermes_feedback.provider_status(config=config),
+            "provider_recovery": hermes_recovery.status(),
             "operator_worker": ((config.get('mcp_servers') or {}).get('gbox') or {}).get('env', {}).get('GBOX_OPERATOR_WORKER'),
             "schedule": job.get("schedule_display"),
             "last_run_at": job.get("last_run_at"), "last_status": last_status,

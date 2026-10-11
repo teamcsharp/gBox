@@ -12,32 +12,54 @@ import time
 import urllib.error
 import urllib.request
 
-from . import hermes_delivery, hermes_task_mode
+from . import hermes_delivery, hermes_task_mode, hermes_quota
 
 MODEL = 'glm-5.3'
 BASE = 'https://api.z.ai/api/coding/paas/v4'
 
 
+def _save(path, data):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    temporary.replace(path)
+
+
 def quota_status(data: dict, now: float) -> dict:
     """Credit windows gate inference; unrelated MCP/tool windows do not."""
-    limits = (data.get('data') or {}).get('limits') or []
-    windows = [x for x in limits if x.get('type') in ('CREDIT_LIMIT', 'TOKENS_LIMIT')]
-    if data.get('success') is not True or not windows:
+    payload = data.get('data') if isinstance(data, dict) else None
+    limits = payload.get('limits') if isinstance(payload, dict) else None
+    windows = [x for x in limits if isinstance(x, dict) and x.get('type') in ('CREDIT_LIMIT', 'TOKENS_LIMIT')] if isinstance(limits, list) else []
+    if not isinstance(data, dict) or data.get('success') is not True or not windows:
         return {'status': 'unknown', 'next_check_at': now + 300, 'windows': []}
-    blocked = [x for x in windows if x.get('remaining', 1) <= 0 or x.get('percentage', 0) >= 100]
-    resets = [x['nextResetTime'] / 1000 for x in blocked
-              if isinstance(x.get('nextResetTime'), (int, float)) and x['nextResetTime'] / 1000 > now]
-    return {'status': 'quota_wait' if blocked else 'quota_available',
+    blocked = [x for x in windows if (hermes_quota.number(x.get('remaining')) is not None and
+                                     hermes_quota.number(x['remaining']) <= 0) or
+                                    (hermes_quota.number(x.get('percentage')) is not None and
+                                     hermes_quota.number(x['percentage']) >= 100)]
+    unknown = any(hermes_quota.number(x.get('remaining')) is None and
+                  hermes_quota.number(x.get('percentage')) is None for x in windows)
+    resets = [value / 1000 for x in blocked if (value := hermes_quota.number(x.get('nextResetTime')))
+              is not None and now < value / 1000 <= now + 31 * 86400]
+    return {'status': 'quota_wait' if blocked else 'unknown' if unknown else 'quota_available',
             'next_check_at': max(resets) + 10 if resets and len(resets) == len(blocked) else now + 300,
             'windows': [{k: x[k] for k in ('type', 'unit', 'number', 'usage', 'currentValue',
-                                          'remaining', 'percentage', 'nextResetTime') if k in x} for x in windows]}
+                                          'remaining', 'percentage', 'nextResetTime') if k in x and
+                         (k == 'type' or hermes_quota.number(x[k]) is not None)} for x in windows],
+            'quota_source': 'provider_account_endpoint', 'quota_observed_at': now,
+            'quota_balance_known': bool(blocked) or not unknown}
 
 
 def _credential():
     # Called by a script using Hermes's own bootstrap/runtime. Never copy or log keys.
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    os.environ['GLM_BASE_URL'] = BASE
-    runtime = resolve_runtime_provider(requested='zai', target_model=MODEL)
+    previous = os.environ.get('GLM_BASE_URL')
+    try:
+        os.environ['GLM_BASE_URL'] = BASE
+        runtime = resolve_runtime_provider(requested='zai', target_model=MODEL)
+    finally:
+        if previous is None:
+            os.environ.pop('GLM_BASE_URL', None)
+        else:
+            os.environ['GLM_BASE_URL'] = previous
     if runtime.get('provider') != 'zai' or runtime.get('base_url') != BASE or not runtime.get('api_key'):
         raise RuntimeError('Configured Z.AI credential is unavailable')
     return runtime['api_key']
@@ -53,10 +75,17 @@ def _zai(path, key, body=None):
     except urllib.error.HTTPError as exc:
         # Retain only a numeric error code; provider messages can contain sensitive input.
         try:
-            code = (json.load(exc).get('error') or {}).get('code')
+            payload = json.load(exc)
+            detail = payload.get('error') if isinstance(payload, dict) else None
+            code = detail.get('code') if isinstance(detail, dict) else None
         except (ValueError, AttributeError):
             code = None
-        return exc.code, {'error_code': code}
+        result = {'error_code': str(code) if isinstance(code, (str, int)) and
+                  re.fullmatch(r'[0-9]{1,6}', str(code)) else None}
+        retry = hermes_quota.retry_after(exc.headers.get('Retry-After') if exc.headers else None, time.time())
+        if retry is not None:
+            result['reset_at'] = retry
+        return exc.code, result
 
 
 def _api(path, body=None):
@@ -81,19 +110,23 @@ def _available_route(now):
     with hermes_delivery.locked('feedback'):
         data = json.loads(path.read_text()) if path.exists() else {}
         data.setdefault('cooldowns', {}).pop('zai/' + MODEL, None)
+        data.setdefault('cooldown_details', {}).pop('zai/' + MODEL, None)
         route = {'provider': 'zai', 'model': MODEL}
         if route not in data.setdefault('routes', []):
             data['routes'].append(route)
         data['zai_available_at'] = now
-        path.write_text(json.dumps(data, indent=2))
+        _save(path, data)
 
 
-def _waiting_route(until):
+def _waiting_route(until, *, source='provider_account_endpoint', quota_balance_known=True):
     path = hermes_delivery.state_dir() / 'feedback.json'
     with hermes_delivery.locked('feedback'):
         data = json.loads(path.read_text()) if path.exists() else {}
         data.setdefault('cooldowns', {})['zai/' + MODEL] = until
-        path.write_text(json.dumps(data, indent=2))
+        data.setdefault('cooldown_details', {})['zai/' + MODEL] = {
+            'until': until, 'source': source, 'quota_balance_known': quota_balance_known,
+            'observed_at': time.time(), 'category': 'quota'}
+        _save(path, data)
 
 
 def _completed_usage(state):
@@ -172,38 +205,60 @@ def tick(now=None):
             _completed_usage(state)
         except (OSError, ValueError, sqlite3.Error) as exc:
             state['usage_error_type'] = type(exc).__name__
-        path.write_text(json.dumps(state, indent=2))
+        _save(path, state)
         job = next((j for j in hermes_task_mode._jobs() if j['id'] == state['work_job_id']), None)
         if job is None:
             raise RuntimeError('Registered Z.AI work job is missing')
-        if job.get('enabled') or hermes_task_mode._active(job['id']):
+        work_active = job.get('enabled') or hermes_task_mode._active(job['id'])
+        if work_active and now - state.get('checked_at', 0) < 300:
             return {'status': 'work_queued_or_running', 'job_id': job['id'], 'provider': 'zai', 'model': MODEL}
         if _native_pending(state.get('request_ids') or []):
             return {'status': 'waiting_for_native_analysis', 'job_id': job['id']}
-        if now < state.get('next_check_at', 0):
+        next_quota_check = state.get('next_quota_check_at',
+            min(state.get('next_check_at', 0), state.get('checked_at', 0) + 300))
+        if now < next_quota_check and not work_active:
             return {k: state.get(k) for k in ('status', 'next_check_at', 'windows')}
         try:
+            if state.get('probe_http') is not None:
+                state['last_probe'] = {'http': state.get('probe_http'), 'usage': state.get('probe_usage'),
+                                       'checked_at': state.get('probe_checked_at', state.get('dispatched_at'))}
+            state.update(probe_http=None, probe_error_code=None, probe_usage={}, probe_checked_at=None)
             key = _credential()
             http, quota = _zai('quota', key)
-            observed = quota_status(quota, now) if http == 200 else {'status': 'unknown', 'next_check_at': now + 300}
-            state.update(observed, checked_at=now)
+            observed = quota_status(quota, now) if http == 200 else {
+                'status': 'unknown', 'next_check_at': now + 300, 'windows': [], 'quota_balance_known': False}
+            state.update(observed, checked_at=now, next_quota_check_at=min(observed['next_check_at'], now + 300))
             if observed['status'] == 'quota_wait':
                 _waiting_route(observed['next_check_at'])
+            if work_active:
+                _save(path, state)
+                return {'status': 'work_queued_or_running', 'job_id': job['id'],
+                        'provider': 'zai', 'model': MODEL, 'quota_status': observed['status'],
+                        'windows': state.get('windows'), 'next_quota_check_at': state['next_quota_check_at']}
             if observed['status'] != 'quota_wait':
                 http, result = _zai('probe', key, {'model': MODEL, 'stream': False, 'max_tokens': 1,
                     'thinking': {'type': 'disabled'}, 'messages': [{'role': 'user', 'content': 'Reply OK.'}]})
-                state.update(probe_http=http, probe_error_code=result.get('error_code'))
+                state.update(probe_http=http, probe_error_code=result.get('error_code'), probe_checked_at=now)
                 if http == 200 and isinstance(result.get('choices'), list) and result['choices']:
                     _available_route(now)
                     # Re-arm a genuine one-shot; its pin prevents fallback attribution to Z.AI.
                     hermes_task_mode._run('resume', job['id'], '--run-now')
                     state.update(status='work_dispatched', dispatched_at=now,
-                                 next_check_at=now + 120, probe_usage=result.get('usage') or {})
+                                 next_check_at=now + 120, next_quota_check_at=now + 120,
+                                 probe_usage=result.get('usage') or {})
                 else:
                     state.update(status='probe_wait', next_check_at=now + (900 if http in (401, 403) else 300))
-        except (OSError, ValueError, RuntimeError) as exc:
+                    if http == 429:
+                        category = hermes_quota.provider_failure(json.dumps(result)) or 'rate_limit'
+                        wait = hermes_quota.failure_wait(result, category, now)
+                        state['next_check_at'] = wait['until']
+                        _waiting_route(wait['until'], source=wait['source'], quota_balance_known=False)
+                    state['next_quota_check_at'] = state['next_check_at']
+        except (OSError, ValueError, RuntimeError, TypeError, AttributeError) as exc:
             # Exception text can include authentication material. Emit only its class.
             state.update(status='monitor_error', error_type=type(exc).__name__, next_check_at=now + 300)
-        path.write_text(json.dumps(state, indent=2))
-        return {k: state.get(k) for k in ('status', 'work_job_id', 'next_check_at', 'windows',
+            state['next_quota_check_at'] = state['next_check_at']
+        _save(path, state)
+        return {k: state.get(k) for k in ('status', 'work_job_id', 'next_check_at', 'next_quota_check_at',
+                                         'checked_at', 'windows', 'probe_checked_at',
                                          'probe_http', 'probe_error_code', 'probe_usage', 'error_type')}

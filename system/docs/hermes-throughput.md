@@ -36,12 +36,40 @@ denials, scheduler ownership, excessive iterations and missing publication.
 Later dispatches include those lessons. A no-agent supervisor checks every five
 minutes without consuming inference tokens.
 
-Cooldowns identify the provider AND model. Quota errors defer that route for
-five hours; rate limits for fifteen minutes. Available configured routes rotate
-between cloud runs. Exhausted routes leave the fallback chain until their
-cooldowns expire. Intentional per-job benchmark pins remain untouched. Local
-interactive model settings remain unchanged. This changes dispatch based on
-observed outcomes; it does not claim to retrain the underlying models.
+Cooldowns identify the provider AND model. Structured provider reset timestamps
+and Retry-After values determine the next retry. Missing metadata uses a bounded
+scheduler backoff (initially five minutes for quota and one minute for rate
+limits, increasing to at most one hour); that delay is labelled as policy, not
+the subscription reset. A quota inside a tool result does not incorrectly cool
+the inference provider. Available configured routes rotate between runs;
+newly configured routes join the retained fallback catalog. Routes are changed
+only while no agent run is active. Intentional per-job benchmark pins remain
+untouched. Interactive model settings remain unchanged.
+
+Provider failures now leave a durable recovery checkpoint containing the actual
+Hermes session, occurrence and owned request IDs. The original conversation and
+isolated Git workspace remain their source of truth. The no-agent supervisor
+can re-arm the same unpinned genuine one-shot with continuity on an eligible
+configured route. It first verifies ticket status, current ownership and whether
+a later occurrence already superseded the failure. It resumes at most one job
+per tick and three occurrences per job in 24 hours. Closed tickets, active jobs,
+explicit pins and disabled task-mode activations are preserved. An uncertain
+launch is held for review rather than repeated after a restart. The queue does
+not create replacement jobs or erase failed history.
+
+Task-mode status includes provider limit observations and recovery states.
+Recorded usage uses Hermes's `session_model_usage` per-call route ledger, so
+provider/model changes and fallback within one session are attributed to the
+actual route. Session aggregates are reconciled against those deltas without
+double counting; legacy residuals attributed only by session metadata are
+explicitly counted and labelled. The scope is sessions started within the last
+24 hours, including cache inputs, output and API calls, with recorded cost and
+estimated cost counted separately. At most 1,000 sessions and 10,000 route rows
+are aggregated; an incomplete window is explicitly labelled and a truncated
+ledger does not manufacture residual attribution.
+Z.AI's account windows retain their observation time and become stale after ten
+minutes. Other subscription balances remain unknown unless an account endpoint
+has actually supplied them. Session token totals never predict remaining quota.
 
 ## Remote testing
 
