@@ -399,6 +399,222 @@ def parse_mot_table(data: bytes) -> dict:
     return {"n_clips": len(offs), "offsets": offs}
 
 
+# --------------------------------------------------------------------------- motion
+# MOT containers hold one u32 directory (0-terminated) of clip offsets; each clip is a
+# 44-pointer table of compact scalar streams.  Native consumer chain (Ghidra, EXE 27a014ae):
+#   FUN_8c0e8484 evaluates a clip as 1 scalar + 3 x vec3 + 4 joint groups x (scalar + vec3 +
+#   2-scalar pair) = 34 evaluated channels; the remaining 10 are consumed elsewhere (the
+#   mixers FUN_8c0e89c2/8ad8/8bc0 apply per-channel u16 centers and weight pairs before use).
+# Compact record: u16 header {codec:2, duration:10, sign:4} + s16 low + payload (6/0/2/4 B).
+MOT_BASE_SCALE = struct.unpack("<f", bytes.fromhex("17b7d138"))[0]      # 1e-4
+MOT_TANGENT24_SCALE = struct.unpack("<f", bytes.fromhex("bd378635"))[0]  # 1e-6
+_MOT_PAYLOAD = (6, 0, 2, 4)                                             # codec -> payload bytes
+
+
+def _sgn(v: int, bits: int) -> int:
+    return v - (1 << bits) if v & (1 << (bits - 1)) else v
+
+
+def _mot_quantized_base(header: int, low_word: int) -> int:
+    """Native signed-20 base: header high nibble << 16 | low word (FUN_8c0e86c2)."""
+    return _sgn(((header & 0xF000) << 4) | (low_word & 0xFFFF), 20)
+
+
+def _read_mot_track(data: bytes, start: int, end: int) -> dict:
+    """Decode one compact scalar stream (codec 0..3) between hard bounds."""
+    records = []
+    cursor = start
+    while cursor + 4 <= end:
+        header, value = struct.unpack_from("<Hh", data, cursor)
+        if header & 0xFFF == 0:                                        # terminator record
+            padding = data[cursor + 4:end]
+            if padding not in (b"", b"\0\0"):
+                raise ValueError(f"MOT track trailing bytes at {cursor + 4:#x}")
+            return {"offset": start, "end": cursor + 4 + len(padding),
+                    "duration": sum(r[0] for r in records), "records": records,
+                    "final_base": _mot_quantized_base(header, value)}
+        codec = header & 3
+        duration = (header & 0xFFF) >> 2
+        size = 4 + _MOT_PAYLOAD[codec]
+        if not duration or cursor + size > end:
+            raise ValueError(f"MOT record out of bounds at {cursor:#x}")
+        records.append((duration, codec, _mot_quantized_base(header, value),
+                        data[cursor + 4:cursor + size]))
+        cursor += size
+    raise ValueError(f"MOT track missing terminator at {start:#x}")
+
+
+def _mot_polynomial(rec: tuple, next_base: int, final_base: int, last: bool) -> list[float]:
+    """Native record -> cubic coefficients [y0, c1, c2, c3] (FUN_8c0e86c2 formulas)."""
+    duration, codec, base, payload = rec
+    y0 = base * MOT_BASE_SCALE
+    y1 = (final_base if last else next_base) * MOT_BASE_SCALE
+    n, delta = duration, y1 - y0
+    if codec == 1:                                                     # linear
+        return [y0, delta / n, 0.0, 0.0]
+    if codec == 2:                                                     # quadratic
+        q = struct.unpack("<h", payload)[0] / 32768.0
+        return [y0, q * n + delta / n, -q, 0.0]
+    if codec == 3:                                                     # cubic, s16 pair
+        a, b = struct.unpack("<2h", payload)
+        a /= 131072.0
+        b /= 131072.0
+    else:                                                              # codec 0, s24 pair
+        lo, mid, hi = struct.unpack("<3H", payload)
+        a = _sgn(lo | ((mid & 0xFF) << 16), 24) * MOT_TANGENT24_SCALE
+        b = _sgn(hi | ((mid & 0xFF00) << 8), 24) * MOT_TANGENT24_SCALE
+    return [y0, a, (3 * delta - (2 * a + b) * n) / (n * n),
+            ((a + b) * n - 2 * delta) / (n * n * n)]
+
+
+def _mot_layout_error(data: bytes) -> str | None:
+    """Classify non-indexed-44 MOT containers found on the owned disc (honest rejection)."""
+    if len(data) >= 8:                                           # paired (id, offset) dir
+        cursor = 0
+        pairs = 0
+        while cursor + 8 <= len(data):
+            cid, off = struct.unpack_from("<II", data, cursor)
+            if cid == 0xFFFFFFFF:
+                if pairs and off == 0:
+                    return (f"paired MOT layout ({pairs} named clips, e.g. T_* throw/blow "
+                            "files) not handled by this indexed reader")
+                break
+            if cid > 0xFFFF or off % 4 or off + 8 > len(data):
+                break
+            pairs += 1
+            cursor += 8
+        first = u32(data, 0)
+        if first % 4 == 0 and first + 26 * 4 <= len(data):
+            ptrs = struct.unpack_from("<26I", data, first)
+            if ptrs[3] < first and all(p % 2 == 0 for p in ptrs):
+                return ("legacy26 MOT layout (26-channel tables, e.g. M_SAMBO/TINA_C) "
+                        "not handled by this compact-44 reader")
+    return None
+
+
+def parse_mot_clips(data: bytes) -> dict:
+    """Full compact-44 MOT decode: directory, 44-channel clip tables, per-track records.
+
+    Returns clip descriptors with per-channel durations, codec histograms and sampled
+    first-frame values (native BASE_SCALE units).  Validates every unique track exactly
+    once; shared channels (Kasumi: 1,004 directory slots -> 283 unique tables) reuse them.
+    Containers in other disc layouts (paired T_* files, legacy26 M_SAMBO/TINA_C) are
+    classified and rejected with an explicit message.
+    """
+    from bisect import bisect_right
+
+    offsets: list[int] = []
+    cursor = 0
+    directory_end = 0
+    try:
+        while cursor + 4 <= len(data):
+            v = u32(data, cursor)
+            if v == 0:
+                directory_end = cursor + 4
+                break
+            if v % 4 or v + 44 * 4 > len(data):
+                raise ValueError(f"MOT clip pointer out of range at {cursor:#x}")
+            offsets.append(v)
+            cursor += 4
+        else:
+            raise ValueError("MOT directory not terminated")
+        if not offsets:
+            raise ValueError("MOT container has no clips")
+        tables = sorted(set(offsets))
+        clips = {t: struct.unpack_from("<44I", data, t) for t in tables}
+        for t, pointers in clips.items():
+            for p in pointers:
+                if p < directory_end or p % 2 or p + 4 > len(data):
+                    raise ValueError(f"MOT channel pointer {p:#x} outside payload")
+    except (ValueError, struct.error) as e:
+        # Prefer an honest "different disc layout" classification over a generic
+        # bounds error when the container is one of the known non-indexed-44 forms.
+        raise ValueError(_mot_layout_error(data) or str(e)) from None
+    starts = sorted({p for pointers in clips.values() for p in pointers})
+    boundaries = sorted(set(starts + tables + [len(data)]))
+    tracks = {}
+    for p in starts:
+        tracks[p] = _read_mot_track(data, p, boundaries[bisect_right(boundaries, p)])
+    durations_ok = True
+    for off in offsets:
+        if len({tracks[p]["duration"] for p in clips[off]}) != 1:
+            durations_ok = False
+    codecs: dict[int, int] = {}
+    for track in tracks.values():
+        for _, codec, _, _ in track["records"]:
+            codecs[codec] = codecs.get(codec, 0) + 1
+    channel_values = [{
+        "offset": p,
+        "duration": tracks[p]["duration"],
+        "n_records": len(tracks[p]["records"]),
+        "first": (tracks[p]["records"][0][2] if tracks[p]["records"]
+                  else tracks[p]["final_base"]) * MOT_BASE_SCALE,
+        "final": tracks[p]["final_base"] * MOT_BASE_SCALE,
+    } for p in clips[offsets[0]]]
+    return {"n_clips": len(offsets), "n_unique_clips": len(tables),
+            "n_unique_tracks": len(tracks), "directory_end": directory_end,
+            "durations_consistent": durations_ok, "record_codecs": codecs,
+            "first_clip_channels": channel_values,
+            "clip_durations": {off: tracks[clips[off][0]]["duration"] for off in offsets}}
+
+
+def sample_mot_clip(data: bytes, clip_index: int, frames: int | None = None) -> dict:
+    """Sample one clip's 44 channels at integer frames through the native polynomials.
+
+    Channel semantics follow the native evaluator FUN_8c0e8484: channels 0-2 root vec3,
+    3-11 three int vec3s, then four joint groups of 8 (vec3 + int vec3 + scalar pair);
+    the mixers' u16 centers/weights are runtime actor state, not file data, so values
+    stay in native BASE_SCALE parameter units (radians for rotation channels).
+    """
+    directory = []
+    cursor = 0
+    while cursor + 4 <= len(data) and u32(data, cursor):
+        directory.append(u32(data, cursor))
+        cursor += 4
+    if clip_index < 0 or clip_index >= len(directory):
+        raise ValueError("MOT clip index out of range")
+    pointers = struct.unpack_from("<44I", data, directory[clip_index])
+    boundaries = sorted({p for off in directory for p in struct.unpack_from("<44I", data, off)}
+                        | set(directory) | {len(data)})
+    from bisect import bisect_right
+    # decode each channel's polynomials once
+    polys: dict[int, list[tuple[int, int, list[float]]]] = {}
+    for p in pointers:
+        track = _read_mot_track(data, p, boundaries[bisect_right(boundaries, p)])
+        segments = []
+        start = 0
+        for i, rec in enumerate(track["records"]):
+            last = i + 1 == len(track["records"])
+            nxt = track["records"][i + 1][2] if not last else track["final_base"]
+            segments.append((start, rec[0], _mot_polynomial(rec, nxt, track["final_base"], last)))
+            start += rec[0]
+        if not segments:                                   # constant track: single hold value
+            segments = [(0, 1, [track["final_base"] * MOT_BASE_SCALE, 0.0, 0.0, 0.0])]
+        polys[p] = segments
+    total = sum(s[1] for s in polys[pointers[0]])
+    if frames is None:
+        frames = total + 1                                     # inclusive of final frame
+    per_channel = []
+    for p in pointers:
+        vals = []
+        for f in range(min(frames, total + 1)):
+            v = None
+            for start, n, c in polys[p]:
+                if start <= f < start + n or (start + n >= total and f >= start):
+                    t = f - start
+                    v = ((c[3] * t + c[2]) * t + c[1]) * t + c[0]
+                    break
+            if v is None:
+                v = polys[p][-1][2][0]                          # hold last value
+            vals.append(round(v, 6))
+        per_channel.append(vals)
+    return {"clip_index": clip_index, "offset": directory[clip_index], "duration": total,
+            "frames": min(frames, total + 1),
+            "channels": per_channel,
+            "layout": ("0-2 root vec3; 3-11 three int vec3; 12-43 four joint groups x "
+                       "(vec3 + int vec3 + scalar pair) per FUN_8c0e8484")}
+
+
 # --------------------------------------------------------------------------- mesh decode
 def _triangles(flags: int, indices: list[int]) -> list[tuple[int, int, int]]:
     culling = flags & 3
@@ -582,13 +798,17 @@ def roster(disc_files: dict | None = None) -> list[dict]:
 # --------------------------------------------------------------------------- export
 def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
                   sup_data: bytes | None = None, rig: dict | None = None,
-                  emit: dict | None = None) -> dict:
+                  emit: dict | None = None, mot_data: bytes | None = None) -> dict:
     """Decode one costume's CHR + BIN into a UAP manifest, per-texture PNGs and a .gltf.
     Textures attached by native texture id. With `rig` (build_rig output) the glTF carries the
     real 17-joint native skeleton (rest pose from the EXE rest table + SUP seam bases); with
     `emit` (emit_skin_map output) body parts carry rigid model->joint weights from the
     render-script emit order (primary[i]->joint i, extras->breast joints 15/16, accessories
-    ->chest); shadow/projected parts stay unskinned (joint 0, weight 0)."""
+    ->chest); shadow/projected parts stay unskinned (joint 0, weight 0). With `mot_data`
+    (the character's .MOT) the manifest also carries verified animation facts (clip count,
+    codec census, duration range) from the compact-44 decoder; the glTF stays a rest pose —
+    channel->joint retargeting is deliberately not claimed until the native mixer layout is
+    fully mapped."""
     import json as _json
 
     import numpy as np
@@ -600,6 +820,7 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
     out.mkdir(parents=True, exist_ok=True)
     meshes = parse_meshes(chr_data)
     textures = parse_textures(chr_data, len(bin_data))
+    mot = parse_mot_clips(mot_data) if mot_data is not None else None
     files = []
     pngs = {}
     arrays = {}
@@ -681,11 +902,22 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
                             "n_seam_records": rig["n_seam_records"],
                             "seam_sources": len(rig["seam_sources"])}
                            if rig is not None else None),
+        "animation_facts": (None if mot is None else {
+                             "container": "compact-44 MOT (indexed directory)",
+                             "n_clips": mot["n_clips"], "n_unique_clips": mot["n_unique_clips"],
+                             "n_unique_tracks": mot["n_unique_tracks"],
+                             "durations_consistent": mot["durations_consistent"],
+                             "record_codecs": {str(k): v for k, v in mot["record_codecs"].items()},
+                             "duration_range": [min(mot["clip_durations"].values()),
+                                                max(mot["clip_durations"].values())],
+                             "channel_layout": "44 channels per FUN_8c0e8484: 0-2 root vec3, "
+                                               "3-11 three int vec3, 12-43 four joint groups"}),
         "confidence": {"entity": "verified", "geometry": "verified", "materials": "verified",
                        "textures": "verified",
                        "skeleton": "verified" if rig is not None else "missing",
                        "skin_weights": "verified" if emit is not None else "missing",
-                       "animations": "missing", "source_identity": "verified"},
+                       "animations": "verified" if mot_data is not None else "missing",
+                       "source_identity": "verified"},
     }
     (out / "manifest.json").write_text(_json.dumps(manifest, indent=1))
     files.append("manifest.json")
@@ -727,13 +959,19 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
         data = disc.read(f"DOA2/{stem}.{ext}")
         (out / f"{stem}.{ext}").write_bytes(data)
         files.append(f"{stem}.{ext}")
+    mot = MOT_FILES.get(key, key)
+    mot_data = None
+    if disc.files.get(f"DOA2/{mot}.MOT"):
+        try:
+            mot_data = disc.read(f"DOA2/{mot}.MOT")
+        except (KeyError, OSError):
+            mot_data = None                                   # unreadable MOT: animations stay missing
     r = export_assets(disc.read(f"DOA2/{stem}.CHR"), disc.read(f"DOA2/{stem}.BIN"), str(out),
-                      f"doa2_{key.lower()}_{costume}", rig=rig, emit=emit)
+                      f"doa2_{key.lower()}_{costume}", rig=rig, emit=emit, mot_data=mot_data)
     manifest = r["manifest"]
     manifest["provenance"] = [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f"DOA2/{stem}.{e}"))}
                               for e in ("BIN", "CHR", "SUP")]
-    mot = MOT_FILES.get(key, key)
-    if disc.files.get(f"DOA2/{mot}.MOT"):
+    if mot_data is not None:
         manifest["source"]["resource_ids"] = [f"DOA2/{stem}.{e}" for e in ("BIN", "CHR", "SUP")] + [f"DOA2/{mot}.MOT"]
     (out / "manifest.json").write_text(__import__("json").dumps(manifest, indent=1))
     return {"files": files + r["files"], "manifest": manifest}

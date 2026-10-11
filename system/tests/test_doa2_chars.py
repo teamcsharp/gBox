@@ -260,6 +260,119 @@ class TestParseSupMot:
         assert r["offsets"][0] == 0x1898 and r["offsets"][2] == 0x1898   # shared clip
 
 
+def _mot_record(duration: int, codec: int, base: int, payload: bytes) -> bytes:
+    """Native compact record: u16 header {codec:2, duration:10, sign:4} + s16 low + payload.
+    The base is signed-20 two's complement: high nibble in header bits 12-15, low 16 bits
+    in the second word (packed unsigned; the reader re-masks and sign-extends)."""
+    b20 = base & 0xFFFFF
+    header = codec | (duration << 2) | ((b20 >> 16) << 12)
+    return struct.pack("<HH", header, b20 & 0xFFFF) + payload
+
+
+def _mot_container(channels: list[bytes], n_entries: int = 2) -> bytes:
+    """Indexed-44 MOT container: directory (n_entries x the shared table, 0-terminated),
+    one 44-pointer clip table (pointers cycle over `channels`), then the channel bytes."""
+    table = 4 * (n_entries + 1)
+    out = bytearray()
+    for _ in range(n_entries):
+        out += struct.pack("<I", table)
+    out += struct.pack("<I", 0)
+    assert len(out) == table
+    ptrs_at = len(out)
+    out += b"\x00" * (44 * 4)
+    starts = []
+    for c in channels:
+        starts.append(len(out))
+        out += c
+    struct.pack_into("<44I", out, ptrs_at, *[starts[i % len(starts)] for i in range(44)])
+    return bytes(out)
+
+
+def synth_mot_clip():
+    """Compact-44 clip in the native grammar (FUN_8c0e8484/86c2): channels = codec-1
+    linear rise then hold, codec-0 cubic, codec-3 cubic pair, codec-1 constant hold."""
+    rise = _mot_record(10, 1, 0, b"") + _mot_record(5, 1, 100, b"") + struct.pack("<Hh", 0, 100)
+    cubic0 = _mot_record(15, 0, -50, b"\x00" * 6) + struct.pack("<Hh", 0, -50)
+    cubic3 = _mot_record(15, 3, 0, struct.pack("<2h", 16384, -16384)) + struct.pack("<Hh", 0, 0)
+    hold = _mot_record(15, 1, 7, b"") + struct.pack("<Hh", 0, 7)
+    return _mot_container([rise, cubic0, cubic3, hold])
+
+
+class TestMotClips:
+    def test_parse_directory_and_tracks(self):
+        r = doa2_chars.parse_mot_clips(synth_mot_clip())
+        assert r["n_clips"] == 2 and r["n_unique_clips"] == 1
+        assert r["n_unique_tracks"] == 4
+        assert r["durations_consistent"] is True
+        assert set(r["clip_durations"].values()) == {15}
+        assert r["record_codecs"] == {1: 3, 0: 1, 3: 1}
+        fc = r["first_clip_channels"]
+        assert fc[0]["first"] == pytest.approx(0.0) and fc[0]["final"] == pytest.approx(0.01)
+        assert fc[1]["first"] == pytest.approx(-0.005)                # -50 * 1e-4
+        assert fc[2]["first"] == pytest.approx(0.0)
+        assert fc[3]["first"] == pytest.approx(0.0007)                 # constant 7
+
+    def test_sampler_endpoint_exactness(self):
+        s = doa2_chars.sample_mot_clip(synth_mot_clip(), 0)
+        assert s["duration"] == 15 and s["frames"] == 16
+        c0 = s["channels"][0]                                         # linear rise, hold
+        assert c0[0] == pytest.approx(0.0)
+        assert c0[5] == pytest.approx(0.005, abs=1e-6)
+        assert c0[10] == pytest.approx(0.01) and c0[-1] == pytest.approx(0.01)
+        c2 = s["channels"][2]                                         # codec-3 cubic
+        assert c2[0] == pytest.approx(0.0, abs=1e-6) and c2[-1] == pytest.approx(0.0, abs=1e-6)
+        c3 = s["channels"][3]                                         # constant channel
+        assert c3[0] == pytest.approx(0.0007) and c3[-1] == pytest.approx(0.0007)
+
+    def test_constant_track_fallback(self):
+        # a channel that is a bare terminator (no records) holds its final base forever
+        only = _mot_container([struct.pack("<Hh", 0, 7)])
+        r = doa2_chars.parse_mot_clips(only)
+        assert r["n_unique_tracks"] == 1
+        assert r["first_clip_channels"][0]["first"] == pytest.approx(0.0007)
+        s = doa2_chars.sample_mot_clip(only, 0)
+        assert all(v == pytest.approx(0.0007) for v in s["channels"][0])
+
+    def test_real_disc_anchor_bytes(self):
+        # exact bytes of the shortest real track in the owned GENFU.MOT (1,000 clips,
+        # 240 unique, 10,560 tracks): one codec-1 record (duration 150) + terminator,
+        # both carrying base 0x44c — track @0x136c, sha256 239adee7...aff5
+        anchor = bytes.fromhex("59024c0400004c04")
+        header, low = struct.unpack_from("<Hh", anchor, 0)
+        assert header & 3 == 1 and (header >> 2) & 0x3FF == 150       # codec 1, duration 150
+        assert doa2_chars._mot_quantized_base(header, low) == 0x44c
+        th, tl = struct.unpack_from("<Hh", anchor, 4)
+        assert th & 0xFFF == 0                                        # terminator record
+        assert doa2_chars._mot_quantized_base(th, tl) == 0x44c
+        r = doa2_chars.parse_mot_clips(_mot_container([anchor]))
+        assert r["n_unique_tracks"] == 1
+        fc = r["first_clip_channels"][0]
+        assert fc["duration"] == 150 and fc["first"] == pytest.approx(0x44c * 1e-4)
+
+    def test_rejects_paired_and_legacy_layouts(self):
+        paired = struct.pack("<4I", 3, 0x40, 7, 0x80) + struct.pack("<2I", 0xFFFFFFFF, 0) + b"\x00" * 0x200
+        with pytest.raises(ValueError, match="paired MOT layout"):
+            doa2_chars.parse_mot_clips(paired)
+        legacy = struct.pack("<I", 0x80) + b"\x00" * 0x7c \
+            + struct.pack("<26I", *([0x20, 0x30, 0x40, 0x10] + [0x50] * 22)) + b"\x00" * 0x100
+        with pytest.raises(ValueError, match="legacy26 MOT layout"):
+            doa2_chars.parse_mot_clips(legacy)
+
+    def test_rejects_short_and_unterminated(self):
+        with pytest.raises(ValueError):
+            doa2_chars.parse_mot_clips(b"\x01\x02")
+        with pytest.raises(ValueError):
+            doa2_chars.parse_mot_clips(struct.pack("<4I", 0x100, 0x200, 0x300, 0x400) + b"\x00" * 0x800)
+        with pytest.raises(ValueError):                            # channel pointer < dir end
+            doa2_chars.parse_mot_clips(struct.pack("<2I", 4, 0) + struct.pack("<44I", *([2] * 44)))
+
+    def test_sampler_index_bounds(self):
+        with pytest.raises(ValueError, match="out of range"):
+            doa2_chars.sample_mot_clip(synth_mot_clip(), 2, frames=2)
+        s = doa2_chars.sample_mot_clip(synth_mot_clip(), 0, frames=2)
+        assert s["frames"] == 2 and len(s["channels"]) == 44
+
+
 class TestRig:
     def test_solve_joint_bases_chain(self):
         # synth seams: (1,0)->I and (0,2)->R_z(90): anchor pelvis 2 = I implies chest quarter-
@@ -471,7 +584,6 @@ class TestEmitSkinMap:
 
     def test_gltf_with_rig(self, tmp_path):
         # synthetic rig in the native 17-joint shape: parents from the EXE rest table, world
-        # matrices built like build_rig does (identity bases, pelvis-chain translations)
         import numpy as np
         parents = doa2_chars.JOINT_PARENTS
         vec = [[0.0, 0.18, 0.0]] + [[0.0, 0.1, 0.0]] * 16              # chest + chain offsets
@@ -500,6 +612,23 @@ class TestEmitSkinMap:
         # pelvis node translation == world position (root parent is -1)
         root_idx = names.index("pelvis_02")
         assert gltf["nodes"][root_idx]["translation"] == pytest.approx([0, 0, 0])
+
+    def test_gltf_with_motion_facts(self, tmp_path):
+        # MOT decode wired into the manifest: animations verified with clip census
+        r = doa2_chars.export_assets(synth_chr(), synth_bin(), str(tmp_path), "animated",
+                                     mot_data=synth_mot_clip())
+        m = r["manifest"]
+        assert m["confidence"]["animations"] == "verified"
+        af = m["animation_facts"]
+        assert af["n_clips"] == 2 and af["n_unique_clips"] == 1
+        assert af["n_unique_tracks"] == 4 and af["durations_consistent"] is True
+        assert af["record_codecs"] == {"1": 3, "0": 1, "3": 1}
+        assert af["duration_range"] == [15, 15]
+        assert "44 channels" in af["channel_layout"]
+        # without MOT data the manifest honestly reports missing
+        r2 = doa2_chars.export_assets(synth_chr(), synth_bin(), str(tmp_path / "plain"), "plain")
+        assert r2["manifest"]["confidence"]["animations"] == "missing"
+        assert r2["manifest"]["animation_facts"] is None
 
 
 class TestGameIds:

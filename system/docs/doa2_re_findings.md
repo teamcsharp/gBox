@@ -156,10 +156,51 @@ writer lane's `doa2_bindings`):
   hair is SUP-physics driven, not joint-driven).
 
 
+## Slice 5 (commit pending): compact-44 MOT decode — the 1,004 Kasumi clips
+
+The MOT container grammar, re-derived from the native consumer chain (Ghidra, EXE 27a014ae:
+`FUN_8c0e8484` evaluates a clip; `FUN_8c0e86c2` expands records; mixers `FUN_8c0e89c2/8ad8/8bc0`
+apply runtime u16 centers/weight pairs before use):
+
+- Container = u32 directory of clip-table offsets (0-terminated; **repeats = shared clips**),
+  each table = 44 channel pointers, then packed scalar streams between hard bounds
+  (neighbour starts / table starts / EOF).
+- Record = u16 header `{codec:2, duration:10, sign:4}` + s16 low + payload (6/0/2/4 B for
+  codec 0/1/2/3). Base is **signed-20** (header nibble << 16 | low word). Codec 0 packs two
+  signed-24 tangents at 1e-6 (three u16s, bit-packed), codec 3 two s16 at 1/131072, codec 2
+  one s16 at 1/32768; values scale by 1e-4 (BASE_SCALE 0x38d1b717).
+- Polynomial expansion is endpoint-exact cubic Hermite: p(0)=y0, p(n)=y1, p'(0)=a, p'(n)=a+b
+  (verified numerically on owned bytes: 44/44 channels hit `final_base` exactly at the last
+  frame; adjacent-frame deltas < 1.0 rad across real clips).
+- Channel layout per `FUN_8c0e8484`: 0-2 root vec3, 3-11 three int vec3, 12-43 four joint
+  groups x (vec3 + int vec3 + scalar pair). Values stay in native parameter units (radians
+  for rotation channels — real max |v| = 6.2831 ≈ 2π; the mixers' u16 centers/weights are
+  runtime actor state, not file data).
+
+Decode results on owned discs (`parse_mot_clips` + `sample_mot_clip` in
+`gbox/doa2_chars.py`):
+
+| MOT | clips | unique | tracks | codecs {0,1,2,3} | durations |
+|---|---|---|---|---|---|
+| KASUMI.MOT (sha256 ed4f2476…) | 1,004 | 283 | 12,452 | 69909/50446/11819/2593 | 2–550, all 44 channels consistent |
+| GENFU.MOT (sha256 239adee7…) | 1,000 | 240 | 10,560 | 50975/9846/8885/3035 | 6–499, consistent |
+
+The 1,004/283 figures independently re-confirm slice 4's doc claim (1,004 directory slots →
+283 unique tables). Non-indexed layouts found on the disc are classified and rejected with
+explicit messages: paired `(id, offset)` directories (T_* throw/blow files) and legacy26
+26-channel tables (M_SAMBO/TINA_C) — honest "not handled", not mis-decoded.
+
+`export()` now reads the character's MOT read-only and `export_assets(..., mot_data=...)`
+emits verified `animation_facts` (clip census, codec histogram, duration range, channel
+layout) with manifest confidence `animations: verified`. The glTF intentionally stays a rest
+pose: channel→joint retargeting is not claimed until the native mixer layout (which joints
+each of the 44 channels drives per actor state) is mapped. Real-disc e2e through `export()`
+verified for KAS c0 (1,004 clips) and GEN c0 (1,000 clips) on the extracted owned GDI.
+
 ## Not yet done (next slice, in order)
 
-1. MOT clip decode (1004 Kasumi clips) still open — with the emit map + rig done, animation
-   is the last missing piece of a fully skinned animated reader export.
+1. Channel→joint retargeting for an animated skinned export (map the 44 MOT channels onto
+   the 17-joint reader rig via the native mixer tables FUN_8c0e89c2/8ad8/8bc0).
 2. Reader-route parity with the writer lane (PR #8): fold the corrected SUP layout into
    `doa2_morphs.inspect_sup` assumptions when that branch merges.
 3. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay
