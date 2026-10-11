@@ -585,13 +585,19 @@ def create_app(config: Config) -> FastAPI:
                 store.put("session", nsid, store.get("session", nsid) | {
                     "mod": mod, "collection_mod": mod, "staged_mod": launch_mod, "launch_mod": launch_mod})
             notes.append(f"The previous {mod} copy was preserved; the new build was staged as {launch_mod}.")
-        loaded = False
+        loaded, load_requested, load_verified = False, False, None
         if art:
             say(70, "Loading your moment into it")
             time.sleep(6)                                      # let the core boot before loading the state
             try:
-                _run_job("state_transfer", {"session_id": nsid, "op": "import", "artifact": art}, actor, worker=tw["id"], wait=90)
-                loaded = True
+                restored = _run_job("state_transfer", {"session_id": nsid, "op": "import", "artifact": art}, actor, worker=tw["id"], wait=90)
+                details = restored.get('result') if isinstance(restored, dict) else None
+                details = details if isinstance(details, dict) else {}
+                load_requested = details.get('load_requested') if type(details.get('load_requested')) is bool else None
+                load_verified = details.get('load_verified') if type(details.get('load_verified')) is bool else None
+                loaded = details.get('load_verified') is True and details.get('loaded') is True
+                if not loaded:
+                    notes.append(f"The state-import job completed, but the saved moment was not confirmed loaded. Your checkpoint is retained: {art}.")
             except HTTPException as e:
                 try:
                     _run_job('session_op', {'session_id': nsid, 'op': 'stop_game', 'args': {}}, actor, worker=tw['id'], wait=60)
@@ -629,9 +635,11 @@ def create_app(config: Config) -> FastAPI:
                     luma.append(None)
             if luma and all(v is not None and v <= 3 for v in luma):
                 notes.append("The restored frame is dark. Your state was preserved; use Inspect or return to Play to check it.")
-        store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid, "state_loaded": loaded})
+        store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid,
+                    "state_loaded": loaded, "load_requested": load_requested, "load_verified": load_verified})
         return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod,
-                "launch_mod": launch_mod, "state_loaded": loaded, "notes": notes}
+                "launch_mod": launch_mod, "state_loaded": loaded, "load_requested": load_requested,
+                "load_verified": load_verified, "notes": notes}
 
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""

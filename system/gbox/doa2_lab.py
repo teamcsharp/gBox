@@ -6,14 +6,14 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from .models import Permission as P
 from .registry import tool
 
 
 class Doa2In(BaseModel):
-    op: Literal["inspect", "decompose", "build", "motions", "native_cache", "environments"] = "inspect"
+    op: Literal["inspect", "decompose", "build", "motions", "native_cache", "environments", "moment_context"] = "inspect"
     game_id: str = "1de2e7634f3161ff"
     fighter: str = "Kasumi"               # fighter name/family; decompose also supports all
     costume: str = "00"                  # decompose also supports all
@@ -26,6 +26,20 @@ class Doa2In(BaseModel):
     include_details: bool = False        # full provenance is always attached as doa2-details.json
     environment: str = "all"            # environments: STAGE03 (archive, not inferred arena name)
     environment_action: Literal["inspect", "decompose"] = "inspect"
+    state_artifact: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+    request_id: str = Field(default="", pattern=r"^(?:[0-9a-f]{16})?$")
+    actor_index: int | None = Field(default=None, strict=True, ge=0, le=1)
+    source_chr_artifact: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+    source_chr_name: str = ""             # explicit source override: native filename, not donor identity
+
+    @model_validator(mode="after")
+    def moment_inputs(self):
+        if self.op == "moment_context":
+            if self.actor_index is None or not (self.state_artifact or self.request_id):
+                raise ValueError("Moment context requires explicit actor_index and state_artifact or request_id")
+            if bool(self.source_chr_artifact) != bool(self.source_chr_name):
+                raise ValueError("A source override requires both source_chr_artifact and source_chr_name")
+        return self
 
 
 class Doa2Out(BaseModel):
@@ -153,7 +167,80 @@ def compact_report(value, key=''):
     return value
 
 
-@tool("doa2_assets", "1.2", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
+def _context_artifact(ctx, digest, game_id):
+    """Read only an existing, content-addressed input; retain its actual provenance."""
+    from . import characters as C, flycast_state as F
+    meta = C._api(ctx, "GET", f"/api/artifacts/{digest}/meta")
+    if not isinstance(meta, dict) or meta.get("sha256") != digest:
+        raise ValueError("Artifact metadata does not identify the requested digest")
+    size, provenance = meta.get("size"), meta.get("provenance")
+    if type(size) is not int or not 0 < size <= F.MAX_STATE_BYTES or not isinstance(provenance, dict):
+        raise ValueError("Artifact metadata has an invalid bounded size or provenance")
+    for field in ("game", "game_id"):
+        if provenance.get(field) and provenance[field] != game_id:
+            raise ValueError("Artifact game provenance disagrees with requested game")
+    raw = C._api(ctx, "GET", f"/api/artifacts/{digest}", timeout=120)
+    if not isinstance(raw, bytes) or len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("Artifact bytes disagree with their declared digest or size")
+    return raw, meta
+
+
+def moment_context(inp, ctx, disc, executable):
+    """Diagnose immutable RAM/cache evidence; no state loading or native cache rewrite."""
+    from . import characters as C, doa2_context as D
+    digest, report = inp.state_artifact, None
+    if inp.request_id:
+        report = C._api(ctx, "GET", f"/api/requests/{inp.request_id}")
+        if not isinstance(report, dict) or report.get("id") != inp.request_id:
+            raise ValueError("Request response does not identify the reported moment")
+        context = report.get("context") or {}
+        if not isinstance(context, dict):
+            raise ValueError("Request moment context must be a mapping")
+        if context.get("game_id") and context["game_id"] != inp.game_id:
+            raise ValueError("Request moment belongs to a different game")
+        reported = context.get("state_artifact")
+        if digest and reported and digest != reported:
+            raise ValueError("Explicit artifact differs from the request's saved moment")
+        if not digest:
+            digest = reported
+        attached = [a.get("sha256") for a in report.get("attachments", []) if isinstance(a, dict)]
+        for message in report.get("messages", []):
+            attached.extend(a.get("sha256") for a in message.get("attachments", []) if isinstance(a, dict))
+        if digest != reported and digest not in attached:
+            raise ValueError("State artifact is not linked to the requested report")
+    import re
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("Reported moment has no explicit valid state artifact")
+    raw, state_meta = _context_artifact(ctx, digest, inp.game_id)
+    ram, state = D.ram_from_state(raw, executable)
+    actor = D.inspect_actor(ram, executable, inp.actor_index)
+    source_name = actor["resource_filenames"]["geometry"]
+    if inp.source_chr_artifact:
+        chr_data, source_meta = _context_artifact(ctx, inp.source_chr_artifact, inp.game_id)
+        source_name = inp.source_chr_name
+        source = {"origin": "explicit_chr_artifact", "artifact": source_meta}
+    else:
+        native_name = "DOA2/" + source_name.upper()
+        if native_name not in disc.files:
+            raise ValueError("Selected actor's native CHR is absent from the owned disc")
+        chr_data = disc.read(native_name)
+        source = {"origin": "owned_disc", "file": native_name}
+    verified = D.source_identity(ram, executable, inp.actor_index, source_name, chr_data)
+    return {"op": "moment_context", "game_id": inp.game_id,
+            "diagnostic_only": True, "state": state, "state_artifact": state_meta,
+            "request_id": inp.request_id or None,
+            "request_snapshot_sha256": hashlib.sha256(json.dumps(report, sort_keys=True,
+                separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() if report else None,
+            "source": source, "actor": verified,
+            "operator_actor_verified": False, "donor_identity_verified": False,
+            "state_loaded": False, "native_reimport_verified": False, "gameplay_verified": False,
+            "limits": ["Actor index is explicit; the operator's marked target is not inferred.",
+                       "Source CHR bytes are hashed, but the cached comparison covers structure, UVs and references only.",
+                       "Animation-mutated positions/normals, textures, SUP/APV/ACS and GPU submission are not verified.",
+                       "A complete container and identified RAM do not prove the core can load this state."]}
+
+
+@tool("doa2_assets", "1.3", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
       permissions=[P.READ, P.STAGE, P.EXECUTE], timeout_s=3600,
       side_effects=["writes decomposed assets and modified disc copies into the cache/analysis folders"],
       artifacts=["doa2-report.json", "doa2-details.json"], validation="native archive validation and operation report match",
@@ -167,6 +254,11 @@ def doa2_assets(inp: Doa2In, ctx):
     Environments inspects/decomposes environment=all or an explicit STAGE## archive using
     environment_action=inspect/decompose. Exports editable, unassembled parts plus native CHR/BIN
     and full PVR mip chains. Stage placement, animation, collision and native reimport remain unverified.
+    Moment_context requires actor_index=0/1 and an existing state_artifact SHA or request_id with
+    context.state_artifact. It maps native actor/cache/resource identity and verifies CHR structure/UVs
+    against the owned disc. For a modified source, supply source_chr_artifact and source_chr_name explicitly.
+    All input artifacts are hash/size checked; no state is saved, loaded or rewritten. This diagnostic does
+    not establish the marked operator target, donor mesh residency, native reimport or gameplay acceptance.
     """
     from . import characters as C, doa2_chars, doa2_geometry as G, doa2_textures as T, doa2_swap as S
     from .gdrom import GDRom
@@ -174,16 +266,20 @@ def doa2_assets(inp: Doa2In, ctx):
     if inp.game_id not in S.GAME_IDS:
         raise ValueError("This native format implementation only supports DOA2 Limited Edition Japan")
     game = C._api(ctx, "GET", f"/api/catalog/{inp.game_id}")
+    if inp.op == 'moment_context' and (not isinstance(game, dict) or game.get('game_id') != inp.game_id):
+        raise ValueError("Catalog response does not identify the requested moment's owned game")
     gdi = C._dc_gdi(ctx, game)
     disc = GDRom(gdi)
     executable = disc.read("1ST_READ.BIN")
     executable_sha = hashlib.sha256(executable).hexdigest()
     if executable_sha != S.EXECUTABLE_SHA256:
         raise ValueError("Unsupported executable identity")
-    selected = [] if inp.op in ("motions", "native_cache", "environments") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
+    selected = [] if inp.op in ("motions", "native_cache", "environments", "moment_context") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
     analysis = Path(ctx.config.data_dir) / "analysis" / "doa2" / inp.game_id
     cache = cache_directory(analysis, inp.native_cache)
-    if inp.op == 'native_cache':
+    if inp.op == 'moment_context':
+        result = moment_context(inp, ctx, disc, executable)
+    elif inp.op == 'native_cache':
         result = {'op': inp.op, 'action': inp.cache_action, 'game_id': inp.game_id,
                   'cache': str(cache), 'verification': run_cache(ctx, disc, analysis, cache, inp.cache_action)}
     elif inp.op == 'environments':
@@ -287,7 +383,7 @@ def doa2_assets(inp: Doa2In, ctx):
             result['source_export_limits'] = [json.loads(row) for row in sorted(limits)]
     result = json.loads(json.dumps(result, default=str))
     ctx.artifact('doa2-details.json', json.dumps(result, indent=2).encode(), 'application/json', game_id=inp.game_id)
-    if not inp.include_details:
+    if not inp.include_details and inp.op != 'moment_context':
         result = compact_report(result)
     ctx.artifact("doa2-report.json", json.dumps(result, indent=2).encode(), "application/json", game_id=inp.game_id)
     ctx.progress(100, f"DOA2 {inp.op} completed; gameplay acceptance is separate")

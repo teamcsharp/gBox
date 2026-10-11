@@ -2618,7 +2618,7 @@ async function modRun(c, sid) {
   }
   if (j.state !== "succeeded") { const err = new Error(`${c.tool}: ${j.error || j.state}`); err.jobId = j.id; throw err; }
   if (swapping && j.output?.state_loaded === false) {
-    const err = new Error("The mod opened, but the saved game moment did not restore. This is not a successful replacement.");
+    const err = new Error("The mod opened, but restoration of the saved game moment was not verified. This replacement still needs verification.");
     err.jobId = j.id; throw err;
   }
   return j;
