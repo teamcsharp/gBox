@@ -2818,6 +2818,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
+                              "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
     import importlib

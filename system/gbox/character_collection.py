@@ -19,7 +19,46 @@ class AutoCollection:
             job = self.store.get('job', record['job_id']) or {}
             record = record | {'state': job.get('state', 'not_started'),
                                'result': (job.get('output') or {}).get('result'), 'error': job.get('error')}
+        capability = self.store.get('game_capability', gid)
+        if capability:
+            record = record | {'capabilities': capability, 'backlog': self.store.get('capability_backlog', gid) or []}
         return record
+
+    def track(self, game, entries=None):
+        """Persist scoped capability gaps without inventing completion or inbox jobs."""
+        from . import char_coverage as CC, game_capabilities as GC
+        if not game.get('game_id'):
+            return None
+        if entries is None:
+            entries = C.list_all(C.library_root(self.config))
+        ex, roster = CC.extractor_for(game)
+        evidence = self.store.get('game_capability_evidence', game['game_id']) or {}
+        row = GC.describe(game, entries, extractor=ex, roster=roster, writer=CC.writer_for(game), evidence=evidence)
+        row['captured_at'] = time.time()
+        tasks = GC.backlog(row)
+        with self.lock:
+            self.store.put('game_capability', game['game_id'], row)
+            self.store.put('capability_backlog', game['game_id'], tasks)
+        return row
+
+    def scan_favorites(self, submit=None, *, schedule=False, retry_failed=False):
+        """Unfiltered local catalog scan; optional registered collection never launches."""
+        from .favorite_capabilities import paginate_favorites
+        def page(params):
+            total, items = self.store.search(**params)
+            return {'total': total, 'offset': params['offset'], 'items': items}
+        games, catalog = paginate_favorites(page)
+        entries = C.list_all(C.library_root(self.config))
+        rows = [self.track(game, entries) for game in games]
+        if schedule and catalog['pagination_complete']:
+            if submit is None:
+                raise ValueError('submit is required when scheduling registered collection')
+            for game in games:
+                self._schedule(game, None, None, submit, retry_failed=retry_failed)
+        return {'catalog': catalog, 'games': rows,
+                'backlog': [task for game in games for task in self.store.get('capability_backlog', game['game_id']) or []],
+                'collection': {game['game_id']: self.status(game['game_id']) for game in games},
+                'queue_scope': 'Registered roster subset only; full source, stages, reimport and unlocks require separate evidence.'}
 
     def _schedule(self, game, parent_request_id, session_id, submit, retry_failed=False):
         policy = self.policy()
@@ -39,7 +78,7 @@ class AutoCollection:
                                'message': 'No native model reader registered for this game.'})
                 return
             created = submit({'tool': 'characters', 'input': {'op': 'collect', 'game_id': gid},
-                              'require_os': 'linux',
+                              'require_os': 'linux', 'agent_use': True,
                               'parent_request_id': parent_request_id or policy.get('parent_request_id')})
             self.store.put('character_collection', gid, {'state': created['state'], 'job_id': created['id'],
                            'updated': time.time(), 'session_id': session_id})
@@ -51,4 +90,5 @@ class AutoCollection:
 
     def after_favorite(self, game, submit):
         """A favorite starts native roster collection without starting or interrupting the game."""
+        self.track(game | {'favorite': True})
         self._schedule(game, None, None, submit, retry_failed=True)
