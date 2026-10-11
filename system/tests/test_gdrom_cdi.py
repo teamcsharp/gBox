@@ -1,10 +1,3 @@
-"""CDI (DiscJuggler) reading for gbox.gdrom — hermetic synthetic image + a real-disc smoke test.
-
-A .cdi is raw CD sectors behind an optional header and a 150-sector pregap. The ISO9660 primary volume
-descriptor (LBA 16) and the next descriptor one sector later pin the sector stride and the LBA-0 base, so
-CDIRom/GDRom can list and read files without chdman. This test builds a tiny in-memory CDI and checks the
-reader end to end; the real Jet Grind Radio .cdi (a DCRES repack) is exercised when it is present.
-"""
 import struct
 from pathlib import Path
 
@@ -12,8 +5,8 @@ import pytest
 
 from gbox.gdrom import CDIRom, GDRom
 
-HELLO = b"jet grind radio model\n"
 JGR_CDI = "/mnt/gbox/quickswap2/Emulation/_emulation/_dc iso/[CDI] Jet Grind Radio (US)[DCRES]/Jet Grind Radio (US)[DCRES].cdi"
+HELLO = b"jet grind radio model\n"
 
 
 def _dir_record(extent: int, size: int, flags: int, name: str) -> bytes:
@@ -30,56 +23,103 @@ def _dir_record(extent: int, size: int, flags: int, name: str) -> bytes:
     return bytes(rec)
 
 
-def make_cdi(sector_size: int = 2336, header: bytes = bytes(8), pregap: int = 150) -> bytes:
-    """A minimal single-file CDI: header + pregap + 16 system sectors + PVD + terminator + root dir + one file."""
+MARK = b"\x00\x00\x01\x00\x00\x00\xff\xff\xff\xff"
+SS_CODE = {2048: 0, 2336: 1, 2352: 2}
+
+
+def _raw(payload: bytes, sector_size: int, mode: int) -> bytes:
+    """One raw sector carrying a 2048-byte user payload at the offset DiscJuggler stores it."""
+    head = {2048: 0, 2336: 8}.get(sector_size, 16 if mode == 1 else 24)
+    sec = bytes(head) + payload.ljust(2048, b"\x00")
+    return sec.ljust(sector_size, b"\xee")         # non-zero EDC/ECC filler must not leak into user data
+
+
+def _iso_sectors(start_lba: int, file_data: bytes, file_name: str) -> list[bytes]:
+    """User payloads for LBAs start_lba .. : 16 system sectors, PVD, terminator, root dir, file."""
     pvd = bytearray(2048)
     pvd[0] = 0x01
     pvd[1:6] = b"CD001"
-    pvd[156:156 + 34] = _dir_record(18, 2048, 2, "\x00")   # root directory at LBA 18
-
+    pvd[156:156 + 34] = _dir_record(start_lba + 18, 2048, 2, "\x00")
     term = bytearray(2048)
     term[0] = 0xFF
     term[1:6] = b"CD001"
-
     root = bytearray(2048)
-    root[0:len(_dir_record(19, len(HELLO), 0, "HELLO.TXT;1"))] = _dir_record(19, len(HELLO), 0, "HELLO.TXT;1")
-
-    def sec(payload: bytes) -> bytes:
-        return payload + bytes(sector_size - len(payload))
-
-    return (header
-            + bytes(pregap * sector_size)
-            + bytes(16 * sector_size)          # LBA 0..15 (system area)
-            + sec(bytes(pvd)) + sec(bytes(term)) + sec(bytes(root)) + sec(HELLO))
+    rec = _dir_record(start_lba + 19, len(file_data), 0, file_name + ";1")
+    root[0:len(rec)] = rec
+    return [bytes(2048)] * 16 + [bytes(pvd), bytes(term), bytes(root), file_data]
 
 
-def _write(tmp_path, img, name="disc.cdi") -> Path:
+def _track_block(pregap: int, length: int, mode: int, start_lba: int, sector_size: int) -> bytes:
+    name = b"C:\\fake.cdi"
+    return (struct.pack("<I", 0) + MARK + MARK + bytes(4) + bytes([len(name)]) + name
+            + bytes(11 + 4 + 4) + struct.pack("<I", 0) + bytes(2)
+            + struct.pack("<II", pregap, length) + bytes(6) + struct.pack("<I", mode) + bytes(12)
+            + struct.pack("<II", start_lba, pregap + length) + bytes(16)
+            + struct.pack("<I", SS_CODE[sector_size]) + bytes(29) + bytes(5) + struct.pack("<I", 0))
+
+
+def make_cdi(sector_size: int = 2336, mode: int = 2, pregap: int = 150,
+             sessions: list[tuple[int, bytes, str]] | None = None, footer: bool = True) -> bytes:
+    """A DiscJuggler v3.5 image: one data track per session, each session holding its own ISO9660 volume."""
+    sessions = sessions or [(0, HELLO, "HELLO.TXT")]
+    body, foot = b"", struct.pack("<H", len(sessions))
+    for start_lba, data, name in sessions:
+        payloads = _iso_sectors(start_lba, data, name)
+        body += b"".join(_raw(b"", sector_size, mode) for _ in range(pregap))
+        body += b"".join(_raw(x, sector_size, mode) for x in payloads)
+        foot += struct.pack("<H", 1) + _track_block(pregap, len(payloads), mode, start_lba, sector_size)
+        foot += bytes(4 + 8 + 1)                    # end of session
+    if not footer:
+        return body
+    foot += bytes(32)                               # disc info (unused by the reader)
+    return body + foot + struct.pack("<II", 0x80000006, len(foot) + 8)
+
+
+def _write(tmp_path: Path, img: bytes, name: str = "disc.cdi") -> Path:
     p = tmp_path / name
     p.write_bytes(img)
     return p
 
 
-def test_cdir_lists_and_reads_file(tmp_path):
+def test_cdir_lists_and_reads_file(tmp_path: Path):
     p = _write(tmp_path, make_cdi())
     cdi = CDIRom(p)
     assert cdi.sector_size == 2336
-    assert cdi.base == 8 + 150 * 2336
-    assert "HELLO.TXT" in cdi.files
+    assert cdi.base == 150 * 2336 + 8
+    assert [t["start_lba"] for t in cdi.tracks_info] == [0]
     assert cdi.read("HELLO.TXT") == HELLO
-    # GDRom exposes the same interface for a .cdi path
     g = GDRom(p)
     assert g.files == cdi.files
     assert g.read("HELLO.TXT") == HELLO
 
 
-def test_cdir_detects_2352_stride(tmp_path):
-    p = _write(tmp_path, make_cdi(sector_size=2352))
-    cdi = CDIRom(p)
+@pytest.mark.parametrize("mode", [1, 2])
+def test_cdir_reads_2352_sectors(tmp_path: Path, mode: int):
+    cdi = CDIRom(_write(tmp_path, make_cdi(sector_size=2352, mode=mode)))
     assert cdi.sector_size == 2352
     assert cdi.read("HELLO.TXT") == HELLO
 
 
-def test_cdir_rejects_non_cd_image(tmp_path):
+def test_cdir_reads_later_session_filesystem(tmp_path: Path):
+    """DCRES-style: a decoy ISO in session 1 and the real game files in session 2 at a gapped LBA."""
+    p = _write(tmp_path, make_cdi(sessions=[(0, b"decoy", "DUMMY.DAT"), (11420, b"session two\n", "1ST_READ.BIN")]))
+    cdi = CDIRom(p)
+    assert [t["start_lba"] for t in cdi.tracks_info] == [0, 11420]
+    assert cdi.read("DUMMY.DAT") == b"decoy"
+    assert cdi.read("1ST_READ.BIN") == b"session two\n"
+    assert GDRom(p).read("1ST_READ.BIN") == b"session two\n"
+
+
+def test_cdir_without_footer_falls_back_to_descriptor_stride(tmp_path: Path):
+    p = _write(tmp_path, bytes(8) + make_cdi(footer=False))
+    cdi = CDIRom(p)
+    assert cdi.tracks_info == []
+    assert cdi.sector_size == 2336
+    assert cdi.base == 8 + 150 * 2336 + 8
+    assert cdi.read("HELLO.TXT") == HELLO
+
+
+def test_cdir_rejects_non_cd_image(tmp_path: Path):
     bad = tmp_path / "bad.cdi"
     bad.write_bytes(b"not a cd image at all")
     with pytest.raises(ValueError):
@@ -93,3 +133,14 @@ def test_real_jgr_cdi_lists_dummy():
     assert "DUMMY.DAT" in cdi.files
     _lba, size = cdi.files["DUMMY.DAT"]
     assert size > 40_000_000
+
+
+@pytest.mark.skipif(not Path(JGR_CDI).exists(), reason="real JGR .cdi not mounted on this node")
+def test_real_jgr_cdi_reads_real_files():
+    cdi = CDIRom(JGR_CDI)
+    assert "1ST_READ.BIN" in cdi.files
+    assert "JETRADIO/PLAYER.AFS" in cdi.files
+    player = cdi.read("JETRADIO/PLAYER.AFS")
+    assert player[:4] == b"AFS\x00"
+    ini = cdi.read("DP2.INI")
+    assert ini.startswith(b"#\n# dp2.ini")
