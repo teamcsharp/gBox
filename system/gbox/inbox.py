@@ -3,6 +3,12 @@ from bisect import bisect_right
 import re
 
 
+# A recurring review quotes its standing instruction with straight or curly
+# quotes. Written as escapes so a non-UTF-8 copy of this file cannot corrupt
+# the pattern (an earlier copy replaced the curly quotes with U+FFFD and '?').
+_STANDING = re.compile("operator['\u2019]s request:\\s*[\"\u201c](.*?)[\"\u201d]")
+
+
 def automated(request):
     text = (request.get("body") or request.get("title") or "").lstrip()
     return bool(request.get("automated") or request.get("parent_request_id")
@@ -42,7 +48,7 @@ def parent_for(request, requests):
         # Only the exact standing instruction quoted by the review is evidence
         # of a parent; an absent original instruction leaves the review unlinked.
         first_line = body.lstrip().splitlines()[0]
-        standing = re.search(r"operator['’]s request:\s*[\"“](.*?)[\"”]", first_line)
+        standing = _STANDING.search(first_line)
         if standing:
             instruction = normalize(standing[1])
             matches = [r for r in roots if instruction and normalize(r.get("body") or r.get("title")) == instruction]
@@ -134,7 +140,7 @@ class _ParentIndex:
                 return parent
         if body.lstrip().startswith("gBox request review"):
             first_line = body.lstrip().splitlines()[0]
-            standing = re.search(r"operator['�?T]s request:\s*[\"�?o](.*?)[\"�??]", first_line)
+            standing = _STANDING.search(first_line)
             instruction = normalize(standing[1]) if standing else ""
             return self.latest(self.prompts.get(instruction), created) if instruction else None
         key = "conversation" if context.get("conversation") else "session"
