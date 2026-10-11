@@ -54,7 +54,9 @@ def test_restore_loads_actual_written_slot_and_ignores_other_games(tmp_path, mon
     monkeypatch.setattr(tools.time, 'sleep', lambda _: None)
     ctx = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), server='http://test', headers={})
     result = tools.state_transfer(tools.StateXIn(session_id='worker-test', op='import', artifact=digest), ctx)
-    assert result['result']['loaded']
+    assert result['result']['load_requested']
+    assert result['result']['load_verified'] is False
+    assert 'loaded' not in result['result']
     assert written.read_bytes() == restored
     assert loaded == [18]
     assert (states / 'Other.state9').read_bytes() == b'unrelated'

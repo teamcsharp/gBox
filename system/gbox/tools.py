@@ -2862,7 +2862,7 @@ class StateXIn(BaseModel):
     session_id: str
     op: str = "export"                      # export: save + upload | export_saved: upload an existing checkpoint | import: load
     artifact: str = ""                      # import: digest of the exported state
-    slot: int = 9
+    slot: int | None = None                 # export/import: default 9; export_saved: exact slot, or latest when omitted
     not_before: float = 0                    # export_saved: reject a stale checkpoint
 
 
@@ -2873,7 +2873,7 @@ class StateXOut(BaseModel):
 _STATE_TRANSFER_LOCK = threading.RLock()
 
 
-@tool("state_transfer", "1.1", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
+@tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
     with _STATE_TRANSFER_LOCK:
         return _state_transfer(inp, ctx)
@@ -2888,7 +2888,6 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
     ad, g = session
     kind = getattr(ad, "name", "")
     if kind == "retroarch":
-        # whatever slot RetroArch really used (slot steps are network commands and can be dropped): the newest file wins
         states, pattern = ctx.config.runtime / "states", "*.state*"
     elif kind == "dolphin":                                    # same Dolphin release on both machines (2609): states are compatible
         exe = getattr(ad, "_exe", None)
@@ -2896,17 +2895,74 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         pattern = "*.s01"                                       # the adapter's save/load hotkeys use slot 1
     else:
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
+    requested_slot = 9 if inp.slot is None else inp.slot
+
+    def matches_game(f):
+        if kind == 'retroarch':
+            return bool(re.search(r'\.state(-?\d+)?$', f.name)) and (
+                not g.get('_rom_path') or f.name.startswith(Path(g['_rom_path']).stem + '.'))
+        return f.match(pattern) and f.suffix.lower() != '.png'
+
+    def candidates():
+        fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
+        # Deduplicate aliases to a single file; distinct core-directory checkpoints remain ambiguous for an exact slot.
+        return list({f.resolve(): f for f in fs if f.resolve().is_relative_to(states.resolve()) and matches_game(f)}.values())
+
+    def native_slot(f):
+        if kind == 'dolphin':
+            return 1
+        match = re.search(r'\.state(-?\d+)?$', f.name)
+        return int(match[1] or 0)
 
     def newest():
-        fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
-        if kind == 'retroarch' and g.get('_rom_path'):
-            prefix = Path(g['_rom_path']).stem + '.'
-            fs = [f for f in fs if f.name.startswith(prefix) and re.search(r'\.state\d*$', f.name)]
+        fs = candidates()
         return max(fs, key=lambda f: f.stat().st_mtime) if fs else None
+
+    def requested_saved():
+        fs = [f for f in candidates() if native_slot(f) == inp.slot]
+        if len(fs) > 1:
+            raise RuntimeError('the requested saved slot has ambiguous checkpoint files')
+        return fs[0] if fs else None
+
+    def checkpoint_details(f, saved=None):
+        details = {'path': str(f), 'selection': 'latest_saved_checkpoint' if saved is None else
+                   ('verified_adapter_path' if saved.get('verified') else 'newest_after_save')}
+        if saved is not None:
+            details.update({k: saved[k] for k in ('verified', 'requested_slot', 'slot_verified', 'warning') if k in saved})
+        actual = native_slot(f)
+        details['slot'] = actual
+        if saved is not None:
+            # Dolphin's hotkeys always use slot 1; RetroArch receives the requested slot.
+            details['requested_slot'] = requested_slot if kind == 'retroarch' else 1
+            details['slot_verified'] = actual == details['requested_slot']
+            if actual != details['requested_slot'] and not details.get('warning'):
+                details['warning'] = 'RetroArch used a different slot; this result identifies the actual saved file.'
+        return details
 
     def save_and_wait():
         t0 = time.time()
-        ad.save_state(inp.slot) if kind == "retroarch" else ad.save_state()
+        saved = ad.save_state(requested_slot) if kind == "retroarch" else ad.save_state()
+        saved = saved if isinstance(saved, dict) else {}
+        if saved.get('path'):
+            if saved.get('verified') is not True:
+                raise RuntimeError('the adapter did not verify its saved checkpoint')
+            f = Path(saved['path']).resolve()
+            if not f.is_relative_to(states.resolve()) or not f.is_file() or not matches_game(f):
+                raise RuntimeError('the verified checkpoint path does not belong to this game and state directory')
+            stat = f.stat()
+            if stat.st_size <= 0 or stat.st_mtime < t0 - 1 or (
+                    saved.get('bytes') is not None and stat.st_size != saved['bytes']):
+                raise RuntimeError('the verified checkpoint file is stale, empty or changed')
+            details = checkpoint_details(f, saved)
+            if kind == 'retroarch':
+                if saved.get('slot') is not None and saved['slot'] != details['slot']:
+                    raise RuntimeError('the verified checkpoint slot disagrees with its native filename')
+                ad.slot = details['slot']
+            return f, details
+        if saved.get('verified') is False:
+            raise RuntimeError('the adapter did not verify its saved checkpoint')
+        if saved.get('verified') is True:
+            raise RuntimeError('the adapter reported a verified checkpoint without its native path')
         for _ in range(100):                                   # RetroArch writes the file asynchronously
             f = newest()
             if f and f.stat().st_mtime >= t0 - 1 and f.stat().st_size > 0:
@@ -2914,29 +2970,45 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
                 if kind == 'retroarch':
                     # Hotkeys and dropped slot commands can disagree with our cached slot.
                     # The file actually written identifies the emulator's current slot.
-                    suffix = f.name.rsplit('.state', 1)[-1]
-                    ad.slot = int(suffix) if suffix.isdigit() else 0
-                return f
+                    ad.slot = checkpoint_details(f, saved)['slot']
+                return f, checkpoint_details(f, saved)
             time.sleep(0.2)
         raise RuntimeError("the emulator didn't write a save state")
     if inp.op in ("export", "export_saved"):
-        f = save_and_wait() if inp.op == "export" else newest()
-        if not f or (inp.op == "export_saved" and f.stat().st_mtime < inp.not_before - 1):
+        if inp.op == "export":
+            f, details = save_and_wait()
+        else:
+            f = newest() if inp.slot is None else requested_saved()
+            details = checkpoint_details(f) if f else {}
+            if f and inp.slot is not None:
+                details.update(selection='requested_saved_slot', requested_slot=inp.slot, slot_verified=True)
+        if not f or (inp.op == "export_saved" and (
+                f.stat().st_size <= 0 or f.stat().st_mtime < inp.not_before - 1)):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
-        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"))
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
-        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name}}
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
     if inp.op == "import":
         r = httpx.get(f"{ctx.server}/api/artifacts/{inp.artifact}", headers=ctx.headers, timeout=120)
         r.raise_for_status()
         if sha256(r.content) != inp.artifact:
             raise ValueError('Saved-state download did not match the preserved checkpoint')
-        f = save_and_wait()                                     # this machine's own state file name/folder for the game
+        f, details = save_and_wait()                            # this machine's verified state file for the game
         f.write_bytes(r.content)
         time.sleep(0.3)
-        ad.load_state(ad.slot) if kind == "retroarch" else ad.load_state()
-        return {"result": {"loaded": True, "file": f.name, "bytes": len(r.content)}}
+        load = ad.load_state(ad.slot) if kind == "retroarch" else ad.load_state()
+        load = load if isinstance(load, dict) else {}
+        verified = (load.get('load_verified') is True or load.get('verified') is True) and load.get('loaded', True) is True
+        if kind == 'retroarch' and load.get('slot') is not None and load['slot'] != details['slot']:
+            verified = False
+        if load.get('path') and Path(load['path']).resolve() != f.resolve():
+            verified = False
+        result = {'file': f.name, 'bytes': len(r.content), **details,
+                  'load_requested': True, 'load_verified': verified, 'load_result': load}
+        if verified:
+            result['loaded'] = True
+        return {'result': result}
     raise ValueError("op: export | export_saved | import")
 
 
