@@ -244,7 +244,21 @@ ipcMain.handle("win:setup", () => {
   return id;
 });
 
-async function startWorker() {
+// The last worker exit, so the app can say WHY this PC's worker is offline (#1296).
+let workerTail = "", workerLastExit = null, workerStarting = null;
+function workerExitReason(text) {
+  const lines = String(text).split(/\r?\n/).map(l => l.replace(/^\d\d:\d\d:\d\d\.\d+ \[win-worker\]\s*/, "").trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--)
+    if (/^[A-Za-z_.]*(Error|Exception)\b.*:/.test(lines[i])) return lines[i].slice(0, 600);
+  return lines.slice(-1)[0]?.slice(0, 600) || "";
+}
+async function startWorker(options = {}) {
+  if (worker) return { running: true, started: false };
+  if (workerStarting) return workerStarting;
+  workerStarting = startWorkerInner(options);
+  try { return await workerStarting; } finally { workerStarting = null; }
+}
+async function startWorkerInner(options) {
   const s = settings();
   if (worker) return { running: true };
   if (!fs.existsSync(venvPython())) return { running: false, error: "Windows node not installed yet — run 'Install / update Windows node'" };
@@ -255,23 +269,39 @@ async function startWorker() {
   } else {
     const t = await token();
     if (!t) return { running: false, error: "no API token: paste it in Settings, or make the Spark share / SSH reachable" };
-    worker = spawn(venvPython(), ["-P", "-m", "gbox", "--config", path.join(s.repoLocal, "gbox.toml"), "worker", "--server", s.apiUrl, "--name", s.workerName],
+    const args = ["-P", "-m", "gbox", "--config", path.join(s.repoLocal, "gbox.toml"), "worker", "--server", s.apiUrl, "--name", s.workerName];
+    if (options.reconcileResults) args.push("--reconcile-results");
+    worker = spawn(venvPython(), args,
       { env: { ...process.env, PYTHONPATH: s.repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1" }, cwd: os.homedir(), windowsHide: true });
   }
-  const out = d => send("task", "win-worker", d.toString());
+  workerTail = "";
+  const out = d => { const t = d.toString(); workerTail = (workerTail + t).slice(-8000); send("task", "win-worker", t); };
   worker.stdout.on("data", out); worker.stderr.on("data", out);
   worker.on("close", code => {
+    workerLastExit = { code, at: Date.now(), reason: workerExitReason(workerTail) };
     send("task", "win-worker", `\n[worker exited ${code}]\n`); worker = null; send("worker", false);
     if (!workerStopRequested && settings().autoStartWorker) setTimeout(startWorker, 5000);   // watchdog
     workerStopRequested = false;
   });
   send("worker", true);
-  return { running: true };
+  return { running: true, started: true };
+}
+// Reconnect only a stopped worker. A stale heartbeat never authorizes killing
+// the existing worker or any native children it owns.
+async function restartWorker() {
+  if (worker) {
+    return { running: true, started: false, error: "This PC's worker is still running. Reconnect is held; no worker or game was stopped." };
+  }
+  if (workerStarting) return { running: false, started: false, error: "This PC's worker is already starting. Wait for its status; no processes were stopped." };
+  if (STANDALONE) return { running: false, started: false, error: "Standalone control-plane recovery requires a separate maintenance review; no service was restarted." };
+  const r = await startWorker({ reconcileResults: true });
+  return { ...r, restarted: r.started === true, lastExit: workerLastExit };
 }
 ipcMain.handle("win:worker", (_e, op) => {
   if (op === "start") return startWorker();
   if (op === "stop" && worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); return { running: false }; }
-  return { running: !!worker };
+  if (op === "restart") return restartWorker();
+  return { running: !!worker, lastExit: workerLastExit };
 });
 
 ipcMain.handle("pad:devices", () => new Promise(resolve => {

@@ -577,7 +577,7 @@ def setup(cfg: Config, with_ghidra: bool = True, log=print) -> list[dict]:
             r = fn()
         except Exception as e:
             r = _receipt(name, "failed", f"{type(e).__name__}: {e}")
-        log(f"  {r['status']:9} {r['step']:24} {str(r['detail'])[:110]}")
+        log(f"  {r['status']:9} {r['step']:24} {str(r.get('detail', r.get('path', '')))[:110]}")
         receipts.append(r)
     out = cfg.data_dir / f"provision-{HOST_OS}-{platform.node()}.json"
     out.parent.mkdir(parents=True, exist_ok=True)

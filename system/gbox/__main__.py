@@ -19,6 +19,8 @@ def main():
     w = sub.add_parser("worker", help="run an execution worker against a control plane")
     w.add_argument("--server", required=True)
     w.add_argument("--name")
+    w.add_argument("--reconcile-results", action="store_true",
+                   help="explicitly retry up to four exact retained results; activation still requires verified delivery")
     j = sub.add_parser("submit", help="submit a job and wait for its receipt")
     j.add_argument("tool")
     j.add_argument("input", nargs="?", default="{}")
@@ -79,7 +81,7 @@ def main():
         uvicorn.run(app, host=cfg.api_host, port=cfg.api_port, log_level="warning")
     elif a.cmd == "worker":
         from . import worker
-        worker.run(a.server, cfg.token(), cfg, a.name)
+        worker.run(a.server, cfg.token(), cfg, a.name, reconcile_results=a.reconcile_results)
     elif a.cmd == "submit":
         import httpx
         server = a.server or f"http://127.0.0.1:{cfg.api_port}"

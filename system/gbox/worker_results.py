@@ -16,6 +16,18 @@ import httpx
 
 
 def normalized_result(result: dict) -> dict:
+    if (not isinstance(result, dict) or not isinstance(result.get('job_id'), str)
+            or not result['job_id'] or type(result.get('ok')) is not bool
+            or not isinstance(result.get('log') or [], list)
+            or not all(isinstance(line, str) for line in result.get('log') or [])
+            or not isinstance(result.get('artifacts') or [], list)):
+        raise ValueError('Invalid finished worker result identity or payload')
+    for artifact in result.get('artifacts') or []:
+        if (not isinstance(artifact, dict)
+                or any(not isinstance(artifact.get(k), str) for k in ('name', 'media_type', 'b64'))
+                or not artifact['name'] or not artifact['media_type']
+                or not isinstance(artifact.get('provenance') or {}, dict)):
+            raise ValueError('Invalid finished worker result artifact')
     return {'job_id': result['job_id'], 'ok': result['ok'],
             'output': result.get('output'), 'error': result.get('error'),
             'log': result.get('log') or [],
@@ -28,6 +40,15 @@ def result_digest(result: dict) -> str:
     data = json.dumps(normalized_result(result), sort_keys=True, separators=(',', ':'),
                       allow_nan=False).encode()
     return hashlib.sha256(data).hexdigest()
+
+
+def _verified_ack(ack, record):
+    return (isinstance(ack, dict) and ack.get('accepted') is True
+            and ack.get('job_id') == record['result']['job_id']
+            and ack.get('worker_id') == record['worker_id']
+            and ack.get('result_sha256') == record['result_sha256']
+            and isinstance(ack.get('state'), str) and ack['state'] in {'succeeded', 'failed', 'invalid'}
+            and isinstance(ack.get('receipt'), str) and bool(ack['receipt']))
 
 
 def _pid_alive(pid):
@@ -115,7 +136,9 @@ class ResultOutbox:
 
     def _read(self, path):
         record = json.loads(path.read_text(encoding='utf-8'))
-        if (record.get('version') != 1 or record.get('server') != self.server
+        if not isinstance(record, dict):
+            raise RuntimeError('Invalid durable worker result; delivery and activation were stopped')
+        if (type(record.get('version')) is not int or record.get('version') != 1 or record.get('server') != self.server
                 or record.get('name') != self.name or not isinstance(record.get('worker_id'), str)
                 or not record['worker_id'] or record.get('status') not in {'pending', 'rejected', 'acknowledged'}
                 or record.get('result_sha256') != result_digest(record['result'])
@@ -126,15 +149,14 @@ class ResultOutbox:
             raise RuntimeError('Unacknowledged result in the delivered archive; activation was stopped')
         if record['status'] == 'acknowledged':
             ack = record.get('acknowledgement') or {}
-            if (ack.get('accepted') is not True or ack.get('result_sha256') != record['result_sha256']
-                    or ack.get('job_id') != record['result']['job_id']
-                    or ack.get('worker_id') != record['worker_id']
-                    or ack.get('state') not in {'succeeded', 'failed', 'invalid'} or not ack.get('receipt')):
+            if not _verified_ack(ack, record):
                 raise RuntimeError('Invalid durable acknowledgement; activation was stopped')
         return record
 
     def records(self, *, include_acknowledged=False):
         with self.lock:
+            if list((self.directory / 'rejected').glob('*.json')):
+                raise RuntimeError('Refused results outside the delivery queue need review; activation was stopped')
             paths = list(self.directory.glob('*.json'))
             if include_acknowledged:
                 paths += list(self.archive.glob('*.json'))
@@ -163,7 +185,7 @@ class ResultOutbox:
             _write(path, record)
             return record
 
-    def deliver(self, client, job_id: str, *, force=False):
+    def deliver(self, client, job_id: str, *, force=False, reconcile_rejected=False):
         """One bounded attempt; uncertain responses retain exactly the same bytes."""
         # Serialize actual sends separately. Heartbeats and newly finished
         # results must not wait behind a network timeout.
@@ -175,8 +197,22 @@ class ResultOutbox:
                 record = self._read(path)
                 if record['status'] == 'acknowledged':
                     return True
-                if record['status'] == 'rejected' or (not force and record['next_attempt'] > self.clock()):
+                if (record['status'] == 'rejected' and not reconcile_rejected
+                        or not force and record['next_attempt'] > self.clock()):
                     return False
+                prior_status = record['status']
+                if prior_status == 'rejected':
+                    # Preserve the exact refused record before any new attempt;
+                    # it remains evidence even if a repaired control plane ACKs.
+                    evidence = self.directory / 'refused-evidence'
+                    _mkdir(evidence)
+                    frozen = evidence / (path.stem + '.' + uuid.uuid4().hex + '.json')
+                    with frozen.open('xb') as stream:
+                        stream.write(path.read_bytes())
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    _sync_dir(evidence)
+                    record.setdefault('refused_evidence', []).append(str(frozen.relative_to(self.directory)))
                 record['attempts'] += 1
                 record['next_attempt'] = self.clock() + min(60, 2 ** min(record['attempts'], 6))
                 # Persist the attempt BEFORE transport. A lost response never clears this record.
@@ -186,17 +222,15 @@ class ResultOutbox:
                                        json=record['result'], timeout=20)
                 response.raise_for_status()
                 ack = response.json()
-                if (not isinstance(ack, dict) or ack.get('accepted') is not True
-                        or ack.get('job_id') != job_id or ack.get('worker_id') != record['worker_id']
-                        or ack.get('result_sha256') != record['result_sha256']
-                        or ack.get('state') not in {'succeeded', 'failed', 'invalid'}
-                        or not isinstance(ack.get('receipt'), str) or not ack['receipt']):
+                if not _verified_ack(ack, record):
                     raise ValueError('The control plane did not verify this exact result')
                 record.update(status='acknowledged', acknowledgement=ack, acknowledged_at=self.clock())
                 record.pop('last_error', None)
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
-                if 400 <= status < 500 and status not in {408, 429}:
+                # 401/403 say the token is wrong, not that the Spark refused this
+                # result: keep it pending so a fixed token can still deliver it.
+                if 400 <= status < 500 and status not in {401, 403, 408, 429}:
                     record['status'] = 'rejected'
                 record['last_error'] = {'kind': 'http', 'status': status}
             except (httpx.HTTPError, ValueError) as exc:
@@ -205,7 +239,7 @@ class ResultOutbox:
                 current = self._read(path)
                 if (current['result_sha256'] != record['result_sha256']
                         or current['worker_id'] != record['worker_id']
-                        or current['attempts'] != record['attempts'] or current['status'] != 'pending'):
+                        or current['attempts'] != record['attempts'] or current['status'] != prior_status):
                     raise RuntimeError('Durable result changed during transport; acknowledgement was not applied')
                 _write(path, record)
                 if record['status'] == 'acknowledged' and path.parent == self.directory:
@@ -230,6 +264,27 @@ class ResultOutbox:
                 if candidate.exists():
                     return self._read(candidate)['status'] in {'acknowledged', 'rejected'}
         return False
+
+    def held(self):
+        """Unacknowledged results, summarized for an operator (no result bytes)."""
+        return [{'job_id': r['result']['job_id'], 'status': r['status'], 'attempts': r.get('attempts', 0),
+                 'last_error': r.get('last_error')} for r in self.records() if r['status'] != 'acknowledged']
+
+    def reconcile_ready(self, client, *, maximum=4):
+        """Explicit bounded retry of exact retained bytes, never a tool replay.
+
+        Routine delivery and watchdog starts do not retry refused results.
+        Only an exact verified acknowledgement releases a retained record.
+        """
+        if type(maximum) is not int or not 0 < maximum <= 4:
+            raise ValueError('Reconciliation must be bounded to one through four results')
+        candidates = self.records()[:maximum]
+        acknowledged = []
+        for record in candidates:
+            if record['status'] != 'acknowledged' and self.deliver(
+                    client, record['result']['job_id'], force=True, reconcile_rejected=True):
+                acknowledged.append(record['result']['job_id'])
+        return acknowledged
 
     def send_ready(self, client, *, maximum=4, force=False):
         acknowledged = []

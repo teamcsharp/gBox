@@ -5032,7 +5032,10 @@ async function svcShow(key) {
       title = `${w.os === "windows" ? "🪟" : "🐧"} ${w.name || id}`; sub = w.online ? "online" : "offline";
       const sess = (ss.data || []).filter(x => x.state === "running" && x.session_id.startsWith(id + "-"));
       const jobs = (js.data || []).filter(j => j.worker_id === id).slice(0, 25);
+      const mine = !!S.workerName && w.name === S.workerName;
+      const local = mine ? await gbox.winWorker("status").catch(() => ({})) : {};
       body = (w.os === "windows" && w.online ? `<button class="act" data-watch-worker="${esc(w.id)}">Watch this PC in picture-in-picture</button>` : "")
+        + (mine ? workerReconnectNote(w, local) : "")
         + svcKV({ name: w.name, id: w.id, os: w.os, online: w.online ? "yes" : "no", "last check-in": ago(w.last_seen),
                   "user idle": w.idle_seconds == null ? "unknown" : `${Math.round(w.idle_seconds)} s`,
                   "agent jobs": w.active_jobs || 0, version: w.version, host: w.host,
@@ -5053,11 +5056,36 @@ async function svcShow(key) {
 }
 $("#sb-right").addEventListener("click", e => { const k = e.target.closest("[data-k]")?.dataset.k; if (k) svcShow(k); });
 $("#svc-close").onclick = () => { $("#svcpanel").classList.remove("on"); SVC_KEY = null; };
+// This PC's worker: say why it is offline and offer a one-click reconnect (#1296).
+function workerReconnectNote(w, local) {
+  const exit = local && local.lastExit;
+  const why = exit && exit.reason ? `<p class="bad">Last worker exit (code ${esc(exit.code)}, ${esc(ago(exit.at / 1000))}): ${esc(exit.reason)}</p>` : "";
+  const state = w.online ? "This PC's worker is connected." :
+    local && local.running ? "This PC's worker is running but hasn't checked in with the Spark." : "This PC's worker isn't running.";
+  return `<p class="mut">${state} ↻ refreshes this panel.</p>${why}`
+    + (w.online || local?.running ? "" : `<button class="act" data-reconnect-worker="1">Reconnect this PC's worker</button>`);
+}
+async function svcReconnect(key) {
+  $("#svcbody").insertAdjacentHTML("afterbegin", '<p class="mut" id="svc-reconnecting">Reconnecting this PC\'s worker…</p>');
+  const r = await gbox.winWorker("restart").catch(e => ({ error: e.message }));
+  if (r?.error || r?.started !== true) { $("#svc-reconnecting")?.remove(); $("#svcbody").insertAdjacentHTML("afterbegin", `<p class="bad">${esc(r?.error || "The worker did not start. Reconnection was not confirmed.")}</p>`); return; }
+  let connected = false;
+  for (let i = 0; i < 8 && SVC_KEY === key; i++) {        // the worker checks in within a few seconds when it can
+    await new Promise(res => setTimeout(res, 2000));
+    const ws = await gbox.api("/api/workers").catch(() => ({}));
+    if ((ws.data || []).some(x => x.name === S.workerName && x.online)) { connected = true; break; }
+  }
+  if (SVC_KEY === key) {
+    await svcShow(key);
+    if (!connected) $("#svcbody").insertAdjacentHTML("afterbegin", '<p class="bad">The worker started, but its connection is not confirmed. Check the latest worker exit and retained result delivery.</p>');
+  }
+}
 $("#svc-refresh").onclick = () => SVC_KEY && svcShow(SVC_KEY);
 floating($("#svcpanel"), $("#svcpanel .ah"), "svc"); window.floating = floating;
 $("#svcbody").addEventListener("click", e => {
   const id = e.target.closest("[data-watch-worker]")?.dataset.watchWorker;
   if (id) remoteWatch(id);
+  if (e.target.closest("[data-reconnect-worker]") && SVC_KEY && SVC_KEY.startsWith("worker:")) svcReconnect(SVC_KEY);
 });
 let remoteDrag = null;
 $("#remote-pip .rp-head").addEventListener("pointerdown", e => {

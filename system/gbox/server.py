@@ -490,14 +490,40 @@ def create_app(config: Config) -> FastAPI:
     # --- swap / move: a running game -> the same game with another mod (or none), on the same machine or another one ---
     # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
-    def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None) -> dict:
+    def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None, should_stop=None,
+                 on_cancel_deferred=None) -> dict:
         j = submit(JobRequest(tool=tool, input=inp, require_worker=worker), actor)
         t0 = time.time()
+        deferred_launch = False
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
+            if should_stop and should_stop():
+                # the parent was cancelled: drop a queued child, ask a running one to stop, and stop waiting (#1297)
+                with store.lock:
+                    cj = store.get("job", j.id)
+                    queued = cj["state"] == JobState.QUEUED
+                    if queued:
+                        cj.update(state=JobState.FAILED, finished=time.time(), cancel=True,
+                                  error="cancelled with its parent task")
+                    elif cj["state"] == JobState.RUNNING and tool != 'launch_game':
+                        cj["cancel"] = True
+                    if queued or tool != 'launch_game':
+                        store.put("job", j.id, cj)
+                if tool != 'launch_game' or queued:
+                    raise HTTPException(409, "cancelled by the operator before the replacement started; "
+                                             "your current game was kept running")
+                # Claim and cancellation share Store.lock. Once a launch is
+                # claimed, its native outcome is unknown: do not race a recovery
+                # launch or stop its emulator. Finish the existing handoff.
+                if on_cancel_deferred:
+                    on_cancel_deferred()
+                deferred_launch = True
             if progress and jj.get('progress'):
                 progress(jj['progress'].get('pct', 0), jj['progress'].get('msg', ''))
             time.sleep(0.5)
         if jj["state"] != "succeeded":
+            if deferred_launch and jj['state'] == JobState.RUNNING:
+                raise HTTPException(409, "Cancellation remains deferred: the replacement launch has no completed result yet. "
+                                         "No recovery launch or game stop was requested.")
             raise HTTPException(409, f"{tool} failed: {jj.get('error') or jj['state']}")
         return jj.get("output") or {}
 
@@ -517,8 +543,17 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, f"no online gBox worker '{to}'")
         return hit
 
-    def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None) -> dict:
+    def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
+                     should_stop=None) -> dict:
         say = progress or (lambda pct, msg: None)
+        stop = should_stop or (lambda: False)
+        cancel_deferred = False
+
+        def defer_cancel():
+            nonlocal cancel_deferred
+            if not cancel_deferred:
+                cancel_deferred = True
+                say(66, "The replacement launch has started. Cancellation is deferred while its safe handoff finishes.")
         sess = store.get("session", sid) or _404()
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
@@ -530,7 +565,7 @@ def create_app(config: Config) -> FastAPI:
         if mod:
             say(2, "Preparing replacement files; your current game keeps running")
             staged = _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
-                              progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+                              progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg), should_stop=stop)
             if isinstance(staged, dict) and (staged.get('ready') is False or
                     (staged.get('source_mod') and staged['source_mod'] != mod)):
                 raise HTTPException(409, 'Prepared replacement does not identify the requested mod')
@@ -546,17 +581,30 @@ def create_app(config: Config) -> FastAPI:
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
-                old_luma = _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30).get("mean_luma")
+                old_luma = _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30,
+                                    should_stop=stop).get("mean_luma")
             except HTTPException:
                 pass
             try:
-                art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=90)["result"]["artifact"]
-            except (HTTPException, KeyError) as e:
+                art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=90,
+                               should_stop=stop)["result"]["artifact"]
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({e.detail}). Your game was kept running.")
+            except KeyError as e:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
+        if stop():
+            raise HTTPException(409, "cancelled by the operator before the replacement started; your current game was kept running")
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
         try:
-            new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900)
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900,
+                           should_stop=stop, on_cancel_deferred=defer_cancel)
         except HTTPException as e:
+            if str(e.detail).startswith('cancelled by the operator before the replacement started'):
+                raise                            # the child never claimed a native launch; no recovery is needed
+            if str(e.detail).startswith('Cancellation remains deferred:'):
+                raise                            # no verified child outcome on which to base native recovery
             # a modded launch closes the same console's game on that PC first: if the new one didn't start, bring the old back
             alive = True
             if running:
@@ -580,6 +628,8 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, f"the mod '{mod}' isn't built for {tw['name']} yet (rebuild it), then try again")
             raise
         nsid = new["session_id"]
+        if stop():
+            defer_cancel()                       # includes cancellation racing a just-completed launch
         if launch_mod != mod and store.get("session", nsid):
             with store.lock:
                 store.put("session", nsid, store.get("session", nsid) | {
@@ -637,9 +687,15 @@ def create_app(config: Config) -> FastAPI:
                 notes.append("The restored frame is dark. Your state was preserved; use Inspect or return to Play to check it.")
         store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": nsid,
                     "state_loaded": loaded, "load_requested": load_requested, "load_verified": load_verified})
+        if cancel_deferred:
+            notes.append("Cancellation arrived after the replacement launch started, so the launch and any requested state restoration were allowed to finish. No game was stopped solely to cancel this task.")
         return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod,
                 "launch_mod": launch_mod, "state_loaded": loaded, "load_requested": load_requested,
-                "load_verified": load_verified, "notes": notes}
+                "load_verified": load_verified, "cancel_deferred": cancel_deferred, "notes": notes}
+
+    # ids of in-server job threads alive in THIS process; a "running" session_swap missing here was left by a previous
+    # server process (restart) and nothing will ever finish or cancel it unless we retire it (#1297)
+    _server_job_threads: set[str] = set()
 
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
@@ -661,6 +717,7 @@ def create_app(config: Config) -> FastAPI:
             job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
                       state=JobState.RUNNING, started=time.time())
             store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
 
         def prog(pct, msg):
             with store.lock:
@@ -674,14 +731,22 @@ def create_app(config: Config) -> FastAPI:
 
         def go():
             try:
-                out, state, err = session_swap(sid, mod, to, actor, keep_state, prog), JobState.SUCCEEDED, None
+                out, state, err = session_swap(sid, mod, to, actor, keep_state, prog,
+                                               lambda: bool((store.get("job", job.id) or {}).get("cancel"))), JobState.SUCCEEDED, None
             except HTTPException as e:
                 out, state, err = None, JobState.FAILED, str(e.detail)
             except Exception as e:                             # noqa: BLE001
                 out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
             with store.lock:
-                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
+                current = store.get("job", job.id)
+                if state == JobState.SUCCEEDED and current.get('cancel') and not out.get('cancel_deferred'):
+                    out = out | {'cancel_deferred': True,
+                                 'notes': out.get('notes', []) + ['Cancellation arrived after the replacement launch started, so its safe handoff was completed. No game was stopped solely to cancel this task.']}
+                store.put("job", job.id, current | {"state": state, "finished": time.time(), "output": out,
                                                                      "error": err})
+                _server_job_threads.discard(job.id)
+            if state == JobState.FAILED and err and err.startswith('cancelled by the operator'):
+                return                                         # the operator stopped it: not a mod failure to report
             if state == JobState.FAILED and mod:
                 try:
                     req_auto_mod_failure(AutoFailureIn(session_id=sid, game=sess.get("title") or "", model=mod,
@@ -689,7 +754,16 @@ def create_app(config: Config) -> FastAPI:
                         detail=err or "session swap failed", job_id=job.id), "gbox-auto")
                 except Exception as exc:
                     store.audit("gbox-auto", "request.auto_mod_failure.error", job.id, {"error": str(exc)[:500]})
-        threading.Thread(target=go, daemon=True).start()
+        try:
+            threading.Thread(target=go, daemon=True).start()
+        except Exception as exc:
+            reason = f'Replacement background task could not start ({type(exc).__name__}); no replacement work was dispatched.'
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {
+                    'state': JobState.FAILED, 'finished': time.time(), 'error': reason})
+                store.audit(actor, 'job.failed', job.id, {'reason': reason, 'server_thread_start_failed': True})
+            raise HTTPException(503, reason) from exc
         return job
 
     # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
@@ -1439,13 +1513,19 @@ def create_app(config: Config) -> FastAPI:
             elif j["state"] == JobState.RUNNING:
                 j["cancel"] = True
             store.put("job", jid, j)
+        from .job_maintenance import is_orphaned_server_job, retire_orphaned_server_jobs
+        if is_orphaned_server_job(j | {"id": jid}, _server_job_threads):
+            # its thread died with an earlier server process: nothing would ever see the cancel flag (#1297)
+            retire_orphaned_server_jobs(store, _server_job_threads)
+            j = store.get("job", jid) or j
         store.audit(actor, "job.cancel", jid, {"state": j["state"]})
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
     def retire_unrunnable_jobs(worker_snapshot=None):
         """Keep dead sessions and long-gone workers out of the visible active queue."""
-        from .job_maintenance import retire_stalled_snapshots
+        from .job_maintenance import retire_orphaned_server_jobs, retire_stalled_snapshots
         retire_stalled_snapshots(store)
+        retire_orphaned_server_jobs(store, _server_job_threads)
         now = time.time()
         with store.lock:
             available = {key for w in (workers() if worker_snapshot is None else worker_snapshot)
