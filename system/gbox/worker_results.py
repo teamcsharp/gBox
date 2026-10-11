@@ -196,7 +196,9 @@ class ResultOutbox:
                 record.pop('last_error', None)
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
-                if 400 <= status < 500 and status not in {408, 429}:
+                # 401/403 say the token is wrong, not that the Spark refused this
+                # result: keep it pending so a fixed token can still deliver it.
+                if 400 <= status < 500 and status not in {401, 403, 408, 429}:
                     record['status'] = 'rejected'
                 record['last_error'] = {'kind': 'http', 'status': status}
             except (httpx.HTTPError, ValueError) as exc:
@@ -216,6 +218,37 @@ class ResultOutbox:
                     _sync_dir(self.archive)
                     _sync_dir(self.directory)
             return record['status'] == 'acknowledged'
+
+    def held(self):
+        """Unacknowledged results, summarized for an operator (no result bytes)."""
+        return [{'job_id': r['result']['job_id'], 'status': r['status'], 'attempts': r.get('attempts', 0),
+                 'last_error': r.get('last_error')} for r in self.records() if r['status'] != 'acknowledged']
+
+    def quarantine_rejected(self):
+        """Move results the control plane explicitly refused out of the delivery queue.
+
+        A rejected result is never resent (the Spark already answered for that job),
+        so holding worker activation on it can only keep the PC offline forever.
+        The exact record bytes are kept under rejected/ for review; nothing is deleted.
+        """
+        moved = []
+        with self.lock:
+            quarantine = self.directory / 'rejected'
+            for record in self.records():
+                if record['status'] != 'rejected':
+                    continue
+                if not moved:
+                    _mkdir(quarantine)
+                source = self._path(record['result']['job_id'])
+                destination = quarantine / source.name
+                if destination.exists():
+                    destination = quarantine / f"{source.stem}.{int(self.clock() * 1000)}.json"
+                os.replace(source, destination)
+                moved.append({'job_id': record['result']['job_id'], 'last_error': record.get('last_error')})
+            if moved:
+                _sync_dir(quarantine)
+                _sync_dir(self.directory)
+        return moved
 
     def send_ready(self, client, *, maximum=4, force=False):
         acknowledged = []

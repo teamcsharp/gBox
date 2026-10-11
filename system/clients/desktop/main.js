@@ -244,6 +244,14 @@ ipcMain.handle("win:setup", () => {
   return id;
 });
 
+// The last worker exit, so the app can say WHY this PC's worker is offline (#1296).
+let workerTail = "", workerLastExit = null;
+function workerExitReason(text) {
+  const lines = String(text).split(/\r?\n/).map(l => l.replace(/^\d\d:\d\d:\d\d\.\d+ \[win-worker\]\s*/, "").trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--)
+    if (/^[A-Za-z_.]*(Error|Exception)\b.*:/.test(lines[i])) return lines[i].slice(0, 600);
+  return lines.slice(-1)[0]?.slice(0, 600) || "";
+}
 async function startWorker() {
   const s = settings();
   if (worker) return { running: true };
@@ -258,9 +266,11 @@ async function startWorker() {
     worker = spawn(venvPython(), ["-P", "-m", "gbox", "--config", path.join(s.repoLocal, "gbox.toml"), "worker", "--server", s.apiUrl, "--name", s.workerName],
       { env: { ...process.env, PYTHONPATH: s.repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1" }, cwd: os.homedir(), windowsHide: true });
   }
-  const out = d => send("task", "win-worker", d.toString());
+  workerTail = "";
+  const out = d => { const t = d.toString(); workerTail = (workerTail + t).slice(-8000); send("task", "win-worker", t); };
   worker.stdout.on("data", out); worker.stderr.on("data", out);
   worker.on("close", code => {
+    workerLastExit = { code, at: Date.now(), reason: workerExitReason(workerTail) };
     send("task", "win-worker", `\n[worker exited ${code}]\n`); worker = null; send("worker", false);
     if (!workerStopRequested && settings().autoStartWorker) setTimeout(startWorker, 5000);   // watchdog
     workerStopRequested = false;
@@ -268,10 +278,20 @@ async function startWorker() {
   send("worker", true);
   return { running: true };
 }
+// Reconnect: stop this PC's worker if it is running (a stale connection), then start a fresh one.
+async function restartWorker() {
+  if (worker) {
+    const old = worker; workerStopRequested = true;
+    await new Promise(resolve => { old.once("close", resolve); execFile("taskkill", ["/T", "/F", "/PID", String(old.pid)], () => {}); setTimeout(resolve, 8000); });
+  }
+  const r = await startWorker();
+  return { ...r, restarted: true, lastExit: workerLastExit };
+}
 ipcMain.handle("win:worker", (_e, op) => {
   if (op === "start") return startWorker();
   if (op === "stop" && worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); return { running: false }; }
-  return { running: !!worker };
+  if (op === "restart") return restartWorker();
+  return { running: !!worker, lastExit: workerLastExit };
 });
 
 ipcMain.handle("pad:devices", () => new Promise(resolve => {

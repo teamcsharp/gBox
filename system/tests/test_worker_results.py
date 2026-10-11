@@ -90,7 +90,7 @@ def test_artifact_bytes_fsynced_before_first_transport_and_restart_retry(cfg):
     assert app.state.store.read_artifact(receipt['artifacts'][0]['sha256']) == b'actual finished bytes'
 
 
-@pytest.mark.parametrize('status', [400, 401, 403, 404, 409, 422])
+@pytest.mark.parametrize('status', [400, 404, 409, 422])
 def test_rejected_result_stays_pending_and_never_blindly_retries(cfg, status):
     outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
     outbox.save('old-worker', launch_result())
@@ -423,3 +423,69 @@ def test_interrupted_stop_acceptance_preserves_ended_session_metadata(cfg, monke
     assert len(store.all("receipt")) == 1
     assert len([e for e in store.audit_log() if e["action"] == "job.succeeded"]) == 1
     assert store.verify_audit()[0]
+
+
+@pytest.mark.parametrize('status', [401, 403])
+def test_auth_failure_is_not_a_verdict_on_the_result(cfg, status):
+    # A wrong token says nothing about the result: keep it pending so it can still be delivered (#1296).
+    app, plane = control(cfg)
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Denied:
+        def post(self, path, **_):
+            return httpx.Response(status, request=httpx.Request('POST', 'http://fixture' + path))
+    assert not outbox.deliver(Denied(), 'launch')
+    assert outbox.records()[0]['status'] == 'pending'
+    assert outbox.send_ready(plane, force=True) == ['launch']
+
+
+class _PlaneClient:
+    plane = None
+    def __init__(self, **_): pass
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
+    def post(self, path, **kwargs): return self.plane.post(path, **kwargs)
+
+
+class _Registered(Exception):
+    pass
+
+
+def test_refused_result_is_quarantined_and_worker_activates(cfg, monkeypatch):
+    # #1296: the Spark answered 409 for a result it no longer tracks. Before, every
+    # restart raised "activation held" and the PC stayed offline forever.
+    app, plane = control(cfg, state='succeeded')
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Refuse:
+        def post(self, path, **_):
+            return httpx.Response(409, request=httpx.Request('POST', 'http://fixture' + path))
+    assert not outbox.deliver(Refuse(), 'launch')
+    saved = next(outbox.directory.glob('*.json')).read_bytes()
+    monkeypatch.setattr(_PlaneClient, 'plane', plane)
+    monkeypatch.setattr(worker.httpx, 'Client', _PlaneClient)
+    monkeypatch.setattr(ResultOutbox, 'protected_sessions', lambda *_: [])
+    def describe(*_):
+        raise _Registered()
+    monkeypatch.setattr(worker, 'describe', describe)
+    with pytest.raises(_Registered):            # activation reached registration
+        worker.run('http://fixture', 'secret', cfg, 'owned-worker', stop=threading.Event())
+    fresh = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    assert fresh.pending_count() == 0 and fresh.held() == []
+    kept = list((fresh.directory / 'rejected').glob('*.json'))
+    assert len(kept) == 1 and kept[0].read_bytes() == saved   # exact bytes preserved, not deleted
+
+
+def test_uncertain_result_still_holds_activation_and_names_the_job(cfg, monkeypatch):
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Down:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def post(self, path, **_): raise httpx.ConnectError('spark unreachable')
+    monkeypatch.setattr(worker.httpx, 'Client', Down)
+    monkeypatch.setattr(worker, 'describe', lambda *_: pytest.fail('registered while a result was uncertain'))
+    with pytest.raises(RuntimeError, match=r'activation held.*job launch pending after 1 attempt\(s\) \(ConnectError\)'):
+        worker.run('http://fixture', 'secret', cfg, 'owned-worker', stop=threading.Event())
+    assert outbox.pending_count() == 1

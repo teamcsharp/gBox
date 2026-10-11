@@ -206,8 +206,19 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     # identity; registration would otherwise retire its unfinished jobs.
     with httpx.Client(base_url=server, headers=h, timeout=20) as delivery_client:
         outbox.send_ready(delivery_client, force=True)
-    if outbox.pending_count():
-        raise RuntimeError('Worker activation held: finished results still await verified delivery')
+    for q in outbox.quarantine_rejected():
+        err = q['last_error'] or {}
+        print(f"result for job {q['job_id']} was refused by the control plane"
+              f" (HTTP {err.get('status', '?')}); kept under worker-results/.../rejected and not resent", flush=True)
+    held = outbox.held()
+    if held:
+        def why(e):
+            return f" ({' '.join(str(v) for v in (e.get('kind'), e.get('status')) if v)})" if e else ''
+        detail = '; '.join(f"job {r['job_id']} {r['status']} after {r['attempts']} attempt(s){why(r['last_error'])}"
+                           for r in held)
+        raise RuntimeError('Worker activation held: finished results still await verified delivery: '
+                           f'{detail}. Check that {server} is reachable and runs the same gBox version, '
+                           'then reconnect this worker.')
     if outbox.protected_sessions(_builtin._running_file(config)):
         raise RuntimeError('Worker activation held: a delivered native launch still has an owned PID record; no emulator was stopped')
     info = describe(config, name)
