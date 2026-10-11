@@ -97,11 +97,37 @@ Cross-archive decode results (owned extracts, `parse_meshes` + `parse_textures` 
 native texture id; weights zeroed — rig is NOT in CHR, it lives in the SUP/ACS route) and a UAP
 manifest with per-dimension confidence honestly set (geometry/textures verified, skeleton missing).
 
+## Slice 3 (commit pending): SUP seam grammar + native 17-joint rig
+
+**Correction to slice 1's SUP reading:** the "offset table of float records (physics supplement)"
+is actually the **seam/skin directory** (grammar verified on all 80 owned costume SUPs, 906 seams):
+
+- Directory: `u32 dir_size` (= 4·(n+1), 4-aligned, == seam-0 offset), n−1 further monotonic
+  starts, one 0 sentinel; `first == 0` means an empty (disabled) seam list.
+- Seam record: `{u32 data_ptr, u8 bone_a, u8 bone_b, u8 model_id, u8 initialized}` with
+  `data_ptr == offset+8`, bones < 44 (MOTs carry 44 tracks), then **18 floats = three interleaved
+  column pairs (A_k, B_k)** — two 3×3 orthonormal bases linking the two joints' neutral
+  orientations (native relation `R_a·A = R_b·B`; all owned seams carry A = identity).
+  `model_id` indexes the costume CHR's models (the seam/bridge mesh).
+- Disc-wide seam graph: 18 distinct joint pairs covering all 15 core joints (hands 5/11 only via
+  KAS04/PDG01) + Tengu wings 17–22 (TNG only).
+
+Reader rig (`gbox/doa2_chars.py::build_rig`): joint rotations solved from the disc-wide SUP seam
+graph (anchor pelvis=2, cross-costume consistency enforced), translations from the EXE
+rest-vector table `0x8c1949a0` (25 slot pointers → 17×xyz; KAS slot 5, GEN slot 6), eyes 15/16
+neutral from head. **Cross-lane validation: world rest matrices match the writer lane's
+independent `doa2-native-rig-v1` profiles (gbox-doa2-animation/*_profile.json) exactly — max
+element delta 0.0 on all 17 joints, both KAS and GEN.** `export_assets` now emits a real
+skinned-shape glTF (17 named joints chest/head/pelvis/…/right_breast_16 + skin + inverse binds);
+manifest confidence `skeleton: verified`, `skin_weights: missing` (the model→joint emit map is a
+render-script fact — geometry alone cannot derive it: rotation-invariant pivot test failed 0/56).
+
 ## Not yet done (next slice, in order)
 
-1. Rig/skeleton: decode SUP (offset-table float records) and ACS chain data into real joints; the
-   retargeting bone-role map depends on it. MOT clip decode (1004 Kasumi clips) still open.
-2. Reader-route parity with the writer lane (PR #8): fold the corrected layout into
-   `doa2_geometry.py`'s assumptions when that branch merges.
-3. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay
+1. Skin weights via the render-script emit map (`0x8c1c85f4` table; PR #8's
+   `doa2_bindings.render_part_mapping` route) — then weights can attach to the reader rig.
+2. MOT clip decode (1004 Kasumi clips) still open.
+3. Reader-route parity with the writer lane (PR #8): fold the corrected SUP layout into
+   `doa2_morphs.inspect_sup` assumptions when that branch merges.
+4. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay
    acceptance on JAYBUILTFINALE remains the gate for #1140.

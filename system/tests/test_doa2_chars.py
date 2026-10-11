@@ -16,6 +16,10 @@ import pytest
 from gbox import doa2_chars
 
 
+def _flat(m):
+    return [round(x, 6) for row in m for x in row]
+
+
 def synth_chr(n_obj=3, n_tex=2, base=0x0C300000):
     """A minimal CHR with the corrected layout: 24-B container header, model 0 at offset 24
     (its {flags, sphere} words are what slice-1 mislabeled 'scale floats'), model bodies with
@@ -63,11 +67,25 @@ def synth_bin():
 
 
 def synth_sup():
-    b = bytearray(68)
-    struct.pack_into("<II", b, 0, 44, 60)
-    struct.pack_into("<6f", b, 44, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
-    struct.pack_into("<2f", b, 60, 0.5, 0.25)                         # last record runs to EOF
-    return bytes(b)
+    """Two seams in the corrected native grammar: directory (n starts + 0 sentinel, first ==
+    directory size), then per-seam {u32 data_ptr==off+8, u8 bone_a, u8 bone_b, u8 model, u8 init}
+    followed by 18 floats = three interleaved column pairs (A_k, B_k). Seam 0: bones 1/0 with
+    A=I, B=I (head/chest aligned). Seam 1: bones 0/2 with A=I, B=R_z(90deg) (chest rotated a
+    quarter turn about Y-up from pelvis in the world frame this encodes)."""
+    def seam(offset, a, b, model, bases):            # bases: list of 3 (A_k, B_k) column pairs
+        body = struct.pack("<IBBBB", offset + 8, a, b, model, 0)
+        for ak, bk in bases:
+            for v in (ak, bk):
+                body += struct.pack("<3f", *v)
+        return body
+    quarter = ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))   # R_z(+90 deg) columns
+    ident = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    dir_size = 12                                             # 3 words: size, start_1, sentinel
+    s0 = seam(dir_size, 1, 0, 23, [(ident[k], ident[k]) for k in range(3)])
+    s1 = seam(dir_size + len(s0), 0, 2, 40, [(ident[k], quarter[k]) for k in range(3)])
+    # native layout: w0 = dir byte size == seam-0 offset; remaining starts; one 0 sentinel
+    out = struct.pack("<3I", dir_size, dir_size + len(s0), 0) + s0 + s1
+    return out
 
 
 def synth_mot():
@@ -192,16 +210,84 @@ class TestRoster:
 
 
 class TestParseSupMot:
-    def test_sup_records(self):
+    def test_sup_seam_grammar(self):
         r = doa2_chars.parse_sup(synth_sup())
-        assert r["n_records"] == 2
-        assert r["records"][0][:3] == pytest.approx([0.0, 0.0, 1.0])
-        assert r["records"][1] == pytest.approx([0.5, 0.25])
+        assert r["seam_count"] == 2
+        s0, s1 = r["seams"]
+        assert s0["bone_a"] == 1 and s0["bone_b"] == 0 and s0["model_id"] == 23
+        assert s0["data_offset"] == s0["offset"] + 8
+        assert _flat(s0["a_vectors"]) == pytest.approx([1, 0, 0, 0, 1, 0, 0, 0, 1])
+        assert s1["bone_a"] == 0 and s1["bone_b"] == 2
+        assert _flat(s1["b_vectors"]) == pytest.approx([0, -1, 0, 1, 0, 0, 0, 0, 1])  # R_z(90)
+
+    def test_sup_real_disc_anchor(self):
+        # first 80 bytes of the real DOA2/KAS00.SUP (sha256 543fad88…): word0 = 0x2c (directory
+        # size == seam-0 offset), seam 0 {ptr=0x34, bones 1/0, model 23} with identity bases.
+        # Later starts point past this slice, so the slice is padded to the last start (0x1884)
+        # with zeros and that last start is redirected to a minimal valid seam.
+        anchor = bytearray(bytes.fromhex(
+            "2c00000048040000400a0000340c0000880e0000581000006c12000060140000b4160000"
+            "8418000000000000"
+            "34000000010017000000803f00000000000000000000803f000000000000000000000000"
+            "0000803f00000000000000000000803f0000000000000000000000000000803f00000000"
+            "000000000000803f"))
+        anchor += bytes(0x1884 + 80 - len(anchor))                     # room for 10 minimal seams
+        for s in (0x448, 0xa40, 0xc34, 0xe88, 0x1058, 0x126c, 0x1460, 0x16b4, 0x1884):
+            struct.pack_into("<IBBBB", anchor, s, s + 8, 3, 7, 10, 0)  # synthetic tail seams
+        r = doa2_chars.parse_sup(bytes(anchor))
+        assert r["seam_count"] == 10
+        s = r["seams"][0]
+        assert s["bone_a"] == 1 and s["bone_b"] == 0 and s["model_id"] == 23
+        assert s["initialized"] == 0
+        assert [round(x, 6) for v in s["a_vectors"] for x in v] == pytest.approx(
+            [1, 0, 0, 0, 1, 0, 0, 0, 1])
+
+    def test_sup_rejects_bad_directory(self):
+        bad = bytearray(synth_sup())
+        struct.pack_into("<I", bad, 4, 0)                     # interior zero start
+        with pytest.raises(ValueError):
+            doa2_chars.parse_sup(bytes(bad))
+        bad = bytearray(synth_sup())
+        struct.pack_into("<I", bad, 0, 7)                     # unaligned directory size
+        with pytest.raises(ValueError):
+            doa2_chars.parse_sup(bytes(bad))
+        with pytest.raises(ValueError):                       # seam data_ptr != offset+8
+            doa2_chars.parse_sup(struct.pack("<II", 12, 0) + struct.pack("<IBBBB", 99, 1, 0, 0, 0))
 
     def test_mot_table(self):
         r = doa2_chars.parse_mot_table(synth_mot())
         assert r["n_clips"] == 3
         assert r["offsets"][0] == 0x1898 and r["offsets"][2] == 0x1898   # shared clip
+
+
+class TestRig:
+    def test_solve_joint_bases_chain(self):
+        # synth seams: (1,0)->I and (0,2)->R_z(90): anchor pelvis 2 = I implies chest quarter-
+        # turned, head aligned to chest
+        r = doa2_chars.solve_joint_bases(
+            [{**s, "name": "synth"} for s in doa2_chars.parse_sup(synth_sup())["seams"]],
+            anchor=2, joint_ids={0, 1, 2})
+        assert _flat(r["2"]) == pytest.approx([1, 0, 0, 0, 1, 0, 0, 0, 1])
+        assert _flat(r["0"]) == pytest.approx([0, 1, 0, -1, 0, 0, 0, 0, 1])  # rows of B=R_z(90)
+        assert _flat(r["1"]) == pytest.approx(_flat(r["0"]))
+
+    def test_solve_rejects_disconnected(self):
+        with pytest.raises(ValueError, match="does not connect"):
+            doa2_chars.solve_joint_bases(
+                [{"bone_a": 5, "bone_b": 4, "a_vectors": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                  "b_vectors": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "name": "x"}],
+                anchor=2, joint_ids=range(6))
+
+    def test_solve_rejects_non_rotation(self):
+        with pytest.raises(ValueError, match="proper rotation"):
+            doa2_chars.solve_joint_bases(
+                [{"bone_a": 0, "bone_b": 2, "a_vectors": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                  "b_vectors": [[2, 0, 0], [0, 1, 0], [0, 0, 1]], "name": "x"}],
+                anchor=2, joint_ids={0, 2})
+
+    def test_rest_table_rejects_foreign_exe(self):
+        with pytest.raises(ValueError, match="verified DOA2"):
+            doa2_chars.parse_rest_rig(b"\0" * 0x100000)
 
 
 class TestExportAssets:
@@ -214,10 +300,42 @@ class TestExportAssets:
         assert m["geometry_facts"]["n_models"] == 3
         assert m["texture_facts"]["n_textures"] == 2
         assert m["confidence"]["geometry"] == "verified"
-        assert m["confidence"]["skeleton"] == "missing"               # honest: rig not in CHR
+        assert m["confidence"]["skeleton"] == "missing"               # no rig passed
         gltf = json.load(open(tmp_path / "unit.gltf"))
         assert gltf["asset"]["version"] == "2.0"
         assert gltf["images"] and len(gltf["materials"]) >= 1
+
+    def test_gltf_with_rig(self, tmp_path):
+        # synthetic rig in the native 17-joint shape: parents from the EXE rest table, world
+        # matrices built like build_rig does (identity bases, pelvis-chain translations)
+        import numpy as np
+        parents = doa2_chars.JOINT_PARENTS
+        vec = [[0.0, 0.18, 0.0]] + [[0.0, 0.1, 0.0]] * 16              # chest + chain offsets
+        pos = {2: np.zeros(3)}
+        for _ in range(17):
+            for j, p in enumerate(parents):
+                if j not in pos and (p == -1 or p in pos):
+                    pos[j] = (np.zeros(3) if p == -1 else pos[p]) + np.asarray(vec[j])
+        world = []
+        for j in range(17):
+            M = np.eye(4)
+            M[:3, 3] = pos[j]
+            world.append(M.tolist())
+        rig = {"parents": parents, "roles": doa2_chars.JOINT_ROLES, "world": world,
+               "rest_address": "0x8c193fe0", "fighter_slot": 5, "n_seam_records": 2,
+               "seam_sources": ["DOA2/SYNTH.SUP"]}
+        r = doa2_chars.export_assets(synth_chr(), synth_bin(), str(tmp_path), "rigged", rig=rig)
+        m = r["manifest"]
+        assert m["confidence"]["skeleton"] == "verified"
+        assert m["skeleton_facts"]["n_joints"] == 17
+        assert m["skeleton_facts"]["rest_address"] == "0x8c193fe0"
+        gltf = json.load(open(tmp_path / "rigged.gltf"))
+        assert len(gltf["skins"]) == 1 and len(gltf["skins"][0]["joints"]) == 17
+        names = [n.get("name", "") for n in gltf["nodes"]]
+        assert "pelvis_02" in names and "left_hand_05" in names and "right_breast_16" in names
+        # pelvis node translation == world position (root parent is -1)
+        root_idx = names.index("pelvis_02")
+        assert gltf["nodes"][root_idx]["translation"] == pytest.approx([0, 0, 0])
 
 
 class TestGameIds:

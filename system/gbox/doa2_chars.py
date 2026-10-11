@@ -107,19 +107,160 @@ def parse_textures(chr_data: bytes, bin_size: int) -> list[dict]:
 
 
 def parse_sup(data: bytes) -> dict:
-    """SUP: offset table then records of float data (physics supplement)."""
-    offs = []
-    o = 0
-    while o < len(data) - 4 and (len(offs) == 0 or offs[-1] != 0):
-        offs.append(u32(data, o))
-        o += 4
-    offs = offs[:-1] if offs and offs[-1] == 0 else offs
-    recs = []
-    for i, r in enumerate(offs):
-        n = (offs[i + 1] - r) if i + 1 < len(offs) else len(data) - r
-        if 0 < n <= 0x1000:
-            recs.append([round(f32(data, r + 4 * k), 4) for k in range(n // 4)])
-    return {"n_records": len(recs), "records": recs}
+    """SUP: seam directory then per-seam skin records (CORRECTED from the slice-1 float-record
+    misread; grammar verified on all 80 owned costume SUPs).
+
+    Directory: u32 directory_size (== 4*(n+1), 4-aligned), then n monotonic u32 record starts,
+    then one 0 sentinel; starts[0] == directory_size. Record: {u32 data_ptr, u8 bone_a, u8 bone_b,
+    u8 model_id, u8 initialized} with data_ptr == offset+8, bones < 44 (MOTs carry 44 tracks),
+    then 18 floats at data_ptr: two 3x3 orthonormal bases A, B (three column vectors each)
+    linking the two joints' neutral orientations (native relation R_a*A = R_b*B; owned seams
+    carry A = identity). model_id indexes the costume CHR's models (the seam/bridge mesh)."""
+    if len(data) < 4:
+        raise ValueError("truncated SUP directory")
+    first = u32(data, 0)
+    if first == 0:
+        return {"seam_count": 0, "seams": [], "file_bytes": len(data)}
+    if first & 3 or not 8 <= first <= len(data):
+        raise ValueError("SUP directory size outside its allocation")
+    vals = [u32(data, 4 * i) for i in range(first // 4)]
+    if vals[-1] != 0 or any(v == 0 for v in vals[:-1]):
+        raise ValueError("SUP directory must end with one zero sentinel")
+    starts = vals[:-1]
+    if starts != sorted(set(starts)) or starts[0] != first:
+        raise ValueError("SUP seam offsets are non-monotonic")
+    seams = []
+    for i, s in enumerate(starts):
+        limit = starts[i + 1] if i + 1 < len(starts) else len(data)
+        if s + 80 > limit:                                  # 8-B header + 18 axis floats
+            raise ValueError(f"SUP seam {i} lacks its header and axis bases")
+        ptr, bone_a, bone_b, model, initialized = struct.unpack_from("<IBBBB", data, s)
+        if ptr != s + 8 or bone_a >= 44 or bone_b >= 44 or initialized not in (0, 1):
+            raise ValueError(f"SUP seam {i} has invalid pointer/joint fields")
+        f = struct.unpack_from("<18f", data, ptr)
+        # 18 floats = three interleaved column pairs (A_k, B_k) — the native layout the writer
+        # lane reads as reshape(3,2,3); A/B are each 3x3 orthonormal bases (column-major triples)
+        seams.append({"offset": s, "data_offset": ptr, "bone_a": bone_a, "bone_b": bone_b,
+                      "model_id": model, "initialized": initialized, "bytes": limit - s,
+                      "a_vectors": [list(f[6 * k:6 * k + 3]) for k in range(3)],
+                      "b_vectors": [list(f[6 * k + 3:6 * k + 6]) for k in range(3)]})
+    return {"seam_count": len(seams), "seams": seams, "file_bytes": len(data)}
+
+
+# --------------------------------------------------------------------------- rig / skeleton
+# Native rest-rig facts from the owned 1ST_READ.BIN (sha256 below), cross-checked against the
+# writer lane's independent profile (gbox-doa2-animation/*_profile.json, PR #8 doa2_rest):
+EXE_LOAD = 0x8C010000
+EXE_SHA256 = "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1"
+REST_TABLE = 0x8C1949A0                      # 25 u32 slot pointers -> 51f (17 joints x xyz)
+JOINT_PARENTS = [2, 0, -1, 7, 8, 4, 2, 6, 0, 13, 14, 10, 2, 12, 0, 1, 1]   # root = 2 (pelvis)
+JOINT_ROLES = ["chest", "head", "pelvis", "left_foot", "left_elbow", "left_hand", "left_thigh",
+               "left_shin", "left_shoulder", "right_foot", "right_elbow", "right_hand",
+               "right_thigh", "right_shin", "right_shoulder", "left_breast", "right_breast"]
+# verified render slots for the disc-anchored export route (writer-lane doa2_bindings resolution)
+FIGHTER_SLOTS = {"KAS": 5, "GEN": 6}
+
+
+def parse_rest_rig(exe: bytes, exe_sha256: str = EXE_SHA256) -> dict:
+    """Per-slot local rest translations (17 joints x xyz floats) from the native rest-vector
+    table. Refuses any executable other than the pinned owned build."""
+    import hashlib
+
+    digest = hashlib.sha256(exe).hexdigest()
+    if digest != exe_sha256:
+        raise ValueError("executable is not the verified DOA2 LE JP 1ST_READ.BIN")
+    ptrs = struct.unpack_from("<25I", exe, REST_TABLE - EXE_LOAD)
+    profiles = []
+    for fid, addr in enumerate(ptrs):
+        if not addr:
+            profiles.append({"fighter_id": fid, "rest_address": None})
+            continue
+        v = struct.unpack_from("<51f", exe, addr - EXE_LOAD)
+        profiles.append({"fighter_id": fid, "rest_address": f"{addr:#x}",
+                         "local_translations": [list(v[i:i + 3]) for i in range(0, 51, 3)]})
+    return {"exe_sha256": digest, "rest_table": f"{REST_TABLE:#x}", "n_slots": len(profiles),
+            "roles": JOINT_ROLES, "parents": JOINT_PARENTS, "profiles": profiles}
+
+
+def solve_joint_bases(seam_records: list[dict], anchor: int = 2,
+                      joint_ids=range(15), tolerance: float = 1e-5) -> dict:
+    """Recover each joint's neutral rotation basis from SUP seams: R_a*A = R_b*B with A, B the
+    seam's orthonormal bases (owned seams carry A = identity, so a seam directly yields
+    R_a = R_b*B). BFS from the anchor (pelvis = 2); duplicate seams across costumes must agree.
+    Covers the 15 core joints (eye joints 15/16 have independent gaze; Tengu wing seams
+    17..22 exist only on TNG costumes and are not part of the shared fighter rig)."""
+    import numpy as np
+
+    ids = set(joint_ids)
+    if anchor not in ids:
+        raise ValueError("seam anchor is outside the requested joint set")
+    edges = []
+    for rec in seam_records:
+        a, b = rec["bone_a"], rec["bone_b"]
+        if a not in ids or b not in ids:
+            continue
+        A = np.asarray(rec["a_vectors"], float).T          # vectors are matrix columns
+        B = np.asarray(rec["b_vectors"], float).T
+        for M in (A, B):
+            if not np.isfinite(M).all() or not np.allclose(M.T @ M, np.eye(3), atol=tolerance) \
+                    or not np.isclose(np.linalg.det(M), 1.0, atol=tolerance):
+                raise ValueError(f"seam basis for joints {a}/{b} is not a proper rotation")
+        edges.append((a, b, B @ A.T, rec.get("name", "?")))
+    rot = {anchor: np.eye(3)}
+    while True:
+        previous = len(rot)
+        for a, b, rel, src in edges:
+            if b in rot and a not in rot:
+                rot[a] = rot[b] @ rel
+            elif a in rot and b not in rot:
+                rot[b] = rot[a] @ rel.T
+            elif a in rot and b in rot and not np.allclose(rot[a], rot[b] @ rel, atol=tolerance):
+                raise ValueError(f"inconsistent seam orientation at joints {a}/{b} (source {src})")
+        if len(rot) == previous:
+            break
+    missing = ids - rot.keys()
+    if missing:
+        raise ValueError(f"seam evidence does not connect joints {sorted(missing)} to anchor {anchor}")
+    return {str(j): rot[j] for j in sorted(rot)}
+
+
+def build_rig(exe: bytes, sup_files: dict[str, bytes], fighter_slot: int,
+              exe_sha256: str = EXE_SHA256) -> dict:
+    """World-space rest pose for one fighter slot: rotations solved from the disc-wide SUP seam
+    graph, translations from the native rest-vector chain (pelvis at the origin). Result is the
+    reader-lane equivalent of the writer lane's doa2-native-rig-v1 world matrices."""
+    import numpy as np
+
+    rest = parse_rest_rig(exe, exe_sha256)
+    prof = rest["profiles"][fighter_slot]
+    if not prof.get("rest_address"):
+        raise ValueError(f"native rest slot {fighter_slot} is empty")
+    records = [{"name": name, **seam}
+               for name, data in sup_files.items() for seam in parse_sup(data)["seams"]]
+    bases = solve_joint_bases(records)
+    bases = {int(k): v for k, v in bases.items()}          # JSON-safe str keys -> int
+    bases[15] = bases[16] = np.eye(3)                      # eyes: neutral gaze from head
+    vec = prof["local_translations"]
+    pos = {2: np.zeros(3)}
+    for _ in range(len(JOINT_PARENTS)):
+        for j, p in enumerate(JOINT_PARENTS):
+            if j not in pos and (p == -1 or p in pos):
+                origin = np.zeros(3) if p == -1 else pos[p]
+                pos[j] = origin + np.asarray(vec[j], float)
+    if len(pos) != 17:
+        raise ValueError("rest-vector chain does not cover all 17 joints")
+    world = []
+    for j in range(17):
+        M = np.eye(4)
+        M[:3, :3] = bases[j]
+        M[:3, 3] = pos[j]
+        world.append(M.tolist())
+    return {"format": "doa2-reader-rig-v1", "fighter_slot": fighter_slot,
+            "rest_address": prof["rest_address"], "parents": JOINT_PARENTS, "roles": JOINT_ROLES,
+            "world": world, "n_seam_records": len(records),
+            "seam_sources": sorted(set(r["name"] for r in records)),
+            "note": "world rest pose from native rest vectors + SUP seam bases; skin weights are "
+                    "NOT in CHR/SUP (the render-script emit map is the writer lane's next slice)"}
 
 
 def parse_mot_table(data: bytes) -> dict:
@@ -317,9 +458,11 @@ def roster(disc_files: dict | None = None) -> list[dict]:
 
 # --------------------------------------------------------------------------- export
 def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
-                  sup_data: bytes | None = None) -> dict:
-    """Decode one costume's CHR + BIN into a UAP manifest, per-texture PNGs and a static .gltf
-    (textures attached by native texture id; skeleton/weights are not in CHR - honest labels)."""
+                  sup_data: bytes | None = None, rig: dict | None = None) -> dict:
+    """Decode one costume's CHR + BIN into a UAP manifest, per-texture PNGs and a .gltf.
+    Textures attached by native texture id. With `rig` (build_rig output) the glTF carries the
+    real 17-joint native skeleton (rest pose from the EXE rest table + SUP seam bases); skin
+    weights stay zeroed — the model->joint emit map is a render-script fact, not CHR data."""
     import json as _json
 
     import numpy as np
@@ -360,7 +503,13 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
                           "J": np.zeros((n, 4), np.uint16), "W": np.tile([1.0, 0, 0, 0], (n, 1)).astype(np.float32),
                           "tex": arrays.get(tid)})
     gltf = out / f"{name}.gltf"
-    write_gltf(gltf, [{"parent": -1, "world": np.eye(4, dtype=np.float32)}], prims, 1.0, name)
+    if rig is not None:
+        joints = [{"parent": p, "world": np.asarray(m, dtype=np.float32)}
+                  for p, m in zip(rig["parents"], rig["world"])]
+        joint_names = [f"{n}_{j:02d}" for j, n in enumerate(rig["roles"])]
+        write_gltf(gltf, joints, prims, 1.0, name, joint_names=joint_names)
+    else:
+        write_gltf(gltf, [{"parent": -1, "world": np.eye(4, dtype=np.float32)}], prims, 1.0, name)
     files.append(gltf.name)
     manifest = {
         "uap_version": "0.1", "name": name,
@@ -373,10 +522,21 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
         "texture_facts": {"n_textures": len(textures),
                           "formats": sorted({(t["pixel"], t["format"]) for t in textures}),
                           "bin_bytes": sum(t["capacity"] for t in textures)},
-        "skeleton_note": "rig is NOT stored in CHR (word[4] is the texture count; bones live in the "
-                         "SUP/ACS supplement route) - weights intentionally absent from the glTF",
+        "skeleton_note": ("rig decoded: 17-joint native hierarchy from the EXE rest-vector table "
+                          "0x8c1949a0 + disc-wide SUP seam bases; skin weights are NOT in CHR/SUP "
+                          "(the model->joint emit map lives in the render scripts)")
+        if rig is not None else
+        "rig is NOT stored in CHR (word[4] is the texture count; bones live in the "
+        "SUP/ACS supplement route) - weights intentionally absent from the glTF",
+        "skeleton_facts": ({"n_joints": 17, "parents": rig["parents"], "roles": rig["roles"],
+                            "rest_address": rig["rest_address"], "fighter_slot": rig["fighter_slot"],
+                            "n_seam_records": rig["n_seam_records"],
+                            "seam_sources": len(rig["seam_sources"])}
+                           if rig is not None else None),
         "confidence": {"entity": "verified", "geometry": "verified", "materials": "verified",
-                       "textures": "verified", "skeleton": "missing", "skin_weights": "missing",
+                       "textures": "verified",
+                       "skeleton": "verified" if rig is not None else "missing",
+                       "skin_weights": "missing",
                        "animations": "missing", "source_identity": "verified"},
     }
     (out / "manifest.json").write_text(_json.dumps(manifest, indent=1))
@@ -386,7 +546,7 @@ def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
 
 def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
     """Extract one fighter's costume asset set read-only from the owned disc: containers plus
-    decoded meshes and textures (UAP manifest + PNGs + static glTF)."""
+    decoded meshes, textures and the native 17-joint rig (UAP manifest + PNGs + skinned glTF)."""
     from .gdrom import GDRom
 
     disc = GDRom(gdi)
@@ -395,12 +555,23 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
     costume = costume.zfill(2) if len(costume) == 1 else costume     # disc names are <KEY><NN>
     stem = f"{key}{costume}"
     files = []
+    sups = None
+    rig = None
+    slot = FIGHTER_SLOTS.get(key)
+    if slot is not None:
+        try:
+            exe = disc.read("1ST_READ.BIN")
+            sups = {n: disc.read(n) for n in sorted(disc.files)
+                    if n.startswith("DOA2/") and n.endswith(".SUP")}
+            rig = build_rig(exe, sups, slot)
+        except ValueError:
+            rig = None                                    # non-pinned executable: rig stays off
     for ext in ("BIN", "CHR", "SUP"):
         data = disc.read(f"DOA2/{stem}.{ext}")
         (out / f"{stem}.{ext}").write_bytes(data)
         files.append(f"{stem}.{ext}")
     r = export_assets(disc.read(f"DOA2/{stem}.CHR"), disc.read(f"DOA2/{stem}.BIN"), str(out),
-                      f"doa2_{key.lower()}_{costume}")
+                      f"doa2_{key.lower()}_{costume}", rig=rig)
     manifest = r["manifest"]
     manifest["provenance"] = [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f"DOA2/{stem}.{e}"))}
                               for e in ("BIN", "CHR", "SUP")]
