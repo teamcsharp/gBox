@@ -1,4 +1,4 @@
-"""Small caller contracts and native character-swap evidence checks."""
+"""Small caller contracts and required-operation evidence checks."""
 from __future__ import annotations
 
 import json
@@ -90,3 +90,98 @@ def native_swap_outcome(events: list[dict]) -> dict:
             outcome.update(native_swap_result(result if isinstance(result, dict) else {}))
             native_call = False
     return outcome
+
+
+def _operation_key(name: str, args: dict) -> str:
+    """A successful change at another target cannot erase a failed operation."""
+    if name == 'cheats':
+        op = args.get('op') or 'list'
+        # The precise correction for enable-with-codes is add-with-those-codes.
+        # Descriptions and list filters do not identify the cheat being applied.
+        identity = {'session_id': args.get('session_id'),
+                    'op': 'enable' if op in {'enable', 'add'} else op}
+        if args.get('codes'):
+            identity['codes'] = args['codes']
+        else:
+            identity['index'] = args.get('index')
+    else:
+        identity = args
+    return name + ':' + json.dumps(identity, sort_keys=True, default=str)
+
+
+def _operation_result_state(text: str, name: str, args: dict) -> str:
+    """Read explicit tool/job failures without treating null error metadata as failure."""
+    try:
+        payload = json.loads(text or '')
+    except (TypeError, ValueError):
+        return 'unresolved'
+    if not isinstance(payload, dict) or not payload:
+        return 'unresolved'
+    layers = [payload]
+    for layer in layers:
+        # Only known result wrappers, not arbitrary game data containing 'error'.
+        for field in ('result', 'output'):
+            nested = layer.get(field)
+            if isinstance(nested, dict) and len(layers) < 8:
+                layers.append(nested)
+    pending = repeat = False
+    for layer in layers:
+        state = str(layer.get('state') or '').lower()
+        status = str(layer.get('status') or '').lower()
+        if (layer.get('error') or layer.get('overlay_error') or
+                state in {'failed', 'blocked', 'invalid', 'cancelled', 'canceled', 'timeout', 'timed_out'} or
+                status in {'failed', 'blocked', 'missing', 'unsupported'} or
+                layer.get('success') is False or layer.get('ok') is False or layer.get('verified') is False):
+            return 'failed'
+        if name == 'cheats' and isinstance(layer.get('enabled'), bool):
+            expected = args.get('op') in {'enable', 'add'}
+            if args.get('op') in {'enable', 'add', 'disable'} and layer['enabled'] != expected:
+                return 'failed'
+        pending |= state in {'queued', 'running'} or status in {'queued', 'running'}
+        repeat |= layer.get('repeat') is True
+    return 'unresolved' if pending else 'repeat' if repeat else 'complete'
+
+
+def required_operation_outcome(events: list[dict], modifies_game) -> dict:
+    """Keep failed game changes pending; successful reads cannot resolve them.
+
+    Reuses the caller's existing change/read classifier. Recovery is deliberately
+    limited to the same tool and exact arguments/target, or the documented cheat
+    enable-with-codes -> add-with-the-same-codes correction. This does not infer
+    success from the assistant's prose or prove gameplay beyond the tool result.
+    """
+    outstanding = {}
+    calls = {}
+    completed = set()
+    for event in events:
+        name = event.get('name')
+        if event.get('type') == 'tool_call':
+            args = event.get('args') or {}
+            if not isinstance(args, dict):
+                args = {}
+            operation_name, operation_args = name, args
+            if name == 'run_tool' and isinstance(args.get('input'), dict):
+                operation_name, operation_args = args.get('name'), args['input']
+            required = modifies_game(operation_name, operation_args)
+            call = None
+            if required:
+                key = _operation_key(operation_name, operation_args)
+                label = operation_name + (' op=' + str(operation_args['op']) if operation_args.get('op') else '')
+                outstanding[key] = label
+                call = (key, operation_name, operation_args)
+            calls.setdefault(name, []).append(call)
+        elif event.get('type') == 'tool_result' and calls.get(name):
+            call = calls[name].pop(0)
+            if call is not None:
+                key, operation_name, operation_args = call
+                state = _operation_result_state(event.get('text'), operation_name, operation_args)
+                if state == 'complete' or (state == 'repeat' and key in completed):
+                    outstanding.pop(key, None)
+                    completed.add(key)
+                elif state != 'repeat':
+                    completed.discard(key)
+    labels = list(dict.fromkeys(outstanding.values()))
+    return {'unresolved': bool(outstanding), 'operations': labels,
+            'reason': ('Required game operation(s) did not complete: ' + ', '.join(labels[:5]) +
+                       '. Keep the request pending until those changes succeed; successful reads do not resolve them.')
+                      if outstanding else ''}

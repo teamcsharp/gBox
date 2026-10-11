@@ -16,7 +16,7 @@ import httpx
 
 from .models import new_id
 from .agent_contracts import (native_swap_outcome, native_swap_result, require_character,
-                              resolve_read_session, validate_cheat_call)
+                              required_operation_outcome, resolve_read_session, validate_cheat_call)
 
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
 You can search the web, find and launch games, inspect and edit live emulator memory, extract sprites/tiles to Blender,
@@ -1517,6 +1517,10 @@ class ChatHub:
             native = native_swap_outcome(turn_events)
             if native["required"] and not native["verified"]:
                 status, note = "in_progress", native["reason"]
+            else:
+                required = required_operation_outcome(turn_events, _modifies_game)
+                if required["unresolved"]:
+                    status, note = "in_progress", required["reason"]
         except Exception as e:
             emit({"type": "error", "text": f"{type(e).__name__}: {e}"})
             res, status, note = {"usage": {"in": 0, "out": 0}, "tools": {}}, "blocked", str(e)
