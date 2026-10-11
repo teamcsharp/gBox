@@ -1731,7 +1731,18 @@ function tkRender(host, html, pane) {
   }
   host.tkWait = 0;
   const snap = tkSnap(host), top = pane ? pane.scrollTop : 0;
+  // Retain the actual open job contents, including loaded previews and their refresh state.
+  // Replaying cached HTML alone loses tkMain and briefly shrinks a full console to progress_log.
+  const jobs = new Map();
+  host.querySelectorAll("details[data-detail-job][open]").forEach(detail => {
+    const box = detail.querySelector(".task-detail");
+    if (box) jobs.set(detail.dataset.detailJob, box);
+  });
   host.innerHTML = html; host.tkHtml = html;
+  host.querySelectorAll("details[data-detail-job][open]").forEach(detail => {
+    const box = jobs.get(detail.dataset.detailJob), replacement = detail.querySelector(".task-detail");
+    if (box && replacement) replacement.replaceWith(box);
+  });
   tkRestore(host, snap);
   if (pane) pane.scrollTop = top;
   return true;
@@ -1801,60 +1812,78 @@ async function tasksLoad() {
   $("#tk-body").querySelectorAll("details[data-detail-job][open]").forEach(tkJobRefresh);
 }
 async function tkHermesRefresh(detail) {
-  const id = detail.dataset.detailHermes;
+  if (tkReading($("#tk-body") || detail)) return;
+  const id = detail.dataset.detailHermes, version = (detail.tkVersion || 0) + 1;
+  detail.tkVersion = version;
   const r = await gbox.api(`/api/tasks/hermes/${id}`);
-  if (!detail.isConnected || !detail.open) return;
+  if (!detail.isConnected || !detail.open || detail.tkVersion !== version || tkReading($("#tk-body") || detail)) return;
   const output = r.ok ? r.data.output : `Could not load Hermes output: ${r.error}`;
   TK.hermesOutput.set(id, output);
   const pre = detail.querySelector("pre"), follow = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20, top = pre.scrollTop;
-  pre.textContent = output;
+  if (pre.textContent !== output) pre.textContent = output;
   pre.scrollTop = follow ? pre.scrollHeight : top;
 }
 async function tkJobRefresh(detail) {
-  const id = detail.dataset.detailJob;
+  if (tkReading($("#tk-body") || detail)) return;
+  const id = detail.dataset.detailJob, version = (detail.tkVersion || 0) + 1;
+  detail.tkVersion = version;
+  const current = () => detail.isConnected && detail.open && detail.tkVersion === version;
   const r = await gbox.api(`/api/jobs/${id}`);
-  if (!detail.isConnected || !detail.open) return;
+  if (!current() || tkReading($("#tk-body") || detail)) return;
   const box = detail.querySelector(".task-detail");
   if (!r.ok) { box.textContent = r.error; box.tkMain = undefined; return; }
-  const j = r.data, log = [...(j.progress_log || []), j.error || ""].filter(Boolean).join("\n");
+  const j = r.data;
+  let log = [...(j.progress_log || []), j.error || ""].filter(Boolean).join("\n");
+  // Fetch the full console before replacing anything. A pending response must not shrink
+  // the open detail or reset a scroll/selection acquired while the request was in flight.
+  if (j.log_sha) {
+    const lr = await gbox.api(`/api/jobs/${id}/log`);
+    if (!current()) return;
+    if (lr.ok && typeof lr.data.log === "string") log = lr.data.log;
+    else log = box.querySelectorAll("pre")[1]?.textContent || log;
+  }
+  let filesHtml = null, link = null;
+  if (j.receipt_id) {
+    const rr = await gbox.api(`/api/receipts/${j.receipt_id}`);
+    if (!current()) return;
+    if (rr.ok) {
+      const files = rr.data.artifacts || [];
+      const tok = S.tok || await gbox.token().catch(() => "");
+      if (!current()) return;
+      link = sha => `${S.apiUrl}/api/artifacts/${sha}?token=${encodeURIComponent(tok)}`;
+      filesHtml = files.map(a => {
+        const sha = a.sha256, name = a.name || sha.slice(0, 12), type = a.media_type || "";
+        if (!/^[0-9a-f]{64}$/.test(sha)) return "";
+        const url = link(sha);
+        return `<div class="task-file">${type.startsWith("image/") ? `<img src="${esc(url)}" alt="${esc(name)}">` : ""}
+          ${type === "model/gltf-binary" ? `<div class="av" data-task-model="${sha}"><canvas></canvas></div>` : ""}
+          <a href="#" data-task-file="${esc(url)}">${esc(name)}</a><div class="mut">${esc(type)} · ${Math.ceil((a.size || 0) / 1024)} KB</div></div>`;
+      }).join("");
+    }
+  } else filesHtml = "";
+  if (!current() || tkReading($("#tk-body") || detail)) return;
   const input = JSON.stringify(j.input || {}, null, 2);
   const output = JSON.stringify(j.output || {}, null, 2);
-  const snap = tkSnap(box);
+  // Snapshot immediately before committing; the user may have scrolled during either fetch.
+  const snap = tkSnap(box), pane = $("#tk-technical"), top = pane.scrollTop;
   const main = `<div class="mut">${esc(j.state)} · ${esc(j.worker_id || j.require_worker || j.require_os || "unassigned")} · ${esc(id)}</div>
     <button class="act" data-task-visual="${esc(id)}">View live 3D progress</button>
     <b>Input</b><pre>${esc(input)}</pre><b>Console and progress</b><pre>${esc(log || "No console output yet.")}</pre>
     ${j.output ? `<b>Result</b><pre>${esc(output.length > 30000 ? output.slice(0, 30000) + "\n…" : output)}</pre>` : ""}
     <div class="task-files"></div>`;
-  // Only rebuild when the job changed, so open logs and loaded previews keep their place (#1289).
-  if (box.tkMain !== main) { box.innerHTML = main; box.tkMain = main; tkRestore(box, snap); }
-  if (j.log_sha) {
-    const lr = await gbox.api(`/api/jobs/${id}/log`), pre = box.querySelectorAll("pre")[1];
-    if (detail.isConnected && detail.open && lr.ok && lr.data.log && pre && pre.textContent !== lr.data.log) {
-      pre.textContent = lr.data.log; tkRestore(box, snap);
-    }
+  if (box.tkMain !== main) {
+    const previousFiles = box.querySelector(".task-files");
+    box.innerHTML = main; box.tkMain = main;
+    if (previousFiles) box.querySelector(".task-files").replaceWith(previousFiles);
+    tkRestore(box, snap);
   }
-  if (detail.isConnected) TK.jobDetail.set(id, box.innerHTML);
-  if (!j.receipt_id) return;
-  const rr = await gbox.api(`/api/receipts/${j.receipt_id}`);
-  if (!detail.isConnected || !detail.open || !rr.ok) return;
-  const files = rr.data.artifacts || [];
-  if (!files.length) return;
-  const tok = S.tok || await gbox.token().catch(() => "");
-  if (!detail.isConnected || !detail.open) return;
-  const link = sha => `${S.apiUrl}/api/artifacts/${sha}?token=${encodeURIComponent(tok)}`;
   const holder = box.querySelector(".task-files");
-  const filesHtml = files.map(a => {
-    const sha = a.sha256, name = a.name || sha.slice(0, 12), type = a.media_type || "";
-    if (!/^[0-9a-f]{64}$/.test(sha)) return "";
-    const url = link(sha);
-    return `<div class="task-file">${type.startsWith("image/") ? `<img src="${esc(url)}" alt="${esc(name)}">` : ""}
-      ${type === "model/gltf-binary" ? `<div class="av" data-task-model="${sha}"><canvas></canvas></div>` : ""}
-      <a href="#" data-task-file="${esc(url)}">${esc(name)}</a><div class="mut">${esc(type)} · ${Math.ceil((a.size || 0) / 1024)} KB</div></div>`;
-  }).join("");
-  if (!holder || holder.tkHtml === filesHtml) return;
-  holder.innerHTML = filesHtml; holder.tkHtml = filesHtml;
+  if (holder && filesHtml !== null && holder.tkHtml !== filesHtml) {
+    holder.innerHTML = filesHtml; holder.tkHtml = filesHtml;
+    if (window.assetView) holder.querySelectorAll("[data-task-model]").forEach(el => window.assetView(el, link(el.dataset.taskModel)).catch(() => {}));
+  }
+  pane.scrollTop = top;
   TK.jobDetail.set(id, box.innerHTML);
-  if (window.assetView) holder.querySelectorAll("[data-task-model]").forEach(el => window.assetView(el, link(el.dataset.taskModel)).catch(() => {}));
 }
 async function tvPoll() {
   if (!TV.id) return;
