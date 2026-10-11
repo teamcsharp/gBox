@@ -672,7 +672,7 @@ class SessionOut(BaseModel):
     ended: bool = False
 
 def _session_accept(store, out: SessionOut, actor: str):
-    if out.ended and (s := store.get("session", out.session_id)):
+    if out.ended and (s := store.get("session", out.session_id)) and s.get("state") != "ended":
         store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result})
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
