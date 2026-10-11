@@ -193,7 +193,8 @@ def test_direct_active_or_unknown_worker_job_blocks(canonical,state):
 def test_terminal_job_records_are_not_active(canonical):
     root,_ = canonical
     with sqlite3.connect(root/'gbox-data/gbox.sqlite3') as db:
-        db.executemany('INSERT INTO docs VALUES(?,?)',[('job',json.dumps({'id':s,'state':s})) for s in ('succeeded','failed','cancelled')])
+        db.executemany('INSERT INTO docs VALUES(?,?)',[('job',json.dumps({'id':s,'state':s}))
+                        for s in ('succeeded','invalid','failed','rejected','cancelled')])
     assert read_active_jobs(root) == []
 
 

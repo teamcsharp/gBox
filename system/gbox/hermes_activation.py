@@ -74,7 +74,7 @@ def read_active_jobs(root: Path) -> list[dict]:
     with closing(sqlite3.connect('file:' + quote(path.as_posix(), safe='/:') + '?mode=ro', uri=True, timeout=2)) as db:
         db.execute('PRAGMA query_only=ON')
         rows = db.execute("SELECT body FROM docs WHERE kind='job' AND COALESCE(json_extract(body,'$.state'),'') "
-                          "NOT IN ('succeeded','failed','cancelled') LIMIT 1001").fetchall()
+                          "NOT IN ('succeeded','invalid','failed','rejected','cancelled') LIMIT 1001").fetchall()
     if len(rows) > 1000:
         raise ValueError('Activation job inventory exceeds its bounded snapshot')
     jobs = [json.loads(row[0]) for row in rows]
