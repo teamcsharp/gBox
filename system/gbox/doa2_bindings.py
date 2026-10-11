@@ -133,31 +133,32 @@ def resolve_archive_binding(executable: bytes, archive: str) -> dict:
     return matches[0]
 
 
-def neutralize_accessory_init(executable: bytes, slot: int, costume: int) -> tuple[bytes, dict]:
-    """Skip ACS cloth initialization while preserving subsequent script commands.
 
-    FUN_8c0dcfe8 takes FFFF0000 + null as an empty mode-zero list and proceeds
-    to the next command. This keeps later material/accessory directives intact.
-    Native SUP seams and APV morphs must independently be disabled in their files.
-    """
-    binding = render_part_mapping(executable, slot, costume)
-    output = bytearray(executable)
-    cursor = binding["script_address"] - BASE
-    changes = []
-    for command in binding["commands"]:
-        word = struct.unpack_from("<I", executable, cursor)[0]
-        explicit = word & 0xFFFF0000 == 0xFFFF0000
-        if command["mode"] == 2:
-            if word != 0xFFFF2000 or command["argument"] != 0:
-                raise ValueError("Unexpected native cloth initialization command layout")
-            struct.pack_into("<I", output, cursor, 0xFFFF0000)
-            changes.append({"file_offset": cursor, "ram_address": BASE + cursor,
-                            "original": word, "replacement": 0xFFFF0000})
-        cursor += 8 if explicit else 4
-    return bytes(output), {"supplement": "ACS initialization", "render_slot": slot,
-                           "render_costume": costume,
-                           "policy": "original cloth initialization replaced with empty list",
-                           "original_sha256": hashlib.sha256(executable).hexdigest(),
-                           "patched_sha256": hashlib.sha256(output).hexdigest(),
-                           "changed_bytes": sum(a != b for a, b in zip(executable, output)),
-                           "changes": changes}
+ACS_FILE_TABLE = 0x8C180130
+ACS_COSTUME_STRIDE = 50
+ACS_COSTUME_COUNT = 9
+
+def accessory_filename(executable: bytes, slot: int, costume: int) -> dict:
+    render_part_mapping(executable, slot, costume)  # pinned hash and binding
+    if not 0 <= costume < ACS_COSTUME_COUNT:
+        raise ValueError('ACS native costume index exceeds verified nine-row table')
+    address = ACS_FILE_TABLE + costume * ACS_COSTUME_STRIDE + slot * 2
+    index = struct.unpack_from('<H', executable, address - BASE)[0]
+    pointer_address = FILE_NAMES + index * 4
+    offset = pointer_address - BASE
+    if offset < 0 or offset + 4 > len(executable):
+        raise ValueError('ACS filename pointer outside owned executable')
+    pointer = struct.unpack_from('<I', executable, offset)[0]
+    offset = pointer - BASE
+    if offset < 0 or offset >= len(executable):
+        raise ValueError('ACS filename outside owned executable')
+    end = executable.find(b'\0', offset, min(offset + 256, len(executable)))
+    if end < 0:
+        raise ValueError('ACS filename has no bounded terminator')
+    name = executable[offset:end].decode('ascii')
+    if not name.lower().endswith('.acs') or '/' in name or '\\' in name:
+        raise ValueError('Native ACS binding resolves an unsupported filename')
+    return {'filename': name, 'render_slot': slot, 'render_costume': costume,
+            'table_address': address, 'filename_index': index,
+            'filename_pointer_address': pointer_address,
+            'native_consumer': '8c0332e4..8c033308'}

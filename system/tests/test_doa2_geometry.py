@@ -104,6 +104,35 @@ class TestGeometry(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'finite'):
             geometry.encode_model({'global_flags': (1, 1)}, [mesh])
 
+    def test_removed_part_retains_header_for_unconditional_native_draw(self):
+        data = archive()
+        old = geometry.decode_chr(data)['models'][0]
+        with self.assertRaisesRegex(ValueError, 'material header'):
+            geometry.encode_model(old, [])
+        rebuilt = geometry.replace_models(data, {0: geometry.invisible_model(old, material())})
+        model = geometry.decode_chr(rebuilt)['models'][0]
+        self.assertEqual(model['vertex_count'], 3)
+        self.assertEqual(model['meshes'][0]['triangles'], [])
+        self.assertEqual(model['meshes'][0]['offset'], model['offset'] + 24)
+
+    def test_reordered_inherited_material_initializes_its_own_colors(self):
+        mesh = quad()
+        header = bytearray(material())
+        struct.pack_into('<I', header, 0, 0x8000003c)
+        struct.pack_into('<I', header, 40, struct.unpack_from('<I', header, 40)[0] | 1)
+        mesh['header'] = bytes(header)
+        blob = geometry.encode_model({'global_flags': (0, 1)}, [mesh])
+        self.assertEqual(struct.unpack_from('<2I', blob), (1, 1))
+        self.assertEqual(struct.unpack_from('<I', blob, 24)[0], 0x8000002c)
+        self.assertEqual(struct.unpack_from('<I', blob, 64)[0] & 1, 0)
+        self.assertEqual(blob[68:100], header[44:76])
+        self.assertEqual(struct.unpack_from('<I', blob, 104)[0], 0x69)
+        decoded = geometry.decode_chr(geometry.replace_models(archive(), {0: blob}))
+        for record in decoded['models'][0]['meshes'][0]['records']:
+            if not record['reference']:
+                self.assertEqual(struct.unpack_from('<I', record['raw'], 0)[0] & 1, 1)
+                self.assertEqual(struct.unpack_from('<I', record['raw'], 28)[0] & 1, 1)
+
 
 if __name__ == '__main__':
     unittest.main()

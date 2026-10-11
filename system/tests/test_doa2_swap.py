@@ -62,7 +62,8 @@ def test_joint_local_world_roundtrip_and_unrelated_volume_preservation():
         assert np.allclose(posed, donor()["pos"][wanted], atol=1e-6)
     a, b = original["models"][15], rebuilt["models"][15]
     assert chr_data[a["offset"]:a["end_offset"]] == result["chr_data"][b["offset"]:b["end_offset"]]
-    assert not rebuilt["models"][0]["meshes"]
+    assert rebuilt["models"][0]["meshes"][0]["triangles"] == []
+    assert rebuilt["models"][0]["vertex_count"] == 3
 
 
 @pytest.mark.parametrize("mutation,match", [

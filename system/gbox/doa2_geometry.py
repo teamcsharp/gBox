@@ -188,8 +188,13 @@ def encode_model(template: dict, meshes: list[dict], *, references: bool = True)
     and an 80-byte native material ``header``. ``texture_id`` can override its slot.
     Template supplies global_flags. Textures and game animation remain separate.
     """
+    meshes = [mesh for mesh in meshes if mesh['triangles']]
+    if not meshes:
+        raise ValueError('native drawing requires a material header; use invisible_model for an unused part')
     pts = [v for mesh in meshes for v in mesh['vertices']]
-    out = bytearray(struct.pack('<2I4f', *template['global_flags'], *_sphere(pts)))
+    # Global word zero selects the indexed reference grammar, not a draw gate.
+    global_flags = (int(references), template['global_flags'][1])
+    out = bytearray(struct.pack('<2I4f', *global_flags, *_sphere(pts)))
     logical_total = 0
     for mesh in meshes:
         vertices = mesh['vertices']
@@ -200,13 +205,22 @@ def encode_model(template: dict, meshes: list[dict], *, references: bool = True)
         if len(header) != 80:
             raise ValueError('need a native 80-byte NaomiLib material header')
         shader = struct.unpack_from('<i', header, 36)[0]
-        if shader < -1:
+        if shader not in (-1, 0, 1):
             raise ValueError('new geometry requires normal-float Lambert/constant material')
+        # Reordered materials cannot inherit the preceding group's intensity
+        # colors. Native format2 emits its own ARGB packet; format3 reuses it.
+        pcw = _u32(header, 0)
+        if (pcw >> 4) & 3 == 3:
+            if shader not in (0, 1):
+                raise ValueError('unsupported inherited-color material shader')
+            _U32.pack_into(header, 0, pcw & ~0x10)
+            _U32.pack_into(header, 40, _u32(header, 40) & ~1)
         struct.pack_into('<4f', header, 16, *_sphere(vertices))
         if 'texture_id' in mesh:
             struct.pack_into('<i', header, 32, mesh['texture_id'])
-        # Counterclockwise, Gouraud, independent triangles; one global parameter send.
-        flags = 0x4b | (0x20 if references else 0)
+        # Native cull-small mode1, Gouraud, independent triangles. Mode1 keeps
+        # donor winding without suppressing either side of a thin garment.
+        flags = 0x49 | (0x20 if references else 0)
         stream = bytearray(struct.pack('<2I', flags, len(faces)))
         seen: dict[bytes, tuple[int, int]] = {}
         dma_vertex = 0
@@ -220,8 +234,10 @@ def encode_model(template: dict, meshes: list[dict], *, references: bool = True)
                 if len(v) != 8 or not all(math.isfinite(x) for x in v):
                     raise ValueError('vertex must contain 8 finite floats')
                 raw = bytearray(struct.pack('<8f', *v))
-                # NL1 tags new position payloads using bit 0 of X (format provenance).
+                # Both payload tags occur on every inline vertex in the owned
+                # corpus and the original NaomiLib exporter.
                 _U32.pack_into(raw, 0, _u32(raw, 0) | 1)
+                _U32.pack_into(raw, 28, _u32(raw, 28) | 1)
                 raw_key = bytes(raw)
                 previous = seen.get(raw_key) if references else None
                 if previous is None:
@@ -243,6 +259,18 @@ def encode_model(template: dict, meshes: list[dict], *, references: bool = True)
         out.extend(stream)
     out.extend(struct.pack('<2I', 0, logical_total))
     return bytes(out)
+
+
+def invisible_model(template: dict, header: bytes) -> bytes:
+    """A zero-area native triangle, safe for unconditional primary rendering.
+
+    The primary renderer consumes the first material at model+24 before it
+    checks the next-group end marker. A 32-byte empty/null record lets it read
+    neighboring archive bytes as a header and is not a valid removed part.
+    """
+    return encode_model(template, [{'header': header,
+        'vertices': [(0., 0., 0., 0., 1., 0., 0., 0.)],
+        'triangles': [(0, 0, 0)]}])
 
 
 def replace_models(data: bytes, replacements: dict[int, bytes], *, size_budget: int | None = None) -> bytes:

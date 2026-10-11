@@ -26,7 +26,7 @@ def writer_fingerprint() -> str:
     digest = hashlib.sha256()
     names = ('doa2_swap', 'doa2_geometry', 'doa2_materials', 'doa2_textures',
              'doa2_pvr', 'doa2_atlas', 'doa2_rig', 'doa2_axes', 'doa2_rest',
-             'doa2_bindings', 'doa2_morphs', 'sm64_swap', 'melee_models')
+             'doa2_bindings', 'doa2_morphs', 'doa2_acs', 'sm64_swap', 'melee_models')
     for name in names:
         digest.update(name.encode('ascii'))
         digest.update(Path(__file__).with_name(name + '.py').read_bytes())
@@ -159,7 +159,13 @@ def encode_parts(chr_data: bytes, bin_data: bytes, prims: list[dict], profile: d
             meshes_by_model[m].append({"vertices": [tuple(v) for v in attrs],
                                       "triangles": [tuple(map(int, t)) for t in remap.reshape(-1, 3)],
                                       "header": doa2_pvr.sampler(material["header"], primitive.get("wrap",(10497,10497))), "texture_id": material["texture_id"]})
-    replacements = {m: G.encode_model(archive["models"][m], meshes) for m, meshes in meshes_by_model.items()}
+    placeholder_header = next((mesh['header'] for meshes in meshes_by_model.values()
+                               for mesh in meshes), None)
+    if placeholder_header is None:
+        raise ValueError('Donor has no triangles for native reintegration')
+    replacements = {m: G.encode_model(archive["models"][m], meshes) if meshes else
+                    G.invisible_model(archive["models"][m], placeholder_header)
+                    for m, meshes in meshes_by_model.items()}
     rebuilt = G.replace_models(chr_data, replacements, size_budget=size_budget)
     if materials["report"]["descriptor_retypes"]:
         updated = bytearray(rebuilt)
@@ -320,10 +326,14 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
             raise RigUnavailable(f"Missing native supplement: {key}")
         changes[key], report = disable(disc.read(key))
         supplements.append(report)
-    patched_exe, cloth = doa2_bindings.neutralize_accessory_init(executable, int(profile["render_slot"]), int(profile["render_costume"]))
-    if patched_exe != executable:
-        changes["1ST_READ.BIN"] = patched_exe
-    supplements.append(cloth)
+    from .doa2_acs import disable_acs
+    accessory = doa2_bindings.accessory_filename(executable, int(profile["render_slot"]),
+                                                int(profile["render_costume"]))
+    key = 'DOA2/' + accessory['filename'].upper()
+    if key not in disc.files:
+        raise RigUnavailable(f'Missing native accessory resource: {key}')
+    changes[key], cloth = disable_acs(disc.read(key))
+    supplements.append(cloth | {'native_binding': accessory})
     report = result['report'] | {'fit': fit, 'fighter': family, 'costume': costume,
                                'supplements': supplements,
                                'source_model_sha256': hashlib.sha256(model.read_bytes()).hexdigest(),

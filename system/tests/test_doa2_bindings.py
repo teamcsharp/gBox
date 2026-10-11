@@ -70,29 +70,20 @@ class NativeBindingsTest(unittest.TestCase):
             with self.subTest(slot=slot, costume=costume), self.assertRaises(ValueError):
                 bindings.render_part_mapping(self.executable, slot, costume)
 
-    def test_cloth_neutralization_preserves_later_commands(self):
-        for filename, expected_modes in (("ZAC02.CHR", [0, 2, 4]),
-                                         ("ZAC04.CHR", [0, 2, 4]),
-                                         ("HIK02.CHR", [0, 2, 3])):
-            b = bindings.resolve_archive_binding(self.executable, filename)
-            self.assertEqual([c["mode"] for c in b["commands"]], expected_modes)
-            output, report = bindings.neutralize_accessory_init(
-                self.executable, b["render_slot"], b["costume"])
-            self.assertEqual(len(output), len(self.executable))
-            self.assertEqual(report["changed_bytes"], 1)
-            change = report["changes"][0]
-            offset = change["file_offset"]
-            self.assertEqual(struct.unpack_from("<2I", output, offset), (0xFFFF0000, 0))
-            self.assertEqual(output[:offset], self.executable[:offset])
-            self.assertEqual(output[offset + 8:], self.executable[offset + 8:])
+    def test_accessory_names_use_native_costume_table(self):
+        for archive, expected in (("KTE00.CHR", "kte_a00.acs"),
+                                  ("KTE01.CHR", "kte_a01.acs"),
+                                  ("JAN02.CHR", "jan_a01.acs")):
+            b = bindings.resolve_archive_binding(self.executable, archive)
+            result = bindings.accessory_filename(self.executable, b["render_slot"], b["costume"])
+            self.assertEqual(result["filename"], expected)
+            self.assertEqual(result["table_address"], 0x8c180130 + 50*b["costume"] + 2*b["render_slot"])
 
-    def test_cloth_free_costume_is_byte_identical(self):
-        b = bindings.resolve_archive_binding(self.executable, "BAS02.CHR")
-        self.assertEqual([c["mode"] for c in b["commands"]], [0])
-        output, report = bindings.neutralize_accessory_init(
-            self.executable, b["render_slot"], b["costume"])
-        self.assertEqual(output, self.executable)
-        self.assertEqual(report["changes"], [])
+    def test_accessory_resolver_pins_owned_executable(self):
+        altered = bytearray(self.executable)
+        altered[0x100] ^= 1
+        with self.assertRaisesRegex(ValueError, "version-specific"):
+            bindings.accessory_filename(bytes(altered), 3, 0)
 
 
 if __name__ == "__main__":
