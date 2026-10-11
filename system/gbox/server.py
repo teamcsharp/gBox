@@ -497,10 +497,13 @@ def create_app(config: Config) -> FastAPI:
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         old_w, tw = sid.split("-")[0], _swap_target(sid.split("-")[0], to)
         running, art, notes, old_luma = sess.get("state") == "running", None, [], None
+        launch_mod = mod
         if mod:
             say(2, "Preparing replacement files; your current game keeps running")
-            _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
-                     progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+            staged = _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
+                              progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+            if isinstance(staged, dict) and staged.get('mod'):
+                launch_mod = staged['mod']                 # <mod>~<build>: the running game holds the old copy open (#1270)
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
@@ -513,7 +516,7 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
         try:
-            new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=tw["id"], wait=900)
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900)
         except HTTPException as e:
             # a modded launch closes the same console's game on that PC first: if the new one didn't start, bring the old back
             alive = True
@@ -537,6 +540,9 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, f"the mod '{mod}' isn't built for {tw['name']} yet (rebuild it), then try again")
             raise
         nsid = new["session_id"]
+        if launch_mod != mod and store.get("session", nsid):
+            store.put("session", nsid, store.get("session", nsid) | {"mod": mod, "staged_mod": launch_mod})
+            notes.append(f"The running game had {mod} open, so the new build was staged as {launch_mod}.")
         loaded = False
         if art:
             say(70, "Loading your moment into it")

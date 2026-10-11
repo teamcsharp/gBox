@@ -184,18 +184,19 @@ class PrepareModIn(BaseModel):
 
 class PrepareModOut(BaseModel):
     ready: bool
+    mod: str = ""                          # the folder to launch: the mod name, or <mod>~<build> when the running game holds the old copy open
 
 
 @tool('prepare_mod', '1.0', PrepareModIn, PrepareModOut, capabilities=['runtime'], permissions=[P.EXECUTE], timeout_s=1800)
 def prepare_mod(inp: PrepareModIn, ctx: Ctx):
     """Stage replacement files on the target worker without closing or changing its running game."""
     from . import filemods
-    marker = filemods.mod_dir(ctx.config, inp.game.game_id, inp.mod) / '.gbox-mod.json'
+    name = inp.mod
     if ctx.server:
-        filemods.fetch(ctx.config, ctx.server, ctx.headers, inp.game.game_id, inp.mod, ctx.progress)
-    if not marker.exists():
+        name = filemods.stage(ctx.config, ctx.server, ctx.headers, inp.game.game_id, inp.mod, ctx.progress)
+    if not (filemods.mod_dir(ctx.config, inp.game.game_id, name) / '.gbox-mod.json').exists():
         raise RuntimeError('Replacement preparation did not complete')
-    return {'ready': True}
+    return {'ready': True, 'mod': name}
 
 
 class LaunchIn(BaseModel):
