@@ -2995,5 +2995,21 @@ if (!new URLSearchParams(location.search).has('embedded')) {
 }
 </script>
 <script src="/viz/emulation-issue.js"></script>
+<script src="/viz/process-popup.js"></script>
+<script>
+// Background 3D task popup (#1175): Blender/GLB/retarget work opens an orbiting model window.
+(() => {
+  if (new URLSearchParams(location.search).has('embedded')) return;   // the embedded play view has no room for it
+  let popup = null;
+  setInterval(async () => {
+    try {
+      const jobs = await api("/api/jobs?state=queued,running&limit=100");
+      if (!popup && !jobs.some(j => window.GBoxProcessPopup.classify(j))) return;
+      popup ||= window.GBoxProcessPopup.mount({});    // page drives sync(); the module hides itself via its ✕ button
+      popup.sync(jobs);
+    } catch {}                                        // server blip: keep the current window as-is
+  }, 4000);
+})();
+</script>
 </body>
 </html>

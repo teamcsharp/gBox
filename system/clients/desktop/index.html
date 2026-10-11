@@ -1031,6 +1031,7 @@ window.taskVizCreate = canvas => {
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
+<script src="../web/viz/process-popup.js"></script>
 <script src="game-surface.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -4721,7 +4722,11 @@ const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], 
 const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
 async function auditPoll() {
   const [r, jobs] = await Promise.all([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
-  if (jobs.ok) activity?.remote(jobs.data); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
+  if (jobs.ok) {
+    activity?.remote(jobs.data);
+    try { processPopupSync(jobs.data); } catch (e) {}   // #1175: orbiting 3D window for background Blender/GLB tasks
+  }
+  if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;
@@ -4748,6 +4753,20 @@ function auditRender() {
 $("#sb-audit").onclick = () => { $("#auditpanel").classList.toggle("on"); if ($("#auditpanel").classList.contains("on")) auditRender(); };
 $("#au-close").onclick = () => $("#auditpanel").classList.remove("on");
 $("#au-q").oninput = auditRender;
+
+// #1175: background 3D task window — orbiting model view + live stages while Blender/GLB work runs.
+let PROCESS_POPUP = null;
+function processPopupSync(jobs) {
+  if (!window.GBoxProcessPopup) return;
+  if (!PROCESS_POPUP && !jobs.some(j => window.GBoxProcessPopup.classify(j))) return;
+  if (!PROCESS_POPUP) {
+    PROCESS_POPUP = window.GBoxProcessPopup.mount({
+      assetUrl: p => `${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
+    });
+  }
+  PROCESS_POPUP.sync(jobs);
+}
+
 auditPoll(); setInterval(auditPoll, 3000);
 
 const EMU_ICON = { rpcs3: "🎮 PS3 · RPCS3", retroarch: "🕹️ RetroArch", dolphin: "🐬 Dolphin", duckstation: "🦆 DuckStation", mgba: "👾 mGBA",

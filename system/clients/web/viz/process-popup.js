@@ -1,0 +1,338 @@
+/* Background 3D task popup (#1175): while a Blender / GLB / model-prep job runs on a worker,
+   a small always-on-top window opens with an orbiting (360°) view of the model being processed,
+   a live stage ticker, and a VCR static-and-signal-loss exit when the task ends.
+   Shared verbatim by the web shell (/viz/process-popup.js) and the desktop app (../web/viz/…). */
+(function (root, factory) {
+  if (typeof module === "object" && module.exports) module.exports = factory;
+  else root.GBoxProcessPopup = factory(root);
+})(typeof window === "undefined" ? globalThis : window, function (env) {
+  "use strict";
+  const doc = env.document;
+
+  // ---- which background jobs are 3D model work ------------------------------------------
+  const MODEL_TOOLS = new Set(["characters", "session_swap", "asset_convert", "open_in_blender", "blender_copy",
+    "export_asset", "extract_pso_model", "extract_pso_area", "bevy_scene", "oot_models", "rom_export", "file_mod"]);
+  const CHEAP_OPS = new Set(["list", "get", "coverage", "environments", "unplace", "plan", "status", "search", "summary"]);
+  const NEVER_TOOLS = new Set(["session_op", "graphics", "launch_game", "autoplay", "tasks", "scan_library", "hash_game",
+    "poke", "read_memory", "write_memory", "freeze_memory", "memory_search", "cheats", "get_frame", "browse", "pick",
+    "video", "llm_complete", "provision_node", "echo_artifact", "zelda", "zelda_oot", "re6", "re_mods", "pso_mods",
+    "gta_mods", "ac_mods", "re_inventory", "pso_inventory", "pso_drops", "unreal_script", "script_patch", "game_link",
+    "live_link", "state_transfer", "ghidra_script", "analyze_binary", "rea_tools", "rea_resources", "read_rea_result"]);
+  const STAGE_WORDS = /decimat|retarget|blender|\bglb\b|\bgltf\b|\bmesh(es)?\b|triangl|\brig(ging)?\b|weight paint|atlas\b|uv unwrap/i;
+
+  function classify(job) {
+    if (!job || !["queued", "running"].includes(job.state)) return false;
+    const tool = job.tool || "";
+    if (MODEL_TOOLS.has(tool)) return !CHEAP_OPS.has((job.input || {}).op);
+    if (NEVER_TOOLS.has(tool)) return false;
+    const msgs = [(job.progress || {}).msg].concat((job.progress_log || []).slice(-5)).filter(Boolean);
+    return msgs.some(m => STAGE_WORDS.test(String(m)));
+  }
+
+  // ---- which of several live 3D jobs the window follows ----------------------------------
+  function pick(jobs) {
+    const live = jobs.filter(classify);
+    live.sort((a, b) => {
+      const sa = a.state === "running" ? 1 : 0, sb = b.state === "running" ? 1 : 0;
+      if (sa !== sb) return sb - sa;                                        // running beats queued
+      const ta = (a.progress || {}).ts || a.started || a.created || 0;
+      const tb = (b.progress || {}).ts || b.started || b.created || 0;
+      return tb - ta;                                                       // most recent activity wins
+    });
+    return { job: live[0] || null, others: Math.max(0, live.length - 1) };
+  }
+
+  function title(job) {
+    const i = job.input || {}, op = i.op ? " · " + i.op : "";
+    const model = i.character || i.mod || i.model || "";
+    return `${job.tool}${op}${model ? " · " + model : ""}`;
+  }
+
+  function modelPath(job) {                                                 // the GLB actually being processed, when known
+    const i = job.input || {};
+    if (job.tool === "characters" && i.character) return `/api/characters/${encodeURIComponent(i.character)}/model`;
+    return null;
+  }
+
+  // ---- VCR close effect: tracking static, then the picture collapses to a line ------------
+  const VCR_TRACKING_MS = 700, VCR_COLLAPSE_MS = 260, VCR_HOLD_MS = 60;
+  function createVcr(now) {
+    const clock = now || (() => Date.now());
+    let t0 = null;
+    return {
+      start() { t0 = clock(); },
+      step() {
+        if (t0 === null) return { phase: "off", p: 0, done: false };
+        const t = clock() - t0;
+        if (t < VCR_TRACKING_MS) return { phase: "tracking", p: t / VCR_TRACKING_MS, done: false };
+        if (t < VCR_TRACKING_MS + VCR_COLLAPSE_MS) return { phase: "collapse", p: (t - VCR_TRACKING_MS) / VCR_COLLAPSE_MS, done: false };
+        if (t < VCR_TRACKING_MS + VCR_COLLAPSE_MS + VCR_HOLD_MS) return { phase: "hold", p: 1, done: false };
+        return { phase: "done", p: 1, done: true };
+      },
+    };
+  }
+
+  // ---- one popup window -------------------------------------------------------------------
+  function mount(opts) {
+    opts = opts || {};
+    const fetchJobs = opts.fetchJobs || null, pollMs = opts.pollMs || 4000;
+    const assetUrl = opts.assetUrl || (p => p);
+    const suppressed = new Set();
+    let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
+      barEl = null, msgEl = null, logEl = null;
+    let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
+      lastMsgs = [], dead = false;
+
+    const style = doc.createElement("style");
+    style.textContent = [
+      ".gbox-pp{position:fixed;right:14px;bottom:46px;width:390px;max-width:calc(100vw - 28px);z-index:9999;",
+      "background:#101318f2;border:1px solid #2c3340;border-radius:10px;box-shadow:0 12px 40px #000c;",
+      "font:12px/1.45 system-ui,sans-serif;color:#dfe4ec;overflow:hidden}",
+      ".gbox-pp .pp-h{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#161a22;border-bottom:1px solid #232a36}",
+      ".gbox-pp .pp-h b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}",
+      ".gbox-pp .pp-chip{flex:none;font-size:10px;padding:1px 7px;border-radius:9px;background:#233042;color:#9fc2ff}",
+      ".gbox-pp .pp-chip.run{background:#1d3a26;color:#8fe6a8}.gbox-pp .pp-x{flex:none;border:0;background:none;color:#8b93a3;",
+      "cursor:pointer;font-size:14px;padding:0 2px}.gbox-pp .pp-x:hover{color:#fff}",
+      ".gbox-pp .pp-stage{position:relative;height:250px;background:#0b0d12}",
+      ".gbox-pp .pp-stage canvas{position:absolute;inset:0;width:100%;height:100%}",
+      ".gbox-pp .pp-meta{padding:7px 10px 2px}.gbox-pp .pp-bar{height:4px;border-radius:3px;background:#222936;overflow:hidden}",
+      ".gbox-pp .pp-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#4f8cff,#8fe6a8);transition:width .4s}",
+      ".gbox-pp .pp-msg{margin-top:5px;color:#aeb7c6;min-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".gbox-pp .pp-log{padding:0 10px 4px;color:#6f7988;font:10px/1.5 ui-monospace,monospace;max-height:44px;overflow:hidden}",
+      ".gbox-pp .pp-f{padding:4px 10px 7px;color:#5b6472;font-size:10px}",
+      ".gbox-pp.pp-closing .pp-stage canvas:first-child{filter:saturate(.4)}",
+    ].join("");
+    doc.head.append(style);
+
+    function build() {
+      root = doc.createElement("div");
+      root.className = "gbox-pp";
+      const head = doc.createElement("div"); head.className = "pp-h";
+      titleEl = doc.createElement("b");
+      stateEl = doc.createElement("span"); stateEl.className = "pp-chip";
+      moreEl = doc.createElement("span"); moreEl.className = "pp-chip"; moreEl.style.display = "none";
+      const x = doc.createElement("button"); x.className = "pp-x"; x.textContent = "✕"; x.title = "Hide this task (it keeps running)";
+      x.onclick = () => { if (current) suppressed.add(current.id); teardown(true); };
+      head.append(titleEl, stateEl, moreEl, x);
+      stage = doc.createElement("div"); stage.className = "pp-stage";
+      overlay = doc.createElement("canvas"); overlay.width = 390; overlay.height = 250;
+      stage.append(overlay);
+      ctx2d = overlay.getContext && overlay.getContext("2d");
+      const meta = doc.createElement("div"); meta.className = "pp-meta";
+      barEl = doc.createElement("div"); barEl.className = "pp-bar";
+      const fill = doc.createElement("i"); barEl.append(fill);
+      msgEl = doc.createElement("div"); msgEl.className = "pp-msg";
+      meta.append(barEl, msgEl);
+      logEl = doc.createElement("div"); logEl.className = "pp-log";
+      const foot = doc.createElement("div"); foot.className = "pp-f";
+      foot.textContent = "Background 3D task · window closes itself when the work finishes";
+      root.append(head, stage, meta, logEl, foot);
+      doc.body.append(root);
+    }
+
+    function teardown(instant) {
+      if (!root) return;
+      if (instant) { remove(); return; }
+      closing = true; root.classList.add("pp-closing"); vcr.start(); loop();
+    }
+
+    function remove() {
+      closing = false; current = null;
+      if (timer) { (env.clearTimeout || clearTimeout)(timer); timer = null; }
+      if (three) { try { three.dispose(); } catch (e) {} three = null; }
+      if (root) { root.remove(); root = null; }
+    }
+
+    function setContent(job, others) {
+      if (!root) build();
+      current = job;
+      titleEl.textContent = title(job);
+      stateEl.textContent = job.state === "running" ? "processing" : "queued";
+      const run = job.state === "running";
+      if (stateEl.classList) stateEl.classList[run ? "add" : "remove"]("run");
+      moreEl.textContent = `+${others} more`;
+      moreEl.style.display = others ? "" : "none";
+      if (!three) startViewer(job);
+    }
+
+    function update(job) {
+      const p = job.progress || {};
+      if (typeof p.pct === "number") barEl.firstChild.style.width = Math.max(0, Math.min(100, p.pct)) + "%";
+      if (p.msg && p.msg !== msgEl.textContent) msgEl.textContent = p.msg;
+      const logs = (job.progress_log || []).filter(Boolean).slice(-3);
+      if (logs.length) {
+        const joined = logs.join("\n");
+        if (joined !== logEl.textContent) logEl.textContent = joined;
+      } else if (p.msg && lastMsgs[lastMsgs.length - 1] !== p.msg) {
+        lastMsgs = (lastMsgs.concat([p.msg])).slice(-3);
+        logEl.textContent = lastMsgs.join("\n");
+      }
+      if (three && three.setJob) three.setJob(job);
+    }
+
+    // ---- viewer: three.js when it can load (web shell), 2D wireframe orbit otherwise -------
+    async function startViewer(job) {
+      if (!stage || three) return;
+      const holder = { canvas: null, dispose() {} };
+      three = holder;                                                       // placeholder until the real viewer is ready
+      let made = null;
+      try {
+        if (opts.now === undefined) {                                       // real browser: try WebGL + CDN modules
+          const T = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/+esm");
+          const L = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm");
+          if (!root || three !== holder) return;                            // closed while loading
+          made = makeThree(T, L.GLTFLoader, job);
+        }
+      } catch (e) { if (made) { try { made.dispose(); } catch (e2) {} made = null; } }
+      if (!root || three !== holder) { if (made) made.dispose(); return; }
+      three = made || make2D(job);
+      if (root && stage.firstChild !== overlay) stage.insertBefore(overlay, stage.firstChild);
+    }
+
+    function makeThree(THREE, GLTFLoader, job) {
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(env.devicePixelRatio || 1, 2));
+      renderer.setSize(390, 250, false);
+      const canvas = renderer.domElement;
+      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
+      stage.insertBefore(canvas, overlay);
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x30364a, 2.1));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.8); sun.position.set(3, 5, 4); scene.add(sun);
+      const camera = new THREE.PerspectiveCamera(40, 390 / 250, 0.01, 100);
+      let group = new THREE.Group(); scene.add(group);
+      const wire = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(1, 1)),
+        new THREE.LineBasicMaterial({ color: 0x4f8cff }));
+      group.add(wire);
+      const path = modelPath(job);
+      let loader = null;
+      const swapIn = gltf => {
+        const b = new THREE.Box3().setFromObject(gltf.scene), c = b.getCenter(new THREE.Vector3()),
+          s = Math.max(b.getSize(new THREE.Vector3()).length(), 0.1);
+        gltf.scene.position.sub(c); gltf.scene.scale.setScalar(1.6 / s);
+        const old = group.userData.model;
+        if (old) group.remove(old);
+        group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
+      };
+      const safeLoad = p => { try { loader.load(assetUrl(p), swapIn, undefined, () => {}); } catch (e) { /* offline/404: keep the wire placeholder */ } };
+      if (path) { loader = new GLTFLoader(); safeLoad(path); }
+      camera.position.set(0, 0.7, 3.1); camera.lookAt(0, 0, 0);
+      let raf = 0, stop = false;
+      const tick = () => {
+        if (stop) return;
+        raf = (env.requestAnimationFrame || (f => env.setTimeout(f, 33)))(tick);
+        group.rotation.y += 0.012;                                          // the 360° orbit around the model
+        group.rotation.x = 0.25 + Math.sin(group.rotation.y * 0.5) * 0.1;
+        renderer.render(scene, camera);
+        drawOverlay();
+      };
+      tick();
+      return {
+        canvas, setJob(j) { const p = modelPath(j); if (p && p !== path && loader) { path = p; safeLoad(p); } },
+        dispose() { stop = true; (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
+          renderer.dispose(); canvas.remove(); },
+      };
+    }
+
+    function make2D(job) {
+      const canvas = doc.createElement("canvas"); canvas.width = 390; canvas.height = 250;
+      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
+      stage.insertBefore(canvas, overlay);
+      const c = canvas.getContext && canvas.getContext("2d");
+      let t = 0, timer2 = null, stop = false;
+      const pts = [];
+      for (let i = 0; i < 90; i++) {                                        // a point-cloud "mesh" to orbit around
+        const y = 1 - 2 * (i % 10) / 9, a = i * 2.399963, r = Math.sqrt(Math.max(0, 1 - y * y));
+        pts.push([Math.cos(a) * r, y, Math.sin(a) * r]);
+      }
+      const draw = () => {
+        if (stop || !c) return;
+        timer2 = env.setTimeout(draw, 33);
+        t += 0.02;
+        c.clearRect(0, 0, 390, 250);
+        c.strokeStyle = "#2b3242"; c.lineWidth = 1;
+        for (let y = 0; y < 250; y += 4) { c.beginPath(); c.moveTo(0, y + .5); c.lineTo(390, y + .5); c.stroke(); }
+        const spin = t * 1.1, cs = Math.cos(spin), sn = Math.sin(spin);
+        c.fillStyle = "#6ea8ff";
+        for (const [x, y, z] of pts) {
+          const rx = x * cs - z * sn, rz = x * sn + z * cs;                  // camera orbiting 360° around the model
+          const sx = 195 + rx * 95 * (1 + rz * .25), sy = 128 - y * 85 + rz * 18;
+          c.globalAlpha = 0.35 + 0.5 * (rz + 1) / 2;
+          c.fillRect(sx, sy, 2, 2);
+        }
+        c.globalAlpha = 1;
+        drawOverlay();
+      };
+      draw();
+      return { canvas, setJob() {}, dispose() { stop = true; if (timer2) env.clearTimeout(timer2); canvas.remove(); } };
+    }
+
+    function drawOverlay() {                                                // VCR static + tracking band while closing
+      if (!ctx2d || !closing) return;
+      const v = vcr.step(), W = overlay.width, H = overlay.height;
+      if (v.done) { remove(); return; }
+      const rnd = env.Math ? env.Math.random : Math.random;
+      ctx2d.clearRect(0, 0, W, H);
+      if (v.phase === "tracking") {
+        const n = Math.floor(40 + 260 * v.p);
+        for (let i = 0; i < n; i++) {                                       // static snow
+          const g = rnd() * 160 | 0;
+          ctx2d.fillStyle = `rgba(${g},${g},${g},${0.25 + rnd() * 0.5})`;
+          ctx2d.fillRect(rnd() * W, rnd() * H, 2 + rnd() * 26, 1.5);
+        }
+        const bandY = H - v.p * (H + 40);                                   // bright tracking bar sweeping upward
+        ctx2d.fillStyle = "rgba(255,255,255,.16)"; ctx2d.fillRect(0, bandY, W, 22);
+        ctx2d.fillStyle = "rgba(255,255,255,.5)"; ctx2d.fillRect(0, bandY + 9, W, 3);
+        ctx2d.fillStyle = "#e8ecf3"; ctx2d.font = "700 11px ui-monospace,monospace";
+        ctx2d.fillText("◼ STOP", 12, 20);
+      } else if (v.phase === "collapse" || v.phase === "hold") {
+        const k = v.phase === "hold" ? 1 : 1 - Math.pow(v.p, 2);
+        ctx2d.fillStyle = `rgba(0,0,0,${0.35 + 0.6 * (1 - k)})`;
+        ctx2d.fillRect(0, 0, W, H);
+        const h = Math.max(1.5, 250 * k);
+        ctx2d.fillStyle = "#dfe6f2";
+        ctx2d.fillRect(0, (H - h) / 2, W, Math.min(h, 2));                  // picture collapsing to a scanline
+        if (v.phase === "collapse" && v.p > .6) { ctx2d.fillStyle = "#fff"; ctx2d.fillRect(0, H / 2 - 1, W, 2); }
+      }
+    }
+
+    function loop() {                                                       // keeps the VCR overlay animating while closing
+      if (!closing || !root) return;
+      drawOverlay();
+      if (closing && root) timer = env.setTimeout(loop, 33);
+    }
+
+    function sync(jobs) {
+      if (dead || !Array.isArray(jobs)) return;
+      const live = jobs.filter(j => classify(j) && !suppressed.has(j.id));
+      if (!live.length) { if (root && !closing) teardown(false); return; }
+      const { job, others } = pick(live);
+      if (closing && root) {
+        if (job.id !== (current && current.id) && !vcr.step().done) return;  // a different 3D task took over mid-effect: let the effect finish first
+        closing = false; root.classList.remove("pp-closing");
+      }
+      if (!root || job.id !== (current && current.id)) setContent(job, others);
+      update(job);
+    }
+
+    if (fetchJobs) {
+      const poll = async () => {
+        if (dead) return;
+        try { sync(await fetchJobs()); } catch (e) { /* server blip: keep the current window as-is */ }
+      };
+      poll();
+      pollTimer = env.setInterval(poll, pollMs);
+    }
+
+    return {
+      sync,
+      dispose() {
+        dead = true;
+        if (pollTimer) (env.clearInterval || (t => env.clearTimeout(t)))(pollTimer);
+        remove();
+      },
+    };
+  }
+
+  return { mount, classify, pick, createVcr, title, modelPath, MODEL_TOOLS };
+});
