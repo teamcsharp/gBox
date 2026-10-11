@@ -482,14 +482,63 @@ ATLAS_TEXTURE = 0                       # the PTEX texture the new strips draw (
 HEAD_NODES = {10, 11}
 
 
-def swap_index(slot: str | None) -> int:
-    """characters op=use slot -> PLAYER.AFS character index: 'player' (= 00), 'NN', 'jgr_charNN' or 'char:NN'."""
+# Archive position is not the game's character ID. Each PLAY starts "PLAY", u32, u32 binding-record offset (relative to
+# the PLAY); the record's first int32 is the native character ID that 1ST_READ's lookup (0x8c0c7f74) compares with the
+# caller's ID, followed by the body-root slots. On the USA disc archive 00 is native ID 7 and native ID 0 is archive 04.
+def native_ids(data: bytes) -> list[int]:
+    """Native character ID of every PLAYER.AFS character, in archive order (checked: a permutation of 0-15)."""
+    ids = []
+    for i in range(CHARACTER_COUNT):
+        play, _ = character_pair(data, i)
+        rec = struct.unpack_from("<I", data, play + 8)[0]
+        if not 12 <= rec < entry_size(data, play) - 4:
+            raise ValueError(f"PLAY {i:02d} (+{play:#x}): binding record offset {rec:#x} is outside the PLAY")
+        ids.append(struct.unpack_from("<i", data, play + rec)[0])
+    if sorted(ids) != list(range(CHARACTER_COUNT)):
+        raise ValueError(f"PLAYER.AFS native character IDs {ids} are not a permutation of 0-{CHARACTER_COUNT - 1}")
+    return ids
+
+
+def native_id_for_archive(data: bytes, index: int) -> int:
+    if not 0 <= index < CHARACTER_COUNT:
+        raise ValueError(f"archive index {index} outside 00-{CHARACTER_COUNT - 1:02d}")
+    return native_ids(data)[index]
+
+
+def archive_index_for_native_id(data: bytes, native_id: int) -> int:
+    ids = native_ids(data)
+    if native_id not in ids:
+        raise ValueError(f"native character ID {native_id} is not bound by any PLAYER.AFS PLAY (IDs 0-{CHARACTER_COUNT - 1})")
+    return ids.index(native_id)
+
+
+def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int:
+    """characters op=use slot -> PLAYER.AFS archive index.
+
+    'NN', 'jgr_charNN' or 'char:NN' name an archive position; 'id:N' names the game's native character ID (needs
+    `data`, the PLAYER.AFS bytes or a callable returning them). 'player' (the default) resolves only through a known
+    active native character ID: archive 00 is not the default player, so it is never guessed."""
     s = (slot or "player").strip().lower()
+    load = (lambda: data() if callable(data) else data)
     if s == "player":
-        return 0
+        if active_id is None:
+            raise ValueError("slot 'player': the active native character ID is unknown, so the archive entry can't be "
+                             "chosen (archive 00 is native ID 7, not the default player). Use 'id:N' for native "
+                             f"character ID N or 'NN' for archive index 00-{CHARACTER_COUNT - 1:02d}")
+        s = f"id:{int(active_id)}"
+    if s.startswith(("id", "native")):
+        num = s.split("id", 1)[-1] if s.startswith("id") else s[len("native"):]
+        num = num.lstrip(":_ ")
+        if not num.isdigit():
+            raise ValueError(f"slot {slot!r}: native character IDs look like 'id:0'")
+        buf = load()
+        if buf is None:
+            raise ValueError(f"slot {slot!r}: resolving a native character ID needs the PLAYER.AFS data")
+        return archive_index_for_native_id(buf, int(num))
     digits = s.rsplit("char", 1)[-1].lstrip(":_ ")
     if not digits.isdigit() or not 0 <= int(digits) < CHARACTER_COUNT:
-        raise ValueError(f"slot {slot!r}: use 'player' or a JGR character index 00-{CHARACTER_COUNT - 1:02d}")
+        raise ValueError(f"slot {slot!r}: use 'id:N' (native character ID), 'player' with a known active ID, or a "
+                         f"JGR archive index 00-{CHARACTER_COUNT - 1:02d}")
     return int(digits)
 
 
@@ -715,7 +764,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     pt = bytearray(data[ptex:ptex + size])
     pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
     afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
-    rep = r["report"] | {"character": f"{index:02d}", "play_bytes": len(r["data"]), "play_room": room,
+    rep = r["report"] | {"character": f"{index:02d}", "native_id": native_id_for_archive(data, index),
+                         "body_root": f"{root:#x}", "play_bytes": len(r["data"]), "play_room": room,
                          "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
@@ -757,7 +807,9 @@ def build_mod(cfg, meta: dict, game: dict, gdi, index: int = 0, progress=lambda 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
     """characters op=use for Jet Grind Radio (DC): build jgr_<slug>_<NN> on the control plane, then launch it."""
     from . import characters as C, filemods
-    index = swap_index(getattr(inp, "slot", None))
+    from .gdrom import GDRom
+    index = swap_index(getattr(inp, "slot", None), lambda: GDRom(str(C._dc_gdi(ctx, game))).read(PLAYER_AFS),
+                       getattr(inp, "active_id", None))
     gid, name = game["game_id"], f"jgr_{meta['slug']}_{index:02d}"
     have = (filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json").exists()
     built = None

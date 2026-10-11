@@ -1854,7 +1854,7 @@ def characters_tool(inp: CharIn, ctx):
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
     from . import jgr
-    if gid in jgr.GAME_IDS:                                   # Jet Grind Radio (DC): slot player / 00-15 -> jgr_<slug>_<NN>
+    if gid in jgr.GAME_IDS:                                   # Jet Grind Radio (DC): slot id:N (native ID) / 00-15 (archive) -> jgr_<slug>_<NN>
         return {"result": out | jgr.use(ctx, meta, game, inp)}
     from . import pso_player
     if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>

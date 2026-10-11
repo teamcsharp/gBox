@@ -333,15 +333,49 @@ def _afs(entries):
     return bytes(out), offs
 
 
-def test_swap_index_slots():
+USA_NATIVE_IDS = [7, 4, 3, 2, 0, 13, 1, 5, 9, 14, 6, 11, 12, 10, 15, 8]   # archive 00..15 (1ST_READ 0x8c0c7f74 review)
+
+
+def test_swap_index_slots(monkeypatch):
     from gbox import jgr
-    assert jgr.swap_index(None) == 0 and jgr.swap_index("player") == 0
-    assert jgr.swap_index("07") == 7 and jgr.swap_index("jgr_char12") == 12 and jgr.swap_index("char:3") == 3
     import pytest
+    assert jgr.swap_index("07") == 7 and jgr.swap_index("jgr_char12") == 12 and jgr.swap_index("char:3") == 3
+    assert jgr.swap_index("00") == 0                                   # explicit archive index still works
     with pytest.raises(ValueError):
         jgr.swap_index("16")
     with pytest.raises(ValueError):
         jgr.swap_index("enemy")
+    # 'player' is never guessed as archive 00: without a known active native ID it fails with guidance
+    for s in (None, "player"):
+        with pytest.raises(ValueError, match="active native character ID is unknown"):
+            jgr.swap_index(s)
+    monkeypatch.setattr(jgr, "native_ids", lambda data: list(USA_NATIVE_IDS))
+    loads = []
+    assert jgr.swap_index("id:0", lambda: loads.append(1) or b"afs") == 4 and loads == [1]   # lazy PLAYER.AFS read
+    assert jgr.swap_index("id:7", b"afs") == 0 and jgr.swap_index("native:15", b"afs") == 14
+    assert jgr.swap_index("player", b"afs", active_id=0) == 4
+    assert jgr.swap_index("07", lambda: 1 / 0) == 7                    # archive indexes never read the disc
+    with pytest.raises(ValueError, match="needs the PLAYER.AFS data"):
+        jgr.swap_index("id:0")
+    with pytest.raises(ValueError, match="not bound"):
+        jgr.swap_index("id:16", b"afs")
+
+
+def test_native_id_checks():
+    from gbox import jgr
+    import pytest
+    with pytest.raises(ValueError):
+        jgr.native_id_for_archive(b"", 16)
+
+
+def test_native_ids_on_owned_disc():
+    from gbox import jgr
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    assert jgr.native_ids(data) == USA_NATIVE_IDS
+    assert jgr.native_id_for_archive(data, 0) == 7 and jgr.archive_index_for_native_id(data, 0) == 4
 
 
 def test_replace_entries_in_place_keeps_length_and_other_entries():

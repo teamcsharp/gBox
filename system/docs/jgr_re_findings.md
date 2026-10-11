@@ -111,6 +111,16 @@ the fixed `BODY_ROLES` map (15 roles). On the owned disc, all 16 entries pass `v
 the tree walk. Tests (`tests/test_jgr.py`) gate on the owned disc and skip when it is absent, the
 same fixture pattern as the DOA2 suite.
 
+## Native character IDs (archive index is not the game's ID)
+
+Each PLAY starts `PLAY`, a u32, then a u32 offset (relative to the PLAY) to its binding record. The
+record's first int32 is the native character ID that `1ST_READ.BIN`'s lookup at `0x8c0c7f74` compares
+with the caller's ID; the body-root slots follow at record offsets 4, 20, 36, 52, 68 and 84. On the
+USA disc the archive-to-ID permutation is `7 4 3 2 0 13 1 5 9 14 6 11 12 10 15 8` (archive 00..15),
+so archive 00 is native ID 7 and native ID 0 is archive 04. `jgr.native_ids` reads and checks this
+table. `swap_index` accepts `id:N` for a native ID, and `player` only resolves when the active native
+ID is known; it no longer silently means archive 00.
+
 ## Swap writer (#1155, work in progress, not routed to `characters op=use`)
 
 `jgr.build_swap` / `build_mod` / `use` port the SA2 chunk-model writer. They use `ninja_swap.fit`, `ninja.cnk_model_lists` with the original vertex chunks kept, `pvr_like` for PTEX texture 0, and `jgr.replace_entries`, which rewrites the entry in place in its AFS room. `patch_gdi` then works unchanged.
