@@ -13,4 +13,5 @@ if (-not (Test-Path "$Venv\Scripts\python.exe")) { python -m venv $Venv }
 $env:PYTHONPATH = $Repo
 # -P: never import gbox from the current directory (only from the share)
 & "$Venv\Scripts\python.exe" -P -m gbox --config "$Repo\gbox.toml" setup
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Output "venv: $Venv"
