@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, Response
 MODEL_EXT = {'.glb', '.gltf', '.obj', '.fbx', '.abc', '.dae', '.ply', '.stl', '.usd', '.usdz'}
 IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.dds', '.tga', '.bmp', '.ktx', '.ktx2'}
 ASSET_EXT = MODEL_EXT | IMAGE_EXT | {'.wav', '.ogg', '.mp3', '.flac', '.anim', '.bin'}
+NESTED_KINDS = {'texture', 'audio', 'data'}
 ASSET_TOOLS = {'characters', 'scene_capture', 'export_asset', 'asset_convert', 'rom_export',
                'extract_pso_model', 'extract_pso_area', 'oot_models', 'pick'}
 
