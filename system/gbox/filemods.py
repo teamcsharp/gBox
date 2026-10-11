@@ -193,15 +193,100 @@ def _files(d: Path, hashes: bool = False) -> list[dict]:
     return files
 
 
-def fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None) -> bool:
-    key = str(mod_dir(cfg, game_id, name).resolve())
+STAGED_SEP = "~"                     # <mod>~<build>: a rebuilt mod staged beside a copy the running game holds open
+STAGED_MARK = ".gbox-staged-of"     # inside such a folder: the collection name it mirrors (never pushed back or listed)
+
+
+class ModInUse(PermissionError):
+    """A file of the mod can't be replaced because a running emulator holds it open (Windows WinError 5/32)."""
+
+
+def fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, dest: Path | None = None) -> bool:
+    key = str((dest or mod_dir(cfg, game_id, name)).resolve())
     with _FETCH_GUARD:
         lock = _FETCH_LOCKS.setdefault(key, threading.Lock())
     with lock:
-        return _fetch(cfg, server, headers, game_id, name, progress)
+        return _fetch(cfg, server, headers, game_id, name, progress, dest=dest)
 
 
-def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, retry=True) -> bool:
+def _build_key(files: list[dict]) -> str:
+    h = hashlib.sha256()
+    for f in sorted(files, key=lambda f: f["path"]):
+        if f["path"] != ".gbox-mod.json":
+            h.update(f"{f['path']}\0{f['size']}\0{f.get('sha256', '')}\n".encode())
+    return h.hexdigest()[:10]
+
+
+def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=None) -> str:
+    """Make mod `name` launchable on this machine and return the folder name to launch. Normally that is `name`. When the
+    running game holds the old build open (a same-name rebuild while it plays: WinError 5 on .part -> .bin, #1270), the
+    new build goes to `name~<build>` with the same file names, so the swap can still close the old game and start it."""
+    try:
+        if fetch(cfg, server, headers, game_id, name, progress):
+            _drop_stale_staged(cfg, game_id, name, keep="")
+            return name
+        return name                                        # not in the collection: the caller's marker check reports it
+    except ModInUse as e:
+        busy = e
+    import httpx
+    r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+    r.raise_for_status()
+    alias = f"{name}{STAGED_SEP}{_build_key(r.json()['files'])}"
+    out = mod_dir(cfg, game_id, alias)
+    if progress:
+        progress(20, f"{busy.filename and Path(busy.filename).name or name} is open in the running game: staging the new build as {alias}")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / STAGED_MARK).write_text(name)
+    src = mod_dir(cfg, game_id, name)
+    for f in r.json()["files"]:                            # reuse what is already here instead of downloading a GD-ROM twice
+        have, part, dst = src / f["path"], src / (f["path"] + ".part"), out / f["path"]
+        if f["path"] == ".gbox-mod.json" or dst.exists() or not dst.resolve().is_relative_to(out.resolve()):
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if part.exists() and part.stat().st_size == f["size"]:
+                os.replace(part, dst.with_name(dst.name + ".part"))     # the finished download that couldn't be swapped in
+            elif have.exists() and have.stat().st_size == f["size"] and f.get("sha256") and _sha(have) == f["sha256"]:
+                os.link(have, dst)                         # unchanged file only: a changed one may be the open, locked copy
+        except OSError:
+            pass
+    if not fetch(cfg, server, headers, game_id, name, progress, dest=out):
+        raise RuntimeError(f"mod {name!r} disappeared from the collection while staging")
+    _drop_stale_staged(cfg, game_id, name, keep=alias)
+    return alias
+
+
+def _sha(p: Path) -> str:
+    with p.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _drop_stale_staged(cfg, game_id: str, name: str, keep: str):
+    root = Path(cfg.cache) / "mods" / game_id
+    for d in root.glob(f"{name}{STAGED_SEP}*") if root.exists() else ():
+        if d.name != keep and (d / STAGED_MARK).exists():
+            gone = d.with_name(d.name + ".drop")
+            try:
+                os.rename(d, gone)                         # fails while a game holds a file open: that copy stays intact
+            except OSError:
+                continue
+            shutil.rmtree(gone, ignore_errors=True)
+
+
+def _replace(tmp: Path, dst: Path, out: Path):
+    try:
+        os.replace(tmp, dst)
+    except PermissionError as e:
+        if not dst.exists():
+            raise
+        try:
+            (out / ".gbox-mod.json").unlink(missing_ok=True)   # half updated: never launch this folder as a finished mod
+        except OSError:
+            pass
+        raise ModInUse(e.errno, f"{dst.name} is open in a running game", str(dst)) from e
+
+
+def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, retry=True, dest: Path | None = None) -> bool:
     """A mod built elsewhere: download it from the central collection (the Spark) into this machine's cache. Resumable:
     files already here with the right size are kept. Returns False if the collection doesn't have it either."""
     import httpx
@@ -209,7 +294,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
     if r.status_code == 404:
         return False
     r.raise_for_status()
-    files, out = r.json()["files"], mod_dir(cfg, game_id, name)
+    files, out = r.json()["files"], dest or mod_dir(cfg, game_id, name)
     total, done = sum(f["size"] for f in files) or 1, 0
     reported = 0
     for f in sorted(files, key=lambda f: f["path"] == ".gbox-mod.json"):    # the marker last: a half copy isn't a mod
@@ -228,7 +313,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
         if offset == f['size']:
             with tmp.open('rb') as stream:
                 valid = not f.get('sha256') or hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
-            if valid: os.replace(tmp, dst); done += offset; continue
+            if valid: _replace(tmp, dst, out); done += offset; continue
             offset = 0
         request_headers = dict(headers)
         if offset: request_headers['Range'] = f'bytes={offset}-'
@@ -253,9 +338,9 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
             with tmp.open('rb') as stream: valid = hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
             if not valid:
                 tmp.unlink()
-                if retry: return _fetch(cfg, server, headers, game_id, name, progress, retry=False)
+                if retry: return _fetch(cfg, server, headers, game_id, name, progress, retry=False, dest=dest)
                 raise ValueError(f"Mod checksum mismatch: {f['path']}")
-        os.replace(tmp, dst)
+        _replace(tmp, dst, out)
     return (out / ".gbox-mod.json").exists()
 
 
@@ -267,6 +352,8 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
         return sent
     for meta in root.glob("*/*/.gbox-mod.json"):
         d, game_id, name = meta.parent, meta.parent.parent.name, meta.parent.name
+        if (d / STAGED_MARK).exists():
+            continue                                       # a local staging copy of a collection mod, not a new build
         r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
         have = {f["path"]: f["size"] for f in r.json().get("files", [])} if r.status_code == 200 else {}
         todo = [f for f in _files(d) if have.get(f["path"]) != f["size"] and not f["path"].endswith(".part")]
@@ -281,7 +368,8 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
 
 def list_mods(cfg, game_id: str) -> list[dict]:
     d = Path(cfg.cache) / "mods" / game_id
-    return [json.loads((m / ".gbox-mod.json").read_text()) for m in sorted(d.iterdir()) if (m / ".gbox-mod.json").exists()] if d.exists() else []
+    return [json.loads((m / ".gbox-mod.json").read_text()) for m in sorted(d.iterdir())
+            if (m / ".gbox-mod.json").exists() and not (m / STAGED_MARK).exists()] if d.exists() else []
 
 
 def remove(cfg, game_id: str, name: str) -> bool:
