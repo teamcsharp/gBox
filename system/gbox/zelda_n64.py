@@ -260,4 +260,15 @@ MM = dict(
 )
 GAMES["mm"] = MM
 
+
+# Text / cutscene detection for the `zelda` op skip_text (input only). OoT: player->stateFlags1 TALKING | IN_CUTSCENE,
+# the exact inverse of oot.in_gameplay (no player actor during a scene change also counts as "not gameplay").
+# A only: Start would open the pause menu if the box closed between polls. Majora's Mask has no verified detector yet.
+def _oot_in_text(m, g) -> bool:
+    return not oot.in_gameplay(m.ad)
+
+
+OOT["skip_text_detector"] = _oot_in_text
+OOT["skip_text_buttons"] = ["a"]
+
 FNS = {"n64_bottle": _bottle, "oot_bits": _oot_bits, "oot_full": _oot_full, "oot_magic": _oot_magic, "mm_magic": _mm_magic}

@@ -1,10 +1,13 @@
 """`zelda`: Link's inventory / equipment, live, in every Zelda game in the library (any system).
 
 ops: games | list | give (item, count) | equip (item, button) | remove (item) | all_items | noclip (on) | unrestrict (alias any_age /
-     any_form: 'let me use/equip anything') | hearts (count) | rupees (count) | max (full hearts, rupees, ammo).
+     any_form: 'let me use/equip anything') | hearts (count) | rupees (count) | max (full hearts, rupees, ammo) |
+     skip_text (alias skip / skip_talk / talk / text: press the advance button until the current text box or
+     cutscene ends; count = max seconds, default 90, capped below the tool timeout).
 Items are taken by NAME ("hook shot", "bow", "the master sword", "bombs", "bottle"...), fuzzy-matched per game.
 Games, tables and sources: gbox/zelda_games.py. Ocarina of Time delegates to gbox/oot.py (v1.2 SaveContext).
-Every op returns before/after bytes of what it touched and verified = read-back equals what was written.
+Every item op returns before/after bytes of what it touched and verified = read-back equals what was written.
+skip_text writes no memory; it only sends controller input and reports whether the text/cutscene state cleared.
 
 Register with:  from . import zelda_tool  # noqa: F401
 """
@@ -678,6 +681,69 @@ def _listing(m, g):
     return out
 
 
+# --- text / cutscene skipping ------------------------------------------------------------------------------------------------
+# Input only, no memory writes. N64 games poll the pad once per game frame (OoT: 20 fps), so each tap is held and
+# released for ~100 ms to register as a fresh press. Clock/sleep are module attributes so tests can drive them.
+
+SKIP_TEXT_DEFAULT_S = 90.0
+SKIP_TEXT_MAX_S = 110.0                                    # the `zelda` tool times out at 120 s
+_clock = time.monotonic
+_sleep = time.sleep
+
+
+def _press(ad, key: str, hold: float = 0.1):
+    ad.send_input([{"key": key, "down": True}])
+    try:
+        _sleep(hold)
+    finally:
+        ad.send_input([{"key": key, "down": False}])       # never leave a button held
+
+
+def _in_text(m: Mem, g: dict):
+    """True in a text box / cutscene, False in free gameplay, None when this game has no detector."""
+    if g.get("skip_text_detector"):
+        return bool(g["skip_text_detector"](m, g))
+    when = g.get("refresh_when")                           # same test _refresh_inputs uses to avoid text boxes
+    if when:
+        return m.u8(when[0]) not in when[1] or any(m.rd(when[0] + 1, 1))
+    return None
+
+
+def _skip_text(ad, m: Mem, g: dict, max_s: float = 0, hold: float = 0.1, gap: float = 0.1, settle: float = 0.5) -> dict:
+    """Tap the game's advance button(s) until the text/cutscene state stays cleared for `settle` s, or time runs out."""
+    if not hasattr(ad, "send_input"):
+        raise RuntimeError(f"{g['name']}: this adapter cannot send controller input, so text can't be skipped here")
+    before = _in_text(m, g)
+    if before is None:
+        raise RuntimeError(f"{g['name']}: skip_text has no text/cutscene detector for this game yet")
+    buttons = list(g.get("skip_text_buttons") or ["a"])
+    limit = min(float(max_s) if max_s and max_s > 0 else SKIP_TEXT_DEFAULT_S, SKIP_TEXT_MAX_S)
+    out = {"in_text_before": before, "buttons": buttons, "max_s": limit, "presses": 0, "timed_out": False}
+    if not before:
+        return {**out, "skipped": False, "in_text_after": False,
+                "note": "no text box or cutscene is active; no buttons were pressed"}
+    t0, cleared = _clock(), False
+    while not cleared:
+        for k in buttons:
+            _press(ad, k, hold)
+            out["presses"] += 1
+            _sleep(gap)
+            if not _in_text(m, g):
+                _sleep(settle)                             # the next box of the same conversation may open
+                if not _in_text(m, g):
+                    cleared = True
+                    break
+        if not cleared and _clock() - t0 >= limit:
+            out["timed_out"] = True
+            break
+    after = _in_text(m, g)
+    out.update(skipped=not after, in_text_after=after, seconds=round(_clock() - t0, 2))
+    if after:
+        out["note"] = (f"still in text/cutscene after {limit:g} s; run skip_text again (some cutscenes only end on "
+                       "their own and cannot be advanced by buttons)")
+    return out
+
+
 def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: int = 0, button: str = "",
         on: bool = True) -> dict:
     """Engine entry (also used by tests through a shim adapter)."""
@@ -685,7 +751,9 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
     op = {"any_age": "unrestrict", "any_form": "unrestrict", "allow": "unrestrict", "use_anything": "unrestrict",
           "all": "all_items", "everything": "all_items", "give_all": "all_items", "inventory": "list", "state": "list",
           "take": "remove", "money": "rupees", "health": "hearts", "full": "max", "walk_through_walls": "noclip",
-          "no_clip": "noclip", "ghost": "noclip"}.get(op, op)
+          "no_clip": "noclip", "ghost": "noclip", "skip": "skip_text", "skip_talk": "skip_text", "talk": "skip_text",
+          "text": "skip_text", "skip_dialog": "skip_text", "skip_dialogue": "skip_text", "skip_cutscene": "skip_text",
+          "advance_text": "skip_text"}.get(op, op)
     if op == "games":
         return {"games": {k: {"name": g["name"], "platforms": g["platforms"]} for k, g in GAMES.items()}}
     key, g = detect(title, platform)
@@ -776,8 +844,10 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
                 _give(m, g, g["items"][name], n, name)
         for w in g.get("max_writes", []):
             _give(m, g, w)
+    elif op == "skip_text":
+        res.update(_skip_text(ad, m, g, count))
     elif op != "noclip":
-        raise ValueError("op: games | list | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip")
+        raise ValueError("op: games | list | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip | skip_text")
     if g.get("hud_refresh") and m.log:
         m.poke(g["hud_refresh"][0], bytes([m.u8(g["hud_refresh"][0]) | g["hud_refresh"][1]]))
     res["changes"] = m.changes()
@@ -789,7 +859,7 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
 
 class ZeldaIn(BaseModel):
     session_id: str
-    op: str = "list"           # games | list | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip
+    op: str = "list"           # games | list | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip | skip_text
     item: str = ""             # by name: "hookshot", "hook shot", "master sword", "bombs", "bottle", "fire arrows"...
     count: int = 0             # give: ammo/amount; hearts: how many; rupees: how many
     button: str = ""           # equip: b | a | y | x | c-left | c-down | c-right (default: the game's main item button)
@@ -803,7 +873,8 @@ class ZeldaOut(BaseModel):
 @tool("zelda", "1.0", ZeldaIn, ZeldaOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=120)
 def zelda(inp: ZeldaIn, ctx):
     """Zelda (every game, any system): give items by name, put an item on a button, give everything, lift item
-    restrictions (OoT any age / MM any form), set hearts/rupees, list what Link has. Verified by read-back."""
+    restrictions (OoT any age / MM any form), set hearts/rupees, list what Link has, skip the current text box or
+    cutscene (op=skip_text, count = max seconds). Item ops are verified by read-back."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
     return {"result": run(ad, g.get("title", ""), g.get("platform", ""), inp.op, inp.item, inp.count, inp.button, inp.on)}
