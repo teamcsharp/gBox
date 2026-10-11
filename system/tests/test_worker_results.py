@@ -154,11 +154,45 @@ def test_finished_result_mismatches_and_foreign_worker_rejected(cfg, change):
     assert len(app.state.store.all('receipt')) == 1
 
 
-@pytest.mark.parametrize('state,cancel', [('running', True), ('failed', True), ('failed', False)])
-def test_late_cancelled_or_unverified_terminal_result_rejected(cfg, state, cancel):
+def test_cancelled_running_job_admits_the_workers_actual_outcome(cfg):
+    # Cancel asks a running tool to stop; refusing its answer used to strand the worker offline.
+    app, plane = control(cfg, tool='tasks', cancel=True)
+    stopped = {'job_id': 'launch', 'ok': False, 'output': None, 'error': 'cancelled by the operator', 'log': [], 'artifacts': []}
+    ack = plane.post('/api/workers/old-worker/result', json=stopped).json()
+    job = app.state.store.get('job', 'launch')
+    assert ack['accepted'] and ack['state'] == 'failed' and not ack.get('late')
+    assert job['state'] == 'failed' and job['error'] == 'cancelled by the operator'
+    assert job['cancel_requested'] and not job.get('cancel')
+
+
+@pytest.mark.parametrize('state,cancel', [('failed', True), ('failed', False), ('succeeded', False)])
+def test_result_for_already_ended_job_is_kept_as_evidence_and_settled(cfg, state, cancel):
     app, plane = control(cfg, state=state, cancel=cancel)
-    assert plane.post('/api/workers/old-worker/result', json=launch_result()).status_code == 409
-    assert app.state.store.all('session') == [] and app.state.store.all('receipt') == []
+    store = app.state.store
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    assert outbox.deliver(plane, 'launch')
+    record = outbox.records(include_acknowledged=True)[0]
+    assert record['status'] == 'acknowledged' and record['acknowledgement']['late']
+    # The job, its receipts and callbacks are untouched: no session is created from a late result.
+    assert store.get('job', 'launch')['state'] == state and store.all('session') == [] and store.all('receipt') == []
+    [late] = store.all('late_result')
+    assert late['result_sha256'] == result_digest(launch_result()) and late['job_state'] == state
+    assert json.loads(store.read_artifact(late['evidence']))['artifacts'][0]['b64'] == launch_result()['artifacts'][0]['b64']
+    # A duplicate delivery settles the same way without a second evidence record.
+    again = plane.post('/api/workers/old-worker/result', json=launch_result()).json()
+    assert again['receipt'] == record['acknowledgement']['receipt'] and len(store.all('late_result')) == 1
+
+
+def test_rejected_result_is_released_by_reconnect_once_the_spark_settles_it(cfg, monkeypatch):
+    app, plane = control(cfg, state='failed')
+    outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
+    outbox.save('old-worker', launch_result())
+    class Refuse:
+        def post(self, path, **_):
+            return httpx.Response(409, request=httpx.Request('POST', 'http://fixture' + path))
+    assert not outbox.deliver(Refuse(), 'launch') and outbox.held()[0]['status'] == 'rejected'
+    assert outbox.reconcile_ready(plane) == ['launch'] and outbox.held() == []
 
 
 def test_concurrent_identical_results_have_one_acceptance(cfg, monkeypatch):
@@ -463,6 +497,7 @@ class _Registered(Exception):
 def test_refused_result_without_ack_still_holds_worker_activation(cfg, monkeypatch):
     # A server refusal is not delivery acceptance, even after reconnect.
     app, plane = control(cfg, state='succeeded')
+    app.state.store.put('job', 'launch', app.state.store.get('job', 'launch') | {'worker_id': 'another-worker'})
     outbox = ResultOutbox(cfg.runtime, 'http://fixture', 'owned-worker')
     outbox.save('old-worker', launch_result())
     class Refuse:
@@ -551,7 +586,7 @@ def test_explicit_reconciliation_never_releases_missing_foreign_or_malformed_ack
     assert not list(outbox.archive.glob('*.json'))
 
 
-@pytest.mark.parametrize('problem', ['missing_job', 'foreign_worker', 'cancelled'])
+@pytest.mark.parametrize('problem', ['missing_job', 'foreign_worker'])
 def test_real_control_plane_refusal_keeps_exact_result_held(cfg, problem):
     app, plane = control(cfg)
     if problem == 'missing_job':
