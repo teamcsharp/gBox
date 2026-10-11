@@ -8,6 +8,14 @@ import pytest
 from gbox import doa2_geometry as G, doa2_swap as S
 
 
+@pytest.mark.parametrize('family', ['LOR', 'MAM', 'PDG', 'WBA'])
+def test_bound_native_variant_families_are_valid_retarget_targets(family):
+    assert S.fighter_slot(family) == (family, None)
+    assert S.fighter_slot(f'{family.lower()}:0') == (family, '00')
+    with pytest.raises(ValueError, match='Unknown'):
+        S.fighter_slot('YTI')
+
+
 def native_fixture():
     h = bytearray(80)
     struct.pack_into("<4I", h, 0, 0x8000002c, 0x83000000, (4 << 29) | (5 << 26), 1 << 27)

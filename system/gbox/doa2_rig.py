@@ -61,8 +61,11 @@ def for_archive(disc, archive_name: str, audit: dict | None = None) -> dict:
     for joint, matrix in eyes['world'].items(): profile['world'][joint] = matrix.tolist()
     profile['component_models'] = {model: joint for joint, model in profile['emit_models'].items()}
     profile['evidence']['eyes'] = eyes['evidence']
-    acs_name = f'DOA2/{stem[:-2]}_A{stem[-2:]}.ACS'
-    if acs_name in disc.files:
+    from .doa2_native_export.source_binding import owned_path
+    native_acs = doa2_bindings.accessory_filename(executable, binding['render_slot'], binding['costume'])
+    acs_name = owned_path(disc, native_acs['filename'])
+    profile['evidence']['native_acs_binding'] = native_acs
+    if acs_name:
         wings = C.wing_attachments(disc.read(acs_name), profile['world'][0],
                                   model_count=len(doa2_geometry.decode_chr(disc.read(archive_name))['models']))
         if wings['world']:

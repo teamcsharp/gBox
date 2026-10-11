@@ -1,6 +1,7 @@
 """Runtime/emulator adapters behind one capability interface (plan §6). Unsupported ops raise Unsupported."""
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -561,6 +562,7 @@ class RetroArchAdapter(CommandAdapter):
                 s.bind(("127.0.0.1", 0))
                 port = s.getsockname()[1]
         self.addr, self.display, self.stream, self.log_path = (host, port), None, None, None
+        self._state_lock = threading.RLock()
         self.rewind_on = (platform or "") not in NO_REWIND
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
@@ -859,7 +861,9 @@ class RetroArchAdapter(CommandAdapter):
 
     def log_tail(self, n: int = 1500) -> str:
         try:
-            return self.log_path.read_text(errors="replace")[-n:]
+            with self.log_path.open('rb') as stream:
+                stream.seek(max(0, self.log_path.stat().st_size - n))
+                return stream.read(n).decode('utf-8', 'replace')
         except (OSError, AttributeError):
             return ""
 
@@ -939,9 +943,41 @@ class RetroArchAdapter(CommandAdapter):
         return cur
 
     def save_state(self, slot: int | None = None) -> dict:
-        slot = self._slot(slot)
-        self.cmd("SAVE_STATE")
-        return {"slot": slot}
+        with self._state_lock:
+            requested = self._slot(slot)
+            offset = self.log_path.stat().st_size
+            started = time.time_ns()
+            self.cmd("SAVE_STATE")
+            deadline = time.monotonic() + 12
+            previous = None
+            while time.monotonic() < deadline:
+                with self.log_path.open('rb') as stream:
+                    stream.seek(max(offset, self.log_path.stat().st_size - 65536))
+                    text = stream.read(65536).decode('utf-8', 'replace')
+                matches = re.findall(r'\[State\] Saving state "([^"]+)"', text)
+                if matches:
+                    path = Path(matches[-1])
+                    match = re.search(r'\.state(-?\d+)?$', path.name)
+                    if match:
+                        try:
+                            stat = path.stat()
+                        except OSError:
+                            stat = None
+                        current = (str(path), stat.st_size, stat.st_mtime_ns) if stat else None
+                        if (stat and stat.st_size > 0 and stat.st_mtime_ns >= started
+                                and current == previous):
+                            actual = int(match[1] or 0)
+                            self.slot = actual
+                            result = {'slot': actual, 'requested_slot': requested,
+                                      'path': str(path), 'bytes': stat.st_size,
+                                      'verified': True, 'slot_verified': actual == requested}
+                            if actual != requested:
+                                result['warning'] = ('RetroArch dropped relative slot commands; '
+                                    'this result identifies the actual saved file, and the slot counter was reconciled.')
+                            return result
+                        previous = current
+                time.sleep(.1)
+            raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed')
 
     def load_state(self, slot: int | None = None) -> dict:
         slot = self._slot(slot)

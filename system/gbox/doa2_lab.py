@@ -13,26 +13,37 @@ from .registry import tool
 
 
 class Doa2In(BaseModel):
-    op: Literal["inspect", "decompose", "build", "motions"] = "inspect"
+    op: Literal["inspect", "decompose", "build", "motions", "native_cache"] = "inspect"
     game_id: str = "1de2e7634f3161ff"
     fighter: str = "Kasumi"               # fighter name/family; decompose also supports all
     costume: str = "00"                  # decompose also supports all
     character: str = ""                  # build: donor library slug/name
     profile: str = ""                    # optional override relative to analysis/doa2/<game_id>/rigs
     allow_downscale: bool = False
+    complete_source: bool = True          # decompose: include verified accessories/chains/cloth
+    native_cache: str = "native-cloth-cache"  # relative to this game's analysis directory
+    cache_action: Literal["prepare", "run", "verify"] = "verify"
+    include_details: bool = False        # full provenance is always attached as doa2-details.json
 
 
 class Doa2Out(BaseModel):
     result: dict
 
 
-def selected_costumes(files: dict, fighter: str, costume: str) -> list[tuple[str, str]]:
+def selected_costumes(files: dict, fighter: str, costume: str, executable: bytes | None = None) -> list[tuple[str, str]]:
     """Resolve only actual costume pairs; never silently fall back to another."""
     from .doa2_chars import roster
     from .doa2_swap import fighter_slot
     families = roster(files)
     if fighter.casefold() != "all":
-        family, specified = fighter_slot(fighter)
+        try:
+            family, specified = fighter_slot(fighter)
+        except ValueError:
+            from .doa2_chars import VARIANTS
+            family = fighter.upper()
+            if family not in VARIANTS:
+                raise
+            specified = None
         families = [f for f in families if f["key"] == family]
         costume = specified or costume
     result = []
@@ -47,6 +58,14 @@ def selected_costumes(files: dict, fighter: str, costume: str) -> list[tuple[str
                 result.append((family["key"], c.zfill(2)))
     if not result:
         raise ValueError("Requested fighter costume is absent from the owned disc")
+    if executable is not None:
+        from .doa2_bindings import parse_render_scripts
+        bound = {row['files']['geometry'].upper().rsplit('/', 1)[-1].split('.')[0]
+                 for slot in parse_render_scripts(executable) if slot['slot'] not in (19,20,21,22)
+                 for row in slot['costumes'] if row['sections']['primary']}
+        result = [(family, costume) for family, costume in result if family + costume in bound]
+        if not result:
+            raise ValueError('Requested archive has no native fighter render binding')
     return result
 
 
@@ -59,6 +78,53 @@ def profile_file(root: Path, relative: str) -> Path:
     return path
 
 
+def cache_directory(analysis: Path, relative: str) -> Path:
+    path = (analysis / relative).resolve()
+    if not relative or not path.is_relative_to(analysis.resolve()):
+        raise ValueError('Native cache must remain inside this game\'s analysis directory')
+    return path
+
+
+def run_cache(ctx, disc, analysis, cache, action):
+    from .doa2_native_export import generate_cache as N
+    if action == 'prepare':
+        return N.prepare(disc, cache)
+    if action == 'verify':
+        result = N.verify(cache)
+        if result.get('errors'):
+            raise ValueError('Native cache verification failed: ' + str(result['errors'][:3]))
+        return result
+    import subprocess
+    from .tools import _ghidra_exe, _ghidra_env
+    executable = _ghidra_exe(ctx.config)
+    if executable is None or not executable.is_file():
+        raise ValueError('Native cache execution requires Ghidra on the selected worker')
+    seed = cache / '1ST_READ.BIN'
+    if not seed.is_file():
+        raise ValueError('Run native_cache prepare before executing the owned cloth generators')
+    if hashlib.sha256(seed.read_bytes()).hexdigest() != hashlib.sha256(disc.read('1ST_READ.BIN')).hexdigest():
+        raise ValueError('Native cache executable does not match this owned disc')
+    project = analysis / 'native-ghidra'
+    if any(part.startswith('.') for part in project.absolute().parts):
+        raise ValueError('Use a data directory without hidden path elements for the native Ghidra project')
+    project.mkdir(parents=True, exist_ok=True)
+    name = 'doa2-native'
+    if not (project / (name + '.gpr')).is_file():
+        arguments = [str(executable), str(project), name, '-import', str(seed),
+                     '-loader', 'BinaryLoader', '-loader-baseAddr', '0x8c010000',
+                     '-processor', 'SuperH4:LE:32:default', '-noanalysis']
+        with (cache / 'native_import.log').open('w', encoding='utf-8') as log:
+            imported = subprocess.run(arguments, stdout=log, stderr=subprocess.STDOUT,
+                                      env=_ghidra_env(ctx.config), timeout=1800, check=False)
+        if imported.returncode:
+            raise RuntimeError('Native Ghidra import failed; inspect native_import.log in the cache')
+    ctx.progress(35, 'Executing original SH4 cloth generators in the verified read-only program')
+    result = N.run_native(cache, executable, project, name, '1ST_READ.BIN', env=_ghidra_env(ctx.config))
+    if result.get('errors'):
+        raise ValueError('Native cloth execution failed verification: ' + str(result['errors'][:3]))
+    return result
+
+
 def _validate(out: Doa2Out, artifacts: dict) -> list[str]:
     report = artifacts.get("doa2-report.json")
     if not report or json.loads(report) != out.result:
@@ -66,15 +132,36 @@ def _validate(out: Doa2Out, artifacts: dict) -> list[str]:
     return []
 
 
-@tool("doa2_assets", "1.0", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
+def compact_report(value, key=''):
+    """Keep named costumes/results while bounding per-vertex and motion payloads."""
+    if isinstance(value, dict):
+        if key == 'native_report':
+            fields = ('format', 'stem', 'triangles', 'vertices', 'joints',
+                      'complete_source_components', 'projected_uv_unreplayed', 'gameplay_verified')
+            return {k: compact_report(value[k], k) for k in fields if k in value} | {
+                'report_file': 'core-report.json', 'details_artifact': 'doa2-details.json',
+                'limits_in': 'source_export_limits'}
+        return {k: compact_report(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        if key in ('provenance', 'clips', 'tracks', 'records', 'vertices', 'aliases',
+                   'cells', 'uv_sequence_proofs', 'files') and len(value) > 16:
+            return {'count': len(value), 'details_artifact': 'doa2-details.json',
+                    'preview': [compact_report(v) for v in value[:2]]}
+        return [compact_report(v) for v in value]
+    return value
+
+
+@tool("doa2_assets", "1.1", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
       permissions=[P.READ, P.STAGE, P.EXECUTE], timeout_s=3600,
       side_effects=["writes decomposed assets and modified disc copies into the cache/analysis folders"],
-      artifacts=["doa2-report.json"], validation="native archive validation and operation report match",
+      artifacts=["doa2-report.json", "doa2-details.json"], validation="native archive validation and operation report match",
       validate=_validate)
 def doa2_assets(inp: Doa2In, ctx):
     """Inspect/decompose DOA2 native fighter geometry, textures and motion files, or build a copied ROM
     with a donor character retargeted to the native executable rest rig. Does not substitute an overlay or certify gameplay.
-    Inspect/decompose supports fighter=all costume=all. Build derives transforms from owned native tables and SUP axes, then neutralizes stale APV/SUP/cloth offsets.
+    Inspect/decompose supports fighter=all costume=all. Native_cache prepare/run/verify reproduces original
+    SH4 cloth generation with Ghidra. Complete decomposition requires its verified cache. Build preserves
+    mapped weights in native SUP, retains original motion/actor initialization and disables stale APV/ACS.
     """
     from . import characters as C, doa2_chars, doa2_geometry as G, doa2_textures as T, doa2_swap as S
     from .gdrom import GDRom
@@ -84,12 +171,17 @@ def doa2_assets(inp: Doa2In, ctx):
     game = C._api(ctx, "GET", f"/api/catalog/{inp.game_id}")
     gdi = C._dc_gdi(ctx, game)
     disc = GDRom(gdi)
-    executable_sha = hashlib.sha256(disc.read("1ST_READ.BIN")).hexdigest()
+    executable = disc.read("1ST_READ.BIN")
+    executable_sha = hashlib.sha256(executable).hexdigest()
     if executable_sha != S.EXECUTABLE_SHA256:
         raise ValueError("Unsupported executable identity")
-    selected = [] if inp.op == "motions" else selected_costumes(disc.files, inp.fighter, inp.costume)
+    selected = [] if inp.op in ("motions", "native_cache") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
     analysis = Path(ctx.config.data_dir) / "analysis" / "doa2" / inp.game_id
-    if inp.op == "motions":
+    cache = cache_directory(analysis, inp.native_cache)
+    if inp.op == 'native_cache':
+        result = {'op': inp.op, 'action': inp.cache_action, 'game_id': inp.game_id,
+                  'cache': str(cache), 'verification': run_cache(ctx, disc, analysis, cache, inp.cache_action)}
+    elif inp.op == "motions":
         from . import doa2_motion
         names=sorted(name for name in disc.files if name.endswith('.MOT'))
         motions=[]
@@ -103,7 +195,8 @@ def doa2_assets(inp: Doa2In, ctx):
                 motions.append({'file':name,'status':'unsupported_encoding','bytes':len(data),
                                 'sha256':hashlib.sha256(data).hexdigest(),'reason':str(error)})
         result={'op':'motions','game_id':inp.game_id,'motions':motions,
-                'interpolation_decoded':False,'native_animation_policy':'preserve original MOT bytes'}
+                'native_compact_polynomials_decoded': any((m.get('motion') or {}).get('native_compact_polynomials_decoded') for m in motions),
+                'runtime_interpolation_verified': False, 'native_animation_policy':'preserve original MOT bytes'}
     elif inp.op == "build":
         if inp.fighter.casefold() == "all":
             raise ValueError("Build requires an explicit fighter")
@@ -125,6 +218,8 @@ def doa2_assets(inp: Doa2In, ctx):
             result = S.build_fighter(gdi, root / meta["slug"], output, family, costume,
                                      allow_downscale=inp.allow_downscale, progress=ctx.progress)
     else:
+        if inp.op == 'decompose' and inp.complete_source and not (cache / 'verification.json').is_file():
+            raise ValueError('Complete source requires native_cache prepare/run/verify first; complete_source=false explicitly exports the partial core')
         entries = []
         for index, (family, costume) in enumerate(selected):
             ctx.progress(10 + 85 * index / len(selected), f"{inp.op}: {family}{costume} ({index+1}/{len(selected)})")
@@ -141,13 +236,25 @@ def doa2_assets(inp: Doa2In, ctx):
                      "bin_sha256": hashlib.sha256(bin_data).hexdigest(), "reconstruction": "byte_exact"}
             if inp.op == "decompose":
                 output = analysis / "assets" / (family + costume)
-                exported = doa2_chars.export(str(gdi), str(output), family, costume)
-                entry.update(path=str(output), files=exported["files"], confidence=exported["manifest"]["confidence"])
+                exported = doa2_chars.export(str(gdi), str(output), family, costume,
+                                            native_cache=cache if inp.complete_source else None)
+                entry.update(path=str(output), files=exported["files"], confidence=exported["assembled_confidence"],
+                             assembly=exported['assembly'], native_report=exported.get('core_report'))
             entries.append(entry)
+        from .doa2_native_export.source_binding import costumes
+        inventory = costumes(disc, executable, include_unavailable=True)
         result = {"op": inp.op, "game_id": inp.game_id, "executable_sha256": executable_sha,
                   "costumes": entries, "gameplay_verified": False,
+                  'unavailable_native_sources': [r for r in inventory if not r['available']],
                   "animation_rig": "native rest vectors and SUP axis graph; MOT channels retain their native IK semantics"}
+        if inp.op == 'decompose':
+            limits = {(json.dumps(e['native_report']['limits'], sort_keys=True))
+                      for e in entries if (e.get('native_report') or {}).get('limits')}
+            result['source_export_limits'] = [json.loads(row) for row in sorted(limits)]
     result = json.loads(json.dumps(result, default=str))
+    ctx.artifact('doa2-details.json', json.dumps(result, indent=2).encode(), 'application/json', game_id=inp.game_id)
+    if not inp.include_details:
+        result = compact_report(result)
     ctx.artifact("doa2-report.json", json.dumps(result, indent=2).encode(), "application/json", game_id=inp.game_id)
     ctx.progress(100, f"DOA2 {inp.op} completed; gameplay acceptance is separate")
     return {"result": result}

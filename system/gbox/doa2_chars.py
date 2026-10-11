@@ -121,7 +121,8 @@ def roster(disc_files: dict | None = None) -> list[dict]:
     return out
 
 
-def export(gdi: str, out_dir: str, key: str, costume: str = "0", *, assemble: bool = True) -> dict:
+def export(gdi: str, out_dir: str, key: str, costume: str = "0", *, assemble: bool = True,
+           native_cache: str | Path | None = None) -> dict:
     """Decompose a costume into native files, real mesh parts and PNG textures.
 
     Parts retain native local coordinates. Skeleton confidence stays missing
@@ -142,11 +143,15 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0", *, assemble: bo
     out.mkdir(parents=True, exist_ok=True)
     names = [f"DOA2/{stem}.{e}" for e in ("CHR", "BIN", "SUP", "APV") if f"DOA2/{stem}.{e}" in disc.files]
     bodies = {name: disc.read(name) for name in names}
-    acs=f"DOA2/{key}_A{costume.zfill(2)}.ACS"
-    if acs in disc.files: bodies[acs]=disc.read(acs)
+    acs = None
     if "1ST_READ.BIN" in disc.files:
-        from .doa2_bindings import resolve_archive_binding
-        binding=resolve_archive_binding(disc.read("1ST_READ.BIN"),f"DOA2/{stem}.CHR")
+        from .doa2_bindings import resolve_archive_binding, accessory_filename
+        from .doa2_native_export.source_binding import owned_path
+        executable = disc.read("1ST_READ.BIN")
+        binding=resolve_archive_binding(executable,f"DOA2/{stem}.CHR")
+        accessory = accessory_filename(executable, binding['render_slot'], binding['costume'])
+        acs = owned_path(disc, accessory['filename'])
+        bodies[acs] = disc.read(acs)
         control='DOA2/'+binding['files']['control'].upper()
         if control in disc.files: bodies[control]=disc.read(control)
     files = []
@@ -215,17 +220,27 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0", *, assemble: bo
         from . import doa2_rig as R, doa2_seams as S
         import numpy as np
         profile = R.for_archive(disc, f"DOA2/{stem}.CHR")
-        core = S.assemble_core(chr_data, bodies[f"DOA2/{stem}.SUP"], bin_data,
-                               np.asarray(profile['world']),
-                               profile['component_models'],
-                               S.native_coefficients(disc.read("1ST_READ.BIN")))
-        path = S.write_core(out / f"{stem}_rigged.gltf", core, profile, stem)
+        if native_cache is not None:
+            from .doa2_native_export import assemble_native, write_complete
+            core = assemble_native(executable, stem, chr_data, bin_data,
+                                   bodies[f"DOA2/{stem}.SUP"], bodies[acs], profile,
+                                   cache_directory=native_cache, acs_filename=acs.rsplit('/', 1)[-1])
+            path = write_complete(out / f"{stem}_rigged.gltf", core, stem)
+            profile = core['profile']
+        else:
+            core = S.assemble_core(chr_data, bodies[f"DOA2/{stem}.SUP"], bin_data,
+                                   np.asarray(profile['world']), profile['component_models'],
+                                   S.native_coefficients(executable))
+            path = S.write_core(out / f"{stem}_rigged.gltf", core, profile, stem)
         files.insert(0, path.name)
         (out / "rig.json").write_text(json.dumps(profile, indent=2), encoding="utf-8")
         (out / "core-report.json").write_text(json.dumps(core['report'], indent=2), encoding="utf-8")
         files += ["rig.json", "core-report.json"]
     else:
         files.insert(0, f"{stem}_parts.glb")
-    return {"files": files, "manifest": manifest,
+    assembled_confidence = manifest['confidence'] | ({'skeleton': 'partial', 'skin_weights': 'partial'} if core else {})
+    return {"files": files, "manifest": manifest, "assembled_confidence": assembled_confidence,
             "roles": {role: role for role in profile['roles']} if core else {},
-            "core_report": core['report'] if core else None}
+            "core_report": core['report'] if core else None,
+            "assembly": "complete_native_source" if core and native_cache is not None else
+                        "partial_core" if core else "unassembled_parts"}

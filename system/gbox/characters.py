@@ -533,6 +533,7 @@ class CharIn(BaseModel):
     base: str = ""                         # add: store as a variant of this character (gbox.variants; Blender Live Link)
     replace: str = ""                      # add base=...: update this variant in place (Live Link push)
     props: list[dict] = []                 # add base=...: [{object, bone}] the Blender add-on bound
+    rig_roles: dict[str, str] = {}         # add: semantic body role -> joint node name in the imported model
     scale: dict = {}                       # add base=...: {"head": k} head-bone scale
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
@@ -1074,14 +1075,29 @@ def _doa2_roster():
 
 def _doa2_run(ctx, game, e, work):
     from . import doa2_chars
-    r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0])
+    cache = Path(ctx.config.data_dir) / 'analysis' / 'doa2' / game['game_id'] / 'native-cloth-cache'
+    r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0],
+                         native_cache=cache if (cache / 'verification.json').is_file() else None)
     m = r["manifest"]
     return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars native NaomiLib decoder",
             "source_files": m["source"]["resource_ids"], "roles": r.get("roles", {}),
+            "extra": {"native_source_assembly": r["assembly"]},
             "notes": f"{m['container_facts']['n_models']} native mesh parts and "
-                     f"{m['container_facts']['n_textures']} textures decoded. Parts retain local coordinates; "
-                     "native executable rest rig and SUP surfaces are exported separately as a retargetable body; "
-                     "SUP seam skin approximates curved deformation. Native motion files remain intact."}
+                     f"{m['container_facts']['n_textures']} textures decoded. Assembly: {r['assembly']}. "
+                     "Complete source includes native accessory, chain and cloth draws when its verified cache is available. "
+                     "SUP source skin approximates curved deformation; motion and procedural limits are in core-report.json."}
+
+
+def _doa2_needs_refresh(ctx, game, meta):
+    """Upgrade a cached body-only extraction when the complete native cache exists."""
+    from . import doa2_chars
+    if not game or game.get('game_id') not in doa2_chars.GAME_IDS:
+        return False
+    if 'gbox.doa2_chars' not in meta.get('extraction_tool', ''):
+        return False
+    cache = Path(ctx.config.data_dir) / 'analysis' / 'doa2' / game['game_id'] / 'native-cloth-cache'
+    return (meta.get('native_source_assembly') != 'complete_native_source'
+            and (cache / 'verification.json').is_file())
 
 
 def _re4_run(ctx, game, e, work):
@@ -1257,9 +1273,11 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         e = best_match(ros, what)
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
+        refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            if verify_entry(root, existing)['ok']:
+            refresh = _doa2_needs_refresh(ctx, game, existing)
+            if verify_entry(root, existing)['ok'] and not refresh:
                 return {"status": "in_collection", "extractor": name, "entry": existing}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
@@ -1270,7 +1288,12 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         meta = add(root, e["slug"], e["name"], r["files"],
                    {"game_title": game["title"], "game_id": game["game_id"], "platform": plat, "files": r["source_files"]},
                    r["tool"], rig={"roles": r["roles"]} if r.get("roles") else None, aliases=e["aliases"],
-                   notes=r.get("notes", ""), kind=e.get("kind", "character"))
+                   notes=r.get("notes", ""), kind=e.get("kind", "character"), extra=r.get('extra'))
+        if refresh:
+            for targets in meta.get('targets', {}).values():
+                for target in targets:
+                    target['needs_rebuild'] = True
+            meta = put_meta(root, meta)
         shutil.rmtree(work, ignore_errors=True)
         return {"status": "extracted", "extractor": name, "entry": meta}
     return None
@@ -1583,7 +1606,7 @@ def extract(ctx, inp: CharIn) -> dict:
     out = {"what": what, "kind": kind, "game": (game or {}).get("title"), "game_id": (game or {}).get("game_id")}
     lib = list_all(eroot if kind == "environment" else root)
     hit = best_match([m for m in lib if _same_game(m, game)], what) if what else None
-    if hit:                                                                                   # (a)
+    if hit and not _doa2_needs_refresh(ctx, game, hit):                                          # (a)
         return out | {"status": "in_collection", "route": "collection", "entry": _brief(hit, kind == "environment"),
                       "message": f"{hit['name']} is already in the collection (from {hit['source'].get('game_title')})."}
     if not game:
@@ -1649,6 +1672,21 @@ def _model_bytes(ctx, inp: CharIn) -> tuple[bytes, str]:
     raise ValueError("add needs from_clipboard=true, artifact=<sha256> or path=<a .glb/.gltf on the control-plane node>")
 
 
+def validate_rig_roles(model: Path, roles: dict[str, str]) -> dict:
+    """Reject stale or ambiguous joint mappings before registering an edited donor."""
+    if not roles:
+        return {}
+    gl, _, _, _ = _load(model)
+    joints = {j for skin in gl.get('skins', []) for j in skin['joints']}
+    if any(type(j) is not int or not 0 <= j < len(gl.get('nodes', [])) for j in joints):
+        raise ValueError('Rig contains an invalid skin joint node index')
+    names = [gl['nodes'][j].get('name', f'node{j}') for j in joints]
+    for role, name in roles.items():
+        if not role.strip() or not name.strip() or names.count(name) != 1:
+            raise ValueError(f'Rig role {role!r} must identify one named skin joint: {name!r}')
+    return dict(roles)
+
+
 def add_model(ctx, inp: CharIn) -> dict:
     """A model edited elsewhere (Blender) -> a new collection entry."""
     name = inp.character.strip()
@@ -1682,11 +1720,12 @@ def add_model(ctx, inp: CharIn) -> dict:
     if f.suffix == ".gltf" and not data.lstrip()[:1] == b"{":
         raise ValueError("that file isn't a glTF / GLB model")
     f.write_bytes(data)
+    mapped_roles = validate_rig_roles(f, inp.rig_roles)
     game = _game(ctx, inp) if (inp.session_id or inp.game_id or inp.game) else None
     src = {"game_title": (game or {}).get("title") or "edited model", "game_id": (game or {}).get("game_id"),
            "from": "clipboard" if inp.from_clipboard else inp.artifact or inp.path}
     meta = add(root, slug, name, [f], src, "characters op=add (edited model)", kind=inp.kind if inp.kind in KINDS else "character",
-               aliases=[name])
+               aliases=[name], rig={"roles": mapped_roles} if mapped_roles else None)
     shutil.rmtree(work, ignore_errors=True)
     return {"status": "added", "entry": meta, "env": env}
 

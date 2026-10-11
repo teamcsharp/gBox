@@ -35,13 +35,15 @@ def _triangles(flags: int, indices: list[int]) -> list[tuple[int, int, int]]:
         triples = [tuple(indices[k:k+3]) for k in range(0, len(indices), 3)]
         if culling == 2:
             triples = [(y, x, z) for x, y, z in triples]
-    else:
+    elif flags & 0x10:
         triples = []
         for k in range(len(indices)-2):
             x, y, z = indices[k:k+3]
             if (k % 2 == 0) == (culling == 2):
                 x, y = y, x
             triples.append((x, y, z))
+    else:
+        raise ValueError('Unsupported NaomiLib fan/sprite primitive; a strip requires flag 0x10')
     return [t for t in triples if len(set(t)) == 3]
 
 
