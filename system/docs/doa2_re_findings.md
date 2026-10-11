@@ -56,12 +56,52 @@ Routed as dedicated extractor `doa2` in `gbox/characters.py` DEDICATED (Dead or 
 Tests: `tests/test_doa2_chars.py` — 10 passed (synthetic fixtures anchored to the real KAS00.CHR
 header words).
 
+## Slice 2 (commit pending): mesh + texture decode — corrected CHR layout
+
+**Correction to slice 1:** header word[4] and the 12-byte tail table describe **textures**, not
+bones (established independently on the JAY lane from real binary bytes; re-verified here against
+the owned KAS00: word[4]=55 descriptors, sizes sum exactly to the 332,800-B BIN). The slice-1
+"n_bones/bind triplets" reading and the "+0x24 character scale floats" interpretation are
+withdrawn — model 0's `{flags, sphere}` preamble sits at +0x24..0x3c inside the model area, and
+those floats are its bounding-sphere center/radius. Kasumi has **56 models / 55 textures**, not
+56 objects / 55 bones.
+
+Verified NL1 mesh grammar (all on owned bytes, `parse_meshes` in `gbox/doa2_chars.py`):
+model = 24-B `{2u32 flags, 4f sphere}` preamble, then submeshes until a `{0, vertex_count}` end
+marker whose count must equal the walked inline+referenced vertex total, then zero padding.
+Submesh = 80-B native material header (word0>>29==4; +32 texture id, +36 shader, +76 payload
+length) + strip blocks `{flags, count}`: flags&8 = indexed list (count triples), else strip;
+flags&3 = culling. Vertex records: inline 32 B `{3f pos, 3f nrm, 2f uv@+24}` (56 B for shader -2;
+shader -3 packs the normal as 3 signed bytes, uv@+24), or 8-B back-references
+`{0x5ff000xx, i32 rel}` to an earlier inline record in the same submesh. KAS00 shader census:
+`{1:109, 0:14, 2:1, 5:6, -1:15}` submeshes. Bbox of all decoded vertices: x[-0.238,0.222]
+y[-0.571,1.205] z[-1.000,0.415] — human scale, no non-finite floats, all refs resolve.
+
+Texture decode: descriptors `[u16 w, u16 h][u8 pix, u8 fmt, u16 pad][u32 addr]`, addresses
+relative to the first texture, indexing the costume `.BIN` (headerless native payloads).
+pixel 0/1/2 = ARGB1555/RGB565/ARGB4444; format 1/0xD = twiddled 16-bit, 3 = 8-bit VQ
+(2048-B codebook + w*h/4). `pvr_wrap` synthesizes the omitted PVRT header and decodes via
+`gbox.ninja.pvr_decode`; 53/55 KAS00 textures carry real image content (std>3).
+
+Cross-archive decode results (owned extracts, `parse_meshes` + `parse_textures` where BIN present):
+
+| archive | models | submeshes | vertices | triangles | textures |
+|---|---|---|---|---|---|
+| KAS00.CHR | 56 | 145 | 11,844 | 8,672 | 55 (BIN 332,800 B, exact fit) |
+| AYA00.CHR | 48 | 98 | 12,060 | 9,138 | — |
+| GEN00.CHR | 52 | 108 | 9,742 | 7,444 | — |
+| EFC0.CHR | 122 | 123 | 8,192 | 6,760 | — |
+| FIX.CHR | 93 | 93 | 406 | 210 | — |
+
+`export_assets` now emits per-texture PNGs, a static skinned-shape glTF (textures attached by
+native texture id; weights zeroed — rig is NOT in CHR, it lives in the SUP/ACS route) and a UAP
+manifest with per-dimension confidence honestly set (geometry/textures verified, skeleton missing).
+
 ## Not yet done (next slice, in order)
 
-1. CHR mesh objects: decode vertex/strip data (object bodies begin with 4×floats then counts —
-   obj1 of KAS00 has `{0x2ee, 1, 1, 750…}`-style fields); produce real glTF geometry.
-2. Texture decode for `<KEY><NN>.BIN` (no PVR GBIX/PVRT headers found — custom twiddled layout).
-3. The writer: rebuilt CHR must keep **absolute pointers exact** (base+file-offset layout) and stay
-   within each costume's sector budget (`gbox.gdrom.patch_gdi` in-place file mod).
-4. Bone-role map (55 Kasumi bones → library roles) for retargeting; MOT clip decode.
-5. Emulator verification on the Spark (Flycast/retroarch) — required before #1140 can close.
+1. Rig/skeleton: decode SUP (offset-table float records) and ACS chain data into real joints; the
+   retargeting bone-role map depends on it. MOT clip decode (1004 Kasumi clips) still open.
+2. Reader-route parity with the writer lane (PR #8): fold the corrected layout into
+   `doa2_geometry.py`'s assumptions when that branch merges.
+3. Emulator verification of the reader output is N/A (read-only); the writer route's gameplay
+   acceptance on JAYBUILTFINALE remains the gate for #1140.

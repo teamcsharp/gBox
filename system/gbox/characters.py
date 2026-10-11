@@ -1076,11 +1076,12 @@ def _doa2_run(ctx, game, e, work):
     from . import doa2_chars
     r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0])
     m = r["manifest"]
-    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars (containers verified)",
+    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars (meshes + textures decoded)",
             "source_files": m["source"]["resource_ids"],
-            "notes": f"skeleton facts: {m['skeleton_facts']['n_bones']} bones, "
-                     f"{m['skeleton_facts']['n_objects']} objects, base {m['skeleton_facts']['object_ptr_base']}; "
-                     "mesh decoding is the next slice (geometry: missing)"}
+            "notes": f"geometry: {m['geometry_facts']['n_models']} models, "
+                     f"{m['geometry_facts']['n_triangles']} triangles; textures: "
+                     f"{m['texture_facts']['n_textures']} decoded to PNG; "
+                     "rig is not in CHR (SUP/ACS route) - weights absent"}
 
 
 def _re4_run(ctx, game, e, work):

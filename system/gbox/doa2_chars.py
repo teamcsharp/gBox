@@ -1,34 +1,30 @@
-# While Ghidra decompiles: write the actual reader module gbox/doa2_chars.py in the task worktree.
-# Verified so far (all from the disc itself, hashes to be recorded in the report):
-#   CHR header: u32[0]=24 (hdr size), [1]=offset of object-ptr array, [2]=offset of tail float table,
-#               [3]=n_objects, [4]=n_bones-ish, [5]=0, [6]=1, [7]=1, [8]=0, [9..11]=floats (scale-ish 0.18/0.011/0.18)
-#   Object pointers are ABSOLUTE SH-4 addresses (0x0C300000 + file offset for fighters; 0x0C400000 for system CHR)
-#   Tail: n2 x 12 bytes of float triplets
-#   SUP: u32 offset table[10] then records (float matrices?)
-#   MOT: u32 offset table then clip blobs; first entry 0x1898 = 6296 -> 0x18a8 area
-"""Dead or Alive 2 - Limited Edition (Japan) (Dreamcast) character assets: CHR/MOT/SUP container readers.
+"""Dead or Alive 2 - Limited Edition (Japan) (Dreamcast) character assets: CHR mesh + BIN texture readers.
 
-Ghidra-verified facts (analysis/re/d6d70500464914684/doa2le, 1ST_READ.BIN sha256
-27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1, loaded unscrambled at 0x8C010000,
-SuperH4:LE:32:default):
-  - The disc's DOA2/<name><NN>.{BIN,CHR,SUP} / <name>.MOT files are the per-costume character assets
-    (filename pointer tables at 1ST_READ+0x16e740..0x16f400; e.g. "kas00.chr" -> 0x8c1681d4).
-  - File open/read goes through function-pointer tables (FUN_8c011ee4 at 0x8c011ee4 wraps
-    open/stat/read/close callbacks; FUN_8c0121c0, FUN_8c01c35c same pattern).
-  - CHR header (u32 LE): [0]=24 header size, [1]=object-ptr-array file offset, [2]=tail float-table
-    offset, [3]=n_objects, [4]=n_bones, [5]=0, [6]=1, [7]=1, [8]=0, [0x24..0x2c]=3 floats
-    (character scale, e.g. Kasumi 0.18116/0.01111/0.17960).
-  - CHR object pointers are ABSOLUTE SH-4 work-RAM addresses: fighters (KAS/AYA/GEN/...) load at
-    0x0C300000, system CHR (EFC0/FIX) at 0x0C400000; the code reads them as pointers directly.
-  - CHR tail: n_bones x {float3} bind/scale triplets (Kasumi 55 bones, Ayane 45, Gen Fu 52).
-  - SUP: u32 offset table (n records) then float records (soft-body/physics supplement; Kasumi 10
-    records, first at +44).
-  - MOT: u32 offset table (n clip offsets, repeats point at shared clips) then per-clip blobs
-    (Kasumi 1004 entries; first clip at 0x1898).
+Ghidra-verified facts (analysis in docs/doa2_re_findings.md; 1ST_READ.BIN sha256
+27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1, unscrambled, loads at 0x8C010000,
+SuperH4:LE:32:default; NaomiLib NL1 model grammar cross-checked against the format references and
+the owned KAS00/AYA00/GEN00 archives):
 
-This module is the READER slice: parse and validate those containers read-only (owned disc, never
-written). The writer (rebuild CHR with a library character's geometry fitted to n_objects/n_bones
-budgets) is the next slice; the game needs pointer-exact layouts because pointers are absolute.
+  CHR header (u32 LE): [0]=24, [1]=model-pointer-table offset, [2]=TEXTURE-descriptor-table offset,
+    [3]=n_models, [4]=n_textures, [5]=0, [6]=1, [7]=1, [8]=0.  Model 0 starts at file offset 24
+    (its first 24 bytes {2I flags, 4f sphere} overlap what the first reader slice mislabeled
+    "character scale floats"); word[4] and the 12-byte tail table are TEXTURES, not bones.
+  Model pointers are ABSOLUTE SH-4 work-RAM addresses: fighters (KAS/AYA/GEN/...) base 0x0C300000,
+  system CHR (EFC0/FIX) base 0x0C400000; file offset = ptr - base + 24.
+  Each model: {u32 global0, u32 global1, 4f bounding-sphere}, then submeshes until a {0, vertex_count}
+  end marker (count must equal the walked inline+referenced vertex total) and zero padding.
+  Each submesh: 80-byte native material header (word0>>29==4; +32 texture id, +36 shader, +76 payload
+  length), then strip blocks {u32 flags, u32 count}: flags&8 = indexed triangle list (count triples),
+  else triangle strip of count vertices; flags&3 = culling mode. Vertex records: inline (32 B:
+    3f pos, 3f normal, 2f uv at +24; 56 B for shader -2; shader -3 packs the normal as 3 signed bytes)
+  or 8-B back-references {0x5ff000xx tag, i32 rel} to an earlier inline record in the same submesh.
+  Texture descriptors (12 B each): [u16 width, u16 height][u8 pixel, u8 format, u16 pad][u32 address];
+  addresses are relative to the first texture's address and index the costume .BIN payload
+  (sizes sum exactly to the BIN length: KAS00 55 textures -> 332,800 B).  pixel 0/1/2 =
+  ARGB1555/RGB565/ARGB4444; format 1/0xD = twiddled 16-bit, 3 = 8-bit VQ (256-entry codebook).
+
+This module is the READER: parse and decode read-only (owned disc, never written). The native writer
+route lives in the doa2_swap stack (PR #8); the rig/skeleton is NOT in CHR (SUP/ACS carry it).
 """
 from __future__ import annotations
 
@@ -50,26 +46,64 @@ def f32(b, o):
     return struct.unpack_from("<f", b, o)[0]
 
 
+# --------------------------------------------------------------------------- containers
 def parse_chr(data: bytes) -> dict:
-    """Parse a DOA2 LE JP .CHR model container. Returns counts, object table (as file offsets),
-    bind triplets and provenance. Read-only; no writes to the disc."""
+    """Parse a DOA2 LE JP .CHR archive header. Corrected layout: word[4]/tail table describe
+    TEXTURES (12-byte descriptors), not bones (the first reader slice misread this)."""
     if len(data) < 0x40:
         raise ValueError("too small for a CHR header")
-    hdr = [u32(data, o) for o in range(0, 0x28, 4)]
+    hdr = [u32(data, o) for o in range(0, 0x18, 4)]
     if hdr[0] != 24:
         raise ValueError(f"unexpected header size {hdr[0]}")
-    a_off, b_off, n_obj, n_bone = hdr[1], hdr[2], hdr[3], hdr[4]
-    if not (0 < n_obj < 0x1000 and 0 < n_bone < 0x1000):
-        raise ValueError(f"implausible counts n_obj={n_obj} n_bone={n_bone}")
-    ptrs = [u32(data, a_off + 4 * i) for i in range(n_obj)]
+    tbl, tex_tbl, n_obj, n_tex = hdr[1], hdr[2], hdr[3], hdr[4]
+    if not (0 < n_obj < 0x1000 and 0 <= n_tex < 0x1000):
+        raise ValueError(f"implausible counts n_models={n_obj} n_textures={n_tex}")
+    if tbl + 4 * n_obj > tex_tbl or tex_tbl + 12 * n_tex > len(data):
+        raise ValueError("pointer tables outside the archive")
+    ptrs = [u32(data, tbl + 4 * i) for i in range(n_obj)]
     base = min(ptrs)
     if base >> 24 not in (0x0C,):                       # absolute SH-4 address in work RAM
-        raise ValueError(f"object table not absolute pointers (min {base:#x})")
-    objs = [p - base for p in ptrs]                     # -> file offsets
-    sizes = [objs[i + 1] - objs[i] for i in range(n_obj - 1)] + [a_off - objs[-1]]
-    bones = [tuple(round(f32(data, b_off + 12 * i + 4 * k), 5) for k in range(3)) for i in range(n_bone)]
-    return {"n_objects": n_obj, "n_bones": n_bone, "ptr_base": base, "objects": objs, "sizes": sizes,
-            "header_floats": [round(f32(data, 0x24 + 4 * k), 5) for k in range(3)], "tail": bones}
+        raise ValueError(f"model table not absolute pointers (min {base:#x})")
+    objs = [p - base + 24 for p in ptrs]                # -> file offsets (model 0 == 24)
+    if objs != sorted(set(objs)) or objs[0] != 24:
+        raise ValueError("non-monotonic model pointers")
+    return {"n_objects": n_obj, "n_textures": n_tex, "ptr_base": base, "objects": objs,
+            "model_table": tbl, "texture_table": tex_tbl,
+            "model0_sphere": [round(f32(data, 32 + 4 * k), 5) for k in range(4)]}
+
+
+def texture_size(width: int, height: int, pixel: int, fmt: int) -> int:
+    """Native BIN payload size for one texture (VQ carries a 256-entry codebook)."""
+    if pixel not in (0, 1, 2):
+        raise ValueError(f"unsupported pixel format {pixel:#x}")
+    if fmt == 3:
+        return 2048 + width * height // 4
+    if fmt in (1, 0x0D):
+        return 2 * width * height
+    raise ValueError(f"unsupported texture format {fmt:#x}")
+
+
+def parse_textures(chr_data: bytes, bin_size: int) -> list[dict]:
+    """Texture descriptors from the CHR tail; each addresses the costume .BIN (relative to the
+    first texture). Validates power-of-two dimensions and BIN-allocation fit."""
+    info = parse_chr(chr_data)
+    raw = [struct.unpack_from("<III", chr_data, info["texture_table"] + 12 * i)
+           for i in range(info["n_textures"])]
+    base = raw[0][2] if raw else 0
+    out = []
+    for i, (wh, flags, addr) in enumerate(raw):
+        w, h = wh & 0xFFFF, wh >> 16
+        pixel, fmt = flags & 0xFF, (flags >> 8) & 0xFF
+        if not w or not h or w & (w - 1) or h & (h - 1) or w > 4096 or h > 4096:
+            raise ValueError(f"invalid texture dimensions at slot {i}: {w}x{h}")
+        size = texture_size(w, h, pixel, fmt)
+        off = addr - base
+        end = (raw[i + 1][2] - base) if i + 1 < len(raw) else bin_size
+        if off < 0 or end < off or end > bin_size or off + size > end:
+            raise ValueError(f"texture {i} exceeds its BIN allocation")
+        out.append({"index": i, "width": w, "height": h, "pixel": pixel, "format": fmt,
+                    "offset": off, "size": size, "capacity": end - off})
+    return out
 
 
 def parse_sup(data: bytes) -> dict:
@@ -99,6 +133,135 @@ def parse_mot_table(data: bytes) -> dict:
         offs.append(v)
         o += 4
     return {"n_clips": len(offs), "offsets": offs}
+
+
+# --------------------------------------------------------------------------- mesh decode
+def _triangles(flags: int, indices: list[int]) -> list[tuple[int, int, int]]:
+    culling = flags & 3
+    if flags & 8:                                        # indexed list: count triples
+        triples: list[tuple[int, int, int]] = [(indices[k], indices[k + 1], indices[k + 2])
+                                               for k in range(0, len(indices), 3)]
+        if culling == 2:
+            triples = [(y, x, z) for x, y, z in triples]
+    else:                                                # strip
+        triples = []
+        for k in range(len(indices) - 2):
+            x, y, z = indices[k:k + 3]
+            if (k % 2 == 0) == (culling == 2):
+                x, y = y, x
+            triples.append((x, y, z))
+    return [t for t in triples if len(set(t)) == 3]
+
+
+def parse_meshes(chr_data: bytes) -> dict:
+    """Decode every NL1 model in a CHR: submeshes (80-B native material headers), strips,
+    inline/referenced vertices (pos/normal/uv) and triangles. Validates each model's
+    {0, vertex_count} end marker and rejects non-finite floats."""
+    import math
+
+    info = parse_chr(chr_data)
+    objs, count = info["objects"], info["n_objects"]
+    limit0 = info["model_table"]
+    models = []
+    for mid, start in enumerate(objs):
+        model_limit = objs[mid + 1] if mid + 1 < count else limit0
+        limit = model_limit - 8 if mid + 1 < count else limit0
+        if start + 24 > limit:
+            raise ValueError(f"model {mid} too short at {start:#x}")
+        gp0, gp1 = struct.unpack_from("<2I", chr_data, start)
+        sphere = struct.unpack_from("<4f", chr_data, start + 8)
+        cursor = start + 24
+        meshes, vertex_total, tri_total = [], 0, 0
+        while cursor + 4 <= limit and u32(chr_data, cursor):
+            if cursor + 80 > limit:
+                raise ValueError(f"truncated submesh header at {cursor:#x}")
+            header = chr_data[cursor:cursor + 80]
+            if u32(header, 0) >> 29 != 4:
+                raise ValueError(f"unsupported native parameter word at {cursor:#x}")
+            texture_id = struct.unpack_from("<i", header, 32)[0]
+            shader = struct.unpack_from("<i", header, 36)[0]
+            length = u32(header, 76)
+            position = cursor + 80
+            stop = position + length
+            if stop > model_limit:
+                raise ValueError("submesh crosses model boundary")
+            vertices, strips, triangles = [], [], []
+            registered = {}
+            while position < stop:
+                if position + 8 > stop:
+                    raise ValueError("short strip header")
+                flags, n = struct.unpack_from("<2I", chr_data, position)
+                if flags > 0x1FF or not 0 < n <= 65536:
+                    raise ValueError(f"invalid strip at {position:#x}")
+                logical = n * (3 if flags & 8 else 1)
+                indices = []
+                position += 8
+                for _ in range(logical):
+                    if position + 4 > stop:
+                        raise ValueError("short vertex record")
+                    tag = u32(chr_data, position)
+                    if 0x5FF00000 <= tag <= 0x5FFFFFFF:   # back-reference to an inline record
+                        if position + 8 > stop:
+                            raise ValueError("short vertex reference")
+                        rel = struct.unpack_from("<i", chr_data, position + 4)[0]
+                        target = position + 8 + rel
+                        if target not in registered:
+                            raise ValueError(f"vertex reference misses earlier record at {position:#x}")
+                        indices.append(registered[target])
+                        position += 8
+                    else:
+                        size = 56 if shader == -2 else 32
+                        if position + size > stop:
+                            raise ValueError("inline vertex crosses submesh boundary")
+                        raw = chr_data[position:position + size]
+                        xyz = struct.unpack_from("<3f", raw, 0)
+                        if shader == -3:                    # packed normal: 3 signed bytes
+                            normal = tuple(max(-1.0, v / 127.0) for v in struct.unpack_from("<3b", raw, 12))
+                            uv = struct.unpack_from("<2f", raw, 24)
+                        else:
+                            normal = struct.unpack_from("<3f", raw, 12)
+                            uv = struct.unpack_from("<2f", raw, size - 8)
+                        if not all(math.isfinite(v) for v in (*xyz, *normal, *uv)):
+                            raise ValueError(f"non-finite vertex at {position:#x}")
+                        registered[position] = len(vertices)
+                        indices.append(len(vertices))
+                        vertices.append((*xyz, *normal, *uv))
+                        position += size
+                strips.append({"flags": flags, "count": n, "indices": indices})
+                triangles.extend(_triangles(flags, indices))
+            meshes.append({"offset": cursor, "texture_id": texture_id, "shader": shader,
+                           "vertices": vertices, "strips": strips, "triangles": triangles})
+            vertex_total += sum(len(s["indices"]) for s in strips)
+            tri_total += len(triangles)
+            cursor = stop
+        end = cursor
+        if end + 8 > model_limit or u32(chr_data, end) != 0:
+            raise ValueError(f"model {mid} has no end marker at {end:#x}")
+        declared = u32(chr_data, end + 4)
+        if declared != vertex_total:
+            raise ValueError(f"model {mid} end-marker count {declared} != walked {vertex_total}")
+        models.append({"id": mid, "offset": start, "global_flags": (gp0, gp1), "sphere": sphere,
+                       "meshes": meshes, "vertex_count": vertex_total, "triangle_count": tri_total})
+    total_v = sum(m["vertex_count"] for m in models)
+    total_t = sum(m["triangle_count"] for m in models)
+    return {"n_models": len(models), "n_submeshes": sum(len(m["meshes"]) for m in models),
+            "n_vertices": total_v, "n_triangles": total_t, "models": models, **info}
+
+
+# --------------------------------------------------------------------------- textures
+def pvr_wrap(tex: dict, body: bytes) -> bytes:
+    """Synthesize the PVRT chunk header the native BIN omits (payload bytes unchanged)."""
+    if len(body) != tex["size"]:
+        raise ValueError("texture body/descriptor size mismatch")
+    return (b"PVRT" + struct.pack("<IBBHHH", len(body) + 8, tex["pixel"], tex["format"],
+                                  0, tex["width"], tex["height"]) + body)
+
+
+def decode_texture(tex: dict, bin_data: bytes):
+    """One native BIN texture -> (width, height, RGBA bytes, description) via gbox.ninja."""
+    from .ninja import pvr_decode
+    body = bin_data[tex["offset"]:tex["offset"] + tex["size"]]
+    return pvr_decode(pvr_wrap(tex, body))
 
 
 # costume prefix -> (display name, aliases). Confirmed against the disc's arts_*.bin / *.mot tables
@@ -152,12 +315,80 @@ def roster(disc_files: dict | None = None) -> list[dict]:
     return out
 
 
-def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
-    """Extract one fighter's costume-0 asset set read-only: DOA2/<KEY><costume>.{BIN,CHR,SUP} +
-    the container facts (counts, bone triplets) as a UAP-shaped manifest. Geometry decoding of the
-    CHR mesh objects is the next slice; this slice pins the containers, budgets and skeleton counts."""
+# --------------------------------------------------------------------------- export
+def export_assets(chr_data: bytes, bin_data: bytes, out_dir: str, name: str,
+                  sup_data: bytes | None = None) -> dict:
+    """Decode one costume's CHR + BIN into a UAP manifest, per-texture PNGs and a static .gltf
+    (textures attached by native texture id; skeleton/weights are not in CHR - honest labels)."""
     import json as _json
+
+    import numpy as np
+
+    from .melee_models import write_gltf
+    from .ninja import png as png_bytes
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    meshes = parse_meshes(chr_data)
+    textures = parse_textures(chr_data, len(bin_data))
+    files = []
+    pngs = {}
+    arrays = {}
+    for tex in textures:
+        w, h, rgba, desc = decode_texture(tex, bin_data)
+        arrays[tex["index"]] = np.frombuffer(rgba, np.uint8).reshape(h, w, 4)
+        pngs[tex["index"]] = (w, h, rgba)
+        fn = f"{name}_tex{tex['index']:02d}_{w}x{h}.png"
+        (out / fn).write_bytes(png_bytes(w, h, rgba))
+        files.append(fn)
+    prims = []
+    for model in meshes["models"]:
+        groups: dict[int, dict] = {}
+        for mesh in model["meshes"]:
+            g = groups.setdefault(mesh["texture_id"], {"pos": [], "nrm": [], "uv": [], "tris": []})
+            base_idx = len(g["pos"])
+            for v in mesh["vertices"]:
+                g["pos"].append(v[0:3]); g["nrm"].append(v[3:6]); g["uv"].append(v[6:8])
+            g["tris"].extend((a + base_idx, b + base_idx, c + base_idx) for a, b, c in mesh["triangles"])
+        for tid, g in sorted(groups.items()):
+            if not g["tris"]:
+                continue
+            n = len(g["pos"])
+            prims.append({"name": f"{name}_m{model['id']:02d}_t{tid}",
+                          "pos": np.array(g["pos"], np.float32), "nrm": np.array(g["nrm"], np.float32),
+                          "uv": np.array(g["uv"], np.float32), "tris": np.array(g["tris"], np.int32),
+                          "J": np.zeros((n, 4), np.uint16), "W": np.tile([1.0, 0, 0, 0], (n, 1)).astype(np.float32),
+                          "tex": arrays.get(tid)})
+    gltf = out / f"{name}.gltf"
+    write_gltf(gltf, [{"parent": -1, "world": np.eye(4, dtype=np.float32)}], prims, 1.0, name)
+    files.append(gltf.name)
+    manifest = {
+        "uap_version": "0.1", "name": name,
+        "source": {"game_id": next(iter(GAME_IDS)), "title": GAME_IDS[next(iter(GAME_IDS))],
+                   "extraction_method": "gbox.doa2_chars (meshes + textures decoded)"},
+        "coordinate_system": {"up": "Y", "forward": "-Z", "handedness": "right"},
+        "geometry_facts": {"n_models": meshes["n_models"], "n_submeshes": meshes["n_submeshes"],
+                           "n_vertices": meshes["n_vertices"], "n_triangles": meshes["n_triangles"],
+                           "model_ptr_base": f"{meshes['ptr_base']:#x}"},
+        "texture_facts": {"n_textures": len(textures),
+                          "formats": sorted({(t["pixel"], t["format"]) for t in textures}),
+                          "bin_bytes": sum(t["capacity"] for t in textures)},
+        "skeleton_note": "rig is NOT stored in CHR (word[4] is the texture count; bones live in the "
+                         "SUP/ACS supplement route) - weights intentionally absent from the glTF",
+        "confidence": {"entity": "verified", "geometry": "verified", "materials": "verified",
+                       "textures": "verified", "skeleton": "missing", "skin_weights": "missing",
+                       "animations": "missing", "source_identity": "verified"},
+    }
+    (out / "manifest.json").write_text(_json.dumps(manifest, indent=1))
+    files.append("manifest.json")
+    return {"files": files, "manifest": manifest, "meshes": meshes, "textures": textures}
+
+
+def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
+    """Extract one fighter's costume asset set read-only from the owned disc: containers plus
+    decoded meshes and textures (UAP manifest + PNGs + static glTF)."""
     from .gdrom import GDRom
+
     disc = GDRom(gdi)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -165,33 +396,16 @@ def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
     stem = f"{key}{costume}"
     files = []
     for ext in ("BIN", "CHR", "SUP"):
-        name = f"DOA2/{stem}.{ext}"
-        data = disc.read(name)
+        data = disc.read(f"DOA2/{stem}.{ext}")
         (out / f"{stem}.{ext}").write_bytes(data)
         files.append(f"{stem}.{ext}")
-    chr_info = parse_chr(disc.read(f"DOA2/{stem}.CHR"))
-    sup_info = parse_sup(disc.read(f"DOA2/{stem}.SUP"))
-    manifest = {
-        "uap_version": "0.1", "name": f"doa2_{key.lower()}_{costume}",
-        "source": {"game_id": next(iter(GAME_IDS)), "title": GAME_IDS[next(iter(GAME_IDS))],
-                   "resource_ids": [f"DOA2/{stem}.BIN", f"DOA2/{stem}.CHR", f"DOA2/{stem}.SUP",
-                                    f"DOA2/{MOT_FILES.get(key, key)}.MOT"
-                                    if disc.files.get(f"DOA2/{MOT_FILES.get(key, key)}.MOT") else None],
-                   "extraction_method": "gbox.doa2_chars (containers verified; meshes not yet decoded)"},
-        "coordinate_system": {"up": "Y", "forward": "-Z", "handedness": "right"},
-        "meshes": [], "materials": [], "skeleton": [],
-        "skeleton_facts": {"n_objects": chr_info["n_objects"], "n_bones": chr_info["n_bones"],
-                           "object_ptr_base": f"{chr_info['ptr_base']:#x}",
-                           "bind_triplets": chr_info["tail"], "header_floats": chr_info["header_floats"]},
-        "container_facts": {"chr_size": chr_info["sizes"] and sum(chr_info["sizes"]),
-                            "sup_records": sup_info["n_records"],
-                            "object_sizes": chr_info["sizes"]},
-        "confidence": {"entity": "verified", "geometry": "missing", "materials": "missing",
-                       "skeleton": "partial", "skin_weights": "missing", "animations": "missing",
-                       "source_identity": "verified"},
-        "provenance": [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f'DOA2/{stem}.{e}'))}
-                       for e in ("BIN", "CHR", "SUP")],
-    }
-    manifest["source"]["resource_ids"] = [r for r in manifest["source"]["resource_ids"] if r]
-    (out / "manifest.json").write_text(_json.dumps(manifest, indent=1))
-    return {"files": files + ["manifest.json"], "manifest": manifest}
+    r = export_assets(disc.read(f"DOA2/{stem}.CHR"), disc.read(f"DOA2/{stem}.BIN"), str(out),
+                      f"doa2_{key.lower()}_{costume}")
+    manifest = r["manifest"]
+    manifest["provenance"] = [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f"DOA2/{stem}.{e}"))}
+                              for e in ("BIN", "CHR", "SUP")]
+    mot = MOT_FILES.get(key, key)
+    if disc.files.get(f"DOA2/{mot}.MOT"):
+        manifest["source"]["resource_ids"] = [f"DOA2/{stem}.{e}" for e in ("BIN", "CHR", "SUP")] + [f"DOA2/{mot}.MOT"]
+    (out / "manifest.json").write_text(__import__("json").dumps(manifest, indent=1))
+    return {"files": files + r["files"], "manifest": manifest}
