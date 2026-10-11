@@ -283,6 +283,7 @@
       group.add(wire);
       let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
         loadGeneration = 0, raf = 0, stop = false;
+      const previewMaterials = new Map();                                  // one original baseline for each shared material
       const swapIn = gltf => {
         // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
         gltf.scene.updateMatrixWorld(true);
@@ -314,12 +315,10 @@
       const clearFx = () => {
         for (const o of fxObjs) { if (o.parent) o.parent.remove(o); disposeObject(o); }
         fxObjs = [];
-        const model = group.userData.model;
-        if (model) model.traverse(o => { if (o.isMesh && o.userData.ppMat) {
-          const ms = Array.isArray(o.material) ? o.material : [o.material];
-          ms.forEach((mt, k) => { const m0 = o.userData.ppMat[k];
-            mt.transparent = m0.t; mt.opacity = m0.o; mt.depthWrite = m0.d; mt.needsUpdate = true; });
-          delete o.userData.ppMat; } });
+        for (const [mt, m0] of previewMaterials) {
+          mt.transparent = m0.t; mt.opacity = m0.o; mt.depthWrite = m0.d; mt.needsUpdate = true;
+        }
+        previewMaterials.clear();
       };
       const applyFx = () => {                                               // show what this stage does to the actual mesh
         const model = group.userData.model;
@@ -340,7 +339,9 @@
         const keep = decimateRatio(fx, tris);
         for (const o of meshes) {
           const ms = Array.isArray(o.material) ? o.material : [o.material];
-          o.userData.ppMat = ms.map(mt => ({ t: mt.transparent, o: mt.opacity, d: mt.depthWrite }));
+          ms.forEach(mt => {
+            if (!previewMaterials.has(mt)) previewMaterials.set(mt, { t: mt.transparent, o: mt.opacity, d: mt.depthWrite });
+          });
           ms.forEach(mt => { mt.transparent = true; mt.opacity = 0.22; mt.depthWrite = false; mt.needsUpdate = true; });  // original fades back…
           let g = null;
           const verts = o.geometry.attributes.position.count;
@@ -481,7 +482,7 @@
         if (job.id !== (current && current.id) && !vcr.step().done) return;  // a different 3D task took over mid-effect: let the effect finish first
         closing = false; root.classList.remove("pp-closing");
       }
-      if (!root || job.id !== (current && current.id)) setContent(job, others);
+      setContent(job, others);                                              // state and companion counts can change without a new job id
       update(job);
     }
 

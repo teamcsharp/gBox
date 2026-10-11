@@ -268,6 +268,24 @@ test('the popup labels the mesh operation running now and clears it on other sta
   assert.equal(op.textContent, '');
 });
 
+test('the same job updates its queued/running chip and changing companion count', () => {
+  const x = setup();
+  const queued = job('characters', { character: 'A' }, { id: 'same', state: 'queued' });
+  x.win.sync([queued]);
+  const root = x.body.children.find(c => c.className === 'gbox-pp');
+  const deep = el => [el, ...el.children.flatMap(deep)];
+  const [state, more] = deep(root).filter(c => c.className === 'pp-chip');
+  assert.equal(state.textContent, 'queued'); assert.equal(more.style.display, 'none');
+  x.win.sync([{ ...queued, state: 'running' }, job('asset_convert', {}, { id: 'other', state: 'queued' })]);
+  assert.equal(x.body.children.find(c => c.className === 'gbox-pp'), root, 'no remount on state transition');
+  assert.equal(state.textContent, 'processing'); assert.ok(state.classList.contains('run'));
+  assert.equal(more.textContent, '+1 more'); assert.equal(more.style.display, '');
+  x.win.sync([queued]);
+  assert.equal(state.textContent, 'queued'); assert.ok(!state.classList.contains('run'));
+  assert.equal(more.textContent, '+0 more'); assert.equal(more.style.display, 'none');
+  x.win.dispose();
+});
+
 test('non-3D jobs never mount anything', () => {
   const x = setup();
   x.win.sync([job('session_op', { op: 'save_state' }, { state: 'running' }), job('graphics', { op: 'get' }, { state: 'running' })]);
@@ -407,6 +425,28 @@ test('a job with no model clears its predecessor instead of mislabelling the old
   assert.equal(x.win.viewer().path, null); assert.equal(v.current(), null);
   assert.match(x.elements.find(e => e.className === 'pp-f').textContent, /^Progress illustration/);
   assert.equal(A.geometry.disposals, 1);
+  x.win.dispose();
+});
+
+test('decimation restores a shared material once across meshes and repeated preview/replacement', async () => {
+  const v = viewerFixture(), x = setup({ loadModules: async () => v.modules });
+  const j = (character, msg) => job('characters', { character }, { progress: { msg } });
+  const decimating = j('A', 'Decimating 12 -> 6 triangles');
+  x.win.sync([decimating]); await tick();
+  const A = v.model('A'), shared = v.model('another');
+  shared.mesh.material = A.mesh.material; A.scene.add(shared.mesh);
+  A.material.opacity = 0.65;
+  const original = () => {
+    assert.equal(A.material.opacity, 0.65);
+    assert.equal(A.material.transparent, false);
+    assert.equal(A.material.depthWrite, true);
+  };
+  v.loads[0].callback(A); assert.equal(A.material.opacity, 0.22);
+  x.win.sync([j('A', 'Building the disc image')]); original();
+  x.win.sync([decimating]); assert.equal(A.material.opacity, 0.22);
+  x.win.sync([j('B', 'Loading the donor')]); original();
+  assert.equal(A.material.disposals, 1, 'shared material disposed once on replacement');
+  assert.equal(A.texture.disposals, 1);
   x.win.dispose();
 });
 
