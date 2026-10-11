@@ -87,6 +87,21 @@ Tools, turns, elapsed time, ticket status and completion credit are unchanged.
 Measured costs are distinct from estimates, and subscription credits are not
 inferred from tokens. Accounting a run does not establish gameplay acceptance.
 
+## Native capture and checkpoint failure feedback
+
+The feedback scanner distinguishes a covered or unavailable emulator window
+from a failed emulator. It keeps the rejected capture, refreshes session
+identity, and requests one bounded retry using only the owned test window or
+its current GPU surface. Desktop pixels cannot establish gameplay acceptance,
+and occlusion checks remain enabled. The operator PC is protected.
+
+Rejected, empty or unfinished checkpoint containers have a separate lesson:
+preserve the original and its hash, validate the complete bounded container,
+and obtain a separate completed native save only from a still-live owned test
+session. An older checkpoint cannot be labelled the same reported moment.
+These local failures do not create an inference-provider cooldown. Repeated
+maintenance scans do not duplicate the lessons.
+
 ## Backend activation
 
 Hermes maintenance job `8e210aab9898`, **Activate Hermes bridge safely #1109**,

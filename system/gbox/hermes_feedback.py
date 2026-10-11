@@ -21,6 +21,8 @@ ADVICE = {
     'turn_budget': 'Resume the saved patch at validation/publication. Use high reasoning, focused tests and a 45-tool-call work budget, reserving the final 10 calls for handoff.',
     'no_publication': 'Use a tracked task workspace, validate its patch and publish a draft PR. A canonical-share edit alone is not GitHub delivery.',
     'workspace_state': 'Use the canonical gBox MCP process with Python -P and the shared GBOX_HERMES_DISPATCH_STATE. Reuse the saved workspace record instead of creating another branch.',
+    'capture_occlusion': 'The capture was blocked by a covered or unavailable emulator window, not proof of a black or frozen game. Refresh the current session and PID once. On the authorized idle test PC, present only that owned game window or use its current GPU capture surface, then capture once more. Do not change the operator PC, disable occlusion validation, or substitute desktop pixels as gameplay evidence. If capture is still unavailable, retain that failure and leave visual acceptance pending.',
+    'checkpoint_container': 'Preserve the rejected or unfinished checkpoint and its hash. Verify the full bounded container before import or export; never bypass validation, overwrite the original, or call an older checkpoint the same reported moment. If the owned test session is still live, obtain a separate completed native save, validate it and test load/frame advance/reload. Otherwise report the precise missing state evidence and continue source work.',
     'other': 'Read the prior failure and saved patch; change the failed step before retrying and report an observable result.',
 }
 
@@ -41,6 +43,15 @@ def classify(error: str) -> str:
         return 'vision_history'
     if 'claim ownership' in text or 'restart-safe cron worker' in text:
         return 'scheduler_claim'
+    if ('game window is covered by another app' in text or
+            'game window isn\'t open' in text or
+            ('notreadableerror' in text and ('video' in text or 'capture' in text))):
+        return 'capture_occlusion'
+    if ('saved checkpoint container could not be validated' in text or
+            'saved checkpoint container exceeds inspection budget' in text or
+            'saved checkpoint contains no core state' in text or
+            'saved checkpoint is empty' in text):
+        return 'checkpoint_container'
     if 'timed out' in text or 'worker is unavailable' in text or 'worker is saturated' in text:
         return 'worker_timeout'
     if 'denied' in text or 'blocked without approvals' in text or 'permission' in text:
