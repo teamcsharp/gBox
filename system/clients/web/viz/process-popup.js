@@ -50,8 +50,42 @@
 
   function modelPath(job) {                                                 // the GLB actually being processed, when known
     const i = job.input || {};
-    if (job.tool === "characters" && i.character) return `/api/characters/${encodeURIComponent(i.character)}/model`;
+    if (i.character && MODEL_TOOLS.has(job.tool)) return `/api/characters/${encodeURIComponent(i.character)}/model`;
     return null;
+  }
+
+  // ---- what the current stage is doing to the mesh (drives the live mesh-change view) -----
+  // Reads the worker's own progress lines, e.g. "Amy: decimating 12000 -> 8000 triangles",
+  // "Too big (…): decimating to ~4000 triangles", "Retargeting Amy onto Leon's skeleton".
+  function stageEffect(msg) {
+    const m = String(msg || "");
+    if (!m) return null;
+    let r;
+    if (/decimat/i.test(m)) {
+      if ((r = /([\d,]+)\s*(?:->|→|to)\s*~?([\d,]+)\s*tri/i.exec(m))) {
+        const from = +r[1].replace(/,/g, ""), to = +r[2].replace(/,/g, "");
+        if (from > 0 && to > 0) return { kind: "decimate", from, to, ratio: Math.min(1, to / from),
+          label: `decimate ${from.toLocaleString("en-US")} → ${to.toLocaleString("en-US")} tris` };
+      }
+      if ((r = /to\s*~?([\d,]+)\s*tri/i.exec(m))) {
+        const to = +r[1].replace(/,/g, "");
+        return { kind: "decimate", to, ratio: null, label: `decimate → ${to.toLocaleString("en-US")} tris` };
+      }
+      return { kind: "decimate", ratio: 0.5, label: "decimate" };
+    }
+    if (/retarget/i.test(m)) {
+      r = /onto\s+(.+?)(?:\s*\(|$)/i.exec(m);
+      return { kind: "retarget", label: "retarget" + (r ? " → " + r[1].trim() : "") };
+    }
+    if (/\b(re)?scal(e|es|ed|ing)\b|\bresiz/i.test(m)) return { kind: "rescale", label: "rescale" };
+    return null;
+  }
+
+  function decimateRatio(effect, totalTris) {                               // fraction of triangles the stage keeps
+    if (!effect || effect.kind !== "decimate") return 1;
+    if (effect.ratio) return Math.max(0.02, Math.min(1, effect.ratio));
+    if (effect.to && totalTris > 0) return Math.max(0.02, Math.min(1, effect.to / totalTris));
+    return 0.5;
   }
 
   // ---- VCR close effect: tracking static, then the picture collapses to a line ------------
@@ -79,7 +113,7 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
       lastMsgs = [], dead = false;
 
@@ -101,6 +135,8 @@
       ".gbox-pp .pp-log{padding:0 10px 4px;color:#6f7988;font:10px/1.5 ui-monospace,monospace;max-height:44px;overflow:hidden}",
       ".gbox-pp .pp-f{padding:4px 10px 7px;color:#5b6472;font-size:10px}",
       ".gbox-pp.pp-closing .pp-stage canvas:first-child{filter:saturate(.4)}",
+      ".gbox-pp .pp-op{position:absolute;left:8px;top:7px;z-index:2;font:700 10px/1.4 ui-monospace,monospace;color:#ffb46b;",
+      "background:#0b0d12cc;padding:1px 6px;border-radius:4px;pointer-events:none}.gbox-pp .pp-op:empty{display:none}",
     ].join("");
     doc.head.append(style);
 
@@ -116,7 +152,8 @@
       head.append(titleEl, stateEl, moreEl, x);
       stage = doc.createElement("div"); stage.className = "pp-stage";
       overlay = doc.createElement("canvas"); overlay.width = 390; overlay.height = 250;
-      stage.append(overlay);
+      opEl = doc.createElement("div"); opEl.className = "pp-op";
+      stage.append(overlay, opEl);
       ctx2d = overlay.getContext && overlay.getContext("2d");
       const meta = doc.createElement("div"); meta.className = "pp-meta";
       barEl = doc.createElement("div"); barEl.className = "pp-bar";
@@ -167,6 +204,12 @@
         lastMsgs = (lastMsgs.concat([p.msg])).slice(-3);
         logEl.textContent = lastMsgs.join("\n");
       }
+      if (opEl && p.msg) {                                                  // which mesh operation is running now
+        const fx = stageEffect(p.msg), lbl = fx ? fx.label : "";
+        if (lbl !== opEl.textContent) opEl.textContent = lbl;
+      }
+      const t = title(job);
+      if (titleEl && t !== titleEl.textContent) titleEl.textContent = t;   // the job may name its model mid-run
       if (three && three.setJob) three.setJob(job);
     }
 
@@ -181,7 +224,11 @@
           const T = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/+esm");
           const L = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm");
           if (!root || three !== holder) return;                            // closed while loading
-          made = makeThree(T, L.GLTFLoader, job);
+          let S = null;
+          try { S = (await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/modifiers/SimplifyModifier.js/+esm")).SimplifyModifier; }
+          catch (e) { /* no simplifier: decimation is shown with a thinned wireframe instead */ }
+          if (!root || three !== holder) return;
+          made = makeThree(T, L.GLTFLoader, job, S);
         }
       } catch (e) { if (made) { try { made.dispose(); } catch (e2) {} made = null; } }
       if (!root || three !== holder) { if (made) made.dispose(); return; }
@@ -189,7 +236,7 @@
       if (root && stage.firstChild !== overlay) stage.insertBefore(overlay, stage.firstChild);
     }
 
-    function makeThree(THREE, GLTFLoader, job) {
+    function makeThree(THREE, GLTFLoader, job, Simplify) {
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(env.devicePixelRatio || 1, 2));
       renderer.setSize(390, 250, false);
@@ -204,18 +251,81 @@
       const wire = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(1, 1)),
         new THREE.LineBasicMaterial({ color: 0x4f8cff }));
       group.add(wire);
-      const path = modelPath(job);
-      let loader = null;
+      let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0;
       const swapIn = gltf => {
-        const b = new THREE.Box3().setFromObject(gltf.scene), c = b.getCenter(new THREE.Vector3()),
-          s = Math.max(b.getSize(new THREE.Vector3()).length(), 0.1);
-        gltf.scene.position.sub(c); gltf.scene.scale.setScalar(1.6 / s);
+        // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
+        gltf.scene.updateMatrixWorld(true);
+        const b = new THREE.Box3(), mb = new THREE.Box3();
+        gltf.scene.traverse(o => { if (o.isMesh && o.geometry) {
+          if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+          b.union(mb.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld)); } });
+        if (b.isEmpty()) b.setFromObject(gltf.scene);
+        const c = b.getCenter(new THREE.Vector3()), s = Math.max(b.getSize(new THREE.Vector3()).length(), 0.1);
+        const k = 1.6 / s;                                                  // centre in scaled units so the whole model is in frame
+        gltf.scene.scale.setScalar(k); gltf.scene.position.copy(c).multiplyScalar(-k);
         const old = group.userData.model;
         if (old) group.remove(old);
         group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
+        fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
       };
-      const safeLoad = p => { try { loader.load(assetUrl(p), swapIn, undefined, () => {}); } catch (e) { /* offline/404: keep the wire placeholder */ } };
-      if (path) { loader = new GLTFLoader(); safeLoad(path); }
+      const safeLoad = p => {
+        if (!loader) loader = new GLTFLoader();
+        try { loader.load(assetUrl(p), swapIn, undefined, () => {}); } catch (e) { /* offline/404: keep the wire placeholder */ }
+      };
+      if (path) safeLoad(path);
+      const clearFx = () => {
+        for (const o of fxObjs) { if (o.parent) o.parent.remove(o); if (o.geometry) o.geometry.dispose(); }
+        fxObjs = [];
+        const model = group.userData.model;
+        if (model) model.traverse(o => { if (o.isMesh && o.userData.ppMat) {
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          ms.forEach((mt, k) => { const m0 = o.userData.ppMat[k];
+            mt.transparent = m0.t; mt.opacity = m0.o; mt.depthWrite = m0.d; mt.needsUpdate = true; });
+          delete o.userData.ppMat; } });
+      };
+      const applyFx = () => {                                               // show what this stage does to the actual mesh
+        const model = group.userData.model;
+        const key = model ? JSON.stringify(fx) : "";
+        if (key === fxKey) return;
+        fxKey = key; clearFx(); pulse = 0;
+        if (!model || !fx) return;
+        if (fx.kind === "rescale") { pulse = 1; return; }
+        if (fx.kind === "retarget") {
+          let bones = 0; model.traverse(o => { if (o.isBone) bones++; });
+          if (bones) { const h = new THREE.SkeletonHelper(model); h.material.color.set(0x8fe6a8);
+            h.material.depthTest = false; scene.add(h); fxObjs.push(h); }
+          return;
+        }
+        const meshes = []; let tris = 0;
+        model.traverse(o => { if (o.isMesh && o.geometry && o.geometry.attributes.position) {
+          meshes.push(o); const g = o.geometry; tris += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
+        const keep = decimateRatio(fx, tris);
+        for (const o of meshes) {
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          o.userData.ppMat = ms.map(mt => ({ t: mt.transparent, o: mt.opacity, d: mt.depthWrite }));
+          ms.forEach(mt => { mt.transparent = true; mt.opacity = 0.22; mt.depthWrite = false; mt.needsUpdate = true; });  // original fades back…
+          let g = null;
+          const verts = o.geometry.attributes.position.count;
+          if (Simplify && verts <= 20000) {                                 // …the decimated mesh draws over it
+            try {
+              const src = new THREE.BufferGeometry();
+              src.setAttribute("position", o.geometry.attributes.position.clone());
+              if (o.geometry.index) src.setIndex(o.geometry.index.clone());
+              const pa = src.attributes.position.array, seen = new Set();   // the modifier welds seams first:
+              for (let v = 0; v < pa.length; v += 3) seen.add(`${pa[v].toFixed(5)},${pa[v + 1].toFixed(5)},${pa[v + 2].toFixed(5)}`);
+              g = new THREE.WireframeGeometry(new Simplify().modify(src, Math.floor(seen.size * (1 - keep))));  // remove a share of welded verts
+              if (g.attributes.position.count < 2) { g.dispose(); g = null; }
+            } catch (e) { g = null; }
+          }
+          if (!g) {                                                         // big mesh: thin the wireframe to the kept share
+            g = new THREE.WireframeGeometry(o.geometry);
+            g.setDrawRange(0, Math.max(2, Math.floor(g.attributes.position.count * keep / 2) * 2));
+          }
+          const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xffb46b, transparent: true, opacity: 0.9, depthTest: false }));
+          lines.renderOrder = 2;
+          o.add(lines); fxObjs.push(lines);
+        }
+      };
       camera.position.set(0, 0.7, 3.1); camera.lookAt(0, 0, 0);
       let raf = 0, stop = false;
       const tick = () => {
@@ -223,13 +333,24 @@
         raf = (env.requestAnimationFrame || (f => env.setTimeout(f, 33)))(tick);
         group.rotation.y += 0.012;                                          // the 360° orbit around the model
         group.rotation.x = 0.25 + Math.sin(group.rotation.y * 0.5) * 0.1;
+        if (pulse > 0) { pulse = (pulse + 0.012) % 1; group.scale.setScalar(1 - 0.18 * Math.sin(pulse * Math.PI)); }
+        else if (group.scale.x !== 1) group.scale.setScalar(1);
+        for (const o of fxObjs) if (o.isSkeletonHelper) o.updateMatrixWorld(true);
         renderer.render(scene, camera);
         drawOverlay();
       };
       tick();
       return {
-        canvas, setJob(j) { const p = modelPath(j); if (p && p !== path && loader) { path = p; safeLoad(p); } },
-        dispose() { stop = true; (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
+        canvas,
+        setJob(j) {
+          const p = modelPath(j);
+          if (p && p !== path) { path = p; safeLoad(p); }                   // the job switched (or first named) its model
+          const next = stageEffect((j.progress || {}).msg);
+          if (next || (j.progress || {}).msg) { fx = next; if (!fx) pulse = 0; applyFx(); }
+        },
+        get state() { return { path, fx, fxObjs: fxObjs.length, pulse,
+          lineVerts: fxObjs.reduce((n, o) => n + (o.isLineSegments && !o.isSkeletonHelper ? o.geometry.attributes.position.count : 0), 0) }; },
+        dispose() { stop = true; clearFx(); (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
           renderer.dispose(); canvas.remove(); },
       };
     }
@@ -326,6 +447,7 @@
 
     return {
       sync,
+      viewer() { return three && three.state ? three.state : null; },      // live mesh-view state (diagnostics/tests)
       dispose() {
         dead = true;
         if (pollTimer) (env.clearInterval || (t => env.clearTimeout(t)))(pollTimer);
@@ -334,5 +456,5 @@
     };
   }
 
-  return { mount, classify, pick, createVcr, title, modelPath, MODEL_TOOLS };
+  return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS };
 });

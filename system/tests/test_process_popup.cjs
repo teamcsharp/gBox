@@ -62,6 +62,37 @@ test('the characters op=use job links to the collection GLB being processed', ()
   assert.equal(popup.modelPath(job('characters', { op: 'use', character: 'sa2_amy_rose' })),
     '/api/characters/sa2_amy_rose/model');
   assert.equal(popup.modelPath(job('asset_convert', { path: 'x.glb' })), null);
+  // a session swap / other model tool naming a collection character follows that GLB too
+  assert.equal(popup.modelPath(job('session_swap', { character: 'sa2_amy_rose' })), '/api/characters/sa2_amy_rose/model');
+  assert.equal(popup.modelPath(job('read_memory', { character: 'sa2_amy_rose' })), null);
+});
+
+// ---------- live mesh-change view: the worker's own stage lines drive what the model shows ----------
+test('decimation lines with both counts give the kept share and a label', () => {
+  const fx = popup.stageEffect('Amy: decimating 12000 -> 8000 triangles');
+  assert.equal(fx.kind, 'decimate'); assert.equal(fx.from, 12000); assert.equal(fx.to, 8000);
+  assert.ok(Math.abs(fx.ratio - 8000 / 12000) < 1e-9);
+  assert.equal(fx.label, 'decimate 12,000 → 8,000 tris');
+  assert.ok(Math.abs(popup.decimateRatio(fx, 999) - 2 / 3) < 1e-9);
+});
+
+test('decimation to a target count is scaled against the loaded mesh', () => {
+  const fx = popup.stageEffect("Too big (90000 > 60000 bytes): decimating to ~4000 triangles");
+  assert.equal(fx.kind, 'decimate'); assert.equal(fx.to, 4000); assert.equal(fx.ratio, null);
+  assert.equal(popup.decimateRatio(fx, 16000), 0.25);
+  assert.equal(popup.decimateRatio(fx, 0), 0.5);                         // mesh not loaded yet
+  assert.equal(popup.decimateRatio(popup.stageEffect("Writing Leon's packs (textures 256px, decimated)"), 100), 0.5);
+  assert.equal(popup.decimateRatio(popup.stageEffect('decimating 100 -> 1 triangles'), 1e6), 0.02);  // never empty
+});
+
+test('retarget and rescale stages are recognised; unrelated stages are not', () => {
+  assert.deepEqual(popup.stageEffect("Retargeting Amy Rose onto Leon's skeleton"), { kind: 'retarget', label: "retarget → Leon's skeleton" });
+  assert.deepEqual(popup.stageEffect('Retargeting Amy onto the wrestler skeleton'), { kind: 'retarget', label: 'retarget → the wrestler skeleton' });
+  assert.equal(popup.stageEffect('Retargeting onto x (52 bones)').label, 'retarget → x');
+  assert.equal(popup.stageEffect('Rescaling to the slot height').kind, 'rescale');
+  for (const m of ['Building the disc image x.iso', 'Vanilla disc image from a.gcz', '', null, undefined])
+    assert.equal(popup.stageEffect(m), null, String(m));
+  assert.equal(popup.decimateRatio(null, 10), 1);
 });
 
 // ---------- VCR close effect timeline ----------
@@ -170,6 +201,21 @@ test('the ✕ button hides this task instantly and it stays hidden while it runs
   x.win.sync([job('asset_convert', {}, { id: 'c3', state: 'queued' })]);
   assert.ok(x.body.children.some(c => c.className === 'gbox-pp' && !c.removed), 'a different task still opens');
   x.win.dispose();
+});
+
+test('the popup labels the mesh operation running now and clears it on other stages', () => {
+  const x = setup();
+  const deep = (el) => [el, ...el.children.flatMap(deep)];
+  const j = (msg) => job('characters', { op: 'use', character: 'amy' }, { id: 'op1', progress: { pct: 30, msg } });
+  x.win.sync([j('Amy: decimating 12000 -> 8000 triangles')]);
+  const root = x.body.children.find(c => c.className === 'gbox-pp');
+  const op = deep(root).find(c => c.className === 'pp-op');
+  assert.ok(op, 'stage label element exists');
+  assert.equal(op.textContent, 'decimate 12,000 → 8,000 tris');
+  x.win.sync([j("Retargeting Amy onto Leon's skeleton")]);
+  assert.equal(op.textContent, "retarget → Leon's skeleton");
+  x.win.sync([j('Building the disc image x.iso')]);
+  assert.equal(op.textContent, '');
 });
 
 test('non-3D jobs never mount anything', () => {
