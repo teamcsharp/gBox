@@ -383,3 +383,93 @@ def export_play_glb(data: bytes, play_off: int, root: int, out_dir: str, name: s
     glb = out / f"{name}.glb"
     glb.write_bytes(uap.to_glb(m, out))
     return str(glb)
+
+
+# ---------------------------------------------------------------- native collection (gbox.characters)
+PLAYER_AFS = "JETRADIO/PLAYER.AFS"
+CHARACTER_COUNT = 16
+
+
+def roster() -> list[dict]:
+    """The 16 PLAY/PTEX character pairs of PLAYER.AFS, in archive order.
+
+    Character names are not read from the disc yet, so entries use their archive index; aliases
+    carry the index so a pick-whip label such as "JGR character 3" still resolves.
+    """
+    return [{"key": f"{i:02d}", "slug": f"jgr_char{i:02d}", "name": f"Jet Grind Radio character {i:02d}",
+             "aliases": [f"JGR character {i}", f"JGR char {i:02d}", f"PLAYER.AFS PLAY {i}"], "kind": "character"}
+            for i in range(CHARACTER_COUNT)]
+
+
+def character_pair(data: bytes, index: int) -> tuple[int, int]:
+    """(PLAY offset, PTEX offset) of character *index*: the archive stores them as consecutive pairs."""
+    ch = chunks(data)
+    plays = [o for k, o in ch if k == "play"]
+    ptexs = [o for k, o in ch if k == "ptex"]
+    if len(plays) != CHARACTER_COUNT or len(ptexs) != CHARACTER_COUNT:
+        raise ValueError(f"PLAYER.AFS holds {len(plays)} PLAY / {len(ptexs)} PTEX chunks, expected {CHARACTER_COUNT}")
+    return plays[index], ptexs[index]
+
+
+def body_root(data: bytes, play_off: int) -> int:
+    """The high-detail body: the 20-node root with the most triangles (variant 0 on ties)."""
+    rows = [r for r in play_summary(data, play_off) if r["nodes"] == 20 and r["triangles"]]
+    if not rows:
+        raise ValueError(f"PLAY +{play_off:#x} has no 20-node body")
+    return max(rows, key=lambda r: r["triangles"])["root"]
+
+
+# Every PLAY body shares one 20-node tree: node000 root, node001 pelvis (legs and spine branch here),
+# node002-004 / node005-007 right / left leg, node008-009 spine, node010-011 head, node012-015 /
+# node016-019 right / left clavicle, shoulder, elbow, wrist. Parent index per node:
+BODY_PARENTS = [-1, 0, 1, 2, 3, 1, 5, 6, 1, 8, 9, 10, 9, 12, 13, 14, 9, 16, 17, 18]
+# Roles in gbox.characters.tree_roles vocabulary. tree_roles itself can't read these rigs: every leaf
+# sits under the pelvis, and two characters (02, 12) are bound with an arm raised above the head.
+BODY_ROLES = {"hip": "node001", "chest": "node008", "head": "node010",
+              "l_thigh": "node005", "l_shin": "node006", "l_foot": "node007",
+              "r_thigh": "node002", "r_shin": "node003", "r_foot": "node004",
+              "l_upper": "node017", "l_fore": "node018", "l_hand": "node019",
+              "r_upper": "node013", "r_fore": "node014", "r_hand": "node015"}
+
+
+def body_roles(glb_path) -> dict[str, str]:
+    """BODY_ROLES after checking the exported skin matches BODY_PARENTS and its left side is +X."""
+    import json
+    from pathlib import Path
+    raw = Path(glb_path).read_bytes()
+    g = json.loads(raw[20:20 + struct.unpack_from("<I", raw, 12)[0]])
+    joints = g["skins"][0]["joints"]
+    names = [g["nodes"][j].get("name") for j in joints]
+    if names != [f"node{i:03d}" for i in range(len(BODY_PARENTS))]:
+        raise ValueError(f"unexpected joint names {names[:4]}...")
+    parent = {c: i for i, n in enumerate(g["nodes"]) for c in n.get("children", [])}
+    got = [joints.index(parent[j]) if parent.get(j) in joints else -1 for j in joints]
+    if got != BODY_PARENTS:
+        raise ValueError(f"skeleton tree differs from the JGR body tree: {got}")
+    tx = {names[k]: g["nodes"][j].get("translation", [0, 0, 0])[0] for k, j in enumerate(joints)}
+    if not (tx["node005"] > 0 > tx["node002"] and tx["node016"] > 0 > tx["node012"]):
+        raise ValueError("left/right sides are not on +X/-X")
+    return dict(BODY_ROLES)
+
+
+def extract_run(ctx, game: dict, e: dict, work) -> dict:
+    """gbox.characters DEDICATED runner: export one character's high-detail body as a skinned GLB."""
+    from pathlib import Path
+    from .characters import _dc_gdi
+    from .gdrom import GDRom
+    work = Path(work)
+    data = GDRom(str(_dc_gdi(ctx, game))).read(PLAYER_AFS)
+    play, ptex = character_pair(data, int(e["key"]))
+    root = body_root(data, play)
+    ctx.progress(50, f"Decoding PLAY +{play:#x} body root +{root:#x}")
+    glb = export_play_glb(data, play, root, str(work), e["slug"], ptex)
+    out = {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.jgr + gbox.ninja",
+           "source_files": [f"{PLAYER_AFS} PLAY #{int(e['key'])} (+{play:#x}, root +{root:#x})",
+                            f"{PLAYER_AFS} PTEX #{int(e['key'])} (+{ptex:#x})"],
+           "notes": "High-detail body, variant 0, bind pose. Texture ids bind to PTEX order (ids 0-2 verified on "
+                    "character 00 only). No in-game writer yet."}
+    try:
+        out["roles"] = body_roles(glb)
+    except Exception as exc:                               # noqa: BLE001 - report instead of inventing roles
+        out["notes"] += f" Rig roles not derived: {exc}"
+    return out

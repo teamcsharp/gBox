@@ -260,3 +260,58 @@ def test_body_is_upright_humanoid_sized_and_exports_a_textured_skinned_glb(tmp_p
     assert len(g["skins"]) == 1 and len(g["skins"][0]["joints"]) == 20
     assert len(g["meshes"]) == 2 and len(g["images"]) == 2
     assert len(list((tmp_path / "textures").glob("*.png"))) == 4
+
+
+# ---------------------------------------------------------------- native collection route
+def test_characters_routes_jet_grind_radio_to_the_jgr_reader():
+    from gbox import characters
+    pick = lambda t, p: next((r[0] for r in characters.DEDICATED if r[1](t.lower(), p)), None)
+    assert pick("Jet Grind Radio (USA)", "dreamcast") == "jgr"
+    assert pick("Jet Set Radio (Europe)", "dreamcast") == "jgr"
+    assert pick("Jet Set Radio Future", "xbox") is None
+    ros = jgr.roster()
+    assert len(ros) == 16 and len({r["slug"] for r in ros}) == 16
+    assert all(r["kind"] == "character" for r in ros)
+
+
+def test_collect_extracts_all_16_characters_verified_and_retargetable(tmp_path, monkeypatch):
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    from gbox import characters
+    monkeypatch.setattr(characters, "_dc_gdi", lambda ctx, game: gdi)
+
+    class Ctx:
+        class config:
+            cache = str(tmp_path / "cache")
+
+        def progress(self, pct, msg):
+            pass
+
+    game = {"game_id": "4187aeab4d67638c", "title": "Jet Grind Radio (USA)", "platform": "dreamcast"}
+    root = tmp_path / "lib"
+    root.mkdir()
+    ros = jgr.roster()
+    for e in ros:
+        res = characters.extract_dedicated(Ctx(), game, e["slug"], root, ("jgr", ros))
+        assert res["status"] == "extracted", res
+        meta = characters.get(root, e["slug"])
+        assert characters.verify_entry(root, meta)["ok"], e["slug"]
+        assert meta["rig"]["roles"] == jgr.BODY_ROLES, e["slug"]
+        rig = characters.rig_from_gltf(root / e["slug"] / meta["model"], meta["rig"]["roles"])
+        assert len(rig["roles"]) == 15 and len(rig["joints"]) == 20
+        # Bind-pose sanity: feet below the pelvis, head above it (02 and 12 are bound with an arm raised).
+        y = {r: rig["joints"][i][1] for r, i in rig["roles"].items()}
+        assert y["l_foot"] < y["hip"] < y["head"] and y["r_foot"] < y["hip"]
+
+
+def test_body_roles_rejects_a_foreign_skeleton(tmp_path):
+    import json
+    gl = {"asset": {"version": "2.0"}, "nodes": [{"name": f"node{i:03d}", "children": [i + 1] if i < 19 else []}
+                                                 for i in range(20)], "skins": [{"joints": list(range(20))}]}
+    js = json.dumps(gl).encode()
+    js += b" " * (-len(js) % 4)
+    p = tmp_path / "chain.glb"
+    p.write_bytes(b"glTF" + struct.pack("<II", 2, 20 + len(js)) + struct.pack("<I", len(js)) + b"JSON" + js)
+    with pytest.raises(ValueError):
+        jgr.body_roles(p)

@@ -81,6 +81,21 @@ render of 8 characters was checked by a vision model, which judged all 8 to be c
 with no exploded or scrambled triangles. `export_play_glb` writes a package plus a self-contained
 skinned GLB with the PTEX textures embedded.
 
+## Native collection (gbox.characters)
+
+`characters.DEDICATED` routes Jet Grind Radio / Jet Set Radio (Dreamcast) to the `jgr` reader, so
+favouriting the game or running `characters op=collect` extracts its roster with no game launch.
+`jgr.roster()` lists the 16 PLAY/PTEX pairs of PLAYER.AFS as `jgr_char00`..`jgr_char15`. The
+characters' real names are not read from the disc yet. `jgr.extract_run` exports each character's
+high-detail body (the 20-node root with the most triangles) with its PTEX textures.
+
+All 16 bodies share one tree (`jgr.BODY_PARENTS`). node001 is the pelvis, and both legs and the
+spine branch from it. Each arm has a clavicle, shoulder, elbow and wrist. Characters 02 and 12 are
+bound with an arm raised above the head. The generic `tree_roles` can't read this rig, so
+`jgr.body_roles` checks the exported skin against `BODY_PARENTS` and the +X left side, then returns
+the fixed `BODY_ROLES` map (15 roles). On the owned disc, all 16 entries pass `verify_entry`, map
+15 roles through `rig_from_gltf` and are marked retargetable.
+
 ## Open questions (follow-up work)
 
 - **Motion data** (kinds 4-7, about 650 KB in the kind-6 record): not decoded yet.
