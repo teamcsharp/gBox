@@ -262,7 +262,17 @@ def _tool_failed(content: str) -> bool:
     try:
         data = json.loads(content)
     except (ValueError, TypeError):
-        return content.lstrip().startswith(('BLOCKED:', 'ERROR:'))
+        text = content.lstrip()
+        if text.startswith(('BLOCKED:', 'ERROR:')):
+            return True
+        # Some MCP bridges return requests' transport exception as the result
+        # string instead of setting isError. Match its direct failure envelope,
+        # not quoted errors or successful terminal/documentation output.
+        first_line = text.splitlines()[0] if text else ''
+        return bool(re.match(r'Request failed:\s*HTTPS?ConnectionPool\(', first_line)
+                    and any(reason in first_line.lower() for reason in (
+                        'max retries exceeded with url:', 'failed to establish a new connection',
+                        'connection refused', 'read timed out', 'connect timeout')))
     if not isinstance(data, dict):
         return False
     if data.get('error') or data.get('isError') or data.get('is_error'):

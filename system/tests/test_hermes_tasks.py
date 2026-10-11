@@ -21,6 +21,49 @@ def test_attempt_failure_classification_uses_outcome_not_error_field_presence(re
     assert hermes_tasks._tool_failed(wrapped) is failed
 
 
+MCP_CONNECTION_REFUSED = (
+    "Request failed: HTTPConnectionPool(host='127.0.0.1', port=8080): "
+    "Max retries exceeded with url: /segments "
+    "(Caused by NewConnectionError('Failed to establish a new connection: [Errno 111] Connection refused'))"
+)
+
+
+@pytest.mark.parametrize('result,failed', [
+    ({'result':MCP_CONNECTION_REFUSED}, True),
+    ({'result':json.dumps({'result':MCP_CONNECTION_REFUSED})}, True),
+    ({'result':"Request failed: HTTPSConnectionPool(host='fixture.example', port=443): Read timed out."}, True),
+    ({'result':'Request failed: HTTPConnectionPool(host=fixture, port=8080)'}, False),
+    ({'result':'Historical diagnostic:\n' + MCP_CONNECTION_REFUSED}, False),
+    ({'result':'> ' + MCP_CONNECTION_REFUSED}, False),
+    ({'result':'```text\n' + MCP_CONNECTION_REFUSED + '\n```'}, False),
+    ({'result':json.dumps(MCP_CONNECTION_REFUSED)}, False),
+    ({'result':json.dumps({'messages':[{'text':MCP_CONNECTION_REFUSED}]})}, False),
+    ({'output':MCP_CONNECTION_REFUSED,'exit_code':0}, False),
+    ({'output':'Documentation example: ' + MCP_CONNECTION_REFUSED,'exit_code':0}, False),
+])
+def test_mcp_transport_error_envelope_is_failed_without_flagging_quoted_diagnostics(result,failed):
+    wrapped='<untrusted_tool_result source="mcp__ghidra__list_segments">\nExternal data\n\n'+json.dumps(result)+'\n</untrusted_tool_result>'
+    assert hermes_tasks._tool_failed(wrapped) is failed
+
+
+def test_ghidra_attempt_displays_connection_refusal_as_failed(monkeypatch,tmp_path):
+    home=tmp_path/'.hermes';home.mkdir()
+    action='mcp__ghidra__list_segments'
+    failure='<untrusted_tool_result source="ghidra">\nExternal data\n\n'+json.dumps({'result':MCP_CONNECTION_REFUSED})+'\n</untrusted_tool_result>'
+    with sqlite3.connect(home/'state.db') as db:
+        db.execute('CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, tool_calls TEXT)')
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
+            (1,'fixture-session','assistant','',None,json.dumps([{'function':{'name':action,'arguments':'{}'}}])))
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
+            (2,'fixture-session','tool',failure,action,None))
+    monkeypatch.setenv('GBOX_HERMES_HOME',str(home))
+    monkeypatch.setattr(hermes_tasks,'_get_run_output',lambda run_id:{
+        'session_id':'fixture-session','job_id':'fixture-job','name':'Native RE verification'})
+    actual=hermes_tasks.get_run('a'*32)
+    assert actual['steps']==[{'action':action,'attempt':1,'input':{},
+        'result':MCP_CONNECTION_REFUSED,'status':'failed'}]
+
+
 def test_running_hermes_run_exposes_expandable_live_tool_output(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     cron = home / "cron"
