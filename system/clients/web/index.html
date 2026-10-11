@@ -613,7 +613,7 @@ tabs.GameModels.after = (gid, title) => {
 
 // ---------------- loading screen (three.js particle ribbon, logo-shaped progress bar, console ticker) ----------------
 const loader = {
-  three: null, raf: 0,
+  three: null, raf: 0, generation: 0,
   async scene() {                                             // the 10-mode visualizer (/viz): random per title, right-click to choose
     if (this.three) return this.three;
     try {
@@ -626,6 +626,7 @@ const loader = {
   },
   frame() {},
   show(title, sub) {
+    this.generation++;
     $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
     $("#ldbar").style.height = "0%"; $("#ldpbar").style.width = "2%"; $("#ldpct").textContent = "0%";
     $("#ldcon").innerHTML = "<div>Preparing…</div>"; $("#ldback").style.display = "none";
@@ -644,7 +645,10 @@ const loader = {
     if (msg && $("#ldcon").firstChild?.textContent !== msg) $("#ldcon").innerHTML = `<div>${esc(msg)}</div>`;
   },
   fail(msg) { $("#ldcon").innerHTML = `<div class="err">${esc(msg)}</div>`; $("#ldback").style.display = "block"; },
-  hide() { const el = $("#loader"); el.classList.add("out"); setTimeout(() => { el.classList.remove("on", "out"); this.three?.viz?.stop(); }, 600); },
+  hide() { const generation = this.generation, el = $("#loader"); el.classList.add("out"); setTimeout(() => {
+    if (generation !== this.generation) return;
+    el.classList.remove("on", "out"); this.three?.viz?.stop();
+  }, 600); },
 };
 
 // ---- microphone device: right-click any mic to pick the default input (persisted) ----

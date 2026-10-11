@@ -262,6 +262,68 @@ test('malformed successful result is diagnosed without discarding known-job canc
   await h.ctx.cancelLoad(); assert.equal(cancelled, 1);
 });
 
+test('an unexplained running launch timeout retains its exact job for later Cancel', async () => {
+  let reads = 0; const cancellations = [];
+  const h = launchHarness(async url => {
+    if (url.startsWith('/api/catalog/')) return catalog();
+    if (url.startsWith('/api/games/')) return { id: 'slow-running' };
+    if (url.endsWith('/cancel')) { cancellations.push(url); return {}; }
+    if (url === '/api/jobs/slow-running') { reads++; return { state: 'running' }; }
+    throw new Error('unexpected ' + url);
+  });
+  await h.ctx.play('game');
+  assert.equal(reads, 750);
+  assert.match(h.fails.at(-1), /has not finished.*Esc to cancel/);
+  assert.equal(h.ctx.state().LOADING?.job, 'slow-running');
+  await h.ctx.cancelLoad();
+  assert.deepEqual(cancellations, ['/api/jobs/slow-running/cancel']);
+});
+
+test('the real loader delayed cancel animation cannot hide a newly started Play', async () => {
+  const loaderStart = html.indexOf('const loader = {');
+  const loaderEnd = html.indexOf('// ---- microphone device:', loaderStart);
+  assert.ok(loaderStart >= 0 && loaderEnd > loaderStart);
+  const loaderSource = html.slice(loaderStart, loaderEnd);
+  const nodes = new Map(), timers = [], oldPoll = deferred(), oldBegan = deferred(), newPoll = deferred(), began = deferred();
+  let oldReads = 0;
+  const $ = selector => {
+    if (!nodes.has(selector)) {
+      const names = new Set();
+      nodes.set(selector, { style: {}, firstChild: null,
+        classList: { add: (...x) => x.forEach(y => names.add(y)), remove: (...x) => x.forEach(y => names.delete(y)), contains: x => names.has(x) } });
+    }
+    return nodes.get(selector);
+  };
+  const ctx = vm.createContext({ console, encodeURIComponent, addEventListener() {}, $,
+    Date: { now: () => NOW }, setTimeout: (f, ms) => timers.push({ f, ms }),
+    api: async url => {
+      if (url.startsWith('/api/catalog/')) return catalog();
+      if (url.startsWith('/api/games/old/')) return { id: 'old' };
+      if (url.startsWith('/api/games/new/')) return { id: 'new' };
+      if (url.endsWith('/cancel')) return {};
+      if (url === '/api/jobs/old') {
+        if (++oldReads === 1) { oldBegan.resolve(); return oldPoll.promise; }
+        return { state: 'queued' };
+      }
+      if (url === '/api/jobs/new') { began.resolve(); return newPoll.promise; }
+      throw new Error('unexpected ' + url);
+    },
+    runJob: async () => ({}), bootGet: () => ({}), esc: x => String(x),
+    show() {}, WHERE: 'local', window: { GBOX_LOCAL: { worker: 'JAYBUILTFINALE' } } });
+  vm.runInContext(loaderSource + source + '\nloader.scene=async()=>({});this.realLoader=loader;this.play=play;this.cancelLoad=cancelLoad;', ctx);
+  // Cancel the real visible old loader, then start a new launch during its600ms exit animation.
+  const old = ctx.play('old'); await oldBegan.promise;
+  await ctx.cancelLoad();
+  const work = ctx.play('new'); await began.promise;
+  assert.equal($('#loader').classList.contains('on'), true);
+  const cancelAnimation = timers.find(t => t.ms === 600);
+  assert.ok(cancelAnimation);
+  cancelAnimation.f();
+  assert.equal($('#loader').classList.contains('on'), true, 'new launch must remain visible after the old hide animation fires');
+  oldPoll.resolve({ state: 'queued' }); await old;
+  newPoll.resolve({ state: 'succeeded', output: { session_id: 'new-session' } }); await work;
+});
+
 test('a job queued by worker name (launched while it was down) resolves the same worker', () => {
   const note = helpers()(queued({ require_worker: 'i9-NUC' }), [jay(), nuc()], 'i9-NUC', NOW);
   assert.match(note, /^i9-NUC's gBox worker is offline/);
