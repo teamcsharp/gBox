@@ -29,6 +29,21 @@ delivery blocks activation. A surviving owned emulator PID also blocks startup;
 startup does not kill or reattach that process. Unknown ownership blocks rather
 than declaring a game preserved or ended.
 
+The desktop Control panel shows the worker's last exit reason and offers
+Reconnect for a stopped worker. Reconnect makes at most four reconciliation
+attempts using the exact retained result bytes, including previously refused
+results. The command-line equivalent is `gbox worker --reconcile-results` with
+the usual server, configuration and worker-name arguments. Ordinary startup
+and watchdog retries do not reconcile refusals. A refused record is copied to
+`refused-evidence` before a reconciliation attempt, and only a matching durable
+acknowledgement releases it. Upgrade the control plane before attempting this
+recovery; an old server response or HTTP 409 does not prove delivery.
+
+Reconnect never terminates a running worker or its games. An existing worker,
+a worker already starting, standalone mode, or a surviving owned native process
+holds reconnection and explains why. The panel's process status alone is not
+proof of a fresh server heartbeat.
+
 Deploy the compatible control-plane and worker changes together during an
 approved idle interval. A source update does not reload cached Python modules.
 This mechanism cannot reconstruct a finished result already lost by an older
