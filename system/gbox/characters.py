@@ -1076,11 +1076,12 @@ def _doa2_run(ctx, game, e, work):
     from . import doa2_chars
     r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0])
     m = r["manifest"]
-    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars (containers verified)",
-            "source_files": m["source"]["resource_ids"],
-            "notes": f"skeleton facts: {m['skeleton_facts']['n_bones']} bones, "
-                     f"{m['skeleton_facts']['n_objects']} objects, base {m['skeleton_facts']['object_ptr_base']}; "
-                     "mesh decoding is the next slice (geometry: missing)"}
+    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars native NaomiLib decoder",
+            "source_files": m["source"]["resource_ids"], "roles": r.get("roles", {}),
+            "notes": f"{m['container_facts']['n_models']} native mesh parts and "
+                     f"{m['container_facts']['n_textures']} textures decoded. Parts retain local coordinates; "
+                     "native executable rest rig and SUP surfaces are exported separately as a retargetable body; "
+                     "SUP seam skin approximates curved deformation. Native motion files remain intact."}
 
 
 def _re4_run(ctx, game, e, work):
@@ -1851,6 +1852,9 @@ def characters_tool(inp: CharIn, ctx):
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
+    from . import doa2_swap
+    if gid in doa2_swap.GAME_IDS:
+        return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
     from . import sm64_swap
     if gid in sm64_swap.GAME_IDS and inp.slot == "player":        # SM64: build sm64_<slug> if missing, launch it
         return {"result": out | sm64_swap.use(ctx, meta, game, inp)}

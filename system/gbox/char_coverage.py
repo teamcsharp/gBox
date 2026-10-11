@@ -15,6 +15,7 @@ import re
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
 # read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
 WRITERS = [
+    ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),

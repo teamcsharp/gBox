@@ -1,0 +1,416 @@
+"""DOA2 native geometry reintegration, requiring a proved runtime rig profile.
+
+CHR contains local model parts, not joint matrices. A profile must identify the
+native part driven by each body joint and its bind transform before a donor can
+be retargeted. Archive conversion alone is not a gameplay acceptance result.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
+
+from . import doa2_chars, doa2_geometry as G
+
+GAME_IDS = doa2_chars.GAME_IDS
+EXECUTABLE_SHA256 = "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1"
+REQUIRED_ROLES = {"hip", "chest", "head", "l_upper", "l_fore", "l_hand",
+                  "r_upper", "r_fore", "r_hand", "l_thigh", "l_shin", "l_foot",
+                  "r_thigh", "r_shin", "r_foot"}
+
+
+def writer_fingerprint() -> str:
+    """Invalidate copied-ROM builds when their conversion implementation changes."""
+    digest = hashlib.sha256()
+    names = ('doa2_swap', 'doa2_geometry', 'doa2_materials', 'doa2_textures',
+             'doa2_pvr', 'doa2_atlas', 'doa2_rig', 'doa2_axes', 'doa2_rest',
+             'doa2_bindings', 'doa2_morphs', 'sm64_swap', 'melee_models')
+    for name in names:
+        digest.update(name.encode('ascii'))
+        digest.update(Path(__file__).with_name(name + '.py').read_bytes())
+    return digest.hexdigest()
+
+
+class RigUnavailable(ValueError):
+    """The requested native rig has not been established by runtime evidence."""
+
+
+def fighter_slot(slot: str) -> tuple[str, str | None]:
+    """Resolve a fighter name/family and optional costume, e.g. 'Kasumi:00'."""
+    parts = slot.removeprefix("fighter:").split(":")
+    if len(parts) > 2:
+        raise ValueError("Use fighter name or fighter name:costume")
+    query = parts[0].strip().casefold()
+    if query == "player":
+        query = "kasumi"
+    for key, name, aliases in doa2_chars.FIGHTERS:
+        if query in {s.casefold() for s in [key, name, *aliases]}:
+            costume = parts[1] if len(parts) == 2 else None
+            if costume is not None and (not costume.isdigit() or len(costume) > 2):
+                raise ValueError("Costume must be one or two decimal digits")
+            return key, costume.zfill(2) if costume is not None else None
+    raise ValueError(f"Unknown DOA2 fighter {parts[0]!r}")
+
+
+def validate_profile(profile: dict, archive: dict) -> dict:
+    """Validate a rig without silently synthesizing a missing joint hierarchy."""
+    if profile.get("format") != "doa2-native-rig-v1":
+        raise RigUnavailable("A verified doa2-native-rig-v1 profile is required")
+    if profile.get("executable_sha256") != EXECUTABLE_SHA256:
+        raise RigUnavailable("Rig profile belongs to a different executable")
+    evidence = profile.get("evidence") or {}
+    if not evidence.get("bind_transforms") or not evidence.get("part_mapping"):
+        raise RigUnavailable("Native bind-transform and part-mapping evidence is missing")
+    world = np.asarray(profile.get("world"), dtype=float)
+    if world.ndim != 3 or world.shape[1:] != (4, 4) or not len(world) or not np.isfinite(world).all():
+        raise ValueError("Rig world transforms must be finite 4x4 matrices")
+    if not np.allclose(world[:, 3, :], [0, 0, 0, 1], atol=1e-7):
+        raise ValueError("Rig matrices must use affine column-vector convention")
+    if np.any(np.abs(np.linalg.det(world[:, :3, :3])) < 1e-8):
+        raise ValueError("Rig contains a singular transform")
+    parent = profile.get("parent")
+    if not isinstance(parent, list) or len(parent) != len(world):
+        raise ValueError("Rig hierarchy length does not match joint transforms")
+    for joint, p in enumerate(parent):
+        if not isinstance(p, int) or not -1 <= p < len(world) or p == joint:
+            raise ValueError("Invalid joint parent")
+    for joint, p in enumerate(parent):
+        seen = {joint}
+        while p != -1:
+            if p in seen:
+                raise ValueError("Rig hierarchy contains a cycle")
+            seen.add(p)
+            p = parent[p]
+    roles = profile.get("roles") or {}
+    if REQUIRED_ROLES - roles.keys():
+        raise RigUnavailable(f"Missing target roles: {sorted(REQUIRED_ROLES - roles.keys())}")
+    if any(not isinstance(j, int) or not 0 <= j < len(world) for j in roles.values()):
+        raise ValueError("Target role references an invalid joint")
+    emit = {int(j): int(m) for j, m in (profile.get("emit_models") or {}).items()}
+    body = profile.get("body_models") or []
+    if not body or len(set(body)) != len(body) or any(not isinstance(m, int) or not 0 <= m < len(archive["models"]) for m in body):
+        raise ValueError("Body model IDs must be unique native archive model IDs")
+    if any(not 0 <= j < len(world) or m not in body for j, m in emit.items()):
+        raise ValueError("Emitted geometry must use a body model and valid joint")
+    if set(roles.values()) - emit.keys() or len(set(emit.values())) != len(emit):
+        raise ValueError("Each target joint needs a distinct native emission model")
+    model_world = {int(m): np.asarray(w, dtype=float) for m, w in (profile.get("model_world") or {}).items()}
+    for j, m in emit.items():
+        # A model may have an attachment offset relative to its body joint.
+        w = model_world.setdefault(m, world[j])
+        if w.shape != (4, 4) or not np.isfinite(w).all() or not np.allclose(w[3], [0, 0, 0, 1]) or abs(np.linalg.det(w[:3, :3])) < 1e-8:
+            raise ValueError("Invalid emitted model bind transform")
+    ground, head_h = float(profile["ground"]), float(profile["head_h"])
+    if not np.isfinite([ground, head_h]).all() or head_h <= 0:
+        raise ValueError("Native ground and head height must be finite and positive")
+    return {"T": world[:, :3, 3], "W": world, "parent": parent, "joints": len(world),
+            "jmap": roles, "emit_models": emit, "body_models": body, "model_world": model_world,
+            "ground": ground, "head_h": head_h}
+
+
+def encode_parts(chr_data: bytes, bin_data: bytes, prims: list[dict], profile: dict,
+                 *, size_budget: int, allow_downscale: bool = False,
+                 synthesize_headers: bool = False, retype_argb4444: bool = False) -> dict:
+    """Convert already-retargeted world geometry to native joint-local parts.
+
+    Triangles spanning joint boundaries use their majority joint, consistently
+    converting all three vertices into that model's local frame. Native motion,
+    unrelated volume parts, and their texture allocations remain separate.
+    """
+    from . import doa2_materials as M, doa2_pvr
+    archive = G.decode_chr(chr_data)
+    target = validate_profile(profile, archive)
+    body = set(target["body_models"])
+    retained_slots = {mesh["texture_id"] for model in archive["models"] if model["id"] not in body
+                      for mesh in model["meshes"] if mesh["texture_id"] >= 0}
+    materials = M.allocate(archive, bin_data, prims, allow_downscale=allow_downscale,
+                           excluded_slots=retained_slots, synthesize_headers=synthesize_headers,
+                           retype_argb4444=retype_argb4444)
+    meshes_by_model = {m: [] for m in body}
+    source_triangles = 0
+    for primitive, material in zip(prims, materials["primitives"]):
+        p, n, uv = (np.asarray(primitive[k], dtype=float) for k in ("pos", "nrm", "uv"))
+        triangles = np.asarray(primitive["tris"], dtype=int)
+        joints = np.asarray(primitive["J"], dtype=int)[:, 0]
+        if p.ndim != 2 or p.shape[1] != 3 or n.shape != p.shape or uv.shape != (len(p), 2) or len(joints) != len(p):
+            raise ValueError("Retargeted vertex attribute lengths do not match")
+        if not all(np.isfinite(x).all() for x in (p, n, uv)) or triangles.ndim != 2 or triangles.shape[1] != 3:
+            raise ValueError("Retargeted geometry must contain finite triangle attributes")
+        if np.any(triangles < 0) or np.any(triangles >= len(p)):
+            raise ValueError("Triangle references a missing donor vertex")
+        if any(int(j) not in target["emit_models"] for j in np.unique(joints)):
+            raise ValueError("Retargeted vertex uses a joint without a native model")
+        owners = joints[triangles]
+        # Stable first-vertex tie-break when all three joints differ.
+        winners = np.where(owners[:, 1] == owners[:, 2], owners[:, 1], owners[:, 0])
+        source_triangles += len(triangles)
+        for joint in np.unique(winners):
+            m = target["emit_models"][int(joint)]
+            inverse = np.linalg.inv(target["model_world"][m])
+            local_p = p @ inverse[:3, :3].T + inverse[:3, 3]
+            # Inverse transpose for normals under a world-to-model transform.
+            local_n = n @ np.linalg.inv(inverse[:3, :3])
+            local_n /= np.maximum(np.linalg.norm(local_n, axis=1, keepdims=True), 1e-9)
+            used = triangles[winners == joint]
+            indices, remap = np.unique(used, return_inverse=True)
+            attrs = np.concatenate((local_p[indices], local_n[indices], uv[indices]), axis=1)
+            meshes_by_model[m].append({"vertices": [tuple(v) for v in attrs],
+                                      "triangles": [tuple(map(int, t)) for t in remap.reshape(-1, 3)],
+                                      "header": doa2_pvr.sampler(material["header"], primitive.get("wrap",(10497,10497))), "texture_id": material["texture_id"]})
+    replacements = {m: G.encode_model(archive["models"][m], meshes) for m, meshes in meshes_by_model.items()}
+    rebuilt = G.replace_models(chr_data, replacements, size_budget=size_budget)
+    if materials["report"]["descriptor_retypes"]:
+        updated = bytearray(rebuilt)
+        offset = G.decode_chr(rebuilt)["texture_table_offset"]
+        updated[offset:offset + len(materials["descriptor_bytes"])] = materials["descriptor_bytes"]
+        rebuilt = bytes(updated)
+    decoded = G.decode_chr(rebuilt)
+    written = sum(len(mesh["triangles"]) for m in decoded["models"] if m["id"] in body for mesh in m["meshes"])
+    if written != source_triangles:
+        raise AssertionError("Native conversion lost donor triangles")
+    for model in archive["models"]:
+        if model["id"] in body:
+            continue
+        new = decoded["models"][model["id"]]
+        if chr_data[model["offset"]:model["end_offset"]] != rebuilt[new["offset"]:new["end_offset"]]:
+            raise AssertionError("Unrelated native model changed")
+    return {"chr_data": rebuilt, "bin_data": materials["bin_data"],
+            "report": {"triangles": written, "chr_bytes": len(rebuilt), "chr_budget": size_budget,
+                       "bin_bytes": len(materials["bin_data"]), "body_models": sorted(body),
+                       "materials": materials["report"], "gameplay_verified": False,
+                       "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()}}
+
+
+def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *, allow_downscale=False, progress=lambda p,m:None):
+    """Keep full geometry when it fits; use audited Blender LOD attempts otherwise."""
+    import tempfile
+    from . import sm64_swap as S
+    from . import doa2_atlas as A, doa2_materials as M
+    from .re4gc_enemies import decimate
+    source_triangles=sum(len(p['tris']) for p in prims)
+    attempts=[]
+    atlas_report=None
+    def encode(geometry):
+        return encode_parts(chr_data,bin_data,geometry,profile,size_budget=size_budget,
+                            allow_downscale=allow_downscale,
+                            synthesize_headers=bool(profile.get('synthesize_material_headers')),
+                            retype_argb4444=bool(profile.get('retype_argb4444')))
+    def finish(result, reduced):
+        result['report'].update(source_triangles=source_triangles, lod_attempts=attempts,
+                                geometry_reduced=reduced, atlas=atlas_report)
+        return result
+    try:
+        result=encode(prims)
+        return finish(result, False)
+    except M.MaterialCapacityError as error:
+        archive=G.decode_chr(chr_data)
+        body=set(target['body_models'])
+        retained={mesh['texture_id'] for model in archive['models'] if model['id'] not in body
+                  for mesh in model['meshes'] if mesh['texture_id'] >= 0}
+        capacities=A.native_capacities(archive, bin_data, excluded_slots=retained,
+                                      synthesize_headers=bool(profile.get('synthesize_material_headers')),
+                                      retype_argb4444=bool(profile.get('retype_argb4444')))
+        progress(32, 'Packing donor materials into native texture allocations')
+        atlas=A.atlas_primitives(prims, capacities, allow_downscale=allow_downscale)
+        prims=atlas['primitives']
+        atlas_report={'initial_capacity_failure':str(error), **atlas['report']}
+        # The atlas already reports any pixel loss; do not resize it again in allocation.
+        allow_downscale=False
+        try:
+            return finish(encode(prims), False)
+        except ValueError as error:
+            if not str(error).startswith('CHR budget exceeded:'): raise
+            attempts.append({'triangles':source_triangles,'result':str(error)})
+    except ValueError as error:
+        if not str(error).startswith('CHR budget exceeded:'): raise
+        attempts.append({'triangles':source_triangles,'result':str(error)})
+    with tempfile.TemporaryDirectory(prefix='gbox-doa2-lod-') as temporary:
+        work=Path(temporary)
+        rigged=S.write_rigged(prims,target,work/'retargeted.gltf','native-donor')
+        failed_budget=source_triangles
+        best=None
+        best_budget=None
+        def reduced_geometry(budget):
+            model=decimate(rigged,work/f'lod{budget}.glb',float(budget))
+            geometry=S.read_rigged(model)
+            for primitive in geometry: primitive['J']=np.asarray(primitive['jid'])[:,None]
+            return geometry, sum(len(p['tris']) for p in geometry)
+        for budget in sorted({max(128,int(source_triangles*.8**k)) for k in range(1,11)},reverse=True):
+            progress(35,f'Native allocation: reducing donor to {budget} triangles')
+            geometry,count=reduced_geometry(budget)
+            try:
+                result=encode(geometry)
+            except ValueError as error:
+                if not str(error).startswith('CHR budget exceeded:'): raise
+                attempts.append({'budget':budget,'triangles':count,'result':str(error)})
+                failed_budget=budget
+                continue
+            attempts.append({'budget':budget,'triangles':count,'result':'allocation_verified'})
+            best,best_budget=result,budget
+            break
+        if best is not None:
+            # Measure intermediate allocations; keep the most detailed actual fit.
+            low,high=best_budget,failed_budget
+            for _ in range(5):
+                if high-low <= 8: break
+                budget=(low+high)//2
+                progress(38,f'Refining native geometry allocation at {budget} triangles')
+                geometry,count=reduced_geometry(budget)
+                try:
+                    result=encode(geometry)
+                except ValueError as error:
+                    if not str(error).startswith('CHR budget exceeded:'): raise
+                    attempts.append({'budget':budget,'triangles':count,'result':str(error)})
+                    high=budget
+                    continue
+                attempts.append({'budget':budget,'triangles':count,'result':'allocation_verified'})
+                low=budget
+                if result['report']['triangles'] > best['report']['triangles']: best=result
+            best['report']['lod_skin_policy']='Blender recomputes smooth normals; native rigid parts use dominant joint weights'
+            return finish(best, True)
+    raise ValueError('Native allocation cannot fit donor geometry after bounded LOD attempts: '+str(attempts))
+
+
+def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
+          fighter: str, costume: str, profile: dict, *, allow_downscale: bool = False,
+          progress=lambda p, m: None) -> dict:
+    """Prepare one costume without mutating or copying its source disc."""
+    from .gdrom import GDRom, patch_gdi
+    from .sm64_swap import load_rig, retarget
+    from . import doa2_morphs, doa2_bindings
+    family, selected = fighter_slot(fighter)
+    costume = selected or str(costume).zfill(2)
+    if not costume.isdigit() or len(costume) != 2:
+        raise ValueError("Invalid costume")
+    if profile.get("fighter") != family or profile.get("costume") != costume:
+        raise RigUnavailable("Rig profile does not match the requested fighter costume")
+    disc = GDRom(gdi)
+    executable = disc.read("1ST_READ.BIN")
+    if hashlib.sha256(executable).hexdigest() != EXECUTABLE_SHA256:
+        raise ValueError("Unsupported DOA2 executable; refusing fixed-layout reintegration")
+    stem = f"DOA2/{family}{costume}"
+    chr_data, bin_data = disc.read(stem + ".CHR"), disc.read(stem + ".BIN")
+    target = validate_profile(profile, G.decode_chr(chr_data))
+    binding = doa2_bindings.render_part_mapping(executable, int(profile["render_slot"]), int(profile["render_costume"]))
+    if any(target["emit_models"].get(j) != m for j, m in enumerate(binding["emit_models"])):
+        raise RigUnavailable("Rig model mapping does not match the executable's native draw script")
+    directory = Path(character_dir)
+    meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
+    roles = (meta.get("rig") or {}).get("roles") or {}
+    if not {"hip", "head"} <= roles.keys():
+        raise ValueError("Donor needs hip and head body roles for retargeting")
+    model = (directory / meta["model"]).resolve()
+    if not model.is_relative_to(directory.resolve()):
+        raise ValueError("Donor model must remain inside its character directory")
+    progress(10, "Retargeting donor onto verified DOA2 body transforms")
+    rig = load_rig(model, roles, [p["node"] for p in meta.get("props") or []])
+    prims, fit = retarget(rig, target, (meta.get("rig") or {}).get("scale"), target["jmap"])
+    lba, original_bytes = disc.files[stem + ".CHR"]
+    next_lba = min((l for l, _ in disc.files.values() if l > lba), default=lba+(original_bytes+2047)//2048)
+    progress(30, "Encoding native joint-local geometry and texture allocations")
+    result = encode_budgeted(chr_data, bin_data, prims, profile, target, (next_lba-lba)*2048,
+                             allow_downscale=allow_downscale, progress=progress)
+    changes = {stem + ".CHR": result["chr_data"], stem + ".BIN": result["bin_data"]}
+    supplements = []
+    for suffix, disable in (("APV", doa2_morphs.disable_apv), ("SUP", doa2_morphs.disable_sup)):
+        key = stem + "." + suffix
+        if key not in disc.files:
+            raise RigUnavailable(f"Missing native supplement: {key}")
+        changes[key], report = disable(disc.read(key))
+        supplements.append(report)
+    patched_exe, cloth = doa2_bindings.neutralize_accessory_init(executable, int(profile["render_slot"]), int(profile["render_costume"]))
+    if patched_exe != executable:
+        changes["1ST_READ.BIN"] = patched_exe
+    supplements.append(cloth)
+    report = result['report'] | {'fit': fit, 'fighter': family, 'costume': costume,
+                               'supplements': supplements,
+                               'source_model_sha256': hashlib.sha256(model.read_bytes()).hexdigest(),
+                               'files': {key: {'bytes':len(data), 'sha256':hashlib.sha256(data).hexdigest()}
+                                         for key, data in changes.items()}}
+    return changes, report
+
+
+def write_mod(gdi, out_dir, name, slug, changes, reports, progress):
+    from .gdrom import GDRom, patch_gdi
+    image = patch_gdi(gdi, out_dir, name, changes, progress)
+    rebuilt = GDRom(image)
+    for key, data in changes.items():
+        if rebuilt.read(key) != data:
+            raise AssertionError(f'Native GDI reintegration mismatch: {key}')
+    report = reports[0] if len(reports)==1 else {'costumes':reports, 'gameplay_verified':False}
+    Path(out_dir, 'build-report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+    Path(out_dir, '.gbox-mod.json').write_text(json.dumps({'name':name, 'game_id':next(iter(GAME_IDS)),
+                  'image':image.name, 'character':slug, 'files':list(changes), 'report':report,
+                  'writer_sha256':writer_fingerprint(), 'gameplay_verified':False}),encoding='utf-8')
+    return {'mod':name, 'image':str(image), 'report':report, 'status':'built_unverified'}
+
+
+def build(gdi, character_dir, out_dir, fighter, costume, profile, *, allow_downscale=False, progress=lambda p,m:None):
+    changes, report = prepare(gdi, character_dir, out_dir, fighter, costume, profile,
+                              allow_downscale=allow_downscale, progress=progress)
+    meta=json.loads(Path(character_dir,'meta.json').read_text(encoding='utf-8'))
+    name=f"doa2_{report['fighter'].lower()}{report['costume']}_{meta['slug']}"
+    return write_mod(gdi,out_dir,name,meta['slug'],changes,[report],progress)
+
+
+def merge_executable_patches(original, patches):
+    """Merge disjoint costume script edits, rejecting conflicting byte changes."""
+    result=bytearray(original); changed={}
+    for patch in patches:
+        if len(patch)!=len(original):
+            raise ValueError('Native executable patch resized the source')
+        for index,(a,b) in enumerate(zip(original,patch)):
+            if a==b: continue
+            if index in changed and changed[index]!=b:
+                raise ValueError('Conflicting native costume script edits')
+            changed[index]=b;result[index]=b
+    return bytes(result)
+
+
+def build_fighter(gdi, character_dir, out_dir, fighter, costume='all', *, allow_downscale=False, progress=lambda p,m:None):
+    from .gdrom import GDRom
+    from . import doa2_rig, doa2_lab
+    family, specified=fighter_slot(fighter)
+    costume=specified or costume
+    disc=GDRom(gdi); audit=doa2_rig.collect_axes(disc)
+    selected=doa2_lab.selected_costumes(disc.files,family,costume)
+    changes={}; reports=[]; patches=[]
+    for index,(key,number) in enumerate(selected):
+        profile=doa2_rig.for_archive(disc,f'DOA2/{key}{number}.CHR',audit)
+        def update(p,m): progress(60*(index+p/100)/len(selected),m)
+        edits,report=prepare(gdi,character_dir,out_dir,key,number,profile,allow_downscale=allow_downscale,progress=update)
+        if '1ST_READ.BIN' in edits: patches.append(edits.pop('1ST_READ.BIN'))
+        changes.update(edits);reports.append(report)
+    if patches: changes['1ST_READ.BIN']=merge_executable_patches(disc.read('1ST_READ.BIN'),patches)
+    meta=json.loads(Path(character_dir,'meta.json').read_text(encoding='utf-8'))
+    suffix='' if costume=='all' else str(costume).zfill(2)
+    name=f"doa2_{family.lower()}{suffix}_{meta['slug']}"
+    return write_mod(gdi,out_dir,name,meta['slug'],changes,reports,progress)
+
+
+def use(ctx, meta, game, inp):
+    """Build one named fighter/costume into a copied native ROM, then optionally launch."""
+    from . import characters as C, filemods
+    family, costume = fighter_slot(inp.slot)
+    costume = costume or "all"
+    name = f"doa2_{family.lower()}{costume if costume != 'all' else ''}_{meta['slug']}"
+    output = filemods.mod_dir(ctx.config, game['game_id'], name)
+    result = None
+    marker = output / '.gbox-mod.json'
+    try:
+        cached = json.loads(marker.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        cached = {}
+    if inp.rebuild or cached.get('writer_sha256') != writer_fingerprint():
+        gdi = C._dc_gdi(ctx, game)
+        result = build_fighter(gdi, C.library_root(ctx.config) / meta['slug'], output, family, costume, progress=ctx.progress)
+        C._api(ctx, 'POST', f"/api/characters/{meta['slug']}/targets",
+               json={'game_id': game['game_id'], 'slot': f'fighter:{family}:{costume}',
+                     'mod': name, 'nodes': [C.HOST_OS],
+                     'notes': 'Native CHR/BIN retarget; original fighter motions retained. Gameplay verification required per donor.'})
+    launch = C._launch(ctx, game['game_id'], name, C.HOST_OS) if inp.launch else None
+    return {'status': 'built_unverified', 'mod': name, 'build': result,
+            'fighter': family, 'costume': costume, 'launch': launch,
+            'gameplay_verified': False, 'replacement_kind': 'native_rom'}

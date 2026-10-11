@@ -1,124 +1,91 @@
-"""DOA2 LE JP character asset readers (gbox.doa2_chars): CHR/SUP/MOT container facts.
-
-The fixture is synthetic (hash-anchored constants from the owned disc's DOA2/KAS00.CHR,
-sha256 63a67aa37da73d09e795c7e14b6ad39ed533ef6adeb7cd17787d749c7ae5dcee) so the test runs without
-the disc; export() against the real GDI is exercised on the control-plane node.
-"""
+"""Native container semantics, input boundaries, and full decomposition export."""
+import json
 import struct
-import zipfile
-from pathlib import Path
 
 import pytest
 
-from gbox import doa2_chars
+from gbox import doa2_chars as C, doa2_geometry as G, uap
 
 
-def synth_chr(n_obj=3, n_bone=2, base=0x0C300000, scale=(0.18116, 0.01111, 0.1796)):
-    """A minimal CHR with the verified layout. Object 0 begins at file offset 0 (the 24-byte
-    header is object 0's leading words, as on the real disc), objects 1.. follow."""
-    tail_off = 24 + 200                       # header + objects 1,2 bodies
-    a_off = tail_off + 12 * n_bone
-    objs = [0, 24 + 40, 24 + 104]             # file offsets: object 0 at 0
-    total = a_off + 4 * n_obj
-    b = bytearray(total)
-    struct.pack_into("<9I", b, 0, 24, a_off, tail_off, n_obj, n_bone, 0, 1, 1, 0)
-    struct.pack_into("<3f", b, 0x24, *scale)
-    for i in (1, 2):
-        struct.pack_into("<I", b, objs[i], 0x11 * i)                  # object body marker
-    for i, o in enumerate(objs):
-        struct.pack_into("<I", b, a_off + 4 * i, base + o)            # absolute SH-4 pointers
-    for i in range(n_bone):
-        struct.pack_into("<3f", b, tail_off + 12 * i, 0.1 * i, 0.0, 0.05 * i)
-    return bytes(b)
+def native_chr():
+    header = bytearray(80)
+    struct.pack_into('<4I', header, 0, 0x8000002c, 0x83000000, 0x20282452, 0x08000000)
+    struct.pack_into('<ii', header, 32, 0, 1)
+    mesh = {'header': bytes(header), 'vertices': [
+        (0, 0, 0, 0, 0, 1, 0, 0), (1, 0, 0, 0, 0, 1, 1, 0), (0, 1, 0, 0, 0, 1, 0, 1)],
+        'triangles': [(0, 1, 2)]}
+    model = G.encode_model({'global_flags': (1, 1)}, [mesh])
+    data = bytearray(24) + model + bytes(8)
+    models = len(data)
+    data += struct.pack('<I', 0x0c300000)
+    textures = len(data)
+    data += struct.pack('<3I', 8 | (8 << 16), 0x101, 0x0d200000) + bytes(4)
+    struct.pack_into('<6I', data, 0, 24, models, textures, 1, 1, 0)
+    return bytes(data)
 
 
-def synth_sup():
-    b = bytearray(68)
-    struct.pack_into("<II", b, 0, 44, 60)
-    struct.pack_into("<6f", b, 44, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
-    struct.pack_into("<2f", b, 60, 0.5, 0.25)                         # last record runs to EOF
-    return bytes(b)
+def native_sup():
+    return struct.pack('<3I', 12, 20, 0) + struct.pack('<4f', 0, 1, 2, 3)
 
 
-def synth_mot():
-    offs = [0x1898, 0x1c5c, 0x1898]
-    b = bytearray(0x40)
-    struct.pack_into("<3I", b, 0, *offs)
-    return bytes(b) + b"\0" * 0x2000
+def test_chr_reports_real_models_and_textures():
+    r = C.parse_chr(native_chr())
+    assert r['n_models'] == r['n_objects'] == 1
+    assert r['n_textures'] == 1 and r['objects'] == [24]
+    assert r['textures'] == [{'width': 8, 'height': 8, 'pixel': 1, 'format': 1, 'address': 0x0d200000}]
+    assert 'n_bones' not in r and 'tail' not in r
 
 
-class TestParseChr:
-    def test_kasumi_like_header(self):
-        r = doa2_chars.parse_chr(synth_chr())
-        assert r["n_objects"] == 3 and r["n_bones"] == 2
-        assert r["ptr_base"] == 0x0C300000
-        assert r["objects"] == [0, 64, 128]                            # object 0 = the header itself
-        assert r["header_floats"] == pytest.approx([0.18116, 0.01111, 0.1796], abs=1e-4)
-        assert r["tail"][1] == pytest.approx((0.1, 0.0, 0.05), abs=1e-4)
+@pytest.mark.parametrize('offset,value', [(0, 32), (4, 0xfffffffc), (8, 4), (12, 0x9999)])
+def test_chr_rejects_bad_boundaries(offset, value):
+    b = bytearray(native_chr())
+    struct.pack_into('<I', b, offset, value)
+    with pytest.raises(ValueError):
+        C.parse_chr(bytes(b))
 
-    def test_system_chr_base(self):
-        r = doa2_chars.parse_chr(synth_chr(base=0x0C400000))
-        assert r["ptr_base"] == 0x0C400000
 
-    def test_rejects_bad_header(self):
+def test_sup_validates_record_boundaries_without_inventing_bones():
+    assert C.parse_sup(native_sup()) == {'n_records': 2, 'offsets': [12, 20],
+                                        'records': [{'offset': 12, 'size': 8}, {'offset': 20, 'size': 8}]}
+    for bad in [b'', struct.pack('<I', 44), struct.pack('<3I', 12, 4, 0) + bytes(16)]:
         with pytest.raises(ValueError):
-            doa2_chars.parse_chr(b"\x00" * 64)
-        bad = bytearray(synth_chr())
-        struct.pack_into("<I", bad, 0, 32)                    # header size must be 24
-        with pytest.raises(ValueError):
-            doa2_chars.parse_chr(bytes(bad))
-        bad = bytearray(synth_chr())
-        struct.pack_into("<I", bad, 12, 0x9999)               # implausible object count
-        with pytest.raises(ValueError):
-            doa2_chars.parse_chr(bytes(bad))
-
-    def test_real_disc_anchors(self):
-        # disc-anchored regression: the real KAS00.CHR header words (offsets 0..0x2c)
-        hdr = struct.unpack("<12I", bytes.fromhex(
-            "18000000" "d8790400" "b87a0400" "38000000" "37000000" "00000000"
-            "01000000" "01000000" "00000000" "4283393e" "f4f5353c" "40e8373e"))
-        assert hdr[0] == 24 and hdr[3] == 56 and hdr[4] == 55      # Kasumi: 56 objects, 55 bones
-        assert hdr[1] == 0x479D8 and hdr[2] == 0x47AB8
+            C.parse_sup(bad)
 
 
-class TestParseSupMot:
-    def test_sup_records(self):
-        r = doa2_chars.parse_sup(synth_sup())
-        assert r["n_records"] == 2
-        assert r["records"][0][:3] == pytest.approx([0.0, 0.0, 1.0])
-        assert r["records"][1] == pytest.approx([0.5, 0.25])
-
-    def test_mot_table(self):
-        r = doa2_chars.parse_mot_table(synth_mot())
-        assert r["n_clips"] == 3
-        assert r["offsets"][0] == 0x1898 and r["offsets"][2] == 0x1898   # shared clip
+def test_motion_pointer_table_allows_shared_tracks():
+    b = struct.pack('<4I', 16, 24, 16, 0) + bytes(24)
+    assert C.parse_mot_table(b) == {'n_clips': 3, 'offsets': [16, 24, 16]}
 
 
-class TestRoster:
-    def test_static_roster_shape(self):
-        r = doa2_chars.roster()
-        kas = next(e for e in r if e["key"] == "KAS")
-        assert kas["name"] == "Kasumi" and kas["slug"] == "doa2_kas"
-        assert {e["key"] for e in r} >= {"KAS", "AYA", "TIN", "RYU", "TNG"}
-
-    def test_disc_listing_costumes(self):
-        files = {"DOA2/KAS00.CHR": 1, "DOA2/KAS09.CHR": 1, "DOA2/AYA00.CHR": 1, "DOA2/STAGE01.CHR": 1,
-                 "DOA2/EFC0.CHR": 1, "DOA2/KAS00.SUP": 1, "DOA2/KAS00.BIN": 1}
-        r = doa2_chars.roster(files)
-        kas = next(e for e in r if e["key"] == "KAS")
-        assert kas["costumes"] == ["00", "09"]                       # disc zero-padded costume ids
-        aya = next(e for e in r if e["key"] == "AYA")
-        assert aya["costumes"] == ["00"]
-        assert not any(e["key"] == "STAGE" for e in r)
+def test_roster_uses_disc_costumes_and_excludes_stage():
+    files = {f'DOA2/{name}': (0, 0) for name in ['KAS00.CHR', 'KAS09.CHR', 'AYA00.CHR', 'STAGE01.CHR']}
+    assert next(e for e in C.roster(files) if e['key'] == 'KAS')['costumes'] == ['00', '09']
+    assert not any(e['key'] == 'STAGE' for e in C.roster(files))
 
 
-class TestGameIds:
-    def test_routes_only_doa2le(self):
-        assert "1de2e7634f3161ff" in doa2_chars.GAME_IDS
-        assert len(doa2_chars.GAME_IDS) == 1
+def test_export_has_real_geometry_textures_native_bytes_and_no_false_rig(monkeypatch, tmp_path):
+    from gbox import gdrom
+    assets = {'DOA2/KAS00.CHR': native_chr(), 'DOA2/KAS00.BIN': b'\xff' * 128,
+              'DOA2/KAS00.SUP': native_sup()}
+    class Disc:
+        files = assets
+        def __init__(self, _): pass
+        def read(self, name): return assets[name]
+    monkeypatch.setattr(gdrom, 'GDRom', Disc)
+    r = C.export('fixture.gdi', str(tmp_path), 'KAS')
+    m = uap.load(tmp_path)
+    assert len(m.meshes) == 1 and len(m.meshes[0].indices) == 3
+    assert len(m.materials) == 1 and m.confidence['textures'] == 'verified'
+    assert m.skeleton == [] and m.confidence['skeleton'] == 'missing'
+    assert uap.validate(m, tmp_path) == []
+    assert (tmp_path/'KAS00.CHR').read_bytes() == assets['DOA2/KAS00.CHR']
+    assert (tmp_path/'textures/tex000.png').read_bytes().startswith(b'\x89PNG')
+    assert (tmp_path/'KAS00_parts.glb').read_bytes()[:4] == b'glTF'
+    assert r['manifest']['container_facts']['n_textures'] == 1
+    assert all(p['sha256'] for p in json.loads((tmp_path/'manifest.json').read_text())['provenance'])
 
 
-def test_module_documented_facts():
-    doc = doa2_chars.__doc__ or ""
-    assert "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1" in doc   # 1ST_READ hash
-    assert "0x0C300000" in doc and "0x0C400000" in doc                                # pointer bases
+@pytest.mark.parametrize('key,costume', [('STAGE', '00'), ('KAS', '../'), ('KAS', '100')])
+def test_invalid_export_identity_rejected_before_disc_access(key, costume, tmp_path):
+    with pytest.raises(ValueError):
+        C.export('does-not-exist', str(tmp_path), key, costume)

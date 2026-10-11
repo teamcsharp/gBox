@@ -1,109 +1,78 @@
-# While Ghidra decompiles: write the actual reader module gbox/doa2_chars.py in the task worktree.
-# Verified so far (all from the disc itself, hashes to be recorded in the report):
-#   CHR header: u32[0]=24 (hdr size), [1]=offset of object-ptr array, [2]=offset of tail float table,
-#               [3]=n_objects, [4]=n_bones-ish, [5]=0, [6]=1, [7]=1, [8]=0, [9..11]=floats (scale-ish 0.18/0.011/0.18)
-#   Object pointers are ABSOLUTE SH-4 addresses (0x0C300000 + file offset for fighters; 0x0C400000 for system CHR)
-#   Tail: n2 x 12 bytes of float triplets
-#   SUP: u32 offset table[10] then records (float matrices?)
-#   MOT: u32 offset table then clip blobs; first entry 0x1898 = 6296 -> 0x18a8 area
-"""Dead or Alive 2 - Limited Edition (Japan) (Dreamcast) character assets: CHR/MOT/SUP container readers.
+"""DOA2 LE Japan native character archives: CHR geometry, BIN textures, SUP/MOT facts.
 
-Ghidra-verified facts (analysis/re/d6d70500464914684/doa2le, 1ST_READ.BIN sha256
-27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1, loaded unscrambled at 0x8C010000,
-SuperH4:LE:32:default):
-  - The disc's DOA2/<name><NN>.{BIN,CHR,SUP} / <name>.MOT files are the per-costume character assets
-    (filename pointer tables at 1ST_READ+0x16e740..0x16f400; e.g. "kas00.chr" -> 0x8c1681d4).
-  - File open/read goes through function-pointer tables (FUN_8c011ee4 at 0x8c011ee4 wraps
-    open/stat/read/close callbacks; FUN_8c0121c0, FUN_8c01c35c same pattern).
-  - CHR header (u32 LE): [0]=24 header size, [1]=object-ptr-array file offset, [2]=tail float-table
-    offset, [3]=n_objects, [4]=n_bones, [5]=0, [6]=1, [7]=1, [8]=0, [0x24..0x2c]=3 floats
-    (character scale, e.g. Kasumi 0.18116/0.01111/0.17960).
-  - CHR object pointers are ABSOLUTE SH-4 work-RAM addresses: fighters (KAS/AYA/GEN/...) load at
-    0x0C300000, system CHR (EFC0/FIX) at 0x0C400000; the code reads them as pointers directly.
-  - CHR tail: n_bones x {float3} bind/scale triplets (Kasumi 55 bones, Ayane 45, Gen Fu 52).
-  - SUP: u32 offset table (n records) then float records (soft-body/physics supplement; Kasumi 10
-    records, first at +44).
-  - MOT: u32 offset table (n clip offsets, repeats point at shared clips) then per-clip blobs
-    (Kasumi 1004 entries; first clip at 0x1898).
-
-This module is the READER slice: parse and validate those containers read-only (owned disc, never
-written). The writer (rebuild CHR with a library character's geometry fitted to n_objects/n_bones
-budgets) is the next slice; the game needs pointer-exact layouts because pointers are absolute.
+The owned 1ST_READ.BIN SHA-256 is
+27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1.
+CHR contains NaomiLib models and texture descriptors, NOT a skeleton.
+Independent format implementation credits VincentNL, EgregiousGuy and The_Zocker160:
+https://github.com/NaomiMod/games-ExtractTools/blob/main/DOA2/CHR_Format.md
+https://github.com/NaomiMod/NL-ModelFormat/wiki
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import struct
 from pathlib import Path
 
 GAME_IDS = {"1de2e7634f3161ff": "Dead or Alive 2 - Limited Edition (Japan)"}
 
 
-def u32(b, o):
-    return struct.unpack_from("<I", b, o)[0]
-
-
-def i32(b, o):
-    return struct.unpack_from("<i", b, o)[0]
-
-
-def f32(b, o):
-    return struct.unpack_from("<f", b, o)[0]
-
-
 def parse_chr(data: bytes) -> dict:
-    """Parse a DOA2 LE JP .CHR model container. Returns counts, object table (as file offsets),
-    bind triplets and provenance. Read-only; no writes to the disc."""
-    if len(data) < 0x40:
-        raise ValueError("too small for a CHR header")
-    hdr = [u32(data, o) for o in range(0, 0x28, 4)]
-    if hdr[0] != 24:
-        raise ValueError(f"unexpected header size {hdr[0]}")
-    a_off, b_off, n_obj, n_bone = hdr[1], hdr[2], hdr[3], hdr[4]
-    if not (0 < n_obj < 0x1000 and 0 < n_bone < 0x1000):
-        raise ValueError(f"implausible counts n_obj={n_obj} n_bone={n_bone}")
-    ptrs = [u32(data, a_off + 4 * i) for i in range(n_obj)]
-    base = min(ptrs)
-    if base >> 24 not in (0x0C,):                       # absolute SH-4 address in work RAM
-        raise ValueError(f"object table not absolute pointers (min {base:#x})")
-    objs = [p - base for p in ptrs]                     # -> file offsets
-    sizes = [objs[i + 1] - objs[i] for i in range(n_obj - 1)] + [a_off - objs[-1]]
-    bones = [tuple(round(f32(data, b_off + 12 * i + 4 * k), 5) for k in range(3)) for i in range(n_bone)]
-    return {"n_objects": n_obj, "n_bones": n_bone, "ptr_base": base, "objects": objs, "sizes": sizes,
-            "header_floats": [round(f32(data, 0x24 + 4 * k), 5) for k in range(3)], "tail": bones}
+    """Validated archive facts; models use absolute work-RAM pointers.
+
+    File offsets include the 24-byte archive header. Texture count/table are
+    reported as textures; they must never be advertised as bones or bind poses.
+    """
+    from .doa2_geometry import decode_chr
+    a = decode_chr(data)
+    models = a["models"]
+    return {"n_objects": len(models), "n_models": len(models),
+            "n_textures": len(a["textures"]), "ptr_base": a["pointer_base"],
+            "objects": [m["offset"] for m in models],
+            "sizes": [m["end_offset"] - m["offset"] for m in models],
+            "model_table_offset": a["model_table_offset"],
+            "texture_table_offset": a["texture_table_offset"],
+            "textures": [{"width": wh & 65535, "height": wh >> 16,
+                          "pixel": flags & 255, "format": flags >> 8 & 255,
+                          "address": ptr} for wh, flags, ptr in a["textures"]]}
 
 
 def parse_sup(data: bytes) -> dict:
-    """SUP: offset table then records of float data (physics supplement)."""
-    offs = []
-    o = 0
-    while o < len(data) - 4 and (len(offs) == 0 or offs[-1] != 0):
-        offs.append(u32(data, o))
-        o += 4
-    offs = offs[:-1] if offs and offs[-1] == 0 else offs
-    recs = []
-    for i, r in enumerate(offs):
-        n = (offs[i + 1] - r) if i + 1 < len(offs) else len(data) - r
-        if 0 < n <= 0x1000:
-            recs.append([round(f32(data, r + 4 * k), 4) for k in range(n // 4)])
-    return {"n_records": len(recs), "records": recs}
+    """Supplement record boundaries, retained without inventing a skeleton."""
+    if len(data) < 4:
+        raise ValueError("Truncated SUP table")
+    first = struct.unpack_from("<I", data)[0]
+    if first % 4 or first < 4 or first > len(data):
+        raise ValueError("Invalid SUP table boundary")
+    offsets = list(struct.unpack_from(f"<{first // 4}I", data))
+    if offsets[-1] == 0:
+        offsets.pop()
+    if not offsets or offsets[0] != first or offsets != sorted(set(offsets)) or any(o >= len(data) for o in offsets):
+        raise ValueError("Invalid SUP record offsets")
+    return {"n_records": len(offsets), "offsets": offsets,
+            "records": [{"offset": start, "size": end-start}
+                        for start, end in zip(offsets, offsets[1:] + [len(data)])]}
 
 
 def parse_mot_table(data: bytes) -> dict:
-    """MOT: leading u32 offset table (0 ends?), offsets into per-clip blobs."""
-    offs = []
-    o = 0
-    while o < min(len(data), 0x4000):
-        v = u32(data, o)
-        if v == 0 or v >= len(data):
+    """Find the bounded outer pointer table; clip pointers can share tracks.
+
+    The first clip can follow its track payloads, so its offset does not give
+    the outer table length. The first invalid pointer terminates this table.
+    Track channels require the game's animation decoder.
+    """
+    offsets = []
+    for o in range(0, min(len(data)-3, 0x4000), 4):
+        v = struct.unpack_from("<I", data, o)[0]
+        if not v or v >= len(data):
             break
-        offs.append(v)
-        o += 4
-    return {"n_clips": len(offs), "offsets": offs}
+        offsets.append(v)
+    return {"n_clips": len(offsets), "offsets": offsets}
 
 
 # costume prefix -> (display name, aliases). Confirmed against the disc's arts_*.bin / *.mot tables
 # (1ST_READ+0x16e7fc arts_*, +0x16e890 *_mot names: zack tina janlee ryu kasumi genfu bayman bass
-# leifan ayane hika karate ind raido tengu sambo). KTE's display identity is unconfirmed.
+# leifan ayane hika karate ind raido tengu sambo). KTE is Ein in the selectable roster.
 FIGHTERS = [
     ("KAS", "Kasumi", ["Kasumi-chan", "DOA2 Kasumi"]),
     ("AYA", "Ayane", ["DOA2 Ayane"]),
@@ -118,7 +87,7 @@ FIGHTERS = [
     ("HIK", "Helena", ["Helena Douglas", "DOA2 Helena"]),
     ("SAM", "Leon", ["DOA2 Leon"]),                       # arts_sam + sambo motion set
     ("TNG", "Tengu", ["Bankotsu-bo", "DOA2 Tengu"]),
-    ("KTE", "KTE fighter", ["Ein", "Kasumi Alpha"]),      # costume family present; identity unconfirmed
+    ("KTE", "Ein", ["DOA2 Ein"]),      # Ein costume family
 ]
 # single-costume families that are not part of the selectable roster (boss/story variants)
 VARIANTS = ["LOR", "MAM", "PDG", "WBA", "YTI"]
@@ -152,46 +121,111 @@ def roster(disc_files: dict | None = None) -> list[dict]:
     return out
 
 
-def export(gdi: str, out_dir: str, key: str, costume: str = "0") -> dict:
-    """Extract one fighter's costume-0 asset set read-only: DOA2/<KEY><costume>.{BIN,CHR,SUP} +
-    the container facts (counts, bone triplets) as a UAP-shaped manifest. Geometry decoding of the
-    CHR mesh objects is the next slice; this slice pins the containers, budgets and skeleton counts."""
-    import json as _json
+def export(gdi: str, out_dir: str, key: str, costume: str = "0", *, assemble: bool = True) -> dict:
+    """Decompose a costume into native files, real mesh parts and PNG textures.
+
+    Parts retain native local coordinates. Skeleton confidence stays missing
+    until the runtime joint map is verified; no false assembled bind pose.
+    The native CHR/BIN are preserved for exact binary reconstruction.
+    """
     from .gdrom import GDRom
+    from .doa2_geometry import decode_chr
+    from .doa2_textures import descriptors, decode
+    from . import uap
+    if key not in {e["key"] for e in roster()}:
+        raise ValueError(f"Unknown fighter family {key}")
+    if not costume.isdigit() or len(costume) > 2:
+        raise ValueError("Costume must be a one/two digit disc costume number")
+    stem = f"{key}{costume.zfill(2)}"
     disc = GDRom(gdi)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    costume = costume.zfill(2) if len(costume) == 1 else costume     # disc names are <KEY><NN>
-    stem = f"{key}{costume}"
+    names = [f"DOA2/{stem}.{e}" for e in ("CHR", "BIN", "SUP", "APV") if f"DOA2/{stem}.{e}" in disc.files]
+    bodies = {name: disc.read(name) for name in names}
+    acs=f"DOA2/{key}_A{costume.zfill(2)}.ACS"
+    if acs in disc.files: bodies[acs]=disc.read(acs)
+    if "1ST_READ.BIN" in disc.files:
+        from .doa2_bindings import resolve_archive_binding
+        binding=resolve_archive_binding(disc.read("1ST_READ.BIN"),f"DOA2/{stem}.CHR")
+        control='DOA2/'+binding['files']['control'].upper()
+        if control in disc.files: bodies[control]=disc.read(control)
     files = []
-    for ext in ("BIN", "CHR", "SUP"):
-        name = f"DOA2/{stem}.{ext}"
-        data = disc.read(name)
-        (out / f"{stem}.{ext}").write_bytes(data)
-        files.append(f"{stem}.{ext}")
-    chr_info = parse_chr(disc.read(f"DOA2/{stem}.CHR"))
-    sup_info = parse_sup(disc.read(f"DOA2/{stem}.SUP"))
-    manifest = {
-        "uap_version": "0.1", "name": f"doa2_{key.lower()}_{costume}",
-        "source": {"game_id": next(iter(GAME_IDS)), "title": GAME_IDS[next(iter(GAME_IDS))],
-                   "resource_ids": [f"DOA2/{stem}.BIN", f"DOA2/{stem}.CHR", f"DOA2/{stem}.SUP",
-                                    f"DOA2/{MOT_FILES.get(key, key)}.MOT"
-                                    if disc.files.get(f"DOA2/{MOT_FILES.get(key, key)}.MOT") else None],
-                   "extraction_method": "gbox.doa2_chars (containers verified; meshes not yet decoded)"},
-        "coordinate_system": {"up": "Y", "forward": "-Z", "handedness": "right"},
-        "meshes": [], "materials": [], "skeleton": [],
-        "skeleton_facts": {"n_objects": chr_info["n_objects"], "n_bones": chr_info["n_bones"],
-                           "object_ptr_base": f"{chr_info['ptr_base']:#x}",
-                           "bind_triplets": chr_info["tail"], "header_floats": chr_info["header_floats"]},
-        "container_facts": {"chr_size": chr_info["sizes"] and sum(chr_info["sizes"]),
-                            "sup_records": sup_info["n_records"],
-                            "object_sizes": chr_info["sizes"]},
-        "confidence": {"entity": "verified", "geometry": "missing", "materials": "missing",
-                       "skeleton": "partial", "skin_weights": "missing", "animations": "missing",
-                       "source_identity": "verified"},
-        "provenance": [{"file": f"DOA2/{stem}.{e}", "bytes": len(disc.read(f'DOA2/{stem}.{e}'))}
-                       for e in ("BIN", "CHR", "SUP")],
-    }
-    manifest["source"]["resource_ids"] = [r for r in manifest["source"]["resource_ids"] if r]
-    (out / "manifest.json").write_text(_json.dumps(manifest, indent=1))
-    return {"files": files + ["manifest.json"], "manifest": manifest}
+    for name, body in bodies.items():
+        dest = out / Path(name).name
+        dest.write_bytes(body)
+        files.append(dest.name)
+    chr_data, bin_data = bodies[names[0]], bodies[names[1]]
+    archive = decode_chr(chr_data)
+    textures = descriptors(chr_data, bin_data)
+    (out / "textures").mkdir(exist_ok=True)
+    materials = []
+    for tex in textures:
+        rel = f"textures/tex{tex.index:03d}.png"
+        decode(tex, bin_data).save(out / rel)
+        files.append(rel)
+        materials.append({"name": f"native_texture_{tex.index}", "texture": rel,
+                          "source": {"width": tex.width, "height": tex.height,
+                                     "pixel_format": tex.pixel, "data_format": tex.format,
+                                     "bin_offset": tex.offset, "bytes": tex.size}})
+    meshes, nodes = [], []
+    for model in archive["models"]:
+        for k, mesh in enumerate(model["meshes"]):
+            if not mesh["triangles"]:
+                continue
+            verts = mesh["vertices"]
+            tid = mesh["texture_id"]
+            if tid >= len(textures) or tid < -1:
+                raise ValueError(f"Invalid native material texture slot {tid}")
+            name = f"part{model['id']:03d}_material{k:03d}"
+            nodes.append({"name": name, "mesh": len(meshes), "skinned": False})
+            meshes.append({"name": name, "positions": [list(v[:3]) for v in verts],
+                           "normals": [list(v[3:6]) for v in verts], "uvs": [list(v[6:8]) for v in verts],
+                           "indices": [i for tri in mesh["triangles"] for i in tri],
+                           "material": tid if tid >= 0 else None})
+    mot_name = f"DOA2/{MOT_FILES.get(key, key)}.MOT"
+    if mot_name in disc.files:
+        body = disc.read(mot_name)
+        (out / Path(mot_name).name).write_bytes(body)
+        files.append(Path(mot_name).name)
+        bodies[mot_name] = body
+    manifest = {"uap_version": "0.1", "name": f"doa2_{key.lower()}_{costume.zfill(2)}",
+                "source": {"game_id": next(iter(GAME_IDS)), "title": next(iter(GAME_IDS.values())),
+                           "resource_ids": list(bodies), "extraction_method": "gbox.doa2_chars native NaomiLib decoder",
+                           "part_coordinates": "native local model coordinates; runtime joint transforms required"},
+                "coordinate_system": {"up": "Y", "forward": "-Z", "handedness": "right"},
+                "meshes": meshes, "materials": materials, "nodes": nodes, "roots": list(range(len(nodes))),
+                "skeleton": [], "animations": [],
+                "container_facts": {"n_models": len(archive["models"]), "n_textures": len(textures),
+                                    "model_pointer_base": archive["pointer_base"], "chr_bytes": len(chr_data),
+                                    "bin_bytes": len(bin_data)},
+                "confidence": {"entity": "verified", "geometry": "verified", "materials": "verified",
+                               "textures": "verified", "skeleton": "missing", "skin_weights": "missing",
+                               "animations": "missing", "runtime_linkage": "partial", "source_identity": "verified"},
+                "provenance": [{"file": name, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+                               for name, body in bodies.items()]}
+    validated = uap.Manifest.model_validate(manifest)
+    issues = uap.validate(validated, out)
+    if issues:
+        raise ValueError("DOA2 asset validation: " + "; ".join(issues))
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    (out / f"{stem}_parts.glb").write_bytes(uap.to_glb(validated, out))
+    files.extend(["manifest.json", f"{stem}_parts.glb"])
+    core = None
+    if assemble and "1ST_READ.BIN" in disc.files:
+        from . import doa2_rig as R, doa2_seams as S
+        import numpy as np
+        profile = R.for_archive(disc, f"DOA2/{stem}.CHR")
+        core = S.assemble_core(chr_data, bodies[f"DOA2/{stem}.SUP"], bin_data,
+                               np.asarray(profile['world']),
+                               profile['component_models'],
+                               S.native_coefficients(disc.read("1ST_READ.BIN")))
+        path = S.write_core(out / f"{stem}_rigged.gltf", core, profile, stem)
+        files.insert(0, path.name)
+        (out / "rig.json").write_text(json.dumps(profile, indent=2), encoding="utf-8")
+        (out / "core-report.json").write_text(json.dumps(core['report'], indent=2), encoding="utf-8")
+        files += ["rig.json", "core-report.json"]
+    else:
+        files.insert(0, f"{stem}_parts.glb")
+    return {"files": files, "manifest": manifest,
+            "roles": {role: role for role in profile['roles']} if core else {},
+            "core_report": core['report'] if core else None}
