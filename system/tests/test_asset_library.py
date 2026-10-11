@@ -49,8 +49,52 @@ def test_unified_collection_includes_companions_packages_and_extracted_artifacts
     page = client.get('/api/assets').json()
     assert page['total_all'] == 5
     assert {'character', 'model', 'environment', 'texture'} <= set(page['kinds'])
-    assert {a['name'] for a in page['items']} == {'Mario', 'Mario · texture.png', 'Castle', 'Sword', 'captured.glb'}
-    assert all('_path' not in a and a['preview_url'] for a in page['items'])
+    assert {a['name'] for a in page['items']} == {'Mario', 'Castle', 'Sword', 'captured.glb'}
+    assert next(a for a in page['items'] if a['name'] == 'Mario')['texture_count'] == 1
+    flat = client.get('/api/assets?nest=false').json()
+    assert {a['name'] for a in flat['items']} == {'Mario', 'Mario · texture.png', 'Castle', 'Sword', 'captured.glb'}
+    assert all('_path' not in a and a['preview_url'] for a in flat['items'])
+
+
+def test_textures_are_listed_under_their_character_only_on_request(assets):
+    app, client, cfg = assets
+    p = collection(cfg, 'doa2_gen', 'Gen Fu', 'Dead or Alive 2 - Limited Edition (Japan)', 500)
+    (p / 'GEN00_parts.glb').write_bytes(glb())
+    for i in range(3):
+        (p / f'tex{i:03}.png').write_bytes(b'png%d' % i)
+    package = cfg.data_dir / 'uap' / 'sword'; package.mkdir(parents=True)
+    (package / 'manifest.json').write_text(json.dumps({'name': 'Sword', 'source': {'game_title': 'Zelda'}}))
+    (package / 'blade.png').write_bytes(b'blade')
+    app.state.store.put_artifact(b'image', 'loose.png', 'image/png', {'tool': 'scene_capture'})
+    page = client.get('/api/assets').json()
+    names = {a['name'] for a in page['items']}
+    # Top level: characters, models and environments, plus textures with no owning model.
+    assert names == {'Gen Fu', 'Gen Fu · GEN00_parts.glb', 'Sword', 'loose.png'}
+    gen = next(a for a in page['items'] if a['name'] == 'Gen Fu')
+    sword = next(a for a in page['items'] if a['name'] == 'Sword')
+    assert gen['texture_count'] == 3 and sword['texture_count'] == 1
+    assert page['nested'] == 4 and page['total'] + page['nested'] == page['total_all']
+    assert 'texture_count' not in next(a for a in page['items'] if a['name'] == 'loose.png')
+    groups = client.get('/api/asset-groups').json()['groups']
+    assert {g['title']: g['count'] for g in groups}['Dead or Alive 2 - Limited Edition (Japan)'] == 2
+    tree = client.get('/api/assets', params={'owner': gen['id'], 'sort': 'name'}).json()
+    assert [a['name'] for a in tree['items']] == ['Gen Fu · tex000.png', 'Gen Fu · tex001.png', 'Gen Fu · tex002.png']
+    assert all(a['kind'] == 'texture' and a['owner'] == gen['id'] for a in tree['items'])
+    # A type filter keeps the character's tree; the texture filter and search list textures directly.
+    assert client.get('/api/assets?kind=character').json()['items'][0]['texture_count'] == 3
+    textures = client.get('/api/assets?kind=texture').json()
+    assert textures['total'] == 5 and all('texture_count' not in a for a in textures['items'])
+    found = client.get('/api/assets?q=tex001').json()
+    assert [a['name'] for a in found['items']] == ['Gen Fu · tex001.png']
+
+
+def test_sidebar_renders_texture_tree_collapsed_and_fetches_it_lazily():
+    from pathlib import Path
+    js = (Path(__file__).resolve().parents[1] / 'clients/web/viz/asset-sidebar.js').read_text()
+    assert '<details class="as-tex"' in js and ' open' not in js.split('function textureTree', 1)[1].split('\n', 1)[0]
+    assert "a.texture_count ? textureTree(a) : ''" in js
+    assert "e.target.classList.contains('as-tex')" in js and 'loadTextures(e.target)' in js
+    assert 'owner, offset, limit: 200' in js
 
 
 def test_pagination_exposes_entire_collection_and_sorts_before_slicing(assets):

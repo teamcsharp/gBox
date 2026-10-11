@@ -29,6 +29,9 @@
       #asset-sidebar .as-group summary img { width:32px; height:32px; object-fit:contain; background:var(--card); }
       #asset-sidebar .as-group summary b { flex:1; overflow-wrap:anywhere; font-size:12px; } #asset-sidebar .as-group summary span { color:var(--mut); font-size:11px; }
       #asset-sidebar .as-group-rows { padding-left:7px; } #asset-sidebar .as-group-more { width:100%; margin:5px 0 9px; }
+      #asset-sidebar .as-tex { margin-top:5px; } #asset-sidebar .as-tex summary { cursor:pointer; color:var(--mut); font-size:11px; list-style:none; }
+      #asset-sidebar .as-tex summary::before { content:'› '; } #asset-sidebar .as-tex[open] summary::before { content:'⌄ '; }
+      #asset-sidebar .as-tex .as-row { grid-template-columns:40px minmax(0,1fr); padding:5px 0; } #asset-sidebar .as-tex .as-thumb { width:40px; height:40px; }
       #asset-sidebar.closed .as-head { padding:5px 3px; } #asset-sidebar.closed .as-head > :not(.as-toggle),#asset-sidebar.closed > :not(.as-head) { display:none; }
       #asset-sidebar.closed .as-toggle { writing-mode:vertical-rl; padding:8px 4px; }
       .asset-dialog { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:10px; width:min(600px,90vw); max-height:85vh; overflow:auto; padding:16px; }
@@ -36,7 +39,7 @@
       .asset-dialog .as-dialog-bar { display:flex; gap:8px; align-items:center; margin-bottom:10px; } .asset-dialog .as-dialog-bar b { flex:1; }
       .asset-dialog button,.asset-dialog a { font:inherit; color:var(--fg); border:1px solid var(--line); background:var(--card); border-radius:5px; padding:6px 10px; text-decoration:none; cursor:pointer; }
     `; document.head.append(css);
-    const $ = selector => root.querySelector(selector), state = { items: [], groups: new Map(), revision: 0, busy: false, signature: '', disposed: false };
+    const $ = selector => root.querySelector(selector), state = { items: [], textures: new Map(), groups: new Map(), revision: 0, busy: false, signature: '', disposed: false };
     let prefs = {}; try { prefs = JSON.parse(localStorage.getItem('gbox_asset_sidebar') || '{}'); } catch {}
     const expanded = new Set(prefs.expanded || []);
     root.innerHTML = `<div class="as-head"><b>Assets</b><button class="as-refresh" title="Refresh extracted assets" aria-label="Refresh extracted assets">↻</button><button class="as-toggle" aria-expanded="true" title="Collapse asset sidebar">›</button></div>
@@ -54,7 +57,24 @@
     const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1000 ? (n / 1000).toFixed(1) + ' KB' : n + ' B';
     const date = ts => ts ? new Date(ts * 1000).toLocaleString() : '';
     function row(a) {
-      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div></div></div>`;
+      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count ? textureTree(a) : ''}</div></div>`;
+    }
+    // Textures stay collapsed under their character/model; their rows are fetched only when expanded.
+    function textureTree(a) { return `<details class="as-tex" data-owner="${esc(a.id)}"><summary>Textures (${a.texture_count})</summary><div class="as-tex-rows"></div></details>`; }
+    async function loadTextures(element) {
+      if (element.dataset.loaded) return; element.dataset.loaded = '1';
+      const owner = element.dataset.owner, revision = state.revision, rows = element.querySelector('.as-tex-rows');
+      rows.innerHTML = '<div class="as-sub">Loading textures…</div>';
+      try {
+        const items = [];
+        for (let offset = 0; ; offset += 200) {
+          const page = await options.api('/api/assets?' + new URLSearchParams({ q: $('.as-search').value, sort: $('.as-sort').value, game: $('.as-game').value, owner, offset, limit: 200 }));
+          if (revision !== state.revision) return;
+          items.push(...page.items); if (!page.has_more) break;
+        }
+        for (const t of items) state.textures.set(t.id, t);
+        rows.innerHTML = items.length ? items.map(row).join('') : '<div class="as-sub">No textures</div>';
+      } catch (e) { delete element.dataset.loaded; rows.innerHTML = `<div class="as-sub">Textures failed to load: ${esc(e.message)}</div>`; }
     }
     function query(game, offset = 0) { return (game === undefined ? '/api/asset-groups?' : '/api/assets?') + new URLSearchParams({ q: $('.as-search').value, sort: $('.as-sort').value, kind: $('.as-kind').value, game: game ?? $('.as-game').value, offset, limit: 60 }); }
     const signature = page => JSON.stringify([page.total, page.groups.map(g => [g.title, g.count, g.copied, g.added])]);
@@ -86,12 +106,12 @@
       try {
         const page = await options.api(query());
         if (revision !== state.revision || state.disposed) return;
-        state.groups = new Map(page.groups.map(g => [g.title, {items: [], more: true, loading: false}])); state.items = [];
+        state.groups = new Map(page.groups.map(g => [g.title, {items: [], more: true, loading: false}])); state.items = []; state.textures = new Map();
         $('.as-rows').innerHTML = page.groups.map(g => `<details class="as-group" data-game="${esc(g.title)}" ${expanded.has(g.title) ? 'open' : ''}><summary><img loading="lazy" src="${esc(url(g.preview_url))}" alt=""><b>${esc(g.title)}</b><span>${g.count}</span></summary><div class="as-group-rows"></div><button class="as-group-more">Load assets · ${g.count}</button></details>`).join('');
         $('.as-list').scrollTop = 0;
         facets('.as-kind', page.kinds, 'All types', prefs.kind); facets('.as-game', page.games, 'All games', prefs.game);
         prefs = {}; $('.as-changed').hidden = true; state.signature = signature(page);
-        $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.total !== page.total_all ? ` · ${page.total_all} total` : ''}`;
+        $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.nested ? ` · ${page.nested} textures inside` : ''}${page.total + (page.nested || 0) !== page.total_all ? ` · ${page.total_all} total` : ''}`;
         if (!page.total) $('.as-rows').innerHTML = '<p>No assets match these filters.</p>';
         await Promise.all(page.groups.filter(g => expanded.has(g.title)).map(g => loadGroup(g.title))); save();
       } catch (e) { if (revision === state.revision) $('.as-message').textContent = 'Could not load assets: ' + e.message; }
@@ -103,6 +123,7 @@
     $('.as-search').oninput = () => { clearTimeout(debounce); debounce = setTimeout(refresh, 200); };
     for (const selector of ['.as-sort', '.as-kind', '.as-game']) $(selector).onchange = refresh;
     root.addEventListener('toggle', e => {
+      if (e.target.classList.contains('as-tex')) { if (e.target.open && e.target.isConnected) loadTextures(e.target); return; }
       if (!e.target.classList.contains('as-group') || !e.target.isConnected) return;
       const title = e.target.dataset.game;
       if (e.target.open) { expanded.add(title); const group = state.groups.get(title); if (group && !group.items.length) loadGroup(title); }
@@ -129,7 +150,7 @@
     root.onclick = e => {
       const more = e.target.closest('.as-group-more'); if (more) { loadGroup(more.closest('.as-group').dataset.game); return; }
       const button = e.target.closest('[data-action]'), id = button?.closest('[data-id]')?.dataset.id;
-      const a = state.items.find(a => a.id === id); if (!a) return;
+      const a = state.items.find(a => a.id === id) || state.textures.get(id); if (!a) return;
       if (button.dataset.action === 'view') preview(a); else if (button.dataset.action === 'copy') copy(a, button); else download(a);
     };
     const interval = setInterval(async () => {

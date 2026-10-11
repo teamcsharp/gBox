@@ -115,7 +115,7 @@ class AssetLibrary:
                         manifest.stat().st_mtime, folder / 'preview.png', aliases=(folder.name,), origin='package', package=folder.name, format='UAP')
                     for path in folder.rglob('*'):
                         if path.suffix.lower() in IMAGE_EXT | {'.wav', '.ogg', '.mp3'} and path.name != 'preview.png' and path.resolve().is_relative_to(folder):
-                            add(f'package-file:{folder.name}:{path.relative_to(folder)}', path, path.name, file_kind(path), game, origin='package-file')
+                            add(f'package-file:{folder.name}:{path.relative_to(folder)}', path, path.name, file_kind(path), game, origin='package-file', package=folder.name)
                 except (OSError, ValueError, TypeError):
                     continue
             artifacts = self.store.all('artifact')
@@ -156,6 +156,21 @@ class AssetLibrary:
             canonical = {a['game'].strip().casefold(): a['game'].strip() for a in entries.values() if a['origin'] == 'collection'}
             for item in entries.values():
                 item['game'] = canonical.get(item['game'].strip().casefold(), item['game'].strip())
+            # Textures that ship with a character, environment or package belong to that model.
+            # The sidebar lists them in a collapsed tree under the owner instead of as top-level cards.
+            owners = {}
+            for item in entries.values():
+                if item['origin'] == 'collection' and item.get('primary'):
+                    owners[('collection', item['collection'], item['slug'])] = item['id']
+                elif item['origin'] == 'package':
+                    owners[('package', item['package'])] = item['id']
+            for item in entries.values():
+                if item['kind'] != 'texture':
+                    continue
+                key = (('collection', item['collection'], item['slug']) if item['origin'] == 'collection'
+                       else ('package', item.get('package')) if item['origin'] == 'package-file' else None)
+                if key in owners:
+                    item['owner'] = owners[key]
             self.entries, self.expiry = entries, time.monotonic() + 10
             return entries
 
@@ -165,21 +180,33 @@ class AssetLibrary:
             raise HTTPException(404, 'Asset is no longer available; refresh the asset list.')
         return item
 
-    def page(self, q='', kind='', game='', sort='newest', offset=0, limit=60):
+    def page(self, q='', kind='', game='', sort='newest', offset=0, limit=60, nest=True, owner=''):
         if sort not in {'newest', 'oldest', 'copied', 'name', 'game', 'kind', 'size'}:
             raise HTTPException(422, 'Unknown asset sort')
         all_items = list(self.index().values())
         words = q.casefold().split()
-        items = [a for a in all_items if (not kind or a['kind'] == kind) and (not game or a['game'] == game)
-                 and all(w in f"{a['name']} {a['game']} {a['kind']} {a['format']}".casefold() for w in words)]
+        pool = [a for a in all_items if (not game or a['game'] == game) and (not owner or a.get('owner') == owner)
+                and all(w in f"{a['name']} {a['game']} {a['kind']} {a['format']}".casefold() for w in words)]
+        items = [a for a in pool if not kind or a['kind'] == kind]
+        counts, hidden = {}, set()
+        if nest and not owner:
+            # A texture is nested only when its owner is listed; otherwise it stays visible on its own.
+            # The owner's count ignores the type filter so a character keeps its texture tree.
+            listed = {a['id'] for a in items}
+            nested = [a for a in pool if a.get('owner') in listed]
+            for a in nested:
+                counts[a['owner']] = counts.get(a['owner'], 0) + 1
+            hidden = {a['id'] for a in nested}
+            items = [a for a in items if a['id'] not in hidden]
         key = {'newest': lambda a: (-a['added'], a['id']), 'oldest': lambda a: (a['added'], a['id']),
                'copied': lambda a: (-a['copied'], -a['added'], a['id']), 'name': lambda a: (a['name'].casefold(), a['id']),
                'game': lambda a: (a['game'].casefold(), a['name'].casefold(), a['id']),
                'kind': lambda a: (a['kind'], a['name'].casefold(), a['id']), 'size': lambda a: (-a['size'], a['id'])}[sort]
         items.sort(key=key)
-        return dict(total=len(items), total_all=len(all_items), offset=offset, has_more=offset + limit < len(items),
+        return dict(total=len(items), total_all=len(all_items), nested=len(hidden), offset=offset, has_more=offset + limit < len(items),
             kinds=sorted({a['kind'] for a in all_items}), games=sorted({a['game'] for a in all_items}),
-            items=[{k: v for k, v in a.items() if not k.startswith('_')} for a in items[offset:offset + limit]])
+            items=[{**{k: v for k, v in a.items() if not k.startswith('_')}, **({'texture_count': counts[a['id']]} if a['id'] in counts else {})}
+                   for a in items[offset:offset + limit]])
 
     def file(self, item):
         if item['origin'] == 'package':
@@ -225,8 +252,9 @@ def routes(app, store, config, auth):
 
     @app.get('/api/assets')
     def asset_list(q: str = '', kind: str = '', game: str = '', sort: str = 'newest',
-                   offset: int = Query(0, ge=0), limit: int = Query(60, ge=1, le=200), actor=Depends(auth)):
-        return assets.page(q, kind, game, sort, offset, limit)
+                   offset: int = Query(0, ge=0), limit: int = Query(60, ge=1, le=200), nest: bool = True,
+                   owner: str = '', actor=Depends(auth)):
+        return assets.page(q, kind, game, sort, offset, limit, nest, owner)
 
     @app.get('/api/assets/{rid}/preview')
     def asset_preview(rid: str, actor=Depends(auth)):
