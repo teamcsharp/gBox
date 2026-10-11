@@ -104,25 +104,38 @@ maintenance scans do not duplicate the lessons.
 
 ## Backend activation
 
-Hermes maintenance job `8e210aab9898`, **Activate Hermes bridge safely #1109**,
-runs the tested activation script outside Codex. It waits for active gBox
-conversations and worker jobs to finish and for Spark game sessions to end.
-It restarts only `gbox.service`, verifies the new policy fields and original
-Windows emulator PIDs, then posts a final reply and completes #1109 with
-implementation and verifier credit recorded separately. Its progress is stored
-on the report and exposed in the expanded task output after activation.
+The guard reads active worker jobs and Hermes claims from their canonical
+read-only databases. It also checks gBox conversations, worker/session/PID
+identity and enabled cron schedules that are overdue or due within 60 seconds.
+Unknown or changing snapshots defer activation. It rechecks immediately before
+the backend refresh, including after its progress reply. It does not call
+`GET /api/tasks`, which can enqueue inventory jobs while collecting a snapshot.
 
-At this report's preparation, cloud configuration and source changes were
-deployed, while backend activation awaited active model-swap jobs. The ticket's
-latest maintenance reply is the authority for subsequent activation success or
-failure. The watcher has a bounded deadline and reports failure explicitly.
-An earlier manually dispatched maintenance occurrence lost its scheduler claim;
-its failed execution remains in history. Its replacement is a finite genuine
-one-shot dispatched by the gateway.
+These checks do not reserve admission to the scheduler: a new run can still
+begin after the final observation. A separate external maintenance reservation
+is required before using the activation function. Do not invoke it inside a
+claimed Hermes cron execution; that execution deliberately blocks the guard.
+Installing this source neither restarts the backend nor activates a Windows
+worker. Existing games and tasks remain separate acceptance requirements.
+
+Historical maintenance job `8e210aab9898` handled the earlier #1109 bridge
+activation. Its original receipts, including a failed claim occurrence, remain
+in the report. They do not prove activation of subsequent source changes.
 
 Attached evidence includes the original screenshot regression, independent
 verification screenshots, an allowlisted audit, exact source patch and actual
 session metrics. No account credentials are included.
+
+## Recurring review prompts
+
+The Claude ledger hook recognizes only the exact observed six-line scheduled
+review instruction. That reminder continues to run and discover app/gap issues,
+but does not create another persistent inbox request. It resets the active
+usage target and explicit claims for that turn, preserving the originating
+operator request. A review can explicitly claim and meter a real issue.
+Changed templates, operator requests for reviews, actual findings and automatic
+issue reports retain their ordinary logging. This does not disable a schedule,
+discard report history or mark a substantive request complete.
 
 ## Provider isolation for screenshot helpers
 
