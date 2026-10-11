@@ -158,3 +158,92 @@ def test_distinct_issue_is_not_hidden_by_pending_capture(cfg):
     assert "model swap is wrong" in second["body"]
     assert "game is frozen" in first["body"]
     assert second["context"]["state_job_id"] != first["context"]["state_job_id"]
+
+
+def _real_issue_log(app):
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/requests/issue")
+    closure = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__))
+    return closure, closure["_issue_log"].cell_contents
+
+
+def _log_tail_jobs(store, sid):
+    return [j for j in store.all("job") if j.get("tool") == "session_op"
+            and (j.get("input") or {}).get("op") == "log_tail" and j["input"].get("session_id") == sid]
+
+
+def test_issue_log_skips_offline_worker_without_queuing_a_failed_job(cfg):
+    import time as real_time
+    app = create_app(cfg)
+    _, issue_log = _real_issue_log(app)
+    store = app.state.store
+    sid = "offlineworker-1"
+    store.put("worker", "offlineworker", {"id": "offlineworker", "name": "i9-NUC", "os": "windows",
+                                          "tools": ["session_op"], "last_seen": real_time.time() - 600})
+    t0 = real_time.time()
+    log, why = issue_log(sid, {})
+    assert log == ""
+    assert "offline" in why and "i9-NUC" in why and "no log job queued" in why
+    assert real_time.time() - t0 < 2                      # no 15 s stall per capture-icon click
+    assert _log_tail_jobs(store, sid) == []                # nothing queued, nothing "cancelled by the operator"
+    _, why_unknown = issue_log("neverseen-2", {})
+    assert "offline" in why_unknown and _log_tail_jobs(store, "neverseen-2") == []
+
+
+def test_issue_log_timeout_is_not_recorded_as_operator_cancel(cfg, monkeypatch):
+    import time as real_time
+    import gbox.server as server
+
+    class FakeTime:
+        def __init__(self):
+            self.now = real_time.time()
+
+        def time(self):
+            return self.now
+
+        def sleep(self, d):
+            self.now += d
+
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    fake = FakeTime()
+    app = create_app(cfg)
+    _, issue_log = _real_issue_log(app)
+    store = app.state.store
+    sid = "busyworker-1"
+    store.put("worker", "busyworker", {"id": "busyworker", "name": "JAYBUILTFINALE", "os": "windows",
+                                       "tools": ["session_op"], "last_seen": fake.now})
+    monkeypatch.setattr(server, "time", fake)
+    log, why = issue_log(sid, {})
+    assert log == "" and "did not answer within 15 s" in why
+    jobs = _log_tail_jobs(store, sid)
+    assert len(jobs) == 1
+    assert jobs[0]["state"] == "failed" and jobs[0]["issue_internal"] is True
+    assert "cancelled by the operator" not in jobs[0]["error"]
+    assert "not an operator cancel" in jobs[0]["error"]
+
+
+def test_report_lists_operator_jobs_but_not_its_own_log_fetches(cfg):
+    import time as real_time
+    app = create_app(cfg)
+    closure, _ = _real_issue_log(app)
+    closure["_issue_chat"].cell_contents = lambda sid: []
+    store = app.state.store
+    sid = "offlineworker-9"
+    store.put("worker", "offlineworker", {"id": "offlineworker", "name": "i9-NUC", "os": "windows",
+                                          "tools": ["session_op"], "last_seen": real_time.time() - 600})
+    store.put("session", sid, {"session_id": sid, "title": "Ocarina of Time", "state": "running",
+                               "adapter": "unsupported-for-transfer", "started": real_time.time() - 60})
+    for i, op in enumerate(("log_tail", "resume")):
+        store.put("job", f"old{i}", {"id": f"old{i}", "tool": "session_op", "state": "failed" if op == "log_tail" else "queued",
+                                    "input": {"session_id": sid, "op": op, "args": {}}, "created": real_time.time() - 30 + i,
+                                    "error": "cancelled by the operator" if op == "log_tail" else None})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    report = client.post("/api/requests/issue", json={"session_id": sid, "what": "Report issue (Capture icon)",
+                                                      "image_b64": base64.b64encode(b"image").decode()}).json()
+    body = report["body"]
+    recent = body.split("## Recent gBox jobs for this game", 1)[1].split("## ", 1)[0]
+    assert '"op": "resume"' in recent
+    assert "log_tail" not in recent and "cancelled by the operator" not in recent
+    assert "log_tail skipped: worker i9-NUC is offline" in body
+    assert [j["id"] for j in _log_tail_jobs(store, sid)] == ["old0"]     # the report queued no new log job

@@ -2421,24 +2421,44 @@ def create_app(config: Config) -> FastAPI:
         kept_mods: list[str] = []          # mod ids the operator keeps on for this game
 
     def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
-        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here."""
-        try:
-            j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
-                                  require_worker=sid.split("-")[0]), "issue")
-            t0 = time.time()
-            while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
-                time.sleep(0.4)
-            if jj["state"] == "succeeded":
-                res = (jj.get("output") or {}).get("result") or {}
-                if res.get("log"):
-                    return res["log"], res.get("path") or ""
-                why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
-            else:
-                why = f"log_tail: {jj.get('error') or jj['state']}"
-                if jj["state"] in ("queued", "running"):
-                    job_cancel(j.id, actor="issue")
-        except Exception as e:                        # noqa: BLE001
-            why = f"log_tail: {e}"
+        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here.
+
+        An offline worker gets no log_tail job at all, and a job the worker did not pick up within 15 s is
+        retired with an honest reason. Earlier, every capture-icon click while the worker was offline queued
+        a job, waited 15 s, and recorded it as "failed: cancelled by the operator", so repeated reports stacked
+        those failures (#1130)."""
+        wid = _wid(sid.split("-")[0])
+        w = store.get("worker", wid) or {}
+        age = time.time() - float(w.get("last_seen") or 0)
+        if not w or age >= WORKER_TTL:
+            why = (f"log_tail skipped: worker {w.get('name') or wid} is offline"
+                   + (f" (last seen {int(age)} s ago)" if w.get("last_seen") else "") + "; no log job queued")
+        else:
+            try:
+                j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
+                                      require_worker=wid), "issue")
+                t0 = time.time()
+                while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
+                    time.sleep(0.4)
+                if jj["state"] == "succeeded":
+                    res = (jj.get("output") or {}).get("result") or {}
+                    if res.get("log"):
+                        return res["log"], res.get("path") or ""
+                    why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
+                elif jj["state"] in ("queued", "running"):
+                    why = f"log_tail: worker {w.get('name') or wid} did not answer within 15 s"
+                    with store.lock:
+                        cur = store.get("job", j.id) or jj
+                        if cur["state"] == JobState.QUEUED:
+                            cur.update(state=JobState.FAILED, finished=time.time(), issue_internal=True,
+                                       error="issue report stopped waiting for the log (worker busy); not an operator cancel")
+                        elif cur["state"] == JobState.RUNNING:
+                            cur.update(cancel=True, issue_internal=True)
+                        store.put("job", j.id, cur)
+                else:
+                    why = f"log_tail: {jj.get('error') or jj['state']}"
+            except Exception as e:                        # noqa: BLE001
+                why = f"log_tail: {e}"
         f = Path(str((s_.get("detail") or {}).get("log") or ""))
         try:
             if f.name and f.is_file():
@@ -2505,7 +2525,8 @@ def create_app(config: Config) -> FastAPI:
         jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id
                        or (s_.get("game_id") and (j.get("input") or {}).get("game_id") == s_.get("game_id") and j.get("created", 0) >= since)),
                       key=lambda j: j.get("created", 0))[-20:] if r.session_id else []
-        jobs = [j for j in jobs if j.get("tool") != "get_frame"]          # report/thumbnail pictures, not operator actions
+        jobs = [j for j in jobs if j.get("tool") != "get_frame"          # report/thumbnail pictures, not operator actions
+                and not (j.get("tool") == "session_op" and (j.get("input") or {}).get("op") == "log_tail")]   # a report's own log fetch
         lines = [f"## What the operator tried\n{r.what}" + (f"\n\n{r.note}" if r.note else ""),
                  f"## Game\n{game} (game_id {s_.get('game_id') or r.context.get('game_id') or '?'}, {s_.get('platform') or s_.get('system') or '?'}, "
                  f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
