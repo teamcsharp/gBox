@@ -951,6 +951,8 @@ class FrameOut(BaseModel):
     height: int
     sha256: str
     mean_luma: float | None = None         # 0-255; ~0 means a black screen (content not drawing)
+    covered: int = Field(default=0, ge=0, le=9)  # Window occlusion points, when confirmed for this captured PNG.
+    capture_source: str | None = None
 
 def _png_validate(out: FrameOut, arts):
     d = arts.get("frame.png", b"")
@@ -959,20 +961,30 @@ def _png_validate(out: FrameOut, arts):
     w, h = int.from_bytes(d[16:20], "big"), int.from_bytes(d[20:24], "big")
     return [] if (w, h) == (out.width, out.height) and sha256(d) == out.sha256 else ["PNG header/hash mismatch"]
 
-@tool("get_frame", "1.0", FrameIn, FrameOut, capabilities=["video"], artifacts=["frame.png"],
+@tool("get_frame", "1.1", FrameIn, FrameOut, capabilities=["video"], artifacts=["frame.png"],
       validate=_png_validate, validation="PNG signature + IHDR size + hash",
       check=lambda c: None if shutil.which("ffmpeg") else "ffmpeg not on PATH")
 def get_frame(inp: FrameIn, ctx: Ctx):
     """Capture one frame of a session display or the host desktop via ffmpeg (x11grab / gdigrab)."""
+    capture = {'covered': 0}
     if inp.session_id:
         ad, g = SESSIONS[inp.session_id]
         d = ad.get_frame()
-        ctx.artifact("frame.png", d, "image/png", session=inp.session_id, game=g["game_id"])
+        if HOST_OS == 'windows':
+            state = adapters.win_grab_state()
+            pid = getattr(getattr(ad, 'proc', None), 'pid', None)
+            # win_grab_state is shared: accept only metadata for the exact returned PNG and current emulator PID.
+            if pid and state.get('pid') == pid and state.get('sha256') == sha256(d):
+                covered = state.get('covered')
+                if type(covered) is int and 0 <= covered <= 9:
+                    capture['covered'] = covered
+                    capture['capture_source'] = state.get('source')
+        ctx.artifact("frame.png", d, "image/png", session=inp.session_id, game=g["game_id"], **capture)
     else:
         d = adapters.grab_png(None, inp.region)
-        ctx.artifact("frame.png", d, "image/png")
+        ctx.artifact("frame.png", d, "image/png", **capture)
     return {"width": int.from_bytes(d[16:20], "big"), "height": int.from_bytes(d[20:24], "big"), "sha256": sha256(d),
-            "mean_luma": mean_luma(d)}
+            "mean_luma": mean_luma(d), **capture}
 
 
 def mean_luma(png: bytes) -> float | None:

@@ -297,8 +297,11 @@ def _win_title(hwnd):
 
 def win_grab(pid: int) -> bytes:
     """PNG of a local emulator window (docked or not), as the screen shows it."""
+    global _last_grab
+    _last_grab = {}  # A failed capture must not retain metadata from the previous PNG.
     import ctypes
     import io
+    from hashlib import sha256
     from ctypes import wintypes
     from PIL import ImageGrab
     # Chromium captures a composited game's GPU window even when its source is
@@ -308,8 +311,8 @@ def win_grab(pid: int) -> bytes:
     if frame.is_file() and 0 <= time.time() - frame.stat().st_mtime < 5:
         data = frame.read_bytes()
         if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) < 8 * 1024 * 1024:
-            _last_grab.update(pid=pid, covered=0, covered_titles=[], source="chromium-gpu-surface",
-                              frame_age_s=round(time.time() - frame.stat().st_mtime, 3))
+            _last_grab = dict(pid=pid, covered=0, source="chromium-gpu-surface", sha256=sha256(data).hexdigest(),
+                             frame_age_s=round(time.time() - frame.stat().st_mtime, 3))
             return data
     h = _pid_window(pid)
     if not h:
@@ -323,22 +326,21 @@ def win_grab(pid: int) -> bytes:
     # several points inside the game before accepting the frame.
     user.WindowFromPoint.argtypes = [wintypes.POINT]
     user.WindowFromPoint.restype = wintypes.HWND
-    foreign, titles = 0, []
+    foreign = 0
     for fx, fy in ((.25, .25), (.5, .25), (.75, .25), (.25, .5), (.5, .5), (.75, .5), (.25, .75), (.5, .75), (.75, .75)):
         point = wintypes.POINT(round(r.left + (r.right - r.left) * fx), round(r.top + (r.bottom - r.top) * fy))
         top = user.WindowFromPoint(point)
         owner = wintypes.DWORD()
         if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != pid:
             foreign += 1
-            title = _win_title(top) if top else ""
-            if title and title not in titles:
-                titles.append(title)
-    _last_grab.update(pid=pid, covered=foreign, covered_titles=titles, source="desktop-compositor", frame_age_s=0)
     if foreign >= 3:
         raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
     buf = io.BytesIO()
     ImageGrab.grab((r.left, r.top, r.right, r.bottom), all_screens=True).save(buf, "PNG")
-    return buf.getvalue()
+    data = buf.getvalue()
+    _last_grab = dict(pid=pid, covered=foreign, source="desktop-compositor", frame_age_s=0,
+                     sha256=sha256(data).hexdigest())
+    return data
 
 
 VGLRUN = "/opt/VirtualGL/bin/vglrun"
