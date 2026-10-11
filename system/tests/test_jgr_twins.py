@@ -87,14 +87,19 @@ def _binary_groups():
     return bytes(out), roots
 
 
-@pytest.mark.parametrize("divergent", [False, True])
-def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monkeypatch, tmp_path, divergent):
+@pytest.mark.parametrize("variant", ["equivalent", "divergent", "shared_object"])
+def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monkeypatch, tmp_path, variant):
     from PIL import Image
     from gbox import gdrom, ninja_swap
     original, roots = _binary_groups()
-    if divergent:
+    if variant != "equivalent":
         changed = bytearray(original)
-        struct.pack_into("<f", changed, roots[1] + 8, 1.0)
+        if variant == "divergent":
+            struct.pack_into("<f", changed, roots[1] + 8, 1.0)
+        else:
+            # The accessory traverses the selected body's live object nodes.
+            # Protecting model storage alone cannot prevent its pointer rewrite.
+            struct.pack_into("<I", changed, roots[-1] + 44, roots[0])
         original = bytes(changed)
     source = b"synthetic owned AFS fixture"
     monkeypatch.setattr(gdrom, "GDRom", lambda path: SimpleNamespace(read=lambda name: source))
@@ -120,8 +125,9 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
         return {"data": encode(geo), "atlas": Image.new("RGB", (8, 8)),
                 "rigged": "fixture.gltf", "report": {"triangles": 19}}
     monkeypatch.setattr(ninja_swap, "fit", fit)
-    if divergent:
-        with pytest.raises(ValueError, match="different native bind"):
+    if variant != "equivalent":
+        message = "different native bind" if variant == "divergent" else "shares an object node"
+        with pytest.raises(ValueError, match=message):
             jgr.build_swap("fixture.gdi", tmp_path / "fixture.glb", {"hip": "x"}, tmp_path, "Donor", 4)
         assert not fit_calls
         return

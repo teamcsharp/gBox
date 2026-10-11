@@ -225,6 +225,8 @@ The node visibility bit may differ and is preserved except where new geometry
 must be enabled. Object structs and storage shared by an unselected group remain
 protected during allocation. Synthetic binary roundtrips exercise all rewritten
 groups and preserved shared storage; these are source checks, not gameplay proof.
+An unselected group that shares a live object node with a replacement group is
+refused before fitting: changing that node would also change the unselected tree.
 
 JGR cache schema 3 invalidates the earlier single-root writer. A different schema
 produces a separate identity-derived build, preserving prior user files. Existing

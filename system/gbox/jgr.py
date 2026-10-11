@@ -850,9 +850,13 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         if r == root or r in twins:
             continue
         try:
-            others += [nd for nd in ninja.tree_nodes(buf, r) if nd["off"] not in mine]
-        except Exception:                                  # noqa: BLE001 - a non-tree record: nothing to keep
-            continue
+            group = ninja.tree_nodes(buf, r)
+        except (ValueError, struct.error, IndexError, RecursionError) as error:
+            raise ValueError(f"Cannot protect JGR draw group {r:#x}") from error
+        if any(nd["off"] in mine for nd in group):
+            raise ValueError(f"JGR unselected draw group {r:#x} shares an object node with the replacement body; "
+                             "independent retargeting is required before rewriting it")
+        others += group
 
     def model_ranges(nds):
         rs = []
