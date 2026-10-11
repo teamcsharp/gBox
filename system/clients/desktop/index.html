@@ -1056,6 +1056,7 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   document.querySelectorAll("aside button[data-s]").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
   if (b.dataset.s === "control") refresh();
+  if (b.dataset.s === "requests") refreshInbox();
 });
 $("#chat-home").onclick = () => viewAction("library");
 // Keep the input's size independent of the microphone wrapper added after the Spark connects.
@@ -2361,6 +2362,31 @@ async function reportEmulationIncident(sid, action = 'auto') {
 document.addEventListener("click", e => { const a = e.target.closest("a.att-file"); if (!a) return; e.preventDefault(); gbox.openExternal(a.dataset.url); });
 
 // ---------------- requests inbox (operator <-> agent) ----------------
+// Automatic ticks share the current poll. Explicit refreshes retain one latest rerun.
+function singleFlightPoll(work) {
+  let running = null, rerun = false;
+  return function (explicit = true) {
+    if (running) { if (explicit) rerun = true; return running; }
+    running = Promise.resolve().then(async () => {
+      try {
+        let result, error;
+        do {
+          rerun = false;
+          try { result = await work(); error = null; } catch (e) { error = e; }
+        } while (rerun);
+        if (error) throw error;
+        return result;
+      } finally { running = null; }
+    });
+    return running;
+  };
+}
+async function pollTogether(requests) {
+  // A rejected sibling must not release the poll while another fetch is still pending.
+  const results = await Promise.allSettled(requests);
+  for (const result of results) if (result.status === "rejected") throw result.reason;
+  return results.map(result => result.value);
+}
 const fmtDur = s => s == null ? "–" : s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const fmtTok = n => !n ? "0" : n > 1e6 ? (n / 1e6).toFixed(2) + "M" : n > 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
 const openThreads = new Set();
@@ -2414,7 +2440,8 @@ $("#reqfilters").addEventListener("click", e => {
   localStorage.setItem("gbox_request_filter", requestFilter);
   refreshInbox();
 });
-async function refreshInbox() {
+function refreshInbox(explicit = true) { return inboxPoll(explicit); }
+const inboxPoll = singleFlightPoll(async () => {
   const r = await gbox.api("/api/requests"); if (!r.ok) return;
   const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
   inboxSolverRequests = all;
@@ -2433,11 +2460,15 @@ async function refreshInbox() {
     button.style.color = mode === requestFilter ? "#fff" : "";
   }
   const host = $("#reqlist"); if (!host) return;
+  // Mod cards are used only in this view; hidden polls still update badges/counts.
+  if (!$("#requests").classList.contains("on")) return;
   if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const tok = await gbox.token();
-  const [mr, rg] = await Promise.all([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
+  const [mr, rg] = await pollTogether([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
   if (rg?.ok) REG.tools = Object.fromEntries(rg.data.tools.map(z => [z.name, z.description || ""]));
   MODS.list = mr.ok ? mr.data : [];
+  if (!$("#requests").classList.contains("on")) return;
+  if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const modsFor = n => MODS.list.filter(m => (m.requests || []).includes(n));
   const art = d => `${S.apiUrl}/api/artifacts/${d}?token=${encodeURIComponent(tok)}`;
   const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; roots.forEach(x => t[x.status]++);
@@ -2474,7 +2505,7 @@ async function refreshInbox() {
   const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
   updateInboxView(host, JSON.stringify([requestFilter, all, MODS.list]), () => (visibleRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.map(renderRequest).join("")}</details>` : ""), replyAtt);
-}
+});
 $("#reqlist").addEventListener("change", async e => {
   if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
   const id = e.target.dataset.linkRequest; if (!id || !e.target.value) return;
@@ -2584,7 +2615,7 @@ document.addEventListener("click", async e => {
   }
   if (e.target.classList.contains("markdone")) { await gbox.api(`/api/requests/${id}/status`, { status: "done", note: "Closed by operator." }); refreshInbox(); }
 });
-setInterval(refreshInbox, 5000);
+setInterval(() => refreshInbox(false).catch(() => {}), 5000);
 
 // ---------------- native game window inside gBox ----------------
 function popups() {                                          // floating things right under <body>: they must show above the game window
@@ -4815,14 +4846,15 @@ const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|de
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
 const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
-async function auditPoll() {
-  const [r, jobs] = await Promise.all([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
+function auditPoll(explicit = true) { return pollAudit(explicit); }
+const pollAudit = singleFlightPoll(async () => {
+  const [r, jobs] = await pollTogether([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
   if (jobs.ok) activity?.remote(jobs.data); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;
   if ($("#auditpanel").classList.contains("on")) auditRender();
-}
+});
 function auGroup(rows) {                  // consecutive same actor+action -> one group
   const out = [];
   for (const x of rows) { const g = out.at(-1); if (g && g[0].actor === x.actor && g[0].action === x.action) g.push(x); else out.push([x]); }
@@ -4844,12 +4876,13 @@ function auditRender() {
 $("#sb-audit").onclick = () => { $("#auditpanel").classList.toggle("on"); if ($("#auditpanel").classList.contains("on")) auditRender(); };
 $("#au-close").onclick = () => $("#auditpanel").classList.remove("on");
 $("#au-q").oninput = auditRender;
-auditPoll(); setInterval(auditPoll, 3000);
+auditPoll(false).catch(() => {}); setInterval(() => auditPoll(false).catch(() => {}), 3000);
 
 const EMU_ICON = { rpcs3: "🎮 PS3 · RPCS3", retroarch: "🕹️ RetroArch", dolphin: "🐬 Dolphin", duckstation: "🦆 DuckStation", mgba: "👾 mGBA",
                    mame: "🕹️ MAME", rocketlauncher: "🚀 RocketLauncher", steam: "♨️ Steam" };
-async function statusRight() {
-  const [ws, ss] = await Promise.all([gbox.api("/api/workers"), gbox.api("/api/sessions")]);
+function statusRight(explicit = true) { return pollStatusRight(explicit); }
+const pollStatusRight = singleFlightPoll(async () => {
+  const [ws, ss] = await pollTogether([gbox.api("/api/workers"), gbox.api("/api/sessions")]);
   const svc = ["ok", "warn", "bad"].find(k => $("#d-svc").classList.contains(k)) || "bad";   // refreshed by refresh() (SSH), not here
   const c = (key, cls, ic, label, tip) => `<span class="c ${cls}" data-k="${esc(key)}" title="${esc(tip)} · click for details"><i></i>${ic} ${esc(label)}</span>`;
   let h = c("api", ws.ok ? "ok" : "bad", "🌐", "Spark API", ws.ok ? "control plane reachable" : "control plane unreachable");
@@ -4859,8 +4892,8 @@ async function statusRight() {
   h += mine ? `<span class="emu" data-k="emu:${esc(mine.session_id)}" title="${esc(mine.title)} · click for details">${EMU_ICON[mine.adapter] || "🎮 " + esc(mine.adapter)}</span>`
             : `<span class="emu mut">no emulator</span>`;
   $("#sb-right").innerHTML = h;
-}
-statusRight(); setInterval(statusRight, 5000);
+});
+statusRight(false).catch(() => {}); setInterval(() => statusRight(false).catch(() => {}), 5000);
 
 // ================= every pop-up: drag by its header, resize from the corner; position + size remembered =================
 window.onFloatingMove = () => {
