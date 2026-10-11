@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
+
+from .agent_contracts import validate_cheat_call
 
 from . import adapters, catalog, provision, uap
 from .models import CatalogEntry, Permission as P
@@ -684,6 +686,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
             raise
         res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
     if inp.op == "save_state" and isinstance(res, dict):            # thumbnail for the save-state film strip
+        if getattr(ad, 'name', '') == 'retroarch' and res.get('path'):
+            _validate_state_container(Path(res['path']).read_bytes(), 'retroarch')
         try:
             png = ad.get_frame()
             ctx.artifact("state.png", png, "image/png", session=inp.session_id, slot=res.get("slot"))
@@ -822,10 +826,18 @@ GCHEATS: dict[str, list[dict]] = {}
 class CheatIn(BaseModel):
     session_id: str
     op: str = "list"                       # list | enable | disable | add | remove | search
-    index: int | None = None               # cheat number (from list)
-    codes: list[str] = []                  # add: code lines ("ADDR VALUE", Gecko/AR raw)
+    index: int | None = Field(default=None, description="Required for enable/disable: a nonnegative integer cheat index from list. To apply new code lines, use add instead.")
+    codes: list[str] = Field(default_factory=list, description="Required for add: nonempty code lines. Add enables the new code immediately. Do not send codes with enable/disable; those operations use index.")
     desc: str = ""
     query: str = ""                        # search: filter descriptions
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_operation_arguments(cls, values):
+        # Validate before coercion so booleans cannot become cheat index 0/1.
+        if isinstance(values, dict):
+            validate_cheat_call(values.get("op", "list"), values.get("index"), values.get("codes", []))
+        return values
 
 class CheatOut(BaseModel):
     result: dict
@@ -941,6 +953,8 @@ class FrameOut(BaseModel):
     height: int
     sha256: str
     mean_luma: float | None = None         # 0-255; ~0 means a black screen (content not drawing)
+    covered: int = Field(default=0, ge=0, le=9)  # Window occlusion points, when confirmed for this captured PNG.
+    capture_source: str | None = None
 
 def _png_validate(out: FrameOut, arts):
     d = arts.get("frame.png", b"")
@@ -949,20 +963,30 @@ def _png_validate(out: FrameOut, arts):
     w, h = int.from_bytes(d[16:20], "big"), int.from_bytes(d[20:24], "big")
     return [] if (w, h) == (out.width, out.height) and sha256(d) == out.sha256 else ["PNG header/hash mismatch"]
 
-@tool("get_frame", "1.0", FrameIn, FrameOut, capabilities=["video"], artifacts=["frame.png"],
+@tool("get_frame", "1.1", FrameIn, FrameOut, capabilities=["video"], artifacts=["frame.png"],
       validate=_png_validate, validation="PNG signature + IHDR size + hash",
       check=lambda c: None if shutil.which("ffmpeg") else "ffmpeg not on PATH")
 def get_frame(inp: FrameIn, ctx: Ctx):
     """Capture one frame of a session display or the host desktop via ffmpeg (x11grab / gdigrab)."""
+    capture = {'covered': 0}
     if inp.session_id:
         ad, g = SESSIONS[inp.session_id]
         d = ad.get_frame()
-        ctx.artifact("frame.png", d, "image/png", session=inp.session_id, game=g["game_id"])
+        if HOST_OS == 'windows':
+            state = adapters.win_grab_state()
+            pid = getattr(getattr(ad, 'proc', None), 'pid', None)
+            # win_grab_state is shared: accept only metadata for the exact returned PNG and current emulator PID.
+            if pid and state.get('pid') == pid and state.get('sha256') == sha256(d):
+                covered = state.get('covered')
+                if type(covered) is int and 0 <= covered <= 9:
+                    capture['covered'] = covered
+                    capture['capture_source'] = state.get('source')
+        ctx.artifact("frame.png", d, "image/png", session=inp.session_id, game=g["game_id"], **capture)
     else:
         d = adapters.grab_png(None, inp.region)
-        ctx.artifact("frame.png", d, "image/png")
+        ctx.artifact("frame.png", d, "image/png", **capture)
     return {"width": int.from_bytes(d[16:20], "big"), "height": int.from_bytes(d[20:24], "big"), "sha256": sha256(d),
-            "mean_luma": mean_luma(d)}
+            "mean_luma": mean_luma(d), **capture}
 
 
 def mean_luma(png: bytes) -> float | None:
@@ -2817,6 +2841,8 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "yukes_sd",   # yukes_sd: WWF SmackDown! 2 (PS1) reader + writer (via characters op=use|match|extract)
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
+                              "doa2_lab",      # verified native fighter archive decomposition/reintegration
+                              "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
     import importlib
@@ -2850,7 +2876,7 @@ class StateXIn(BaseModel):
     session_id: str
     op: str = "export"                      # export: save + upload | export_saved: upload an existing checkpoint | import: load
     artifact: str = ""                      # import: digest of the exported state
-    slot: int = 9
+    slot: int | None = None                 # export/import: default 9; export_saved: exact slot, or latest when omitted
     not_before: float = 0                    # export_saved: reject a stale checkpoint
 
 
@@ -2861,7 +2887,29 @@ class StateXOut(BaseModel):
 _STATE_TRANSFER_LOCK = threading.RLock()
 
 
-@tool("state_transfer", "1.1", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
+def _validate_state_container(data: bytes, adapter_name: str) -> None:
+    """Check recognized RetroArch envelopes only, without interpreting a core's MEM layout.
+
+    Nonempty raw core states and other adapters retain their existing handling. Container
+    decoding is bounded by flycast_state.unpack's RZIP/RASTATE limits; its
+    Flycast serializer, Maple and PVR inspectors are deliberately not called.
+    This proves container completeness, not that a game will restore correctly.
+    """
+    if adapter_name != 'retroarch':
+        return
+    if not data:
+        raise RuntimeError('Saved checkpoint is empty')
+    if not data.startswith((b'#RZIPv', b'RASTATE')):
+        return
+    from .flycast_state import unpack
+    try:
+        if not unpack(data):
+            raise ValueError('empty decoded checkpoint')
+    except ValueError as error:
+        raise RuntimeError(f'Saved checkpoint container could not be validated: {error}') from error
+
+
+@tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
     with _STATE_TRANSFER_LOCK:
         return _state_transfer(inp, ctx)
@@ -2876,7 +2924,6 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
     ad, g = session
     kind = getattr(ad, "name", "")
     if kind == "retroarch":
-        # whatever slot RetroArch really used (slot steps are network commands and can be dropped): the newest file wins
         states, pattern = ctx.config.runtime / "states", "*.state*"
     elif kind == "dolphin":                                    # same Dolphin release on both machines (2609): states are compatible
         exe = getattr(ad, "_exe", None)
@@ -2884,17 +2931,74 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         pattern = "*.s01"                                       # the adapter's save/load hotkeys use slot 1
     else:
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
+    requested_slot = 9 if inp.slot is None else inp.slot
+
+    def matches_game(f):
+        if kind == 'retroarch':
+            return bool(re.search(r'\.state(-?\d+)?$', f.name)) and (
+                not g.get('_rom_path') or f.name.startswith(Path(g['_rom_path']).stem + '.'))
+        return f.match(pattern) and f.suffix.lower() != '.png'
+
+    def candidates():
+        fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
+        # Deduplicate aliases to a single file; distinct core-directory checkpoints remain ambiguous for an exact slot.
+        return list({f.resolve(): f for f in fs if f.resolve().is_relative_to(states.resolve()) and matches_game(f)}.values())
+
+    def native_slot(f):
+        if kind == 'dolphin':
+            return 1
+        match = re.search(r'\.state(-?\d+)?$', f.name)
+        return int(match[1] or 0)
 
     def newest():
-        fs = [f for f in states.rglob(pattern) if f.is_file() and f.suffix.lower() != ".png"] if states.exists() else []
-        if kind == 'retroarch' and g.get('_rom_path'):
-            prefix = Path(g['_rom_path']).stem + '.'
-            fs = [f for f in fs if f.name.startswith(prefix) and re.search(r'\.state\d*$', f.name)]
+        fs = candidates()
         return max(fs, key=lambda f: f.stat().st_mtime) if fs else None
+
+    def requested_saved():
+        fs = [f for f in candidates() if native_slot(f) == inp.slot]
+        if len(fs) > 1:
+            raise RuntimeError('the requested saved slot has ambiguous checkpoint files')
+        return fs[0] if fs else None
+
+    def checkpoint_details(f, saved=None):
+        details = {'path': str(f), 'selection': 'latest_saved_checkpoint' if saved is None else
+                   ('verified_adapter_path' if saved.get('verified') else 'newest_after_save')}
+        if saved is not None:
+            details.update({k: saved[k] for k in ('verified', 'requested_slot', 'slot_verified', 'warning') if k in saved})
+        actual = native_slot(f)
+        details['slot'] = actual
+        if saved is not None:
+            # Dolphin's hotkeys always use slot 1; RetroArch receives the requested slot.
+            details['requested_slot'] = requested_slot if kind == 'retroarch' else 1
+            details['slot_verified'] = actual == details['requested_slot']
+            if actual != details['requested_slot'] and not details.get('warning'):
+                details['warning'] = 'RetroArch used a different slot; this result identifies the actual saved file.'
+        return details
 
     def save_and_wait():
         t0 = time.time()
-        ad.save_state(inp.slot) if kind == "retroarch" else ad.save_state()
+        saved = ad.save_state(requested_slot) if kind == "retroarch" else ad.save_state()
+        saved = saved if isinstance(saved, dict) else {}
+        if saved.get('path'):
+            if saved.get('verified') is not True:
+                raise RuntimeError('the adapter did not verify its saved checkpoint')
+            f = Path(saved['path']).resolve()
+            if not f.is_relative_to(states.resolve()) or not f.is_file() or not matches_game(f):
+                raise RuntimeError('the verified checkpoint path does not belong to this game and state directory')
+            stat = f.stat()
+            if stat.st_size <= 0 or stat.st_mtime < t0 - 1 or (
+                    saved.get('bytes') is not None and stat.st_size != saved['bytes']):
+                raise RuntimeError('the verified checkpoint file is stale, empty or changed')
+            details = checkpoint_details(f, saved)
+            if kind == 'retroarch':
+                if saved.get('slot') is not None and saved['slot'] != details['slot']:
+                    raise RuntimeError('the verified checkpoint slot disagrees with its native filename')
+                ad.slot = details['slot']
+            return f, details
+        if saved.get('verified') is False:
+            raise RuntimeError('the adapter did not verify its saved checkpoint')
+        if saved.get('verified') is True:
+            raise RuntimeError('the adapter reported a verified checkpoint without its native path')
         for _ in range(100):                                   # RetroArch writes the file asynchronously
             f = newest()
             if f and f.stat().st_mtime >= t0 - 1 and f.stat().st_size > 0:
@@ -2902,29 +3006,47 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
                 if kind == 'retroarch':
                     # Hotkeys and dropped slot commands can disagree with our cached slot.
                     # The file actually written identifies the emulator's current slot.
-                    suffix = f.name.rsplit('.state', 1)[-1]
-                    ad.slot = int(suffix) if suffix.isdigit() else 0
-                return f
+                    ad.slot = checkpoint_details(f, saved)['slot']
+                return f, checkpoint_details(f, saved)
             time.sleep(0.2)
         raise RuntimeError("the emulator didn't write a save state")
     if inp.op in ("export", "export_saved"):
-        f = save_and_wait() if inp.op == "export" else newest()
-        if not f or (inp.op == "export_saved" and f.stat().st_mtime < inp.not_before - 1):
+        if inp.op == "export":
+            f, details = save_and_wait()
+        else:
+            f = newest() if inp.slot is None else requested_saved()
+            details = checkpoint_details(f) if f else {}
+            if f and inp.slot is not None:
+                details.update(selection='requested_saved_slot', requested_slot=inp.slot, slot_verified=True)
+        if not f or (inp.op == "export_saved" and (
+                f.stat().st_size <= 0 or f.stat().st_mtime < inp.not_before - 1)):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
-        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"))
+        _validate_state_container(data, kind)
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
-        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name}}
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
     if inp.op == "import":
         r = httpx.get(f"{ctx.server}/api/artifacts/{inp.artifact}", headers=ctx.headers, timeout=120)
         r.raise_for_status()
         if sha256(r.content) != inp.artifact:
             raise ValueError('Saved-state download did not match the preserved checkpoint')
-        f = save_and_wait()                                     # this machine's own state file name/folder for the game
+        _validate_state_container(r.content, kind)              # refuse before even creating the native placeholder
+        f, details = save_and_wait()                            # this machine's verified state file for the game
         f.write_bytes(r.content)
         time.sleep(0.3)
-        ad.load_state(ad.slot) if kind == "retroarch" else ad.load_state()
-        return {"result": {"loaded": True, "file": f.name, "bytes": len(r.content)}}
+        load = ad.load_state(ad.slot) if kind == "retroarch" else ad.load_state()
+        load = load if isinstance(load, dict) else {}
+        verified = (load.get('load_verified') is True or load.get('verified') is True) and load.get('loaded', True) is True
+        if kind == 'retroarch' and load.get('slot') is not None and load['slot'] != details['slot']:
+            verified = False
+        if load.get('path') and Path(load['path']).resolve() != f.resolve():
+            verified = False
+        result = {'file': f.name, 'bytes': len(r.content), **details,
+                  'load_requested': True, 'load_verified': verified, 'load_result': load}
+        if verified:
+            result['loaded'] = True
+        return {'result': result}
     raise ValueError("op: export | export_saved | import")
 
 

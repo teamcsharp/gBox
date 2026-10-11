@@ -259,9 +259,17 @@ def create_app(config: Config) -> FastAPI:
 
     def _session_png(sid: str) -> bytes:
         """Current picture of a session: the live stream frame when fresh, else ask its worker for one (native windows)."""
+        from .session_images import SessionImageError, as_png
+
+        def normalize(frame: bytes) -> bytes:
+            try:
+                return as_png(frame)
+            except SessionImageError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
         lv = live.get(sid) or {}
         if lv.get("frame") and time.time() - lv.get("ts", 0) < 5:
-            return lv["frame"]
+            return normalize(lv["frame"])
         j = submit(JobRequest(tool="get_frame", input={"session_id": sid}), "mods")
         t0 = time.time()
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 45:
@@ -271,7 +279,7 @@ def create_app(config: Config) -> FastAPI:
         o = jj["output"]
         if (o.get("mean_luma") or 0) < 6:
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
-        return store.read_artifact(o["sha256"]) or b""
+        return normalize(store.read_artifact(o["sha256"]) or b"")
 
     def _mod_picture(m: dict) -> dict:
         """Discard missing or tiny artifacts left by the old JSON-body capture path."""
@@ -2421,24 +2429,49 @@ def create_app(config: Config) -> FastAPI:
         kept_mods: list[str] = []          # mod ids the operator keeps on for this game
 
     def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
-        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here."""
-        try:
-            j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
-                                  require_worker=sid.split("-")[0]), "issue")
-            t0 = time.time()
-            while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
-                time.sleep(0.4)
-            if jj["state"] == "succeeded":
-                res = (jj.get("output") or {}).get("result") or {}
-                if res.get("log"):
-                    return res["log"], res.get("path") or ""
-                why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
-            else:
-                why = f"log_tail: {jj.get('error') or jj['state']}"
-                if jj["state"] in ("queued", "running"):
-                    job_cancel(j.id, actor="issue")
-        except Exception as e:                        # noqa: BLE001
-            why = f"log_tail: {e}"
+        """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here.
+
+        An offline worker gets no log_tail job at all, and a job the worker did not pick up within 15 s is
+        retired with an honest reason. Earlier, every capture-icon click while the worker was offline queued
+        a job, waited 15 s, and recorded it as "failed: cancelled by the operator", so repeated reports stacked
+        those failures (#1130)."""
+        wid = _wid(sid.split("-")[0])
+        w = store.get("worker", wid) or {}
+        age = time.time() - float(w.get("last_seen") or 0)
+        if not w or age >= WORKER_TTL:
+            why = (f"log_tail skipped: worker {w.get('name') or wid} is offline"
+                   + (f" (last seen {int(age)} s ago)" if w.get("last_seen") else "") + "; no log job queued")
+        else:
+            try:
+                j = submit(JobRequest(tool="session_op", input={"session_id": sid, "op": "log_tail", "args": {"n": 60000}},
+                                      require_worker=wid), "issue")
+                with store.lock:
+                    cur = store.get("job", j.id)
+                    store.put("job", j.id, cur | {"issue_internal": True})
+                t0 = time.time()
+                while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < 15:
+                    time.sleep(0.4)
+                if jj["state"] == "succeeded":
+                    res = (jj.get("output") or {}).get("result") or {}
+                    if res.get("log"):
+                        return res["log"], res.get("path") or ""
+                    why = f"the {res.get('emulator') or 'emulator'} keeps no log gBox can read"
+                elif jj["state"] in ("queued", "running"):
+                    why = f"log_tail: worker {w.get('name') or wid} did not answer within 15 s"
+                    with store.lock:
+                        cur = store.get("job", j.id) or jj
+                        if cur["state"] == JobState.QUEUED:
+                            cur.update(state=JobState.FAILED, finished=time.time(), issue_internal=True,
+                                       error="issue report stopped waiting for the log (worker busy); not an operator cancel")
+                        elif cur["state"] == JobState.RUNNING:
+                            # A running read can finish normally. Cancelling it would
+                            # recreate the misleading operator-cancel failure.
+                            cur.update(issue_internal=True, issue_log_wait_expired=True)
+                        store.put("job", j.id, cur)
+                else:
+                    why = f"log_tail: {jj.get('error') or jj['state']}"
+            except Exception as e:                        # noqa: BLE001
+                why = f"log_tail: {e}"
         f = Path(str((s_.get("detail") or {}).get("log") or ""))
         try:
             if f.name and f.is_file():
@@ -2464,12 +2497,48 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
         s_ = store.get("session", r.session_id) or {} if r.session_id else {}
+        capture_key = json.dumps({k: getattr(r, k) for k in (
+            "what", "detail", "note", "title", "element", "mods_on", "kept_mods")}, sort_keys=True)
+        if r.save_state and r.session_id:
+            # Repeated capture-icon clicks while a save-state capture is already in flight
+            # stacked duplicate reports and jobs (the "failing endlessly" pileup). Reuse the
+            # newest in-flight report for this session instead of creating another one.
+            pending = None
+            for old in store.all("request"):
+                ctx = old.get("context") or {}
+                if (ctx.get("session_id") != r.session_id or not ctx.get("state_job_id")
+                        or ctx.get("issue_capture_key") != capture_key or old.get("status") == "done"):
+                    continue
+                job = store.get("job", ctx["state_job_id"])
+                if job and job.get("state") in ("queued", "running"):
+                    if pending is None or old.get("created", 0) > pending.get("created", 0):
+                        pending = old
+            if pending:
+                rid, now = pending["id"], time.time()
+                # Reuse the pending save job, while preserving every subsequent capture's
+                # screenshot, diagnostics and context. A distinct issue gets a new report.
+                attachments = _attach(rid, r.attachments)
+                if r.image_b64:
+                    attachments += _attach(rid, [{"name": "repeat-capture.png", "type": "image/png",
+                                                   "b64": r.image_b64}])
+                snapshot = r.model_dump(exclude={"image_b64", "attachments"}) | {"captured_at": now, "session": s_}
+                ref = store.put_artifact(json.dumps(snapshot, ensure_ascii=False, indent=2).encode(),
+                                         "repeat-capture-context.json", "application/json", {"request": rid})
+                attachments.append({"sha256": ref.sha256, "name": ref.name, "type": "application/json", "size": ref.size})
+                with store.lock:
+                    latest = store.get("request", rid) or pending
+                    latest.setdefault("messages", []).append({"author": "operator",
+                        "text": f"Repeated capture: {r.what}" + (f"\n{r.detail}" if r.detail else "")
+                                + (f"\n{r.note}" if r.note else ""), "ts": now, "attachments": attachments})
+                    store.put("request", rid, latest)
+                    store.audit(actor, "request.capture_reused", rid, {"state_job_id": latest["context"]["state_job_id"]})
+                    return _clean(latest)
         game = s_.get("title") or s_.get("game_title") or r.context.get("game") or "no game running"
         since = (s_.get("started") or s_.get("created") or time.time() - 3600) - 5
         jobs = sorted((j for j in store.all("job") if (j.get("input") or {}).get("session_id") == r.session_id
                        or (s_.get("game_id") and (j.get("input") or {}).get("game_id") == s_.get("game_id") and j.get("created", 0) >= since)),
-                      key=lambda j: j.get("created", 0))[-20:] if r.session_id else []
-        jobs = [j for j in jobs if j.get("tool") != "get_frame"]          # report/thumbnail pictures, not operator actions
+                      key=lambda j: j.get("created", 0)) if r.session_id else []
+        jobs = [j for j in jobs if j.get("tool") != "get_frame" and not j.get("issue_internal")][-20:]
         lines = [f"## What the operator tried\n{r.what}" + (f"\n\n{r.note}" if r.note else ""),
                  f"## Game\n{game} (game_id {s_.get('game_id') or r.context.get('game_id') or '?'}, {s_.get('platform') or s_.get('system') or '?'}, "
                  f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
@@ -2510,7 +2579,8 @@ def create_app(config: Config) -> FastAPI:
                                       kind="screenshot" if img else "element", image_b64=img, element=r.element, attachments=atts,
                                       context=r.context | {"session_id": r.session_id, "game_id": s_.get("game_id") or r.context.get("game_id"),
                                                            "game": game,
-                                                           "save_state_requested": r.save_state}), actor)
+                                                           "save_state_requested": r.save_state,
+                                                           "issue_capture_key": capture_key}), actor)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
@@ -3010,7 +3080,7 @@ def create_app(config: Config) -> FastAPI:
         for k, v in m.tools.items():
             mt["tools"][k] = mt["tools"].get(k, 0) + v
         mt["files_changed"] = sorted(set(mt["files_changed"]) | set(m.files_changed))
-        mt["turns"] = (mt.get("turns") or 0) + (m.turns or 1)
+        mt["turns"] = (mt.get("turns") or 0) + (m.turns if m.turns is not None else 1)
         if m.duration_s is not None:
             mt["agent_seconds"] = round(mt.get("agent_seconds", 0) + m.duration_s, 1)
         store.put("request", rid, r)

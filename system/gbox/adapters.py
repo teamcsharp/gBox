@@ -1,6 +1,7 @@
 """Runtime/emulator adapters behind one capability interface (plan §6). Unsupported ops raise Unsupported."""
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -30,6 +31,17 @@ NO_REWIND = {"gamecube", "wii", "ps2", "3ds", "wiiu", "switch",
 COARSE_REWIND = {"n64", "n64dd", "psx", "dreamcast", "naomi", "saturn", "psp", "segacd", "pcecd", "3do", "jaguar", "neocd", "cdi", "pcfx"}
 # Pads whose games actually use L2/R2 (triggers): never steal those for rewind / fast-forward.
 TRIGGERS_USED = {"psx", "ps2", "dreamcast", "naomi", "gamecube", "wii", "n64", "n64dd", "3ds", "wiiu", "switch"}
+FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
+# Keep rendered textures in emulated VRAM, so future states can include them.
+# Unthreaded rendering also keeps serialization size stable between query/write.
+FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+
+
+def _set_core_opts(path: Path, values: dict[str, str]) -> None:
+    """Replace exact option keys while preserving every unrelated setting."""
+    lines = [line for line in (path.read_text().splitlines() if path.exists() else [])
+             if line.split("=", 1)[0].strip() not in values]
+    path.write_text("\n".join(lines + [f'{key} = "{value}"' for key, value in values.items()]) + "\n")
 
 
 class Adapter:
@@ -285,8 +297,11 @@ def _win_title(hwnd):
 
 def win_grab(pid: int) -> bytes:
     """PNG of a local emulator window (docked or not), as the screen shows it."""
+    global _last_grab
+    _last_grab = {}  # A failed capture must not retain metadata from the previous PNG.
     import ctypes
     import io
+    from hashlib import sha256
     from ctypes import wintypes
     from PIL import ImageGrab
     # Chromium captures a composited game's GPU window even when its source is
@@ -296,8 +311,8 @@ def win_grab(pid: int) -> bytes:
     if frame.is_file() and 0 <= time.time() - frame.stat().st_mtime < 5:
         data = frame.read_bytes()
         if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) < 8 * 1024 * 1024:
-            _last_grab.update(pid=pid, covered=0, covered_titles=[], source="chromium-gpu-surface",
-                              frame_age_s=round(time.time() - frame.stat().st_mtime, 3))
+            _last_grab = dict(pid=pid, covered=0, source="chromium-gpu-surface", sha256=sha256(data).hexdigest(),
+                             frame_age_s=round(time.time() - frame.stat().st_mtime, 3))
             return data
     h = _pid_window(pid)
     if not h:
@@ -311,22 +326,21 @@ def win_grab(pid: int) -> bytes:
     # several points inside the game before accepting the frame.
     user.WindowFromPoint.argtypes = [wintypes.POINT]
     user.WindowFromPoint.restype = wintypes.HWND
-    foreign, titles = 0, []
+    foreign = 0
     for fx, fy in ((.25, .25), (.5, .25), (.75, .25), (.25, .5), (.5, .5), (.75, .5), (.25, .75), (.5, .75), (.75, .75)):
         point = wintypes.POINT(round(r.left + (r.right - r.left) * fx), round(r.top + (r.bottom - r.top) * fy))
         top = user.WindowFromPoint(point)
         owner = wintypes.DWORD()
         if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != pid:
             foreign += 1
-            title = _win_title(top) if top else ""
-            if title and title not in titles:
-                titles.append(title)
-    _last_grab.update(pid=pid, covered=foreign, covered_titles=titles, source="desktop-compositor", frame_age_s=0)
     if foreign >= 3:
         raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
     buf = io.BytesIO()
     ImageGrab.grab((r.left, r.top, r.right, r.bottom), all_screens=True).save(buf, "PNG")
-    return buf.getvalue()
+    data = buf.getvalue()
+    _last_grab = dict(pid=pid, covered=foreign, source="desktop-compositor", frame_age_s=0,
+                     sha256=sha256(data).hexdigest())
+    return data
 
 
 VGLRUN = "/opt/VirtualGL/bin/vglrun"
@@ -541,6 +555,45 @@ def _examine_ok(proc) -> bool:
     return bool(info) and "error" not in info
 
 
+def _state_file_identity(stat) -> tuple:
+    # Windows Python 3.12 path.stat/fstat expose different legacy ctime
+    # semantics. Device/inode bind the file; size/mtime bind its write state.
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _validate_completed_state_file(path: Path, expected_stat) -> None:
+    """Require a stable, complete recognized container without inspecting a core layout.
+
+    Raw core snapshots keep their existing handling. A temporarily stable file
+    may still contain an unfinished RZIP header/chunk, so its envelope must be
+    complete before capture reports verified success.
+    """
+    expected = _state_file_identity(expected_stat)
+    with path.open('rb') as stream:
+        if _state_file_identity(os.fstat(stream.fileno())) != expected:
+            raise ValueError('saved checkpoint changed before validation')
+        header = stream.read(8)
+        if not header:
+            raise ValueError('saved checkpoint is empty')
+        if header.startswith((b'#RZIPv', b'RASTATE')):
+            from .flycast_state import MAX_RZIP_CHUNK, MAX_STATE_BYTES, unpack
+            # Bound the encoded read as well as unpack's decoded/chunk budgets.
+            limit = MAX_STATE_BYTES + MAX_RZIP_CHUNK
+            if expected_stat.st_size > limit:
+                raise ValueError('saved checkpoint container exceeds inspection budget')
+            # Read only the observed file plus one growth-detection byte; using
+            # the full global budget here would allocate hundreds of MiB even
+            # for a tiny unfinished checkpoint on every polling attempt.
+            data = header + stream.read(expected_stat.st_size + 1 - len(header))
+            if len(data) != expected_stat.st_size or len(data) > limit:
+                raise ValueError('saved checkpoint changed or exceeded budget during read')
+            if not unpack(data):
+                raise ValueError('saved checkpoint contains no core state')
+        if (_state_file_identity(os.fstat(stream.fileno())) != expected
+                or _state_file_identity(path.stat()) != expected):
+            raise ValueError('saved checkpoint changed during validation')
+
+
 class RetroArchAdapter(CommandAdapter):
     """RetroArch + libretro core, controlled through RetroArch's UDP network command interface.
 
@@ -561,6 +614,7 @@ class RetroArchAdapter(CommandAdapter):
                 s.bind(("127.0.0.1", 0))
                 port = s.getsockname()[1]
         self.addr, self.display, self.stream, self.log_path = (host, port), None, None, None
+        self._state_lock = threading.RLock()
         self.rewind_on = (platform or "") not in NO_REWIND
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
@@ -598,9 +652,8 @@ class RetroArchAdapter(CommandAdapter):
             set_opt = {"parallel-n64-gfxplugin": "angrylion"}             # draw at launch size -> squeezed/cropped picture;
             lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if l.split(" =")[0] not in set_opt]   # software
             co.write_text("\n".join(lines + [f'{k} = "{v}"' for k, v in set_opt.items()]) + "\n")                        # output scales
-        if (self.platform or "") in ("dreamcast", "naomi", "atomiswave"):   # query and the write ("Serializer buffer overflow")
-            lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if not l.startswith("reicast_threaded_rendering")]
-            co.write_text("\n".join(lines + ['reicast_threaded_rendering = "disabled"']) + "\n")
+        if (self.platform or "") in FLYCAST_PLATFORMS:
+            _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
             opts["rewind_enable"] = "false"
         if self.rewind_on:
@@ -859,7 +912,9 @@ class RetroArchAdapter(CommandAdapter):
 
     def log_tail(self, n: int = 1500) -> str:
         try:
-            return self.log_path.read_text(errors="replace")[-n:]
+            with self.log_path.open('rb') as stream:
+                stream.seek(max(0, self.log_path.stat().st_size - n))
+                return stream.read(n).decode('utf-8', 'replace')
         except (OSError, AttributeError):
             return ""
 
@@ -939,9 +994,49 @@ class RetroArchAdapter(CommandAdapter):
         return cur
 
     def save_state(self, slot: int | None = None) -> dict:
-        slot = self._slot(slot)
-        self.cmd("SAVE_STATE")
-        return {"slot": slot}
+        with self._state_lock:
+            requested = self._slot(slot)
+            offset = self.log_path.stat().st_size
+            started = time.time_ns()
+            self.cmd("SAVE_STATE")
+            deadline = time.monotonic() + 12
+            previous = None
+            validation_error = None
+            while time.monotonic() < deadline:
+                with self.log_path.open('rb') as stream:
+                    stream.seek(max(offset, self.log_path.stat().st_size - 65536))
+                    text = stream.read(65536).decode('utf-8', 'replace')
+                matches = re.findall(r'\[State\] Saving state "([^"]+)"', text)
+                if matches:
+                    path = Path(matches[-1])
+                    match = re.search(r'\.state(-?\d+)?$', path.name)
+                    if match:
+                        try:
+                            stat = path.stat()
+                        except OSError:
+                            stat = None
+                        current = (str(path), *_state_file_identity(stat)) if stat else None
+                        if (stat and stat.st_size > 0 and stat.st_mtime_ns >= started
+                                and current == previous):
+                            try:
+                                _validate_completed_state_file(path, stat)
+                            except (OSError, ValueError) as error:
+                                validation_error = str(error)
+                                time.sleep(.1)
+                                continue
+                            actual = int(match[1] or 0)
+                            self.slot = actual
+                            result = {'slot': actual, 'requested_slot': requested,
+                                      'path': str(path), 'bytes': stat.st_size,
+                                      'verified': True, 'slot_verified': actual == requested}
+                            if actual != requested:
+                                result['warning'] = ('RetroArch dropped relative slot commands; '
+                                    'this result identifies the actual saved file, and the slot counter was reconciled.')
+                            return result
+                        previous = current
+                time.sleep(.1)
+            detail = f'; last container validation: {validation_error}' if validation_error else ''
+            raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed' + detail)
 
     def load_state(self, slot: int | None = None) -> dict:
         slot = self._slot(slot)

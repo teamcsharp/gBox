@@ -25,6 +25,12 @@ class GDRom:
         if pvd[1:6] != b"CD001":
             raise ValueError("no ISO9660 volume in the high-density area")
         root = pvd[156:156 + 34]
+        self.metadata_ranges = [(hd[0], hd[0] + 18)]
+        path_sectors = (struct.unpack_from('<I', pvd, 132)[0] + 2047) // 2048
+        for offset, endian in ((140, '<'), (144, '<'), (148, '>'), (152, '>')):
+            location = struct.unpack_from(endian + 'I', pvd, offset)[0]
+            if location and path_sectors:
+                self.metadata_ranges.append((location, location + path_sectors))
         self.files: dict[str, tuple[int, int]] = {}
         self.records: dict[str, tuple[int, int]] = {}  # file -> (LBA of its directory sector, record offset there)
         self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
@@ -38,6 +44,7 @@ class GDRom:
         raise ValueError(f"LBA {lba} not in a data track")
 
     def _walk(self, lba, size, prefix):
+        self.metadata_ranges.append((lba, lba + (size + 2047) // 2048))
         data = b"".join(self.sector(lba + i) for i in range((size + 2047) // 2048))
         o = 0
         while o < len(data):
@@ -114,12 +121,14 @@ def mode1_sector(raw: bytes, data: bytes) -> bytes:
 
 
 def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[str, bytes], progress=None,
-              donors: list[str] = ()) -> Path:
+              donors: list[str] = (), *, reuse_modified_slack: bool = False) -> Path:
     """Copy a GDI to out_dir/<name>.gdi (unchanged tracks hard-linked, the last data track copied) with `files`
     rewritten in place when they fit their old sectors plus the free ones before the next file, else moved into
     the sectors of a `donors` file the mod gives up (its directory entry then points at the moved data too).
     Sectors after the last file are NOT used: Flycast crashes reading them. ISO9660 extent and size updated;
-    EDC/ECC recomputed. Only the last data track is patched."""
+    EDC/ECC recomputed. Only the last data track is patched. With reuse_modified_slack,
+    overflowing files relocate into shortened modified CHR/BIN tails, preserving
+    all other files and ISO metadata. The complete plan is checked before copying."""
     import os
     import shutil
     src_gdi, out_dir = Path(src_gdi), Path(out_dir)
@@ -139,6 +148,8 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
         lba, size = disc.files[key]
         if lba < start or disc.records[key][0] < start:
             raise ValueError(f"{key} isn't on the last data track; only that track is patched")
+        if reuse_modified_slack:
+            continue
         nxt = next((l for l in order if l > lba), None)
         room = (nxt - lba) if nxt else (size + 2047) // 2048
         need = (len(data) + 2047) // 2048
@@ -149,6 +160,14 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
                                  f"(the original is {size} bytes)" + (" and no donor file is big enough" if donors else ""))
             lba, sp[0], sp[1] = sp[0], sp[0] + need, sp[1] - need
         plan.append((key, lba, data))
+    if reuse_modified_slack:
+        if donors:
+            raise ValueError('Preserving modified slack cannot be combined with sacrificed donor files')
+        from .gdrom_slack import plan_modified_slack
+        planned = plan_modified_slack(disc.files, files, track_start=start,
+                                     track_end=start + tpath.stat().st_size // ssz,
+                                     reserved_ranges=disc.metadata_ranges)
+        plan = [(row['file'], row['lba'], files[row['file']]) for row in planned['plan']]
     out_dir.mkdir(parents=True, exist_ok=True)
     lines = [ln for ln in src_gdi.read_text().splitlines() if ln.strip()]
     new_lines, dst_of = [lines[0]], {}

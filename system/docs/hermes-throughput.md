@@ -36,12 +36,81 @@ denials, scheduler ownership, excessive iterations and missing publication.
 Later dispatches include those lessons. A no-agent supervisor checks every five
 minutes without consuming inference tokens.
 
-Cooldowns identify the provider AND model. Quota errors defer that route for
-five hours; rate limits for fifteen minutes. Available configured routes rotate
-between cloud runs. Exhausted routes leave the fallback chain until their
-cooldowns expire. Intentional per-job benchmark pins remain untouched. Local
-interactive model settings remain unchanged. This changes dispatch based on
-observed outcomes; it does not claim to retrain the underlying models.
+Cooldowns identify the provider AND model. Structured provider reset timestamps
+and Retry-After values determine the next retry. Missing metadata uses a bounded
+scheduler backoff (initially five minutes for quota and one minute for rate
+limits, increasing to at most one hour); that delay is labelled as policy, not
+the subscription reset. A quota inside a tool result does not incorrectly cool
+the inference provider. Available configured routes rotate between runs;
+newly configured routes join the retained fallback catalog. Routes are changed
+only while no agent run is active. Intentional per-job benchmark pins remain
+untouched. Interactive model settings remain unchanged.
+
+Provider failures now leave a durable recovery checkpoint containing the actual
+Hermes session, occurrence and owned request IDs. The original conversation and
+isolated Git workspace remain their source of truth. The no-agent supervisor
+can re-arm the same unpinned genuine one-shot with continuity on an eligible
+configured route. It first verifies ticket status, current ownership and whether
+a later occurrence already superseded the failure. It resumes at most one job
+per tick and three occurrences per job in 24 hours. Closed tickets, active jobs,
+explicit pins and disabled task-mode activations are preserved. An uncertain
+launch is held for review rather than repeated after a restart. The queue does
+not create replacement jobs or erase failed history.
+
+Task-mode status includes provider limit observations and recovery states.
+Recorded usage uses Hermes's `session_model_usage` per-call route ledger, so
+provider/model changes and fallback within one session are attributed to the
+actual route. Session aggregates are reconciled against those deltas without
+double counting; legacy residuals attributed only by session metadata are
+explicitly counted and labelled. The scope is sessions started within the last
+24 hours, including cache inputs, output and API calls, with recorded cost and
+estimated cost counted separately. At most 1,000 sessions and 10,000 route rows
+are aggregated; an incomplete window is explicitly labelled and a truncated
+ledger does not manufacture residual attribution.
+Z.AI's account windows retain their observation time and become stale after ten
+minutes. Other subscription balances remain unknown unless an account endpoint
+has actually supplied them. Session token totals never predict remaining quota.
+
+## Nous account activation, 2026-10-11
+
+The Nous login and fresh paid account/model endpoints passed inspection. Old
+Nous inference records existed, but recent inbox work was using other routes;
+the previous dedicated Nous job was disabled after an HTTP 402 credit error.
+That historical failure did not describe the currently available account.
+Nous/Claude Opus 5.5 is now included in the retained route catalog. The feedback
+supervisor intentionally rotates the global route after completed agent runs,
+so a particular primary provider is not a permanent preference. A task pinned
+with `--provider nous --model anthropic/claude-opus-5.5` stays on Nous and does
+not enter the global fallback ladder.
+
+The installed Hermes cron constructor did not pass an output budget to
+`AIAgent`; native Anthropic messages defaulted to 128,000 output tokens. This
+can increase the requested credit reservation, although the old failed
+request's exact wire payload was not recovered. The maintenance command
+`scripts/apply_hermes_nous_output_limit.py` adds support for
+`cron.output_token_limits.nous: 8192` only for the actual Nous cron route. It
+checks the supported constructor's complete AST, preserves surrounding code,
+backs up exact bytes and writes atomically. Unknown runtime versions or a
+conflicting patch are refused. Run without `--apply` to check compatibility,
+then explicitly apply to the installed `hermes-agent/cron/scheduler.py`.
+Recheck after a Hermes update; the new setting is a gBox runtime extension,
+not an upstream Hermes configuration key.
+
+This is an initial request budget, not a hard spending ceiling. Existing
+length retries may increase it to 16K/32K. The runtime supplies canonical
+provider strings and ordinary parsed YAML dictionaries; malformed values
+leave the native default unchanged. Keep the configured value a positive
+integer within the selected model's supported output limit. Interactive
+settings and other providers' initial budgets are unchanged.
+
+Verification included 28 maintenance checks, a real stateless Nous code review
+with private memory/context/tools disabled, and a running Nous-only report
+#1216 investigation. Its recorded session configuration contains
+`max_tokens: 8192`, and its native per-call billing ledger reports Nous with
+real API calls and token counts. The task is visible by name in the Tasks
+panel with expandable tools and output. Private replay evidence was sent only
+after the operator explicitly approved that transfer. The report remains open
+until the supplied moment's visual replay and deployed fix pass acceptance.
 
 ## Remote testing
 

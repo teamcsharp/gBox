@@ -133,6 +133,7 @@ def load_rig(path: Path, roles: dict[str, str], props=()) -> dict:
             N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
             tris = acc(pr["indices"]).reshape(-1, 3).astype(int) if "indices" in pr else np.arange(len(P) // 3 * 3).reshape(-1, 3)
             tex, color = None, (255, 255, 255, 255)
+            wrap = (10497, 10497)
             if (mi := pr.get("material")) is not None:
                 pbr = gl["materials"][mi].get("pbrMetallicRoughness", {})
                 color = tuple(int(round(c * 255)) for c in pbr.get("baseColorFactor", [1, 1, 1, 1]))
@@ -143,8 +144,12 @@ def load_rig(path: Path, roles: dict[str, str], props=()) -> dict:
                         except Exception:                  # noqa: BLE001 - a missing image: plain colour
                             texcache[bct["index"]] = None
                     tex = texcache[bct["index"]]
+                    sampler = gl.get("samplers", [])
+                    si = gl["textures"][bct["index"]].get("sampler")
+                    settings = sampler[si] if si is not None else {}
+                    wrap = (settings.get("wrapS",10497), settings.get("wrapT",10497))
             prims.append({"pos": P, "nrm": N, "uv": UV, "tris": tris, "owner": owner, "tex": tex, "color": color,
-                          "prop": nd.get("name") in props})
+                          "prop": nd.get("name") in props, "wrap": wrap})
     if not prims:
         raise ValueError(f"{Path(path).name}: no triangles")
     return {"joints": np.array([Wn[j][:3, 3] for j in jn]), "parent": parent, "roles": ri, "prims": prims, "names": names}
@@ -299,7 +304,7 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
         Wv = np.zeros((len(P), 4))
         Wv[:, 0] = 1
         out.append({"pos": P, "nrm": N, "uv": p["uv"], "tris": p["tris"], "J": Jv, "W": Wv, "tex": p["tex"],
-                    "color": p["color"], "name": f"m{len(out)}", "prop": bool(p.get("prop"))})
+                    "color": p["color"], "wrap": p.get("wrap",(10497,10497)), "name": f"m{len(out)}", "prop": bool(p.get("prop"))})
     rep_flip = _orient(out)
     rep = {"normals_flipped": rep_flip, "scale": round(float(s), 4), "torso_up": round(sy_up / s, 2), "torso_down": round(sy_dn / s, 2),
            "shoulder_widen": round(sx, 2), "head_scale": round(head_k, 2), "head_scale_user": float((scale or {}).get("head", 1.0)),
@@ -364,6 +369,7 @@ def read_rigged(path: Path) -> list[dict]:
             N = np.einsum("nij,nj->ni", M[:, :3, :3], N)
             tris = acc(pr["indices"]).reshape(-1, 3).astype(int) if "indices" in pr else np.arange(len(P)).reshape(-1, 3)
             tex, color = None, (255, 255, 255, 255)
+            wrap = (10497, 10497)
             if (mi := pr.get("material")) is not None:
                 pbr = gl["materials"][mi].get("pbrMetallicRoughness", {})
                 color = tuple(int(round(c * 255)) for c in pbr.get("baseColorFactor", [1, 1, 1, 1]))
@@ -371,7 +377,11 @@ def read_rigged(path: Path) -> list[dict]:
                     if bct["index"] not in texcache:
                         texcache[bct["index"]] = image(bct["index"])
                     tex = texcache[bct["index"]]
-            out.append({"pos": P, "nrm": N, "uv": UV, "tris": tris, "jid": jid[k], "tex": tex, "color": color})
+                    sampler = gl.get("samplers", [])
+                    si = gl["textures"][bct["index"]].get("sampler")
+                    settings = sampler[si] if si is not None else {}
+                    wrap = (settings.get("wrapS",10497), settings.get("wrapT",10497))
+            out.append({"pos": P, "nrm": N, "uv": UV, "tris": tris, "jid": jid[k], "tex": tex, "color": color, "wrap": wrap})
     return out
 
 

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="dark">
 <title>gBox</title>
 <link rel="icon" href="../../assets/brand/gbox-logo.svg">
 <style>
@@ -11,7 +12,8 @@
   :root { color-scheme:dark; --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341; }
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; overflow:clip; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif; }
-  .app { display:grid; grid-template-columns:200px 1fr; height:100vh; transition:grid-template-columns .15s; }
+  .app { display:grid; grid-template-columns:200px minmax(0,1fr); height:100vh; transition:grid-template-columns .15s; }
+  .app > section { min-width:0; }
   body.navc .app { grid-template-columns:0 1fr; } body.navc .app > aside { padding:0; border:0; overflow:hidden; }
   #navtog { position:absolute; top:12px; right:6px; padding:4px 6px; line-height:0; color:var(--mut); }
   #navshow { display:none; position:fixed; left:0; top:50%; z-index:44; padding:14px 3px; border:1px solid var(--line); border-left:0;
@@ -1031,6 +1033,7 @@ window.taskVizCreate = canvas => {
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
+<script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -1053,6 +1056,7 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   document.querySelectorAll("aside button[data-s]").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
   if (b.dataset.s === "control") refresh();
+  if (b.dataset.s === "requests") refreshInbox();
 });
 $("#chat-home").onclick = () => viewAction("library");
 // Keep the input's size independent of the microphone wrapper added after the Spark connects.
@@ -1947,7 +1951,7 @@ function loadPlay() {
     wv.addEventListener("dom-ready", async () => {
       const revision = generation;
       try {
-        await wv.executeJavaScript(`(async () => { window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; })()`);
+        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
       } catch {
@@ -2358,6 +2362,31 @@ async function reportEmulationIncident(sid, action = 'auto') {
 document.addEventListener("click", e => { const a = e.target.closest("a.att-file"); if (!a) return; e.preventDefault(); gbox.openExternal(a.dataset.url); });
 
 // ---------------- requests inbox (operator <-> agent) ----------------
+// Automatic ticks share the current poll. Explicit refreshes retain one latest rerun.
+function singleFlightPoll(work) {
+  let running = null, rerun = false;
+  return function (explicit = true) {
+    if (running) { if (explicit) rerun = true; return running; }
+    running = Promise.resolve().then(async () => {
+      try {
+        let result, error;
+        do {
+          rerun = false;
+          try { result = await work(); error = null; } catch (e) { error = e; }
+        } while (rerun);
+        if (error) throw error;
+        return result;
+      } finally { running = null; }
+    });
+    return running;
+  };
+}
+async function pollTogether(requests) {
+  // A rejected sibling must not release the poll while another fetch is still pending.
+  const results = await Promise.allSettled(requests);
+  for (const result of results) if (result.status === "rejected") throw result.reason;
+  return results.map(result => result.value);
+}
 const fmtDur = s => s == null ? "–" : s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const fmtTok = n => !n ? "0" : n > 1e6 ? (n / 1e6).toFixed(2) + "M" : n > 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
 const openThreads = new Set();
@@ -2411,7 +2440,8 @@ $("#reqfilters").addEventListener("click", e => {
   localStorage.setItem("gbox_request_filter", requestFilter);
   refreshInbox();
 });
-async function refreshInbox() {
+function refreshInbox(explicit = true) { return inboxPoll(explicit); }
+const inboxPoll = singleFlightPoll(async () => {
   const r = await gbox.api("/api/requests"); if (!r.ok) return;
   const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
   inboxSolverRequests = all;
@@ -2430,11 +2460,15 @@ async function refreshInbox() {
     button.style.color = mode === requestFilter ? "#fff" : "";
   }
   const host = $("#reqlist"); if (!host) return;
+  // Mod cards are used only in this view; hidden polls still update badges/counts.
+  if (!$("#requests").classList.contains("on")) return;
   if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const tok = await gbox.token();
-  const [mr, rg] = await Promise.all([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
+  const [mr, rg] = await pollTogether([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
   if (rg?.ok) REG.tools = Object.fromEntries(rg.data.tools.map(z => [z.name, z.description || ""]));
   MODS.list = mr.ok ? mr.data : [];
+  if (!$("#requests").classList.contains("on")) return;
+  if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const modsFor = n => MODS.list.filter(m => (m.requests || []).includes(n));
   const art = d => `${S.apiUrl}/api/artifacts/${d}?token=${encodeURIComponent(tok)}`;
   const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; roots.forEach(x => t[x.status]++);
@@ -2471,7 +2505,7 @@ async function refreshInbox() {
   const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
   updateInboxView(host, JSON.stringify([requestFilter, all, MODS.list]), () => (visibleRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.map(renderRequest).join("")}</details>` : ""), replyAtt);
-}
+});
 $("#reqlist").addEventListener("change", async e => {
   if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
   const id = e.target.dataset.linkRequest; if (!id || !e.target.value) return;
@@ -2581,7 +2615,7 @@ document.addEventListener("click", async e => {
   }
   if (e.target.classList.contains("markdone")) { await gbox.api(`/api/requests/${id}/status`, { status: "done", note: "Closed by operator." }); refreshInbox(); }
 });
-setInterval(refreshInbox, 5000);
+setInterval(() => refreshInbox(false).catch(() => {}), 5000);
 
 // ---------------- native game window inside gBox ----------------
 function popups() {                                          // floating things right under <body>: they must show above the game window
@@ -2623,16 +2657,17 @@ async function embedTick() {
       rect = { x: 0, y: 36, w: innerWidth, h: innerHeight - 36 };
     } else if (onPlay && wv) {
       const slot = VIEW.mode === "pip" ? null : await wv.executeJavaScript(`(() => { const e = document.getElementById("nativeslot"); if (!e) return null;
-        const r = e.getBoundingClientRect(); return r.width > 20 ? { x: r.left, y: r.top, w: r.width, h: r.height, sid: e.dataset.sid } : null; })()`).catch(() => null);
+        const r = e.getBoundingClientRect(); return r.width > 20 ? { x: r.left, y: r.top, w: r.width, h: r.height, sid: e.dataset.sid, viewport: {w: innerWidth, h: innerHeight} } : null; })()`).catch(() => null);
       const o = wv.getBoundingClientRect();
       if (slot && slot.sid === EMB.sid) {
-        const top = Math.max(slot.y, 0), bottom = Math.min(slot.y + slot.h, o.height);
-        rect = { x: o.left + slot.x, y: o.top + top, w: slot.w, h: Math.max(0, bottom - top) };
+        rect = GBoxEmbedGeometry.guestRect(slot, o, slot.viewport);
       } else {                                                 // elsewhere in the app: movable picture-in-picture
         rect = pipRect(); pipNow = true;
       }
     }
-    if (rect && !pipNow && $("#live").classList.contains("on")) rect.w = Math.min(rect.w, innerWidth - 384 - rect.x);
+    if (rect) rect = GBoxEmbedGeometry.intersect(rect, { x: 0, y: 0, w: innerWidth, h: innerHeight });
+    if (rect && !pipNow && $("#live").classList.contains("on"))
+      rect = GBoxEmbedGeometry.intersect(rect, { x:0, y:0, w:Math.max(0, $("#live").getBoundingClientRect().left - 4), h:innerHeight });
     EMB.rect = rect;
     const hidden = overlay || EYE.on;
     EMB.title = mine.title;
@@ -2644,14 +2679,14 @@ async function embedTick() {
       "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]")]
       .filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" &&
         +s.opacity !== 0 && s.pointerEvents !== "none"; })
-      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height }; })
+      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0))()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
     const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
       ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
-      .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => ({ left: webOrigin.left + b.x, top: webOrigin.top + b.y,
-        right: webOrigin.left + b.x + b.w, bottom: webOrigin.top + b.y + b.h, width: b.w, height: b.h })))
+      .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
+        .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
       .filter(b => b.width > 0 && b.height > 0)
       .map(b => ({ x: Math.max(0, b.left - rect.x), y: Math.max(0, b.top - rect.y), x2: Math.min(rect.w, b.right - rect.x), y2: Math.min(rect.h, b.bottom - rect.y) }))
       .filter(h => h.x2 > h.x && h.y2 > h.y).map(h => ({ x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.x2 - h.x), h: Math.round(h.y2 - h.y) })) : [];
@@ -2841,12 +2876,102 @@ gbox.onAppFocus?.(gameFocus);
 document.addEventListener("pointerup", e => { const r = EMB.rect;
   if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
       && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatresize, #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble, #report, #whipmenu")) gameFocus(); });
+// ---- microphone device: right-click any mic to pick the default input (persisted) ----
+(() => {
+  const KEY = "gbox_mic_device";
+  const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let menu = null, revision = 0;
+  const close = () => { revision++; if (menu) { menu.remove(); menu = null; } };
+  const style = document.createElement("style");
+  style.textContent = `.micmenu{position:fixed;z-index:2147483647;background:var(--card,#1c1f26);border:1px solid var(--line,#343a45);border-radius:8px;box-shadow:0 10px 28px #000a;width:300px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;padding:4px 0;font:13px/1.4 system-ui,sans-serif;color:var(--fg,#e8eaf0)}
+.micmenu-head{font-size:11px;color:var(--mut,#8a93a3);padding:5px 12px 3px;text-transform:uppercase;letter-spacing:.04em}
+.micmenu-item{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;color:inherit;text-align:left;padding:7px 12px;cursor:pointer;font:inherit;box-sizing:border-box}
+.micmenu-item:hover,.micmenu-item:focus-visible{background:var(--hover,#2a2f3a)}
+.micmenu-item .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.micmenu-item .id,.micmenu-note{color:var(--mut,#8a93a3);font-size:11px}
+.micmenu-note{padding:7px 12px}
+.micmenu-item .chk{color:var(--acc,#4da3ff);font-weight:bold;margin-left:auto}`;
+  document.head.append(style);
+  window.gboxMicDevice = () => { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } };
+  window.gboxMicAudio = extra => {
+    const id = window.gboxMicDevice();
+    return id ? { audio: { ...(extra || {}), deviceId: { exact: id } } } : (extra ? { audio: { ...extra } } : { audio: true });
+  };
+  window.gboxMicMenu = async (anchor, ev) => {
+    ev.preventDefault(); ev.stopPropagation(); close();
+    const request = revision, media = navigator.mediaDevices;
+    let devs = [], failure = "";
+    if (!media?.enumerateDevices) failure = "Microphones are unavailable in this browser context.";
+    else try { devs = (await media.enumerateDevices()).filter(d => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default"); }
+    catch (error) { failure = "Unable to list microphones: " + error.message; }
+    if (request !== revision) return;
+    const cur = window.gboxMicDevice();
+    const m = document.createElement("div"); m.className = "micmenu";
+    m.setAttribute("role", "menu"); m.setAttribute("aria-label", "Default microphone");
+    const hd = document.createElement("div"); hd.className = "micmenu-head"; hd.textContent = "Default microphone"; m.append(hd);
+    const add = (label, id, isDefault) => {
+      const d = document.createElement("button"); d.type = "button"; d.className = "micmenu-item";
+      d.title = label;
+      d.setAttribute("role", "menuitemradio"); d.setAttribute("aria-checked", String(id === cur));
+      d.innerHTML = `<span class="lbl">${escHtml(label)}</span>${isDefault ? "" : `<span class="id">${escHtml(id.slice(0, 8))}…</span>`}${id === cur ? `<span class="chk">✓</span>` : ""}`;
+      d.onclick = () => { try { localStorage.setItem(KEY, id); } catch {} close(); }; m.append(d);
+    };
+    add("System default", "", true);
+    devs.forEach((d, i) => add(d.label || `Microphone ${i + 1}`, d.deviceId, false));
+    const note = text => { const x = document.createElement("div"); x.className = "micmenu-note"; x.textContent = text; m.append(x); return x; };
+    if (cur && !devs.some(d => d.deviceId === cur)) note("The selected microphone is unavailable. Choose another input or System default.");
+    if (failure) note(failure);
+    else if (!devs.length || devs.some(d => !d.label)) {
+      const d = document.createElement("button"); d.type = "button"; d.className = "micmenu-item";
+      d.setAttribute("role", "menuitem"); d.textContent = "Allow microphone access to list device names";
+      d.onclick = async () => {
+        d.disabled = true; let stream = null;
+        try {
+          stream = await media.getUserMedia({ audio: true });
+          stream.getTracks().forEach(t => t.stop()); stream = null;
+          if (menu === m) await window.gboxMicMenu(anchor, { preventDefault() {}, stopPropagation() {} });
+        } catch (error) { if (menu === m) { note("Microphone access failed: " + error.message); d.disabled = false; } }
+        finally { stream?.getTracks().forEach(t => t.stop()); }
+      }; m.append(d);
+      if (!devs.length) note("No microphones found. You can keep using System default.");
+    }
+    m.onpointerup = e => e.stopPropagation(); // a menu over the game keeps the click in gBox
+    document.body.append(m); menu = m;
+    const r = anchor.getBoundingClientRect(), w = m.offsetWidth || 300, h = m.offsetHeight || 120;
+    let x = Math.max(8, Math.min(r.right - w, innerWidth - w - 8));
+    let y = r.bottom + 6; if (y + h > innerHeight - 8) y = r.top - h - 6;
+    y = Math.max(8, Math.min(y, innerHeight - h - 8));
+    const game = document.getElementById?.("nativeslot"), native = typeof EMB !== "undefined" ? EMB.rect : null;
+    const g = game?.getBoundingClientRect() || (native ? { left:native.x, top:native.y, right:native.x+native.w, bottom:native.y+native.h } : null);
+    // Prefer available sidebar space to keep every choice clickable while the
+    // embedded native window updates its popup cutouts. Keep the usual anchor
+    // placement when it already clears the game.
+    if (g && g.right > g.left && g.bottom > g.top && x < g.right && x+w > g.left && y < g.bottom && y+h > g.top) {
+      if (g.right+8+w <= innerWidth-8) x = g.right+8;
+      else if (g.left-w-8 >= 8) x = g.left-w-8;
+      else if (g.top-h-8 >= 8) y = g.top-h-8;
+      else if (g.bottom+8+h <= innerHeight-8) y = g.bottom+8;
+    }
+    m.style.left = x + "px"; m.style.top = y + "px";
+    m.onkeydown = e => {
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      e.preventDefault(); const items = [...m.querySelectorAll("button:not(:disabled)")], i = items.indexOf(document.activeElement);
+      const next = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    };
+  };
+  document.addEventListener("pointerdown", e => { if (!menu || !menu.contains(e.target)) close(); }, true);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); }, true);
+  navigator.mediaDevices?.addEventListener?.("devicechange", close);
+  window.addEventListener("resize", close);
+})();
+
 // ---------------- hold ~ : push-to-talk to the active conversation, the reply is spoken ----------------
 const PTT = { rec: null, chunks: [], down: false };
 async function pttDown() {
   if (PTT.down) return; PTT.down = true;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio());
     PTT.chunks = []; PTT.rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
     PTT.rec.ondataavailable = e => e.data.size && PTT.chunks.push(e.data);
     PTT.rec.start(); document.body.classList.add("talking"); toast("🎙 Listening… (release ~ to send)", 60000);
@@ -3750,7 +3875,7 @@ async function talkLoop() {
   }
 }
 async function talkStart() {
-  try { TALK.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  try { TALK.stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio({ echoCancellation: true, noiseSuppression: true })); }
   catch (e) { return alert("Microphone unavailable: " + e.message); }
   TALK.ctx = new AudioContext(); TALK.on = true;
   $("#talkbtn").classList.add("on"); $("#live").classList.add("on"); document.body.classList.add("talking"); EMB.last = "";
@@ -3764,6 +3889,7 @@ function talkStop() {
   $("#talkbtn").classList.remove("on"); $("#live").classList.remove("on"); document.body.classList.remove("talking"); liveStatus("Idle"); EMB.last = "";
 }
 $("#talkbtn").onclick = () => TALK.on ? talkStop() : talkStart();
+$("#talkbtn").oncontextmenu = e => window.gboxMicMenu($("#talkbtn"), e);
 // The title-bar logo is a push-to-talk toggle; the speech-bar logo opens Play & Library.
 document.querySelectorAll("#titlebar > img").forEach(img => {
   img.title = "Talk to gBox about the game you're playing (click again to stop)";
@@ -3788,7 +3914,7 @@ const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() 
   async function toggle(btn, field) {
     if (rec) { rec.stop(); return; }
     let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
+    try { stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio()); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
     const chunks = [], mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
     mr.ondataavailable = e => e.data.size && chunks.push(e.data);
     mr.onstop = async () => {
@@ -3824,7 +3950,8 @@ const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() 
       if (!held) return;                                   // a quick click: keep recording until the next click
       if (rec) rec.stop(); else b._ptt = "release";        // getUserMedia still opening: stop as soon as it starts
     };
-    b.title = "Dictate: click to start/stop, or hold to talk (Spark speech-to-text)";
+    b.title = "Dictate: click to start/stop, or hold to talk (Spark speech-to-text). Right-click to choose microphone.";
+    b.oncontextmenu = e => window.gboxMicMenu(b, e);
   }
   const skip = el => el.type === "password" || el.closest(".micwrap") || el.dataset.nomic !== undefined || el.offsetParent === null && el.type === "hidden";
   function decorate(root) {
@@ -4719,14 +4846,15 @@ const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|de
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
 const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
-async function auditPoll() {
-  const [r, jobs] = await Promise.all([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
+function auditPoll(explicit = true) { return pollAudit(explicit); }
+const pollAudit = singleFlightPoll(async () => {
+  const [r, jobs] = await pollTogether([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
   if (jobs.ok) activity?.remote(jobs.data); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;
   if ($("#auditpanel").classList.contains("on")) auditRender();
-}
+});
 function auGroup(rows) {                  // consecutive same actor+action -> one group
   const out = [];
   for (const x of rows) { const g = out.at(-1); if (g && g[0].actor === x.actor && g[0].action === x.action) g.push(x); else out.push([x]); }
@@ -4748,12 +4876,13 @@ function auditRender() {
 $("#sb-audit").onclick = () => { $("#auditpanel").classList.toggle("on"); if ($("#auditpanel").classList.contains("on")) auditRender(); };
 $("#au-close").onclick = () => $("#auditpanel").classList.remove("on");
 $("#au-q").oninput = auditRender;
-auditPoll(); setInterval(auditPoll, 3000);
+auditPoll(false).catch(() => {}); setInterval(() => auditPoll(false).catch(() => {}), 3000);
 
 const EMU_ICON = { rpcs3: "🎮 PS3 · RPCS3", retroarch: "🕹️ RetroArch", dolphin: "🐬 Dolphin", duckstation: "🦆 DuckStation", mgba: "👾 mGBA",
                    mame: "🕹️ MAME", rocketlauncher: "🚀 RocketLauncher", steam: "♨️ Steam" };
-async function statusRight() {
-  const [ws, ss] = await Promise.all([gbox.api("/api/workers"), gbox.api("/api/sessions")]);
+function statusRight(explicit = true) { return pollStatusRight(explicit); }
+const pollStatusRight = singleFlightPoll(async () => {
+  const [ws, ss] = await pollTogether([gbox.api("/api/workers"), gbox.api("/api/sessions")]);
   const svc = ["ok", "warn", "bad"].find(k => $("#d-svc").classList.contains(k)) || "bad";   // refreshed by refresh() (SSH), not here
   const c = (key, cls, ic, label, tip) => `<span class="c ${cls}" data-k="${esc(key)}" title="${esc(tip)} · click for details"><i></i>${ic} ${esc(label)}</span>`;
   let h = c("api", ws.ok ? "ok" : "bad", "🌐", "Spark API", ws.ok ? "control plane reachable" : "control plane unreachable");
@@ -4763,8 +4892,8 @@ async function statusRight() {
   h += mine ? `<span class="emu" data-k="emu:${esc(mine.session_id)}" title="${esc(mine.title)} · click for details">${EMU_ICON[mine.adapter] || "🎮 " + esc(mine.adapter)}</span>`
             : `<span class="emu mut">no emulator</span>`;
   $("#sb-right").innerHTML = h;
-}
-statusRight(); setInterval(statusRight, 5000);
+});
+statusRight(false).catch(() => {}); setInterval(() => statusRight(false).catch(() => {}), 5000);
 
 // ================= every pop-up: drag by its header, resize from the corner; position + size remembered =================
 window.onFloatingMove = () => {

@@ -1,7 +1,9 @@
 import base64
 import time
+from io import BytesIO
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from gbox.agent import ChatHub
 from gbox.server import create_app
@@ -96,7 +98,9 @@ def test_capture_request_screenshot_attaches_live_frame_with_step(cfg):
     app.state.store.put("session", "worker-session", {"session_id": "worker-session", "state": "running"})
     client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
     report = client.post("/api/requests", json={"title": "Swap attempt"}).json()
-    png = b"\x89PNG\r\n\x1a\nfixture-frame"
+    frame = BytesIO()
+    Image.new('RGB', (8, 6), 'orange').save(frame, format='PNG')
+    png = frame.getvalue()
     assert client.post("/api/sessions/worker-session/frame", content=png).status_code == 200
     response = client.post(f"/api/requests/{report['id']}/capture", json={"session_id": "worker-session",
         "text": "Ninja is visible", "task_step": {"action": "verify model", "attempt": "2",

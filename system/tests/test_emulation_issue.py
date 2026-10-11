@@ -56,7 +56,7 @@ def test_report_immediately_keeps_markdown_screenshot_and_deduplicates(cfg, monk
     assert len(targets) == 1
 
 
-def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False):
+def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False, covered_points=None):
     app = create_app(cfg)
     store = app.state.store
     game, session, worker = setup_session(store)
@@ -67,13 +67,17 @@ def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False):
     store.put('job', job.id, job.model_dump())
     calls = []
     colors = iter(frame_colors)
+    coverage = iter(covered_points) if covered_points is not None else None
     def run(tool, data, wid, wait):
         calls.append((tool, data))
         if tool == 'get_frame':
             buf = io.BytesIO()
             Image.new('RGB', (64, 48), next(colors, 'black')).save(buf, format='PNG')
             ref = store.put_artifact(buf.getvalue(), 'frame.png', 'image/png', {})
-            return {'sha256': ref.sha256}
+            out = {'sha256': ref.sha256}
+            if coverage is not None:
+                out['covered'] = next(coverage, 0)
+            return out
         if tool == 'state_transfer' and data['op'] == 'export':
             if state_failure:
                 raise RuntimeError('Emulator did not write a state')
@@ -107,8 +111,10 @@ def test_capture_precedes_recovery_and_paused_game_resumes_without_restart(cfg):
     assert 'Game.state81' in names and 'emulation-diagnostics-complete.md' in names and 'emulation-recovery.md' in names
 
 
-def test_failed_checkpoint_does_not_reset_or_relaunch_running_game(cfg):
+@pytest.mark.parametrize('mod', ['', 'active-mod'])
+def test_failed_checkpoint_does_not_reset_or_relaunch_running_game(cfg, mod):
     incident, calls = make_incident(cfg, ['black'] * 8, state_failure=True)
+    incident.session['mod'] = mod
     incident.run()
     assert not any(tool == 'launch_game' or data.get('op') == 'reset' for tool, data in calls)
     assert incident.store.get('job', incident.job.id)['state'] == 'failed'
@@ -133,9 +139,35 @@ def test_relaunch_keeps_rom_mod_and_attached_state_but_does_not_claim_exact_rest
 
 def test_black_rgb_frame_is_detected_and_static_menu_is_not_claimed_recovered(cfg):
     incident, _ = make_incident(cfg, ['black', 'white', 'white', 'white', 'white'])
-    _, luma = incident.frame('before')
-    assert luma == 0
+    _, luma, covered = incident.frame('before')
+    assert luma == 0 and covered == 0
     assert incident.observe() == {'visible': True, 'motion': False, 'errors': []}
+
+
+@pytest.mark.parametrize('covered', [1, 9])
+def test_covered_frame_pixels_are_retained_but_do_not_prove_recovery(cfg, covered):
+    incident, _ = make_incident(cfg, ['black', 'red', 'green', 'white'], covered_points=[covered]*4)
+    observed = incident.observe()
+    assert observed['visible'] is False and observed['motion'] is False
+    assert any('covered by another window' in e for e in observed['errors'])
+    messages = incident.store.get('request', incident.rid)['messages']
+    frames = [m for m in messages if m.get('task_step', {}).get('action') == 'verify recovery frame']
+    assert len(frames) == 4 and all(m['attachments'] for m in frames)
+    assert all(f'{covered}/9 capture points' in m['text'] for m in frames)
+
+
+@pytest.mark.parametrize(('colors', 'coverage'), [
+    (['red', 'white', 'white', 'white'], [9, 0, 0, 0]),
+    (['white', 'red', 'white', 'white'], [0, 9, 0, 0]),
+])
+def test_clearing_an_occluder_is_not_moving_gameplay(cfg, colors, coverage):
+    incident, _ = make_incident(cfg, colors, covered_points=coverage)
+    assert incident.observe() == {'visible': True, 'motion': False, 'errors': []}
+
+
+def test_two_clear_frames_can_prove_motion_after_occlusion(cfg):
+    incident, _ = make_incident(cfg, ['white', 'white', 'red', 'green'], covered_points=[9, 1, 0, 0])
+    assert incident.observe() == {'visible': True, 'motion': True}
 
 
 def test_redaction_preserves_usage_and_paths():

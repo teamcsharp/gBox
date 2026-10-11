@@ -70,23 +70,81 @@ def _last_action(db: sqlite3.Connection, session_id: str) -> str:
 
 
 def _owned_requests(db: sqlite3.Connection, session_id: str) -> list[str]:
-    """Progress replies and jobs claim work; merely reading a ticket does not."""
+    """Only acknowledged work reserves tickets; reading or attempting does not."""
+    try:
+        rows = db.execute(
+            "SELECT role,content,tool_name,tool_call_id,tool_calls FROM messages "
+            "WHERE session_id=? AND role IN ('assistant','tool') ORDER BY id", (session_id,)
+        ).fetchall()
+    except sqlite3.Error:
+        # Older/missing transcript schemas cannot establish a response identity,
+        # but must not hide the ordinary run viewer.
+        return []
+    return confirmed_request_ids([dict(row) for row in rows])
+
+
+def confirmed_request_ids(messages: list[dict]) -> list[str]:
+    """Pure successful-work evidence shared with finalized usage accounting.
+
+    The shared scanner pairs by call ID and exact action and unwraps known MCP
+    envelopes. Payload prose and read-only request results never assign work.
+    Multiple confirmed tickets are returned without allocating session tokens.
+    """
+    # Lazy import keeps accounting's existing dependency on this run viewer
+    # acyclic while sharing its pure response parser.
+    from . import hermes_accounting
+    try:
+        calls = hermes_accounting._calls(messages)
+    except (hermes_accounting.Deferred, TypeError, AttributeError):
+        return []
     owned = set()
-    rows = db.execute("SELECT tool_calls FROM messages WHERE session_id=? AND role='assistant' "
-                      "AND tool_calls IS NOT NULL ORDER BY id", (session_id,)).fetchall()
-    for row in rows:
-        for call in _structured_calls(row['tool_calls']):
-            if not call['action'].endswith(('reply_request', 'set_request_status', 'start_job')):
-                continue
-            args = call['input']
-            if not isinstance(args, dict):
-                continue
-            for values in (args, args.get('inputs') or {}):
-                if not isinstance(values, dict):
-                    continue
-                rid = values.get('request_id') or values.get('parent_request_id')
-                if isinstance(rid, str) and rid:
-                    owned.add(rid)
+    actions = {'reply_request', 'set_request_status', 'start_job', 'prepare_task_workspace',
+               'publish_task_changes', 'capture_request_screenshot', 'capture_worker_screen',
+               'record_request_metrics'}
+    for call in calls:
+        if not isinstance(call.get('name'), str) or not isinstance(call.get('call_id'), str) or not call['call_id']:
+            continue
+        action = call['name'].removeprefix('mcp__gbox__')
+        if action not in actions and not action.startswith('job_'):
+            continue
+        if not call['has_response'] or call['wrapped_ambiguous'] or call['rejected']:
+            continue
+        args, result = call['args'], call['result']
+        if not isinstance(args, dict) or not isinstance(result, dict):
+            continue
+        ids = {source[key] for source in (args, args.get('input'), args.get('inputs'), args.get('metrics'))
+               if isinstance(source, dict) for key in ('request_id', 'parent_request_id')
+               if isinstance(source.get(key), str) and re.fullmatch(r'[0-9a-f]{16}', source[key])}
+        if len(ids) != 1:
+            continue
+        rid = next(iter(ids))
+        if any(result.get(key) not in (None, rid) for key in ('request_id', 'parent_request_id', 'attached_request_id')):
+            continue
+        if action.startswith('job_') or action == 'start_job':
+            tool = action[4:] if action.startswith('job_') else args.get('tool')
+            ok = (isinstance(result.get('id'), str) and re.fullmatch(r'[0-9a-f]{16}', result['id'])
+                  and result.get('state') in ('queued', 'running', 'succeeded')
+                  and isinstance(tool, str) and result.get('tool') == tool)
+        elif action in ('prepare_task_workspace', 'publish_task_changes'):
+            ok = result.get('request_id') == rid and isinstance(result.get('path'), str) and bool(result['path'])
+        elif action == 'capture_request_screenshot':
+            attachments = result.get('attachments')
+            ok = result.get('author') == 'agent' and isinstance(attachments, list) and any(
+                isinstance(a, dict) and isinstance(a.get('sha256'), str)
+                and re.fullmatch(r'[0-9a-f]{64}', a['sha256']) for a in attachments)
+        elif action == 'capture_worker_screen':
+            ok = (result.get('attached_request_id') == rid and isinstance(result.get('sha256'), str)
+                  and re.fullmatch(r'[0-9a-f]{64}', result['sha256']))
+        elif action == 'set_request_status':
+            ok = ((result.get('request_id') or result.get('id')) == rid
+                  and args.get('status') in ('open', 'in_progress', 'done', 'blocked')
+                  and result.get('status') == args['status'])
+        else:
+            field = 'metrics' if action == 'record_request_metrics' else 'posted_message'
+            ok = (result.get('ok') is True and result.get('request_id') == rid
+                  and isinstance(result.get(field), dict))
+        if ok:
+            owned.add(rid)
     return sorted(owned)
 
 
@@ -141,7 +199,7 @@ def list_runs(limit: int = 8) -> list[dict]:
                         "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                         **_usage(session),
                         "request_ids": _owned_requests(state, session['id'])
-                                       if session and r['status'] in ('claimed', 'running') else [],
+                                       if session else [],
                         "progress": _last_action(state, session["id"]) if session else
                                     ('Maintenance is running' if r['status'] in ('claimed', 'running') else
                                      'Completed without inference' if r['status'] == 'completed' else 'Run failed before inference'),
@@ -220,6 +278,7 @@ def get_run(run_id: str) -> dict | None:
         started = _stamp(r["started_at"])
         state = _db(home / "state.db")
         session = _session(state, r["job_id"], started) if state else None
+        request_ids = _owned_requests(state, session['id']) if session else []
         lines = []
         if session:
             messages = state.execute(
@@ -245,6 +304,7 @@ def get_run(run_id: str) -> dict | None:
                 "session_id": session["id"] if session else None, "model": session["model"] if session else None,
                 "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                 **_usage(session),
+                "request_ids": request_ids,
                 "output": "\n\n".join(lines)[-70000:] or "Hermes has not emitted output yet."}
     except (OSError, ValueError, sqlite3.Error):
         return None
@@ -260,7 +320,17 @@ def _tool_failed(content: str) -> bool:
     try:
         data = json.loads(content)
     except (ValueError, TypeError):
-        return content.lstrip().startswith(('BLOCKED:', 'ERROR:'))
+        text = content.lstrip()
+        if text.startswith(('BLOCKED:', 'ERROR:')):
+            return True
+        # Some MCP bridges return requests' transport exception as the result
+        # string instead of setting isError. Match its direct failure envelope,
+        # not quoted errors or successful terminal/documentation output.
+        first_line = text.splitlines()[0] if text else ''
+        return bool(re.match(r'Request failed:\s*HTTPS?ConnectionPool\(', first_line)
+                    and any(reason in first_line.lower() for reason in (
+                        'max retries exceeded with url:', 'failed to establish a new connection',
+                        'connection refused', 'read timed out', 'connect timeout')))
     if not isinstance(data, dict):
         return False
     if data.get('error') or data.get('isError') or data.get('is_error'):

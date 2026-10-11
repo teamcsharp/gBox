@@ -574,7 +574,7 @@ def write_gltf(path: Path, joints: list[dict], prims: list[dict], scale: float =
         m = np.eye(4, dtype=np.float32)
         m[:3, 3] = -wpos[i]
         ibm[i] = m.T.reshape(16)
-    images, textures, materials, gprims = [], [], [], []
+    images, textures, materials, gprims, samplers = [], [], [], [], []
     seen = {}
     for p in prims:
         if not len(p["tris"]):
@@ -589,16 +589,20 @@ def write_gltf(path: Path, joints: list[dict], prims: list[dict], scale: float =
         md = {"name": p.get("name", f"mat{len(materials)}"), "doubleSided": True,
               "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.9}}
         if p.get("tex") is not None:
-            key = id(p["tex"])
+            pixels = np.asarray(p["tex"], dtype=np.uint8)
+            wrap = tuple(p.get("wrap", (10497, 10497)))
+            key = (id(p["tex"]), wrap)
             if key not in seen:
-                images.append({"uri": "data:image/png;base64," + base64.b64encode(_png(p["tex"])).decode()})
-                wrap = p.get("wrap", (10497, 10497))
+                images.append({"uri": "data:image/png;base64," + base64.b64encode(_png(pixels)).decode()})
+                samplers.append({"magFilter": 9729, "minFilter": 9729, "wrapS": wrap[0], "wrapT": wrap[1]})
                 textures.append({"source": len(images) - 1, "sampler": len(textures)})
                 seen[key] = (len(textures) - 1, wrap)
             ti, wrap = seen[key]
             md["pbrMetallicRoughness"]["baseColorTexture"] = {"index": ti}
-            if (p["tex"][..., 3] < 250).any():
-                md["alphaMode"] = "MASK"
+            alpha = pixels[..., 3]
+            if (alpha < 250).any():
+                md["alphaMode"] = "BLEND" if ((alpha > 0) & (alpha < 255)).any() else "MASK"
+            md["pbrMetallicRoughness"]["baseColorFactor"] = [c / 255 for c in col]
         else:
             md["pbrMetallicRoughness"]["baseColorFactor"] = [c / 255 for c in col]
         materials.append(md)
@@ -612,8 +616,7 @@ def write_gltf(path: Path, joints: list[dict], prims: list[dict], scale: float =
           "buffers": [{"byteLength": len(blob), "uri": "data:application/octet-stream;base64," + base64.b64encode(bytes(blob)).decode()}],
           "extras": extras or {}}
     if images:
-        gl.update(images=images, textures=textures,
-                  samplers=[{"magFilter": 9729, "minFilter": 9729, "wrapS": 10497, "wrapT": 10497} for _ in textures])
+        gl.update(images=images, textures=textures, samplers=samplers)
     Path(path).write_text(json.dumps(gl))
     return Path(path)
 

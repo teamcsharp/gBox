@@ -43,12 +43,31 @@ def turns(events):
 
 
 def judge(req, evs):
+    # The script can be run directly from the share without an editable install.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from gbox.agent_contracts import native_swap_outcome
+
     calls = [e for e in evs if e.get("type") == "tool_call"]
     results = [e for e in evs if e.get("type") == "tool_result"]
     answer = " ".join(e.get("text", "") for e in evs if e.get("type") == "assistant")
     names = [c["name"] for c in calls]
     flags = []
-    errs = [r for r in results if '"error"' in (r.get("text") or "")[:400] or '"state": "failed"' in (r.get("text") or "")]
+    def failed(result):
+        body = result.get("text") or ""
+        try:
+            payload = json.loads(body)
+        except (TypeError, ValueError):
+            return bool(re.match(r"\s*(error|traceback|failed)\b", body, re.I))
+        if not isinstance(payload, dict):
+            return False
+        layers = [payload]
+        if isinstance(payload.get("result"), dict):
+            layers.append(payload["result"])
+        return any(layer.get("error") or layer.get("overlay_error") or
+                   layer.get("state") == "failed" or layer.get("status") in ("missing", "blocked", "failed")
+                   for layer in layers)
+
+    errs = [r for r in results if failed(r)]
     if errs:
         squash = lambda t: re.sub(r"\s+", " ", t)[:140]
         flags.append(f"{len(errs)} tool error(s): " + "; ".join(f"{r['name']}: {squash(r['text'])}" for r in errs[:3]))
@@ -66,6 +85,9 @@ def judge(req, evs):
         flags.append("claimed success without a verified result")
     if not answer.strip():
         flags.append("no final answer (still running, crashed, or asked a question)")
+    native = native_swap_outcome(evs)
+    if native["required"] and not native["verified"]:
+        flags.append(native["reason"])
     return flags, names, answer
 
 

@@ -24,7 +24,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
+
+from .agent_contracts import require_character
 
 LICENCE = "extracted from the operator's own copy, local use only"
 RE4GC = {"78ab9efa2e310db4": "Resident Evil 4 (USA) (Disc 1)", "e42c9b780c07c437": "Resident Evil 4 (USA) (Disc 2)"}
@@ -517,11 +519,13 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 class CharIn(BaseModel):
     op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
-    character: str = ""                    # slug, name or alias ("leon", "Aya", "my PSO character"); extract: what to extract
+    character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only)
+    active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
+                                 description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
     launch: bool = True                    # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
@@ -533,6 +537,7 @@ class CharIn(BaseModel):
     base: str = ""                         # add: store as a variant of this character (gbox.variants; Blender Live Link)
     replace: str = ""                      # add base=...: update this variant in place (Live Link push)
     props: list[dict] = []                 # add base=...: [{object, bone}] the Blender add-on bound
+    rig_roles: dict[str, str] = {}         # add: semantic body role -> joint node name in the imported model
     scale: dict = {}                       # add base=...: {"head": k} head-bone scale
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
@@ -544,6 +549,11 @@ class CharIn(BaseModel):
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
     pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+
+    @model_validator(mode="after")
+    def require_named_character(self):
+        require_character(self.op, self.character)
+        return self
 
 
 class CharOut(BaseModel):
@@ -1067,6 +1077,38 @@ def _sm64_run(ctx, game, e, work):
     return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"]}
 
 
+def _doa2_roster():
+    from . import doa2_chars
+    return doa2_chars.roster()
+
+
+def _doa2_run(ctx, game, e, work):
+    from . import doa2_chars
+    cache = Path(ctx.config.data_dir) / 'analysis' / 'doa2' / game['game_id'] / 'native-cloth-cache'
+    r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0],
+                         native_cache=cache if (cache / 'verification.json').is_file() else None)
+    m = r["manifest"]
+    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars native NaomiLib decoder",
+            "source_files": m["source"]["resource_ids"], "roles": r.get("roles", {}),
+            "extra": {"native_source_assembly": r["assembly"]},
+            "notes": f"{m['container_facts']['n_models']} native mesh parts and "
+                     f"{m['container_facts']['n_textures']} textures decoded. Assembly: {r['assembly']}. "
+                     "Complete source includes native accessory, chain and cloth draws when its verified cache is available. "
+                     "SUP source skin approximates curved deformation; motion and procedural limits are in core-report.json."}
+
+
+def _doa2_needs_refresh(ctx, game, meta):
+    """Upgrade a cached body-only extraction when the complete native cache exists."""
+    from . import doa2_chars
+    if not game or game.get('game_id') not in doa2_chars.GAME_IDS:
+        return False
+    if 'gbox.doa2_chars' not in meta.get('extraction_tool', ''):
+        return False
+    cache = Path(ctx.config.data_dir) / 'analysis' / 'doa2' / game['game_id'] / 'native-cloth-cache'
+    return (meta.get('native_source_assembly') != 'complete_native_source'
+            and (cache / 'verification.json').is_file())
+
+
 def _re4_run(ctx, game, e, work):
     out = export_leon(_gc_iso(ctx, game), work)
     return {"files": [out], "tool": "gbox.re4gc_models (characters.export_leon)", "source_files": ["em/pl00.drs (BINs 0, 2, 4, 5, 6, 7)"],
@@ -1137,6 +1179,10 @@ DEDICATED = [
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
+    ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
+     lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.jgr", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("doa2", lambda t, p: "dead or alive 2" in t and p == "dreamcast", _doa2_roster, _doa2_run),
     ("shenmue", lambda t, p: re.match(r"shenmue(?! ii)", t) is not None and p == "dreamcast",
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
@@ -1239,9 +1285,11 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         e = best_match(ros, what)
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
+        refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            if verify_entry(root, existing)['ok']:
+            refresh = _doa2_needs_refresh(ctx, game, existing)
+            if verify_entry(root, existing)['ok'] and not refresh:
                 return {"status": "in_collection", "extractor": name, "entry": existing}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
@@ -1252,7 +1300,12 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         meta = add(root, e["slug"], e["name"], r["files"],
                    {"game_title": game["title"], "game_id": game["game_id"], "platform": plat, "files": r["source_files"]},
                    r["tool"], rig={"roles": r["roles"]} if r.get("roles") else None, aliases=e["aliases"],
-                   notes=r.get("notes", ""), kind=e.get("kind", "character"))
+                   notes=r.get("notes", ""), kind=e.get("kind", "character"), extra=r.get('extra'))
+        if refresh:
+            for targets in meta.get('targets', {}).values():
+                for target in targets:
+                    target['needs_rebuild'] = True
+            meta = put_meta(root, meta)
         shutil.rmtree(work, ignore_errors=True)
         return {"status": "extracted", "extractor": name, "entry": meta}
     return None
@@ -1565,7 +1618,7 @@ def extract(ctx, inp: CharIn) -> dict:
     out = {"what": what, "kind": kind, "game": (game or {}).get("title"), "game_id": (game or {}).get("game_id")}
     lib = list_all(eroot if kind == "environment" else root)
     hit = best_match([m for m in lib if _same_game(m, game)], what) if what else None
-    if hit:                                                                                   # (a)
+    if hit and not _doa2_needs_refresh(ctx, game, hit):                                          # (a)
         return out | {"status": "in_collection", "route": "collection", "entry": _brief(hit, kind == "environment"),
                       "message": f"{hit['name']} is already in the collection (from {hit['source'].get('game_title')})."}
     if not game:
@@ -1631,6 +1684,21 @@ def _model_bytes(ctx, inp: CharIn) -> tuple[bytes, str]:
     raise ValueError("add needs from_clipboard=true, artifact=<sha256> or path=<a .glb/.gltf on the control-plane node>")
 
 
+def validate_rig_roles(model: Path, roles: dict[str, str]) -> dict:
+    """Reject stale or ambiguous joint mappings before registering an edited donor."""
+    if not roles:
+        return {}
+    gl, _, _, _ = _load(model)
+    joints = {j for skin in gl.get('skins', []) for j in skin['joints']}
+    if any(type(j) is not int or not 0 <= j < len(gl.get('nodes', [])) for j in joints):
+        raise ValueError('Rig contains an invalid skin joint node index')
+    names = [gl['nodes'][j].get('name', f'node{j}') for j in joints]
+    for role, name in roles.items():
+        if not role.strip() or not name.strip() or names.count(name) != 1:
+            raise ValueError(f'Rig role {role!r} must identify one named skin joint: {name!r}')
+    return dict(roles)
+
+
 def add_model(ctx, inp: CharIn) -> dict:
     """A model edited elsewhere (Blender) -> a new collection entry."""
     name = inp.character.strip()
@@ -1664,11 +1732,12 @@ def add_model(ctx, inp: CharIn) -> dict:
     if f.suffix == ".gltf" and not data.lstrip()[:1] == b"{":
         raise ValueError("that file isn't a glTF / GLB model")
     f.write_bytes(data)
+    mapped_roles = validate_rig_roles(f, inp.rig_roles)
     game = _game(ctx, inp) if (inp.session_id or inp.game_id or inp.game) else None
     src = {"game_title": (game or {}).get("title") or "edited model", "game_id": (game or {}).get("game_id"),
            "from": "clipboard" if inp.from_clipboard else inp.artifact or inp.path}
     meta = add(root, slug, name, [f], src, "characters op=add (edited model)", kind=inp.kind if inp.kind in KINDS else "character",
-               aliases=[name])
+               aliases=[name], rig={"roles": mapped_roles} if mapped_roles else None)
     shutil.rmtree(work, ignore_errors=True)
     return {"status": "added", "entry": meta, "env": env}
 
@@ -1834,6 +1903,9 @@ def characters_tool(inp: CharIn, ctx):
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
+    from . import doa2_swap
+    if gid in doa2_swap.GAME_IDS:
+        return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
     from . import sm64_swap
     if gid in sm64_swap.GAME_IDS and inp.slot == "player":        # SM64: build sm64_<slug> if missing, launch it
         return {"result": out | sm64_swap.use(ctx, meta, game, inp)}
@@ -1850,6 +1922,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import sa2_chars
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
+    from . import jgr
+    if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
+        return {"result": out | jgr.use(ctx, meta, game, inp)}
     from . import pso_player
     if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
         return {"result": out | pso_player.use(ctx, meta, game, inp)}

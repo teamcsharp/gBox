@@ -1,11 +1,14 @@
 import base64
 import json
 import struct
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
 
 from gbox.config import Config
+from gbox.asset_library import _IndexMetadata
 from gbox.server import create_app
 
 
@@ -49,8 +52,122 @@ def test_unified_collection_includes_companions_packages_and_extracted_artifacts
     page = client.get('/api/assets').json()
     assert page['total_all'] == 5
     assert {'character', 'model', 'environment', 'texture'} <= set(page['kinds'])
-    assert {a['name'] for a in page['items']} == {'Mario', 'Mario · texture.png', 'Castle', 'Sword', 'captured.glb'}
-    assert all('_path' not in a and a['preview_url'] for a in page['items'])
+    assert {a['name'] for a in page['items']} == {'Mario', 'Castle', 'Sword', 'captured.glb'}
+    assert next(a for a in page['items'] if a['name'] == 'Mario')['texture_count'] == 1
+    flat = client.get('/api/assets?nest=false').json()
+    assert {a['name'] for a in flat['items']} == {'Mario', 'Mario · texture.png', 'Castle', 'Sword', 'captured.glb'}
+    assert all('_path' not in a and a['preview_url'] for a in flat['items'])
+
+
+def test_textures_are_listed_under_their_character_only_on_request(assets):
+    app, client, cfg = assets
+    p = collection(cfg, 'doa2_gen', 'Gen Fu', 'Dead or Alive 2 - Limited Edition (Japan)', 500)
+    (p / 'GEN00_parts.glb').write_bytes(glb())
+    for i in range(3):
+        (p / f'tex{i:03}.png').write_bytes(b'png%d' % i)
+    package = cfg.data_dir / 'uap' / 'sword'; package.mkdir(parents=True)
+    (package / 'manifest.json').write_text(json.dumps({'name': 'Sword', 'source': {'game_title': 'Zelda'}}))
+    (package / 'blade.png').write_bytes(b'blade')
+    app.state.store.put_artifact(b'image', 'loose.png', 'image/png', {'tool': 'scene_capture'})
+    page = client.get('/api/assets').json()
+    names = {a['name'] for a in page['items']}
+    # The default top level contains models; unowned textures remain in the explicit filter.
+    assert names == {'Gen Fu', 'Gen Fu · GEN00_parts.glb', 'Sword'}
+    gen = next(a for a in page['items'] if a['name'] == 'Gen Fu')
+    sword = next(a for a in page['items'] if a['name'] == 'Sword')
+    assert gen['texture_count'] == 3 and sword['texture_count'] == 1
+    assert page['nested'] == 4 and page['hidden_textures'] == 5
+    assert page['total'] + page['hidden_textures'] == page['total_all']
+    # A package's human name can differ from its filenames; searching it retains all its textures.
+    sword_search = client.get('/api/assets', params={'q': 'Sword', 'kind': 'model'}).json()
+    assert len(sword_search['items']) == 1 and sword_search['items'][0]['texture_count'] == 1
+    assert sword_search['nested'] == 1
+    sword_tree = client.get('/api/assets', params={'owner': sword_search['items'][0]['id']}).json()
+    assert [a['name'] for a in sword_tree['items']] == ['blade.png']
+    groups = client.get('/api/asset-groups').json()['groups']
+    assert {g['title']: g['count'] for g in groups}['Dead or Alive 2 - Limited Edition (Japan)'] == 2
+    tree = client.get('/api/assets', params={'owner': gen['id'], 'sort': 'name'}).json()
+    assert [a['name'] for a in tree['items']] == ['Gen Fu · tex000.png', 'Gen Fu · tex001.png', 'Gen Fu · tex002.png']
+    assert all(a['kind'] == 'texture' and a['owner'] == gen['id'] for a in tree['items'])
+    # A type filter keeps the character's tree; the texture filter and search list textures directly.
+    assert client.get('/api/assets?kind=character').json()['items'][0]['texture_count'] == 3
+    textures = client.get('/api/assets?kind=texture').json()
+    assert textures['total'] == 5 and all('texture_count' not in a for a in textures['items'])
+    found = client.get('/api/assets?q=tex001').json()
+    assert [a['name'] for a in found['items']] == ['Gen Fu · tex001.png']
+
+
+def test_owned_textures_paginate_without_leaking_into_model_pages(assets):
+    app, client, cfg = assets
+    folder = collection(cfg, 'many', 'Many textures')
+    for i in range(205):
+        (folder / f'tex{i:03}.png').write_bytes(bytes([i % 256]))
+    page = client.get('/api/assets?limit=1').json()
+    assert page['total'] == 1 and page['nested'] == 205 and not page['has_more']
+    owner = page['items'][0]
+    assert owner['texture_count'] == 205
+    first = client.get('/api/assets', params={'owner': owner['id'], 'sort': 'name', 'limit': 200}).json()
+    last = client.get('/api/assets', params={'owner': owner['id'], 'sort': 'name', 'offset': 200, 'limit': 200}).json()
+    assert first['total'] == last['total'] == 205 and first['has_more'] and not last['has_more']
+    assert len(first['items']) == 200 and len(last['items']) == 5
+    assert len({a['id'] for a in first['items'] + last['items']}) == 205
+    assert all(a['kind'] == 'texture' and a['owner'] == owner['id'] and '_path' not in a for a in first['items'] + last['items'])
+
+
+def test_unowned_textures_are_discoverable_without_default_texture_cards(assets):
+    app, client, cfg = assets
+    app.state.store.put_artifact(b'loose', 'loose.png', 'image/png', {'tool': 'scene_capture', 'title': 'Loose game'})
+    default = client.get('/api/assets').json()
+    assert default['total'] == 0 and default['hidden_textures'] == 1 and default['nested'] == 0
+    assert 'texture' in default['kinds']
+    assert client.get('/api/asset-groups').json()['groups'] == []
+    for params in ({'kind': 'texture'}, {'nest': 'false'}, {'q': 'loose.png'}):
+        page = client.get('/api/assets', params=params).json()
+        assert [a['name'] for a in page['items']] == ['loose.png']
+
+
+def test_default_cards_exclude_data_and_audio_but_keep_explicit_access(assets):
+    app, client, cfg = assets
+    folder = collection(cfg)
+    (folder / 'mesh.bin').write_bytes(b'mesh')
+    (folder / 'voice.wav').write_bytes(b'voice')
+    page = client.get('/api/assets').json()
+    assert [a['name'] for a in page['items']] == ['Mario']
+    assert page['total_all'] == 3 and page['hidden_assets'] == 2 and page['hidden_textures'] == 0
+    assert {'data', 'audio'} <= set(page['kinds'])
+    assert client.get('/api/asset-groups').json()['groups'][0]['count'] == 1
+    assert client.get('/api/assets?kind=data').json()['items'][0]['format'] == 'BIN'
+    assert client.get('/api/assets?kind=audio').json()['items'][0]['format'] == 'WAV'
+    assert client.get('/api/assets?q=mesh.bin').json()['items'][0]['format'] == 'BIN'
+    assert client.get('/api/assets?nest=false').json()['total'] == 3
+
+
+def test_cold_asset_query_does_not_wait_behind_job_store_lock(assets):
+    app, client, cfg = assets
+    collection(cfg)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        # A frame/job write owns this lock; listing committed assets must still respond.
+        with app.state.store.lock:
+            response = pool.submit(client.get, '/api/asset-groups').result(timeout=2)
+            assert response.status_code == 200
+            assert response.json()['groups'][0]['count'] == 1
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_index_metadata_is_read_only_and_consistent_during_new_commits(assets):
+    app, client, cfg = assets
+    store = app.state.store
+    with _IndexMetadata(store.dir) as snapshot:
+        assert snapshot.all('asset_copy') == []
+        store.put('asset_copy', 'new', {'id': 'new', 'ts': 123})
+        assert snapshot.get('asset_copy', 'new') is None
+        with pytest.raises(sqlite3.OperationalError, match='readonly'):
+            snapshot.db.execute("INSERT INTO docs VALUES ('asset_copy','bad','{}')")
+    with _IndexMetadata(store.dir) as refreshed:
+        assert refreshed.get('asset_copy', 'new')['ts'] == 123
+        assert refreshed.get('asset_copy', 'bad') is None
 
 
 def test_pagination_exposes_entire_collection_and_sorts_before_slicing(assets):
@@ -94,8 +211,10 @@ def test_existing_clipboard_and_native_blender_copies_are_included(assets):
                         'input': {'character': 'mario'}, 'finished': 999})
     r = client.post('/api/clipboard', json={'kind': 'image', 'name': 'Copied image', 'b64': base64.b64encode(b'image').decode()})
     assert r.status_code == 200
-    page = client.get('/api/assets?sort=copied').json()
+    page = client.get('/api/assets?sort=copied&nest=false').json()
     assert page['items'][0]['name'] == 'Copied image' and page['items'][0]['kind'] == 'texture'
+    visible = client.get('/api/assets?sort=copied').json()
+    assert [a['name'] for a in visible['items']] == ['Mario']
     assert next(a for a in page['items'] if a['name'] == 'Mario')['copied'] == 999
 
 

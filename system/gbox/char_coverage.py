@@ -15,6 +15,7 @@ import re
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
 # read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
 WRITERS = [
+    ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
@@ -26,6 +27,10 @@ WRITERS = [
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
+    ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
+     "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
+    ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
+    ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
@@ -38,7 +43,7 @@ DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("R
              ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto III", "ps2"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
              ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
-             ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp")]
+             ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
 
 
 def _mod(name):
@@ -85,8 +90,12 @@ def coverage(ctx, api) -> dict:
     """The rip / reimport matrix over every game gBox has studied: games with a writer, games the collection came from,
     and the games docs/model_swaps.md discusses."""
     from . import characters as C
+    from . import game_capabilities as GC
+    from .favorite_capabilities import read_favorites
     chars = api(ctx, "GET", "/api/characters")
     ids: dict[str, dict] = {}
+    favorites, catalog = read_favorites(ctx, api)
+    ids.update((g['game_id'], g) for g in favorites)
 
     def game(gid):
         if gid not in ids:
@@ -123,7 +132,10 @@ def coverage(ctx, api) -> dict:
         missing = [r["name"] for r in roster if r["slug"] not in slugs]
         tools = sorted({m.get("extraction_tool") or "" for m in have} - {""})
         w = writer_for(g)
+        capabilities = GC.describe(g, chars, extractor=ex, roster=roster, writer=w)
         rows.append({"game_id": gid, "title": g.get("title"), "platform": g.get("platform"),
+                     "favorite": bool(g.get('favorite')), "library": g.get('library'),
+                     "capabilities": capabilities, "backlog": GC.backlog(capabilities),
                      "rip": {"extractor": ex or (tools[0] if tools else None), "roster": len(roster),
                              "in_collection": sorted(slugs), "usable": sorted(m["slug"] for m in have
                                                                              if (m.get("rig") or {}).get("roles")),
@@ -132,7 +144,11 @@ def coverage(ctx, api) -> dict:
                      {"writer": (w or {}).get("writer"), "routed": False, "slots": [],
                       "fallback": "overlay (characters op=overlay: drawn over the player in the desktop app)"}})
     rows.sort(key=lambda r: (not r["reimport"]["routed"], not r["rip"]["in_collection"], r["title"] or ""))
-    return {"games": rows, "summary": {"games": len(rows), "rip": sum(bool(r["rip"]["extractor"]) for r in rows),
+    return {"games": rows, "favorite_catalog": catalog,
+            "summary": {"games": len(rows), "favorites": len(favorites),
+                                       "complete_sources_verified": sum(r['capabilities']['complete_source_verified'] for r in rows),
+                                       "verified_fighter_costume_sources": sum(bool(r['capabilities']['verified_fighter_costume_source']) for r in rows),
+                                       "rip": sum(bool(r["rip"]["extractor"]) for r in rows),
                                        "reimport": sum(r["reimport"]["routed"] for r in rows),
                                        "both": sum(bool(r["rip"]["extractor"]) and r["reimport"]["routed"] for r in rows),
                                        "collection": len([m for m in chars if m.get("kind", "character") == "character"])}}

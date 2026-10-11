@@ -112,23 +112,34 @@ class Incident:
         raw = self.store.artifact_path(out['sha256']).read_bytes()
         image = Image.open(io.BytesIO(raw)).convert('RGB').resize((96, 72))
         luma = ImageStat.Stat(image.convert('L')).mean[0]
-        self.step(label, f'Game screenshot captured; mean RGB luminance {luma:.2f}.', attachment={
-            'sha256': ref['sha256'], 'name': label.replace(' ', '-') + '.png', 'type': 'image/png', 'size': ref['size']})
-        return image, luma
+        covered = out.get('covered', 0)
+        self.step(label, f'Game screenshot captured; mean RGB luminance {luma:.2f}'
+                         + (f'; {covered}/9 capture points covered by another window.' if covered else '.'),
+                  attachment={'sha256': ref['sha256'], 'name': label.replace(' ', '-') + '.png',
+                              'type': 'image/png', 'size': ref['size']})
+        return image, luma, covered
 
     def observe(self):
-        previous, visible = None, False
+        previous, visible, covered_error = None, False, None
         errors = []
         for delay in (0, 2, 4, 8):
             self.sleep(delay)
             try:
-                image, luma = self.frame('verify recovery frame')
+                image, luma, covered = self.frame('verify recovery frame')
+                if covered:
+                    covered_error = f'frame capture had {covered}/9 points covered by another window (pixels are the window surface)'
+                    # A newly exposed static game is not motion relative to an
+                    # obscuring window. Start a fresh clear-frame comparison.
+                    previous = None
+                    continue
                 visible |= luma > 3
                 if previous is not None and luma > 3 and ImageStat.Stat(ImageChops.difference(previous, image)).mean[0] > .6:
                     return {'visible': True, 'motion': True}
                 previous = image
             except Exception as exc:
                 errors.append(str(exc)[:500])
+        if covered_error and not visible:
+            errors.append(covered_error)
         return {'visible': visible, 'motion': False, 'errors': errors}
 
     def capture(self):
