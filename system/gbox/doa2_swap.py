@@ -45,8 +45,9 @@ def fighter_slot(slot: str) -> tuple[str, str | None]:
     if len(parts) > 2:
         raise ValueError("Use fighter name or fighter name:costume")
     query = parts[0].strip().casefold()
-    if query == "player":
-        query = "kasumi"
+    if query in {"", "player", "default"}:
+        raise ValueError("DOA2 requires an explicit fighter and optional costume; the marked point and current player "
+                         "have not been resolved. Use slot='ein:01' for known Ein C1, or another verified fighter name.")
     variants = [(key, key, []) for key in ('LOR', 'MAM', 'PDG', 'WBA')]
     for key, name, aliases in [*doa2_chars.FIGHTERS, *variants]:
         if query in {s.casefold() for s in [key, name, *aliases]}:

@@ -1,6 +1,8 @@
 """Native joint-local reintegration, bind transforms and capability boundaries."""
 import copy
 import struct
+import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -101,10 +103,134 @@ def test_unknown_joint_or_invalid_donor_rejected_before_reintegration():
         S.encode_parts(chr_data, binary, [primitive], profile, size_budget=len(chr_data))
 
 
-@pytest.mark.parametrize("query,result", [("player", ("KAS", None)), ("Ein:1", ("KTE", "01")),
+@pytest.mark.parametrize("query,result", [("Kasumi", ("KAS", None)), ("KAS:00", ("KAS", "00")),
+                                         ("Ein:1", ("KTE", "01")), ("fighter:KTE:01", ("KTE", "01")),
                                          ("fighter:Lei Fang:03", ("LEI", "03"))])
 def test_fighter_names_and_costume_slots(query, result):
     assert S.fighter_slot(query) == result
+
+
+@pytest.mark.parametrize("query", ["player", "Player", " default ", "", " ",
+                                  "fighter:player", "fighter:default", "fighter:"])
+def test_ambiguous_fighter_is_rejected_before_disc_build_or_launch(monkeypatch, query):
+    from gbox import characters as C, filemods, gdrom
+    build_fighter = S.build_fighter
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("An unresolved DOA2 player must not read a disc, write a mod, record a target or launch")
+
+    monkeypatch.setattr(gdrom, "GDRom", unexpected)
+    monkeypatch.setattr(filemods, "mod_dir", unexpected)
+    monkeypatch.setattr(S, "build_fighter", unexpected)
+    monkeypatch.setattr(C, "_dc_gdi", unexpected)
+    monkeypatch.setattr(C, "_api", unexpected)
+    monkeypatch.setattr(C, "_launch", unexpected)
+    with pytest.raises(ValueError, match="explicit fighter"):
+        S.use(None, {"slug": "sa2_amy_rose"}, {"game_id": "1de2e7634f3161ff"},
+              SimpleNamespace(slot=query, x=0.47, y=0.57))
+    with pytest.raises(ValueError, match="ein:01"):
+        build_fighter("unopened.gdi", "unopened-character", "unwritten-mod", query)
+
+
+def test_public_characters_use_default_doa2_slot_rejects_before_build_or_launch(monkeypatch):
+    from gbox import characters as C, filemods, oot_swap
+    meta = {"slug": "sa2_amy_rose", "name": "Amy Rose", "aliases": [], "source": {"game_id": "sa2"}}
+
+    def api(ctx, method, path, **kwargs):
+        assert (method, path) == ("GET", "/api/characters")
+        return [meta]
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("The public DOA2 default route must not create or launch a Kasumi replacement")
+
+    monkeypatch.setattr(C, "_api", api)
+    monkeypatch.setattr(C, "_game", lambda *a: {"game_id": "1de2e7634f3161ff", "title": "DOA2LE"})
+    monkeypatch.setattr(oot_swap, "tool", lambda *a: None)
+    monkeypatch.setattr(filemods, "mod_dir", unexpected)
+    monkeypatch.setattr(S, "build_fighter", unexpected)
+    monkeypatch.setattr(C, "_launch", unexpected)
+    inp = C.CharIn(op="use", character="sa2_amy_rose", game_id="1de2e7634f3161ff", x=0.47, y=0.57)
+    assert inp.slot == "player"  # The generic default for other engines is preserved.
+    with pytest.raises(ValueError, match="explicit fighter"):
+        C.characters_tool(inp, None)
+
+
+def test_public_characters_use_explicit_ein_c1_preserves_native_target(monkeypatch, tmp_path):
+    from gbox import characters as C, filemods, oot_swap
+    meta = {"slug": "sa2_amy_rose", "name": "Amy Rose", "aliases": [], "source": {"game_id": "sa2"}}
+    observed = {"builds": [], "launches": [], "targets": []}
+
+    def api(ctx, method, path, **kwargs):
+        if (method, path) == ("GET", "/api/characters"):
+            return [meta]
+        assert (method, path) == ("POST", "/api/characters/sa2_amy_rose/targets")
+        observed["targets"].append(kwargs["json"])
+
+    def build(gdi, source, output, fighter, costume, **kwargs):
+        observed["builds"].append((gdi, source, output, fighter, costume))
+        return {"fixture": "native build delegated; no ROM or filesystem changes"}
+
+    def launch(ctx, gid, mod, node):
+        observed["launches"].append((gid, mod, node))
+        return {"fixture": "launch delegated; no process started"}
+
+    monkeypatch.setattr(C, "_api", api)
+    monkeypatch.setattr(C, "_game", lambda *a: {"game_id": "1de2e7634f3161ff", "title": "DOA2LE"})
+    monkeypatch.setattr(oot_swap, "tool", lambda *a: None)
+    monkeypatch.setattr(C, "library_root", lambda *a: tmp_path / "characters")
+    monkeypatch.setattr(C, "_dc_gdi", lambda *a: "owned-original.gdi")
+    monkeypatch.setattr(filemods, "mod_dir", lambda *a: tmp_path / "mod-output")
+    monkeypatch.setattr(S, "build_fighter", build)
+    monkeypatch.setattr(C, "_launch", launch)
+    ctx = SimpleNamespace(config=None, progress=lambda *a: None)
+    result = C.characters_tool(C.CharIn(op="use", character="sa2_amy_rose", game_id="1de2e7634f3161ff",
+                                      slot="ein:01"), ctx)["result"]
+    assert observed["builds"] == [("owned-original.gdi", tmp_path / "characters" / "sa2_amy_rose",
+                                    tmp_path / "mod-output", "KTE", "01")]
+    assert observed["targets"][0]["slot"] == "fighter:KTE:01"
+    assert observed["launches"] == [("1de2e7634f3161ff", "doa2_kte01_sa2_amy_rose", C.HOST_OS)]
+    assert result["fighter"] == "KTE" and result["costume"] == "01"
+    assert result["gameplay_verified"] is False
+
+
+def test_rejected_doa2_job_auto_report_preserves_requested_model_and_point(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from gbox.agent import ChatHub
+    from gbox.server import create_app
+
+    # In-process fixture API only: no real provider, worker, save capture or session controls.
+    dispatched = []
+    monkeypatch.setattr(ChatHub, "post", lambda *args: dispatched.append(args))
+    app = create_app(cfg)
+    store = app.state.store
+    store.put("session", "fixture-ended-session", {"session_id": "fixture-ended-session", "state": "ended",
+              "game_id": "1de2e7634f3161ff", "title": "Dead or Alive 2 - Limited Edition (Japan)"})
+    inp = {"op": "use", "character": "sa2_amy_rose", "session_id": "fixture-ended-session",
+           "slot": "player", "x": 0.47, "y": 0.57}
+    store.put("job", "fixture-doa2-rejection", {"id": "fixture-doa2-rejection", "tool": "characters",
+              "input": inp, "worker_id": "fixture-worker", "state": "running", "started": time.time(),
+              "parent_request_id": None})
+    with pytest.raises(ValueError) as rejected:
+        S.fighter_slot(inp["slot"])
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    response = client.post("/api/workers/fixture-worker/result", json={"job_id": "fixture-doa2-rejection",
+                           "ok": False, "error": f"ValueError: {rejected.value}"})
+    assert response.status_code == 200 and response.json()["state"] == "failed"
+    deadline = time.monotonic() + 2
+    reports = []
+    while time.monotonic() < deadline:
+        reports = [r for r in store.all("request") if (r.get("context") or {}).get("job_id") == "fixture-doa2-rejection"]
+        if reports and dispatched:
+            break
+        time.sleep(0.01)
+    assert len(reports) == 1
+    report = reports[0]
+    assert report["context"]["model"] == "sa2_amy_rose"
+    assert report["context"]["moment"] == "x=0.47, y=0.57"
+    assert report["context"]["session_id"] == "fixture-ended-session"
+    assert "Target: player" in report["body"] and "explicit fighter" in report["body"]
+    assert "ein:01" in report["body"]
+    assert report["context"]["auto_report"] is True
 
 
 def test_invalid_costume_and_unknown_fighter_do_not_fall_back_to_kasumi():
