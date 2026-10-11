@@ -490,10 +490,21 @@ def create_app(config: Config) -> FastAPI:
     # --- swap / move: a running game -> the same game with another mod (or none), on the same machine or another one ---
     # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
-    def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None) -> dict:
+    def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None, should_stop=None) -> dict:
         j = submit(JobRequest(tool=tool, input=inp, require_worker=worker), actor)
         t0 = time.time()
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
+            if should_stop and should_stop():
+                # the parent was cancelled: drop a queued child, ask a running one to stop, and stop waiting (#1297)
+                with store.lock:
+                    cj = store.get("job", j.id)
+                    if cj["state"] == JobState.QUEUED:
+                        cj.update(state=JobState.FAILED, finished=time.time(), error="cancelled with its parent task")
+                    elif cj["state"] == JobState.RUNNING:
+                        cj["cancel"] = True
+                    store.put("job", j.id, cj)
+                raise HTTPException(409, "cancelled by the operator before the replacement started; "
+                                         "your current game was kept running")
             if progress and jj.get('progress'):
                 progress(jj['progress'].get('pct', 0), jj['progress'].get('msg', ''))
             time.sleep(0.5)
@@ -517,8 +528,10 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, f"no online gBox worker '{to}'")
         return hit
 
-    def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None) -> dict:
+    def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
+                     should_stop=None) -> dict:
         say = progress or (lambda pct, msg: None)
+        stop = should_stop or (lambda: False)
         sess = store.get("session", sid) or _404()
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
@@ -530,7 +543,7 @@ def create_app(config: Config) -> FastAPI:
         if mod:
             say(2, "Preparing replacement files; your current game keeps running")
             staged = _run_job('prepare_mod', {'game': game, 'mod': mod}, actor, worker=tw['id'], wait=1800,
-                              progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg))
+                              progress=lambda pct, msg: say(min(60, 2 + pct * .58), msg), should_stop=stop)
             if isinstance(staged, dict) and (staged.get('ready') is False or
                     (staged.get('source_mod') and staged['source_mod'] != mod)):
                 raise HTTPException(409, 'Prepared replacement does not identify the requested mod')
@@ -546,13 +559,21 @@ def create_app(config: Config) -> FastAPI:
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
-                old_luma = _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30).get("mean_luma")
+                old_luma = _run_job("get_frame", {"session_id": sid}, actor, worker=old_w, wait=30,
+                                    should_stop=stop).get("mean_luma")
             except HTTPException:
                 pass
             try:
-                art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=90)["result"]["artifact"]
-            except (HTTPException, KeyError) as e:
+                art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=90,
+                               should_stop=stop)["result"]["artifact"]
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({e.detail}). Your game was kept running.")
+            except KeyError as e:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
+        if stop():
+            raise HTTPException(409, "cancelled by the operator before the replacement started; your current game was kept running")
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900)
@@ -633,6 +654,10 @@ def create_app(config: Config) -> FastAPI:
         return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": mod,
                 "launch_mod": launch_mod, "state_loaded": loaded, "notes": notes}
 
+    # ids of in-server job threads alive in THIS process; a "running" session_swap missing here was left by a previous
+    # server process (restart) and nothing will ever finish or cancel it unless we retire it (#1297)
+    _server_job_threads: set[str] = set()
+
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
         sess = store.get("session", sid) or _404()
@@ -652,6 +677,7 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, 'This session has ended. Open the running game before replacing its models.')
             job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
                       state=JobState.RUNNING, started=time.time())
+            _server_job_threads.add(job.id)
             store.put("job", job.id, job.model_dump())
 
         def prog(pct, msg):
@@ -666,7 +692,8 @@ def create_app(config: Config) -> FastAPI:
 
         def go():
             try:
-                out, state, err = session_swap(sid, mod, to, actor, keep_state, prog), JobState.SUCCEEDED, None
+                out, state, err = session_swap(sid, mod, to, actor, keep_state, prog,
+                                               lambda: bool((store.get("job", job.id) or {}).get("cancel"))), JobState.SUCCEEDED, None
             except HTTPException as e:
                 out, state, err = None, JobState.FAILED, str(e.detail)
             except Exception as e:                             # noqa: BLE001
@@ -674,6 +701,9 @@ def create_app(config: Config) -> FastAPI:
             with store.lock:
                 store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
                                                                      "error": err})
+                _server_job_threads.discard(job.id)
+            if state == JobState.FAILED and err and err.startswith('cancelled by the operator'):
+                return                                         # the operator stopped it: not a mod failure to report
             if state == JobState.FAILED and mod:
                 try:
                     req_auto_mod_failure(AutoFailureIn(session_id=sid, game=sess.get("title") or "", model=mod,
@@ -1431,13 +1461,19 @@ def create_app(config: Config) -> FastAPI:
             elif j["state"] == JobState.RUNNING:
                 j["cancel"] = True
             store.put("job", jid, j)
+        from .job_maintenance import is_orphaned_server_job, retire_orphaned_server_jobs
+        if is_orphaned_server_job(j | {"id": jid}, _server_job_threads):
+            # its thread died with an earlier server process: nothing would ever see the cancel flag (#1297)
+            retire_orphaned_server_jobs(store, _server_job_threads)
+            j = store.get("job", jid) or j
         store.audit(actor, "job.cancel", jid, {"state": j["state"]})
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
     def retire_unrunnable_jobs(worker_snapshot=None):
         """Keep dead sessions and long-gone workers out of the visible active queue."""
-        from .job_maintenance import retire_stalled_snapshots
+        from .job_maintenance import retire_orphaned_server_jobs, retire_stalled_snapshots
         retire_stalled_snapshots(store)
+        retire_orphaned_server_jobs(store, _server_job_threads)
         now = time.time()
         with store.lock:
             available = {key for w in (workers() if worker_snapshot is None else worker_snapshot)
