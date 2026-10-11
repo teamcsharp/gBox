@@ -26,7 +26,8 @@ WRITERS = [
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
-    ("jgr", ["player", "<00-15>"], "a Jet Grind Radio character's high-detail body (PLAYER.AFS PLAY + PTEX texture 0)"),
+    ("jgr", ["<name> (beat = new-game player)", "id:<0-15>", "<00-15>"],
+     "a Jet Grind Radio character's high-detail body (PLAYER.AFS PLAY + PTEX texture 0), named from the disc"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),

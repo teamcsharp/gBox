@@ -515,10 +515,13 @@ def _rgb565(c) -> int:
     return _px16(c, 1)
 
 
-def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: bool = False) -> bytes:
+def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: bool = False,
+           mips: bool = False) -> bytes:
     """Square power-of-two image -> [GBIX] + PVRT VQ: data format 3 (256-entry codebook of 2x2 blocks, k-means) or,
     small=True, format 0x10 (small VQ: the codebook size pvr_decode expects for the width), + one twiddled index
-    byte per block. pix: 16-bit pixel format of the codebook. 256x256 = 18 KB."""
+    byte per block. pix: 16-bit pixel format of the codebook. 256x256 = 18 KB. mips=True writes data format 4 (VQ
+    with mipmaps): the same codebook, then every smaller level's twiddled indexes smallest first (the 1x1 and 2x2
+    levels one byte each, as pvr_decode reads them), then the full-size level."""
     img = np.asarray(rgba, float)[..., :3]
     h, w = img.shape[:2]
     if h != w or w & (w - 1) or w < 8:
@@ -542,13 +545,27 @@ def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: 
     lab = labels()
     book = b"".join(struct.pack("<4H", *[_px16(cb[c, 3 * q:3 * q + 3], pix) for q in range(4)]) for c in range(k))
     book += bytes(8 * (nbook - k))
-    idx = bytearray(bw * bw)
-    lab = lab.reshape(bw, bw)                                # [by, bx]
-    for by in range(bw):
-        for bx in range(bw):
-            idx[_twiddle(bx, by)] = lab[by, bx]
-    body = book + bytes(idx)
-    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), pix, 0x10 if small else 3, 0, w, h) + body
+    def level(lab_grid, n):
+        out = bytearray(n * n)
+        for by in range(n):
+            for bx in range(n):
+                out[_twiddle(bx, by)] = lab_grid[by, bx]
+        return bytes(out)
+    idx = level(lab.reshape(bw, bw), bw)                     # [by, bx]
+    pre = b""
+    if mips:
+        if small:
+            raise ValueError("mipmapped small VQ (0x11) is not written")
+        levels, sz = [], w // 2
+        while sz >= 2:                                       # level sz x sz texels = (sz/2)^2 blocks
+            sm = img.reshape(sz, h // sz, sz, w // sz, 3).mean((1, 3))
+            sb = np.stack([sm[0::2, 0::2], sm[1::2, 0::2], sm[0::2, 1::2], sm[1::2, 1::2]], 2).reshape(-1, 12)
+            sl = ((sb[:, None, :] - cb[None]) ** 2).sum(2).argmin(1)
+            levels.append(level(sl.reshape(sz // 2, sz // 2), sz // 2))
+            sz //= 2
+        pre = levels[-1][:1] + b"".join(reversed(levels))   # 1x1 level: one byte, then 2x2 ... w/2 levels
+    body = book + pre + idx
+    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), pix, 0x10 if small else 4 if mips else 3, 0, w, h) + body
     return (b"GBIX" + struct.pack("<II", 8, gbix) + bytes(4) if gbix is not None else b"") + pvrt
 
 
@@ -566,8 +583,8 @@ def pvr_twiddled(rgba, pix: int = 1) -> bytes:
 
 
 def pvr_like(old: bytes, rgb_img) -> bytes:
-    """`rgb_img` (PIL) encoded like the PVR `old` (same size, pixel and data format; its GBIX kept): VQ (3), small
-    VQ (0x10) or twiddled (1). ValueError for other formats."""
+    """`rgb_img` (PIL) encoded like the PVR `old` (same size, pixel and data format; its GBIX kept): VQ (3), VQ with
+    mipmaps (4), small VQ (0x10) or twiddled (1). ValueError for other formats."""
     q = old.find(b"PVRT")
     pix, fmt, w, h = old[q + 8], old[q + 9], *struct.unpack_from("<HH", old, q + 12)
     img = np.asarray(rgb_img.convert("RGB").resize((w, h)))
@@ -575,6 +592,11 @@ def pvr_like(old: bytes, rgb_img) -> bytes:
         new = pvr_vq(img, pix=pix)
     elif fmt == 0x10:
         new = pvr_vq(img, pix=pix, small=True)
+    elif fmt == 4:                                           # VQ + mipmaps: keep the old header and any tail padding
+        body = pvr_vq(img, pix=pix, mips=True)[16:]
+        if q + 16 + len(body) > len(old):
+            raise ValueError(f"mipmapped VQ body {len(body)} bytes does not fit the old {len(old) - q - 16}")
+        return old[:q + 16] + body + old[q + 16 + len(body):]
     elif fmt == 1:
         new = pvr_twiddled(img, pix)
     else:

@@ -378,6 +378,118 @@ def test_native_ids_on_owned_disc():
     assert jgr.native_id_for_archive(data, 0) == 7 and jgr.archive_index_for_native_id(data, 0) == 4
 
 
+def test_swap_index_by_character_name(monkeypatch):
+    from gbox import jgr
+    import pytest
+    # without disc data the USA constants resolve names; beat = 1ST_READ "BEAT(EREKI)" = archive 04 = native ID 0
+    assert jgr.swap_index("beat") == 4 and jgr.swap_index("Ereki") == 4 and jgr.swap_index(jgr.NEW_GAME_PLAYER) == 4
+    assert jgr.swap_index("bis") == 0 and jgr.swap_index("gum") == 6 and jgr.swap_index("combo") == 2
+    assert jgr.swap_index("conpo") == 2 and jgr.swap_index("nuts") == 7 and jgr.swap_index("pench") == 8
+    assert jgr.swap_index("yo_yo") == 15 and jgr.swap_index("rival_pjam") == 13 and jgr.swap_index("Rival-NTank") == 12
+    with pytest.raises(ValueError, match="no JGR character has that name"):
+        jgr.swap_index("sonic")
+    with pytest.raises(ValueError, match="use slot 'beat'"):
+        jgr.swap_index("player")
+    # with disc data the archive's own directory names are used (a reordered disc resolves by its names)
+    names = list(reversed(jgr.ARCHIVE_NAMES))
+    monkeypatch.setattr(jgr, "character_names", lambda data: names)
+    monkeypatch.setattr(jgr, "native_ids", lambda data: list(reversed(USA_NATIVE_IDS)))
+    assert jgr.swap_index("ereki", b"afs") == 11 and jgr.swap_index("beat", lambda: b"afs") == 11
+
+
+def test_roster_names_every_character_from_the_disc_tables():
+    from gbox import jgr
+    ros = jgr.roster()
+    assert [r["slug"] for r in ros] == [f"jgr_char{i:02d}" for i in range(16)]     # collection slugs unchanged
+    assert ros[4]["name"] == "Beat (JGR ereki, ID 0)" and ros[4]["native_id"] == 0
+    assert ros[0]["name"] == "Bis (JGR bis, ID 7)" and "BIS" in ros[0]["aliases"] and "JGR character 0" in ros[0]["aliases"]
+    assert ros[13]["name"].startswith("Rival Pjam") and ros[15]["name"].startswith("Yo-Yo")
+
+
+def test_afs_names_rejects_a_directory_that_disagrees_with_the_table():
+    import struct
+    import pytest
+    from gbox import jgr
+    blob = bytearray(0x1000)
+    blob[:4] = b"AFS\0"
+    struct.pack_into("<III", blob, 4, 1, 0x800, 4)                 # one entry at 0x800, 4 bytes
+    struct.pack_into("<II", blob, 0x800 - 8, 0xc00, 48)            # directory pair before the first entry
+    blob[0xc00:0xc08] = b"abcdat.b"
+    struct.pack_into("<I", blob, 0xc00 + 44, 4)
+    assert jgr.afs_names(bytes(blob)) == ["abcdat.b"]
+    struct.pack_into("<I", blob, 0xc00 + 44, 5)                    # size mismatch: not a real directory
+    with pytest.raises(ValueError, match="no file-name directory"):
+        jgr.afs_names(bytes(blob))
+
+
+def test_character_names_agree_with_native_ids_and_1st_read_on_owned_disc():
+    import struct
+    from gbox import jgr
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    disc = GDRom(str(gdi))
+    data = disc.read("JETRADIO/PLAYER.AFS")
+    names = jgr.character_names(data)
+    assert names == jgr.ARCHIVE_NAMES
+    assert jgr.afs_names(data)[16:18] == ["player_effect_dat.bin", "player_effect_txr.bin"]
+    ids = jgr.native_ids(data)
+    # 1ST_READ's debug pointer table (0x8c10df40) lists the names in native-ID order
+    exe, base = disc.read("1ST_READ.BIN"), 0x8c010000
+    labels = []
+    for k in range(15):
+        ptr = struct.unpack_from("<I", exe, 0x8c10df40 - base + 4 * k)[0]
+        labels.append(exe[ptr - base:exe.index(b"\0", ptr - base)].decode())
+    assert labels[:10] + labels[13:] == [n for n in jgr.NATIVE_DEBUG_NAMES if n]
+    for i, n in enumerate(names):                   # each archive file name matches its native ID's debug label
+        label = jgr.NATIVE_DEBUG_NAMES[ids[i]]
+        if label:
+            assert {"ereki": "BEAT(EREKI)", "conpo": "COMBO", "nat": "NUTS", "plug": "PLUG(PENCH)",
+                    "yoyo": "YO_YO"}.get(n, n.upper()) == label
+    assert jgr.swap_index("beat", data) == 4 and ids[4] == 0
+
+
+def test_mipmapped_vq_encodes_and_decodes_like_the_old_texture():
+    import struct
+    import numpy as np
+    from PIL import Image
+    from gbox.ninja import pvr_vq, pvr_like, pvr_decode
+    w = 64
+    yy, xx = np.mgrid[0:w, 0:w]
+    img = np.stack([xx * 4, yy * 4, np.full_like(xx, 128)], -1).astype(np.uint8)
+    new = pvr_vq(img, pix=1, mips=True)
+    q = new.find(b"PVRT")
+    assert new[q + 9] == 4 and len(new) - q - 16 == 2048 + 1 + sum((s // 2) ** 2 for s in (2, 4, 8, 16, 32)) + (w // 2) ** 2
+    dw, dh, rgba, _ = pvr_decode(new)
+    out = np.frombuffer(rgba, np.uint8).reshape(w, w, 4)[..., :3].astype(int)
+    assert (dw, dh) == (w, w) and np.abs(out - img).mean() < 12            # full-size level decodes to the image
+    old = new[:q + 16] + bytes(len(new) - q - 16) + b"\xaa" * 40         # an old fmt-4 texture with tail padding
+    like = pvr_like(old, Image.fromarray(img))
+    assert len(like) == len(old) and like[:q + 16] == old[:q + 16] and like.endswith(b"\xaa" * 40)
+    assert np.abs(np.frombuffer(pvr_decode(like)[2], np.uint8).reshape(w, w, 4)[..., :3].astype(int) - img).mean() < 12
+
+
+def test_beat_texture_0_is_mipmapped_vq_and_re_encodes_on_owned_disc():
+    import numpy as np
+    from PIL import Image
+    from gbox import jgr
+    from gbox.ninja import pvr_like, pvr_decode
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    _, ptex = jgr.character_pair(data, jgr.swap_index("beat", data))
+    t0 = jgr.ptex_textures(data, ptex)[jgr.ATLAS_TEXTURE]
+    q = t0["bytes"].find(b"PVRT")
+    assert t0["bytes"][q + 9] == 4                                   # Beat's body texture: VQ with mipmaps
+    w, h, rgba, _ = pvr_decode(t0["bytes"])
+    img = Image.frombytes("RGBA", (w, h), rgba)
+    new = pvr_like(t0["bytes"], img)
+    assert len(new) == len(t0["bytes"])
+    back = np.frombuffer(pvr_decode(new)[2], np.uint8).reshape(h, w, 4)[..., :3].astype(int)
+    assert np.abs(back - np.asarray(img)[..., :3].astype(int)).mean() < 16   # re-encoding Beat's own texture keeps it
+
+
 def test_replace_entries_in_place_keeps_length_and_other_entries():
     import pytest
     from gbox import jgr
