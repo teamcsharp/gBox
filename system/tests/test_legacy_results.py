@@ -170,3 +170,20 @@ def test_legacy_stored_output_is_compared_as_canonical_json(cfg):
     job['output']['detail']['pid'] = 4321.0
     app.state.store.put('job', 'launch', job)
     assert plane.post('/api/workers/old-worker/result', json=result).status_code == 409
+
+
+@pytest.mark.parametrize('key', ['started', 'finished'])
+def test_legacy_job_timestamps_require_numbers_not_booleans(cfg, key):
+    app, plane, result, before, session = legacy(cfg)
+    store = app.state.store
+    job = store.get('job', 'launch')
+    receipt = store.get('receipt', job['receipt_id'])
+    job['started'], job['finished'] = 1, 2
+    receipt['started'], receipt['finished'] = 1, 2
+    if key == 'finished':
+        job['started'] = receipt['started'] = 0.5
+        job['finished'] = True
+        receipt['finished'] = 1
+    else: job['started'] = True
+    store.put('job', job['id'], job); store.put('receipt', receipt['id'], receipt)
+    assert plane.post('/api/workers/old-worker/result', json=result).status_code == 409
