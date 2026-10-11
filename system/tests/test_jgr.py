@@ -192,3 +192,71 @@ def test_first_character_body_texture_is_not_flat_or_noise(tmp_path):
     paths = jgr.export_texture_set(data, off, str(tmp_path))
     assert len(paths) == 4
     assert all(open(p, "rb").read(8) == b"\x89PNG\r\n\x1a\n" for p in paths)
+
+
+# ---------------------------------------------------------------- PLAY model trees
+def _plays(data):
+    return [o for k, o in jgr.chunks(data) if k == "play"]
+
+
+def test_first_play_chunk_roots_and_counts_match_the_disc():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    rows = jgr.play_summary(data, _plays(data)[0])
+    got = [(r["root"], r["nodes"], r["vertices"], r["triangles"], r["texture_ids"]) for r in rows]
+    assert got == [
+        (0x9C7C, 20, 353, 1834, [0]),
+        (0x22644, 20, 178, 947, [0]),
+        (0x15450, 20, 386, 2054, [0, 1]),
+        (0x1B8D4, 20, 195, 1057, [0, 1]),
+        (0x1CAA4, 20, 11, 0, []),        # shadow volume: vertices, no strips
+        (0xA990, 4, 28, 120, [1]),
+    ]
+    # The root table record and the motion/other kinds are not taken as objects.
+    buf = jgr.play_bytes(data, _plays(data)[0])
+    assert not jgr._is_object(buf, 0x6C)
+
+
+def test_every_character_has_a_20_node_body_with_resolved_triangles():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    plays = _plays(data)
+    assert len(plays) == 16
+    for off in plays:
+        rows = jgr.play_summary(data, off)
+        bodies = [r for r in rows if r["nodes"] == 20 and r["triangles"]]
+        assert len(bodies) == 4, (hex(off), rows)
+        best = max(r["triangles"] for r in bodies)
+        assert 1300 < best < 2200, (hex(off), best)
+        buf = jgr.play_bytes(data, off)
+        nj = jgr.play_model(buf, max(bodies, key=lambda r: r["triangles"])["root"])
+        # Every strip corner resolved to a cached vertex when it was drawn.
+        assert all(c[2] is not None for tl in nj.tris.values() for t in tl for c in t)
+
+
+def test_body_is_upright_humanoid_sized_and_exports_a_textured_skinned_glb(tmp_path):
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    import json
+    data = _player_afs(gdi)
+    ch = jgr.chunks(data)
+    play = [o for k, o in ch if k == "play"][0]
+    ptex = [o for k, o in ch if k == "ptex"][0]
+    nj = jgr.play_model(jgr.play_bytes(data, play), 0x15450)
+    pts = [c[2]["pos"] for tl in nj.tris.values() for t in tl for c in t]
+    xs, ys, zs = zip(*pts)
+    height, width, depth = max(ys) - min(ys), max(xs) - min(xs), max(zs) - min(zs)
+    assert 15 < height < 20 and min(ys) > -0.5          # feet on the ground, Y up
+    assert width < height / 2 and depth < height / 2      # standing figure, not exploded parts
+    glb = Path(jgr.export_play_glb(data, play, 0x15450, str(tmp_path), "jgr_char00", ptex))
+    raw = glb.read_bytes()
+    assert raw[:4] == b"glTF"
+    g = json.loads(raw[20:20 + struct.unpack_from("<I", raw, 12)[0]])
+    assert len(g["skins"]) == 1 and len(g["skins"][0]["joints"]) == 20
+    assert len(g["meshes"]) == 2 and len(g["images"]) == 2
+    assert len(list((tmp_path / "textures").glob("*.png"))) == 4

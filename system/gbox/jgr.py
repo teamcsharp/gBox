@@ -281,3 +281,105 @@ def export_texture_set(data: bytes, ptex_off: int, outdir: str) -> list[str]:
             f.write(png(w, h, rgba))
         paths.append(path)
     return paths
+
+
+
+# ---------------------------------------------------------------- PLAY model trees (Ninja chunk objects)
+# A PLAY chunk is a raw Ninja *chunk-model* object tree without the NJCM wrapper. Every pointer is
+# relative to the start of the PLAY chunk. NJS_OBJECT is 0x34 bytes (evalflags, model, pos[3],
+# ang[3], scl[3], child, sibling); NJS_CNK_MODEL is (vlist, plist, center[3], radius) and sits after
+# its plist/vlist. Container header records of kind 1-3 point at model roots (the first record is a
+# root table, not an object); kinds 4-7 are motion/other data. Body roots carry 20 nodes.
+
+MODEL_KINDS = (1, 2, 3)
+
+
+def play_bytes(data: bytes, play_off: int, size: int | None = None) -> bytes:
+    """The PLAY chunk as its own buffer, so its internal pointers index it directly."""
+    if size is None:
+        size = entry_size(data, play_off)
+    return bytes(data[play_off:play_off + size])
+
+
+def _is_object(buf: bytes, o: int) -> bool:
+    """Cheap NJS_OBJECT sanity check: small eval flags, sane scale, aligned in-range pointers."""
+    if o % 4 or not 0 <= o <= len(buf) - 0x34:
+        return False
+    flags, model = struct.unpack_from("<II", buf, o)
+    scl = struct.unpack_from("<3f", buf, o + 0x20)
+    child, sib = struct.unpack_from("<II", buf, o + 0x2C)
+    if flags > 0xFF or not all(1e-3 < abs(s) < 1e3 for s in scl):
+        return False
+    return all(p == 0 or (p % 4 == 0 and p < len(buf)) for p in (model, child, sib))
+
+
+def play_model_roots(data: bytes, play_off: int, size: int | None = None) -> list[int]:
+    """Model root object offsets (relative to the PLAY chunk), in container-header order.
+
+    Header records of kind 1-3 point at model roots; the first record is a root table (not an
+    object) and kinds 4-7 hold motion/other data. A record is kept only when it looks like an
+    NJS_OBJECT (:func:`_is_object`).
+    """
+    buf = play_bytes(data, play_off, size)
+    _, recs = container_header(data, play_off)
+    roots: list[int] = []
+    for v, k in recs:
+        if k in MODEL_KINDS and v not in roots and _is_object(buf, v):
+            roots.append(v)
+    return roots
+
+
+def play_model(buf: bytes, root: int):
+    """Walk one PLAY model tree with the shared Ninja chunk parser (:class:`gbox.ninja.NJ`)."""
+    from .ninja import NJ
+
+    class _PlayNJ(NJ):
+        def __init__(self, d: bytes, start: int):
+            self.e, self.d = "<", d
+            self.bones, self.vbuf, self.tris, self.tex, self.plcache = [], {}, {}, 0, {}
+            self._walk(start, None, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+
+    if not 0 <= root <= len(buf) - 0x34:
+        raise ValueError(f"root +{root:#x} outside the PLAY chunk")
+    return _PlayNJ(buf, root)
+
+
+def play_summary(data: bytes, play_off: int) -> list[dict]:
+    """Per-root node, vertex, triangle and texture-id counts for one PLAY chunk."""
+    buf = play_bytes(data, play_off)
+    out = []
+    for root in play_model_roots(data, play_off):
+        nj = play_model(buf, root)
+        out.append({"root": root, "nodes": len(nj.bones), "vertices": len(nj.vbuf),
+                    "triangles": sum(len(t) for t in nj.tris.values()), "texture_ids": sorted(nj.tris)})
+    return out
+
+
+def export_play_glb(data: bytes, play_off: int, root: int, out_dir: str, name: str,
+                    ptex_off: int | None = None) -> str:
+    """Write one PLAY model (skinned to its node skeleton) as a package + self-contained GLB.
+
+    When ``ptex_off`` is given, that PTEX set is decoded into ``textures/`` and Ninja texture id
+    *i* is bound to the set's *i*-th texture. Returns the GLB path.
+    """
+    from pathlib import Path
+    from . import uap
+    from .ninja import png, to_manifest
+    out = Path(out_dir)
+    files: list[str | None] = []
+    if ptex_off is not None:
+        (out / "textures").mkdir(parents=True, exist_ok=True)
+        for i, tex in enumerate(ptex_textures(data, ptex_off)):
+            w, h, rgba = decode_texture(tex)
+            rel = f"textures/{name}_tex{i:02d}_gbix{tex['gbix']}.png"
+            (out / rel).write_bytes(png(w, h, rgba))
+            files.append(rel)
+    out.mkdir(parents=True, exist_ok=True)
+    nj = play_model(play_bytes(data, play_off), root)
+    m = to_manifest(nj, name, {"game": GAME_IDS["4187aeab4d67638c"], "files": ["JETRADIO/PLAYER.AFS"],
+                               "play_offset": play_off, "root": root, "extraction_method": "gbox.jgr"},
+                    files or None)
+    (out / "manifest.json").write_text(m.model_dump_json())
+    glb = out / f"{name}.glb"
+    glb.write_bytes(uap.to_glb(m, out))
+    return str(glb)

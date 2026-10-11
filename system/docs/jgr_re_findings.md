@@ -57,16 +57,41 @@ atlas (face, teal outfit, striped sleeves and pouches), a 128×128 face-expressi
 expressions, and two 64×64 textures. GBIX 760 shows up in every set, probably a shared texture.
 A vision model checked both large textures and found coherent character art, not noise.
 
+## PLAY model trees (decoded)
+
+A `PLAY` chunk is a raw **Ninja chunk-model object tree** without the `NJCM` wrapper. Every pointer
+is relative to the start of the PLAY chunk. `NJS_OBJECT` is 0x34 bytes (evalflags, model, pos[3],
+ang[3], scl[3], child, sibling). `NJS_CNK_MODEL` (vlist, plist, center[3], radius) is stored after
+its polygon and vertex lists. Polygon lists use standard chunk types: `0x13` material, `0x08`
+texture id, `0x40`/`0x41` strips. Vertex lists use `0x22`, `0x23` and `0x29` (XYZ + normal) with
+cache base indices, so weighted joints reuse vertices across nodes, the same way SA2 and PSO do.
+`gbox.ninja.NJ`'s walker parses these trees unchanged.
+
+The container-header records of kind 1-3 are the model roots. The first record is a root table,
+not an object, and kinds 4-7 hold motion and other data. Every one of the 16 PLAY chunks has:
+
+- 4 body roots with a **20-node** skeleton: 2 detail levels × 2 variants, about 1,400-2,100
+  triangles at the high level and about 650-1,000 at the low level;
+- 1 shadow volume (11-17 vertices, no strips);
+- 1 small accessory tree (usually 4 nodes).
+
+On character 0, the high-detail body (root `+0x15450`) stands upright (Y up) and is 17.5 units
+tall, with its feet at y = 0.12. Its texture ids 0/1 bind to PTEX textures 0/1. A flat-shaded
+render of 8 characters was checked by a vision model, which judged all 8 to be coherent humanoids
+with no exploded or scrambled triangles. `export_play_glb` writes a package plus a self-contained
+skinned GLB with the PTEX textures embedded.
+
 ## Open questions (follow-up work)
 
-- **Mesh vertex/triangle format**: only the first small self-contained kind==1 submesh decodes
-  (`decode_submesh`). The larger records share vertices across sub-objects. This is where a Ghidra
-  pass on `1ST_READ.BIN` (model loader) is needed, as done for DOA2.
-- **PTEX header table**: the 404 (value, kind) records before the textures probably hold
-  UV/material entries linking the meshes to the GBIX ids. This needs to be decoded so textures
-  can be bound to the meshes.
+- **Motion data** (kinds 4-7, about 650 KB in the kind-6 record): not decoded yet.
+- **Texture-id binding** to PTEX order is assumed for ids 0-2; the PTEX header table (404
+  records) may remap them per variant.
+- **Writer and bone map**: rebuild a PLAY tree from a library character, mapped onto the 20-node
+  skeleton, then verify the swap in-game at the operator's saved moment.
 
 `gbox/jgr.py` implements the verified parts: `afs_entries`, `chunks`, `entry_size`,
-`container_header`, `inventory`, `play_subobjects`, `decode_submesh`, `ptex_textures`,
-`decode_texture` and `export_texture_set`. Tests (`tests/test_jgr.py`) gate on the owned disc
-and skip when it is absent, the same fixture pattern as the DOA2 suite.
+`container_header`, `inventory`, `play_model_roots`, `play_model`, `play_summary`,
+`export_play_glb`, `ptex_textures`, `decode_texture` and `export_texture_set`. The earlier
+`play_subobjects`/`decode_submesh` helpers slice records by header address and are superseded by
+the tree walk. Tests (`tests/test_jgr.py`) gate on the owned disc and skip when it is absent, the
+same fixture pattern as the DOA2 suite.
