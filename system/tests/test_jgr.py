@@ -33,8 +33,13 @@ def test_afs_header_parses_owned_player_archive():
     count, offsets, sizes = jgr.afs_entries(data)
     assert count == 34
     assert len(offsets) == 34 and len(sizes) == 34
-    # First offset points at the first PLAY chunk; its magic is intact.
+    # Interleaved (offset, size) pairs: first entry is the first PLAY chunk, sizes are exact and
+    # every entry ends before the next begins.
     assert data[offsets[0]:offsets[0] + 4] == b"PLAY"
+    assert (offsets[0], sizes[0]) == (0x80000, 0xC6768)
+    for (o, sz), nxt in zip(zip(offsets, sizes), offsets[1:]):
+        assert o + sz <= nxt
+    assert offsets[-1] + sizes[-1] <= len(data)
 
 
 def test_chunks_finds_play_ptex_and_main():
@@ -44,10 +49,12 @@ def test_chunks_finds_play_ptex_and_main():
     data = _player_afs(gdi)
     found = jgr.chunks(data)
     kinds = [k for k, _ in found]
-    assert kinds.count("play") == 8
-    assert kinds.count("ptex") == 8
+    # 16 characters, each a PLAY model followed by its PTEX texture set, plus main and EFTX.
+    assert kinds.count("play") == 16
+    assert kinds.count("ptex") == 16
     assert kinds.count("main") == 1
-    assert len(found) == 17
+    assert kinds.count("eftx") == 1
+    assert len(found) == 34
 
 
 def test_play_container_header_decodes_record_table():
@@ -81,7 +88,7 @@ def test_inventory_lists_player_and_enemy_archives():
     inv = jgr.inventory(str(gdi))
     assert "JETRADIO/PLAYER.AFS" in inv
     assert "JETRADIO/ENEMY.AFS" in inv
-    assert len(inv["JETRADIO/PLAYER.AFS"]) == 17
+    assert len(inv["JETRADIO/PLAYER.AFS"]) == 34
 
 
 def test_afs_entries_rejects_non_archive():
@@ -128,3 +135,60 @@ def test_decode_submesh_produces_indexed_triangle_list_for_small_record():
 def test_container_header_rejects_unknown_magic():
     with pytest.raises(ValueError):
         jgr.container_header(b"XXXX" + struct.pack("<I", 3) + b"\x00" * 24, 0)
+
+
+def test_ptex_textures_walk_every_gbix_pvrt_to_the_entry_end():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    off = next(off for kind, off in jgr.chunks(data) if kind == "ptex")
+    size = jgr.entry_size(data, off)
+    texs = jgr.ptex_textures(data, off)
+    assert [(t["offset"], t["gbix"], t["pixfmt"], t["datafmt"], t["width"], t["height"]) for t in texs] == [
+        (0x1000, 50, 1, 0x03, 256, 256),
+        (0x5820, 54, 1, 0x04, 128, 128),
+        (0x75A0, 760, 1, 0x10, 64, 64),
+        (0x7DC0, 53, 2, 0x10, 64, 64),
+    ]
+    last = texs[-1]
+    assert last["offset"] + len(last["bytes"]) <= size
+    assert all(t["bytes"][:4] == b"GBIX" and t["bytes"][16:20] == b"PVRT" for t in texs)
+
+
+def test_every_player_texture_decodes_to_rgba():
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    total = 0
+    for kind, off in jgr.chunks(data):
+        if kind not in ("ptex", "eftx"):
+            continue
+        texs = jgr.ptex_textures(data, off)
+        assert texs, f"no textures in {kind} at {off:#x}"
+        for t in texs:
+            w, h, rgba = jgr.decode_texture(t)
+            assert (w, h) == (t["width"], t["height"])
+            assert len(rgba) == w * h * 4
+            total += 1
+    assert total == 89
+
+
+def test_first_character_body_texture_is_not_flat_or_noise(tmp_path):
+    gdi = _gdi()
+    if gdi is None:
+        pytest.skip("JGR disc not present")
+    data = _player_afs(gdi)
+    off = next(off for kind, off in jgr.chunks(data) if kind == "ptex")
+    w, h, rgba = jgr.decode_texture(jgr.ptex_textures(data, off)[0])
+    px = [tuple(rgba[i:i + 4]) for i in range(0, len(rgba), 4)]
+    colours = set(px)
+    # A real VQ atlas has many distinct colours but long runs of identical neighbours (flat UV
+    # islands); random bytes decoded as VQ would give almost no equal neighbours.
+    assert 64 < len(colours) < w * h // 2
+    same = sum(1 for i in range(1, len(px)) if px[i] == px[i - 1])
+    assert same > len(px) // 4
+    paths = jgr.export_texture_set(data, off, str(tmp_path))
+    assert len(paths) == 4
+    assert all(open(p, "rb").read(8) == b"\x89PNG\r\n\x1a\n" for p in paths)

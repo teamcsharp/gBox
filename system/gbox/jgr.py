@@ -1,10 +1,10 @@
 """Jet Grind Radio / Jet Set Radio (Sega Dreamcast) disc + archive reader (foundation).
 
 The Dreamcast build stores its player and enemy character data in AFS archives under JETRADIO/
-(PLAYER.AFS, ENEMY.AFS, ...). An AFS here is the CRI AFS layout: "AFS\\0", a uint32 table length,
-then that many uint32 offset entries followed by the same number of uint32 size entries. The offset
-table alternates large offsets (the PLAY/PTEX model/texture chunks) and small offsets; the real
-character data chunks are the ones whose first 4 bytes spell PLAY, PTEX or main.
+(PLAYER.AFS, ENEMY.AFS, ...). An AFS here is the standard CRI AFS layout: "AFS\\0", a uint32 entry
+count, then that many interleaved (uint32 offset, uint32 size) pairs. On the owned USA disc PLAYER.AFS
+holds 34 entries: 16 (PLAY model, PTEX texture set) pairs, one shared "main" container and one EFTX
+effect-texture set. Each entry's size is exact (the next entry starts at the following 0x800 boundary).
 
 A PLAY chunk is a JGR container (NOT a standard Ninja NJCM): "PLAY" + uint32 N + N*(uint32 value,
 uint32 kind) descriptor records, then the sub-object data at those relative offsets. PTEX is the same
@@ -22,6 +22,7 @@ AFS_MAGIC = b"AFS\x00"
 PLAY_MAGIC = b"PLAY"
 PTEX_MAGIC = b"PTEX"
 MAIN_MAGIC = b"main"
+EFTX_MAGIC = b"EFTX"
 
 # The game_id of the owned disc (Jet Grind Radio (USA), dreamcast).
 GAME_IDS = {"4187aeab4d67638c": "Jet Grind Radio (USA)"}
@@ -30,36 +31,44 @@ PLAYER_FILES = ["JETRADIO/PLAYER.AFS", "JETRADIO/ENEMY.AFS"]
 
 
 def afs_entries(data: bytes) -> tuple[int, list[int], list[int]]:
-    """Parse a Sega AFS archive. Returns (count, offsets, sizes) straight off the header tables."""
+    """Parse a Sega AFS archive. Returns (count, offsets, sizes).
+
+    The table is ``count`` interleaved (offset, size) uint32 pairs straight after the 8-byte header.
+    """
     if len(data) < 8 or data[:4] != AFS_MAGIC:
         raise ValueError(f"not an AFS archive (magic {data[:4]!r})")
     count = struct.unpack_from("<I", data, 4)[0]
     need = 8 + 8 * count
     if len(data) < need:
         raise ValueError(f"AFS header truncated: need {need} bytes, have {len(data)}")
-    offsets = list(struct.unpack_from("<" + "I" * count, data, 8))
-    sizes = list(struct.unpack_from("<" + "I" * count, data, 8 + 4 * count))
-    return count, offsets, sizes
+    pairs = struct.unpack_from("<" + "I" * (2 * count), data, 8)
+    return count, list(pairs[0::2]), list(pairs[1::2])
+
+
+_CHUNK_KINDS = {PLAY_MAGIC: "play", PTEX_MAGIC: "ptex", MAIN_MAGIC: "main", EFTX_MAGIC: "eftx"}
 
 
 def chunks(data: bytes) -> list[tuple[str, int]]:
     """The model/texture chunks an AFS references, in table order: [(kind, offset), ...].
 
-    kind is 'play' (model), 'ptex' (texture set) or 'main' (shared container).
+    kind is 'play' (model), 'ptex' (texture set), 'main' (shared container) or 'eftx' (effect
+    textures). Entries with any other leading magic are skipped.
     """
     _, offsets, _ = afs_entries(data)
     out: list[tuple[str, int]] = []
     for off in offsets:
         if off < 0 or off + 4 > len(data):
             continue
-        m = data[off:off + 4]
-        if m == PLAY_MAGIC:
-            out.append(("play", off))
-        elif m == PTEX_MAGIC:
-            out.append(("ptex", off))
-        elif m == MAIN_MAGIC:
-            out.append(("main", off))
+        kind = _CHUNK_KINDS.get(bytes(data[off:off + 4]))
+        if kind:
+            out.append((kind, off))
     return out
+
+
+def entry_size(data: bytes, off: int) -> int:
+    """Exact byte size of the AFS entry starting at absolute offset ``off``."""
+    _, offsets, sizes = afs_entries(data)
+    return sizes[offsets.index(off)]
 
 
 def container_header(data: bytes, off: int) -> tuple[bytes, list[tuple[int, int]]]:
@@ -72,7 +81,7 @@ def container_header(data: bytes, off: int) -> tuple[bytes, list[tuple[int, int]
     if off + 8 > len(data):
         raise ValueError(f"container at {off} truncated")
     magic = data[off:off + 4]
-    if magic not in (PLAY_MAGIC, PTEX_MAGIC, MAIN_MAGIC):
+    if magic not in _CHUNK_KINDS:
         raise ValueError(f"not a JGR container at {off}: magic {magic!r}")
     n = struct.unpack_from("<I", data, off + 4)[0]
     recs: list[tuple[int, int]] = []
@@ -210,3 +219,65 @@ def split_submeshes(segment: bytes) -> list[bytes]:
     if start < len(segment):
         out.append(segment[start:])
     return out
+
+
+# ---------------------------------------------------------------- PTEX texture sets
+def ptex_textures(data: bytes, ptex_off: int, size: int | None = None) -> list[dict]:
+    """Every GBIX+PVRT texture inside a PTEX (or EFTX) chunk, in file order.
+
+    The PTEX header table is followed (at the first GBIX) by back-to-back Dreamcast PVR textures,
+    each ``GBIX`` (global index) + ``PVRT`` chunk, 4-byte aligned, zero padded to the entry end. The
+    walk stops at the entry end or at the first non-GBIX data. Each dict has ``offset`` (relative
+    to the chunk), ``gbix``, ``pixfmt``, ``datafmt``, ``width``, ``height`` and ``bytes`` (the GBIX +
+    PVRT bytes, ready for :func:`gbox.ninja.pvr_decode`).
+    """
+    if size is None:
+        size = entry_size(data, ptex_off)
+    end = min(len(data), ptex_off + size)
+    out: list[dict] = []
+    q = data.find(b"GBIX", ptex_off + 8, end)
+    while 0 <= q and q + 16 <= end and data[q:q + 4] == b"GBIX":
+        glen, gbix = struct.unpack_from("<II", data, q + 4)
+        r = q + 8 + glen
+        if data[r:r + 4] != b"PVRT":
+            raise ValueError(f"GBIX at +{q - ptex_off:#x} not followed by PVRT")
+        plen = struct.unpack_from("<I", data, r + 4)[0]
+        tex_end = r + 8 + plen
+        if tex_end > end:
+            raise ValueError(f"PVRT at +{r - ptex_off:#x} overruns its entry")
+        w, h = struct.unpack_from("<HH", data, r + 12)
+        out.append({
+            "offset": q - ptex_off,
+            "gbix": gbix,
+            "pixfmt": data[r + 8],
+            "datafmt": data[r + 9],
+            "width": w,
+            "height": h,
+            "bytes": bytes(data[q:tex_end]),
+        })
+        q = (tex_end + 3) & ~3
+        while q + 4 <= end and data[q:q + 4] == b"\0\0\0\0":
+            q += 4
+    return out
+
+
+def decode_texture(tex: dict) -> tuple[int, int, bytes]:
+    """Decode one :func:`ptex_textures` entry to (width, height, RGBA bytes)."""
+    from .ninja import pvr_decode
+    w, h, rgba, _ = pvr_decode(tex["bytes"])
+    return w, h, rgba
+
+
+def export_texture_set(data: bytes, ptex_off: int, outdir: str) -> list[str]:
+    """Decode every texture of one PTEX chunk to PNG files in ``outdir``; returns the paths."""
+    import os
+    from .ninja import png
+    os.makedirs(outdir, exist_ok=True)
+    paths = []
+    for i, tex in enumerate(ptex_textures(data, ptex_off)):
+        w, h, rgba = decode_texture(tex)
+        path = os.path.join(outdir, f"tex{i:02d}_gbix{tex['gbix']}_{w}x{h}.png")
+        with open(path, "wb") as f:
+            f.write(png(w, h, rgba))
+        paths.append(path)
+    return paths

@@ -18,12 +18,18 @@ Character data archives (sizes from the ISO directory):
 
 ## AFS archive format (PLAYER.AFS)
 
-Header: `AFS\0` + uint32 LE `count` + `count`×uint32 offsets + `count`×uint32 sizes
-(standard CRI AFS). For PLAYER.AFS, `count` = 34.
+Header: `AFS\0` + uint32 LE `count` + `count` × interleaved (uint32 offset, uint32 size) pairs,
+which is the standard CRI AFS layout. For PLAYER.AFS, `count` = 34. Each size is exact, and every
+entry starts on the next 0x800 boundary.
 
-The offset table alternates large offsets (character chunks) and small offsets; filtering by magic
-yields 17 character chunks in table order — 8 × `PLAY` (models), 8 × `PTEX` (texture sets), 1 ×
-`main` (shared container). This matches the 8 playable characters shipped in PLAYER.AFS.
+(Correction: the first reader split the table into `count` offsets followed by `count` sizes. That
+mixed sizes in with offsets and made 17 of the 34 entries disappear. The pair reading tiles the
+archive with no overlaps.)
+
+Entries in table order: 16 × (`PLAY` model, `PTEX` texture set) pairs for the 16 player
+characters, plus 1 × `main` (shared container, entry 16) and 1 × `EFTX` (effect textures,
+entry 17). ENEMY.AFS (54 entries) uses another layout: alternating raw GBIX texture sets and
+model blobs that start `11 25 02 00` / `11 21 02 00` / `13 25 04 00`.
 
 ## PLAY / PTEX container header
 
@@ -39,19 +45,28 @@ The first PLAY chunk (offset 524288) has N = 12, with records
 `(143036,6) (792768,7) (812880,0)` — relative sub-object offsets grouped by `kind`. `PTEX` uses the
 same shape (`PTEX` + N + records; first PTEX has N = 0x194 = 404).
 
+## PTEX texture sets (decoded)
+
+After the PTEX header table (404 records in the first set, meaning not yet known), the data
+holds standard Dreamcast PVR textures, starting at +0x1000. Each one is a `GBIX` chunk (global
+texture index) followed by a `PVRT` chunk. They are 4-byte aligned and run back to back, and the
+last one ends exactly at the entry end. `gbox.ninja.pvr_decode` decodes all of them as-is:
+89 textures in 16 PTEX sets plus the EFTX set. Formats seen: VQ (3), VQ + mipmaps (4), small VQ
+(0x10) and twiddled (1), in RGB565, ARGB4444 and ARGB1555. Character 0's set: a 256×256 VQ body
+atlas (face, teal outfit, striped sleeves and pouches), a 128×128 face-expression sheet with 4
+expressions, and two 64×64 textures. GBIX 760 shows up in every set, probably a shared texture.
+A vision model checked both large textures and found coherent character art, not noise.
+
 ## Open questions (follow-up work)
 
-- **File sizing semantics**: the AFS size table does not tile the archive cleanly under either the
-  "offset+size per index" or "interleaved (offset,size) pairs" reading; sizes ~7–14 MB overlap.
-  Likely uncompressed sizes vs. stored sizes, or a second table region. Needs byte-level
-  confirmation before a mesh writer can target exact allocations (the DOA2 lane hit the same issue
-  with CHR vs. SUP budgets).
-- **Mesh vertex/triangle format**: the sub-objects referenced by the PLAY record table are not yet
-  decoded (JGR's variant of the Ninja layout). This is where a Ghidra pass on `1ST_READ.BIN`
-  (model loader) is needed, as done for DOA2.
-- **Texture decode**: PTEX holds PVR texture sets; whether `gbox.ninja.pvr_decode` applies directly
-  (or a JGR PVR variant) is unverified.
+- **Mesh vertex/triangle format**: only the first small self-contained kind==1 submesh decodes
+  (`decode_submesh`). The larger records share vertices across sub-objects. This is where a Ghidra
+  pass on `1ST_READ.BIN` (model loader) is needed, as done for DOA2.
+- **PTEX header table**: the 404 (value, kind) records before the textures probably hold
+  UV/material entries linking the meshes to the GBIX ids. This needs to be decoded so textures
+  can be bound to the meshes.
 
-`gbox/jgr.py` implements the verified parts: `afs_entries`, `chunks`, `container_header`, and
-`inventory`. Tests (`tests/test_jgr.py`) gate on the owned disc and skip when it is absent, the same
-fixture pattern as the DOA2 suite.
+`gbox/jgr.py` implements the verified parts: `afs_entries`, `chunks`, `entry_size`,
+`container_header`, `inventory`, `play_subobjects`, `decode_submesh`, `ptex_textures`,
+`decode_texture` and `export_texture_set`. Tests (`tests/test_jgr.py`) gate on the owned disc
+and skip when it is absent, the same fixture pattern as the DOA2 suite.
