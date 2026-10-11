@@ -2,10 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>gBox</title>
 <script>
 // The desktop stays dark even when Windows changes its system color scheme.
-if (new URLSearchParams(location.search).has("embedded")) document.documentElement.dataset.embedded = "true";
+if (new URLSearchParams(location.search).has("embedded")) {
+  document.documentElement.dataset.embedded = "true";
+  document.documentElement.style.colorScheme = "dark";
+}
 </script>
 <link rel="icon" href="/brand/gbox-logo.svg" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico">
@@ -17,6 +21,7 @@ if (new URLSearchParams(location.search).has("embedded")) document.documentEleme
   @media (prefers-color-scheme: dark) { :root { --bg:#16161a; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; } }
   :root[data-embedded="true"] { color-scheme:dark; --bg:#16161a; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; }
   * { box-sizing:border-box; }
+  html { background:var(--bg); color:var(--fg); }
   body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
   header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:25; }
   header b { font-size:16px; } .brand { display:flex; align-items:center; gap:8px; } .brand img { height:28px; width:auto; } nav button { background:none; border:0; color:var(--mut); padding:6px 8px; cursor:pointer; font:inherit; }
@@ -106,7 +111,7 @@ if (new URLSearchParams(location.search).has("embedded")) document.documentEleme
   .dock { display:flex; flex-direction:column; gap:6px; min-height:8px; border-radius:8px; transition:background .15s, outline-color .15s; outline:2px dashed transparent; }
   .dock.drop { outline-color:var(--acc); background:color-mix(in srgb, var(--acc) 8%, transparent); min-height:60px; }
   #wb { display:none !important; } #padstat { font-size:11px; margin:4px 0 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sidecol { display:flex; flex-direction:column; gap:8px; min-width:0; overflow-y:auto; overflow-x:hidden; max-height:calc(100vh - 150px); scrollbar-width:thin; }
+  .sidecol { display:flex; flex-direction:column; gap:8px; min-width:0; overflow-y:auto; overflow-x:hidden; max-height:100%; scrollbar-width:thin; }
   .sidecol > *, .dock > * { flex:0 0 auto; min-height:min-content; } .sect { overflow:hidden; } #padglyph { overflow:hidden; }
   .sect { border:1px solid var(--line); border-radius:8px; padding:6px 10px; } .sect > summary { font-weight:600; padding:2px 0; }
   .sect[open] > summary { margin-bottom:6px; } #dock-main:empty { display:none; }
@@ -121,7 +126,8 @@ if (new URLSearchParams(location.search).has("embedded")) document.documentEleme
   .wbm .ok { color:#3fb950; } .wbm .unv { color:var(--mut); } .wbm details { font-size:11px; } .wbm summary { cursor:pointer; color:var(--mut); }
   .wbm .call { border-left:2px solid var(--line); padding:2px 0 2px 6px; margin:4px 0; } .wbm .call pre { margin:2px 0 0; white-space:pre-wrap; word-break:break-all; font:10.5px ui-monospace,Consolas,monospace; color:var(--mut); }
   .gfxbox summary { cursor:pointer; font-weight:600; } .gfxbox[open] summary { margin-bottom:8px; }
-  @media (max-width:800px) { .play { grid-template-columns:1fr; } }
+  @media (max-width:800px) { .play { grid-template-columns:1fr; }
+    .play.fit { grid-template-rows:minmax(0,2fr) minmax(0,1fr); } }
   .screen { background:#000; border-radius:6px; width:100%; outline:none; min-height:200px; display:block; }
   .screen:focus { box-shadow:0 0 0 2px var(--acc); }
   .pad { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; user-select:none; }
@@ -494,6 +500,18 @@ const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };
 const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
+function fitSessionLayout() {
+  const layout = document.querySelector("#view > .play.fit, #view > .exam");
+  if (layout) layout.style.height = Math.max(0, innerHeight - layout.getBoundingClientRect().top - 16) + "px";
+}
+const sessionLayoutObserver = new ResizeObserver(fitSessionLayout);
+function watchSessionLayout() {
+  sessionLayoutObserver.disconnect();
+  for (const node of [document.querySelector("header"), document.getElementById("session-head")])
+    if (node) sessionLayoutObserver.observe(node);
+  fitSessionLayout();
+}
+addEventListener("resize", fitSessionLayout);
 async function show(t, ...args) {
   const revision = ++viewRevision;
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
@@ -504,7 +522,7 @@ async function show(t, ...args) {
   sessionMode = t === "Sessions" ? args[1] || null : null;
   pip();                                                         // leaving a game -> picture-in-picture
   try { const html = await tabs[t](...args); if (revision !== viewRevision) return;
-    $("#view").innerHTML = html; tabs[t].after && tabs[t].after(...args); }
+    $("#view").innerHTML = html; tabs[t].after && tabs[t].after(...args); watchSessionLayout(); }
   catch (e) { if (revision === viewRevision) $("#view").innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
 }
 

@@ -1,6 +1,6 @@
 // The normal game belongs inside the guest DOM; PiP/fullscreen belong in the host DOM.
 // Both are Chromium GPU video layers, so menus need no Win32 window regions.
-const GPU_GAME = { pid: null, failedPid: null, source: null, checked: 0, frameAt: 0, retryAt: 0, error: null };
+const GPU_GAME = { pid: null, failedPid: null, blockedPid: null, source: null, checked: 0, frameAt: 0, retryAt: 0, error: null };
 async function gpuGameGuest(wv) {
   if (!wv || wv.dataset.ready !== "true") return false;
   return wv.executeJavaScript(`(async () => {
@@ -24,6 +24,9 @@ async function gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay) {
   // RetroArch's network RetroPad is independent of HWND focus. Keep emulators whose
   // keyboard/controller bridges still require a native focused window on that path.
   if (mine.adapter !== "retroarch") return false;
+  // An unreadable source cannot recover by repeatedly reparenting the same game.
+  // Keep its working native dock; a new game or app restart may try capture again.
+  if (mine.detail.pid === GPU_GAME.blockedPid) return false;
   if (mine.detail.pid !== GPU_GAME.failedPid) GPU_GAME.retryAt = 0;
   if (Date.now() < GPU_GAME.retryAt) return false;
   try {
@@ -49,7 +52,7 @@ async function gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay) {
       if (!guest.ready) throw new Error(guest.error || "The game view could not display a frame");
     }
     if (warm) await gbox.embedSync({ ...st, surface: "gpu-ready" });
-    EMB.surface = "gpu"; GPU_GAME.error = null; GPU_GAME.failedPid = null;
+    EMB.surface = "gpu"; GPU_GAME.error = null; GPU_GAME.failedPid = null; GPU_GAME.blockedPid = null;
     EMB.vis = visible; EMB.holes = []; ovlRect();
     // Reports/agents need the game alone, even behind a dialog or while another tab
     // is open. One PNG/second is separate from the live video presentation path.
@@ -64,6 +67,7 @@ async function gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay) {
     return true;
   } catch (e) {
     GPU_GAME.error = e.message; GPU_GAME.failedPid = mine.detail.pid; GPU_GAME.retryAt = Date.now() + 30000;
+    if (e.name === "NotReadableError") GPU_GAME.blockedPid = mine.detail.pid;
     console.warn("GPU game view; restoring native dock:", e.message);
     await gpuGameDispose(wv); EMB.last = "";
     return false;

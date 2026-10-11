@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="dark">
 <title>gBox</title>
 <link rel="icon" href="../../assets/brand/gbox-logo.svg">
 <style>
@@ -11,7 +12,8 @@
   :root { color-scheme:dark; --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341; }
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; overflow:clip; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif; }
-  .app { display:grid; grid-template-columns:200px 1fr; height:100vh; transition:grid-template-columns .15s; }
+  .app { display:grid; grid-template-columns:200px minmax(0,1fr); height:100vh; transition:grid-template-columns .15s; }
+  .app > section { min-width:0; }
   body.navc .app { grid-template-columns:0 1fr; } body.navc .app > aside { padding:0; border:0; overflow:hidden; }
   #navtog { position:absolute; top:12px; right:6px; padding:4px 6px; line-height:0; color:var(--mut); }
   #navshow { display:none; position:fixed; left:0; top:50%; z-index:44; padding:14px 3px; border:1px solid var(--line); border-left:0;
@@ -1031,6 +1033,7 @@ window.taskVizCreate = canvas => {
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
+<script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -1947,7 +1950,7 @@ function loadPlay() {
     wv.addEventListener("dom-ready", async () => {
       const revision = generation;
       try {
-        await wv.executeJavaScript(`(async () => { window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; })()`);
+        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
       } catch {
@@ -2623,16 +2626,17 @@ async function embedTick() {
       rect = { x: 0, y: 36, w: innerWidth, h: innerHeight - 36 };
     } else if (onPlay && wv) {
       const slot = VIEW.mode === "pip" ? null : await wv.executeJavaScript(`(() => { const e = document.getElementById("nativeslot"); if (!e) return null;
-        const r = e.getBoundingClientRect(); return r.width > 20 ? { x: r.left, y: r.top, w: r.width, h: r.height, sid: e.dataset.sid } : null; })()`).catch(() => null);
+        const r = e.getBoundingClientRect(); return r.width > 20 ? { x: r.left, y: r.top, w: r.width, h: r.height, sid: e.dataset.sid, viewport: {w: innerWidth, h: innerHeight} } : null; })()`).catch(() => null);
       const o = wv.getBoundingClientRect();
       if (slot && slot.sid === EMB.sid) {
-        const top = Math.max(slot.y, 0), bottom = Math.min(slot.y + slot.h, o.height);
-        rect = { x: o.left + slot.x, y: o.top + top, w: slot.w, h: Math.max(0, bottom - top) };
+        rect = GBoxEmbedGeometry.guestRect(slot, o, slot.viewport);
       } else {                                                 // elsewhere in the app: movable picture-in-picture
         rect = pipRect(); pipNow = true;
       }
     }
-    if (rect && !pipNow && $("#live").classList.contains("on")) rect.w = Math.min(rect.w, innerWidth - 384 - rect.x);
+    if (rect) rect = GBoxEmbedGeometry.intersect(rect, { x: 0, y: 0, w: innerWidth, h: innerHeight });
+    if (rect && !pipNow && $("#live").classList.contains("on"))
+      rect = GBoxEmbedGeometry.intersect(rect, { x:0, y:0, w:Math.max(0, $("#live").getBoundingClientRect().left - 4), h:innerHeight });
     EMB.rect = rect;
     const hidden = overlay || EYE.on;
     EMB.title = mine.title;
@@ -2644,14 +2648,14 @@ async function embedTick() {
       "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]")]
       .filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" &&
         +s.opacity !== 0 && s.pointerEvents !== "none"; })
-      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height }; })
+      .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0))()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
     const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
       ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
-      .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => ({ left: webOrigin.left + b.x, top: webOrigin.top + b.y,
-        right: webOrigin.left + b.x + b.w, bottom: webOrigin.top + b.y + b.h, width: b.w, height: b.h })))
+      .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
+        .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
       .filter(b => b.width > 0 && b.height > 0)
       .map(b => ({ x: Math.max(0, b.left - rect.x), y: Math.max(0, b.top - rect.y), x2: Math.min(rect.w, b.right - rect.x), y2: Math.min(rect.h, b.bottom - rect.y) }))
       .filter(h => h.x2 > h.x && h.y2 > h.y).map(h => ({ x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.x2 - h.x), h: Math.round(h.y2 - h.y) })) : [];

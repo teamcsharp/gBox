@@ -242,12 +242,12 @@ def move(x, y, w, h, holes=()):
         u32.ShowWindow(state["hwnd"], SW_SHOWNA)
     if moved:                                               # repainting an unmoved window every sync made it flicker
         u32.SetWindowPos(state["hwnd"], 0, *r, 0x0004 | 0x0010 | 0x0200)   # NOZORDER | NOACTIVATE | NOOWNERZORDER
-    key = tuple(map(tuple, holes or ()))
+    key = (r[2], r[3], tuple(map(tuple, holes or ())))
     if key != state.get("holes"):                           # cut app panels out of the game window (they show through)
         state["holes"] = key
-        if key:
+        if holes:
             rgn = g32.CreateRectRgn(0, 0, int(w), int(h))
-            for hx, hy, hw, hh in key:
+            for hx, hy, hw, hh in holes:
                 cut = g32.CreateRectRgn(int(hx), int(hy), int(hx + hw), int(hy + hh))
                 g32.CombineRgn(rgn, rgn, cut, 4)            # RGN_DIFF
                 g32.DeleteObject(cut)

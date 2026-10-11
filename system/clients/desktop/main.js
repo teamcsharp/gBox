@@ -1,8 +1,11 @@
 // gBox desktop manager (Electron main process).
 // Manages: the Spark control plane (over SSH: install/update, start/stop, logs), the local Windows worker,
 // dependency setup on both nodes, and hosts the gBox web UI with the API token injected.
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
+const embedGeometry = require("./embed-geometry");
+// The shell and its guest are one dark app, including native controls and first paint.
+nativeTheme.themeSource = "dark";
 
 // gBox owns everything under a \gBox\runtime\ folder (RetroArch, "gBox Dolphin", Xenia, PCSX2...) plus its worker and window embedder:
 // close all of them when the app closes, and sweep leftovers (a crash, a killed app) when it opens. Nothing else is touched.
@@ -543,8 +546,7 @@ async function syncEmbeddedGame(st) {
   }
   if (!st.visible) return embedCmd({ op: "hide" });
   const k = screen.getDisplayMatching(win.getBounds()).scaleFactor;
-  return embedCmd({ op: "move", x: Math.round(st.rect.x * k), y: Math.round(st.rect.y * k), w: Math.round(st.rect.w * k), h: Math.round(st.rect.h * k),
-                    holes: (st.holes || []).map(h => [h.x, h.y, h.w, h.h].map(v => Math.round(v * k))) });
+  return embedCmd(embedGeometry.nativePlacement(st.rect, st.holes || [], k, win.webContents.getZoomFactor() || 1));
 }
 // Update pending = app or worker code on disk changed after this app started (the logo click applies it).
 const APP_START = Date.now();
