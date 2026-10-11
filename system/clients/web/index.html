@@ -1181,6 +1181,10 @@ function launchWaitNote(job, workers, node, now) {
       `Start gBox on that PC, or press Esc to cancel.`;
     if (!w.online) return `${w.name}'s gBox worker is offline: it last checked in ${ago(w)} ago. ` +
       `The game starts by itself when it reconnects. If it doesn't, restart gBox on ${w.name}, or press Esc to cancel.`;
+    // #1294: slots held with nothing running on the Spark are leaked, not busy: that worker never claims this launch
+    if (waited >= 60 && +w.active_jobs > 0 && w.running_jobs === 0) return `${w.name} is online but stuck: it reports ` +
+      `${w.active_jobs} job slot${+w.active_jobs === 1 ? "" : "s"} in use while the Spark has no job running there, so it ` +
+      `won't pick up this launch. Restart gBox on ${w.name} to free them (the launch then starts by itself), or press Esc to cancel.`;
     if (waited >= 15 && +w.active_jobs > 0) return `${w.name} is online but still busy with ${w.active_jobs} other ` +
       `job${+w.active_jobs === 1 ? "" : "s"}; this launch is still queued. Press Esc to cancel.`;
     return "";

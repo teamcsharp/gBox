@@ -355,6 +355,13 @@ class Store:
                                    (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def running_job_counts(self) -> dict[str, int]:
+        """Running jobs per claiming worker id, so a worker whose reported slots don't match is visible (#1294)."""
+        with self.lock:
+            rows = self.db.execute("SELECT json_extract(body,'$.worker_id'), COUNT(*) FROM docs WHERE kind='job' "
+                                   "AND json_extract(body,'$.state')='running' GROUP BY 1").fetchall()
+        return {wid: n for wid, n in rows if wid}
+
     def queued_jobs(self) -> list[dict]:
         """Claim only queued work, in submission order, without decoding every completed job."""
         with self.lock:
