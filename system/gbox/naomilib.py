@@ -20,8 +20,12 @@ Layout handled (verified on the owned DOA2 LE Japan disc, #1275):
           u32 count, then inline vertices or 8-byte back-references
           (tag 0x5ffxxxxx, i32 relative to the end of the reference).
 
-A scan result is a list of models; `to_obj` writes them for Blender (or the
-blender-NaomiLib addon can open the original file at the reported offset).
+A scan result is a list of models; `to_obj`/`to_glb` write them for Blender
+(or the blender-NaomiLib addon can open the original file at the reported
+offset). Character archives (DOA2 CHR) hold each body part in its bone's local
+space: a scan export shows the parts unassembled. Do not add a scan export to
+the character collection; a fighter needs the game's skeleton placement
+(gbox/doa2_chars.py on the #1135 branch for DOA2).
 Pure Python plus optional numpy, no Blender dependency.
 """
 from __future__ import annotations
@@ -188,6 +192,67 @@ def to_obj(models: list[dict], name: str = 'naomilib') -> str:
     return '\n'.join(lines) + '\n'
 
 
+def to_glb(models: list[dict], path, name: str = 'naomilib') -> Path:
+    """Binary glTF: one node + mesh per NaomiLib model, one primitive per mesh (untextured, unskinned).
+
+    Vertices stay in the file's own coordinates; nothing is re-posed or invented."""
+    import json
+    blob, views, accessors, meshes, nodes = bytearray(), [], [], [], []
+
+    def add(raw: bytes, target: int | None) -> int:
+        while len(blob) % 4:
+            blob.append(0)
+        views.append({'buffer': 0, 'byteOffset': len(blob), 'byteLength': len(raw),
+                      **({'target': target} if target else {})})
+        blob.extend(raw)
+        return len(views) - 1
+
+    for m in models:
+        prims = []
+        for mesh in m['meshes']:
+            if not mesh['triangles']:
+                continue
+            verts = mesh['vertices']
+            pos = [v[:3] for v in verts]
+            lo = [min(p[k] for p in pos) for k in range(3)]
+            hi = [max(p[k] for p in pos) for k in range(3)]
+            normals = []
+            for v in verts:
+                length = math.sqrt(v[3] ** 2 + v[4] ** 2 + v[5] ** 2)
+                normals.append((v[3] / length, v[4] / length, v[5] / length) if length > 1e-6 else (0.0, 0.0, 1.0))
+            attrs = {}
+            for key, rows, extra in (('POSITION', pos, {'min': lo, 'max': hi}), ('NORMAL', normals, {}),
+                                     ('TEXCOORD_0', [v[6:8] for v in verts], {})):
+                width = len(rows[0])
+                view = add(struct.pack(f'<{len(rows) * width}f', *(c for r in rows for c in r)), 34962)
+                accessors.append({'bufferView': view, 'componentType': 5126, 'count': len(rows),
+                                  'type': f'VEC{width}', **extra})
+                attrs[key] = len(accessors) - 1
+            flat = [i for tri in mesh['triangles'] for i in tri]
+            view = add(struct.pack(f'<{len(flat)}I', *flat), 34963)
+            accessors.append({'bufferView': view, 'componentType': 5125, 'count': len(flat), 'type': 'SCALAR'})
+            prims.append({'attributes': attrs, 'indices': len(accessors) - 1, 'mode': 4,
+                          'extras': {'texture_id': mesh['texture_id'], 'shader': mesh['shader']}})
+        if prims:
+            meshes.append({'name': f"model_{m['offset']:08x}", 'primitives': prims})
+            nodes.append({'name': f"model_{m['offset']:08x}", 'mesh': len(meshes) - 1})
+    if not meshes:
+        raise ValueError(f'{name}: no NaomiLib triangles to write')
+    while len(blob) % 4:
+        blob.append(0)
+    gl = {'asset': {'version': '2.0', 'generator': 'gbox.naomilib'},
+          'scene': 0, 'scenes': [{'name': name, 'nodes': list(range(len(nodes)))}], 'nodes': nodes,
+          'meshes': meshes, 'accessors': accessors, 'bufferViews': views, 'buffers': [{'byteLength': len(blob)}]}
+    js = json.dumps(gl, separators=(',', ':')).encode()
+    js += b' ' * (-len(js) % 4)
+    out = struct.pack('<3I', 0x46546C67, 2, 28 + len(js) + len(blob))
+    out += struct.pack('<2I', len(js), 0x4E4F534A) + js + struct.pack('<2I', len(blob), 0x004E4942) + bytes(blob)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(out)
+    return path
+
+
 def summary(models: list[dict]) -> dict:
     return {'models': len(models), 'meshes': sum(len(m['meshes']) for m in models),
             'triangles': sum(m['triangle_count'] for m in models),
@@ -200,6 +265,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description='Scan files for NaomiLib models')
     p.add_argument('files', nargs='+')
     p.add_argument('--obj', help='write an OBJ per input file into this directory')
+    p.add_argument('--glb', help='write a GLB per input file into this directory (parts stay in file coordinates)')
     a = p.parse_args(argv)
     for f in a.files:
         models = scan(Path(f).read_bytes())
@@ -210,6 +276,8 @@ def main(argv=None) -> int:
             out = Path(a.obj) / (Path(f).name + '.obj')
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(to_obj(models, Path(f).name))
+        if a.glb and models:
+            to_glb(models, Path(a.glb) / (Path(f).name + '.glb'), Path(f).name)
     return 0
 
 
