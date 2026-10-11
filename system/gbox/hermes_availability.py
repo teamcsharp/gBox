@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-from collections import Counter
-from contextlib import closing
 import time
 import urllib.error
 import urllib.request
@@ -130,69 +128,22 @@ def _waiting_route(until, *, source='provider_account_endpoint', quota_balance_k
 
 
 def _completed_usage(state):
-    """Record measured completed sessions once and retain their actual task ownership."""
-    from . import hermes_tasks
-    home = hermes_task_mode._home()
-    if not (home / 'cron/executions.db').exists() or not (home / 'state.db').exists():
-        return
-    with closing(sqlite3.connect(f'file:{(home / "cron/executions.db").as_posix()}?mode=ro', uri=True)) as cron:
-        cron.row_factory = sqlite3.Row
-        runs = cron.execute('SELECT started_at FROM executions WHERE job_id=? '
-                            "AND status IN ('completed','failed') ORDER BY started_at DESC LIMIT 10",
-                            (state['work_job_id'],)).fetchall()
-    with closing(sqlite3.connect(f'file:{(home / "state.db").as_posix()}?mode=ro', uri=True)) as db:
-        db.row_factory = sqlite3.Row
-        for run in reversed(runs):
-            session = hermes_tasks._session(db, state['work_job_id'], hermes_tasks._stamp(run['started_at']))
-            if not session or not session['ended_at']:
-                continue
-            owners = hermes_tasks._owned_requests(db, session['id'])
-            state['request_ids'] = sorted(set(state.get('request_ids') or []) | set(owners))
-            rid = state.get('usage_request_id') or next((x for x in state.get('request_ids') or []
-                                                       if re.fullmatch(r'[0-9a-f]{16}', x)), None)
-            reported_in = reported_out = reported_turns = 0
-            reported_tools = Counter()
-            primary = None
-            for row in db.execute("SELECT tool_calls FROM messages WHERE session_id=? AND role='assistant'",
-                                  (session['id'],)):
-                for call in hermes_tasks._structured_calls(row['tool_calls']):
-                    args = call['input']
-                    if not isinstance(args, dict):
-                        continue
-                    if (primary is None and call['action'].endswith('set_request_status')
-                            and args.get('status') == 'in_progress'):
-                        primary = args.get('request_id')
-            if isinstance(primary, str) and re.fullmatch(r'[0-9a-f]{16}', primary):
-                rid = primary
-            if rid is None:
-                continue
-            for row in db.execute("SELECT tool_calls FROM messages WHERE session_id=? AND role='assistant'",
-                                  (session['id'],)):
-                for call in hermes_tasks._structured_calls(row['tool_calls']):
-                    args = call['input']
-                    if (call['action'].endswith('record_request_metrics') and isinstance(args, dict)
-                            and args.get('request_id') == rid):
-                        metrics = args.get('metrics') or args
-                        reported_in += metrics.get('tokens_in') or 0
-                        reported_out += metrics.get('tokens_out') or 0
-                        reported_turns += metrics.get('turns') or 1
-                        reported_tools.update(metrics.get('tools') or {})
-            marker = 'hermes_session_' + session['id'] + '_recorded'
-            request = _api('/api/requests/' + rid)
-            if request.get('metrics', {}).get('tokens_detail', {}).get(marker):
-                continue
-            usage = hermes_tasks._usage(session)
-            detail = {k: v for k, v in usage['tokens_detail'].items() if isinstance(v, int)} | {marker: 1}
-            tools = Counter(row['tool_name'] or 'tool' for row in db.execute(
-                "SELECT tool_name FROM messages WHERE session_id=? AND role='tool'", (session['id'],)))
-            _api('/api/requests/' + rid + '/metrics', {
-                'provider': session['billing_provider'] or 'zai', 'model': session['model'], 'system': 'Hermes',
-                'tokens_in': max(0, usage['tokens_in'] - reported_in),
-                'tokens_out': max(0, usage['tokens_out'] - reported_out), 'tokens_detail': detail,
-                'turns': max(1, detail['api_call_count'] - reported_turns), 'tools': dict(tools - reported_tools),
-                'duration_s': round(session['ended_at'] - session['started_at'], 1)})
-            state['last_usage_session'] = session['id']
-            state['last_usage_request'] = rid
+    """Share verified, idempotent model-ledger accounting with every work lane."""
+    from . import hermes_accounting
+    records = hermes_accounting.reconcile_completed(api=_api, home=hermes_task_mode._home(), limit=10)
+    fields = ('run_id', 'request_id', 'session_id', 'status', 'tokens_in_added', 'tokens_out_added', 'reason')
+    results = [{key: record[key] for key in fields if key in record}
+               for record in records[:10] if isinstance(record, dict)]
+    state['usage_reconciliation'] = results
+    for record in results:
+        rid, session = record.get('request_id'), record.get('session_id')
+        if (record.get('status') not in ('reconciled', 'already_recorded')
+                or not isinstance(rid, str) or not re.fullmatch(r'[0-9a-f]{16}', rid)
+                or not isinstance(session, str) or not session):
+            continue
+        state['request_ids'] = sorted(set(state.get('request_ids') or []) | {rid})
+        state['last_usage_request'], state['last_usage_session'] = rid, session
+    return results
 
 
 def tick(now=None):

@@ -205,7 +205,23 @@ def canonical_mcp(config):
     return fixed if fixed != mcp else None
 
 
+def finalize_usage() -> dict:
+    """Reconcile ended inbox runs independently of route availability or live work."""
+    from . import hermes_accounting
+    from .hermes_availability import _api
+    try:
+        results = hermes_accounting.reconcile_completed(api=_api, home=hermes_task_mode._home(), limit=10)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+        # Accounting must not interrupt quota monitoring; exception text can
+        # contain private transport details, so retain its class only.
+        return {'status': 'deferred', 'error_type': type(error).__name__}
+    return {'checked_runs': len(results), 'runs': results,
+            'tokens_in_added': sum(item.get('tokens_in_added', 0) for item in results),
+            'tokens_out_added': sum(item.get('tokens_out_added', 0) for item in results)}
+
+
 def adjust_routes() -> dict:
+    accounting = finalize_usage()
     data, config = scan(), hermes_task_mode._config()
     cli = str(hermes_task_mode._cli())
     repaired = canonical_mcp(config)
@@ -227,10 +243,12 @@ def adjust_routes() -> dict:
         with hermes_delivery.locked('feedback'):
             saved = json.loads(path.read_text())
             saved['routes'] = routes
+            saved['completed_usage'] = accounting
             _save(path, saved)
         return {'changed': False, 'reason': 'Agent run is active' if busy else 'All connected routes are cooling down',
                 'route': primary, 'agent_busy': busy, 'cooldowns': data['cooldowns'],
-                'new_lessons': data['new_lessons'], 'providers': provider_status(data, config)}
+                'new_lessons': data['new_lessons'], 'providers': provider_status(data, config),
+                'completed_usage': accounting}
     chosen = primary
     if primary not in eligible or (data.get('rotation_pending') and not busy):
         index = eligible.index(primary) if primary in eligible else -1
@@ -247,13 +265,14 @@ def adjust_routes() -> dict:
     path = hermes_delivery.state_dir() / 'feedback.json'
     with hermes_delivery.locked('feedback'):
         saved = json.loads(path.read_text())
-        saved.update(routes=routes, current_route=chosen)
+        saved.update(routes=routes, current_route=chosen, completed_usage=accounting)
         if chosen != primary or not busy:
             saved['rotation_pending'] = False
         _save(path, saved)
     from .hermes_recovery import recover
     return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
+            'completed_usage': accounting,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
 
 

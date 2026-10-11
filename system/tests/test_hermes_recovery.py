@@ -136,10 +136,15 @@ def test_actual_failed_quota_session_saves_owner_and_provider_retry_once(monkeyp
     with sqlite3.connect(home / 'state.db') as db:
         db.execute('CREATE TABLE sessions (id TEXT,source TEXT,started_at REAL,model TEXT,billing_provider TEXT,output_tokens INT,api_call_count INT)')
         db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?,?)', ('cron_job_today', 'cron', 1000, 'glm', 'zai', 9, 3))
-        db.execute('CREATE TABLE messages (id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_name TEXT,tool_calls TEXT)')
-        calls = [{'function': {'name': 'mcp_gbox_set_request_status',
+        db.execute('CREATE TABLE messages (id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_name TEXT,tool_calls TEXT,tool_call_id TEXT)')
+        calls = [{'id': 'owner-call', 'function': {'name': 'mcp__gbox__set_request_status',
                               'arguments': json.dumps({'request_id': RID, 'status': 'in_progress'})}}]
-        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)', (1, 'cron_job_today', 'assistant', '', None, json.dumps(calls)))
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)',
+                   (1, 'cron_job_today', 'assistant', '', None, json.dumps(calls), None))
+        acknowledgement = {'ok': True, 'request_id': RID, 'id': RID, 'status': 'in_progress'}
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)',
+                   (2, 'cron_job_today', 'tool', json.dumps({'result': json.dumps(acknowledgement)}),
+                    'mcp__gbox__set_request_status', None, 'owner-call'))
     first = hermes_feedback.scan(home=home, now=1030)
     assert first['cooldowns']['zai/glm'] == 1111
     assert first['cooldown_details']['zai/glm']['source'] == 'provider_retry_metadata'

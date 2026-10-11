@@ -79,11 +79,19 @@ def test_route_rotation_waits_for_running_agent_and_restores_expired_routes(monk
         else: config['cron'][key.split('.')[1]] = value
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(hermes_feedback, 'scan', scan)
+    finalized = []
+    def finalize():
+        finalized.append(True)
+        return {'checked_runs': 1, 'tokens_in_added': 42, 'tokens_out_added': 3}
+    monkeypatch.setattr(hermes_feedback, 'finalize_usage', finalize)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_config', lambda: config)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [{'id': 'live'}])
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_active', lambda _: busy[0])
     monkeypatch.setattr(hermes_feedback.subprocess, 'run', run)
-    assert hermes_feedback.adjust_routes()['route'] == routes[0]
+    held = hermes_feedback.adjust_routes()
+    assert held['route'] == routes[0]
+    assert finalized == [True] and held['completed_usage']['tokens_in_added'] == 42
+    assert json.loads(path.read_text())['completed_usage'] == held['completed_usage']
     assert json.loads(path.read_text())['rotation_pending']
     assert config['fallback_providers'] == routes[1:]
     busy[0] = False
@@ -92,3 +100,11 @@ def test_route_rotation_waits_for_running_agent_and_restores_expired_routes(monk
     data.update(cooldowns={}, rotation_pending=False)
     hermes_feedback.adjust_routes()
     assert routes[2] in config['fallback_providers']
+
+
+def test_accounting_transport_failure_does_not_interrupt_dispatch_monitor(monkeypatch):
+    from gbox import hermes_accounting
+    def fail(**_kwargs):
+        raise OSError('private transport information must remain private')
+    monkeypatch.setattr(hermes_accounting, 'reconcile_completed', fail)
+    assert hermes_feedback.finalize_usage() == {'status': 'deferred', 'error_type': 'OSError'}

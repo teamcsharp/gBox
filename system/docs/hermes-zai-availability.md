@@ -47,9 +47,13 @@ credential resolver restores its prior endpoint environment after the check.
 
 The same work job is reused; queued/running occurrences are not duplicated.
 Pending Ghidra/character analysis pauses further inference until it settles.
-After each terminal session the watcher retains actual request ownership and
-records its measured tokens, caches, API/tool counts and elapsed time once on
-the primary report, respecting the session marker and prior reported usage.
+After each terminal session the watcher uses the shared finalized usage
+accountant. It confirms ownership from successful tool receipts and records
+measured primary and helper-model tokens, including caches, once on the report.
+Existing tool counts, turns and elapsed time are preserved. The ordinary
+feedback supervisor also runs this accountant even while another agent is busy
+or every provider is cooling down. See `hermes-job-reliability.md` for evidence
+and retry rules.
 Global Hermes parallelism remains two. Native work uses durable gBox job IDs.
 
 Unpinned request investigations also use the shared provider recovery queue in

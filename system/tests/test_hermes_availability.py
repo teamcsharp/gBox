@@ -33,6 +33,7 @@ def test_missing_reset_uses_cheap_recheck_instead_of_guessing_five_hours():
 @pytest.fixture
 def lane(monkeypatch, tmp_path):
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
+    monkeypatch.setattr(availability.hermes_task_mode, '_home', lambda: tmp_path / 'isolated-hermes-home')
     path = tmp_path / 'zai-availability.json'
     path.write_text(json.dumps({'work_job_id': 'work', 'request_ids': ['report']}))
     job = {'id': 'work', 'enabled': False}
@@ -149,45 +150,104 @@ def test_old_probe_success_is_not_reported_as_part_of_a_new_exhausted_quota_chec
 
 
 def test_completed_usage_tracks_actual_owner_cache_and_records_once(tmp_path, monkeypatch):
+    import copy
     import sqlite3
     from gbox import hermes_tasks
     home = tmp_path / 'home'
     (home / 'cron').mkdir(parents=True)
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path / 'dispatch'))
     monkeypatch.setattr(availability.hermes_task_mode, '_home', lambda: home)
     started = '2026-10-10T21:50:00+00:00'
     stamp = hermes_tasks._stamp(started)
-    rid = 'abcdef0123456789'
+    rid, run_id, session_id = 'abcdef0123456789', 'a'*32, 'cron_work_today'
     with sqlite3.connect(home / 'cron/executions.db') as db:
-        db.execute('CREATE TABLE executions (job_id TEXT,status TEXT,started_at TEXT)')
-        db.execute('INSERT INTO executions VALUES (?,?,?)', ('work', 'completed', started))
+        db.execute('CREATE TABLE executions (id TEXT,job_id TEXT,status TEXT,started_at TEXT,finished_at TEXT)')
+        db.execute('INSERT INTO executions VALUES (?,?,?,?,?)',
+                   (run_id, 'work', 'completed', started, '2026-10-10T21:50:30+00:00'))
     with sqlite3.connect(home / 'state.db') as db:
         db.execute('CREATE TABLE sessions (id TEXT,source TEXT,started_at REAL,ended_at REAL,model TEXT,'
                    'billing_provider TEXT,input_tokens INT,cache_read_tokens INT,cache_write_tokens INT,'
-                   'output_tokens INT,api_call_count INT)')
-        db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                   ('cron_work_today', 'cron', stamp, stamp + 30, 'glm-5.3', 'zai', 100, 300, 20, 7, 5))
+                   'output_tokens INT,reasoning_tokens INT,api_call_count INT)')
+        db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                   (session_id, 'cron', stamp, stamp + 30, 'glm-5.3', 'zai', 100, 300, 20, 7, 0, 5))
+        db.execute('CREATE TABLE session_model_usage (session_id TEXT,billing_provider TEXT,model TEXT,task TEXT,'
+                   'input_tokens INT,cache_read_tokens INT,cache_write_tokens INT,output_tokens INT,'
+                   'reasoning_tokens INT,api_call_count INT,estimated_cost_usd REAL)')
+        db.executemany('INSERT INTO session_model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?)', [
+            (session_id, 'zai', 'glm-5.3', 'primary', 100, 300, 20, 7, 0, 5, 0.1),
+            (session_id, 'nous', 'fixture-vision', 'vision', 17, 3, 0, 4, 0, 1, 0.2),
+        ])
         db.execute('CREATE TABLE messages (id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,'
-                   'tool_name TEXT,tool_calls TEXT)')
+                   'tool_name TEXT,tool_calls TEXT,tool_call_id TEXT)')
         args = {'request_id': rid, 'status': 'in_progress'}
-        calls = json.dumps([{'function': {'name': 'mcp_gbox_set_request_status', 'arguments': json.dumps(args)}}])
-        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
-                   (1, 'cron_work_today', 'assistant', '', None, calls))
-        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
-                   (2, 'cron_work_today', 'tool', '{}', 'mcp_gbox_set_request_status', None))
-    recorded, request = [], {'metrics': {'tokens_detail': {}}}
+        calls = json.dumps([{'id': 'confirmed-owner', 'function': {
+            'name': 'tool_call', 'arguments': json.dumps({'calls': [
+                {'name': 'mcp__gbox__set_request_status', 'arguments': args}]})}}])
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)',
+                   (1, session_id, 'assistant', '', None, calls, None))
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)',
+                   (2, session_id, 'tool', json.dumps({'result': json.dumps({'id': rid, 'status': 'in_progress'})}),
+                    'mcp__gbox__set_request_status', None, 'confirmed-owner'))
+    database_bytes = {p.name: p.read_bytes() for p in (home/'state.db', home/'cron/executions.db')}
+    recorded, request = [], {'id': rid, 'status': 'in_progress', 'solved_by': {'service': 'earlier-reviewer'},
+        'messages': [{'author': 'user', 'text': 'Original report'}],
+        'metrics': {'tokens_in': 0, 'tokens_out': 0, 'tokens_detail': {'original_detail': 'preserve'},
+                    'tools': {'terminal': 8}, 'turns': 6, 'agent_seconds': 42, 'duration_s': 19,
+                    'files_changed': ['earlier.py']}}
+    original = copy.deepcopy(request)
     def api(path, body=None):
-        assert rid in path
+        assert path in ('/api/requests/'+rid, '/api/requests/'+rid+'/metrics')
         if body is not None:
-            recorded.append(body)
-            request['metrics']['tokens_detail'].update(body['tokens_detail'])
-        return request
+            assert path.endswith('/metrics')
+            assert body['tools'] == {} and body['turns'] == 0 and 'duration_s' not in body
+            recorded.append(copy.deepcopy(body))
+            mt = request['metrics']
+            mt['tokens_in'] += body['tokens_in']
+            mt['tokens_out'] += body['tokens_out']
+            for key, value in body['tokens_detail'].items():
+                mt['tokens_detail'][key] = mt['tokens_detail'].get(key, 0)+value if isinstance(value, int) else value
+        return copy.deepcopy(request)
     monkeypatch.setattr(availability, '_api', api)
-    state = {'work_job_id': 'work', 'usage_request_id': '0000000000000000'}
-    availability._completed_usage(state)
-    availability._completed_usage(state)
-    assert len(recorded) == 1
-    measured = recorded[0]
-    assert measured['tokens_in'] == 420 and measured['tokens_out'] == 7
-    assert measured['duration_s'] == 30 and measured['turns'] == 5
-    assert measured['provider'] == 'zai' and measured['tools'] == {'mcp_gbox_set_request_status': 1}
-    assert state['last_usage_request'] == rid and rid in state['request_ids']
+    state = {'work_job_id': 'work', 'usage_request_id': '0000000000000000', 'status': 'quota_wait'}
+    first = availability._completed_usage(state)
+    assert first[0]['status'] == 'reconciled' and first[0]['tokens_in_added'] == 440
+    second = availability._completed_usage(state)
+    assert second[0]['status'] == 'already_recorded' and second[0]['tokens_in_added'] == 0
+    assert len(recorded) == 3  # Two model records and one aggregate marker, never duplicate credits.
+    assert request['metrics']['tokens_in'] == 440 and request['metrics']['tokens_out'] == 11
+    rows = {value['task']: value for value in request['metrics']['tokens_detail'].values()
+            if isinstance(value, dict) and value.get('task') in ('primary', 'vision')}
+    assert rows['primary']['tokens_in_including_caches'] == 420 and rows['primary']['tokens_out'] == 7
+    assert rows['primary']['input_cache_read'] == 300 and rows['primary']['input_cache_write'] == 20
+    assert rows['primary']['api_call_count'] == 5
+    assert rows['vision']['tokens_in_including_caches'] == 20 and rows['vision']['tokens_out'] == 4
+    assert rows['vision']['api_call_count'] == 1 and rows['vision']['provider'] == 'nous'
+    assert rows['vision']['actual_cost_usd'] is None
+    for key in ('tools', 'turns', 'agent_seconds', 'duration_s', 'files_changed'):
+        assert request['metrics'][key] == original['metrics'][key]
+    for key in ('status', 'solved_by', 'messages'):
+        assert request[key] == original[key]
+    assert request['metrics']['tokens_detail']['original_detail'] == 'preserve'
+    assert state['last_usage_request'] == rid and state['last_usage_session'] == session_id
+    assert state['request_ids'] == [rid] and state['usage_request_id'] == '0000000000000000'
+    assert state['status'] == 'quota_wait' and state['usage_reconciliation'] == second
+    assert database_bytes == {p.name: p.read_bytes() for p in (home/'state.db', home/'cron/executions.db')}
+
+
+def test_completed_usage_does_not_assign_deferred_or_unacknowledged_owners(tmp_path, monkeypatch):
+    from gbox import hermes_accounting
+    home = tmp_path/'home'
+    monkeypatch.setattr(availability.hermes_task_mode, '_home', lambda: home)
+    state = {'request_ids': ['0123456789abcdef'], 'last_usage_request': '0123456789abcdef',
+             'last_usage_session': 'confirmed-earlier', 'usage_request_id': '0000000000000000'}
+    calls = []
+    def reconcile(**kwargs):
+        calls.append(kwargs)
+        return [{'status': 'deferred', 'request_id': 'fedcba9876543210', 'session_id': 'unconfirmed',
+                 'tokens_in_added': 0, 'tokens_out_added': 0}] * 12
+    monkeypatch.setattr(hermes_accounting, 'reconcile_completed', reconcile)
+    result = availability._completed_usage(state)
+    assert calls == [{'api': availability._api, 'home': home, 'limit': 10}]
+    assert len(result) == 10 and len(state['usage_reconciliation']) == 10
+    assert state['request_ids'] == ['0123456789abcdef']
+    assert state['last_usage_request'] == '0123456789abcdef' and state['last_usage_session'] == 'confirmed-earlier'

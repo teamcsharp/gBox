@@ -61,6 +61,32 @@ marked done for its emulation recovery; this does not verify a character swap.
 DeepSeek save-state investigation #1106 also retains its separate acceptance
 criteria. A completed Hermes execution does not automatically complete a ticket.
 
+## Finalized model usage
+
+`hermes_accounting` reads ended cron executions, complete tool transcripts and
+the `session_model_usage` ledger. The feedback supervisor and Z.AI availability
+watcher share this implementation. Maintenance-only executions do not consume
+the bounded inference-run scan. The accountant performs no inference, task
+dispatch or provider change, and runs independently of provider cooldowns and
+other active work.
+
+Ticket ownership requires successful, call-ID-matched mutation receipts.
+Reading a ticket, quoting its ID or attempting a rejected operation cannot
+reserve it. Mixed ownership and incomplete transcripts defer accounting rather
+than allocate tokens by guesswork. Hermes's empty primary-task label is
+normalized to `primary`; helper tasks retain their own model and provider.
+Input includes uncached, cache-read and cache-write tokens. Reasoning remains
+part of output rather than being counted again.
+
+Successful earlier metric snapshots and verified manual final records are
+credited once. Per-model and aggregate markers preserve exact provenance.
+Unknown historical credits are left unchanged. API writes first persist a
+write intent, then verify the returned counters and markers. Lost responses
+are resolved by reading the ticket; unresolved writes are not replayed blindly.
+Tools, turns, elapsed time, ticket status and completion credit are unchanged.
+Measured costs are distinct from estimates, and subscription credits are not
+inferred from tokens. Accounting a run does not establish gameplay acceptance.
+
 ## Backend activation
 
 Hermes maintenance job `8e210aab9898`, **Activate Hermes bridge safely #1109**,
