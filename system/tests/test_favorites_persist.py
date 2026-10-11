@@ -1,5 +1,4 @@
 """#1291: favorites are one durable list that library refreshes, prunes and restarts never erase."""
-import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -73,8 +72,7 @@ def test_session_header_star_uses_server_favorites():
     html = (ROOT / "clients/web/index.html").read_text(encoding="utf-8")
     head = html[html.index('id="session-head"'):]
     assert head.index('id="session-fav"') < head.index('id="pausebtn"')    # where the operator marked it
-    body = html[html.index("async function toggleSessionFav"):]
-    assert re.search(r"/api/catalog/\$\{btn\.dataset\.gid\}/favorite\?on=", body[:600])
+    # Actual request URLs and recovery are exercised by test_session_favorite.cjs.
     after = html[html.index("sessionsView.after = "):][:200]
     assert "syncSessionFav()" in after
     server = (ROOT / "gbox/server.py").read_text(encoding="utf-8")
