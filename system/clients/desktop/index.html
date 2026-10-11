@@ -2841,12 +2841,67 @@ gbox.onAppFocus?.(gameFocus);
 document.addEventListener("pointerup", e => { const r = EMB.rect;
   if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
       && !e.target.closest("input, textarea, select, button, a, [contenteditable], #chatresize, #chatpanel, #items, #reinv, #pipmenu, #strip, #trouble, #report, #whipmenu")) gameFocus(); });
+// ---- microphone device: right-click any 🎤 to pick the default input (persisted) ----
+(() => {
+  const KEY = "gbox_mic_device";
+  const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let menu = null;
+  const close = () => { if (menu) { menu.remove(); menu = null; } };
+  const style = document.createElement("style");
+  style.textContent = `.micmenu{position:fixed;z-index:2147483647;background:var(--card,#1c1f26);border:1px solid var(--line,#343a45);border-radius:8px;box-shadow:0 10px 28px #000a;min-width:230px;max-width:340px;padding:4px 0;font:13px/1.4 system-ui,sans-serif;color:var(--fg,#e8eaf0)}
+.micmenu-head{font-size:11px;color:var(--mut,#8a93a3);padding:5px 12px 3px;text-transform:uppercase;letter-spacing:.04em}
+.micmenu-item{display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+.micmenu-item:hover{background:var(--hover,#2a2f3a)}
+.micmenu-item .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.micmenu-item .id{color:var(--mut,#8a93a3);font-size:11px}
+.micmenu-item .chk{color:var(--acc,#4da3ff);font-weight:bold;margin-left:auto}`;
+  document.head.append(style);
+  window.gboxMicDevice = () => { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } };
+  window.gboxMicAudio = extra => {
+    const id = window.gboxMicDevice();
+    return id ? { audio: { deviceId: { exact: id }, ...(extra || {}) } } : (extra ? { audio: { ...extra } } : { audio: true });
+  };
+  window.gboxMicMenu = async (anchor, ev) => {
+    ev.preventDefault(); ev.stopPropagation(); close();
+    const inputs = () => navigator.mediaDevices.enumerateDevices().catch(() => [])
+      .then(a => a.filter(d => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default"));
+    let devs = await inputs();
+    if (!devs.length) {   // first use: request mic permission so real device labels are visible
+      let s = null;
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
+      if (s) { s.getTracks().forEach(t => t.stop()); devs = await inputs(); }
+    }
+    const cur = window.gboxMicDevice();
+    const m = document.createElement("div"); m.className = "micmenu";
+    const hd = document.createElement("div"); hd.className = "micmenu-head"; hd.textContent = "Default microphone";
+    m.append(hd);
+    const add = (label, id, isDef) => {
+      const d = document.createElement("div"); d.className = "micmenu-item";
+      d.innerHTML = `<span class="lbl">${escHtml(label)}</span>${isDef ? "" : `<span class="id">${escHtml(id.slice(0, 8))}…</span>`}${id === cur ? `<span class="chk">✓</span>` : ""}`;
+      d.onclick = () => { try { localStorage.setItem(KEY, id); } catch {} close(); };
+      m.append(d);
+    };
+    add("System default", "", true);
+    devs.forEach((d, i) => add(d.label || `Microphone ${i + 1}`, d.deviceId, false));
+    if (!devs.length) { const x = document.createElement("div"); x.className = "micmenu-item"; x.innerHTML = `<span class="lbl">No microphones found</span>`; m.append(x); }
+    document.body.append(m);
+    const r = anchor.getBoundingClientRect(), w = m.offsetWidth || 230, h = m.offsetHeight || 120;
+    let x = r.right - w, y = r.bottom + 6;
+    if (x < 8) x = 8; if (y + h > innerHeight - 8) y = r.top - h - 6; if (y < 8) y = 8;
+    m.style.left = x + "px"; m.style.top = y + "px";
+    menu = m;
+  };
+  document.addEventListener("pointerdown", e => { if (menu && !menu.contains(e.target)) close(); }, true);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); }, true);
+  window.addEventListener("resize", close);
+})();
+
 // ---------------- hold ~ : push-to-talk to the active conversation, the reply is spoken ----------------
 const PTT = { rec: null, chunks: [], down: false };
 async function pttDown() {
   if (PTT.down) return; PTT.down = true;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio());
     PTT.chunks = []; PTT.rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
     PTT.rec.ondataavailable = e => e.data.size && PTT.chunks.push(e.data);
     PTT.rec.start(); document.body.classList.add("talking"); toast("🎙 Listening… (release ~ to send)", 60000);
@@ -3750,7 +3805,7 @@ async function talkLoop() {
   }
 }
 async function talkStart() {
-  try { TALK.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  try { TALK.stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio({ echoCancellation: true, noiseSuppression: true })); }
   catch (e) { return alert("Microphone unavailable: " + e.message); }
   TALK.ctx = new AudioContext(); TALK.on = true;
   $("#talkbtn").classList.add("on"); $("#live").classList.add("on"); document.body.classList.add("talking"); EMB.last = "";
@@ -3788,7 +3843,7 @@ const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() 
   async function toggle(btn, field) {
     if (rec) { rec.stop(); return; }
     let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
+    try { stream = await navigator.mediaDevices.getUserMedia(window.gboxMicAudio()); } catch (e) { alert("Microphone unavailable: " + e.message); return; }
     const chunks = [], mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
     mr.ondataavailable = e => e.data.size && chunks.push(e.data);
     mr.onstop = async () => {
@@ -3825,6 +3880,7 @@ const SPARK_OK = async () => { const r = await gbox.api("/api/health").catch(() 
       if (rec) rec.stop(); else b._ptt = "release";        // getUserMedia still opening: stop as soon as it starts
     };
     b.title = "Dictate: click to start/stop, or hold to talk (Spark speech-to-text)";
+    b.oncontextmenu = e => window.gboxMicMenu(b, e);   // right-click: pick the default microphone
   }
   const skip = el => el.type === "password" || el.closest(".micwrap") || el.dataset.nomic !== undefined || el.offsetParent === null && el.type === "hidden";
   function decorate(root) {
