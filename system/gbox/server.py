@@ -1591,15 +1591,20 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/catalog/{gid}/favorite")
     def favorite(gid: str, on: bool = True, actor=Depends(auth)):
-        game = store.catalog_get(gid) or _404()
-        store.catalog_update(gid, favorite=on)
-        store.audit(actor, "catalog.favorite", gid, {"on": on})
+        with store.lock:
+            game = store.set_favorite(gid, on) or _404()  # includes unstar of a known, pruned title
+            store.audit(actor, "catalog.favorite", gid, {"on": game["favorite"]})
         if on:
             try:
                 auto_collection.after_favorite(game, lambda request: submit(JobRequest(**request), actor).model_dump(mode="json"))
             except Exception as exc:
                 store.audit(actor, "characters.auto_collect_failed", gid, {"error": str(exc)})
         return {"game_id": gid, "favorite": on, "collection": auto_collection.status(gid)}
+
+    @app.get("/api/favorites")
+    def favorites_list(actor=Depends(auth)):
+        items = store.favorites()
+        return {"count": len(items), "items": items}
 
     @app.get("/api/catalog/{gid}")
     def catalog_entry(gid: str, actor=Depends(auth)):
