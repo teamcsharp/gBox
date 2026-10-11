@@ -108,3 +108,16 @@ def test_nonmip_replacement_preserves_original_extent_and_following_data(fmt):
     struct.pack_into('<I', malformed, 4, 8)
     with pytest.raises(ValueError, match='declared PVRT body'):
         ninja.pvr_like(bytes(malformed), image)
+
+
+@pytest.mark.parametrize('fmt', [1, 3, 4, 0x10])
+@pytest.mark.parametrize('width,height', [(0, 0), (65535, 65535), (2048, 2048), (64, 32), (12, 12)])
+def test_invalid_dimensions_reject_before_allocating_replacement_image(fmt, width, height):
+    old = bytearray(ninja.pvr_vq(np.zeros((8, 8, 3)), mips=True))
+    old[9] = fmt
+    struct.pack_into('<HH', old, 12, width, height)
+    class ImageMustNotBeConverted:
+        def convert(self, _mode):
+            pytest.fail('invalid native dimensions must be rejected before image allocation')
+    with pytest.raises(ValueError, match='dimensions'):
+        ninja.pvr_like(bytes(old), ImageMustNotBeConverted())

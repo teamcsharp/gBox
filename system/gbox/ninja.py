@@ -619,6 +619,11 @@ def pvr_like(old: bytes, rgb_img) -> bytes:
     pix, fmt, w, h = old[q + 8], old[q + 9], *struct.unpack_from("<HH", old, q + 12)
     if pix not in (0, 1, 2):
         raise ValueError(f"PVR pixel format {pix} is not written")
+    if fmt not in (1, 3, 4, 0x10):
+        raise ValueError(f"PVR data format {fmt:#x} not written")
+    minimum = 1 if fmt == 1 else 8
+    if w != h or w & (w - 1) or not minimum <= w <= 1024:
+        raise ValueError(f"unsupported PVR replacement dimensions {w}x{h}")
     img = np.asarray(rgb_img.convert("RGBA" if pix != 1 else "RGB").resize((w, h)))
     if fmt == 3:
         new = pvr_vq(img, pix=pix)
@@ -628,8 +633,6 @@ def pvr_like(old: bytes, rgb_img) -> bytes:
         new = pvr_vq(img, pix=pix, mips=True)
     elif fmt == 1:
         new = pvr_twiddled(img, pix)
-    else:
-        raise ValueError(f"PVR data format {fmt:#x} not written")
     body = new[16:]
     if len(body) > size - 8:
         raise ValueError(f"replacement body {len(body)} bytes exceeds the declared PVRT body {size - 8}")
