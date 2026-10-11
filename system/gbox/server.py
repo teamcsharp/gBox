@@ -1592,7 +1592,7 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/catalog/{gid}/favorite")
     def favorite(gid: str, on: bool = True, actor=Depends(auth)):
         game = store.catalog_get(gid) or _404()
-        store.catalog_update(gid, favorite=on)
+        store.set_favorite(gid, on)            # durable list shared by every client/session (#1291)
         store.audit(actor, "catalog.favorite", gid, {"on": on})
         if on:
             try:
@@ -1600,6 +1600,11 @@ def create_app(config: Config) -> FastAPI:
             except Exception as exc:
                 store.audit(actor, "characters.auto_collect_failed", gid, {"error": str(exc)})
         return {"game_id": gid, "favorite": on, "collection": auto_collection.status(gid)}
+
+    @app.get("/api/favorites")
+    def favorites_list(actor=Depends(auth)):
+        items = store.favorites()
+        return {"count": len(items), "items": items}
 
     @app.get("/api/catalog/{gid}")
     def catalog_entry(gid: str, actor=Depends(auth)):

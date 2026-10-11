@@ -1024,6 +1024,21 @@ async function loadMore() {
   const m = $("#more");                                   // still visible (tall screen)? keep filling
   if (m && !L.done && m.getBoundingClientRect().top < innerHeight + 800) loadMore();
 }
+function paintSessionFav(btn, on) {        // session-header star (#1291): same server list as the Library stars
+  btn.textContent = on ? "★" : "☆"; btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.title = on ? "Favorite: in your favorites on every PC and session · click to remove" : "Add this game to your favorites (shared by every PC and session)";
+}
+async function syncSessionFav() {
+  const btn = $("#session-fav"); if (!btn) return;
+  try { const g = await api(`/api/catalog/${btn.dataset.gid}`); if ($("#session-fav") === btn) { paintSessionFav(btn, !!g.favorite); btn.disabled = false; } }
+  catch (e) { btn.title = `Favorites unavailable: ${e.message}`; }
+}
+async function toggleSessionFav(btn) {
+  const on = btn.getAttribute("aria-pressed") !== "true"; btn.disabled = true;
+  try { const r = await api(`/api/catalog/${btn.dataset.gid}/favorite?on=${on}`, {}); paintSessionFav(btn, !!r.favorite); }
+  catch (e) { btn.title = `Couldn't save favorite: ${e.message}`; }
+  finally { btn.disabled = false; }
+}
 async function toggleFav(id, btn) {
   const on = btn.textContent !== "★";
   await api(`/api/catalog/${id}/favorite?on=${on}`, {});
@@ -1213,7 +1228,8 @@ async function sessionsView(sid, mode) {
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
-    ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="margin-left:auto;padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+    ${s.game_id ? `<button class="act" id="session-fav" data-gid="${esc(s.game_id)}" style="margin-left:auto;padding:4px 8px;font-size:16px;line-height:1;color:var(--warn,#f5c542)" title="Checking favorites" aria-label="Favorite this game" aria-pressed="false" disabled onclick='toggleSessionFav(this)'>☆</button>` : ""}
+    ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="${s.game_id ? "" : "margin-left:auto;"}padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     <button class="act" id="resetbtn" style="padding:5px 7px;line-height:0" title="Reset: restart the game (console reset; emulators without one relaunch the same game + mod)"
       aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
@@ -1565,6 +1581,7 @@ async function gfxInit() {
 }
 sessionsView.after = (sid, mode) => {
   if (!sid) return;
+  syncSessionFav();
   const head = $("#session-head");
   if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
   sid = head.dataset.sid; playing = sid;

@@ -52,6 +52,7 @@ class Store:
             CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(game_id UNINDEXED, title, system, collections,
                                                                       manufacturer, category, year, tokenize='unicode61 remove_diacritics 2');
         """)
+        self._init_favorites()
         n_cat = self.db.execute("SELECT COUNT(*) FROM catalog").fetchone()[0]
         n_fts = self.db.execute("SELECT COUNT(*) FROM catalog_fts").fetchone()[0]
         if n_cat != n_fts:                       # interrupted ingest / older index layout -> rebuild
@@ -59,6 +60,55 @@ class Store:
 
     # --- catalog (indexed, full-text searchable) ---
     STATUS = ("playable", "analysis", "asset_mapping", "autoplay", "modding")
+    USER_FIELDS = ("favorite", "last_played")     # set by the operator/sessions, never by a library scan
+
+    # --- favorites: one durable list for every client, PC and session (#1291) ---
+    def _init_favorites(self):
+        """Create the favorites table. On first creation, rebuild it from the catalog and the append-only audit log,
+        so stars that an older catalog refresh erased come back, then re-apply every star to the catalog."""
+        with self.lock:
+            fresh = not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='favorites'").fetchone()
+            self.db.execute("CREATE TABLE IF NOT EXISTS favorites(game_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL, "
+                            "title TEXT, platform TEXT, ts REAL)")
+            if fresh:
+                state = {}
+                for (gid,) in self.db.execute("SELECT game_id FROM catalog WHERE json_extract(body,'$.favorite') = 1"):
+                    state[gid] = (True, 0.0)
+                for gid, data, ts in self.db.execute("SELECT subject, data, ts FROM audit WHERE action='catalog.favorite' ORDER BY seq"):
+                    try:
+                        on = json.loads(data or "{}").get("on")
+                    except ValueError:
+                        continue
+                    if isinstance(on, bool) and gid:
+                        state[gid] = (on, ts or 0.0)
+                for gid, (on, ts) in state.items():
+                    row = self.db.execute("SELECT title, platform FROM catalog WHERE game_id=?", (gid,)).fetchone() or (None, None)
+                    self.db.execute("INSERT OR REPLACE INTO favorites(game_id,favorite,title,platform,ts) VALUES(?,?,?,?,?)",
+                                    (gid, int(on), row[0], row[1], ts))
+            self.db.execute("UPDATE catalog SET body=json_set(body,'$.favorite',json('true')) WHERE game_id IN "
+                            "(SELECT game_id FROM favorites WHERE favorite=1) AND COALESCE(json_extract(body,'$.favorite'),0) != 1")
+            self.db.commit()
+
+    def set_favorite(self, game_id: str, on: bool) -> dict | None:
+        """Star/unstar a title. The favorites table outlives catalog refreshes, prunes and re-scans."""
+        with self.lock:
+            e = self.catalog_get(game_id)
+            if e is None:
+                return None
+            e["favorite"] = bool(on)
+            self.db.execute("UPDATE catalog SET body=? WHERE game_id=?", (json.dumps(e), game_id))
+            self.db.execute("INSERT OR REPLACE INTO favorites(game_id,favorite,title,platform,ts) VALUES(?,?,?,?,?)",
+                            (game_id, int(bool(on)), e.get("title"), e.get("platform"), time.time()))
+            self.db.commit()
+        return e
+
+    def favorites(self) -> list[dict]:
+        """Every starred title, including ones whose files are currently missing from the catalog."""
+        with self.lock:
+            rows = self.db.execute("SELECT f.game_id, f.title, f.platform, f.ts, c.game_id IS NOT NULL FROM favorites f "
+                                   "LEFT JOIN catalog c ON c.game_id=f.game_id WHERE f.favorite=1 "
+                                   "ORDER BY f.title COLLATE NOCASE").fetchall()
+        return [{"game_id": g, "title": t, "platform": p, "favorited": ts, "in_catalog": bool(c)} for g, t, p, ts, c in rows]
 
     @staticmethod
     def _fts_row(rid: int, e: dict) -> tuple:
@@ -79,12 +129,18 @@ class Store:
                         old = json.loads(row[1])
                         for k in self.STATUS:
                             e[k] = old.get(k, e.get(k))
+                        for k in self.USER_FIELDS:     # scans never produce these; a refresh must not erase them
+                            if k in old and k not in e:
+                                e[k] = old[k]
                         self.db.execute("UPDATE catalog SET library=?, title=?, platform=?, system=?, year=?, body=? WHERE rowid=?",
                                         (e.get("library"), e["title"], e["platform"], e.get("system"), e.get("year"),
                                          json.dumps(e), row[0]))
                         rid = row[0]
                         self.db.execute("DELETE FROM catalog_fts WHERE rowid=?", (rid,))
                     else:
+                        fav = self.db.execute("SELECT favorite FROM favorites WHERE game_id=?", (e["game_id"],)).fetchone()
+                        if fav and fav[0]:             # a pruned-then-rescanned game keeps its star
+                            e["favorite"] = True
                         rid = self.db.execute("INSERT INTO catalog(game_id,library,title,platform,system,year,body) VALUES(?,?,?,?,?,?,?)",
                                               (e["game_id"], e.get("library"), e["title"], e["platform"], e.get("system"),
                                                e.get("year"), json.dumps(e))).lastrowid
