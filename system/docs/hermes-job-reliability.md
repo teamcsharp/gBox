@@ -82,3 +82,30 @@ one-shot dispatched by the gateway.
 Attached evidence includes the original screenshot regression, independent
 verification screenshots, an allowlisted audit, exact source patch and actual
 session metrics. No account credentials are included.
+
+## Provider isolation for screenshot helpers
+
+A cron job's main provider pin does not pin `vision_analyze`. The helper can
+inherit a separate global provider and use its own fallback ladder. Read the
+`session_model_usage` ledger as well as the main session counters; record helper
+usage separately and do not treat an unpriced cost of zero as a measured bill.
+
+`scripts/apply_hermes_strict_auxiliary_routes.py` installs an optional,
+context-local vision policy on the supported Hermes runtime. An opted-in job
+has `auxiliary_routes.vision` containing an explicit `provider`, `model` and
+`strict: true`. The policy ignores unrelated global helper credentials and
+routes, blocks automatic and cross-provider fallback, and preserves retries on
+the chosen provider. Unsupported runtime functions or incomplete patches are
+rejected before writing. Source backups and before/after hashes are produced.
+
+Disable the target job before applying, then confirm it starts through a fresh
+external cron worker before resuming. The external worker loads the patched
+source without restarting the gateway or other active jobs. Cached in-process
+workers need a controlled restart to activate it. Jobs without the optional
+field retain their existing routing. The scope resets on completion or error
+and propagates through the existing cron and tool thread contexts.
+
+The portable fixture suite checks conflicting routes, unavailable clients,
+quota errors, nested and concurrent contexts, worker propagation, attribution,
+idempotence and rejection of unknown runtime source. A real image call and its
+separate provider ledger must still verify the deployed task's route.
