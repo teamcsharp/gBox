@@ -202,9 +202,29 @@ field and ensures future task iterations update the review description as well
 as the source branch. A focused real-Git test verifies push precedes this update
 and that title/body text is preserved through a structured JSON input file.
 
-All three are actual open draft PRs, verified through GitHub. The source fixes
-have not been merged by the dispatch repair. Full measured session usage,
+At the time of that dispatch repair, all three were actual open draft PRs,
+verified through GitHub. Full measured session usage,
 including cache reads/writes, is recorded once on the associated inbox tickets.
 Report #1132 is complete with implementation, patch, screenshot and usage
 attachments. Codex's unavailable session token count is explicitly marked
 unavailable rather than estimated.
+
+## Continuing tasks after a PR merge
+
+On 2026-10-11, PRs #1 through #15 were integrated into main at
+`b0559ef3e96f77466c3ea479e60802e90d5fe7bd`. Their merge does not establish
+adoption by already running applications or acceptance of unresolved gameplay.
+
+Task workspaces and branch records survive a merge so an agent can preserve
+its patch and continue the same request. Publication refreshes `origin/main`
+without resetting the branch, index or working files. An already integrated
+commit cannot be reported as new source delivery.
+
+`publish_task_changes` discovers only open PRs targeting main. If the earlier
+PR was merged or closed, new commits on the existing task branch receive a new
+draft PR. If an open PR exists, its description is updated. Both paths verify
+the returned PR is open and belongs to the exact pushed commit and task branch
+before recording successful publication. A failed lookup defers publication
+instead of assuming no PR exists and creating a duplicate. An uncertain create
+or readback is reconciled through open-PR discovery on the next attempt; the
+workspace and pushed commit remain intact.

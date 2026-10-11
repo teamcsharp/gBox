@@ -12,6 +12,7 @@ import time
 
 REPOSITORY = 'teamcsharp/gBox'
 ALLOWED = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'system/hermes/')
+PR_FIELDS = 'url,number,state,headRefName,headRefOid,baseRefName,isCrossRepository'
 
 
 def state_dir() -> Path:
@@ -61,6 +62,34 @@ def _record_path(request_id):
     return state_dir() / (request_id + '.json')
 
 
+def _verify_pull(pull, branch, commit):
+    """A handoff must refer to an open PR for the exact pushed task commit."""
+    if (not isinstance(pull, dict) or type(pull.get('number')) is not int
+            or pull['number'] <= 0 or pull.get('state') != 'OPEN'
+            or pull.get('headRefName') != branch or pull.get('headRefOid') != commit
+            or pull.get('baseRefName') != 'main' or pull.get('isCrossRepository') is not False
+            or pull.get('url') != f'https://github.com/{REPOSITORY}/pull/{pull["number"]}'):
+        raise RuntimeError('GitHub has not confirmed an open main PR for the exact pushed commit; preserve the workspace')
+    return pull
+
+
+def _open_pull(root, branch, commit):
+    # `pr view <branch>` also returns already merged/closed PRs. A resumed task
+    # needs a new open review, and a failed discovery call must not imply none.
+    pulls = json.loads(_run(['gh', 'pr', 'list', '--repo', REPOSITORY,
+        '--head', branch, '--base', 'main', '--state', 'open', '--limit', '2',
+        '--json', PR_FIELDS], root))
+    if not isinstance(pulls, list) or len(pulls) > 1:
+        raise RuntimeError('GitHub open-PR discovery is ambiguous; preserve the workspace')
+    return _verify_pull(pulls[0], branch, commit) if pulls else None
+
+
+def _read_pull(root, number, branch, commit):
+    pull = json.loads(_run(['gh', 'pr', 'view', str(number), '--repo', REPOSITORY,
+                           '--json', PR_FIELDS], root))
+    return _verify_pull(pull, branch, commit)
+
+
 def prepare(request_id: str, number: int) -> dict:
     record = _record_path(request_id)
     repo = repository()
@@ -100,6 +129,9 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                     or any(part.startswith('.') for part in Path(name).parts)):
                 raise ValueError('Only explicit source, test and documentation files can be published')
         _run(['git', 'diff', '--check'], root)
+        # Workspaces survive their first PR merge. Refresh the comparison base
+        # without changing the agent's branch, index or uncommitted source.
+        _run(['git', 'fetch', 'origin', 'main'], root)
         checks = []
         system = root / 'system'
         env = os.environ | {'PYTHONPATH': str(system)}
@@ -129,28 +161,31 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
         if not _run(['git', 'log', 'origin/main..HEAD', '--format=%H'], root):
             raise RuntimeError('No task commit exists; no GitHub progress was claimed')
         _run(['git', 'push', '-u', 'origin', workspace['branch']], root, timeout=90)
+        commit = _run(['git', 'rev-parse', 'HEAD'], root)
         body = (f"gBox request #{workspace['number']} ({request_id}).\n\n"
                 f"{title}\n\nValidation:\n```text\n" + '\n'.join(checks) +
                 "\n```\n\nPublished for review. This PR does not by itself verify live emulation or close the inbox ticket.\n")
         body_path = state_dir() / (request_id + '-pr.md')
         body_path.write_text(body)
-        existing = subprocess.run(['gh', 'pr', 'view', workspace['branch'], '--repo', REPOSITORY,
-                                   '--json', 'url'], cwd=root, capture_output=True, text=True, timeout=30)
-        if existing.returncode == 0:
-            url = json.loads(existing.stdout)['url']
-            match = re.fullmatch(r'https://github\.com/' + re.escape(REPOSITORY) + r'/pull/(\d+)', url)
-            if not match:
-                raise RuntimeError('GitHub returned an unexpected pull request URL')
+        existing = _open_pull(root, workspace['branch'], commit)
+        if existing:
+            number = existing['number']
             # Keep the review description in sync when a resumed task changes its patch.
             # REST avoids gh pr edit's dependency on deprecated classic project fields.
             update_path = state_dir() / (request_id + '-pr-update.json')
             update_path.write_text(json.dumps({'title': title[:180], 'body': body}), encoding='utf-8')
-            _run(['gh', 'api', f'repos/{REPOSITORY}/pulls/{match[1]}', '--method', 'PATCH',
+            _run(['gh', 'api', f'repos/{REPOSITORY}/pulls/{number}', '--method', 'PATCH',
                   '--input', str(update_path)], root)
         else:
             url = _run(['gh', 'pr', 'create', '--draft', '--repo', REPOSITORY, '--base', 'main',
                         '--head', workspace['branch'], '--title', title[:180], '--body-file', str(body_path)], root)
-        workspace.update(commit=_run(['git', 'rev-parse', 'HEAD'], root), url=url,
+            match = re.fullmatch(r'https://github\.com/' + re.escape(REPOSITORY) + r'/pull/(\d+)', url)
+            if not match:
+                raise RuntimeError('GitHub creation was not confirmed; preserve the workspace and inspect open PRs before retrying')
+            number = int(match[1])
+        confirmed = _read_pull(root, number, workspace['branch'], commit)
+        workspace.update(commit=commit, url=confirmed['url'], pr_number=number, pr_state=confirmed['state'],
+                         base_head=_run(['git', 'rev-parse', 'origin/main'], root),
                          checks=checks, files=files, published_at=time.time())
         record.write_text(json.dumps(workspace, indent=2))
         return workspace
