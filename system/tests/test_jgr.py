@@ -315,3 +315,46 @@ def test_body_roles_rejects_a_foreign_skeleton(tmp_path):
     p.write_bytes(b"glTF" + struct.pack("<II", 2, 20 + len(js)) + struct.pack("<I", len(js)) + b"JSON" + js)
     with pytest.raises(ValueError):
         jgr.body_roles(p)
+
+
+# ---- swap-writer helpers (offline: synthetic AFS) ----
+def _afs(entries):
+    import struct as _s
+    n = len(entries)
+    offs, o = [], 0x800
+    for e in entries:
+        offs.append(o)
+        o = (o + len(e) + 0x7FF) & ~0x7FF
+    out = bytearray(o)
+    out[:8] = b"AFS\0" + _s.pack("<I", n)
+    for i, (off, e) in enumerate(zip(offs, entries)):
+        _s.pack_into("<II", out, 8 + 8 * i, off, len(e))
+        out[off:off + len(e)] = e
+    return bytes(out), offs
+
+
+def test_swap_index_slots():
+    from gbox import jgr
+    assert jgr.swap_index(None) == 0 and jgr.swap_index("player") == 0
+    assert jgr.swap_index("07") == 7 and jgr.swap_index("jgr_char12") == 12 and jgr.swap_index("char:3") == 3
+    import pytest
+    with pytest.raises(ValueError):
+        jgr.swap_index("16")
+    with pytest.raises(ValueError):
+        jgr.swap_index("enemy")
+
+
+def test_replace_entries_in_place_keeps_length_and_other_entries():
+    import pytest
+    from gbox import jgr
+    data, offs = _afs([b"PLAY" + b"a" * 100, b"PTEX" + b"b" * 3000, b"main" + b"c" * 10])
+    assert jgr.entry_room(data, offs[0]) == 0x800 and jgr.entry_room(data, offs[1]) == 0x1000
+    new = jgr.replace_entries(data, {offs[1]: b"PTEX" + b"z" * 4000})
+    assert len(new) == len(data)
+    _, o2, s2 = jgr.afs_entries(new)
+    assert o2 == offs and s2 == [104, 4004, 14]
+    assert new[offs[0]:offs[0] + 104] == data[offs[0]:offs[0] + 104]
+    assert new[offs[2]:] == data[offs[2]:]
+    assert new[offs[1] + 4004:offs[2]] == bytes(offs[2] - offs[1] - 4004)
+    with pytest.raises(ValueError):
+        jgr.replace_entries(data, {offs[0]: b"PLAY" + b"x" * 0x800})

@@ -110,3 +110,10 @@ the fixed `BODY_ROLES` map (15 roles). On the owned disc, all 16 entries pass `v
 `play_subobjects`/`decode_submesh` helpers slice records by header address and are superseded by
 the tree walk. Tests (`tests/test_jgr.py`) gate on the owned disc and skip when it is absent, the
 same fixture pattern as the DOA2 suite.
+
+## Swap writer (#1155, work in progress, not routed to `characters op=use`)
+
+`jgr.build_swap` / `build_mod` / `use` port the SA2 chunk-model writer. They use `ninja_swap.fit`, `ninja.cnk_model_lists` with the original vertex chunks kept, `pvr_like` for PTEX texture 0, and `jgr.replace_entries`, which rewrites the entry in place in its AFS room. `patch_gdi` then works unchanged.
+- PLAYER.AFS fills its disc extent (6906 sectors, PROMO.AFS follows). Each PLAY's AFS room is its size plus 52–2036 bytes of padding, so the new body must fit inside the bytes the old body frees.
+- Character 00's body (root +0x15450) frees 42,634 bytes: model structs 456, vertex lists 27,036, strips 15,142. No other root shares those offsets exactly. The kept vertex lists take 27,036 of that. Amy Rose at 299 triangles adds 10,780 bytes (measured with `cnk_model_lists`), so the totals should fit.
+- Measured result: the encode still comes out 13–14 KB over the room (826,992 > 813,056) even at 300 triangles. Next step: log the holes `encode` computes against these totals. Most likely another root's lists partly overlap the body's ranges, and `shared` then re-protects them. It could also be fragmentation around the node structs. Fix that before routing `use` (the routing patch is kept at `~/.hermes/cache/scratch/jgr_use_routing.patch`). Use `/usr/bin/blender` (arm64) for decimation: `/usr/local/bin/blender` is x86-64.

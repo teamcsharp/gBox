@@ -473,3 +473,259 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
     except Exception as exc:                               # noqa: BLE001 - report instead of inventing roles
         out["notes"] += f" Rig roles not derived: {exc}"
     return out
+
+
+# ---- native swap writer: a library character -> one PLAYER.AFS body (gbox.ninja_swap pipeline, as gbox.sa2_chars) ----
+BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300)
+ATLAS_TEXTURE = 0                       # the PTEX texture the new strips draw (it's replaced by the character's atlas)
+HEAD_NODES = {10, 11}
+
+
+def swap_index(slot: str | None) -> int:
+    """characters op=use slot -> PLAYER.AFS character index: 'player' (= 00), 'NN', 'jgr_charNN' or 'char:NN'."""
+    s = (slot or "player").strip().lower()
+    if s == "player":
+        return 0
+    digits = s.rsplit("char", 1)[-1].lstrip(":_ ")
+    if not digits.isdigit() or not 0 <= int(digits) < CHARACTER_COUNT:
+        raise ValueError(f"slot {slot!r}: use 'player' or a JGR character index 00-{CHARACTER_COUNT - 1:02d}")
+    return int(digits)
+
+
+def entry_room(data: bytes, off: int) -> int:
+    """Bytes an AFS entry may grow to without moving the next entry (its size + the padding before the next one)."""
+    _, offsets, _ = afs_entries(data)
+    later = [o for o in offsets if o > off]
+    return (min(later) if later else len(data)) - off
+
+
+def replace_entries(data: bytes, new: dict[int, bytes]) -> bytes:
+    """PLAYER.AFS with the entries at the given absolute offsets rewritten in place (table sizes updated). Every
+    other byte stays, so the archive keeps its length and gbox.gdrom.patch_gdi rewrites it in its own sectors."""
+    _, offsets, _ = afs_entries(data)
+    out = bytearray(data)
+    for off, blob in new.items():
+        room = entry_room(data, off)
+        if len(blob) > room:
+            raise ValueError(f"AFS entry +{off:#x}: {len(blob)} bytes > {room} bytes of room")
+        out[off:off + room] = blob + bytes(room - len(blob))
+        struct.pack_into("<I", out, 8 + 8 * offsets.index(off) + 4, len(blob))
+    return bytes(out)
+
+
+def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
+    from .sa2_chars import _first_material
+    mat, tiny, texfl, strip = _first_material(buf, nodes)
+    if not mat:
+        raise ValueError("the body has no textured strip to copy the render state from")
+    return mat, tiny, texfl, strip
+
+
+def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender: str | None = None,
+               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+    """-> {files {PLAYER_AFS: bytes}, report, rigged, atlas}: character `index`'s high-detail body drawn as `model`
+    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh); every node keeps its original vertex
+    chunks (the game's skinning reads them), the new vertices go after them in the vertex cache and the new strips
+    draw those with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
+    their own AFS room, so PLAYER.AFS keeps its size; the model is decimated until it fits."""
+    import numpy as np
+    from pathlib import Path
+    from . import ninja, ninja_swap as NS
+    from .gdrom import GDRom
+    data = GDRom(str(gdi)).read(PLAYER_AFS)
+    play, ptex = character_pair(data, index)
+    room = entry_room(data, play)
+    buf = play_bytes(data, play)
+    root = body_root(data, play)
+    nj = play_model(buf, root)
+    tgt = NS.target_from_nj(nj, {k: int(v[4:]) for k, v in BODY_ROLES.items()}, HEAD_NODES)
+    nodes = ninja.tree_nodes(buf, root)
+    if len(nodes) != len(BODY_PARENTS):
+        raise ValueError(f"PLAY {index:02d} body has {len(nodes)} nodes, expected {len(BODY_PARENTS)}")
+    mat, tiny_fl, tex_fl, strip_fl = _material(buf, nodes)
+    mine = {nd["off"] for nd in nodes}
+    others = []
+    for r in play_model_roots(data, play):
+        if r == root:
+            continue
+        try:
+            others += [nd for nd in ninja.tree_nodes(buf, r) if nd["off"] not in mine]
+        except Exception:                                  # noqa: BLE001 - a non-tree record: nothing to keep
+            continue
+
+    def model_ranges(nds):
+        rs = []
+        for nd in nds:
+            if nd["model"]:
+                vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
+                rs.append((nd["model"], nd["model"] + 24))
+                if vl:
+                    rs.append((vl, vl + ninja.chunk_list_len(buf, vl, "v")))
+                if pl_:
+                    rs.append((pl_, pl_ + ninja.chunk_list_len(buf, pl_, "p")))
+        return rs
+    body = bytearray(buf)
+    for a_, b_ in model_ranges(nodes):
+        body[a_:b_] = bytes(b_ - a_)
+    shared = model_ranges(others)
+    for a_, b_ in shared:                                  # still drawn by another tree: keep
+        body[a_:b_] = buf[a_:b_]
+    freed = np.zeros(len(buf), bool)
+    for a_, b_ in model_ranges(nodes):
+        freed[a_:b_] = True
+    for a_, b_ in shared:
+        freed[a_:b_] = False
+    holes, i = [], 0
+    while i < len(freed):
+        if freed[i]:
+            j = i
+            while j < len(freed) and freed[j]:
+                j += 1
+            st_ = (i + 3) & ~3
+            if j - st_ >= 32:
+                holes.append([st_, j])
+            i = j
+        else:
+            i += 1
+
+    def orig_vlist(nd):
+        if not nd["model"]:
+            return b""
+        vl = struct.unpack_from("<I", buf, nd["model"])[0]
+        return buf[vl:vl + ninja.chunk_list_len(buf, vl, "v") - 4] if vl else b""
+    vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
+
+    def home_of(nd):                                      # the freed hole that held this node's own lists
+        if not nd["model"]:
+            return None
+        vl = struct.unpack_from("<I", buf, nd["model"])[0] or nd["model"]
+        return next((k for k, h in enumerate(holes) if h[0] <= vl < h[1]), None)
+
+    def encode(geo):
+        out = bytearray(body)
+        out += bytes((-len(out)) % 32)
+        padded = len(out)
+        free = [h[:] for h in holes]
+
+        def alloc(blob, home=None):                         # the node's own hole first (each node's lists sit
+            size = (len(blob) + 3) & ~3                     # between node structs), else best fit, else the end
+            if home is not None and free[home][1] - free[home][0] >= size:
+                h = free[home]
+            else:
+                fits = [h for h in free if h[1] - h[0] >= size]
+                h = min(fits, key=lambda h: h[1] - h[0]) if fits else None
+            if h is not None:
+                o, h[0] = h[0], h[0] + size
+            else:
+                o = len(out)
+                out.extend(bytes(size))
+            out[o:o + len(blob)] = blob
+            return o
+        # vertex lists first, each into its node's hole (they hold the kept original chunks, the biggest part)
+        built, vls = {}, {}
+        for j, nd in enumerate(nodes):
+            keep = orig_vlist(nd)
+            if j in geo:
+                P, N, T = geo[j]
+                built[j] = ninja.cnk_model_lists(P, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
+                                                 base=vbase, keep_vlist=keep)
+                vls[j] = alloc(built[j][0], home_of(nd))
+            elif keep:
+                vls[j] = alloc(keep + struct.pack("<I", 0xFF), home_of(nd))
+        ep, lists = None, {}
+        for j in sorted(range(len(nodes)), key=lambda j: -len(built[j][1]) if j in built else 0):
+            nd = nodes[j]
+            if j in built:
+                _vl, pl_, c, r = built[j]
+                lists[j] = (vls[j], alloc(pl_, home_of(nd)), c, r)
+            elif nd["model"]:
+                if ep is None:
+                    ep = alloc(struct.pack("<HH", 0xFF, 0))
+                c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
+                lists[j] = (vls.get(j, 0), ep, list(c_r[:3]), c_r[3])
+        for j, nd in enumerate(nodes):
+            mo = 0
+            if j in lists:
+                vo, po, c, r = lists[j]
+                mo = alloc(struct.pack("<II4f", vo, po, *c, r), home_of(nd))
+            flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
+            struct.pack_into("<II", out, nd["off"], flags, mo)
+        if len(out) == padded:                              # nothing landed at the end: keep the old length
+            del out[len(buf):]
+        if len(out) > room:
+            raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
+        return bytes(out)
+    progress(20, f"Fitting {name} to JGR character {index:02d}'s {len(nodes)} nodes")
+    r = NS.fit(Path(model), roles, tgt, Path(work), name, BUDGETS, blender, encode, 256, scale, progress)
+    progress(80, "Encoding the texture atlas (PVR, PTEX texture 0's format)")
+    from .ninja import pvr_like
+    texs = ptex_textures(data, ptex)
+    t0 = texs[ATLAS_TEXTURE]
+    new_t = pvr_like(t0["bytes"], r["atlas"])
+    if len(new_t) != len(t0["bytes"]):
+        raise ValueError(f"PTEX texture {ATLAS_TEXTURE}: re-encoded {len(new_t)} bytes != {len(t0['bytes'])}")
+    size = entry_size(data, ptex)
+    pt = bytearray(data[ptex:ptex + size])
+    pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
+    afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
+    rep = r["report"] | {"character": f"{index:02d}", "play_bytes": len(r["data"]), "play_room": room,
+                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
+    return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
+
+
+def build_mod(cfg, meta: dict, game: dict, gdi, index: int = 0, progress=lambda p, m: None, root=None) -> dict:
+    """On the control plane: jgr_<slug>_<NN> = a copy of the GD-ROM image with character NN's body replaced."""
+    import json
+    import shutil
+    import time
+    from pathlib import Path
+    from . import characters as C, filemods
+    from .gdrom import patch_gdi
+    root = root or C.library_root(cfg)
+    gid, name = game["game_id"], f"jgr_{meta['slug']}_{index:02d}"
+    roles = (meta.get("rig") or {}).get("roles") or {}
+    if "hip" not in roles:
+        raise ValueError(f"{meta['name']} has no body roles (rig.roles in meta.json): can't map it onto the JGR body")
+    work = Path(cfg.cache) / "characters_build" / meta["slug"] / "jgr"
+    shutil.rmtree(work, ignore_errors=True)
+    b = build_swap(gdi, root / meta["slug"] / meta["model"], roles, work, meta["name"], index, C._blender(cfg),
+                   progress, (meta.get("rig") or {}).get("scale"))
+    tdir = root / meta["slug"] / "targets"
+    tdir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(b["rigged"], tdir / f"jgr_{index:02d}.gltf")
+    b["atlas"].save(tdir / "jgr_atlas.png")
+    C.render_preview(tdir / f"jgr_{index:02d}.gltf", tdir / "jgr_preview.png")
+    d = filemods.mod_dir(cfg, gid, name)
+    if d.exists():
+        shutil.rmtree(d)
+    progress(85, "Writing the modded GD-ROM image")
+    img = patch_gdi(gdi, d, name, b["files"], progress)
+    (d / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": gid, "image": img.name, "built": time.time(),
+                                                  "files": sorted(b["files"]), "character": meta["slug"],
+                                                  "report": json.loads(json.dumps(b["report"], default=str))}))
+    shutil.rmtree(work, ignore_errors=True)
+    return {"mod": name, "image": img.name, "report": b["report"], "rigged": str(tdir / f"jgr_{index:02d}.gltf")}
+
+
+def use(ctx, meta: dict, game: dict, inp) -> dict:
+    """characters op=use for Jet Grind Radio (DC): build jgr_<slug>_<NN> on the control plane, then launch it."""
+    from . import characters as C, filemods
+    index = swap_index(getattr(inp, "slot", None))
+    gid, name = game["game_id"], f"jgr_{meta['slug']}_{index:02d}"
+    have = (filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json").exists()
+    built = None
+    if getattr(inp, "rebuild", False) or not have:
+        if not C.library_root(ctx.config).is_dir():
+            raise ValueError("JGR swaps are built on the control-plane node (the Spark): run this there")
+        built = build_mod(ctx.config, meta, game, C._dc_gdi(ctx, game), index, ctx.progress)
+        C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
+               json={"game_id": gid, "slot": f"{index:02d}", "mod": name, "nodes": [C.HOST_OS],
+                     "notes": f"replaces JGR character {index:02d}'s high-detail body (its 20 nodes and motions; "
+                              f"{built['report']['triangles']} triangles, PTEX texture 0 = atlas); "
+                              "preview targets/jgr_preview.png"})
+    out = {"mod": name, "build": built,
+           "replaces": f"JGR character {index:02d} (high-detail body; skeleton, motions and lower-detail bodies stay)"}
+    if not getattr(inp, "launch", False):
+        return out | {"status": "built" if built else "ready"}
+    l = C._launch(ctx, gid, name, C.HOST_OS)
+    return out | {"status": "built+launched" if built else "launched", "launch": l}
