@@ -95,6 +95,53 @@ test('retarget and rescale stages are recognised; unrelated stages are not', () 
   assert.equal(popup.decimateRatio(null, 10), 1);
 });
 
+test('every writer wording of decimate / simplify / fit / retarget drives a stage', () => {
+  const D = (m) => popup.stageEffect(m);
+  // oot_swap / sm64_swap / ninja_swap name the model, then give only the target
+  let fx = D('Decimating Amy Rose -> 4000 triangles (Blender)');
+  assert.equal(fx.kind, 'decimate'); assert.equal(fx.to, 4000); assert.equal(fx.ratio, null);
+  assert.equal(fx.label, 'decimate → 4,000 tris'); assert.equal(popup.decimateRatio(fx, 16000), 0.25);
+  assert.equal(D('Decimating the body -> 3000 triangles (Blender)').to, 3000);
+  assert.equal(D('Decimating Amy to 1500 triangles (Blender)').to, 1500);
+  fx = D('Simplifying the props 300 -> 200 triangles (Blender)');
+  assert.equal(fx.kind, 'decimate'); assert.equal(fx.from, 300); assert.equal(fx.to, 200);
+  // budget fitting is a decimation; fitting onto a skeleton / body / nodes is a retarget
+  assert.deepEqual(D("Fitting 3 parts into the game's vertex/face budget (Blender, pass 1)"),
+    { kind: 'decimate', ratio: 0.5, label: 'fit to budget' });
+  assert.equal(D("Fitting textures and triangles into Mario's data (64x32 RGBA16 max)").kind, 'decimate');
+  assert.deepEqual(D("Fitting Amy onto Cloud's field skeleton"), { kind: 'retarget', label: "retarget → Cloud's field skeleton" });
+  assert.deepEqual(D("Fitting Amy to Sonic's 22 nodes"), { kind: 'retarget', label: "retarget → Sonic's 22 nodes" });
+  assert.equal(D('Fitting Amy to the HUmar body (40 nodes)').label, 'retarget → the HUmar body');
+  assert.equal(D('Fitting Amy onto Aya (casual dress)').label, 'retarget → Aya');
+  assert.equal(D('Fitting the character onto torso, legs').label, 'retarget → torso, legs');
+  // '4000 to the slot' is not a triangle count; still a plain rescale
+  assert.equal(D('Rescaling 4000 to the slot height').kind, 'rescale');
+});
+
+test("the stage parser covers every progress line gBox's writers actually emit", () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const dir = path.join(__dirname, '..', 'gbox');
+  const NUMERIC = /tris|target|budget|len\(|count|^n$|^k$|rnd|btarget|PROP|attempt/i;
+  const seen = [];
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.py'))) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of src.matchAll(/progress\([^"\n]*?f?"([^"\n]*)"/g)) {
+      const line = m[1].replace(/\{([^{}]*)\}/g, (_, e) => (NUMERIC.test(e.trim()) ? '1200' : 'Amy'));
+      let want = null;
+      if (/decimat|simplif/i.test(line) || /\bfitting\b.*\binto\b/i.test(line)) want = 'decimate';
+      else if (/retarget/i.test(line) || /\bfitting\b.*\b(onto|to)\b/i.test(line)) want = 'retarget';
+      if (!want) continue;
+      seen.push(`${f}: ${line}`);
+      const fx = popup.stageEffect(line);
+      assert.ok(fx, `${f}: no stage for "${line}"`);
+      assert.equal(fx.kind, want, `${f}: "${line}"`);
+      if (want === 'retarget') assert.notEqual(fx.label, 'retarget', `${f}: no target named in "${line}"`);
+      if (want === 'decimate' && /\d+\s*tri/i.test(line)) assert.ok(fx.to > 0, `${f}: lost the triangle target in "${line}"`);
+    }
+  }
+  assert.ok(seen.length >= 15, `expected the writers' progress lines, found ${seen.length}`);
+});
+
 // ---------- VCR close effect timeline ----------
 test('VCR effect runs tracking static, collapse to a line, then finishes', () => {
   let t = 1000;

@@ -18,7 +18,7 @@
     "video", "llm_complete", "provision_node", "echo_artifact", "zelda", "zelda_oot", "re6", "re_mods", "pso_mods",
     "gta_mods", "ac_mods", "re_inventory", "pso_inventory", "pso_drops", "unreal_script", "script_patch", "game_link",
     "live_link", "state_transfer", "ghidra_script", "analyze_binary", "rea_tools", "rea_resources", "read_rea_result"]);
-  const STAGE_WORDS = /decimat|retarget|blender|\bglb\b|\bgltf\b|\bmesh(es)?\b|triangl|\brig(ging)?\b|weight paint|atlas\b|uv unwrap/i;
+  const STAGE_WORDS = /decimat|simplif|retarget|blender|\bglb\b|\bgltf\b|\bmesh(es)?\b|triangl|\brig(ging)?\b|weight paint|atlas\b|uv unwrap/i;
 
   function classify(job) {
     if (!job || !["queued", "running"].includes(job.state)) return false;
@@ -57,24 +57,31 @@
   // ---- what the current stage is doing to the mesh (drives the live mesh-change view) -----
   // Reads the worker's own progress lines, e.g. "Amy: decimating 12000 -> 8000 triangles",
   // "Too big (…): decimating to ~4000 triangles", "Retargeting Amy onto Leon's skeleton".
+  // Writers word the same operations differently (oot/sm64/ninja "Decimating Amy -> 4000 triangles
+  // (Blender)", sm64 "Simplifying the props 300 -> 200 triangles", pe/ff7/sa2/pso/re6/metal_arms
+  // "Fitting Amy onto Cloud's field skeleton" / "Fitting Amy to Sonic's 22 nodes", aki/sm64
+  // "Fitting 3 parts into the game's vertex/face budget"); tests scan gbox/*.py to keep this in step.
   function stageEffect(msg) {
     const m = String(msg || "");
     if (!m) return null;
     let r;
-    if (/decimat/i.test(m)) {
-      if ((r = /([\d,]+)\s*(?:->|→|to)\s*~?([\d,]+)\s*tri/i.exec(m))) {
+    const fitting = /\bfitting\b/i.test(m);
+    const budgetFit = fitting && /\binto\b.*\b(budget|triangles?|faces?|data)\b/i.test(m);
+    if (/decimat|simplif/i.test(m) || budgetFit) {
+      const verb = budgetFit ? "fit to budget" : "decimate";
+      if ((r = /([\d,]+)\s*(?:->|→|\bto)\s*~?([\d,]+)\s*tri/i.exec(m))) {
         const from = +r[1].replace(/,/g, ""), to = +r[2].replace(/,/g, "");
         if (from > 0 && to > 0) return { kind: "decimate", from, to, ratio: Math.min(1, to / from),
-          label: `decimate ${from.toLocaleString("en-US")} → ${to.toLocaleString("en-US")} tris` };
+          label: `${verb} ${from.toLocaleString("en-US")} → ${to.toLocaleString("en-US")} tris` };
       }
-      if ((r = /to\s*~?([\d,]+)\s*tri/i.exec(m))) {
+      if ((r = /(?:->|→|\bto)\s*~?([\d,]+)\s*tri/i.exec(m))) {                // target only: scaled to the mesh
         const to = +r[1].replace(/,/g, "");
-        return { kind: "decimate", to, ratio: null, label: `decimate → ${to.toLocaleString("en-US")} tris` };
+        if (to > 0) return { kind: "decimate", to, ratio: null, label: `${verb} → ${to.toLocaleString("en-US")} tris` };
       }
-      return { kind: "decimate", ratio: 0.5, label: "decimate" };
+      return { kind: "decimate", ratio: 0.5, label: verb };
     }
-    if (/retarget/i.test(m)) {
-      r = /onto\s+(.+?)(?:\s*\(|$)/i.exec(m);
+    if (/retarget/i.test(m) || (fitting && /\b(onto|to)\b/i.test(m))) {
+      r = /\bonto\s+(.+?)(?:\s*\(|$)/i.exec(m) || (fitting ? /\bfitting\b.*?\bto\s+(.+?)(?:\s*\(|$)/i.exec(m) : null);
       return { kind: "retarget", label: "retarget" + (r ? " → " + r[1].trim() : "") };
     }
     if (/\b(re)?scal(e|es|ed|ing)\b|\bresiz/i.test(m)) return { kind: "rescale", label: "rescale" };
