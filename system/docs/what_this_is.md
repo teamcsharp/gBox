@@ -101,7 +101,8 @@ system/
     ninja.py                 Sega Ninja formats: PRS, BML archives, NJCM chunk models, PVM/PVR textures → UAP
     psomap.py                PSO map data: collision REL (GC/DC) → walkable grid
     gcdisc.py gdrom.py       read-only GameCube ISO and Dreamcast GD-ROM (.gdi) filesystems; DOL/RAM → ELF
-  profiles/                  semantic state profiles: pso-gc-plus-us.json, pso-v2-dc-us.json (with evidence)
+  profiles/                  semantic state profiles: pso-gc-plus-us.json, pso-v2-dc-us.json, auf-gcn-us.json (with evidence)
+    entity_probe.py          generic entity/camera probe for table-of-records games (007 AUF; docs/auf-entity-analysis.md)
   adapters/ghidra/           Ghidra scripts: ExportAnalysis.java, ExplainAddresses.java
   clients/
     web/index.html           browser UI (library, sessions, inspect: memory/tiles/CPU/game state, controllers, ops)

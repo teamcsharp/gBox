@@ -51,6 +51,10 @@ def _set_core_opts(path: Path, values: dict[str, str]) -> None:
 class Adapter:
     name = "base"
     supported: set[str] = set()
+    # gBox's checkpoint rewind (gbox/rewind.py): "path" = save_state reports the file it wrote (the operator's slot,
+    # borrowed and given back), "dir" = checkpoint_save writes a private slot found under state_dir() / state_glob,
+    # False = the save state does not work in place (checkpoint_reason says why), None = no save state file to copy.
+    checkpoint_state: str | bool | None = None
 
     def get_capabilities(self) -> dict[str, str]:
         return {op: ("supported" if op in self.supported else "unsupported") for op in OPS}
@@ -211,6 +215,9 @@ _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
                                                                      0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
                                                                      0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32])}}
+# function keys and Tab: emulator hotkeys (Dolphin's save / load state slots and its speed limit); they were dropped before
+_SCAN.update({f"F{i + 1}": (sc, 0) for i, sc in enumerate([0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58])})
+_SCAN["Tab"] = (0x0F, 0)
 
 
 def _pid_window(pid: int):
@@ -714,6 +721,8 @@ class RetroArchAdapter(CommandAdapter):
     name = "retroarch"
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "save_state",
                  "load_state", "step_frames", "query_runtime", "get_frame", "send_input", "stream_session", "rewind", "fast_forward"}
+    checkpoint_state = "path"                            # NO_REWIND cores: gBox's checkpoint ring behind Select+L2
+    ff_on = False                                        # gBox's view of RetroArch's fast-forward toggle
 
     def __init__(self, cfg: EmulatorConfig, config: Config | None = None, platform: str | None = None,
                  port: int | None = None, host: str = "127.0.0.1"):
@@ -1116,9 +1125,15 @@ class RetroArchAdapter(CommandAdapter):
         return {"rewound_s": seconds, "steps": steps}
 
     def fast_forward(self, on: bool | None = None) -> dict:
-        """Toggle fast-forward (4x)."""
+        """Fast-forward (fastforward_ratio, 16x in the session cfg): a toggle, or on / off as gBox last set it."""
+        if on is not None and bool(on) == self.ff_on:
+            return {"fast_forward": "on" if self.ff_on else "off"}
         self.cmd("FAST_FORWARD")
-        return {"fast_forward": "toggled"}
+        self.ff_on = (not self.ff_on) if on is None else bool(on)
+        return {"fast_forward": "toggled", "on": self.ff_on}
+
+    def state_dir(self) -> Path:
+        return self.config.runtime / "states"
 
     def step_frames(self, n: int = 1) -> dict:
         for _ in range(n):
@@ -1489,6 +1504,7 @@ class DolphinAdapter(StandaloneAdapter):
     name = "dolphin"
     flatpak = "org.DolphinEmu.dolphin-emu"
     screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
+    checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
     # gBox pad -> keys; GCPadNew.ini binds the same keys to the GameCube pad (Dolphin names letter keys in upper case)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
             "l": "q", "r": "w", "l2": "q", "r2": "w", "select": "e", "z": "e", "start": "Return",
@@ -1594,13 +1610,25 @@ D-Pad/Right = `H`
         from .debug import GdbDebugger
         return GdbDebugger("127.0.0.1", self.port, "ppc", connect_timeout=60)
 
+    # gBox's checkpoint ring (Select+L2 on the streamed pad, gbox/rewind.py): Dolphin's slot 8, the operator keeps slot 1
+    def state_dir(self) -> Path:
+        return Path.home() / ".var" / "app" / self.flatpak / "data" / "dolphin-emu" / "StateSaves"
+
+    def checkpoint_save(self) -> dict:
+        self._xdo("key", "shift+F8")
+        return {"slot": 8}
+
+    def checkpoint_load(self) -> dict:
+        self._xdo("key", "F8")
+        return {"slot": 8}
+
 
 class DolphinWinAdapter(DolphinAdapter):
     """GameCube / Wii on standalone Dolphin on Windows (portable copy in the runtime folder, same release as the Spark's
     flatpak so save states move between them). Docked in the app like RetroArch; the operator's Xbox pad drives the
     GameCube pad; memory + breakpoints through Dolphin's GDB stub, exactly like on the Spark."""
     name = "dolphin"
-    supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window"}   # native window, frames via get_frame
+    supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window", "fast_forward"}   # native window, frames via get_frame
     # XInput pad (positional, like RetroArch's autoconfig) with the keyboard keys gBox sends as an alternative
     PAD_INI_WIN = """[GCPad1]
 Device = XInput/0/Gamepad
@@ -1744,6 +1772,32 @@ D-Pad/Right = `Pad E`
     def load_state(self, slot: int | None = None) -> dict:
         win_send_keys(self.proc.pid, [{"key": "F1", "down": True}, {"key": "F1", "down": False}])
         return {"slot": 1}
+
+    # gBox's checkpoint ring (Select+L2 rewind, gbox/rewind.py) uses Dolphin's slot 8: the operator's slot 1 is untouched.
+    # Its hotkeys are keystrokes into the game window (win_send_keys focuses it): checkpoints only while the pad is in use.
+    checkpoint_when_playing = True
+
+    def state_dir(self) -> Path:
+        return self._exe().parent / "User" / "StateSaves"
+
+    def checkpoint_save(self) -> dict:
+        win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F8", "down": True},
+                                      {"key": "F8", "down": False}, {"key": "Shift_R", "down": False}])
+        return {"slot": 8}
+
+    def checkpoint_load(self) -> dict:
+        win_send_keys(self.proc.pid, [{"key": "F8", "down": True}, {"key": "F8", "down": False}])
+        return {"slot": 8}
+
+    ff_on = False
+
+    def fast_forward(self, on: bool | None = None) -> dict:
+        """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (Tab, its default) while gBox wants fast-forward."""
+        want = (not self.ff_on) if on is None else bool(on)
+        if want != self.ff_on:
+            win_send_keys(self.proc.pid, [{"key": "Tab", "down": want}])
+            self.ff_on = want
+        return {"fast_forward": "on" if self.ff_on else "off"}
 
 
 class MgbaAdapter(StandaloneAdapter):
@@ -1999,6 +2053,9 @@ class RPCS3Adapter(Adapter):
     # GPU-rendered game made it stutter (same reason RetroArch native windows aren't streamed)
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "read_memory", "write_memory", "pause", "resume",
                  "save_state", "load_state"}
+    # save state = F2 "save and continue" (RPCS3 reloads the game from it), load = a relaunch: no in-place checkpoint
+    # every two seconds; Select+L2 reports itself unsupported here (gbox/rewind.py)
+    checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
 
     def __init__(self, config: Config):
         self.config, self.proc, self.stream, self.base, self.paused = config, None, None, None, False
