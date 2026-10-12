@@ -52,6 +52,19 @@ class RewindConfig(BaseModel):
     repeat_s: float = 0.6             # holding Select+L2: one older checkpoint per repeat
 
 
+class RecordingConfig(BaseModel):
+    """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
+    operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
+    enabled: bool = True              # false: no background capture (the recording tool's op=enable switches it per session)
+    seconds: int = 120                # how far back a clip can reach (the ring keeps this much on disk)
+    encoder: str = "auto"             # auto (NVENC when ffmpeg has it, else libx264) | h264_nvenc | hevc_nvenc | libx264
+    max_mb: int = 512                 # disk cap per session's ring; the oldest segments go first
+    fps: int = 30                     # capture rate
+    bitrate_kbps: int = 8000          # capture bitrate (the export re-encodes to the requested file size)
+    idle_s: float = 20.0              # capture runs while pad activity was seen within this long; stops after it
+    segment_s: int = 5                # length of one ring segment (export granularity is finer: the range is trimmed)
+
+
 class Config(BaseModel):
     data_dir: Path = Path("gbox-data")
     libraries: list[Library] = []
