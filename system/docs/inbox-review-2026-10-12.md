@@ -36,3 +36,9 @@ Validation: Python suite 848 passed, 42 skipped (tests/test_doa5a_inventory.py::
 ## Deployment notes
 
 The fixes are committed on `inbox-audit-20261012` and need a push, a PR merge, a Spark `gbox` service restart when no Spark-hosted session is running, and an app relaunch on the operator's PC for the client and worker changes.
+
+## Follow-up: deploy and the second batch (same day)
+
+- PR #150 (the four root-cause fixes) was merged by the operator; the 15 files it changed, plus the session observer fix from PR #132, were copied to the Spark share with a backup under `gbox-data/deploy-backups/20261012-main4f96389` and verified identical. The web client is live immediately. The Spark service refresh is deferred by the idle check while Hermes executions run; the operator restarts it (`sudo -n systemctl restart gbox`) when the check passes, and relaunches the desktop app on the Windows PCs for the worker and client changes.
+- Branch `inbox-audit-20261012-b` adds four more requests: online cover art for any game card (#1067, `gbox/cover_art.py`, `POST /api/catalog/{gid}/cover`), a per-PC switch for which computers background testing may use (#1383, `gbox/background_testing.py`, Tasks icon right-click, honoured by `idle_worker` and the MCP test-PC selection), loading a game from a conversation's chip (#152), and "Request about this" on any element in both clients (#1386, #1087). Full suite: 2377 passed, 145 skipped; the two Zelda test expectations that the merged #150 left stale are corrected on this branch.
+- Still not possible from the agent session under auto mode: pushing, merging, pausing Hermes dispatch and restarting the Spark service. Each was handed to the operator with the exact command.
