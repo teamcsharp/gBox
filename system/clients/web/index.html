@@ -502,6 +502,8 @@ document.addEventListener("contextmenu", e => {
   m.querySelector("input").onkeydown = k => { if (k.key === "Enter") send(); };
 });
 document.addEventListener("mousedown", e => { const m = $("#issuemenu"); if (m && !m.contains(e.target)) m.style.display = "none"; });
+// a click on the docked native game window never reaches this page: closing on focus loss covers it (#1423)
+addEventListener("blur", () => { const m = $("#issuemenu"); if (m) m.style.display = "none"; $("#gmenu")?.classList.remove("on"); });
 // right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();

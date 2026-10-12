@@ -2762,6 +2762,8 @@ document.addEventListener("click", e => {
 }, true);
 document.addEventListener("contextmenu", e => { const f = e.target.closest(".reqmod"); if (!f) return;
   const m = MODS.list.find(x => x.id === f.dataset.mod); if (m?.video) { e.preventDefault(); modPlay(m, "video"); } });
+// A click on the docked native game window never reaches this page: close transient menus on focus loss (#1423).
+addEventListener("blur", () => { for (const id of ["#reqmenu", "#chipmenu", "#testpcmenu"]) { const m = $(id); if (m) m.style.display = "none"; } });
 // Right-click anything in the app and file a specific request about it (#1386). Element-level menus (capture,
 // recording, microphone, mod videos, the game bar, PC chips) run first and keep their own behaviour.
 document.addEventListener("contextmenu", e => {
