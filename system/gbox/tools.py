@@ -2547,6 +2547,38 @@ def project_point(eye, tgt, pt, fov_deg):
     return 0.5 + xc / zc * s * 0.5 * 0.75, 0.5 - yc / zc * s * 0.5               # 0.75 = 4:3; sign checked on a still frame
 
 
+PICK_FRAME = (640, 480)                   # picture the probe projects into (4:3; the click is mapped into it)
+
+
+def _picture_xy(inp: PickIn):
+    """The 4:3 picture is centred in the window: map the click into picture coordinates (0..1)."""
+    cx, cy = inp.x, inp.y
+    if inp.window_aspect > 4 / 3:
+        w = (4 / 3) / inp.window_aspect
+        cx = (inp.x - (1 - w) / 2) / w
+    elif inp.window_aspect < 4 / 3:
+        h = inp.window_aspect / (4 / 3)
+        cy = (inp.y - (1 - h) / 2) / h
+    return cx, cy
+
+
+def _pick_from_probe(scan: dict, cx: float, cy: float) -> dict:
+    """Pick result from a gbox.entity_probe scan (profiles with entities.layout struct_array + camera pos_angles_fov)."""
+    from . import entity_probe
+    w, h = scan["frame"]
+    hit = entity_probe.Probe.under_point(cx * w, cy * h, scan)
+    e = hit["entity"]
+    out = {"picked": entity_probe.summary(e) if e else None, "contained": hit["contained"], "miss": hit["miss"],
+           "click": [round(cx, 3), round(cy, 3)], "click_px": [round(cx * w, 1), round(cy * h, 1)],
+           "others": [entity_probe.summary(o) for o in hit["others"]], "camera": scan["camera"],
+           "entities": len(scan["entities"]), "diagnostics": scan["diagnostics"][:20]}
+    if e is None:
+        out["note"] = "nothing projectable near the click" if scan["camera"] else "camera unreadable (see diagnostics)"
+    elif e.get("model"):
+        out["asset_note"] = f"model {e['model']}: extracting it from the disc is the next stage (no reader for this game yet)"
+    return out
+
+
 @tool("pick", "1.0", PickIn, PickOut, capabilities=["runtime", "memory", "asset"], timeout_s=900)
 def pick(inp: PickIn, ctx: Ctx):
     """Live picker (plan phase 6): what is under this click in the running game? Projects every entity through the game's
@@ -2564,9 +2596,12 @@ def pick(inp: PickIn, ctx: Ctx):
         pass
     try:
         st = _semantic_state(ad, g)
-        cam_raw = None
+        cam_raw = probe_scan = None
         prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
-        if prof and prof.get("camera"):
+        if prof and (prof.get("camera") or {}).get("layout") == "pos_angles_fov":      # table-of-records games (AUF)
+            from . import entity_probe
+            probe_scan = entity_probe.Probe(prof, ad.read_memory).scan(*PICK_FRAME, entities=st.get("entities"))
+        elif prof and prof.get("camera"):
             cam_raw = (ad.read_memory(int(prof["camera"]["eye"], 16), 12), ad.read_memory(int(prof["camera"]["target"], 16), 12))
     finally:
         if paused:
@@ -2577,17 +2612,12 @@ def pick(inp: PickIn, ctx: Ctx):
     if not prof or not prof.get("camera"):
         raise Unsupported(f"no camera mapping for {g.get('title')} yet (profile.camera)")
     cam = prof["camera"]
+    cx, cy = _picture_xy(inp)
+    if probe_scan is not None:
+        return {"result": _pick_from_probe(probe_scan, cx, cy)}
     e_, t_ = cam_raw
     end = ">" if g.get("platform") in BIG_ENDIAN else "<"
     eye, tgt = S.unpack(end + "3f", e_), S.unpack(end + "3f", t_)
-    # the 4:3 picture is centred in the window: map the click into picture coordinates
-    cx, cy = inp.x, inp.y
-    if inp.window_aspect > 4 / 3:
-        w = (4 / 3) / inp.window_aspect
-        cx = (inp.x - (1 - w) / 2) / w
-    elif inp.window_aspect < 4 / 3:
-        h = inp.window_aspect / (4 / 3)
-        cy = (inp.y - (1 - h) / 2) / h
     hits = []
     for e in st.get("entities", []):
         if e["kind"] == "player":
