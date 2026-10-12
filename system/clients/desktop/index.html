@@ -940,7 +940,7 @@ window.taskVizCreate = canvas => {
     <button id="ch-close" title="Close">✕</button></div>
   <div id="chatlog"></div><div id="chatimgs"></div>
   <div id="chatcomp"><textarea id="chatin2" rows="1" placeholder="Reply to gBox…" title="Enter sends · Shift+Enter new line · paste or drop images" autocomplete="off"></textarea>
-    <button id="chatvoice" title="Voice mode: talk with gBox hands-free (click again to end)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4"/><path d="M7 6v12"/><path d="M11 3v18"/><path d="M15 7v10"/><path d="M19 10v4"/></svg></button>
+    <button id="chatvoice" title="Voice mode: talk with gBox hands-free (click again to end)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg></button>
     <button id="chatsend" title="Send (Enter)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></button></div></div></div>
 <div class="pickhint" id="pickhint">Eyedropper: hover any element · ↑/↓ = parent/child · click to select · Esc to cancel</div>
 <div id="report"><div class="stage">
@@ -4692,6 +4692,7 @@ const compFit = () => { const t = $("#chatin2"); t.style.height = "auto"; t.styl
 $("#chatin2").addEventListener("input", compFit);
 $("#chatsend").onclick = compSend;
 $("#chatvoice").onclick = () => TALK.on ? talkStop() : talkStart();
+$("#chatvoice").oncontextmenu = e => window.gboxMicMenu($("#chatvoice"), e);   // right-click: default microphone
 setInterval(() => $("#chatvoice").classList.toggle("on", TALK.on), 500);
 new MutationObserver(() => { if ($("#chatpanel").classList.contains("on")) { window.__micDecorate?.($("#chatcomp")); } })
   .observe($("#chatpanel"), { attributes: true, attributeFilter: ["class"] });
