@@ -21,16 +21,22 @@ def build_idrk_entry(name: str | None, crc1: int, data: bytes, size: int | None 
     """
     flags = flags if flags is not None else (0x00120000 if name else 0x00100000)
     num1 = 0
-    hlen = 56 + 12 * 0 + num1 + (len(name.encode()) + 1 if name else 0)
-    payload = struct.pack("<I", 0) if not data else struct.pack("<I", len(zlib.compress(data))) + zlib.compress(data)
-    entry_size = hlen + len(payload) + (4 if data else 0)  # loose files carry a 4-byte trailer
+    raw_hlen = 56 + 12 * 0 + num1 + (len(name.encode()) + 1 if name else 0)
+    hlen = (raw_hlen + 3) & ~3
+    if data:
+        compressed = zlib.compress(data)
+        payload = struct.pack("<I", len(compressed)) + compressed + b"\0" * 4
+    else:
+        payload = struct.pack("<I", 0)
+    entry_size = (hlen + len(payload) + 3) & ~3
     header = d6.IDRK_MAGIC
     header += struct.pack("<QQQI", entry_size, 0, len(data) if size is None else size, num1)
     header += struct.pack("<5I", crc1, 0x1234ABCD, flags, 0, 0)
     if name:
         header += name.encode("latin1") + b"\0"
+    header += b"\0" * (hlen - len(header))
     assert len(header) == hlen, (len(header), hlen)
-    return header + payload + (b"\0" * 4 if data else b"")
+    return header + payload + b"\0" * (entry_size - hlen - len(payload))
 
 
 def build_rdb(entries: list[tuple[str | None, int, bytes]]) -> bytes:
@@ -93,6 +99,7 @@ def test_sniff():
     assert d6.sniff_magic(b"_RNK0000\x18\x00") == "rnk"
     assert d6.sniff_magic(b"_DRK0000\x20\x00") == "drk"
     assert d6.sniff_magic(b"G1MX....") == "g1m"
+    assert d6.sniff_magic(b"GT1G....") == "g1t"
     assert d6.sniff_magic(b"\x89PNG\r\n\x1a\n....") == "png"
     assert d6.sniff_magic(b"\x00\x01\x02") == "unknown"
 
@@ -115,3 +122,29 @@ def test_inventory_synthetic():
         assert m["rdbs"]["RRPreview"]["parses_clean"]
         assert m["loose"]["files"] == 1
         assert m["loose"]["content"] == {"rnk": 1}
+
+
+def test_read_bin_entry_and_classify():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "DOA6.exe").write_bytes(b"MZ" + b"\0" * 10)
+        idx = root / "RRPreview.rdb"
+        idx.write_bytes(build_rdb([
+            ("tex", 1, b""),
+            ("mdl", 2, b""),
+            ("rnk", 3, b""),
+        ]))
+        rdb = d6.Rdb(idx)
+        bin_path = root / "RRPreview.rdb.bin"
+        # build a bin from three IDRK entries with different payloads
+        bin_path.write_bytes(
+            build_idrk_entry(None, 1, b"GT1G0600" + b"\0" * 20)
+            + build_idrk_entry(None, 2, b"_M1G7300" + b"\0" * 20)
+            + build_idrk_entry(None, 3, b"_RNK0000" + b"\0" * 20)
+        )
+        assert d6.sniff_magic(d6.read_bin_entry(bin_path, 0, limit=8)) == "g1t"
+        summary = d6.classify_bin_entries(rdb, sample=None)
+        assert summary[bin_path.name]["sampled"] == 3
+        assert summary[bin_path.name]["content"] == {"g1t": 1, "g1m": 1, "rnk": 1}
