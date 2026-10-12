@@ -438,7 +438,9 @@ def tool_specs() -> list[dict]:
            "'skip the dialogue/cutscene', 'skip to the end of the conversation': taps A until the whole conversation ends; "
            "Ocarina of Time only - other games report that no text detector exists); "
            "hearts count=N; rupees count=N; max; remove item=<name>; list "
-           "(what Link has + what is on each button); games. Item names are fuzzy ('hook shot', 'bow and arrows', 'master "
+           "(what Link has + what is on each button); catalog ('show me an item equip screen', 'let me choose what to "
+           "equip': the chat shows a scrolling Equip card of the game's inventory, equipment and upgrades with Give / Equip / "
+           "Let me use buttons the operator clicks - answer with op=catalog, never list the items yourself); games. Item names are fuzzy ('hook shot', 'bow and arrows', 'master "
            "sword', 'bottle', 'fire arrows'). Results carry before/after bytes and verified (read-back). For Ocarina of Time "
            "story skips / warps use zelda_oot (skip_deku_tree, goto).",
            {"session_id": s, "op": s, "item": s, "count": i, "button": s, "on": b}, ["session_id", "op"]),
@@ -985,7 +987,10 @@ class Agent:
     def zelda(self, session_id, op="list", item="", count=0, button="", on=True):
         j = self._job("zelda", {"session_id": session_id, "op": op, "item": item, "count": count, "button": button, "on": on},
                       worker=session_id.rsplit("-", 1)[0])
-        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+        r = (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+        if isinstance(r, dict) and isinstance(r.get("catalog"), dict) and r["catalog"].get("items"):
+            return zelda_equip_card(r, session_id)
+        return r
 
     def gta_mods(self, session_id, op="status", on=True, value=None, button=None, max_height=None, count=None, behaviour=None,
                  height=None, radius=None, model=None, explosion=None):
@@ -1478,6 +1483,19 @@ class Agent:
                 messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": text[:6000]})
         emit({"type": "assistant", "text": "(stopped: step limit reached — ask me to continue)"})
         return {"usage": usage, "tools": used}
+
+
+def zelda_equip_card(result: dict, session_id: str) -> dict:
+    """zelda op=catalog -> the Equip screen card (#212): the desktop client draws the whole table with Give / Equip /
+    Let me use buttons that dispatch the zelda ops themselves. The model only gets the item names (the table is big)."""
+    cat = result["catalog"]
+    card = {"kind": "equip", "session_id": session_id, "game": cat.get("game"), "catalog": cat, "state": result.get("state"),
+            "note": result.get("note"), "items": cat["items"]}
+    slim = {k: v for k, v in cat.items() if k != "items"}
+    slim["items"] = [i["name"] for i in cat["items"]]
+    return {**result, "catalog": slim, "_cards": card,
+            "shown": "an Equip screen card is in the chat: the operator clicks Give / Equip / Let me use there; "
+                     "do not list the items yourself"}
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
