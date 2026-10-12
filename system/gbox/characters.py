@@ -1913,6 +1913,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import gta_stories_models as lcs
     if gid in lcs.GAME_IDS and inp.slot == "player":              # GTA LCS (PS2): every Toni outfit -> lcs_<slug>
         return {"result": out | lcs.use(ctx, meta, game, inp)}
+    from . import gta3_swap
+    if gid in gta3_swap.GAME_IDS and inp.slot == "player":         # GTA III (PS2): Claude -> gta3_<slug> (disc image)
+        return {"result": out | gta3_swap.use(ctx, meta, game, inp)}
     from . import re6_tool
     if gid in re6_tool.GAME_IDS and (inp.slot in ("player", "enemies") or inp.slot.startswith("enemy:")):
         # RE6 (X360, Xenia): player = Leon's every costume -> re6_<slug>; enemies / enemy:<family> -> zombies, J'avo
