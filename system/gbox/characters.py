@@ -151,6 +151,9 @@ def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
     """Use the sprite sheet itself as the collection preview, fitted to a square."""
     from PIL import Image
     im = Image.open(src).convert("RGBA")
+    if im.width * 2 <= size and im.height * 2 <= size:     # pixel art: whole multiples, no blur (sprite_capture sheets)
+        k = min(size // im.width, size // im.height)
+        im = im.resize((im.width * k, im.height * k), Image.Resampling.NEAREST)
     im.thumbnail((size, size))
     canvas = Image.new("RGBA", (size, size), (38, 40, 48, 255))
     canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
