@@ -322,7 +322,7 @@ def read_ped(b: bytes) -> PedModel:
     r = Reloc(b)
     if r.ident != MDL_IDENT:
         raise ValueError("not a .mdl chunk")
-    eg = r.u32(0x24)
+    eg = 0x20 if r.u32(0x20) == 2 else r.u32(0x24)   # cutscene models: a bare element group, no CColModel
     if r.u8(eg) != 2:
         raise ValueError("not a ped model (no element group at +4)")
     nodes: list[Node] = []
