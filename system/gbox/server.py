@@ -3261,6 +3261,8 @@ def create_app(config: Config) -> FastAPI:
         r["messages"].append(entry)
         if m.author == "operator" and r["status"] == "done":
             r["status"], r["completed"] = "open", None      # a follow-up reopens the request
+        elif m.author == "operator" and r["status"] == "blocked":
+            r["status"] = "open"                            # the operator answered what the agent asked
         store.put("request", rid, r)
         store.audit(actor, "request.message", rid, {"author": m.author, "chars": len(m.text)})
         return _clean(r)
