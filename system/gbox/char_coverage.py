@@ -20,6 +20,9 @@ WRITERS = [
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
+    ("gta_vc_swap", ["player", "ped:<dff name>", "peds:all", "all"],
+     "Tommy (player.dff/.txd), one ped or every ped on his skeleton in a rebuilt models/gta3.img (classic RenderWare PC "
+     "port only; the owned install is the UE4 Definitive Edition, which use() detects and reports as a gap)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
