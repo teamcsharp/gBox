@@ -1502,12 +1502,13 @@ def pso_inventory(inp: InvIn, ctx: Ctx):
 
 class OotIn(BaseModel):
     session_id: str
-    op: str = "state"                      # state | skip_deku_tree | goto | give | kit | scale
+    op: str = "state"                      # state | skip_deku_tree | goto | give | kit | full_inventory | scale_link | scale_sword | scale_status | scale_release
     place: str = ""                        # goto: "end of the shadow temple", "final battle", "gohma", "kakariko"...
     item: str = ""                         # give: "hookshot", "longshot", "bow"...
     c_button: int = 0                      # give: also put it on C-left/down/right (1-3)
     kit: str = ""                          # kit: child | adult | endgame
-    factor: float = 1.0                    # scale: Link's size multiplier (2 = twice as big)
+    factor: float = 1.0                    # scale_link / scale_sword: size multiplier (2 = twice as big; 1 = back to normal)
+    reach: bool = True                     # scale_sword: the sword's hit range grows with it (sMeleeWeaponLengths in code)
     cutscene: bool = False                 # skip_deku_tree: play the Deku Tree farewell cutscene
 
 
@@ -1518,10 +1519,11 @@ class OotOut(BaseModel):
 @tool("zelda_oot", "1.0", OotIn, OotOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=180)
 def zelda_oot(inp: OotIn, ctx: Ctx):
     """Zelda: Ocarina of Time (N64 USA 1.0 / 1.1 / 1.2) on a live session: skip the Deku Tree, warp anywhere (dungeons, boss rooms,
-    the final battle) with the gear for it, give/equip items, resize Link. Warps are guarded: a save state is taken first
-    and reloaded automatically if the game hangs; the result says whether the warp landed."""
-    import struct as _s
-    from . import oot
+    the final battle) with the gear for it, give/equip items, make Link bigger (scale_link) or only his sword (scale_sword:
+    hand and shield stay, the hit range follows) - both held across scene changes by gbox.oot_scale, factor 1 restores.
+    Warps are guarded: a save state is taken first and reloaded automatically if the game hangs; the result says whether
+    the warp landed."""
+    from . import oot, oot_scale
     ad, g = SESSIONS[inp.session_id]
     oot.check(ad)
     if inp.op == "state":
@@ -1535,16 +1537,18 @@ def zelda_oot(inp: OotIn, ctx: Ctx):
         return {"result": oot.kit(ad, inp.kit or "adult")}
     if inp.op == "full_inventory":
         return {"result": oot.full_inventory(ad)}
-    if inp.op == "scale":
-        pl = _s.unpack(">I", oot._rd(ad, oot.play(ad) + 0x1C44, 4))[0]
-        if not pl:
-            raise RuntimeError("no Link actor right now (title screen / scene loading)")
-        oot._wr(ad, pl + 0x50, _s.pack(">3f", *[0.01 * inp.factor] * 3))
-        got = _s.unpack(">f", oot._rd(ad, pl + 0x50, 4))[0]
-        return {"result": {"scale": inp.factor, "verified": abs(got - 0.01 * inp.factor) < 1e-6,
-                           "note": "resets when Link is re-created (scene change); hold it with freeze/cheats if needed"}}
+    if inp.op in ("scale", "scale_link"):                     # scale: the old name of scale_link
+        return {"result": oot_scale.hold_link(ad, inp.session_id, inp.factor)}
+    if inp.op == "scale_sword":
+        return {"result": oot_scale.apply_sword(ad, inp.session_id, inp.factor, inp.reach)}
+    if inp.op == "scale_status":
+        now = oot_scale.link_scale(ad)
+        return {"result": oot_scale.status(inp.session_id) | {"link_scale": list(now) if now else None}}
+    if inp.op == "scale_release":
+        return {"result": oot_scale.release(ad, inp.session_id)}
     if inp.op not in ("skip_deku_tree", "goto"):
-        raise ValueError("op: state | skip_deku_tree | goto | give | kit | full_inventory | scale")
+        raise ValueError("op: state | skip_deku_tree | goto | give | kit | full_inventory | scale_link | scale_sword | "
+                         "scale_status | scale_release")
     if not oot.wait_gameplay(ad, 45):
         return {"result": {"landed": False, "note": "a cutscene or dialog is running: advance it (A) and ask again - warping mid-cutscene hangs the game"}}
     slot = 9

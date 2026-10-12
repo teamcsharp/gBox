@@ -74,7 +74,8 @@ How to work:
   handling.cfg fields: fAcceleration / fMaxVelocity / fTractionMultiplier live in the handling table in RAM; a ped's size is
   its RwMatrix: right/up/at vectors' lengths), then read_memory / memory_search to find and verify the live address on this
   session, then offer_controls with tool 'poke' (scale_original:true for multipliers, e.g. character size 1..800x writes all
-  three matrix axes). remember the verified addresses so the next request is instant.
+  three matrix axes). remember the verified addresses so the next request is instant. Ocarina of Time has it built in:
+  zelda_oot op=scale_link (Link) / op=scale_sword (only the sword) with factor - no search, no poke.
 - After you get something working that the operator may ask again (an item spawn, a slider's address, a level warp), call
   save_recipe with the exact verified steps. Prefer an existing recipe_* tool over research when one fits.
 - GTA pedestrians / traffic amount: the population density multipliers (PedDensityMultiplier, CarDensityMultiplier floats,
@@ -96,6 +97,11 @@ How to work:
   on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
   "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
   session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
+- "Make my sword N times bigger", "giant sword" (Zelda: Ocarina of Time): zelda_oot op=scale_sword factor=N on the live
+  session - only the equipped sword's mesh grows (hand and shield stay) and its hit range follows; the result's max_factor
+  is the largest size that fits. "Make Link N times bigger / twice as big": zelda_oot op=scale_link factor=N (the whole
+  actor). Both stay on through scene changes (gBox re-applies them); factor=1 puts it back; scale_status / scale_release.
+  Tell the operator what grew and that factor 1 undoes it.
 - Rewind / fast-forward: the operator holds Select+L2 / Select+R2 on their own pad, in every game. The session's
   capabilities say which rewind it has: native (RetroArch's buffer), checkpoint (gBox's save state every 2 s, held L2
   steps back one per repeat), unsupported (Xenia, Yuzu, RPCS3). session_op op=rewind args seconds=N does it from here.
@@ -477,9 +483,13 @@ def tool_specs() -> list[dict]:
         fn("zelda_oot", "Zelda: Ocarina of Time on the live session. op=skip_deku_tree ('get me past the Deku Tree'), "
            "goto with place ('end of the shadow temple', 'final battle', 'gohma', 'forest temple', 'kakariko'... gives the gear "
            "that place needs and warps; adult places make Link adult), give with item (+c_button 1-3 to equip: 'equip the "
-           "hookshot'), kit (child|adult|endgame), full_inventory ('give me every item'), scale with factor ('make Link 2x bigger'), state. Verifies the warp landed "
+           "hookshot'), kit (child|adult|endgame), full_inventory ('give me every item'), scale_link with factor ('make Link 2x "
+           "bigger' = factor 2: the whole actor), scale_sword with factor ('make my sword three times bigger' = factor 3: only the "
+           "equipped sword's mesh and hit range; hand and shield stay; reach=false leaves the hit range), factor 1 restores, both "
+           "are kept across scene changes, scale_status, scale_release, state. Verifies the warp landed "
            "and auto-restores a save state if the game hangs.",
-           {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "cutscene": b},
+           {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "reach": b,
+            "cutscene": b},
            ["session_id", "op"]),
         fn("mario_kart", "Mario Kart 64 (N64) items on the live session, verified by read-back. op=always item=<name> holds that "
            "item in the player's slot so using it never consumes it ('infinite red shells' = op=always item='red shell'; 'always "
@@ -1012,9 +1022,10 @@ class Agent:
                                      "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False):
+    def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False, reach=True):
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
-                                    "kit": kit, "factor": factor, "cutscene": cutscene}, worker=session_id.rsplit("-", 1)[0])
+                                    "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
+                      worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def autoplay(self, session_id, op="status", mission="", assist=False):
