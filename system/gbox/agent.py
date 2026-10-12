@@ -64,7 +64,16 @@ How to work:
   verify the display changed, freeze_memory if the game reverts it; (5) remember the verified address for next time.
   For items/equipment, find the inventory slot the same way (search for the item's ID from the game's item list), then write the
   wanted item's ID. Do it; don't explain how.
-- Phantasy Star Online drops: "double/triple the rare rate", "only rares", "every enemy drops rares" -> pso_drops (scale with
+- Phantasy Star Online "every enemy drops the rarest items" / "only rares, the best ones": pso_mods op=rare_drops on=true
+  (every monster and box slot drops a rare from the rarest-items list; codes=[..] to choose the list), op=rare_drops on=false
+  to restore. For a tuned rate (double/triple) use pso_drops op=scale factor instead; op=all_rare maxes the existing rares.
+- Phantasy Star Online "run/move three times faster", "let me run faster": pso_mods op=move_speed factor=3 on=true (the
+  player's per-frame move step runs N x; on=false to stop). It is separate from attack_speed (which speeds attacks). "faster
+  attacks / rapid fire" is still pso_mods op=attack_speed.
+- Phantasy Star Online "skip/bypass the serial / access key / key entry", "get me past the Hunter's License screen":
+  pso_mods op=key_bypass on=true (patches the serial/access-key check so any key is accepted; on=false restores). It needs
+  no running player, so it works right on the key-entry screen; save_recipe it so it re-applies when the title reaches there.
+- Phantasy Star Online rare rate tuning: "double/triple the rare rate" -> pso_drops (scale with
   factor, or all_rare), then tell them the new odds from its sample. "I want more rares" -> offer_controls with a 'Rare drop rate'
   slider (1-64x, tool pso_drops op=scale factor='{value}') plus an 'Only rares' toggle (tool pso_drops, input op='all_rare').
   Things gBox hasn't mapped yet (rare *enemy* spawn rate, drop-anything rate): find them (recall, web_search newserv/PSO dev
@@ -74,7 +83,8 @@ How to work:
   handling.cfg fields: fAcceleration / fMaxVelocity / fTractionMultiplier live in the handling table in RAM; a ped's size is
   its RwMatrix: right/up/at vectors' lengths), then read_memory / memory_search to find and verify the live address on this
   session, then offer_controls with tool 'poke' (scale_original:true for multipliers, e.g. character size 1..800x writes all
-  three matrix axes). remember the verified addresses so the next request is instant.
+  three matrix axes). remember the verified addresses so the next request is instant. Ocarina of Time has it built in:
+  zelda_oot op=scale_link (Link) / op=scale_sword (only the sword) with factor - no search, no poke.
 - After you get something working that the operator may ask again (an item spawn, a slider's address, a level warp), call
   save_recipe with the exact verified steps. Prefer an existing recipe_* tool over research when one fits.
 - GTA pedestrians / traffic amount: the population density multipliers (PedDensityMultiplier, CarDensityMultiplier floats,
@@ -96,6 +106,11 @@ How to work:
   on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
   "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
   session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
+- "Make my sword N times bigger", "giant sword" (Zelda: Ocarina of Time): zelda_oot op=scale_sword factor=N on the live
+  session - only the equipped sword's mesh grows (hand and shield stay) and its hit range follows; the result's max_factor
+  is the largest size that fits. "Make Link N times bigger / twice as big": zelda_oot op=scale_link factor=N (the whole
+  actor). Both stay on through scene changes (gBox re-applies them); factor=1 puts it back; scale_status / scale_release.
+  Tell the operator what grew and that factor 1 undoes it.
 - Rewind / fast-forward: the operator holds Select+L2 / Select+R2 on their own pad, in every game. The session's
   capabilities say which rewind it has: native (RetroArch's buffer), checkpoint (gBox's save state every 2 s, held L2
   steps back one per repeat), unsupported (Xenia, Yuzu, RPCS3). session_op op=rewind args seconds=N does it from here.
@@ -321,7 +336,12 @@ def tool_specs() -> list[dict]:
            "'drop a DB saber on the ground'), floor_rares (count: rares scattered around the player), floor_clear (on=false: remove "
            "only items gBox spawned; on=true: every item on this floor - 'remove the rares from the ground'), floor_list, meseta (value) / meseta_max, "
            "crit_always on=true|false ('every attack is a critical'), attack_speed (on=true value=10: attack N times faster, and "
-           "holding the attack button rapid-fires; on=false to stop), stat (name atp|mst|evp|hp|dfp|ata|lck, value: 'set my ATP to 900' - sticks and is saved), "
+           "holding the attack button rapid-fires; on=false to stop), move_speed (on=true factor=3: the player runs N times "
+           "faster - 'let me run 3x faster'; on=false to stop; separate from attack_speed), key_bypass (on=true: skip the "
+           "serial/access-key entry check at the title - 'get me past the key entry / Hunter's License'; on=false restores; "
+           "needs no running player), rare_drops (on=true: every enemy and box drops a rare from the rarest-items list, "
+           "codes=[..] to pick the list - 'make every enemy drop the rarest items'; on=false restores), "
+           "stat (name atp|mst|evp|hp|dfp|ata|lck, value: 'set my ATP to 900' - sticks and is saved), "
            "list (the live inventory: slot, name, code, equipped), item_set (target = slot number as the menu shows it (0 = first) | "
            "weapon | armor | mag | current code; code = new item code/name, or rare=true for a random rare of the same kind: "
            "'make this item a Durandal', 'make my weapon rare'; for a Ctrl+clicked item, op=list first and match the name), "
@@ -329,7 +349,8 @@ def tool_specs() -> list[dict]:
            "'multi-equip bug'; on=false target='' unequips all extras), "
            "status, unhook. give with equip=true also equips the first item ('equip me with a DB saber' = give code count=1 "
            "equip=true; add equip_any first if the class can't normally use it).",
-           {"session_id": s, "op": s, "on": b, "value": i, "code": s, "count": i, "equip": b, "name": s, "target": s, "rare": b},
+           {"session_id": s, "op": s, "on": b, "value": i, "factor": i, "code": s, "count": i, "equip": b, "name": s,
+            "target": s, "rare": b, "codes": {"type": "array", "items": s}},
            ["session_id", "op"]),
         fn("re_mods", "Resident Evil 4 live mods (GameCube; Wii Edition = unlock_all, merc_time, merc_time_bonus, merc_timer_freeze, "
            "unlimited_health, weapon_mod), verified by read-back. MERCENARIES (same op names in every RE with a Mercenaries "
@@ -477,9 +498,13 @@ def tool_specs() -> list[dict]:
         fn("zelda_oot", "Zelda: Ocarina of Time on the live session. op=skip_deku_tree ('get me past the Deku Tree'), "
            "goto with place ('end of the shadow temple', 'final battle', 'gohma', 'forest temple', 'kakariko'... gives the gear "
            "that place needs and warps; adult places make Link adult), give with item (+c_button 1-3 to equip: 'equip the "
-           "hookshot'), kit (child|adult|endgame), full_inventory ('give me every item'), scale with factor ('make Link 2x bigger'), state. Verifies the warp landed "
+           "hookshot'), kit (child|adult|endgame), full_inventory ('give me every item'), scale_link with factor ('make Link 2x "
+           "bigger' = factor 2: the whole actor), scale_sword with factor ('make my sword three times bigger' = factor 3: only the "
+           "equipped sword's mesh and hit range; hand and shield stay; reach=false leaves the hit range), factor 1 restores, both "
+           "are kept across scene changes, scale_status, scale_release, state. Verifies the warp landed "
            "and auto-restores a save state if the game hangs.",
-           {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "cutscene": b},
+           {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "reach": b,
+            "cutscene": b},
            ["session_id", "op"]),
         fn("mario_kart", "Mario Kart 64 (N64) items on the live session, verified by read-back. op=always item=<name> holds that "
            "item in the player's slot so using it never consumes it ('infinite red shells' = op=always item='red shell'; 'always "
@@ -951,9 +976,11 @@ class Agent:
         j = self._job("pso_drops", {"session_id": session_id, "op": op, "factor": factor, "boxes": boxes, "code": code}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def pso_mods(self, session_id, op="status", on=True, value=999999, code="", count=1, equip=False, name="", target="", rare=False):
-        j = self._job("pso_mods", {"session_id": session_id, "op": op, "on": on, "value": value, "code": code, "count": count,
-                                   "equip": equip, "name": name, "target": target, "rare": rare},
+    def pso_mods(self, session_id, op="status", on=True, value=999999, factor=3, code="", count=1, equip=False, name="",
+                 target="", rare=False, codes=None):
+        j = self._job("pso_mods", {"session_id": session_id, "op": op, "on": on, "value": value, "factor": factor,
+                                   "code": code, "count": count, "equip": equip, "name": name, "target": target,
+                                   "rare": rare, "codes": codes or []},
                       worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
@@ -1012,9 +1039,10 @@ class Agent:
                                      "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False):
+    def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False, reach=True):
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
-                                    "kit": kit, "factor": factor, "cutscene": cutscene}, worker=session_id.rsplit("-", 1)[0])
+                                    "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
+                      worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def autoplay(self, session_id, op="status", mission="", assist=False):
