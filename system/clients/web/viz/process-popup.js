@@ -195,6 +195,7 @@
     // The popup can be moved by pressing on its header, meta or footer and dragging (#1415); the 3D stage, the log and
     // the hide button keep their own behaviour. A drag never counts as a click.
     function draggable(el) {
+      if (typeof el.addEventListener !== "function") return;              // headless test documents
       el.addEventListener("pointerdown", e => {
         if (e.button !== 0 || e.target.closest("button, a, canvas, .pp-log, .pp-stage")) return;
         const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, id = e.pointerId;
