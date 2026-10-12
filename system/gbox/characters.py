@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 LICENCE = "extracted from the operator's own copy, local use only"
 RE4GC = {"78ab9efa2e310db4": "Resident Evil 4 (USA) (Disc 1)", "e42c9b780c07c437": "Resident Evil 4 (USA) (Disc 2)"}
@@ -522,6 +522,8 @@ class CharIn(BaseModel):
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only)
+    active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
+                                   description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
     launch: bool = True                    # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
@@ -533,6 +535,7 @@ class CharIn(BaseModel):
     base: str = ""                         # add: store as a variant of this character (gbox.variants; Blender Live Link)
     replace: str = ""                      # add base=...: update this variant in place (Live Link push)
     props: list[dict] = []                 # add base=...: [{object, bone}] the Blender add-on bound
+    rig_roles: dict[str, str] = {}         # add: semantic body role -> joint node name in the imported model
     scale: dict = {}                       # add base=...: {"head": k} head-bone scale
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
@@ -544,6 +547,13 @@ class CharIn(BaseModel):
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
     pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+
+    @model_validator(mode="after")
+    def require_named_character(self):
+        if self.op in {"use", "live_use", "overlay", "place"} and not str(self.character or "").strip():
+            raise ValueError(f"characters op={self.op} requires character=<the exact collection slug or name>; "
+                             "copy the character supplied in the request, or use op=list to find it")
+        return self
 
 
 class CharOut(BaseModel):
@@ -1137,6 +1147,9 @@ DEDICATED = [
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
+    ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
+     lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.jgr", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("shenmue", lambda t, p: re.match(r"shenmue(?! ii)", t) is not None and p == "dreamcast",
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
@@ -1631,6 +1644,21 @@ def _model_bytes(ctx, inp: CharIn) -> tuple[bytes, str]:
     raise ValueError("add needs from_clipboard=true, artifact=<sha256> or path=<a .glb/.gltf on the control-plane node>")
 
 
+def validate_rig_roles(model: Path, roles: dict[str, str]) -> dict:
+    """Reject stale or ambiguous joint mappings before registering an edited donor."""
+    if not roles:
+        return {}
+    gl, _, _, _ = _load(model)
+    joints = {j for skin in gl.get('skins', []) for j in skin['joints']}
+    if any(type(j) is not int or not 0 <= j < len(gl.get('nodes', [])) for j in joints):
+        raise ValueError('Rig contains an invalid skin joint node index')
+    names = [gl['nodes'][j].get('name', f'node{j}') for j in joints]
+    for role, name in roles.items():
+        if not role.strip() or not name.strip() or names.count(name) != 1:
+            raise ValueError(f'Rig role {role!r} must identify one named skin joint: {name!r}')
+    return dict(roles)
+
+
 def add_model(ctx, inp: CharIn) -> dict:
     """A model edited elsewhere (Blender) -> a new collection entry."""
     name = inp.character.strip()
@@ -1664,11 +1692,12 @@ def add_model(ctx, inp: CharIn) -> dict:
     if f.suffix == ".gltf" and not data.lstrip()[:1] == b"{":
         raise ValueError("that file isn't a glTF / GLB model")
     f.write_bytes(data)
+    mapped_roles = validate_rig_roles(f, inp.rig_roles)
     game = _game(ctx, inp) if (inp.session_id or inp.game_id or inp.game) else None
     src = {"game_title": (game or {}).get("title") or "edited model", "game_id": (game or {}).get("game_id"),
            "from": "clipboard" if inp.from_clipboard else inp.artifact or inp.path}
     meta = add(root, slug, name, [f], src, "characters op=add (edited model)", kind=inp.kind if inp.kind in KINDS else "character",
-               aliases=[name])
+               aliases=[name], rig={"roles": mapped_roles} if mapped_roles else None)
     shutil.rmtree(work, ignore_errors=True)
     return {"status": "added", "entry": meta, "env": env}
 
@@ -1850,6 +1879,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import sa2_chars
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
+    from . import jgr
+    if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
+        return {"result": out | jgr.use(ctx, meta, game, inp)}
     from . import pso_player
     if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
         return {"result": out | pso_player.use(ctx, meta, game, inp)}

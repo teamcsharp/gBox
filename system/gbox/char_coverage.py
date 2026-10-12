@@ -26,6 +26,8 @@ WRITERS = [
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
+    ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
+     "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),

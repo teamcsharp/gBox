@@ -515,40 +515,81 @@ def _rgb565(c) -> int:
     return _px16(c, 1)
 
 
-def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: bool = False) -> bytes:
+def _vq_nearest(blocks, book, batch_size=1024):
+    """Nearest VQ codewords with a bounded temporary, including the large mip levels."""
+    return np.concatenate([((blocks[start:start + batch_size, None, :] - book[None]) ** 2).sum(2).argmin(1)
+                           for start in range(0, len(blocks), batch_size)])
+
+
+def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: bool = False,
+           mips: bool = False) -> bytes:
     """Square power-of-two image -> [GBIX] + PVRT VQ: data format 3 (256-entry codebook of 2x2 blocks, k-means) or,
     small=True, format 0x10 (small VQ: the codebook size pvr_decode expects for the width), + one twiddled index
-    byte per block. pix: 16-bit pixel format of the codebook. 256x256 = 18 KB."""
-    img = np.asarray(rgba, float)[..., :3]
+    byte per block. mips=True writes format 4 with all smaller levels first, using Flycast's VQMipPoint offsets.
+    RGBA alpha is retained for ARGB1555/4444. Mipmapped small VQ remains unsupported."""
+    if pix not in (0, 1, 2):
+        raise ValueError(f"VQ pixel format {pix} is not written (ARGB1555, RGB565, ARGB4444 only)")
+    if mips and small:
+        raise ValueError("mipmapped small VQ (0x11) is not written")
+    img = np.asarray(rgba, float)
+    if img.ndim != 3 or img.shape[2] not in (3, 4):
+        raise ValueError("VQ needs an RGB or RGBA image")
+    channels = 4 if pix != 1 and img.shape[2] == 4 else 3
+    img = img[..., :channels]
     h, w = img.shape[:2]
-    if h != w or w & (w - 1) or w < 8:
+    if h != w or w & (w - 1) or not 8 <= w <= 1024:
         raise ValueError(f"VQ needs a square power-of-two texture, got {w}x{h}")
     bw = w // 2
     # block k: (x, y), (x, y + 1), (x + 1, y), (x + 1, y + 1) = pvr_decode's order
-    blocks = np.stack([img[0::2, 0::2], img[1::2, 0::2], img[0::2, 1::2], img[1::2, 1::2]], 2).reshape(-1, 12)
+    blocks = np.stack([img[0::2, 0::2], img[1::2, 0::2], img[0::2, 1::2], img[1::2, 1::2]], 2).reshape(-1, 4 * channels)
+    mip_blocks = []
+    if mips:
+        # Include reduced-level patterns in the shared codebook. Full-resolution-only
+        # training cannot represent the different texels of a coarse 2x2 mip block.
+        mip_blocks.append((1, np.tile(img.mean((0, 1)), 4).reshape(1, -1)))
+        side = 2
+        while side < w:
+            reduced = img.reshape(side, h // side, side, w // side, channels).mean((1, 3))
+            values = np.stack([reduced[0::2, 0::2], reduced[1::2, 0::2],
+                               reduced[0::2, 1::2], reduced[1::2, 1::2]], 2).reshape(-1, 4 * channels)
+            mip_blocks.append((side, values))
+            side *= 2
+    training = np.concatenate([blocks] + [values for _, values in mip_blocks]) if mips else blocks
     rng = np.random.default_rng(0)
     nbook = (16 if w <= 16 else 32 if w <= 32 else 128 if w <= 64 else 256) if small else 256
-    k = min(nbook, len(blocks))
-    cb = blocks[rng.choice(len(blocks), k, replace=False)].copy()
+    k = min(nbook, len(training))
+    cb = training[rng.choice(len(training), k, replace=False)].copy()
+    anchors = np.concatenate([values for side, values in mip_blocks if side <= 4]) if mips else []
+    fixed = len(anchors)
+    if fixed:
+        cb[:fixed] = anchors  # At most six entries retain the 1x1, 2x2 and 4x4 averages.
 
     def labels():
-        return np.concatenate([((blocks[s:s + 4096, None, :] - cb[None]) ** 2).sum(2).argmin(1)
-                               for s in range(0, len(blocks), 4096)])
+        return _vq_nearest(training, cb)
     for _ in range(iters):
         lab = labels()
-        for c in range(k):
+        for c in range(fixed, k):
             m = lab == c
-            cb[c] = blocks[m].mean(0) if m.any() else blocks[rng.integers(len(blocks))]
-    lab = labels()
-    book = b"".join(struct.pack("<4H", *[_px16(cb[c, 3 * q:3 * q + 3], pix) for q in range(4)]) for c in range(k))
+            cb[c] = training[m].mean(0) if m.any() else training[rng.integers(len(training))]
+    lab = labels()[:len(blocks)]
+    book = b"".join(struct.pack("<4H", *[_px16(cb[c, channels * q:channels * (q + 1)], pix)
+                                       for q in range(4)]) for c in range(k))
     book += bytes(8 * (nbook - k))
-    idx = bytearray(bw * bw)
-    lab = lab.reshape(bw, bw)                                # [by, bx]
-    for by in range(bw):
-        for bx in range(bw):
-            idx[_twiddle(bx, by)] = lab[by, bx]
-    body = book + bytes(idx)
-    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), pix, 0x10 if small else 3, 0, w, h) + body
+
+    def level(grid):
+        side = grid.shape[0]
+        out = bytearray(side * side)
+        for by in range(side):
+            for bx in range(side):
+                out[_twiddle(bx, by)] = grid[by, bx]
+        return bytes(out)
+    idx = level(lab.reshape(bw, bw))                         # [by, bx]
+    prefix = b""
+    if mips:
+        prefix = b"".join(level(_vq_nearest(values, cb).reshape(max(1, side // 2), -1))
+                          for side, values in mip_blocks)
+    body = book + prefix + idx
+    pvrt = b"PVRT" + struct.pack("<IBBHHH", 8 + len(body), pix, 0x10 if small else 4 if mips else 3, 0, w, h) + body
     return (b"GBIX" + struct.pack("<II", 8, gbix) + bytes(4) if gbix is not None else b"") + pvrt
 
 
@@ -566,20 +607,37 @@ def pvr_twiddled(rgba, pix: int = 1) -> bytes:
 
 
 def pvr_like(old: bytes, rgb_img) -> bytes:
-    """`rgb_img` (PIL) encoded like the PVR `old` (same size, pixel and data format; its GBIX kept): VQ (3), small
-    VQ (0x10) or twiddled (1). ValueError for other formats."""
+    """Encode like `old`: VQ (3), VQ+mips (4), small VQ (0x10), or twiddled (1).
+
+    Keep the original header, GBIX and trailing bytes; the declared PVRT extent must fit the new body.
+    """
     q = old.find(b"PVRT")
+    if q < 0 or q + 16 > len(old):
+        raise ValueError("missing or truncated PVRT header")
+    size = struct.unpack_from("<I", old, q + 4)[0]
+    if size < 8 or q + 8 + size > len(old):
+        raise ValueError("truncated or invalid PVRT chunk extent")
     pix, fmt, w, h = old[q + 8], old[q + 9], *struct.unpack_from("<HH", old, q + 12)
-    img = np.asarray(rgb_img.convert("RGB").resize((w, h)))
+    if pix not in (0, 1, 2):
+        raise ValueError(f"PVR pixel format {pix} is not written")
+    if fmt not in (1, 3, 4, 0x10):
+        raise ValueError(f"PVR data format {fmt:#x} not written")
+    minimum = 1 if fmt == 1 else 8
+    if w != h or w & (w - 1) or not minimum <= w <= 1024:
+        raise ValueError(f"unsupported PVR replacement dimensions {w}x{h}")
+    img = np.asarray(rgb_img.convert("RGBA" if pix != 1 else "RGB").resize((w, h)))
     if fmt == 3:
         new = pvr_vq(img, pix=pix)
     elif fmt == 0x10:
         new = pvr_vq(img, pix=pix, small=True)
+    elif fmt == 4:
+        new = pvr_vq(img, pix=pix, mips=True)
     elif fmt == 1:
         new = pvr_twiddled(img, pix)
-    else:
-        raise ValueError(f"PVR data format {fmt:#x} not written")
-    return old[:q] + new
+    body = new[16:]
+    if len(body) > size - 8:
+        raise ValueError(f"replacement body {len(body)} bytes exceeds the declared PVRT body {size - 8}")
+    return old[:q + 16] + body + old[q + 16 + len(body):]
 
 
 def pvm_entry_gbix(chunk: bytes) -> int | None:
