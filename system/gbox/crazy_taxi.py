@@ -26,8 +26,8 @@ enum tables of 0x44-byte records (u32 enum id, name[64] without `.shp`); `MP_YH_
 0x80190a9c while its bank position is 1136 (the drivers sit at a constant +26; cars and props use other shifts), so
 ids are not bank positions. A writer must therefore keep every bank name and record order in place and only
 replace blobs. The `.shp` name list at 0x80135158 is still unread (candidate part hierarchy / pose tables).
-`motDC.bin` starts with a big-endian u32 table of 18 offsets (0x5b, 0x12, 0x8d, ...) followed by keyed
-(frame, f32 x3) tracks: the driver animation bank.
+`motDC.bin` is a bank of self-contained motions (`motion_bank`): u32 frame count + 17 u32 group word offsets,
+each group three X/Y/Z channel tracks of Hermite keys; it is the people animation bank.
 
 This module is read-only; it never writes the disc. The writer (re-encoding a donor into the driver parts) is the
 next stage of #608 and is intentionally not routed in `characters` yet.
@@ -35,12 +35,21 @@ next stage of #608 and is intentionally not routed in `characters` yet.
 Skeleton/animation stage (#1369): the driver parts are bone-local, not pre-placed. Every `MP_YH_plyr*` part's
 decoded vertices (header centre included) surround its own joint origin (Axel: hips x -0.2..2.31, chest
 x 0.15..4.99, head y -0.87..2.62, thigh x -0.88..4.23; the head and feet boxes overlap), so concatenating the 15
-parts is a pile of parts, not a driver. The pose lives in the motion bank `ct/motDC.bin`: 18 big-endian u32
-header words (word 1 = 18 = the first track's word offset; consecutive deltas are 3 mod 4, consistent with
-three-track records; record 1 is three 10-key tracks), then key tracks of u32 count + count x (u32 frame, f32 x, f32 y, f32 z) (`motion_tracks`). The
-per-car part table's pose fields are zero in the DOL (runtime-computed). Until the bank's bone order and channel
-convention are bound in main.dol's motDC.bin loader, the drivers stay out of `characters op=collect`; only fully
-posed cabs (`WHEEL_POSE`) opt into background collection (`collect`: True in `roster()`).
+parts is a pile of parts, not a driver. The animation bank `ct/motDC.bin` (`motion_bank`/`parse_motion`) is a sequence of
+self-contained motions (278 parse back to back from offset 0 to 0x174738; the remaining 1328488 bytes are a
+different float table, unread): u32 frame count, then 17 u32 word offsets (relative to the motion; the first is always 18)
+of 17 channel groups. A group is three channel tracks (X, Y, Z), each u32 count + count x (u32 frame, value word,
+tangent-in word, tangent-out word). The header offsets delimit the tracks: frames are not always rising (the
+61-frame motion at 0x8a18 keys frames 0, 1, 30, 40, 50, 60, 75, 60, and the motion at 0x20080 has group-9 frame
+words above 0xFFFF, kept raw: their meaning is unverified). Groups 1, 6, 9, 13
+and 16 hold f32 positions; the other twelve hold s32 angles (0x10000 = 360 degrees; motion 0 group 2 starts at
+exactly -0xC000 = -270). In motion 0 (91 frames) group 1 starts at (-4.4, 9.8, 2.62), groups 6/9 sit about 3 units
+either side of it at the same height and groups 13/16 about 8-9 units below it. That is consistent with a root
+position plus hand and foot effector targets (an IK rig, unverified), so the bank carries no bone lengths.
+main.dol lists the driver parts in rig order at 0x80135158 (`DRIVER_BONES`, `dol_shape_names`). Until the IK
+segment lengths and parent offsets are bound in main.dol's motDC.bin loader, the drivers stay out of
+`characters op=collect`; only fully posed cabs (`WHEEL_POSE`) opt into background collection (`collect`: True in
+`roster()`).
 """
 from __future__ import annotations
 
@@ -448,28 +457,123 @@ def driver_part_extents(bank: bytes, letter: str) -> dict[str, tuple[tuple, tupl
     return out
 
 
-def motion_tracks(m: bytes, header_words: int = 18, limit: int = 64) -> dict:
-    """Parse the start of `ct/motDC.bin` (#1369 analysis; tracks are not bound to bones yet): `header_words`
-    big-endian u32 words, then consecutive key tracks of u32 count + count x (u32 frame, f32 x, f32 y, f32 z).
-    On the owned disc the first record's three tracks (10 keys each, frames 0..90) start at words 18/59/100 and
-    the second record starts at header word 2 (141) with a 7-key track; its next track (word 170) uses a layout
-    this parser does not read yet, so later records still need the main.dol loader.
-    Returns the header, the tracks and each track's start as a word offset; parsing stops at the first record
-    that breaks the layout (implausible count, non-increasing frames or non-finite values)."""
-    head = list(struct.unpack_from(f">{header_words}I", m, 0))
-    o, tracks, starts = 4 * header_words, [], []
-    while len(tracks) < limit and o + 4 <= len(m):
-        n = _u32(m, o)
-        if not 0 < n < 4096 or o + 4 + 16 * n > len(m):
+BONE_LIST_VA = 0x80135158  # main.dol (GCTE51): driver part names in rig order, then MP_YH_Man_*, passengers...
+DRIVER_BONES = ("koshi", "momo_r", "sune_r", "kakato_r", "momo_l", "sune_l", "kakato_l", "muneB", "mune",
+                "kata_rB", "kata_r", "ude_r", "te_r_gu", "te_r_ch", "te_r_ok", "te_r", "kata_lB", "kata_l", "ude_l",
+                "te_l_gu", "te_l_ch", "te_l_ok", "te_l", "atamaD", "atamaC", "atamaB", "atama")
+MOTION_GROUPS = 17
+POSITION_GROUPS = (1, 6, 9, 13, 16)  # 1-based groups holding f32 positions; the rest hold s32 angles
+BAMS = 0x10000  # angle units per full turn
+
+
+def dol_va_to_offset(dol: bytes, va: int) -> int | None:
+    """File offset of virtual address `va` in a GameCube DOL (7 text + 11 data sections), or None."""
+    offs = struct.unpack_from(">18I", dol, 0)
+    addrs = struct.unpack_from(">18I", dol, 0x48)
+    sizes = struct.unpack_from(">18I", dol, 0x90)
+    for o, a, n in zip(offs, addrs, sizes):
+        if n and a <= va < a + n:
+            return o + va - a
+    return None
+
+
+def dol_shape_names(dol: bytes, va: int = BONE_LIST_VA, limit: int = 512) -> list[str]:
+    """The consecutive NUL-terminated `.shp` names main.dol stores from `va` (suffix dropped), stopping at the first
+    string that is not a `.shp` name. On GCTE51 the list at 0x80135158 opens with driver A's 27 parts in rig order."""
+    o = dol_va_to_offset(dol, va)
+    out: list[str] = []
+    while o is not None and o < len(dol) and len(out) < limit:
+        e = dol.find(b"\0", o)
+        if e < 0 or not dol[o:e].endswith(b".shp"):
             break
-        keys = [struct.unpack_from(">I3f", m, o + 4 + 16 * i) for i in range(n)]
-        frames = [k[0] for k in keys]
-        if any(b <= a for a, b in zip(frames, frames[1:])) or not all(math.isfinite(v) for k in keys for v in k[1:]):
+        out.append(dol[o:e - 4].decode("latin1"))
+        o = e + 1
+        while o < len(dol) and dol[o] == 0:
+            o += 1
+    return out
+
+
+def driver_bones_from_dol(dol: bytes, letter: str = "A") -> tuple[str, ...]:
+    """Driver `letter`'s part names (without the `MP_YH_plyrX_` prefix) in main.dol's rig order."""
+    pre = f"MP_YH_plyr{letter}_"
+    names = dol_shape_names(dol)
+    out = []
+    for n in names:
+        if not n.startswith(pre):
+            if out:
+                break
+            continue
+        out.append(n[len(pre):])
+    return tuple(out)
+
+
+@dataclass
+class Motion:
+    offset: int                 # byte offset of the motion in motDC.bin
+    frames: int                 # header frame count
+    groups: list = field(default_factory=list)  # 17 x 3 channels x [(frame_word, value, tangent_in_word, tangent_out_word)]
+    size: int = 0               # bytes, header included
+
+    def at_frame0(self, group: int) -> tuple:
+        """Group `group` (1-based) X/Y/Z values at its first key (positions in units, angles in degrees)."""
+        return tuple(ch[0][1] if ch else 0.0 for ch in self.groups[group - 1])
+
+
+def _s32(w: int) -> int:
+    return w - (1 << 32) if w >> 31 else w
+
+
+def parse_motion(m: bytes, base: int = 0) -> Motion | None:
+    """One `motDC.bin` motion at byte `base`, or None when the bytes break the layout (see module docstring).
+    Position values decode as f32, angle values as s32 BAMS converted to degrees; tangent words stay raw."""
+    hw = MOTION_GROUPS + 1
+    if base < 0 or base + 4 * hw > len(m):
+        return None
+    head = struct.unpack_from(f">{hw}I", m, base)
+    nf = head[0]
+    if head[1] != hw or not 0 < nf < 100000 or any(b <= a for a, b in zip(head[1:], head[2:])):
+        return None
+    o, groups = base + 4 * hw, []
+    for g in range(1, hw):
+        if o != base + 4 * head[g]:
+            return None
+        pos = g in POSITION_GROUPS
+        chans = []
+        for _ in range(3):
+            if o + 4 > len(m):
+                return None
+            n = struct.unpack_from(">I", m, o)[0]
+            if n > 4096 or o + 4 + 16 * n > len(m):
+                return None
+            keys = [struct.unpack_from(">4I", m, o + 4 + 16 * i) for i in range(n)]
+            vals = []
+            for fr, w, tin, tout in keys:
+                if pos:
+                    v = struct.unpack(">f", struct.pack(">I", w))[0]
+                    if not math.isfinite(v) or abs(v) > 1e5:
+                        return None
+                else:
+                    if not -(1 << 20) < _s32(w) < 1 << 20:
+                        return None
+                    v = _s32(w) * 360.0 / BAMS
+                vals.append((fr, v, tin, tout))
+            chans.append(vals)
+            o += 4 + 16 * n
+        groups.append(chans)
+    return Motion(base, nf, groups, o - base)
+
+
+def motion_bank(m: bytes, limit: int = 100000) -> dict:
+    """Walk `motDC.bin` motion by motion from offset 0 (each motion ends where the next begins). Returns the motions
+    and `end`, the byte offset of the first record that is not a motion in this layout (== len(m) when all parse)."""
+    o, motions = 0, []
+    while o < len(m) and len(motions) < limit:
+        mo = parse_motion(m, o)
+        if mo is None:
             break
-        tracks.append(keys)
-        starts.append(o // 4)
-        o += 4 + 16 * n
-    return {"header": head, "tracks": tracks, "starts": starts, "end": o // 4}
+        motions.append(mo)
+        o += mo.size
+    return {"motions": motions, "end": o}
 
 
 def main(argv=None):

@@ -155,15 +155,57 @@ def test_roster_collects_only_posed_cabs_and_no_bone_local_drivers():
     assert all(e["collect"] is (e["key"] in ct.WHEEL_POSE) for e in roster)
 
 
-def test_motion_tracks_layout_on_synthetic_bank():
-    head = [0x5b, 18, 32] + [0] * 15
-    body = b""
-    for keys in ([(0, -4.4, 0.0, 0.0), (12, -5.38, -1.5, -1.15)], [(0, 9.8, 0.0, 0.0)]):
-        body += struct.pack(">I", len(keys)) + b"".join(struct.pack(">I3f", *k) for k in keys)
-    bad = struct.pack(">I", 2) + struct.pack(">I3f", 5, 0, 0, 0) + struct.pack(">I3f", 5, 0, 0, 0)
-    got = ct.motion_tracks(struct.pack(">18I", *head) + body + bad)
-    assert got["header"][1] == 18 and got["starts"] == [18, 27] and got["end"] == 32
-    assert got["tracks"][0][1][0] == 12 and abs(got["tracks"][1][0][1] - 9.8) < 1e-6
+def _f(v: float) -> int:
+    return struct.unpack(">I", struct.pack(">f", v))[0]
+
+
+def _motion(frames: int, groups) -> bytes:
+    """A motDC.bin motion: u32 frames + 17 group word offsets, then 3 channel tracks per group of
+    u32 count + count x (u32 frame, value word, tangent-in word, tangent-out word)."""
+    body, offs = b"", []
+    for g in groups:
+        offs.append(18 + len(body) // 4)
+        for keys in g:
+            body += struct.pack(">I", len(keys)) + b"".join(struct.pack(">4I", f, w, 0, 0) for f, w in keys)
+    return struct.pack(">18I", frames, *offs) + body
+
+
+def test_motion_bank_channel_groups_on_synthetic_bank():
+    groups = []
+    for g in range(1, 18):
+        if g in ct.POSITION_GROUPS:
+            groups.append([[(0, _f(-4.4)), (12, _f(-5.38))], [(0, _f(9.8))], [(0, _f(2.62)), (30, _f(0.0))]])
+        else:
+            groups.append([[(0, 0)], [(0, (-0xC000) & 0xFFFFFFFF), (30, 0x4000)], []])
+    m0 = _motion(30, groups)                     # last key may sit on the frame count (looping motions)
+    bad = struct.pack(">18I", 30, 18, *range(19, 35)) + struct.pack(">I", 2) + struct.pack(">4I", 5, 0, 0, 0) * 2
+    got = ct.motion_bank(m0 + m0 + bad)
+    assert len(got["motions"]) == 2 and got["end"] == 2 * len(m0)
+    a = got["motions"][0]
+    assert a.frames == 30 and a.size == len(m0) and got["motions"][1].offset == len(m0)
+    assert max(abs(v - w) for v, w in zip(a.at_frame0(1), (-4.4, 9.8, 2.62))) < 1e-6
+    assert a.at_frame0(2) == (0.0, -270.0, 0.0) and a.groups[1][1][1][1] == 90.0
+    worse = list(groups)
+    worse[1] = [[(0, _f(1.5))], [(0, 0)], []]    # a float word in an angle group breaks the layout
+    assert ct.parse_motion(_motion(30, worse)) is None
+    assert ct.motion_bank(m0[:-4])["motions"] == []
+
+
+def test_dol_shape_names_reads_the_rig_order_list():
+    names = [b"MP_YH_plyrA_koshi.shp", b"MP_YH_plyrA_momo_r.shp", b"MP_YH_Man_koshi.shp", b"not a shape"]
+    data = b""
+    for n in names:
+        data += n + b"\0" * (4 - len(n) % 4)
+    va = 0x80003100
+    dol = bytearray(0x100)
+    struct.pack_into(">I", dol, 0x1C, 0x100)            # data section 0: file offset, address, size
+    struct.pack_into(">I", dol, 0x64, va)
+    struct.pack_into(">I", dol, 0xAC, len(data))
+    dol = bytes(dol) + data
+    assert ct.dol_va_to_offset(dol, va + 4) == 0x104 and ct.dol_va_to_offset(dol, va - 4) is None
+    assert ct.dol_shape_names(dol, va) == ["MP_YH_plyrA_koshi", "MP_YH_plyrA_momo_r", "MP_YH_Man_koshi"]
+    assert ct.driver_bones_from_dol(dol[:0x100] + data, "A") == ()     # default VA is not in this fixture
+    assert set(ct.PARTS) <= set(ct.DRIVER_BONES) and ct.DRIVER_BONES[0] == "koshi"
 
 
 def test_collect_includes_opted_in_vehicle_without_rig(monkeypatch, tmp_path):
@@ -205,13 +247,16 @@ def test_owned_disc_build_identity_bone_local_drivers_and_motion_bank():
             assert all(alo[a] < fhi[a] and flo[a] < ahi[a] for a in range(3)), (letter, foot)
     mot = disc.read(ct.MOTION)
     assert hashlib.sha256(mot).hexdigest() == ct.MOTION_SHA256
-    got = ct.motion_tracks(mot)
-    h = got["header"]
-    assert len(h) == 18 and h[1] == 18 and all(b > a for a, b in zip(h[1:], h[2:]))
-    assert all((b - a) % 4 == 3 for a, b in zip(h[1:], h[2:]))   # records of three (1 + 4n)-word tracks
-    first = got["tracks"][0]
-    assert [k[0] for k in first[:4]] == [0, 12, 21, 27] and abs(first[0][1] + 4.4) < 1e-5
-    assert got["starts"][:4] == [18, 59, 100, h[2]] and [len(k) for k in got["tracks"][:3]] == [10, 10, 10]
+    got = ct.motion_bank(mot)
+    ms = got["motions"]
+    assert len(ms) == 278 and got["end"] == 1525560 and ms[1].offset == 7556   # sequential walk; see findings
+    m0 = ms[0]
+    assert m0.frames == 91 and [len(c) for c in m0.groups[0]] == [10, 10, 10]
+    assert [k[0] for k in m0.groups[0][0][:4]] == [0, 12, 21, 27]
+    assert max(abs(v - w) for v, w in zip(m0.at_frame0(1), (-4.4, 9.8, 2.62))) < 1e-5
+    assert m0.at_frame0(2) == (0.0, -270.0, 0.0)
+    assert ms[6].offset == 0x8a18 and ms[6].frames == 61 and [k[0] for k in ms[6].groups[0][0]][-2:] == [75, 60]
+    assert ct.driver_bones_from_dol(disc.dol()) == ct.DRIVER_BONES
 
 
 @pytest.mark.skipif(not ISO.exists(), reason="owned Crazy Taxi GC disc not present")
