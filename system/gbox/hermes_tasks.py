@@ -173,6 +173,48 @@ def _script_output(home, job_id, finished):
 
 
 DEFAULT_RUNS, MAX_RUNS = 20, 100
+STREAK_CAP = 3          # consecutive inbox task-mode runs one ticket may take (#1300 gap 3)
+TASK_MODE_NAME = "gBox inbox task mode"
+
+
+def ticket_streaks(runs: list[dict], last_operator: dict[str, float] | None = None,
+                   cap: int = STREAK_CAP, name: str = TASK_MODE_NAME) -> dict[str, dict]:
+    """Tickets the recurring inbox job has worked `cap` or more ended runs in a row.
+
+    `runs` are list_runs/`/api/tasks` rows in any order. Only ended runs of the
+    recurring job count: one-shot dispatches for a ticket are deliberate. A run
+    that confirmed no ticket neither counts nor breaks a streak, and an operator
+    message on a ticket (``last_operator[rid]`` = its newest timestamp) restarts
+    that ticket's count, because the operator asked for more.
+    Returns ``{rid: {"runs": n, "run_ids": [...], "since": oldest start}}``.
+    """
+    last_operator = last_operator or {}
+    ended = sorted((r for r in runs if r.get("name") == name and r.get("state") not in ("claimed", "running")),
+                   key=lambda r: r.get("started") or 0, reverse=True)
+    worked = []
+    for run in ended:
+        rids = set(run.get("request_ids") or []) | {t.get("id") for t in run.get("tickets") or [] if t.get("id")}
+        if rids:
+            worked.append((run, rids))
+    if not worked:
+        return {}
+    out = {}
+    for rid in worked[0][1]:
+        streak = []
+        for run, rids in worked:
+            if rid not in rids or (run.get("started") or 0) <= last_operator.get(rid, 0):
+                break
+            streak.append(run)
+        if len(streak) >= cap:
+            out[rid] = {"runs": len(streak), "run_ids": [r.get("id") for r in streak],
+                        "since": streak[-1].get("started")}
+    return out
+
+
+def capped_note(streak: dict) -> str:
+    return (f"The last {streak['runs']} inbox runs in a row all worked this ticket with no new operator message. "
+            "Choose another actionable request this run; return to this one only if no other actionable "
+            "operator request exists.")
 
 
 def list_runs(limit: int = DEFAULT_RUNS) -> list[dict]:
