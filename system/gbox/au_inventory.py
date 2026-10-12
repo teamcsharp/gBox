@@ -356,11 +356,47 @@ def sub_type_to_str(sub: int) -> str:
     return "full" if sub == 0 else "scrubbed"
 
 
+def extract(src: str, names, out_dir: str) -> list:
+    """Copy disc files out of the GCZ by FST path ("/base.elf/Bond.elf") or basename ("Bond.elf").
+
+    Returns [{"path", "offset", "size", "sha256", "out"}] in the order found; unknown names raise KeyError.
+    The GCZ is never written to.
+    """
+    import os
+    wanted = {n.lower(): n for n in names}
+    found = []
+    os.makedirs(out_dir, exist_ok=True)
+    with GCZ(src) as g:
+        _, fst_off, fst_size, _ = struct.unpack(">IIII", g.read(0x420, 16))
+        for path, off, size in FST(g.read(fst_off, fst_size)).walk():
+            key = path.lower() if path.lower() in wanted else path.rsplit("/", 1)[-1].lower()
+            if key not in wanted:
+                continue
+            data = g.read(off, size)
+            out = os.path.join(out_dir, path.rsplit("/", 1)[-1])
+            with open(out, "wb") as f:
+                f.write(data)
+            found.append({"path": path, "offset": off, "size": size,
+                          "sha256": sha256_bytes(data), "out": out})
+            wanted.pop(key)
+    if wanted:
+        raise KeyError("not on the disc: " + ", ".join(sorted(wanted.values())))
+    return found
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("src", help="path to the owned .gcz file")
     ap.add_argument("--out", default="au_inventory.json")
+    ap.add_argument("--extract", nargs="+", metavar="FILE",
+                    help="copy these disc files (FST path or basename, e.g. Bond.elf) "
+                         "into --out-dir instead of writing the manifest")
+    ap.add_argument("--out-dir", default=".")
     args = ap.parse_args(argv)
+    if args.extract:
+        for rec in extract(args.src, args.extract, args.out_dir):
+            print(f"{rec['sha256']}  {rec['size']:10d}  {rec['path']} -> {rec['out']}")
+        return 0
     m = manifest(args.src)
     with open(args.out, "w") as f:
         json.dump(m, f, indent=2, sort_keys=True)

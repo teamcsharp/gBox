@@ -432,6 +432,32 @@ TITLE_FACTS = [
          _f("patch", "0x8C1E743E", "serial check bypass 1", "01 E0 (mov #1,r0)", "docs/what_this_is.md"),
          _f("patch", "0x8C2670B6", "serial check bypass 2", "01 E0 (mov #1,r0)", "docs/what_this_is.md"),
      ]},
+    {"platform": "gamecube", "title_has": ["agent under fire"], "label": "007 Agent Under Fire GameCube USA (GW7E69)",
+     "executable": {"processor": "PowerPC:BE:32:default", "registers": {"r13": "0x804EB040", "r2": "0x804EC2A0"},
+                    "note": "Bond.elf (/base.elf/Bond.elf, sha256 1a9c0d19...) keeps .symtab and .rela.*: 17636 "
+                            "CodeWarrior-mangled symbols; Quake III / Ritual UberTools lineage (FAKK2 names)"},
+     "facts": [
+         _f("global", "0x804E38B0", "g_entities", "gentity_t* table, 0x2B0 bytes each; count at globals+0x80 "
+            "(0x803F0210); +0x1E4 inuse, +0x24C Entity*, +0x5C s.modelindex, +0x124 svflags (0x80 hidden), "
+            "+0x214/+0x220 absmin/absmax, +0x22C currentOrigin", "profiles/auf-gcn-us.json"),
+         _f("global", "0x804E3530", "gClientArr", "gclient_t* array (stride at gClientSize 0x804E3534 = 0x860, count "
+            "gNumClients 0x804E3068, viewed index currentPlayer 0x804E34CC): +0x74 eye, +0x68 angles (pitch,yaw,roll "
+            "deg), +0x2D0 fov deg; scripted camera +0x2DC/+0x2E8/+0x2F4 while pm_flags(+0xC) & 0x100",
+            "profiles/auf-gcn-us.json"),
+         _f("field", "+0x4", "Entity.vtable", "vtable pointer (Class keeps it at +4); +0x1C classname, +0x28 model "
+            "(str -> strdata.data), +0x8C origin, +0x98 angles, +0x2C/+0x38 mins/maxs, +0x14 edict, +0x18 client",
+            "profiles/auf-gcn-us.json"),
+         _f("table", "0x802612C0", "__vt__5Actor", "NPC class vtable; Player 0x80254E70, DeathmatchPlayer 0x802482C0, "
+            "Bot 0x80287BB4, Sentient 0x80259E4C (246 ClassDefs from the __sinit_* initialisers)",
+            "profiles/auf-gcn-us.json"),
+         _f("function", "0x800990D0", "G_NextEntity(Entity*)", "walks g_entities[0..num_entities) skipping !inuse",
+            "docs/auf-entity-analysis.md"),
+         _f("function", "0x800138A0", "R_BuildCameraMatrix(player, mtx, fov*, angles*)", "camera from gclient_t; "
+            "R_RenderPlayerView_Sub 0x800149F8 -> R_Draw 0x800142B0 -> R_SetupProjection 0x80014270 -> "
+            "veMatPerspective 0x8019B4D0 (m00 = cot/aspect, m11 = cot: vertical fov)", "docs/auf-entity-analysis.md"),
+         _f("function", "0x80075D00", "Entity::setModel(const char*)", "gi.setmodel -> edict s.modelindex; model str "
+            "at Entity+0x28, handle at +0x144", "docs/auf-entity-analysis.md"),
+     ]},
     {"platform": "gamecube", "title_has": ["metal arms"], "label": "Metal Arms GameCube USA (GM5E7D)",
      "executable": {"processor": "PowerPC:BE:32:default", "registers": {"r13": "0x804BABE0", "r2": "0x804C2420"}},
      "facts": [

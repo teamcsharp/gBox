@@ -1502,12 +1502,13 @@ def pso_inventory(inp: InvIn, ctx: Ctx):
 
 class OotIn(BaseModel):
     session_id: str
-    op: str = "state"                      # state | skip_deku_tree | goto | give | kit | scale
+    op: str = "state"                      # state | skip_deku_tree | goto | give | kit | full_inventory | scale_link | scale_sword | scale_status | scale_release
     place: str = ""                        # goto: "end of the shadow temple", "final battle", "gohma", "kakariko"...
     item: str = ""                         # give: "hookshot", "longshot", "bow"...
     c_button: int = 0                      # give: also put it on C-left/down/right (1-3)
     kit: str = ""                          # kit: child | adult | endgame
-    factor: float = 1.0                    # scale: Link's size multiplier (2 = twice as big)
+    factor: float = 1.0                    # scale_link / scale_sword: size multiplier (2 = twice as big; 1 = back to normal)
+    reach: bool = True                     # scale_sword: the sword's hit range grows with it (sMeleeWeaponLengths in code)
     cutscene: bool = False                 # skip_deku_tree: play the Deku Tree farewell cutscene
 
 
@@ -1518,10 +1519,11 @@ class OotOut(BaseModel):
 @tool("zelda_oot", "1.0", OotIn, OotOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=180)
 def zelda_oot(inp: OotIn, ctx: Ctx):
     """Zelda: Ocarina of Time (N64 USA 1.0 / 1.1 / 1.2) on a live session: skip the Deku Tree, warp anywhere (dungeons, boss rooms,
-    the final battle) with the gear for it, give/equip items, resize Link. Warps are guarded: a save state is taken first
-    and reloaded automatically if the game hangs; the result says whether the warp landed."""
-    import struct as _s
-    from . import oot
+    the final battle) with the gear for it, give/equip items, make Link bigger (scale_link) or only his sword (scale_sword:
+    hand and shield stay, the hit range follows) - both held across scene changes by gbox.oot_scale, factor 1 restores.
+    Warps are guarded: a save state is taken first and reloaded automatically if the game hangs; the result says whether
+    the warp landed."""
+    from . import oot, oot_scale
     ad, g = SESSIONS[inp.session_id]
     oot.check(ad)
     if inp.op == "state":
@@ -1535,16 +1537,18 @@ def zelda_oot(inp: OotIn, ctx: Ctx):
         return {"result": oot.kit(ad, inp.kit or "adult")}
     if inp.op == "full_inventory":
         return {"result": oot.full_inventory(ad)}
-    if inp.op == "scale":
-        pl = _s.unpack(">I", oot._rd(ad, oot.play(ad) + 0x1C44, 4))[0]
-        if not pl:
-            raise RuntimeError("no Link actor right now (title screen / scene loading)")
-        oot._wr(ad, pl + 0x50, _s.pack(">3f", *[0.01 * inp.factor] * 3))
-        got = _s.unpack(">f", oot._rd(ad, pl + 0x50, 4))[0]
-        return {"result": {"scale": inp.factor, "verified": abs(got - 0.01 * inp.factor) < 1e-6,
-                           "note": "resets when Link is re-created (scene change); hold it with freeze/cheats if needed"}}
+    if inp.op in ("scale", "scale_link"):                     # scale: the old name of scale_link
+        return {"result": oot_scale.hold_link(ad, inp.session_id, inp.factor)}
+    if inp.op == "scale_sword":
+        return {"result": oot_scale.apply_sword(ad, inp.session_id, inp.factor, inp.reach)}
+    if inp.op == "scale_status":
+        now = oot_scale.link_scale(ad)
+        return {"result": oot_scale.status(inp.session_id) | {"link_scale": list(now) if now else None}}
+    if inp.op == "scale_release":
+        return {"result": oot_scale.release(ad, inp.session_id)}
     if inp.op not in ("skip_deku_tree", "goto"):
-        raise ValueError("op: state | skip_deku_tree | goto | give | kit | full_inventory | scale")
+        raise ValueError("op: state | skip_deku_tree | goto | give | kit | full_inventory | scale_link | scale_sword | "
+                         "scale_status | scale_release")
     if not oot.wait_gameplay(ad, 45):
         return {"result": {"landed": False, "note": "a cutscene or dialog is running: advance it (A) and ask again - warping mid-cutscene hangs the game"}}
     slot = 9
@@ -2565,6 +2569,38 @@ def project_point(eye, tgt, pt, fov_deg):
     return 0.5 + xc / zc * s * 0.5 * 0.75, 0.5 - yc / zc * s * 0.5               # 0.75 = 4:3; sign checked on a still frame
 
 
+PICK_FRAME = (640, 480)                   # picture the probe projects into (4:3; the click is mapped into it)
+
+
+def _picture_xy(inp: PickIn):
+    """The 4:3 picture is centred in the window: map the click into picture coordinates (0..1)."""
+    cx, cy = inp.x, inp.y
+    if inp.window_aspect > 4 / 3:
+        w = (4 / 3) / inp.window_aspect
+        cx = (inp.x - (1 - w) / 2) / w
+    elif inp.window_aspect < 4 / 3:
+        h = inp.window_aspect / (4 / 3)
+        cy = (inp.y - (1 - h) / 2) / h
+    return cx, cy
+
+
+def _pick_from_probe(scan: dict, cx: float, cy: float) -> dict:
+    """Pick result from a gbox.entity_probe scan (profiles with entities.layout struct_array + camera pos_angles_fov)."""
+    from . import entity_probe
+    w, h = scan["frame"]
+    hit = entity_probe.Probe.under_point(cx * w, cy * h, scan)
+    e = hit["entity"]
+    out = {"picked": entity_probe.summary(e) if e else None, "contained": hit["contained"], "miss": hit["miss"],
+           "click": [round(cx, 3), round(cy, 3)], "click_px": [round(cx * w, 1), round(cy * h, 1)],
+           "others": [entity_probe.summary(o) for o in hit["others"]], "camera": scan["camera"],
+           "entities": len(scan["entities"]), "diagnostics": scan["diagnostics"][:20]}
+    if e is None:
+        out["note"] = "nothing projectable near the click" if scan["camera"] else "camera unreadable (see diagnostics)"
+    elif e.get("model"):
+        out["asset_note"] = f"model {e['model']}: extracting it from the disc is the next stage (no reader for this game yet)"
+    return out
+
+
 @tool("pick", "1.0", PickIn, PickOut, capabilities=["runtime", "memory", "asset"], timeout_s=900)
 def pick(inp: PickIn, ctx: Ctx):
     """Live picker (plan phase 6): what is under this click in the running game? Projects every entity through the game's
@@ -2582,9 +2618,12 @@ def pick(inp: PickIn, ctx: Ctx):
         pass
     try:
         st = _semantic_state(ad, g)
-        cam_raw = None
+        cam_raw = probe_scan = None
         prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
-        if prof and prof.get("camera"):
+        if prof and (prof.get("camera") or {}).get("layout") == "pos_angles_fov":      # table-of-records games (AUF)
+            from . import entity_probe
+            probe_scan = entity_probe.Probe(prof, ad.read_memory).scan(*PICK_FRAME, entities=st.get("entities"))
+        elif prof and prof.get("camera"):
             cam_raw = (ad.read_memory(int(prof["camera"]["eye"], 16), 12), ad.read_memory(int(prof["camera"]["target"], 16), 12))
     finally:
         if paused:
@@ -2595,17 +2634,12 @@ def pick(inp: PickIn, ctx: Ctx):
     if not prof or not prof.get("camera"):
         raise Unsupported(f"no camera mapping for {g.get('title')} yet (profile.camera)")
     cam = prof["camera"]
+    cx, cy = _picture_xy(inp)
+    if probe_scan is not None:
+        return {"result": _pick_from_probe(probe_scan, cx, cy)}
     e_, t_ = cam_raw
     end = ">" if g.get("platform") in BIG_ENDIAN else "<"
     eye, tgt = S.unpack(end + "3f", e_), S.unpack(end + "3f", t_)
-    # the 4:3 picture is centred in the window: map the click into picture coordinates
-    cx, cy = inp.x, inp.y
-    if inp.window_aspect > 4 / 3:
-        w = (4 / 3) / inp.window_aspect
-        cx = (inp.x - (1 - w) / 2) / w
-    elif inp.window_aspect < 4 / 3:
-        h = inp.window_aspect / (4 / 3)
-        cy = (inp.y - (1 - h) / 2) / h
     hits = []
     for e in st.get("entities", []):
         if e["kind"] == "player":
@@ -3005,6 +3039,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
+                              "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
                               "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
                               "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
                               "stranglehold")):   # stranglehold: PS3 bullet-time interception systems and chat driver
