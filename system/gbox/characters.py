@@ -1294,6 +1294,11 @@ DEDICATED = [
     ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # John Woo Presents Stranglehold (PS3, BLUS30081): Midway UE3 multi-chunk packages; reader extracts
+    # SkeletalMesh/Texture2D exports and a placeholder GLB; full vertex decode is the next stage.
+    ("stranglehold", lambda t, p: "stranglehold" in t and p == "ps3",
+     lambda: __import__("gbox.stranglehold", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.stranglehold", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
