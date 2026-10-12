@@ -4910,11 +4910,11 @@ $("#bv-run").onclick = async () => {
   let items;
   try { items = JSON.parse($("#bv-items").value); } catch (e) { $BV_MSG("#bv-run-msg", "items is not valid JSON: " + e.message, false); return; }
   $BV_MSG("#bv-run-msg", "dispatching bevy_scene…");
-  const j = await bvJob({ name: "scene", items, screenshot: $("#bv-shot").checked, camera: {} }, "linux");
+  const j = await bvJob({ name: "scene", items, screenshot: $("#bv-shot").checked, camera: {} }, "windows");
   $BV_MSG("#bv-run-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); the PNG appears in the chat when it finishes.`);
 };
 $("#bv-render").onclick = async () => { $BV_MSG("#bv-msg", "dispatching render…");
-  const j = await bvJob({ name: "scene", items: BV_DEMO(), screenshot: true }, "linux");
+  const j = await bvJob({ name: "scene", items: BV_DEMO(), screenshot: true }, "windows");
   $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); the PNG appears in the chat when it finishes.`);
 };
 $("#bv-live").onclick = async () => { $BV_MSG("#bv-msg", "dispatching live viewer (first build takes several minutes)…");
@@ -4928,7 +4928,7 @@ $("#bv-scenes").onclick = async e => {
   const open = b.hasAttribute("data-bv-open");
   const input = open ? { name: row.name, op: "open", items: row.src || [] }
                      : { name: row.name, op: "render", items: [], screenshot: true };
-  const j = await bvJob(input, open ? "windows" : "linux");
+  const j = await bvJob(input, "windows");   // renders + live windows run on a Windows node (real display); its data dir is the shared gbox-data the Spark serves
   $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}).`);
 };
 document.querySelector('aside button[data-s="bevy"]').addEventListener("click", () => BV.data || loadBevy());
