@@ -86,6 +86,10 @@ How to work:
   Ask (ask_user, 2-5 concrete options) only when the request is genuinely ambiguous in a way that changes the outcome (which
   character, which save, permanent vs. toggle); otherwise pick the sensible reading, say which one you picked, and act. Never ask
   permission for something the operator already asked for, and never answer "I can't" before trying the tools above.
+- "Skip this talking / dialogue / text", "skip to the end of the conversation" (Zelda: Ocarina of Time): zelda op=skip_text
+  on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
+  "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
+  session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
 - "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (pso_mods op=noclip, zelda op=noclip), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
@@ -414,7 +418,10 @@ def tool_specs() -> list[dict]:
            "hookshot', Ctrl+click an item + 'give me this'); equip item=<name> button=b|a|y|x|z|c-left|c-down|c-right "
            "('put the bow on Y', 'equip this'; swords/shields/tunics are just worn); all_items ('give me everything'); "
            "unrestrict ('let me use/equip anything': OoT any age, MM any form, other games the gear that opens every path); "
-           "noclip on=true|false (walk through walls/doors); hearts count=N; rupees count=N; max; remove item=<name>; list "
+           "noclip on=true|false (walk through walls/doors); skip_text [count=max seconds, default 90] ('skip this talking', "
+           "'skip the dialogue/cutscene', 'skip to the end of the conversation': taps A until the whole conversation ends; "
+           "Ocarina of Time only - other games report that no text detector exists); "
+           "hearts count=N; rupees count=N; max; remove item=<name>; list "
            "(what Link has + what is on each button); games. Item names are fuzzy ('hook shot', 'bow and arrows', 'master "
            "sword', 'bottle', 'fire arrows'). Results carry before/after bytes and verified (read-back). For Ocarina of Time "
            "story skips / warps use zelda_oot (skip_deku_tree, goto).",
