@@ -53,5 +53,6 @@ def test_stalled_snapshot_fails_without_retiring_live_capture_or_emulation(cfg):
     assert failed['state'] == 'failed' and 'no screenshot' in failed['error'] and failed['cancel']
     assert store.get('session', 'game')['detail']['pid'] == 123
     late = client.post('/api/workers/worker/result', json={'job_id': 'stalled', 'ok': True, 'output': {}})
-    assert late.status_code == 409
+    # The late frame is settled as evidence so the worker can release it; the timed-out job stays failed.
+    assert late.status_code == 200 and late.json()['late'] is True
     assert store.get('job', 'stalled')['state'] == 'failed'
