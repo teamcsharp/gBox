@@ -52,6 +52,44 @@ class RewindConfig(BaseModel):
     repeat_s: float = 0.6             # holding Select+L2: one older checkpoint per repeat
 
 
+class AudioCppConfig(BaseModel):
+    """[audio_cpp] audio.cpp (audiocpp_server) as a gBox-managed local speech service (docs/audio_cpp.md, #816)."""
+    enabled: bool = True
+    binary: str | None = None         # audiocpp_server executable; unset = discovered (PATH, runtime/audio_cpp, C:/_tools, the user profile)
+    search: list[str] = []            # extra folders searched for the binary (a build tree's bin folder)
+    args: list[str] = []              # extra arguments placed before --config (e.g. ["--ui"])
+    url: str | None = None            # an audio.cpp server gBox does not manage (another machine); start/stop then do nothing
+    host: str = "127.0.0.1"
+    port: int = 8790
+    gpu: bool = True                  # true = cuda, false = cpu (backend= wins)
+    backend: str = ""                 # explicit backend: cpu | cuda | vulkan | metal
+    device: int = 0
+    threads: int = 0                  # 0 = the server's default
+    models_dir: str | None = None     # default <runtime>/audio_cpp/models (audiocpp_model_manager install <id> --models-dir ...)
+    tts_family: str = "kokoro_tts"
+    tts_model: str | None = None      # path; unset = the Kokoro GGUF found under models_dir
+    tts_voice: str = "af_heart"       # the voice used when a request names none
+    tts_language: str = "en-us"
+    stt_family: str = "qwen3_asr"
+    stt_model: str | None = None      # path; unset = the Qwen3-ASR package found under models_dir
+    stt_language: str = "en"
+    models: list[dict] = []           # extra server.json model entries verbatim (any family audio.cpp supports)
+    lazy_load: bool = True
+    max_loaded_models: int = 0
+    idle_unload_ms: int = 0
+    busy_timeout_ms: int = 20000      # audio.cpp answers 503 instead of queueing longer; gBox then takes the other assistant
+    autostart: bool = True            # start with the worker / control plane when the binary is on this machine
+    start_timeout_s: int = 90
+
+
+class VoiceConfig(BaseModel):
+    """[voice] which speech assistant answers first and what happens when it is busy (docs/audio_cpp.md)."""
+    default_assistant: str = "director"   # director (Pine Box Voice Director + Wyoming whisper) | audio_cpp
+    fallback: bool = True                 # the other assistant takes a request when the default is busy or down
+    director_slots: int = 1               # requests the Director serves at once; further ones go to audio.cpp in parallel
+    down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
+
+
 class Config(BaseModel):
     data_dir: Path = Path("gbox-data")
     libraries: list[Library] = []
@@ -79,6 +117,8 @@ class Config(BaseModel):
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
+    audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
+    voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -149,6 +189,20 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # interval_s = 2.0                # seconds between checkpoints
 # depth = 60                      # checkpoints kept per session
 # max_mb = 2048                   # disk cap per session
+
+# [voice]                         # speech assistants (docs/audio_cpp.md)
+# default_assistant = "audio_cpp" # "director" (Pine Box Voice Director + Wyoming whisper, the default) or "audio_cpp"
+# fallback = true                 # the other assistant answers when the default is busy or down
+# director_slots = 1              # Director requests served at once; more go to audio.cpp in parallel
+
+# [audio_cpp]                     # audio.cpp (audiocpp_server) started and supervised by gBox on this machine
+# binary = "C:/_tools/audio.cpp/build/windows-cuda-release/bin/audiocpp_server.exe"   # unset = discovered
+# port = 8790
+# gpu = true                      # cuda; backend = "vulkan" for a non-NVIDIA GPU, gpu = false for cpu
+# models_dir = "D:/gBox/runtime/audio_cpp/models"
+# tts_family = "kokoro_tts"       # tts_model / stt_model = explicit GGUF paths when discovery finds none
+# tts_voice = "af_heart"
+# stt_family = "qwen3_asr"
 
 # [[libraries]]
 # id = "roms"
