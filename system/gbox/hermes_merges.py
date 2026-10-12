@@ -143,3 +143,173 @@ def reconcile(api, *, gh=_gh, carriers=_carriers, now=None, force=False):
     with hermes_delivery.locked('merges'):
         path.write_text(json.dumps(saved, indent=2))
     return {'posted': posted, 'open': open_prs, 'errors': errors}
+
+
+# --- task branches: is each ticket's published work actually on main? ---------------------------------
+# PR notices say what GitHub did with a PR. They cannot see a commit pushed after
+# its PR merged, or work that reached main through another (rebased) PR. This pass
+# compares every task branch with main by patch identity (git cherry). Commits on
+# no open PR, and on no PR the operator deliberately closed, get a draft PR so they
+# come back for review instead of being lost (the #1275 to_glb commit).
+
+STRANDED_GRACE = 1800       # a branch pushed in the last 30 min may still be mid-publication
+PULL_FIELDS = 'number,state,headRefName,headRefOid,url'
+
+
+class Branches:
+    """The Hermes repository's view of task branches on origin."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def _git(self, *args, timeout=60):
+        return hermes_delivery._run(['git', *args], self.root, timeout=timeout)
+
+    def refresh(self):
+        self._git('fetch', '--quiet', '--prune', 'origin', '+refs/heads/main:refs/remotes/origin/main',
+                  '+refs/heads/hermes/*:refs/remotes/origin/hermes/*', timeout=180)
+
+    def heads(self):
+        """{branch: (sha, committer time)} for every hermes/* branch on origin."""
+        out = self._git('for-each-ref', '--format=%(refname:lstrip=3) %(objectname) %(committerdate:unix)',
+                        'refs/remotes/origin/hermes/')
+        heads = {}
+        for line in out.splitlines():
+            name, sha, stamp = line.split()
+            heads[name] = (sha, float(stamp))
+        return heads
+
+    def pending(self, sha):
+        """[(sha, subject)] of commits whose change is not on main, oldest first."""
+        out = self._git('cherry', '-v', 'origin/main', sha)
+        return [(line[2:].partition(' ')[0], line[2:].partition(' ')[2].strip())
+                for line in out.splitlines() if line.startswith('+ ')]
+
+    def pulls(self):
+        """{branch: [pull]} for every PR GitHub has for a hermes/* branch."""
+        rows = json.loads(hermes_delivery._run(['gh', 'pr', 'list', '--repo', hermes_delivery.REPOSITORY,
+            '--state', 'all', '--limit', '500', '--json', PULL_FIELDS], self.root))
+        out = {}
+        for pull in rows:
+            if (pull.get('headRefName') or '').startswith('hermes/'):
+                out.setdefault(pull['headRefName'], []).append(pull)
+        return out
+
+    def open_pull(self, branch, record, pending):
+        """Open a draft PR for stranded commits; return {number, url}."""
+        title = f"Recover unmerged Hermes work for request #{record.get('number')}"
+        body = (f"gBox request #{record.get('number')} ({record['request_id']}).\n\n"
+                f"These commits on `{branch}` were not on main and no open PR carried them "
+                "(for example, pushed after the branch's earlier PR merged):\n\n"
+                + '\n'.join(f'- {sha[:12]} {subject.strip()}' for sha, subject in pending)
+                + "\n\nOpened automatically by the gBox Hermes outcome reconciler so the work is reviewed instead of lost.\n")
+        path = hermes_delivery.state_dir() / (record['request_id'] + '-recover-pr.md')
+        path.write_text(body, encoding='utf-8')
+        url = hermes_delivery._run(['gh', 'pr', 'create', '--draft', '--repo', hermes_delivery.REPOSITORY,
+                                    '--base', 'main', '--head', branch, '--title', title[:180],
+                                    '--body-file', str(path)], self.root).strip()
+        match = re.fullmatch(r'https://github\.com/' + re.escape(hermes_delivery.REPOSITORY) + r'/pull/(\d+)', url)
+        if not match:
+            raise RuntimeError('GitHub did not confirm the recovery PR')
+        return {'number': int(match[1]), 'url': url}
+
+
+def _default_branches():
+    root = hermes_delivery.repository()
+    return Branches(root) if (root / '.git').exists() else None
+
+
+def _busy_requests():
+    from . import hermes_recovery
+    return hermes_recovery._active_requests()
+
+
+def branch_state(record, heads, pulls, branches):
+    """(state key, detail) for one request's task branch, or None if it was never pushed."""
+    branch = record.get('branch')
+    if not branch or branch not in heads:
+        return None
+    sha, pushed = heads[branch]
+    if sha == record.get('baseline'):
+        return f'unchanged:{sha}', {'sha': sha}
+    pending = branches.pending(sha)
+    if not pending:
+        return f'on_main:{sha}', {'sha': sha}
+    prs = pulls.get(branch, [])
+    open_pr = next((p for p in prs if p.get('state') == 'OPEN'), None)
+    if open_pr:
+        return f"review:{open_pr['number']}:{sha}", {'sha': sha, 'pull': open_pr, 'pending': pending}
+    closed = next((p for p in prs if p.get('state') == 'CLOSED' and p.get('headRefOid') == sha), None)
+    if closed:
+        # The operator or an integration PR closed exactly this head: never reopen it on our own.
+        return f"closed:{closed['number']}:{sha}", {'sha': sha, 'pull': closed, 'pending': pending}
+    return f'stranded:{sha}', {'sha': sha, 'pushed': pushed, 'pending': pending}
+
+
+def reconcile_branches(api, *, branches=None, busy=_busy_requests, now=None, force=False):
+    """Report when a ticket's work is fully on main; recover commits no PR carries."""
+    now = time.time() if now is None else now
+    root = hermes_delivery.state_dir()
+    path = root / 'branches.json'
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, ValueError):
+        saved = {}
+    if not force and now - saved.get('checked_at', 0) < INTERVAL:
+        return {'skipped': 'interval'}
+    branches = branches or _default_branches()
+    if branches is None:
+        return {'skipped': 'no_repository'}
+    branches.refresh()
+    heads, pulls = branches.heads(), branches.pulls()
+    try:
+        owned = set(busy())
+    except Exception:
+        owned = None            # unknown ownership: report, but never open a PR under an active run
+    reported = saved.setdefault('reported', {})
+    posted, recovered, errors = [], [], []
+    for record in _records(root):
+        rid = record.get('request_id')
+        if not rid:
+            continue
+        try:
+            found = branch_state(record, heads, pulls, branches)
+        except Exception as error:
+            errors.append(f'{rid}: {type(error).__name__}')
+            continue
+        if found is None:
+            continue
+        state, detail = found
+        if reported.get(rid) == state:
+            continue
+        text = None
+        if state.startswith('on_main:'):
+            text = (f"All published work for this ticket is on main: branch {record['branch']} "
+                    f"(head {detail['sha'][:12]}) has no change that main lacks.")
+        elif state.startswith('stranded:'):
+            if owned is None or rid in owned or now - detail['pushed'] < STRANDED_GRACE:
+                continue        # decide again next pass; nothing is recorded
+            try:
+                pull = branches.open_pull(record['branch'], record, detail['pending'])
+            except Exception as error:
+                errors.append(f'{rid}: recovery PR failed ({type(error).__name__})')
+                continue
+            recovered.append({'request_id': rid, 'number': record.get('number'), 'pr': pull['number']})
+            text = (f"{len(detail['pending'])} commit(s) on branch {record['branch']} were not on main and no open PR "
+                    f"carried them. Opened draft PR #{pull['number']} to bring them back for review: {pull['url']}\n"
+                    + '\n'.join(f'- {sha[:12]} {subject.strip()}' for sha, subject in detail['pending'][:10]))
+            state = f"review:{pull['number']}:{detail['sha']}"
+        if text:
+            try:
+                api(f'/api/requests/{rid}/messages', {'author': 'agent', 'text': text, 'task_step': {
+                    'action': 'check ticket branch against main', 'attempt': '1',
+                    'result': state.split(':', 1)[0], 'status': 'finished'}})
+            except Exception as error:
+                errors.append(f'{rid}: {type(error).__name__}')
+                continue
+            posted.append({'request_id': rid, 'number': record.get('number'), 'state': state.split(':', 1)[0]})
+        reported[rid] = state
+    saved['checked_at'] = now
+    with hermes_delivery.locked('branches'):
+        path.write_text(json.dumps(saved, indent=2))
+    return {'posted': posted, 'recovered': recovered, 'errors': errors}

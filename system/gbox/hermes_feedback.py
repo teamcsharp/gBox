@@ -235,9 +235,31 @@ def finalize_merges() -> dict:
     """Post merged/closed PR outcomes on their requests (#1300); never block routing."""
     from . import hermes_merges
     from .hermes_availability import _api
+    out = {}
+    for key, step in (('pulls', hermes_merges.reconcile), ('branches', hermes_merges.reconcile_branches)):
+        try:
+            out[key] = step(_api)
+        except Exception as error:  # GitHub or the inbox may be unreachable
+            out[key] = {'status': 'deferred', 'error_type': type(error).__name__}
+    return out
+
+
+def finalize_cap() -> dict:
+    """Block a ticket the inbox job keeps taking and ask the operator (#1300); never block routing."""
+    from . import hermes_summaries
+    from .hermes_availability import _api
     try:
-        return hermes_merges.reconcile(_api)
-    except Exception as error:  # GitHub or the inbox may be unreachable
+        return hermes_summaries.enforce_cap(_api)
+    except Exception as error:
+        return {'status': 'deferred', 'error_type': type(error).__name__}
+
+
+def finalize_cleanup() -> dict:
+    """Stop long-lived processes finished tasks left in their workspaces; never block routing."""
+    from . import hermes_recovery
+    try:
+        return {'stopped': hermes_delivery.reap_task_processes(hermes_recovery._active_requests)}
+    except Exception as error:
         return {'status': 'deferred', 'error_type': type(error).__name__}
 
 
@@ -255,6 +277,8 @@ def adjust_routes() -> dict:
     accounting = finalize_usage()
     merges = finalize_merges()
     summaries = finalize_summaries()
+    capped = finalize_cap()
+    cleanup = finalize_cleanup()
     data, config = scan(), hermes_task_mode._config()
     cli = str(hermes_task_mode._cli())
     repaired = canonical_mcp(config)
@@ -306,6 +330,7 @@ def adjust_routes() -> dict:
     return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
             'completed_usage': accounting, 'merges': merges, 'summaries': summaries,
+            'capped': capped, 'cleanup': cleanup,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
 
 

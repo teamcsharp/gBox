@@ -171,3 +171,44 @@ def reconcile(api, *, home=None, now=None):
     with hermes_delivery.locked('summaries'):
         path.write_text(json.dumps(saved, indent=2))
     return {'posted': posted, 'errors': errors}
+
+
+def cap_question(streak):
+    return (f"Hermes worked this ticket in the last {streak['runs']} inbox runs in a row without finishing it, "
+            "so it is pausing here (blocked) and moving on to other requests. Reply on this ticket with what "
+            "to do next (what is still wrong, a narrower goal, or \"keep going\"); your reply reopens it for "
+            "the next run.")
+
+
+def enforce_cap(api, *, runs=None):
+    """Ask the operator about a ticket the inbox job keeps taking (#1300 gap 3).
+
+    list_requests only advises a run to skip a capped ticket. Here a ticket that
+    reached the streak cap is set to blocked with a question, once per streak;
+    the operator's reply reopens it (server req_message) and restarts its count.
+    """
+    path = hermes_delivery.state_dir() / 'capped.json'
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, ValueError):
+        saved = {}
+    runs = hermes_tasks.list_runs(hermes_tasks.MAX_RUNS) if runs is None else runs
+    rows = api('/api/requests?status=open,in_progress')
+    last = {r['id']: max([m.get('ts') or 0 for m in r.get('messages') or []
+                          if m.get('author') == 'operator'] or [0.0]) for r in rows}
+    asked = saved.setdefault('asked', {})
+    blocked, errors = [], []
+    for rid, streak in hermes_tasks.ticket_streaks(runs, last).items():
+        latest = streak['run_ids'][0]
+        if rid not in last or asked.get(rid) == latest:
+            continue
+        try:
+            api(f'/api/requests/{rid}/status', {'status': 'blocked', 'note': cap_question(streak)})
+        except Exception as error:
+            errors.append(f'{rid}: {type(error).__name__}')
+            continue
+        asked[rid] = latest
+        blocked.append({'request_id': rid, 'runs': streak['runs']})
+    with hermes_delivery.locked('capped'):
+        path.write_text(json.dumps(saved, indent=2))
+    return {'blocked': blocked, 'errors': errors}

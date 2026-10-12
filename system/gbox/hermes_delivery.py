@@ -115,6 +115,57 @@ def prepare(request_id: str, number: int) -> dict:
         return workspace
 
 
+def reap_task_processes(busy, *, max_age=6 * 3600, proc=Path('/proc'), now=None, kill=os.kill) -> list[dict]:
+    """Stop processes a task left running in its workspace, e.g. a preview `http.server`.
+
+    Only this user's processes whose working directory is inside a task workspace,
+    older than max_age, and whose request no active Hermes run owns. `busy` returns
+    the owned request IDs; when ownership is unknown nothing is stopped.
+    """
+    import signal
+    if os.name == 'nt' or not proc.is_dir():
+        return []
+    try:
+        owned = set(busy())
+    except Exception:
+        return []
+    tasks = (repository().parent / 'gbox-hermes-tasks').resolve()
+    now = time.time() if now is None else now
+    try:
+        boot = next(float(line.split()[1]) for line in (proc / 'stat').read_text().splitlines()
+                    if line.startswith('btime '))
+        ticks = os.sysconf('SC_CLK_TCK') if hasattr(os, 'sysconf') else 100
+    except (OSError, StopIteration, ValueError):
+        return []
+    stopped = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if entry.stat().st_uid != os.getuid():
+                continue
+            cwd = Path(os.readlink(entry / 'cwd'))
+            # Field 22 of /proc/<pid>/stat is the start time in clock ticks after boot;
+            # the command name (field 2) may contain spaces, so split after its ')'.
+            started = int((entry / 'stat').read_text().rsplit(')', 1)[1].split()[19]) / ticks
+            age = now - (boot + started)
+        except (OSError, ValueError, IndexError):
+            continue        # exited, or not ours to inspect
+        if not cwd.is_relative_to(tasks) or cwd == tasks or age < max_age:
+            continue
+        request_id = cwd.relative_to(tasks).parts[0]
+        if request_id in owned:
+            continue
+        try:
+            command = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace').strip()
+            kill(int(entry.name), signal.SIGTERM)
+        except OSError:
+            continue
+        stopped.append({'pid': int(entry.name), 'request_id': request_id, 'command': command[:200],
+                        'age_hours': round(age / 3600, 1)})
+    return stopped
+
+
 def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> dict:
     record = _record_path(request_id)
     with locked(request_id):

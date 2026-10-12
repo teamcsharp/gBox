@@ -85,6 +85,8 @@ def test_route_rotation_waits_for_running_agent_and_restores_expired_routes(monk
         return {'checked_runs': 1, 'tokens_in_added': 42, 'tokens_out_added': 3}
     monkeypatch.setattr(hermes_feedback, 'finalize_usage', finalize)
     monkeypatch.setattr(hermes_feedback, 'finalize_merges', lambda: {'posted': []})
+    monkeypatch.setattr(hermes_feedback, 'finalize_cap', lambda: {'blocked': []})
+    monkeypatch.setattr(hermes_feedback, 'finalize_cleanup', lambda: {'stopped': []})
     monkeypatch.setattr(hermes_feedback, 'finalize_summaries', lambda: {'posted': []})
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_config', lambda: config)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [{'id': 'live'}])
