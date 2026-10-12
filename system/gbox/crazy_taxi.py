@@ -1,0 +1,258 @@
+"""Crazy Taxi (GameCube, GCTE51) native model reader: the `polDC*.all` shape archives and their `.shp` models.
+
+Evidence (request #608, owned disc GCTE51, main.dol sha256 c6447c2d...):
+
+* `ct/polDC0.all` is the common shape bank (1586 shapes: cars, pedestrians, passengers and the four drivers).
+  Layout: u32le count, u32le 0x00410020, u32le 0, u32le 0, then `count` records of name[64] + u32le size, 8 bytes
+  of padding, then the shape blobs back to back in record order (sizes are multiples of 0x20; the last blob ends
+  exactly at EOF).
+* The drivers are `MP_YH_plyrA..D_*` (Axel, B.D. Joe, Gena, Gus in select order), one rigid `.shp` per body part
+  (atama head, mune chest, koshi hips, kata/ude/te upper arm/forearm/hand, momo/sune/kakato thigh/shin/foot, with
+  hand-pose variants `_ok/_ch/_gu` and `sl_` low-detail twins). Pedestrians (`MP_YH_Man_*`) use the same part set.
+* A `.shp` is big-endian. Header: f32 1.0, f32 bounding radius, ..., vec3 centre @0x20, vec3 quantisation scale
+  @0x2c, per-attribute format words @0x60, GX attribute array offsets @0xc8 (POS @0xcc, NRM @0xd0, CLR0 @0xd4,
+  TEX0 @0xdc), material table offset @0x110, first array offset @0x114, display-list base @0x118, texture name
+  table @0x11c (64-byte names, e.g. `white.tex`).
+  Positions are s16x3 and normals s16x3 (1.14); colours RGBA8; UVs s16x2. Each material record (0x24 bytes) holds
+  a display-list offset and size. Display lists are GX: 0x90|vat = triangles, 0x98|vat = strip, 0xa0|vat = fan,
+  u16 vertex count, then one u16 index per present attribute, in POS, NRM, CLR0, TEX0 order.
+  `ct/cube0.shp` (a loose 8-vertex cube) is the oracle: 36 triangle corners, positions +-1.
+
+main.dol (GCTE51) evidence for the writer stage: `polDC0.all` is opened at 0x800866e0 and `motDC.bin` at
+0x80059cfc/0x8005a12c/0x8005a94c/0x8005b810/0x8005b988 (lis/addi xrefs). main.dol also carries game-side shape
+enum tables of 0x44-byte records (u32 enum id, name[64] without `.shp`); `MP_YH_plyrA_koshi` is id 0x48a at
+0x80190a9c while its bank position is 1136 (the drivers sit at a constant +26; cars and props use other shifts), so
+ids are not bank positions. A writer must therefore keep every bank name and record order in place and only
+replace blobs. The `.shp` name list at 0x80135158 is still unread (candidate part hierarchy / pose tables).
+`motDC.bin` starts with a big-endian u32 table of 18 offsets (0x5b, 0x12, 0x8d, ...) followed by keyed
+(frame, f32 x3) tracks: the driver animation bank.
+
+This module is read-only; it never writes the disc. The writer (re-encoding a donor into the driver parts) is the
+next stage of #608 and is intentionally not routed in `characters` yet.
+"""
+from __future__ import annotations
+
+import math
+import struct
+from dataclasses import dataclass, field
+from pathlib import Path
+
+GAME_IDS = {"bc02bb68790ce2e7"}
+DISC_ID = "GCTE51"
+BANK = "ct/polDC0.all"
+DRIVERS = {"A": "axel", "B": "bd_joe", "C": "gena", "D": "gus"}
+# Body parts of one driver, parent first (rigid parts, one per bone).
+PARTS = ("koshi", "mune", "atama", "kata_l", "ude_l", "te_l", "kata_r", "ude_r", "te_r",
+         "momo_l", "sune_l", "kakato_l", "momo_r", "sune_r", "kakato_r")
+ROLE = {"koshi": "hips", "mune": "chest", "atama": "head",
+        "kata_l": "upperarm_l", "ude_l": "forearm_l", "te_l": "hand_l",
+        "kata_r": "upperarm_r", "ude_r": "forearm_r", "te_r": "hand_r",
+        "momo_l": "thigh_l", "sune_l": "shin_l", "kakato_l": "foot_l",
+        "momo_r": "thigh_r", "sune_r": "shin_r", "kakato_r": "foot_r"}
+
+ATTR_OFFS = (("pos", 0xCC), ("nrm", 0xD0), ("clr", 0xD4), ("tex", 0xDC))
+
+
+def read_bank(data: bytes) -> list[tuple[str, int, int]]:
+    """polDC*.all -> [(name, offset, size)]. Raises ValueError when the layout does not add up."""
+    if len(data) < 16:
+        raise ValueError("bank too small")
+    count = struct.unpack_from("<I", data, 0)[0]
+    table_end = 0x10 + count * 0x44
+    if count <= 0 or table_end > len(data):
+        raise ValueError(f"bad shape count {count}")
+    out, off = [], table_end + 8
+    for i in range(count):
+        p = 0x10 + i * 0x44
+        name = data[p:p + 64].split(b"\0")[0].decode("latin-1")
+        size = struct.unpack_from("<I", data, p + 64)[0]
+        out.append((name, off, size))
+        off += size
+    if off != len(data):
+        raise ValueError(f"bank sizes end at {off:#x}, file is {len(data):#x}")
+    return out
+
+
+def write_bank(entries: list[tuple[str, bytes]], word1: int = 0x00410020) -> bytes:
+    """Inverse of read_bank (used for the no-op round trip and later for the driver writer)."""
+    hdr = bytearray(struct.pack("<4I", len(entries), word1, 0, 0))
+    for name, blob in entries:
+        nm = name.encode("latin-1")
+        if len(nm) >= 64:
+            raise ValueError(f"name too long: {name}")
+        hdr += nm.ljust(64, b"\0") + struct.pack("<I", len(blob))
+    hdr += b"\0" * 8
+    return bytes(hdr) + b"".join(b for _, b in entries)
+
+
+@dataclass
+class Shape:
+    name: str
+    radius: float
+    centre: tuple
+    scale: tuple
+    pos: list = field(default_factory=list)       # raw s16 triples
+    nrm: list = field(default_factory=list)
+    uv: list = field(default_factory=list)
+    textures: list = field(default_factory=list)
+    tris: list = field(default_factory=list)      # [(corner, corner, corner)], corner = {attr: index}
+    lists: list = field(default_factory=list)     # [(dl_offset, dl_size)]
+
+    def frac(self) -> int:
+        """POS fixed-point shift. The VAT field that sets it is not located yet, so derive it from the bounding
+        radius: cube0.shp is 6 (18918 * 0.0033829 / 64 = 1.0); 1411 of the 1584 decodable polDC0 shapes,
+        all driver parts included, are 8."""
+        used = {c["pos"] for t in self.tris for c in t} or set(range(len(self.pos)))
+        if not used or self.radius <= 0:
+            return 8
+        far = max(math.sqrt(sum((self.pos[i][a] * self.scale[a]) ** 2 for a in range(3))) for i in used)
+        return max(0, min(15, round(math.log2(far / self.radius)))) if far > 0 else 8
+
+    def positions(self, frac: int | None = None) -> list[tuple[float, float, float]]:
+        """Decoded positions: s16 * scale / 2**frac."""
+        k = 1.0 / (1 << (self.frac() if frac is None else frac))
+        return [(x * self.scale[0] * k, y * self.scale[1] * k, z * self.scale[2] * k) for x, y, z in self.pos]
+
+
+def _u32(b, o):
+    return struct.unpack_from(">I", b, o)[0]
+
+
+def decode_dl(dl: bytes, attrs: list[str]) -> list[tuple]:
+    """GX display list (u16 index per attribute) -> triangles of corner dicts."""
+    tris, p, stride = [], 0, 2 * len(attrs)
+    while p + 3 <= len(dl):
+        cmd = dl[p]
+        if cmd == 0:                   # NOP / padding
+            p += 1
+            continue
+        prim = cmd & 0xF8
+        if prim not in (0x90, 0x98, 0xA0):
+            raise ValueError(f"unknown GX command {cmd:#x} at {p:#x}")
+        n = struct.unpack_from(">H", dl, p + 1)[0]
+        p += 3
+        if p + n * stride > len(dl):
+            raise ValueError("display list overruns its block")
+        vs = []
+        for i in range(n):
+            idx = struct.unpack_from(f">{len(attrs)}H", dl, p + i * stride)
+            vs.append(dict(zip(attrs, idx)))
+        p += n * stride
+        if prim == 0x90:
+            tris += [tuple(vs[i:i + 3]) for i in range(0, n - 2, 3)]
+        elif prim == 0x98:
+            for i in range(n - 2):
+                a, b, c = vs[i], vs[i + 1], vs[i + 2]
+                tris.append((a, b, c) if i % 2 == 0 else (b, a, c))
+        else:
+            tris += [(vs[0], vs[i], vs[i + 1]) for i in range(1, n - 1)]
+    return tris
+
+
+def _material_lists(b: bytes, mat_off: int, dl_base: int, end: int) -> list[tuple[int, int]]:
+    """Find the (offset, size) display-list pointers in the material block: u32 pairs pointing at a GX
+    primitive inside [dl_base, end)."""
+    out = []
+    for o in range(mat_off, dl_base - 7, 4):
+        off, size = _u32(b, o), _u32(b, o + 4)
+        if dl_base <= off < end and 0 < size <= end - off and size % 0x20 == 0 and b[off] & 0xF8 in (0x90, 0x98, 0xA0):
+            if not out or out[-1][0] + out[-1][1] <= off:
+                out.append((off, size))
+    return out
+
+
+def read_shape(b: bytes, name: str = "") -> Shape:
+    if len(b) < 0x120 or struct.unpack_from(">f", b, 0)[0] != 1.0:
+        raise ValueError(f"{name}: not a Crazy Taxi .shp")
+    radius = struct.unpack_from(">f", b, 4)[0]
+    centre = struct.unpack_from(">3f", b, 0x20)
+    scale = struct.unpack_from(">3f", b, 0x2C)
+    mat_off, dl_base, tex_off = _u32(b, 0x110), _u32(b, 0x118), _u32(b, 0x11C)
+    present = [(a, _u32(b, o)) for a, o in ATTR_OFFS if _u32(b, o)]
+    bounds = sorted({o for _, o in present} | {mat_off, dl_base, tex_off, len(b)})
+    nxt = {o: min(x for x in bounds if x > o) for _, o in present}
+    s = Shape(name, radius, centre, scale)
+    for a, o in present:
+        n = nxt[o] - o
+        if a == "pos":
+            s.pos = [struct.unpack_from(">3h", b, o + 6 * i) for i in range(n // 6)]
+        elif a == "nrm":
+            s.nrm = [tuple(v / 16384 for v in struct.unpack_from(">3h", b, o + 6 * i)) for i in range(n // 6)]
+        elif a == "tex":
+            s.uv = [tuple(v / 256 for v in struct.unpack_from(">2h", b, o + 4 * i)) for i in range(n // 4)]
+    if tex_off and tex_off < len(b):
+        for o in range(tex_off, len(b) - 63, 64):
+            nm = b[o:o + 64].split(b"\0")[0]
+            if nm.endswith(b".tex"):
+                s.textures.append(nm.decode("latin-1"))
+    attrs = [a for a, _ in present]
+    s.lists = _material_lists(b, mat_off, dl_base, tex_off or len(b))
+    for off, size in s.lists:
+        s.tris += decode_dl(b[off:off + size], attrs)
+    np_ = len(s.pos)
+    for t in s.tris:
+        for c in t:
+            if c["pos"] >= np_:
+                raise ValueError(f"{name}: position index {c['pos']} >= {np_}")
+    return s
+
+
+def to_obj(s: Shape, frac: int | None = None) -> str:
+    lines = [f"o {s.name or 'shape'}"]
+    lines += [f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in s.positions(frac)]
+    lines += [f"vt {u:.6f} {1 - v:.6f}" for u, v in s.uv] or []
+    for t in s.tris:
+        if s.uv and all("tex" in c for c in t):
+            lines.append("f " + " ".join(f"{c['pos'] + 1}/{c['tex'] + 1}" for c in t))
+        else:
+            lines.append("f " + " ".join(str(c["pos"] + 1) for c in t))
+    return "\n".join(lines) + "\n"
+
+
+def driver_parts(entries, letter: str, low: bool = False) -> dict[str, tuple[int, int]]:
+    """Map the PARTS of driver A-D to (offset, size) inside the bank."""
+    pre = f"MP_YH_plyr{letter}_" + ("sl_" if low else "")
+    by = {n: (o, s) for n, o, s in entries}
+    return {p: by[f"{pre}{p}.shp"] for p in PARTS if f"{pre}{p}.shp" in by}
+
+
+def inventory(bank: bytes) -> dict:
+    """Drivers, their parts, triangle counts and texture names (the reader stage of #608)."""
+    entries = read_bank(bank)
+    out = {"shapes": len(entries), "drivers": {}}
+    for letter, slug in DRIVERS.items():
+        parts = {}
+        for p, (o, size) in driver_parts(entries, letter).items():
+            s = read_shape(bank[o:o + size], p)
+            parts[p] = {"offset": o, "size": size, "verts": len(s.pos), "tris": len(s.tris),
+                        "textures": s.textures, "role": ROLE[p]}
+        out["drivers"][slug] = {"letter": letter, "parts": parts,
+                                "tris": sum(v["tris"] for v in parts.values())}
+    return out
+
+
+def main(argv=None):
+    import argparse
+    import json
+    from .gcdisc import GCDisc
+    ap = argparse.ArgumentParser(description="Crazy Taxi GC shape reader")
+    ap.add_argument("iso")
+    ap.add_argument("--obj", type=Path, help="write the drivers' parts as OBJ files here")
+    a = ap.parse_args(argv)
+    disc = GCDisc(a.iso)
+    if disc.game_id != DISC_ID:
+        raise SystemExit(f"expected {DISC_ID}, got {disc.game_id}")
+    bank = disc.read(BANK)
+    inv = inventory(bank)
+    if a.obj:
+        entries = read_bank(bank)
+        for letter, slug in DRIVERS.items():
+            for p, (o, size) in driver_parts(entries, letter).items():
+                dst = a.obj / slug / f"{p}.obj"
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_text(to_obj(read_shape(bank[o:o + size], p)))
+    print(json.dumps(inv, indent=1))
+
+
+if __name__ == "__main__":
+    main()
