@@ -38,6 +38,33 @@ def _iso_path() -> pathlib.Path | None:
 
 
 @pytest.mark.skipif(_iso_path() is None, reason="GTA III base ISO not staged")
+def test_extract_playerx_glb():
+    """playerx.txd bundles a 4-bit companion raster (shot_all) alongside the 8-bit
+    character atlas (playa5).  The reader must pick the usable 8-bit atlas so the
+    model extracts and verifies instead of failing with ``depth 4``."""
+    from gbox import characters as C
+
+    rom = pathlib.Path("/mnt/gbox/quickswap2/Emulation/PS2/Grand Theft Auto III (USA, Canada).7z")
+    cfg = config.load(pathlib.Path(__file__).parent.parent / "gbox.toml")
+
+    class FakeCtx:
+        config = cfg
+        def progress(self, _p, _m):
+            pass
+
+    C._rom = lambda _ctx, _game: rom
+    with tempfile.TemporaryDirectory() as td:
+        work = pathlib.Path(td)
+        entry = next(e for e in gta3_models.roster() if e["key"] == "playerx")
+        result = gta3_models.extract_run(FakeCtx(), GAME, entry, work)
+        assert result["tool"] == "gbox.gta3_models"
+        assert result["files"][0].exists()
+        assert result["files"][0].stat().st_size > 0
+        assert "MODELS/GTA3.IMG" in result["source_files"][0]
+        assert set(result["roles"]) == set(GTA3_ROLES)
+
+
+@pytest.mark.skipif(_iso_path() is None, reason="GTA III base ISO not staged")
 def test_extract_player_glb():
     from gbox import characters as C
     from gbox.gta3_swap import iso_from_rom
@@ -54,6 +81,31 @@ def test_extract_player_glb():
     with tempfile.TemporaryDirectory() as td:
         work = pathlib.Path(td)
         entry = next(e for e in gta3_models.roster() if e["key"] == "player")
+        result = gta3_models.extract_run(FakeCtx(), GAME, entry, work)
+        assert result["tool"] == "gbox.gta3_models"
+        assert result["files"][0].exists()
+        assert result["files"][0].stat().st_size > 0
+        assert "MODELS/GTA3.IMG" in result["source_files"][0]
+        assert set(result["roles"]) == set(GTA3_ROLES)
+
+
+@pytest.mark.skipif(_iso_path() is None, reason="GTA III base ISO not staged")
+def test_extract_playerp_glb():
+    """The prison outfit reader uses the same TXD logic as the stock player."""
+    from gbox import characters as C
+
+    rom = pathlib.Path("/mnt/gbox/quickswap2/Emulation/PS2/Grand Theft Auto III (USA, Canada).7z")
+    cfg = config.load(pathlib.Path(__file__).parent.parent / "gbox.toml")
+
+    class FakeCtx:
+        config = cfg
+        def progress(self, _p, _m):
+            pass
+
+    C._rom = lambda _ctx, _game: rom
+    with tempfile.TemporaryDirectory() as td:
+        work = pathlib.Path(td)
+        entry = next(e for e in gta3_models.roster() if e["key"] == "playerp")
         result = gta3_models.extract_run(FakeCtx(), GAME, entry, work)
         assert result["tool"] == "gbox.gta3_models"
         assert result["files"][0].exists()
