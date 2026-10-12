@@ -95,6 +95,9 @@ How to work:
   on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
   "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
   session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
+- Rewind / fast-forward: the operator holds Select+L2 / Select+R2 on their own pad, in every game. The session's
+  capabilities say which rewind it has: native (RetroArch's buffer), checkpoint (gBox's save state every 2 s, held L2
+  steps back one per repeat), unsupported (Xenia, Yuzu, RPCS3). session_op op=rewind args seconds=N does it from here.
 - "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (zelda op=noclip; PSO has no noclip op), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
