@@ -1069,12 +1069,51 @@ def _shenmue_run(ctx, game, e, work):
             "source_files": ["MISC/COLDINIT.PKS", "MISC/COLDINIT.PKF (YKB_M.CHRM)"]}
 
 
+SM64_MARIO_CHAINS = [("hip", "chest", "head"), ("chest", "l_upper", "l_fore", "l_hand"),
+                     ("chest", "r_upper", "r_fore", "r_hand"), ("hip", "l_thigh", "l_shin", "l_foot"),
+                     ("hip", "r_thigh", "r_shin", "r_foot")]
+
+
+def sm64_mario_roles(path: Path) -> dict[str, str]:
+    """Body roles of gbox.sm64_mario's glTF. Its joints j00..j19 are Mario's geo-layout animated parts in the order
+    gbox.sm64_swap.MARIO indexes (and the writer keeps), so the roles are {role: f"j{index:02d}"}. A model whose joint
+    names, tree (each limb a parent chain below the torso) or frame (+Y up, Mario's left +X, face toward +Z) differ is
+    refused instead of being mapped by position."""
+    from .sm64_swap import MARIO
+    gl, _acc, _img, Wn = _load(path)
+    sk = max(gl.get("skins") or [{"joints": []}], key=lambda s: len(s["joints"]))["joints"]
+    names = [gl["nodes"][j].get("name", f"node{j}") for j in sk]
+    if names != [f"j{k:02d}" for k in range(20)]:
+        raise ValueError(f"{Path(path).name}: not gbox.sm64_mario's 20-joint skeleton ({len(sk)} joints)")
+    roles = validate_rig_roles(Path(path), {r: f"j{k:02d}" for r, k in MARIO.items()})
+    node = {r: sk[names.index(n)] for r, n in roles.items()}
+    par = {c: i for i, nd in enumerate(gl["nodes"]) for c in nd.get("children", [])}
+
+    def below(a, b):                                       # is role b's joint a descendant of role a's?
+        k = par.get(node[b])
+        while k is not None and k != node[a]:
+            k = par.get(k)
+        return k == node[a]
+    bad = [f"{b} under {a}" for ch in SM64_MARIO_CHAINS for a, b in zip(ch, ch[1:]) if not below(a, b)]
+    p = {r: np.asarray(Wn[j])[:3, 3] for r, j in node.items()}
+    if not p["head"][1] > p["chest"][1] > p["hip"][1] > max(p["l_foot"][1], p["r_foot"][1]):
+        bad.append("+Y up (head > chest > hip > feet)")
+    bad += [f"left +X ({s})" for s in ("upper", "fore", "hand", "thigh", "shin", "foot")
+            if not p["l_" + s][0] > 0 > p["r_" + s][0]]
+    if not p["head"][2] > p["chest"][2]:
+        bad.append("face toward +Z")
+    if bad:
+        raise ValueError(f"{Path(path).name}: Mario's joint layout differs: " + ", ".join(bad))
+    return roles
+
+
 def _sm64_run(ctx, game, e, work):
     from . import sm64_mario as S, n64_rom
     data = n64_rom.read(_rom(ctx, game))
     out = work / "sm64_mario.gltf"
     S.to_gltf(S.extract(data, anim=197), out)
-    return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"]}
+    return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"],
+            "roles": sm64_mario_roles(out)}
 
 
 def _doa2_roster():
@@ -1231,6 +1270,26 @@ def dedicated_entries(config, game, name, roster):
     return entries
 
 
+# extractor -> body roles read from an entry's stored model, for entries collected before the reader reported roles
+ROLE_BACKFILL = {"sm64": sm64_mario_roles}
+
+
+def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
+    """A verified entry collected before its reader reported body roles (rig.roles) gets them from its own model file,
+    so collect() can call it retargetable without re-extracting. A model the role reader refuses stays unmapped."""
+    rig = dict(meta.get("rig") or {})
+    fn = ROLE_BACKFILL.get(extractor)
+    if fn is None or rig.get("roles"):
+        return meta
+    try:
+        roles = fn(Path(root) / meta["slug"] / meta["model"])
+    except (OSError, KeyError, IndexError, ValueError):
+        return meta
+    if not roles:
+        return meta
+    return put_meta(root, {**meta, "rig": {**rig, "roles": roles}})
+
+
 def collect(ctx, inp):
     """Collect a supported disc roster without vision/LLM calls or gameplay interruption."""
     game, root = _game(ctx, inp), library_root(ctx.config)
@@ -1290,7 +1349,7 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
             existing = get(root, e["slug"])
             refresh = _doa2_needs_refresh(ctx, game, existing)
             if verify_entry(root, existing)['ok'] and not refresh:
-                return {"status": "in_collection", "extractor": name, "entry": existing}
+                return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
