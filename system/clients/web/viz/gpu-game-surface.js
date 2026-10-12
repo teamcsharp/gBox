@@ -263,7 +263,7 @@
   }
   function voice(st, url) {
     if (!st.on) { voiceLayer?.remove(); voiceLayer = null; voiceReady = false; voiceState = null; return; }
-    voiceState = { level: st.level, beat: st.beat };
+    voiceState = { level: st.level, beat: st.beat, ...(st.mode ? { mode: st.mode } : {}) };   // mode: a fresh random visual (#250)
     if (!voiceLayer && url) {
       const frame = voiceLayer = layer(url); frame.style.opacity = "0.42";
       frame.addEventListener("load", () => {
