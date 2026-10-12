@@ -35,15 +35,19 @@ PRESENTATION_ERRORS = (
 )
 
 
-def presentation_state(error, frames_seen):
+def presentation_state(error, frames_seen, session_id=None):
     """The gameplay_state for a capture error caused by the game window, or None for a route failure.
 
     Until a session has produced a frame, a missing or covered window may mean the window lookup
-    itself is broken (for example a launcher PID), so it still counts toward a repair request."""
+    itself is broken (for example a launcher PID), so it still counts toward a repair request.
+    A worker that no longer has the session (it ended, or the worker restarted) fails the capture
+    with KeyError('<session id>'): the session is gone, so there is no capture route to repair."""
     text = str(error).lower()
     for fragment, state, needs_frame in PRESENTATION_ERRORS:
         if fragment in text and (frames_seen or not needs_frame):
             return state
+    if session_id and 'keyerror' in text and str(session_id).lower() in text:
+        return 'stopped'
     return None
 
 
@@ -219,7 +223,9 @@ class SessionObservers:
         except WaitingForFrame as exc:
             self._put(sid, gameplay_state='waiting_for_frame', error=str(exc), next_sample=self.clock() + 5)
         except Exception as exc:
-            state = presentation_state(exc, record.get('samples', 0) or record.get('frame_digest'))
+            state = presentation_state(exc, record.get('samples', 0) or record.get('frame_digest'), sid)
+            if not state and (self.store.get('session', sid) or {}).get('state') not in (None, 'running'):
+                state = 'stopped'  # The session ended while its capture ran: nothing to repair.
             if state:
                 # The game window is closed, covered or gone: watch for it again without a repair request.
                 misses = record.get('window_failures', 0) + 1
