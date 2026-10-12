@@ -34,15 +34,25 @@ def roster() -> list[dict]:
 
 
 def _rgba_from_txd(txd: bytes, name: str | None = None) -> np.ndarray | None:
-    """First (or named) 8-bit PS2 raster from a TXD as RGBA."""
+    """Pick a PS2 raster from a TXD and return it as RGBA.
+
+    If a texture name is given, match it exactly. Otherwise prefer an 8-bit
+    raster (GTA III player textures are 8-bit 256x256) and fall back to the
+    largest available raster. This keeps 4-bit companion rasters (e.g.
+    ``shot_all`` in ``playerx.txd``) from blocking extraction while still
+    texturing the model with the main atlas.
+    """
     root, _ = R.parse(txd)
     rasters = [R.texnative_read(t) for t in root.find(R.TEXNATIVE)]
     if not rasters:
         return None
-    for r in rasters:
-        if name is None or r.name.lower() == name.lower():
-            return R.raster_rgba(r)
-    return R.raster_rgba(rasters[0])
+    if name is not None:
+        for r in rasters:
+            if r.name.lower() == name.lower():
+                return R.raster_rgba(r)
+    # Prefer 8-bit, then the largest area (usually the main character atlas).
+    candidates = sorted(rasters, key=lambda r: (r.depth != 8, -(r.width * r.height)))
+    return R.raster_rgba(candidates[0])
 
 
 def extract_run(ctx, game: dict, e: dict, work: Path) -> dict:
