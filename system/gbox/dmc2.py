@@ -17,6 +17,13 @@ Layout of the owned USA Disc 1 (chdman extractcd of the catalog CHD -> 2048-byte
 * Model children start ``<b0> <b1> <b2> 01`` followed by u32 part count and u32 byte size (<= child size), then
   16-byte part records (u16 kind, u16 count, u32 offset, 0, 0).  Texture banks start u32 n followed by n
   u32 0x21 type words; textures are ``TIM2``.
+* Mesh children (``b1 == 0x22``) verified on the owned disc: the u32 at +4 is NOT a reliable part-record
+  count (X:108/0 declares 57 but holds 7 records), so ``mesh_parts`` walks 16-byte records
+  (u16 kind, u16 count, u32 offset, u16 flags, u16 z2) until one fails sanity checks; the 0xCDCD padding
+  after the last record terminates most tables.  Kinds seen: 1/3/4/5 = float arrays (kind 3/4 carry the
+  (1, 0x10) quad flags), 2 = u16 arrays.  Every verified mesh child ends with a 0x280-byte trailer beyond
+  the declared size.  Part payloads are plain float/u16 blocks; the EE code (SLUS_204.84) wraps them into
+  VIF uploads, so the VIF tag construction lives in the executable, not in the file.
 
 Nothing here writes to the disc; ``inventory`` only reads the extracted image.
 """
@@ -161,6 +168,78 @@ def character_candidates(uniq: dict, models: list, min_copies: int = 20) -> list
     out = [{"sha256": k, "first": v[0], "copies": len(v), "parts": by[k]["model"]["parts"],
             "size": by[k]["size"], "tag": by[k]["model"]["tag"]} for k, v in uniq.items() if len(v) >= min_copies]
     return sorted(out, key=lambda c: (-c["copies"], c["first"]))
+
+
+# --- mesh part-record / VIF probe --------------------------------------------------------------
+# Verified against the six recurring mesh candidates on the owned disc (X:108/0, 108/10, 1157/0,
+# 1157/10, 2036/0, 836/10): every one has len(child) - declared_size == 0x280.  Part payloads are
+# plain float/u16 blocks; the EE wraps them into VIF uploads at runtime (analysis-stage target in
+# SLUS_204.84), so the file itself carries no VIF tags.
+
+MESH_KINDS = (1, 2, 3, 4, 5)      # 1/3/4/5: float arrays; 2: u16 arrays
+QUAD_FLAGS = (1, 0x10)             # kinds 3 and 4 carry these flags on every verified mesh
+MESH_TRAILER = 0x280               # bytes after the declared size on every verified mesh child
+MAX_PARTS = 4096
+
+
+def mesh_parts(b: bytes) -> tuple[dict, list[dict]]:
+    """Parse a DMC2 mesh child (b1 == 0x22): 12-byte header then 16-byte part records.
+
+    The u32 at +4 is not a reliable record count (X:108/0 declares 57 but holds 7 records), so
+    records are walked until one fails the kind/offset sanity checks; 0xCDCD padding terminates
+    most tables.  Each record: u16 kind, u16 count, u32 offset, u16 flags, u16 z2.  Offsets are
+    child-absolute and payloads must end inside the declared size."""
+    if len(b) < 12 or b[1] != 0x22 or b[3] != 1:
+        raise ValueError(f"not a DMC2 mesh child (tag {b[:4].hex()})")
+    declared_parts, size = struct.unpack_from("<II", b, 4)
+    if size > len(b):
+        raise ValueError(f"declared size {size} exceeds child size {len(b)}")
+    header = {"tag": b[:4].hex(), "declared_parts": declared_parts, "size": size,
+              "trailer": len(b) - size}
+    parts = []
+    for j in range(min(declared_parts, MAX_PARTS)):
+        off = 12 + 16 * j
+        if off + 16 > len(b):
+            break
+        kind, count = struct.unpack_from("<HH", b, off)
+        p_off = struct.unpack_from("<I", b, off + 4)[0]
+        flags, z2 = struct.unpack_from("<HH", b, off + 8)
+        elsz = 2 if kind == 2 else 4
+        if kind not in MESH_KINDS or p_off < 12 or p_off + count * elsz > size:
+            break
+        parts.append({"kind": kind, "count": count, "offset": p_off, "flags": flags,
+                      "z2": z2, "elements": elsz})
+    return header, parts
+
+
+def mesh_probe(b: bytes) -> dict:
+    """Structural probe of a mesh child: header, parsed part records and float sanity.
+
+    The probe is the analysis-stage format check: it validates the part-record table against the
+    declared size and reports how much of the payload region the records cover, so a reader can be
+    built on the same arithmetic once the ELF consumer (VIF upload construction) is mapped."""
+    header, parts = mesh_parts(b)
+    floats = u16s = quads = nans = 0
+    max_end = 0
+    for p in parts:
+        o, c = p["offset"], p["count"]
+        max_end = max(max_end, o + p["elements"] * c)
+        if p["kind"] == 2:
+            u16s += c
+            continue
+        floats += c
+        if p["kind"] in (3, 4):
+            quads += c
+        if c:
+            n = min(c, 64)
+            vals = struct.unpack_from(f"<{n}f", b, o)
+            nans += sum(1 for v in vals if v != v)
+    return {**header, "records": len(parts), "floats": floats, "u16s": u16s,
+            "quads": quads, "max_end": max_end,
+            "coverage": max_end / header["size"] if header["size"] else 0.0,
+            "nan_count": nans,
+            "quad_flagged": [p for p in parts if p["kind"] in (3, 4) and
+                             (p["flags"], p["z2"]) == QUAD_FLAGS]}
 
 
 def inventory(iso: Path, deep: bool = True) -> dict:

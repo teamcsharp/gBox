@@ -91,3 +91,96 @@ def test_owned_disc_inventory():
     assert inv["archives"]["Z_DATA.BIN"]["kinds"] == {"mpeg_ps": 11}
     assert not inv["archives"]["X_DATA.BIN"]["name_dir_on_disc"]
     assert inv["unique_models"] == 7 and len(inv["character_candidates"]) >= 5
+
+
+# --- mesh part-record / VIF probe ---------------------------------------------------------------
+
+
+def _mesh_child(parts=5, declared=None, trailer=0x280, pad_after=0):
+    """Synthetic mesh child: header, part records (kinds 1..5 round-robin), payloads, trailer."""
+    table_end = 12 + 16 * parts
+    payloads, offs = [], []
+    o = table_end
+    for k in range(parts):
+        kind = (1, 2, 3, 4, 5)[k % 5]
+        cnt = 8
+        if kind == 2:
+            data = struct.pack("<8H", *range(8))
+        else:
+            data = struct.pack("<8f", *([1.5 + k] * 8))
+        flags, z2 = (1, 0x10) if kind in (3, 4) else (0, 0)
+        offs.append(o)
+        payloads.append((kind, cnt, flags, z2, data))
+        o += len(data)
+    body = b"".join(p[4] for p in payloads)
+    size = declared if declared is not None else o
+    table = b"".join(struct.pack("<HHIHH4x", p[0], p[1], offs[i], p[2], p[3]) for i, p in enumerate(payloads))
+    child = bytes([9, 0x22, 4, 1]) + struct.pack("<II", parts, size) + table + body
+    child += b"\xcd" * pad_after + b"\x00" * trailer
+    return child
+
+
+def _x_data_child(iso, entry, path):
+    """Fetch a MOMO child from X_DATA.BIN on the owned disc image."""
+    X_LBA = 1264649  # verified in the inventory stage
+    with iso.open("rb") as f:
+        f.seek(X_LBA * 2048)
+        n = struct.unpack_from("<I", f.read(8)[4:])[0]
+        f.seek(X_LBA * 2048)
+        tab = dmc2.afs_table(f.read(8 + 8 * n), 1065326592)
+        o, z = tab["offsets"][entry], tab["sizes"][entry]
+        f.seek(X_LBA * 2048 + o)
+        cur = f.read(z)
+    for j in path:
+        kids = dmc2.momo_children(cur)
+        cur = cur[kids[j][0]: kids[j][0] + kids[j][1]]
+    return cur
+
+
+MESH_CANDIDATES = [(108, [10]), (1157, [10]), (108, [0]), (1157, [0]), (2036, [0]), (836, [10])]
+
+
+def test_mesh_parts_synthetic_and_probe():
+    child = _mesh_child(parts=5)
+    header, parts = dmc2.mesh_parts(child)
+    assert header["tag"] == "09220401" and header["declared_parts"] == 5
+    assert header["trailer"] == 0x280
+    assert [p["kind"] for p in parts] == [1, 2, 3, 4, 5]
+    assert all(p["count"] == 8 for p in parts)
+    probe = dmc2.mesh_probe(child)
+    assert probe["floats"] == 32 and probe["u16s"] == 8 and probe["quads"] == 16
+    assert probe["nan_count"] == 0 and probe["coverage"] >= 0.9
+    assert len(probe["quad_flagged"]) == 2  # kinds 3 and 4 carry (1, 0x10)
+
+
+def test_mesh_parts_rejects_non_mesh_and_bad_size():
+    with pytest.raises(ValueError):
+        dmc2.mesh_parts(b"\x09\x21\x04\x01" + b"\x00" * 32)  # b1 != 0x22
+    with pytest.raises(ValueError):
+        dmc2.mesh_parts(b"\x09\x22\x04\x01" + struct.pack("<II", 2, 0x100) + b"\x00" * 0x10)  # size > child
+
+
+def test_mesh_parts_stops_at_padding():
+    child = _mesh_child(parts=5)
+    header, parts = dmc2.mesh_parts(child)
+    assert len(parts) == 5
+    padded = bytearray(_mesh_child(parts=5))
+    padded[12 + 16 * 2: 12 + 16 * 2 + 2] = b"\xcd\xcd"  # 0xCDCD padding mid-table
+    _, short = dmc2.mesh_parts(bytes(padded))
+    assert len(short) == 2
+    with pytest.raises(ValueError):
+        dmc2.mesh_parts(_mesh_child(parts=5)[:0x40])  # truncated: declared size exceeds child
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned DMC2 Disc 1 image not extracted on this host")
+def test_owned_disc_mesh_probe():
+    for entry, path in MESH_CANDIDATES:
+        child = _x_data_child(ISO, entry, path)
+        probe = dmc2.mesh_probe(child)
+        assert probe["trailer"] == 0x280, (entry, path, probe["trailer"])
+        assert probe["records"] >= 1, (entry, path)
+        assert probe["max_end"] <= probe["size"], (entry, path)
+        assert probe["nan_count"] == 0, (entry, path, probe["nan_count"])
+        # quad records (kinds 3/4) always carry the (1, 0x10) flags on the owned disc
+        for p in probe["quad_flagged"]:
+            assert p["kind"] in (3, 4) and (p["flags"], p["z2"]) == (1, 0x10)
