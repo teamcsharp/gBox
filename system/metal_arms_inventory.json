@@ -1,0 +1,267 @@
+{
+  "game_id": "7e103ec3aab47fa2",
+  "title": "Metal Arms - Glitch in the System (USA)",
+  "platform": "gamecube",
+  "core": "dolphin",
+  "game_code": "GM5E7D",
+  "disc_magic_ok": true,
+  "iso": {
+    "path": "/home/ehm_eckx/gbox-cache/modbase/7e103ec3aab47fa2/Metal Arms - Glitch in the System (USA).iso",
+    "size": 1459978240,
+    "sha256": "62d752e07d3e00ccc074f360e5edcbd88787bf72d584c8d2807516a7e8775354"
+  },
+  "gcz": {
+    "path": "/home/ehm_eckx/gbox-cache/7e103ec3aab47fa2/Metal Arms - Glitch in the System (USA).gcz",
+    "size": 1255783040,
+    "sha256": "58e800bbfefc44458ae7fc488f9fbbf4f44cc71cec4c40c3ec68278ace76d88b"
+  },
+  "executable": {
+    "name": "start.dol (disc header 0x420 -> offset)",
+    "size": 4193920,
+    "sha256": "0404e788ec43fd675e030bc80e4a177f889bc36cb86a94440b6de12dc55e903d",
+    "saved": "start.dol"
+  },
+  "fst_files": 210,
+  "master_file": {
+    "name": "mettlearms_gc.mst",
+    "size": 358239872,
+    "entry_count": 12048,
+    "by_extension": {
+      "ape": 2231,
+      "cam": 38,
+      "csv": 1291,
+      "fnt": 10,
+      "fpr": 377,
+      "gt": 71,
+      "mtx": 1069,
+      "rdg": 166,
+      "sfb": 106,
+      "sma": 393,
+      "tga": 6237,
+      "wld": 59
+    },
+    "total_payload": 352523017
+  },
+  "roster": [
+    {
+      "slug": "glitch",
+      "name": "Glitch (player)",
+      "mesh_entry": {
+        "name": "grdggltch00.ape",
+        "size": 194880,
+        "crc": "e7f4e309"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trdggltch00",
+        "tfm_scorch1",
+        "demorefl",
+        "trd1_flik01"
+      ],
+      "anim_banks": [
+        "ac00gltch01.mtx",
+        "ac00gltch02.mtx",
+        "ac00gltch03.mtx",
+        "accdgltch01.mtx",
+        "accdgltch02.mtx",
+        "accdgltch03.mtx",
+        "accdgltch04.mtx",
+        "accfgltch01.mtx"
+      ]
+    },
+    {
+      "slug": "ma_grunt",
+      "name": "Mil Grunt",
+      "mesh_entry": {
+        "name": "grmggrunt00.ape",
+        "size": 188480,
+        "crc": "ea9befba"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trmggrunt01",
+        "demorefl",
+        "trmggrunt02",
+        "tf_1glowlit",
+        "tfp1square1"
+      ],
+      "anim_banks": [
+        "accfgrunt01.mtx",
+        "accfgrunt02.mtx",
+        "accfgrunt03.mtx",
+        "acdtgrunt01.mtx",
+        "acdtgrunt02.mtx",
+        "acdtgrunt03.mtx",
+        "acshgrunt01.mtx",
+        "acshgrunt02.mtx"
+      ]
+    },
+    {
+      "slug": "ma_miner",
+      "name": "Droid Miner",
+      "mesh_entry": {
+        "name": "grdmminer00.ape",
+        "size": 120924,
+        "crc": "5c232cc1"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trdmminery3",
+        "demorefl",
+        "trdmminerh3",
+        "trdmminery1",
+        "trdggltch00",
+        "trdmminerh1",
+        "trdmminery2",
+        "trdmminerh2",
+        "trd1_flik01",
+        "tf_1glowlit",
+        "tr_1litea00"
+      ],
+      "anim_banks": [
+        "ac00miner01.mtx",
+        "ac00miner02.mtx",
+        "ac00miner03.mtx",
+        "ac00miner04.mtx",
+        "ac00miner05.mtx",
+        "ac00miner06.mtx",
+        "ac00minera1.mtx",
+        "ac00minera2.mtx"
+      ]
+    },
+    {
+      "slug": "ma_krunk",
+      "name": "Krunk",
+      "mesh_entry": {
+        "name": "grdkkrunk00.ape",
+        "size": 127936,
+        "crc": "c2566fcf"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trdkkrunk01",
+        "demorefl",
+        "trdkkrunk02",
+        "trd1_flam01"
+      ],
+      "anim_banks": [
+        "ac00krunkw1.mtx",
+        "acwrkrunk01.mtx",
+        "acwrkrunk02.mtx",
+        "acwrkrunk03.mtx",
+        "acwrkrunk04.mtx",
+        "acwtkrunk01.mtx",
+        "acwtkrunk02.mtx",
+        "acwtkrunk03.mtx"
+      ]
+    },
+    {
+      "slug": "ma_zobby",
+      "name": "Zobby",
+      "mesh_entry": {
+        "name": "grdzzobby00.ape",
+        "size": 131140,
+        "crc": "45687168"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trdzzobby01",
+        "demorefl",
+        "trdzzobby02"
+      ],
+      "anim_banks": [
+        "ac00zobby01.mtx",
+        "ac00zobby02.mtx",
+        "acsrzobby01.mtx",
+        "acsrzobby02.mtx",
+        "acsrzobby03.mtx",
+        "acwrzobby01.mtx"
+      ]
+    },
+    {
+      "slug": "ma_exavolt",
+      "name": "Exavolt",
+      "mesh_entry": {
+        "name": "grdxexavo00.ape",
+        "size": 140220,
+        "crc": "eb1835de"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trdxexavo00",
+        "demorefl",
+        "trdxexavo01",
+        "trdxexavo02",
+        "trdxexavo03",
+        "trdxexavo04",
+        "trdxexavo05"
+      ],
+      "anim_banks": [
+        "accdexavo01.mtx",
+        "accdexavo02.mtx",
+        "accdexavo03.mtx",
+        "acdiexavo01.mtx",
+        "acdiexavo02.mtx",
+        "acdiexavo03.mtx",
+        "acdiexavo04.mtx",
+        "acshexavo01.mtx"
+      ]
+    },
+    {
+      "slug": "ma_titan",
+      "name": "Titan",
+      "mesh_entry": {
+        "name": "grmttitan00.ape",
+        "size": 144276,
+        "crc": "c37aaf0e"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trmttitan02",
+        "demorefl",
+        "trmttitan01",
+        "trmttitan03",
+        "trmttitan05",
+        "tf_lit01",
+        "tfp1square1",
+        "trmttitan04",
+        "tom_spota01"
+      ],
+      "anim_banks": [
+        "accfgrunt01.mtx",
+        "accfgrunt02.mtx",
+        "accfgrunt03.mtx",
+        "acdtgrunt01.mtx",
+        "acdtgrunt02.mtx",
+        "acdtgrunt03.mtx",
+        "acshgrunt01.mtx",
+        "acshgrunt02.mtx"
+      ]
+    },
+    {
+      "slug": "ma_grunt2",
+      "name": "Mil Grunt (variant)",
+      "mesh_entry": {
+        "name": "grmggrunt01.ape",
+        "size": 139812,
+        "crc": "a2c057db"
+      },
+      "mesh_ok": true,
+      "textures": [
+        "trmggrunt03",
+        "demorefl",
+        "trmggrunt02"
+      ],
+      "anim_banks": [
+        "accfgrunt01.mtx",
+        "accfgrunt02.mtx",
+        "accfgrunt03.mtx",
+        "acdtgrunt01.mtx",
+        "acdtgrunt02.mtx",
+        "acdtgrunt03.mtx",
+        "acshgrunt01.mtx",
+        "acshgrunt02.mtx"
+      ]
+    }
+  ]
+}
