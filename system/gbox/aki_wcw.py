@@ -393,6 +393,46 @@ def roster_entries() -> list[dict]:
     return [{"key": k, "slug": slug_of(n), "name": n, "aliases": [f"World Tour {n}"], "kind": "character"} for k, n in WT_NAMES]
 
 
+# Revenge (NW2E/NW2P): snapshot of aki_wcw.roster() on the owned builds (92 wrestlers, 13 hidden slots keep their
+# generated "Wrestler g-m" placeholder because no profile string exists for them; #1317).
+RV_NAMES = [
+    (0, 1, "Sting"), (0, 2, "Giant"), (0, 3, "Lex Luger"), (0, 4, "Diamond Dallas Page"), (0, 5, "Rick Steiner"),
+    (0, 6, "Wrestler 0-6"), (0, 7, "Roddy Piper"), (0, 8, "Bret Hart"), (0, 9, "Chris Benoit"), (0, 10, "Goldberg"),
+    (0, 11, "Booker T"), (0, 12, "Disco Inferno"),
+    (1, 1, "Fit Finley"), (1, 2, "Wrestler 1-2"), (1, 3, "Wrestler 1-3"), (1, 4, "Wrestler 1-4"), (1, 5, "Meng"),
+    (1, 6, "Barbarian"), (1, 7, "Larry Zbysko"), (1, 8, "Stevie Ray"), (1, 9, "Wrestler 1-9"),
+    (1, 10, "Wrestler 1-10"), (1, 11, "British Bulldog"), (1, 12, "Wrestler 1-12"), (1, 13, "Yugi Nagata"),
+    (1, 14, "Jim Neidhart"), (1, 15, "Alex Wright"), (1, 16, "Wrestler 1-16"),
+    (2, 1, "Hollywood Hogan"), (2, 2, "Macho Man Randy Savage"), (2, 3, "Kevin Nash"), (2, 4, "Scott Hall"),
+    (2, 5, "Buff Bagwell"), (2, 6, "Scott Steiner"), (2, 7, "Curt Hennig"), (2, 8, "Konnan"), (2, 9, "Scott Norton"),
+    (2, 10, "Wrestler 2-10"), (2, 11, "Wrestler 2-11"), (2, 12, "Brian Adams"), (2, 13, "Eric Bischoff"),
+    (2, 14, "Wrestler 2-14"),
+    (3, 1, "Ultimo Dragon"), (3, 2, "Eddy Guerrero"), (3, 3, "Chris Jericho"), (3, 4, "Rey Mysterio Jr."),
+    (3, 5, "Juventud Guerrera"), (3, 6, "Dean Malenko"), (3, 7, "Chavo Guerrero Jr."), (3, 8, "La Parka"),
+    (3, 9, "Psychosis"), (3, 10, "Wrestler 3-10"),
+    (4, 1, "Glacier"), (4, 2, "Wrestler 4-2"), (4, 3, "Wrath"), (4, 4, "Kanyon"),
+    (5, 1, "Raven"), (5, 2, "Saturn"), (5, 3, "Kidman"), (5, 4, "Riggs"), (5, 5, "Van Hammer"), (5, 6, "Sick Boy"),
+    (5, 7, "Lodi"), (5, 8, "Reese"),
+    (6, 1, "AKI man"), (6, 2, "Shogun"), (6, 3, "Executioner"), (6, 4, "Dr. Frank"), (6, 5, "Jekel"),
+    (6, 6, "Maya Inca Boy"),
+    (7, 1, "Hawk Hana"), (7, 2, "Kim Chee"), (7, 3, "Dake Ken"), (7, 4, "Brickowski"), (7, 5, "Ming Chee"),
+    (7, 6, "Han Zo Mon"),
+    (8, 1, "Eric Bischoff"), (8, 2, "Onoo"), (8, 3, "Jimmy Hart"), (8, 4, "Rick Rude"), (8, 5, "Dusty Rhodes"),
+    (8, 6, "Ted Debisas"), (8, 7, "James Bandenderg"), (8, 8, "Vincent"),
+    (9, 1, "Elizabeth"), (9, 2, "Kimberly"), (9, 3, "Jackreen"), (9, 4, "Sister Sherri"), (9, 5, "Woman"),
+    (9, 6, "WHITE"), (9, 7, "RED"), (9, 8, "DRIVER"),
+]
+
+
+def revenge_roster() -> list[dict]:
+    """characters.DEDICATED roster (Revenge): keys = 'group-member'; slugs match dedicated_entries' rv_* scheme."""
+    out = []
+    for g, m, n in RV_NAMES:
+        out.append({"key": f"{g}-{m}", "slug": f"rv_{g}_{m}_{re.sub(r'[^a-z0-9]+', '_', n.lower()).strip('_')}",
+                    "name": n, "aliases": [f"Revenge {n}", f"{g}-{m}"], "kind": "character"})
+    return out
+
+
 def extract_run(ctx, game, e, work):
     from .characters import _rom
     rom = A.rom_bytes(_rom(ctx, game))
