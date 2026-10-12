@@ -651,7 +651,9 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     return int(digits)
 
 
-CACHE_VERSION = 4  # Translation-only twins get re-expressed copies (#1151); invalidates v3 multi-root caches.
+CACHE_VERSION = 5  # 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
+                   # put new vertices past the native cache span and drew no body in gameplay (#1153 live).
+                   # 5: new vertices stay inside every group's native span (#1156).
 
 
 def donor_fingerprint(model, roles: dict, scale=None) -> str:
@@ -856,9 +858,12 @@ def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
 def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender: str | None = None,
                progress=lambda p, m: None, scale: dict | None = None) -> dict:
     """-> {files {PLAYER_AFS: bytes}, report, rigged, atlas}: character `index`'s high-detail body drawn as `model`
-    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh); every node keeps its original vertex
-    chunks (the game's skinning reads them), the new vertices go after them in the vertex cache and the new strips
-    draw those with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
+    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh). Each rewritten node carries only its
+    own new vertices (JGR vertex chunks are plain 0x29, not SA2's weighted ones, so no original chunk has to run
+    first), placed at the node's native cache base and clamped so every slot stays inside the native vertex span of
+    EVERY group that draws the shared models (`vertex_slots`): on Beat, slots 368-529 past the stock 0-354 (low LOD
+    0-178) drew no body at all in gameplay while the cutscene renderer drew it (#1153 live, #1156). The new strips
+    draw with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
     their own AFS room, so PLAYER.AFS keeps its size; the model is decimated until it fits."""
     import numpy as np
     from pathlib import Path
@@ -886,6 +891,13 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     def copy_key(g, j):
         d = offsets[g].get(j)
         return None if d is None else copies[(j, tuple(round(x, 6) for x in d))]
+    spans = {}
+    for group_root in [root, *twins]:
+        cache = nj.vbuf if group_root == root else play_model(buf, group_root).vbuf
+        if not cache:
+            raise ValueError(f"JGR body group {group_root:#x} writes no vertex cache slots")
+        spans[group_root] = max(cache) + 1
+    vlimit = min(spans.values())                           # every group must find each new slot in its own span
     mine = {nd["off"] for nd in nodes + twin_nodes}
     others = []
     for r in play_model_roots(data, play):
@@ -951,12 +963,11 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     tail = (len(buf) + 3) & ~3
     spare = [(tail, room)] if room - tail >= 4 else []     # the AFS padding after the entry: a last resort
 
-    def orig_vlist(nd):
+    def orig_base(nd):
         if not nd["model"]:
-            return b""
+            return 0
         vl = struct.unpack_from("<I", buf, nd["model"])[0]
-        return buf[vl:vl + ninja.chunk_list_len(buf, vl, "v") - 4] if vl else b""
-    vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
+        return struct.unpack_from("<H", buf, vl + 4)[0] if vl else 0
     homes = {}                                             # where each node's old vlist / plist / model sat
     for j, nd in enumerate(nodes):
         if nd["model"]:
@@ -970,20 +981,19 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                 homes.update({("v", key): vl or nd["model"], ("p", key): pl_ or nd["model"], ("m", key): nd["model"]})
 
     def encode(geo):
-        # every blob (vertex lists, which carry the kept original chunks, poly lists, model structs) is sized
+        # every blob (new-only vertex lists, poly lists, model structs) is sized
         # first, then packed into the freed holes + the entry's AFS padding together (pack_blobs), so a node
         # whose new lists outgrow its own hole no longer spills past the entry while other holes sit empty
         built, blobs = {}, {}
         for j, nd in enumerate(nodes):
-            keep = orig_vlist(nd)
             if j in geo:
                 P, N, T = geo[j]
+                if len(P) > vlimit:                         # ValueError: fit() retries a smaller budget
+                    raise ValueError(f"node {j}: {len(P)} vertices > {vlimit} native vertex cache slots")
                 built[j] = ninja.cnk_model_lists(P, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
-                                                 base=vbase, keep_vlist=keep)
+                                                 base=min(orig_base(nd), vlimit - len(P)))
                 blobs[("v", j)] = built[j][0]
                 blobs[("p", j)] = built[j][1]
-            elif keep:
-                blobs[("v", j)] = keep + struct.pack("<I", 0xFF)
             if nd["model"]:
                 blobs[("m", j)] = bytes(24)
         for (j, d), key in copies.items():                 # the same strips, expressed in a twin's own node frame
@@ -991,7 +1001,7 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                 P, N, T = geo[j]
                 moved = [[p[0] + d[0], p[1] + d[1], p[2] + d[2]] for p in P]
                 built[key] = ninja.cnk_model_lists(moved, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
-                                                   base=vbase, keep_vlist=orig_vlist(nodes[j]))
+                                                   base=min(orig_base(nodes[j]), vlimit - len(P)))
                 blobs[("v", key)] = built[key][0]
                 blobs[("p", key)] = built[key][1]
                 blobs[("m", key)] = bytes(24)
@@ -1057,7 +1067,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                                           for g, o in offsets.items() if o},
                          "body_selection": "max_triangles_unverified",
                          "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
-                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
+                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_slots": vlimit,
+                         "group_vertex_spans": {f"{k:#x}": v for k, v in spans.items()}}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
 
