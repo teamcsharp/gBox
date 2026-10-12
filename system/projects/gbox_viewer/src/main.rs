@@ -43,7 +43,12 @@ fn main() {
     let root = scene["assets_root"].as_str().unwrap_or(".").to_string();
     let mtime = std::fs::metadata(&scene_path).and_then(|m| m.modified()).ok();
     App::new()
-        .add_plugins(DefaultPlugins.set(AssetPlugin { file_path: root, ..default() }).set(WindowPlugin {
+        .add_plugins(DefaultPlugins.set(AssetPlugin {
+            file_path: root,
+            // models come from the collection cache, UAP share, etc. — any path the scene lists is allowed
+            unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
+            ..default()
+        }).set(WindowPlugin {
             primary_window: Some(Window { title: "gBox · Bevy".into(), ..default() }),
             ..default()
         }))
