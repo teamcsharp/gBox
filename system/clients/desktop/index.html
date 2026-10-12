@@ -363,6 +363,16 @@
   #whipmenu > div { margin:2px 0 8px; } #whipmenu button { display:flex; gap:10px; align-items:center; width:100%; text-align:left; padding:7px 8px;
     border:0; background:none; color:var(--fg); font:inherit; border-radius:6px; cursor:pointer; } #whipmenu button:hover { background:var(--card); }
   #whipmenu button span { width:16px; text-align:center; color:var(--acc); }
+  #blpop { display:none; position:fixed; z-index:92; width:360px; padding:8px 10px 10px; background:var(--bg); border:1px solid var(--line);
+    border-radius:10px; box-shadow:0 12px 40px #000b; font-size:13px; } #blpop.on { display:block; }
+  #blpop .hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; } #blpop .hd b { font-size:13.5px; }
+  #blpop .x { background:none; border:0; color:var(--fg); cursor:pointer; font-size:14px; padding:2px 6px; border-radius:5px; } #blpop .x:hover { background:var(--card); }
+  #blpop .av { position:relative; height:220px; border-radius:8px; overflow:hidden; background:radial-gradient(circle at 50% 40%, #26304d, #0b0d14); }
+  #blpop .av canvas { width:100%; height:100%; display:block; cursor:grab; }
+  #blpop .av .hint { position:absolute; right:8px; bottom:6px; font-size:10px; color:#ffffff70; pointer-events:none; }
+  #blpop .av .err { position:absolute; inset:auto 8px 8px 8px; color:var(--bad); font-size:12px; }
+  #blpop .cap { margin:8px 0 4px; font-weight:600; } #blpop details { margin-top:6px; } #blpop summary { cursor:pointer; opacity:.8; font-size:12px; }
+  #blpop ul { margin:4px 0 0; padding-left:18px; font-size:11.5px; word-break:break-all; max-height:120px; overflow:auto; }
   /* overlay swap bar (over the game's top-right corner; cut out of the native game window like the other panels) */
   #ovbar { display:none; position:fixed; z-index:89; align-items:center; gap:2px; padding:3px 6px; background:var(--bg); border:1px solid var(--line);
     border-radius:8px; box-shadow:0 6px 20px #0009; font-size:12px; max-width:560px; } #ovbar.on { display:flex; }
@@ -1337,12 +1347,7 @@ async function remotePollFrame() {
   REMOTE.pending = true;
   try {
     const started = await gbox.api("/api/jobs", { tool: "get_frame", input: {}, require_worker: REMOTE.worker });
-    if (!started.ok) throw new Error(started.error || "Could not capture desktop");
-    let job = started.data;
-    for (let i = 0; i < 40 && ["queued", "running"].includes(job.state); i++) {
-      await new Promise(r => setTimeout(r, 500));
-      job = (await gbox.api(`/api/jobs/${job.id}`)).data;
-    }
+    const job = await jobWait(jobOf(started, "get_frame", "Could not capture desktop"), "get_frame", 500, 40);
     if (job.state !== "succeeded") throw new Error(job.error || job.state);
     const token = await gbox.token();
     $("#rp-image").src = `${S.apiUrl}/api/artifacts/${job.output.sha256}?token=${encodeURIComponent(token)}&t=${Date.now()}`;
@@ -2722,19 +2727,28 @@ async function modRun(c, sid) {
   const started = swapping
     ? await gbox.api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: c.input.mod || "", keep_state: true })
     : await gbox.api("/api/jobs", { tool: c.tool, input: { ...c.input, session_id: sid }, require_worker: sid.split("-")[0] });
-  if (!started.ok || !started.data) throw new Error(`${c.tool}: ${started.error || "job request failed"}`);
-  let j = started.data;
-  if (!j?.id || !j?.state) throw new Error(`${c.tool}: invalid job response`);
-  while (["queued", "running"].includes(j.state)) {
-    await new Promise(r => setTimeout(r, 500));
-    const polled = await gbox.api("/api/jobs/" + j.id);
-    if (!polled.ok || !polled.data) throw new Error(`${c.tool}: ${polled.error || "job status unavailable"} (job ${j.id})`);
-    j = polled.data;
-  }
+  const j = await jobWait(jobOf(started, c.tool), c.tool, 500);
   if (j.state !== "succeeded") { const err = new Error(`${c.tool}: ${j.error || j.state}`); err.jobId = j.id; throw err; }
   if (swapping && j.output?.state_loaded === false) {
     const err = new Error("The mod opened, but restoration of the saved game moment was not verified. This replacement still needs verification.");
     err.jobId = j.id; throw err;
+  }
+  return j;
+}
+// A job answer that is missing or malformed fails with words, never with a TypeError (#993: "Cannot read properties of
+// undefined (reading 'state')" while applying a mod). gbox.api answers {ok, data, error}; data must be a job with an id
+// and a state before anything reads or polls it. Every job loop in this file goes through these two.
+function jobOf(r, what, failed = "job request failed") {
+  if (!r || !r.ok || !r.data) throw new Error(`${what}: ${r?.error || failed}`);
+  const j = r.data;
+  if (typeof j !== "object" || !j.id || !j.state) throw new Error(`${what}: invalid job response`);
+  return j;
+}
+async function jobWait(j, what, ms = 500, max = Infinity) {   // poll until the job settles; a lost poll is a readable error
+  for (let i = 0; i < max && ["queued", "running"].includes(j.state); i++) {
+    await new Promise(r => setTimeout(r, ms));
+    const polled = await gbox.api("/api/jobs/" + j.id).catch(e => ({ ok: false, error: e.message }));
+    j = jobOf(polled, `${what} (job ${j.id})`, "job status unavailable");
   }
   return j;
 }
@@ -2745,22 +2759,15 @@ async function modSession(m, launch) {
   if (run || !launch) return { sid: run?.session_id || "", bootApplied: !!run && !!bootMod && run.mod === bootMod };
   toast(`Launching ${m.game_title || "the game"}…`);
   const started = await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}&mod=${encodeURIComponent(bootMod)}`, {});   // this PC
-  if (!started.ok || !started.data) throw new Error(started.error || "game launch request failed");
-  let j = started.data;
-  if (!j?.id || !j?.state) throw new Error(`Launch returned no trackable job for ${m.game_title || m.game_id}`);
-  while (["queued", "running"].includes(j.state)) {
-    await new Promise(r => setTimeout(r, 1000));
-    const polled = await gbox.api("/api/jobs/" + j.id);
-    if (!polled.ok || !polled.data) throw new Error(polled.error || `Could not read launch job ${j.id}`);
-    j = polled.data;
-  }
+  const what = `Launch of ${m.game_title || m.game_id}`;
+  const j = await jobWait(jobOf(started, what, "game launch request failed"), what, 1000);
   if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
   if (!j.output?.session_id) throw new Error(`Launch completed without a game session for ${m.game_title || m.game_id}`);
   return { sid: j.output.session_id, bootApplied: !!bootMod };
 }
 async function modPlay(m, how) {
-  let attemptedSid = "";
+  let attemptedSid = "", step = "find or start the game";
   try {
     if (how === "video") { const t = await gbox.token(); window.open(`${S.apiUrl}/api/artifacts/${m.video}?token=${encodeURIComponent(t)}`); return; }
     const target = await modSession(m, how !== "apply");
@@ -2769,22 +2776,32 @@ async function modPlay(m, how) {
     if (!sid) { toast(`Start ${m.game_title || "the game"} first`); return; }
     for (const c of m.calls) {
       if (c.tool === "@launch" && target.bootApplied) continue;
+      step = c.tool === "@launch" ? "open the mod" : `apply ${c.tool}`;
       const job = await modRun(c, sid);
       sid = job.output?.session_id || sid;
       attemptedSid = sid;
     }
     if (how === "moment" && m.state_slot != null) {
+      step = "load the saved moment";
       await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid);
       toast(`${m.title}: saved moment loaded`);
     } else toast(`${m.title}: ${m.state_slot == null && how === "moment" ? "mod opened; no saved moment is attached to its picture" : "on"}`);
     document.querySelector(`[data-s="play"]`)?.click();             // show the game
   } catch (err) {
+    const why = modFailureText(err, step);
     const shot = await gbox.captureOS?.().catch(() => null);
     const report = await gbox.api("/api/requests/auto-mod-failure", { session_id: attemptedSid, game: m.game_title || "",
       model: m.title || "", action: "apply mod", target: how, moment: "current game moment",
-      detail: `${err.message}\n${String(err.stack || "").slice(0, 1600)}`, job_id: err.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
-    toast("⚠ " + err.message + (report?.ok ? ` · auto report #${report.data.number}` : ""), 12000);
+      detail: `${why}\n${String(err?.stack || "").slice(0, 1600)}`, job_id: err?.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
+    toast("⚠ " + why + (report?.ok && report.data?.number ? ` · auto report #${report.data.number}` : ""), 12000);
   }
+}
+// What went wrong, in words (#993): a guard's own message passes through; an unexpected TypeError (a field missing from an
+// answer) is named as the app's fault with the step it was on, so the auto report says what could not be done, not "reading 'state'".
+function modFailureText(err, step) {
+  const msg = String(err?.message || err || "unknown error");
+  const internal = err instanceof TypeError || /^Cannot (read|set) propert|is not a function$|is not iterable$|^undefined is not/.test(msg);
+  return `Could not ${step}: ${internal ? `gBox's app hit an internal error (${msg})` : msg}`;
 }
 document.addEventListener("click", e => {
   const f = e.target.closest(".reqmod, .modplay, .modapply, .modvideo"); if (!f) return;
@@ -3053,8 +3070,8 @@ async function gameJob(tool, input, wait = true) {
   const sid = input.session_id || EMB.sid || (await chatContext().catch(() => ({}))).session_id;
   if (!sid) throw new Error("no game running");
   const r = await gbox.api("/api/jobs", { tool, input: { session_id: sid, ...input }, require_worker: sid.split("-")[0] });
-  if (!r.ok) throw new Error(r.error); let j = r.data;
-  while (wait && ["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 400)); j = (await gbox.api(`/api/jobs/${j.id}`)).data; }
+  let j = jobOf(r, tool);                                      // #993: a missing answer is an error in words, not a TypeError
+  if (wait) j = await jobWait(j, tool, 400);
   if (["failed", "rejected", "cancelled"].includes(j.state)) {
     const error = new Error(j.error || j.state); error.jobId = j.id; throw error;
   }
@@ -3284,6 +3301,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gameclick") closePops(null);
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
+    else if (m.ev === "blendercopied") blenderCopiedMsg(m);
     else if (m.ev === "gamecontext" || m.ev === "gamepick") {
       const r = wv.getBoundingClientRect();
       if (m.ev === "gamecontext") pipMenu(r.left + m.x, r.top + m.y);
@@ -3446,9 +3464,7 @@ async function eyeGrab() {
     try {
       const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, window_aspect: EMB.rect.w / EMB.rect.h } });
       if (r.ok && r.data?.id) {
-        const id = r.data.id;
-        const wait = async () => { let j; while ((j = (await gbox.api(`/api/jobs/${id}`)).data).state === "queued" || j.state === "running") await new Promise(r => setTimeout(r, 200)); return j; };
-        const j = await wait();
+        const j = await jobWait(jobOf(r, "pick"), "pick", 200);
         if (j.state === "succeeded") { pick = j.output?.result || {}; EYE.pick = pick; }
       }
     } catch (e) { console.warn("eyeGrab pick:", e); }
@@ -3647,6 +3663,50 @@ async function stripShow() {
   p.classList.add("on");
 }
 
+// ---------------- Blender paste pop-up (#1393): after blender_copy, the copied model rotating + the clipboard files written ----------------
+// The copy runs on this PC's worker (gbox/blender_copy.py writes copybuffer.blend to every temp dir the operator's Blender
+// may read). The embedded library page reports the result over the GBOX: console bridge; this shows it in a movable window.
+const BLENDER_PASTE_CAPTION = "Copied to Blender's clipboard: hover a 3D viewport and press Ctrl+V";
+const blenderPasteFiles = r => (r?.copybuffers || [r?.copybuffer]).filter(Boolean);
+function blenderPasteGlb(source, apiUrl, tok) {              // the same GLB the worker imported: an API path -> a fetchable URL
+  const s = String(source || "");
+  if (!s.startsWith("/api/")) return "";                       // a local file on the worker: nothing to fetch from here
+  return `${apiUrl}${s}${s.includes("?") ? "&" : "?"}token=${encodeURIComponent(tok || "")}`;
+}
+function blenderPasteHtml(r) {
+  const files = blenderPasteFiles(r), skipped = Object.entries(r?.skipped || {});
+  const facts = [r?.triangles != null ? `${r.triangles} triangles` : "", r?.packed != null ? `${r.packed} textures` : "",
+    r?.blender_version ? `Blender ${r.blender_version}` : "", r?.host ? `on ${r.host}` : ""].filter(Boolean).join(" · ");
+  return `<div class="hd"><b>Copied to Blender</b><button class="x" data-close title="Close">✕</button></div>
+    <div class="av"><canvas></canvas><span class="hint">drag to orbit · wheel to zoom</span></div>
+    <p class="cap">${esc(BLENDER_PASTE_CAPTION)}</p>
+    <div class="mut">${esc(facts)}</div>
+    <details open><summary>${files.length} clipboard file${files.length === 1 ? "" : "s"} written</summary><ul>${files.map(f => `<li>${esc(f)}</li>`).join("")}</ul></details>
+    ${skipped.length ? `<details><summary>${skipped.length} not written</summary><ul>${skipped.map(([d, why]) => `<li>${esc(d)}: ${esc(why)}</li>`).join("")}</ul></details>` : ""}
+    ${Array.isArray(r?.running) && !r.running.length ? `<div class="mut">Blender was not open on ${esc(r.host || "that PC")} when this was copied: open it there, then paste.</div>` : ""}`;
+}
+function blenderPastePopup(r, glbUrl, at) {
+  let m = $("#blpop");
+  if (!m) { m = document.createElement("div"); m.id = "blpop"; document.body.append(m); dragAnywhere(m);
+    m.addEventListener("click", e => { if (e.target.closest("[data-close]")) blenderPasteClose(); }); }
+  m.innerHTML = blenderPasteHtml(r);                           // a new model: the old stage leaves the DOM, its renderer stops
+  m.classList.add("on");
+  const [x, y] = at || [innerWidth - 372, 56];
+  fitMenu(m, x, y, 8, 40);
+  const av = m.querySelector(".av");
+  if (!glbUrl) av.insertAdjacentHTML("beforeend", `<span class="err">no preview: the source is a file on the worker</span>`);
+  else if (!window.assetView) av.insertAdjacentHTML("beforeend", `<span class="err">3D viewer not loaded</span>`);
+  else window.assetView(av, glbUrl).catch(err => av.insertAdjacentHTML("beforeend", `<span class="err">${esc(err.message)}</span>`));
+  return m;
+}
+function blenderPasteClose() { const m = $("#blpop"); if (m) { m.classList.remove("on"); m.innerHTML = ""; } }
+async function blenderCopiedMsg(m) {                          // GBOX:{ev:"blendercopied", result, input, worker}
+  const r = m.result || {};
+  let tok = S.tok || "";
+  if (!tok && String(r.source || "").startsWith("/api/")) { try { tok = S.tok = await gbox.token(); } catch {} }
+  blenderPastePopup(r, blenderPasteGlb(r.source, S.apiUrl, tok));
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#blpop")?.classList.contains("on")) blenderPasteClose(); });
 // ---------------- texture pop-up (#186): click any texture or picture in gBox to inspect it in a movable window ----------------
 // Zoom with the wheel at the cursor or + / − (Fit, 1:1), pan by dragging the picture, ‹ › through the sibling textures,
 // brightness / contrast sliders, alpha checkerboard, per-channel views + histogram when the pixels are readable (data URLs
@@ -4562,8 +4622,7 @@ document.addEventListener("input", e => { const l = e.target.closest("#chatlog .
     const input = fill(c.input), sid = input.session_id;
     try {
       const r = await gbox.api("/api/jobs", { tool: c.tool, input, ...(sid ? { require_worker: sid.split("-")[0] } : {}) });
-      if (!r.ok) throw new Error(r.error); let j = r.data;
-      while (["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 400)); j = (await gbox.api(`/api/jobs/${j.id}`)).data; }
+      const j = await jobWait(jobOf(r, c.tool), c.tool, 400);
       if (j.state !== "succeeded") throw new Error(j.error || j.state);
       st.textContent = "✓"; st.title = JSON.stringify(j.output?.result || j.output || {}).slice(0, 400);
     } catch (err) { st.textContent = "⚠"; st.title = err.message; }
