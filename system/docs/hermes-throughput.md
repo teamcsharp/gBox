@@ -241,9 +241,11 @@ The pump reserves capacity before creating or resuming genuine one-shots. It
 uses the existing configured cloud route, excludes known provider cooldowns,
 and counts both queued and running agent jobs. At most four agents run, balanced
 between inbox work and favorite-game analysis when both have eligible work.
-Failed native replacements and published branches already on main receive first-pass
-priority, then last-dispatch ordering prevents repeated attempts starving older requests.
-Automatic replacement failures, writer gaps and operator child requests remain actionable.
+Each lane alternates first attempts with follow-ups: acceptance and later game stages
+do not wait until every untouched request or title has been visited. Explicit pick-whips,
+native repairs and published work awaiting acceptance receive priority within each group.
+Automatic replacement failures, extraction requests, tool gaps and operator child requests
+remain actionable; recurring review reminders and agent notifications are excluded.
 Two pending heavyweight native analysis jobs defer new inventory
 and analysis admissions while allowing independent writer or acceptance work.
 This is admission backpressure, not a new worker execution limit.

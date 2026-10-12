@@ -79,7 +79,7 @@ def test_automatic_repairs_and_manual_children_are_not_forgotten(env):
     reqs = [request(automated=True, context={'auto_report': True, 'game_id': G}),
             request('1' * 16, automated=True, source='gap', parent_request_id=P,
                     context={'character': 'amy', 'game_id': G}),
-            request('2' * 16, parent_request_id=P),
+            request('2' * 16, parent_request_id=P, author='operator', source='gbox-chat', automated=True),
             request('3' * 16, automated=True, body='gBox request review')]
     q.sync(env, {'count': 1, 'items': [favorite()]}, reqs, now=1)
     options = q.candidates(env, reqs, [], set(), set(), now=2)
@@ -99,6 +99,37 @@ def test_explicit_pickwhip_has_first_pass_priority_without_starving_old_work(env
     assert selected[1]['request_id'] == '1' * 16
     selected[1]['last_dispatched'] = 100
     assert q.choose(options, env)[1]['request_id'] == R
+
+
+def test_followup_acceptance_gets_a_turn_before_entire_backlog_is_visited(env):
+    reqs = [request(), request('1' * 16, context={'native_replacement': True,
+                                               'replacement_requested': True})]
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=100)
+    env['items']['inbox:' + '1' * 16]['last_dispatched'] = 90
+    options = q.candidates(env, reqs, [], set(), set(), now=100)
+    env['last_inbox_kind'] = 'new'
+    assert q.choose(options, env)[1]['request_id'] == '1' * 16
+    env['last_inbox_kind'] = 'followup'
+    assert q.choose(options, env)[1]['request_id'] == R
+
+
+def test_favorite_analysis_continues_before_every_title_finishes_inventory(env):
+    q.sync(env, {'count': 2, 'items': [favorite(), favorite('1' * 16)]}, [], now=100)
+    env['items']['favorite:' + G].update(last_dispatched=90, stages={'inventory': {'status': 'verified'}})
+    options = q.candidates(env, [], [], set(), set(), now=100)
+    env['last_favorite_kind'] = 'new'
+    assert q.choose(options, env)[1]['game_id'] == G
+    env['last_favorite_kind'] = 'followup'
+    assert q.choose(options, env)[1]['game_id'] == '1' * 16
+
+
+def test_extraction_and_generic_tool_gaps_are_actionable_but_agent_messages_are_not(env):
+    reqs = [request(source='characters', automated=True, context={'what': 'selected player', 'game_id': G}),
+            request('1' * 16, source='gap', automated=True, context={'session_id': 's'}),
+            request('2' * 16, source='gap', automated=True, body='<agent-message from="x">status</agent-message>')]
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=100)
+    assert set(env['items']) == {'inbox:' + R, 'inbox:' + '1' * 16}
+    assert env['items']['inbox:' + R]['repair']
 
 
 def test_completed_occurrence_backoff_and_idempotence(env):

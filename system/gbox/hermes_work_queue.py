@@ -115,10 +115,15 @@ def sync(data, favorites, requests, *, now):
             continue
         # Automatic recurring review reminders are never engineering work.
         context = request.get('context') or {}
+        body = str(request.get('body') or request.get('title') or '').lstrip()
+        actionable = request.get('source') in ('gap', 'characters')
         repair = bool(context.get('auto_report') or context.get('native_replacement')
-                      or request.get('source') == 'gap' and context.get('character'))
-        if ((request.get('automated') and not repair)
-                or str(request.get('body', '')).lstrip().startswith('gBox request review')):
+                      or actionable and (context.get('character') or context.get('what')
+                                         or body.startswith('Extract ') or 'pick whip' in body.lower()))
+        operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
+                          and request.get('source') not in {'characters', 'gap', 'system', 'automation', 'agent', 'review'})
+        if ((request.get('automated') and not repair and not operator_child and not actionable)
+                or body.startswith(('gBox request review', '<agent-message', '<task-notification'))):
             continue
         if request.get('status') not in ('open', 'in_progress'):
             continue
@@ -199,12 +204,15 @@ def candidates(data, requests, native, owned, on_main, *, now):
 
 
 def choose(options, data):
-    """Alternate completion and favorites; unvisited titles precede revisits."""
+    """Alternate lanes and first attempts/follow-ups so acceptance is not postponed indefinitely."""
     preferred = 'favorite' if data.get('last_lane') == 'inbox' else 'inbox'
     lane = [v for v in options if v[1]['lane'] == preferred] or options
+    if lane and len({v[1]['lane'] for v in lane}) == 1:
+        followup = data.get('last_' + lane[0][1]['lane'] + '_kind') == 'new'
+        lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
     return min(lane, key=lambda v: (
+        0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
         v[1].get('last_dispatched', 0),
-        0 if v[1].get('operator_requested') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
         v[1].get('created', 0), v[0])) if lane else None
 
 
@@ -215,7 +223,9 @@ def _prompt(item):
               "Do not select a different ticket from list_requests. ")
     if item['lane'] == 'inbox':
         if item.get('repair'):
-            header += ('This is an unfinished native character replacement. Read the preserved donor, target, '
+            header += ('This is unfinished native character work. Follow the request scope: extraction needs an '
+                       'identified reusable native asset with validation; replacement additionally needs gameplay '
+                       'acceptance. Read the preserved donor, target, '
                        'normalized pick point, exact game build, screenshot and checkpoint from the request. '
                        'Identify the selected actor and its native model/skeleton/animation slot using REA and '
                        'Ghidra evidence; do not silently replace the player when a different actor was selected. '
@@ -319,6 +329,7 @@ def tick(*, now=None):
             # Recheck the operator switch immediately before admission.
             if not (mode._job() or {}).get('enabled'):
                 break
+            attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
                         attempts=item.get('attempts', 0) + 1)
             _save(data)
@@ -336,6 +347,7 @@ def tick(*, now=None):
                 job = found[0]
             item.update(job_id=job['id'], dispatch_state='queued')
             data['last_lane'] = item['lane']
+            data['last_' + item['lane'] + '_kind'] = attempt_kind
             _save(data)
             dispatched.append({'job_id': job['id'], 'request_id': item['request_id'],
                                'game_id': item.get('game_id'), 'lane': item['lane']})
