@@ -594,6 +594,27 @@ def _validate_completed_state_file(path: Path, expected_stat) -> None:
             raise ValueError('saved checkpoint changed during validation')
 
 
+def _link_lst_names(lst: Path) -> list[str]:
+    """A GD-ROM .lst may name its data file differently from what the set ships
+    (capcomvssnk2.bin vs cvs2gd.bin): hard-link each missing referenced name to the
+    set's single data file, next to the .lst. Returns the names that were linked.
+    A set with more than one data file is left alone (ambiguous)."""
+    text = lst.read_text(errors="replace")
+    wants = [m[4].strip('"') for m in (re.findall(r'"[^"]+"|\S+', ln) for ln in text.splitlines())
+             if len(m) >= 5 and m[4].strip('"').lower().endswith((".bin", ".dat"))]
+    bins = [f for f in lst.parent.iterdir() if f.suffix.lower() in (".bin", ".dat")]
+    linked = []
+    for want in wants:
+        if len(bins) != 1 or (lst.parent / want).exists():
+            continue
+        try:
+            os.link(bins[0], lst.parent / want)
+        except OSError:
+            shutil.copyfile(bins[0], lst.parent / want)
+        linked.append(want)
+    return linked
+
+
 class RetroArchAdapter(CommandAdapter):
     """RetroArch + libretro core, controlled through RetroArch's UDP network command interface.
 
@@ -791,19 +812,41 @@ class RetroArchAdapter(CommandAdapter):
                     out.mkdir(parents=True, exist_ok=True)
                     self._p(30, f"Unpacking {Path(rom).name}")
                     z.extractall(out)
-                # the .lst may name its data file differently from what the set ships (capcomvssnk2.bin vs cvs2gd.bin):
-                # link each missing name to the set's single data file
-                import re
-                bins = [f for f in out.iterdir() if f.suffix.lower() in (".bin", ".dat")]
-                for want in re.findall(r'"?([\w\-. ]+\.(?:bin|dat))"?', (out / lst).read_text(errors="replace"), re.I):
-                    if not (out / want).exists() and len(bins) == 1:
-                        try:
-                            os.link(bins[0], out / want)
-                        except OSError:
-                            shutil.copyfile(bins[0], out / want)
+                _link_lst_names(out / lst)
                 return str(out / lst)
         except zipfile.BadZipFile:
             return rom
+
+    def _from_lst(self, rom: str) -> str:
+        """Unpacked NAOMI/Atomiswave GD-ROM list sets (<game>.lst + data files next to it): Flycast opens
+        the .lst itself. When its referenced names all exist next to it, launch in place (the library stays
+        read-only). When the set's data file has a different name than the .lst expects, stage a linked copy
+        in the runtime extract cache and launch that instead."""
+        if not rom.lower().endswith(".lst") or (self.platform or "") not in ("naomi", "naomi2", "atomiswave"):
+            return rom
+        path = Path(rom)
+        try:
+            wants = [m[4].strip('"') for m in (re.findall(r'"[^"]+"|\S+', ln)
+                     for ln in path.read_text(errors="replace").splitlines()) if len(m) >= 5]
+        except OSError:
+            return rom
+        if not wants or all((path.parent / w).exists() for w in wants):
+            return rom                                     # names match: flycast reads the set in place
+        if self.config is None or any(Path(w).suffix.lower() not in (".bin", ".dat") for w in wants):
+            return rom                                     # ambiguous or nowhere to stage: let flycast report it
+        bins = [f for f in path.parent.iterdir() if f.suffix.lower() in (".bin", ".dat")]
+        if len(bins) != 1:
+            return rom
+        import hashlib
+        out = self.config.runtime / "extract" / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        staged = out / path.name
+        if not staged.exists():
+            out.mkdir(parents=True, exist_ok=True)
+            self._p(30, f"Staging {Path(rom).name}")
+            shutil.copyfile(path, staged)
+            shutil.copyfile(bins[0], out / bins[0].name)
+        _link_lst_names(staged)
+        return str(staged)
 
     def _from_old_chd(self, rom: str) -> str:
         """The neocd core only reads CHD v5; HyperSpin's Neo Geo CD set is v4: convert once to cue/bin with chdman."""
@@ -836,7 +879,7 @@ class RetroArchAdapter(CommandAdapter):
 
     def launch_game(self, rom: str) -> dict:
         if self.config is not None:
-            rom = self._from_lst_zip(self._from_gme(self._from_old_chd(self._from_7z(rom))))
+            rom = self._from_lst_zip(self._from_lst(self._from_gme(self._from_old_chd(self._from_7z(rom)))))
         argv = self._argv(rom)
         self.examine_unavailable_reason = None
         if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
