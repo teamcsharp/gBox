@@ -110,6 +110,24 @@ def test_fit_kmd_retargets_library_model_inside_budget():
         assert fitted.objects[i].bbox[1] < -200 and fitted.objects[i].bbox[4] < 200
 
 
+@pytest.mark.skipif(not DISC_KMD.is_file(), reason="owned VR Missions KMD not extracted on this host")
+def test_fit_kmd_retargets_aya_tshirt_jeans_inside_budget():
+    import json
+    from gbox import mgs_vr_swap as W, oot_swap
+    lib = HOME / "gbox-cache/characters/aya_tshirt_jeans"
+    if not (lib / "meta.json").is_file():
+        pytest.skip("Aya (tshirt jeans) library entry absent")
+    meta = json.loads((lib / "meta.json").read_text())
+    raw = DISC_KMD.read_bytes()
+    data, rep = W.fit_kmd(raw, lib / meta["model"], oot_swap.roles_of(meta, lib / meta["model"]))
+    assert len(data) <= len(raw)
+    snake, fitted = K.loads(raw), K.loads(data)
+    assert K.check_compatible(snake, fitted, raw=data) == []
+    assert rep["triangles"] > 200
+    for i in (2, 7, 10, 13):
+        assert fitted.objects[i].bbox[1] < -200 and fitted.objects[i].bbox[4] < 200
+
+
 def test_weld_seams_snaps_and_pairs_only_seam_vertices_of_pairing_objects():
     model = two_bones(flag_child_weld=False)
     child = model.objects[1]

@@ -1941,7 +1941,7 @@ def characters_tool(inp: CharIn, ctx):
     if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
         return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
     from . import mgs_vr_swap
-    if gid in mgs_vr_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":
+    if gid in mgs_vr_swap.GAME_IDS and inp.slot == "player":
         return {"result": out | mgs_vr_swap.use(ctx, meta, game, inp)}
     from . import mgs1_swap
     if gid in mgs1_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":
