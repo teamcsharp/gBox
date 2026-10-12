@@ -1,13 +1,11 @@
-"""Ticket outcomes Hermes reports back: branches vs main, the run cap, and task leftovers (#1300)."""
+"""Ticket outcomes Hermes reports back: branches vs main and the run cap (#1300)."""
 import json
-import os
 import subprocess
-import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from gbox import hermes_delivery, hermes_merges, hermes_summaries
+from gbox import hermes_merges, hermes_summaries
 from gbox.server import create_app
 
 URL = 'https://github.com/teamcsharp/gBox/pull/'
@@ -175,38 +173,3 @@ def test_operator_reply_reopens_a_blocked_request(cfg, _dispatch_state):
     client.post(f'/api/requests/{rid}/status', json={'status': 'blocked', 'note': 'What next?'})
     assert client.post(f'/api/requests/{rid}/messages', json={'author': 'agent', 'text': 'still waiting'}).json()['status'] == 'blocked'
     assert client.post(f'/api/requests/{rid}/messages', json={'author': 'operator', 'text': 'keep going'}).json()['status'] == 'open'
-
-
-@pytest.mark.skipif(os.name == 'nt', reason='reads a Linux /proc layout')
-def test_reaper_stops_only_old_unowned_task_processes(tmp_path, monkeypatch):
-    monkeypatch.setenv('GBOX_HERMES_REPO', str(tmp_path / 'gbox-hermes-repo'))
-    tasks = tmp_path / 'gbox-hermes-tasks'
-    proc = tmp_path / 'proc'
-    proc.mkdir()
-    ticks = os.sysconf('SC_CLK_TCK')
-    (proc / 'stat').write_text('cpu 0\nbtime 1000\n')
-    now = 1000 + 10 * 3600
-
-    def process(pid, cwd, started_hours, name='python3 (http)'):
-        entry = proc / str(pid)
-        entry.mkdir()
-        cwd.mkdir(parents=True, exist_ok=True)
-        os.symlink(cwd, entry / 'cwd')
-        fields = ['S'] + ['0'] * 18 + [str(int(started_hours * 3600 * ticks))]
-        (entry / 'stat').write_text(f'{pid} ({name}) ' + ' '.join(fields))
-        (entry / 'cmdline').write_bytes(b'python3\0-m\0http.server\08124\0')
-
-    process(101, tasks / A / 'system', 1)        # 9 h old, unowned: stopped
-    process(102, tasks / B, 1)                   # owned by an active run: kept
-    process(103, tasks / C, 9)                   # 1 h old: kept
-    process(104, tmp_path / 'elsewhere', 1)      # not a task workspace: kept
-    killed = []
-    stopped = hermes_delivery.reap_task_processes(lambda: {B}, proc=proc, now=now,
-                                                  kill=lambda pid, sig: killed.append(pid))
-    assert killed == [101] and stopped[0]['request_id'] == A and 'http.server' in stopped[0]['command']
-
-    def unknown():
-        raise RuntimeError('locked')
-
-    assert hermes_delivery.reap_task_processes(unknown, proc=proc, now=now, kill=lambda *a: killed.append(a)) == []
-    assert killed == [101]

@@ -254,15 +254,6 @@ def finalize_cap() -> dict:
         return {'status': 'deferred', 'error_type': type(error).__name__}
 
 
-def finalize_cleanup() -> dict:
-    """Stop long-lived processes finished tasks left in their workspaces; never block routing."""
-    from . import hermes_recovery
-    try:
-        return {'stopped': hermes_delivery.reap_task_processes(hermes_recovery._active_requests)}
-    except Exception as error:
-        return {'status': 'deferred', 'error_type': type(error).__name__}
-
-
 def finalize_summaries() -> dict:
     """Post each ended run's outcome on the tickets it worked on (#1300); never block routing."""
     from . import hermes_summaries
@@ -270,6 +261,16 @@ def finalize_summaries() -> dict:
     try:
         return hermes_summaries.reconcile(_api, home=hermes_task_mode._home())
     except Exception as error:  # the inbox or Hermes's databases may be unavailable
+        return {'status': 'deferred', 'error_type': type(error).__name__}
+
+
+def finalize_cleanup() -> dict:
+    """Stop servers ended task runs left in their worktrees (#1304); never block routing."""
+    from . import hermes_cleanup
+    from .hermes_availability import _api
+    try:
+        return hermes_cleanup.sweep(_api, home=hermes_task_mode._home())
+    except Exception as error:  # /proc, Hermes's databases or the inbox may be unavailable
         return {'status': 'deferred', 'error_type': type(error).__name__}
 
 
