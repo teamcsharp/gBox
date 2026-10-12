@@ -1276,6 +1276,11 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
+    # GTA III (PS2): Claude, model 0 (special skins 'player' / prison 'playerp'), from GTA3.IMG streamed out of the
+    # owned 7z without unpacking it (gbox/gta3_chars.py, #1309)
+    ("gta3", lambda t, p: re.search(r"grand theft auto iii\b", t) is not None and p == "ps2",
+     lambda: __import__("gbox.gta3_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta3_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1295,6 +1300,14 @@ DEDICATED = [
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
+
+# extractor -> resolve a pick whose words name nobody ("the character in the middle of the screen", x/y, slot,
+# session) to a roster entry: (ctx, game, roster, what, pick) -> (entry, why) | None. Readers without one keep name
+# matching only, so a pick never silently becomes some other actor.
+DEDICATED_PICK = {
+    "gta3": lambda ctx, game, ros, what, pick: __import__("gbox.gta3_chars", fromlist=["x"]).pick_entry(
+        ctx, game, ros, what, pick),
+}
 
 
 def dedicated_entries(config, game, name, roster):
@@ -1393,22 +1406,27 @@ def collect(ctx, inp):
             'retargetable': mapped, 'characters': len(chars), 'entries': results}
 
 
-def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
-    """The game's own extractor, when it has one: None = no extractor for this game."""
+def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None, pick: dict | None = None) -> dict | None:
+    """The game's own extractor, when it has one: None = no extractor for this game. pick = {slot, x, y, kind,
+    session} of an on-screen request, resolved by the reader's DEDICATED_PICK hook when the words name nobody."""
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, roster, run in DEDICATED:
         if not test(t, plat):
             continue
         ros = prepared[1] if prepared and prepared[0] == name else dedicated_entries(ctx.config, game, name, roster)
-        e = best_match(ros, what)
+        e, picked = best_match(ros, what), None
+        if e is None and pick and name in DEDICATED_PICK:
+            picked = DEDICATED_PICK[name](ctx, game, ros, what, pick)
+            e = picked[0] if picked else None
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
+        why = {"picked": picked[1]} if picked else {}
         refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
             refresh = _doa2_needs_refresh(ctx, game, existing)
             if verify_entry(root, existing)['ok'] and not refresh:
-                return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
+                return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing), **why}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
@@ -1425,7 +1443,7 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
                     target['needs_rebuild'] = True
             meta = put_meta(root, meta)
         shutil.rmtree(work, ignore_errors=True)
-        return {"status": "extracted", "extractor": name, "entry": meta}
+        return {"status": "extracted", "extractor": name, "entry": meta, **why}
     return None
 
 
@@ -1758,9 +1776,11 @@ def extract(ctx, inp: CharIn) -> dict:
         except (LookupError, ValueError, RuntimeError) as e:
             tried.append(f"gBox's No Mercy session extractor: {e}")
     if kind != "environment":                                                                 # (b)
-        r = extract_dedicated(ctx, game, what, root)
+        r = extract_dedicated(ctx, game, what, root,
+                              pick={"slot": inp.slot, "x": inp.x, "y": inp.y, "kind": kind, "session": sess})
         if r and r["status"] in ("extracted", "in_collection"):
-            return out | {"status": r["status"], "route": f"dedicated:{r['extractor']}", "entry": r["entry"]}
+            return out | {"status": r["status"], "route": f"dedicated:{r['extractor']}", "entry": r["entry"],
+                          **({"picked": r["picked"]} if r.get("picked") else {})}
         if r:
             tried.append(f"gBox's {r['extractor']} extractor reads only: {', '.join(r['roster'])}")
         else:
