@@ -15,6 +15,7 @@ import httpx
 import mcp_types as T
 from mcp.server.lowlevel import Server
 
+from . import hermes_tasks
 S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
 ADDR = {"type": ["string", "integer"], "description": "hex string (0x80001234) or integer"}
 PREFIX = "job_"                                   # registry tools; unprefixed names are the conveniences below
@@ -71,7 +72,7 @@ CONVENIENCE = {
     "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
-    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true.",
+    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists.",
                       obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
                     obj({"request_id": S}, ["request_id"])),
@@ -136,6 +137,22 @@ def build(base_url: str, token: str) -> Server:
         if r.status_code >= 400:
             raise RuntimeError(f"{r.status_code}: {r.text[:500]}")
         return r.json()
+
+    async def _capped_requests(rows=None):
+        """Open tickets the inbox job has taken STREAK_CAP runs in a row (#1300 gap 3).
+
+        Advisory only: any failure returns {} so listing requests never breaks."""
+        try:
+            runs = (await get('/api/tasks', hermes_limit=20)).get('hermes') or []
+            if not hermes_tasks.ticket_streaks(runs):
+                return {}
+            if rows is None:
+                rows = await get('/api/requests', status='open,in_progress')
+            last = {r['id']: max([m.get('ts') or 0 for m in r.get('messages') or []
+                                  if m.get('author') == 'operator'] or [0.0]) for r in rows}
+            return {rid: s for rid, s in hermes_tasks.ticket_streaks(runs, last).items() if rid in last}
+        except Exception:
+            return {}
 
     async def wait_job(job, timeout):
         async def poll():
@@ -234,17 +251,24 @@ def build(base_url: str, token: str) -> Server:
             hermes = snapshot.get('hermes', [])
             if not a.get('include_finished'):
                 hermes = [r for r in hermes if r.get('state') in ('claimed', 'running')]
-            return {'jobs': snapshot.get('jobs', []), 'hermes': hermes,
-                    'completion_note': 'Hermes run completion is separate from verified inbox completion.'}
+            out = {'jobs': snapshot.get('jobs', []), 'hermes': hermes,
+                   'completion_note': 'Hermes run completion is separate from verified inbox completion.'}
+            capped = await _capped_requests()
+            if capped:
+                out['capped_requests'] = [{'request_id': rid} | s for rid, s in capped.items()]
+            return out
         if name == "list_requests":
             rows = await get("/api/requests", status=a.get("status", "open,in_progress"), source=a.get("source", ""))
             if not a.get("include_recurring"):
                 rows = [r for r in rows if not (r.get("title") or "").startswith("gBox request review (recurring")]
             offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
+            capped = await _capped_requests(rows)
             return {"total": len(rows), "offset": offset, "items": [
                 {"id": r["id"], "number": r.get("number"), "title": r.get("title"), "status": r.get("status"),
                  "source": r.get("source"), "automated": r.get("automated"), "parent_request_id": r.get("parent_request_id"),
                  "created": r.get("created"), "summary": (r.get("body") or "")[:350]}
+                | ({"hermes_capped": {"runs": capped[r["id"]]["runs"],
+                                      "note": hermes_tasks.capped_note(capped[r["id"]])}} if r["id"] in capped else {})
                 for r in rows[offset:offset + limit]]}
         if name == "get_request":
             return await get(f"/api/requests/{a['request_id']}")

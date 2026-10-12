@@ -2234,9 +2234,30 @@ def create_app(config: Config) -> FastAPI:
     task_cache: dict[str, dict] = {}
     task_cache_lock = threading.Lock()
 
+    def hermes_runs(limit: int) -> list[dict]:
+        """Recent Hermes runs, each naming the inbox tickets it confirmed work on."""
+        from . import hermes_tasks
+        runs = hermes_tasks.list_runs(limit)
+        titles: dict[str, dict | None] = {}
+        for run in runs:
+            tickets = []
+            for rid in run.get("request_ids") or []:
+                if rid not in titles:
+                    r = store.get("request", rid)
+                    titles[rid] = {"id": rid, "number": r.get("number"),
+                                   "title": (r.get("title") or "")[:120],
+                                   "status": r.get("status")} if r else None
+                if titles[rid]:
+                    tickets.append(titles[rid])
+            run["tickets"] = tickets
+        return runs
+
     @app.get("/api/tasks")
-    def tasks_all(actor=Depends(auth)):
-        """Return the latest machine readings without waiting for slow GPU/process counters."""
+    def tasks_all(hermes_limit: int = 20, actor=Depends(auth)):
+        """Return the latest machine readings without waiting for slow GPU/process counters.
+
+        `hermes_limit` (1-100, default 20) is how many recent Hermes runs to list.
+        """
         with store.lock:
             worker_snapshot = workers()
             retire_unrunnable_jobs(worker_snapshot)
@@ -2291,9 +2312,9 @@ def create_app(config: Config) -> FastAPI:
                                 "state": "running" if chat.get("busy") else report["status"], "chat_id": cid,
                                 "progress": (latest.get("text") or latest.get("name") or "Agent is starting")[:160],
                                 "output": "\n".join(f"{e.get('type')}: {e.get('name') or e.get('text') or ''}" for e in events[-25:])[-12000:]})
-        from . import hermes_tasks
         return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)),
-                "recent": recent, "hermes": hermes_tasks.list_runs(), "resolutions": resolutions}
+                "recent": recent, "hermes": hermes_runs(max(1, min(hermes_limit, 100))),
+                "resolutions": resolutions}
 
     @app.get("/api/tasks/resolutions/{rid}")
     def tasks_resolution(rid: str, actor=Depends(auth)):

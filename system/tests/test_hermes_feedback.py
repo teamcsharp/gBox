@@ -84,6 +84,8 @@ def test_route_rotation_waits_for_running_agent_and_restores_expired_routes(monk
         finalized.append(True)
         return {'checked_runs': 1, 'tokens_in_added': 42, 'tokens_out_added': 3}
     monkeypatch.setattr(hermes_feedback, 'finalize_usage', finalize)
+    monkeypatch.setattr(hermes_feedback, 'finalize_merges', lambda: {'posted': []})
+    monkeypatch.setattr(hermes_feedback, 'finalize_summaries', lambda: {'posted': []})
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_config', lambda: config)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [{'id': 'live'}])
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_active', lambda _: busy[0])
@@ -108,6 +110,14 @@ def test_accounting_transport_failure_does_not_interrupt_dispatch_monitor(monkey
         raise OSError('private transport information must remain private')
     monkeypatch.setattr(hermes_accounting, 'reconcile_completed', fail)
     assert hermes_feedback.finalize_usage() == {'status': 'deferred', 'error_type': 'OSError'}
+
+
+def test_run_summary_failure_does_not_interrupt_dispatch_monitor(monkeypatch):
+    from gbox import hermes_summaries
+    def fail(*_args, **_kwargs):
+        raise OSError('inbox unreachable')
+    monkeypatch.setattr(hermes_summaries, 'reconcile', fail)
+    assert hermes_feedback.finalize_summaries() == {'status': 'deferred', 'error_type': 'OSError'}
 
 
 def test_native_capture_and_checkpoint_failures_have_distinct_recovery_lessons():

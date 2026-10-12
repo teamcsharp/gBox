@@ -46,10 +46,14 @@ def _jobs(home: Path) -> dict[str, str]:
 def _session(db: sqlite3.Connection, job_id: str, started: float | None):
     # An unsuccessful scheduler claim has no Hermes conversation. A real run
     # creates a session within seconds of its execution start.
+    # Match by start time, not among the job's newest sessions: a busy job has
+    # far more than 10 sessions, and older runs would lose their model/tickets.
+    if not started:
+        return None
     rows = db.execute(
-        "SELECT * FROM sessions "
-        "WHERE source='cron' AND id LIKE ? ORDER BY started_at DESC LIMIT 10",
-        (f"cron_{job_id}_%",),
+        "SELECT * FROM sessions WHERE source='cron' AND id LIKE ? "
+        "AND started_at BETWEEN ? AND ? ORDER BY started_at DESC LIMIT 10",
+        (f"cron_{job_id}_%", started - 120, started + 120),
     ).fetchall()
     nearest = min(rows, key=lambda s: abs(s["started_at"] - started)) if rows and started else None
     return nearest if nearest and abs(nearest["started_at"] - started) < 120 else None
@@ -168,8 +172,59 @@ def _script_output(home, job_id, finished):
     return nearest.read_text(encoding='utf-8')[-70000:] if nearest and abs(nearest.stat().st_mtime - finished) < 120 else ''
 
 
-def list_runs(limit: int = 8) -> list[dict]:
-    """Return actual Hermes agent runs, omitting scheduler claims that never started."""
+DEFAULT_RUNS, MAX_RUNS = 20, 100
+STREAK_CAP = 3          # consecutive inbox task-mode runs one ticket may take (#1300 gap 3)
+TASK_MODE_NAME = "gBox inbox task mode"
+
+
+def ticket_streaks(runs: list[dict], last_operator: dict[str, float] | None = None,
+                   cap: int = STREAK_CAP, name: str = TASK_MODE_NAME) -> dict[str, dict]:
+    """Tickets the recurring inbox job has worked `cap` or more ended runs in a row.
+
+    `runs` are list_runs/`/api/tasks` rows in any order. Only ended runs of the
+    recurring job count: one-shot dispatches for a ticket are deliberate. A run
+    that confirmed no ticket neither counts nor breaks a streak, and an operator
+    message on a ticket (``last_operator[rid]`` = its newest timestamp) restarts
+    that ticket's count, because the operator asked for more.
+    Returns ``{rid: {"runs": n, "run_ids": [...], "since": oldest start}}``.
+    """
+    last_operator = last_operator or {}
+    ended = sorted((r for r in runs if r.get("name") == name and r.get("state") not in ("claimed", "running")),
+                   key=lambda r: r.get("started") or 0, reverse=True)
+    worked = []
+    for run in ended:
+        rids = set(run.get("request_ids") or []) | {t.get("id") for t in run.get("tickets") or [] if t.get("id")}
+        if rids:
+            worked.append((run, rids))
+    if not worked:
+        return {}
+    out = {}
+    for rid in worked[0][1]:
+        streak = []
+        for run, rids in worked:
+            if rid not in rids or (run.get("started") or 0) <= last_operator.get(rid, 0):
+                break
+            streak.append(run)
+        if len(streak) >= cap:
+            out[rid] = {"runs": len(streak), "run_ids": [r.get("id") for r in streak],
+                        "since": streak[-1].get("started")}
+    return out
+
+
+def capped_note(streak: dict) -> str:
+    return (f"The last {streak['runs']} inbox runs in a row all worked this ticket with no new operator message. "
+            "Choose another actionable request this run; return to this one only if no other actionable "
+            "operator request exists.")
+
+
+def list_runs(limit: int = DEFAULT_RUNS) -> list[dict]:
+    """Return actual Hermes agent runs, omitting scheduler claims that never started.
+
+    Maintenance scripts run every few minutes and outnumber agent runs, so the
+    scan reads many more execution rows than it returns; a job without a Hermes
+    session (a script) keeps only its newest finished row.
+    """
+    limit = max(1, min(int(limit or DEFAULT_RUNS), MAX_RUNS))
     home = _home()
     try:
         db = _db(home / "cron" / "executions.db")
@@ -182,11 +237,13 @@ def list_runs(limit: int = 8) -> list[dict]:
             rows = db.execute(
                 "SELECT id,job_id,status,started_at,finished_at,error FROM executions "
                 "WHERE started_at IS NOT NULL ORDER BY CASE WHEN status='running' "
-                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(40, min(limit, 20) * 10),),
+                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(200, limit * 25),),
             ).fetchall()
         names = _jobs(home)
         out, terminal_scripts = [], set()
         for r in rows:
+            if len(out) >= limit:
+                break
             started = _stamp(r["started_at"])
             session = _session(state, r["job_id"], started) if state else None
             if not session and r['status'] not in ('claimed', 'running'):
@@ -207,7 +264,7 @@ def list_runs(limit: int = 8) -> list[dict]:
         db.close()
         if state:
             state.close()
-        return out[:max(1, min(limit, 20))]
+        return out[:limit]
     except (OSError, ValueError, sqlite3.Error):
         return []
 

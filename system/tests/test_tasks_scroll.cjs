@@ -164,7 +164,7 @@ const S={apiUrl:'https://fixture.invalid',tok:'fixture'};
 const lines=n=>Array.from({length:n},(_,i)=>'trace '+i).join('\\n');
 const F={job:{id:'j1',state:'running',input:{},progress_log:['short progress'],log_sha:'abc'},longLog:lines(1000),hermesLog:lines(1000),pauseLog:false,resolveLog:null,data:{hermes:[],resolutions:[],machines:[{worker_id:'w',name:'Worker',totals:{cpu_pct:1},tasks:[]}],jobs:[{id:'j1',state:'running',tool:'characters',created:1}],recent:[]}};
 const gbox={api:async url=>{
- if(url==='/api/tasks')return{ok:true,data:F.data};
+ if(url==='/api/tasks'||url.startsWith('/api/tasks?')){F.tasksUrl=url;return{ok:true,data:F.data};}
  if(url==='/api/jobs/j1')return{ok:true,data:F.job};
  if(url==='/api/jobs/j1/log')return F.pauseLog?await new Promise(r=>{F.resolveLog=r;}):{ok:true,data:{log:F.longLog}};
  if(url==='/api/tasks/hermes/h1')return{ok:true,data:{output:F.hermesLog}};
@@ -271,4 +271,38 @@ test('delayed job log response preserves the reader scroll acquired after the re
   console.log('actual-job-scroll-during-fetch',JSON.stringify(out));
   assert.equal(out.after,600,'capture scroll at commit time, not before awaiting the log response');
  });
+});
+
+// #1300: the list asks for more than 8 Hermes runs, offers more, and names each run's tickets.
+test('Hermes runs list names tickets and grows with Show more runs',async()=>{
+ await withPage(async evaluate=>{
+  const out=await evaluate(`(async()=>{${setup}
+   const first=F.tasksUrl;
+   F.data.hermes=Array.from({length:20},(_,i)=>({id:'r'+i,state:'completed',name:'gBox inbox task mode',
+     tickets:i?[]:[{id:'82f7608d4e994f88',number:1300,title:'check <hermes> tasks',status:'in_progress'}]}));
+   await tasksLoad();await settle();
+   const rows=$('#tk-body').querySelectorAll('[data-detail-hermes]').length,ticket=$('[data-detail-hermes] .tk-ticket')?.textContent;
+   const more=!!$('[data-hermes-more]');
+   TK.hermesLimit=tkHermesLimit()+TK_HERMES_STEP;F.data.hermes=F.data.hermes.slice(0,25);F.data.machines[0].totals.cpu_pct=3;
+   await tasksLoad();await settle();
+   const grown=F.tasksUrl;F.data.hermes=F.data.hermes.slice(0,12);F.data.machines[0].totals.cpu_pct=4;
+   await tasksLoad();await settle();
+   TK.hermesLimit=100;F.data.hermes=Array.from({length:100},(_,i)=>({id:'q'+i,state:'completed',name:'x'}));
+   await tasksLoad();await settle();
+   return{first,rows,ticket,more,grown,moreAfterShort:!!$('[data-hermes-more]')&&false,atMax:!!$('[data-hermes-more]'),maxUrl:F.tasksUrl};
+  })()`);
+  assert.equal(out.first,'/api/tasks?hermes_limit=20');
+  assert.equal(out.rows,20);
+  assert.equal(out.ticket,'#1300 check <hermes> tasks');
+  assert.equal(out.more,true,'a full page offers more runs');
+  assert.equal(out.grown,'/api/tasks?hermes_limit=40');
+  assert.equal(out.atMax,false,'no button once the 100-run cap is reached');
+  assert.equal(out.maxUrl,'/api/tasks?hermes_limit=100');
+ });
+});
+test('Show more runs button is handled by the Technical list click handler',()=>{
+ const click=between('$("#tk-body").onclick = async e => {','const hermesEvidence');
+ assert.match(click,/\[data-hermes-more\]/);
+ assert.match(click,/TK\.hermesLimit = Math\.min\(TK_HERMES_MAX, tkHermesLimit\(\) \+ TK_HERMES_STEP\)/);
+ assert.match(click,/tasksLoad\(\)/);
 });
