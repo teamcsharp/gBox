@@ -12,6 +12,8 @@ code copied or run; checked against the operator's ROMs and in Ghidra, see docs/
     frame (arms down, facing +Z, his left = +X); the engine poses each part with its own matrix (G_MOVEMEM 0x0E,
     forced MVP) about its joint.
   * Ci8 texture: {w-1, h-1, u16 colours, mirror s, mirror t, log2 w, log2 h} + w*h indices; palette 256 x RGBA5551.
+    The loaders 0x8000d688/0x8000e784 test header byte 2: == 1 is CI8 (256-colour TLUT), anything else CI4 with
+    (w*h+1)/2 bytes, high nibble first, on the palette's first 16 colours (the shared neck 0x1F6A says 32 colours).
 WWF No Mercy (NTSC-U Rev A, NW4E 1.1), RAM addresses from Ghidra on an RDRAM image (gBox DecompileAll, MIPS:BE:32):
   * 0x80003ab0 loads the file table (ROM 0x16C31D8, 0x1300C bytes = 0x4C03 entries, FirstFile 0x1BD150) into the heap
     and precomputes file sizes; 0x80003bd0 resolves a file id (ids 1..0x4C02).
@@ -275,11 +277,34 @@ def rgba5551(c) -> np.ndarray:
     return np.stack([r * 255 // 31, g * 255 // 31, b * 255 // 31, a * 255], -1).astype(np.uint8)
 
 
-def ci8_decode(tex: bytes, pal: bytes) -> np.ndarray:
+def tex_format(tex: bytes) -> str:
+    """'ci8' or 'ci4' by the game's rule (header byte 2 == 1 -> CI8, see gbox.nomercy_analysis); raises ValueError
+    on a truncated file."""
+    if len(tex) < 8:
+        raise ValueError("truncated AKI texture header")
+    fmt = "ci8" if tex[2] == 1 else "ci4"
+    px = (tex[0] + 1) * (tex[1] + 1)
+    need = 8 + (px if fmt == "ci8" else (px + 1) // 2)
+    if len(tex) < need:
+        raise ValueError(f"truncated AKI {fmt} texture: {len(tex)} < {need} bytes")
+    return fmt
+
+
+def tex_decode(tex: bytes, pal: bytes) -> np.ndarray:
+    """CI8 or CI4 texture + RGBA5551 palette -> RGBA (h, w, 4). CI4 uses palette entries 0-15 (16-colour TLUT)."""
     w, h = tex[0] + 1, tex[1] + 1
-    idx = np.frombuffer(tex, np.uint8, w * h, 8).reshape(h, w)
-    p = rgba5551(np.frombuffer(pal[:512].ljust(512, b"\0"), ">u2"))
+    if tex_format(tex) == "ci8":
+        idx, n = np.frombuffer(tex, np.uint8, w * h, 8).reshape(h, w), 256
+    else:
+        b = np.frombuffer(tex, np.uint8, (w * h + 1) // 2, 8)
+        idx, n = np.stack([b >> 4, b & 15], 1).reshape(-1)[:w * h].reshape(h, w), 16
+    p = rgba5551(np.frombuffer(pal[:2 * n].ljust(2 * n, b"\0"), ">u2"))
     return p[idx]
+
+
+def ci8_decode(tex: bytes, pal: bytes) -> np.ndarray:
+    """Any AKI model texture (CI8 or CI4) -> RGBA; kept for existing callers (see tex_decode)."""
+    return tex_decode(tex, pal)
 
 
 def quantize(img: np.ndarray, n: int = 256) -> tuple[np.ndarray, np.ndarray]:
@@ -412,9 +437,9 @@ def part_list_static(rom: bytes, wrestler: int, costume: int = 0) -> dict:
     """A wrestler's parts from the ROM tables (body + face). Attire layers are not composited (see extract)."""
     cs = costumes(rom)
     c = cs[4 * (wrestler - 1) + costume]
-    bp, _ = body_parts(rom, c[0])
+    bp, cls = body_parts(rom, c[0])
     out = {o: list(v) for o, v in bp.items()}
-    out[0x20] = [0x14FF, 0x1F6A, 0x1F6B]
+    out[0x20] = [0x14FF, 0x1F6A, 0x1F6D if cls >= 6 else 0x1F6B]       # 0x80018C7C-0x80018C9C: palette by body class
     out.update(head_parts(rom, c))
     return out
 
