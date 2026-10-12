@@ -811,8 +811,32 @@ def _dc_gdi(ctx, game) -> Path:
     rom = _rom(ctx, game)
     if rom.suffix.lower() in (".gdi", ".cdi"):
         return rom
+    if rom.is_dir():                                     # an already-extracted disc set
+        gdi = next(rom.glob("*.gdi"), None)
+        if gdi is None:
+            raise ValueError(f"{rom.name}: extracted Dreamcast disc has no .gdi descriptor")
+        return gdi
     d = Path(ctx.config.cache) / "dc" / game["game_id"]
     if (d / "disc.gdi").exists():
+        return d / "disc.gdi"
+    if rom.suffix.lower() == ".7z":                      # archived GDI set: extract once, flatten,
+        tmp = d.with_name(d.name + ".part")              # keep tracks beside disc.gdi (GDRom resolves
+        shutil.rmtree(tmp, ignore_errors=True)           # track paths relative to the descriptor)
+        tmp.mkdir(parents=True)
+        ctx.progress(5, f"Unpacking the GD-ROM archive {rom.name} (7z, once per game)")
+        subprocess.run(["7z", "x", "-y", f"-o{tmp}", str(rom)], check=True,
+                       capture_output=True, timeout=1800)
+        for p in [p for p in tmp.rglob("*") if p.is_file() and p.parent != tmp]:
+            p.rename(tmp / p.name)
+        for sub in sorted((p for p in tmp.rglob("*") if p.is_dir()), reverse=True):
+            sub.rmdir()
+        gdi = next(tmp.glob("*.gdi"), None)
+        if gdi is None:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise ValueError(f"{rom.name}: archive contains no .gdi descriptor")
+        shutil.copyfile(gdi, tmp / "disc.gdi")
+        shutil.rmtree(d, ignore_errors=True)
+        tmp.rename(d)
         return d / "disc.gdi"
     if rom.suffix.lower() != ".chd" or not shutil.which("chdman"):
         raise ValueError(f"{rom.name}: reading a Dreamcast disc needs a GDI, or a CHD plus chdman on this node")
