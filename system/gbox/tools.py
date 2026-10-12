@@ -2892,7 +2892,8 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
-                              "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "mashup")):   # mashup: natural-language cross-title planner and dispatcher
     import importlib
     import subprocess
     import sys
