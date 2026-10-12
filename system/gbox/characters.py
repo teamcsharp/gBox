@@ -1189,6 +1189,9 @@ DEDICATED = [
      _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
+    ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
+     lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
@@ -1240,7 +1243,10 @@ def collect(ctx, inp):
         return {"status": "unsupported", "game_id": game['game_id'],
                 "message": "No native model reader for this game; no unrigged capture was substituted."}
     name, _, roster, _ = reader
-    entries = [e for e in dedicated_entries(ctx.config, game, name, roster) if e.get('kind', 'character') == 'character']
+    # Characters always; other kinds only when the reader opts a fully assembled entry in (`collect`: True), e.g. the
+    # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
+    entries = [e for e in dedicated_entries(ctx.config, game, name, roster)
+               if e.get('kind', 'character') == 'character' or e.get('collect') is True]
     results = []
     for i, e in enumerate(entries):
         total = max(1, len(entries))
@@ -1261,18 +1267,23 @@ def collect(ctx, inp):
             checked = verify_entry(root, meta)
             roles = (meta.get('rig') or {}).get('roles') or {}
             ready = checked['ok'] and bool(roles)
-            results.append({'slug': meta['slug'], 'name': meta['name'], 'status': res['status'],
+            kind = e.get('kind', 'character')
+            done = ready or (kind != 'character' and checked['ok'])
+            results.append({'slug': meta['slug'], 'name': meta['name'], 'kind': kind, 'status': res['status'],
                             'verified': checked['ok'], 'retargetable': ready,
-                            'message': '' if ready else 'Model or mapped rig needs verification before retargeting.'})
+                            'message': '' if done else ('Model needs verification.' if kind != 'character' else
+                                                        'Model or mapped rig needs verification before retargeting.')})
         except Exception as exc:
-            results.append({'slug': e['slug'], 'name': e['name'], 'status': 'failed',
-                            'verified': False, 'retargetable': False, 'error': str(exc)})
-    ctx.progress(100, f"Collected {len(entries)} characters from {game['title']}")
+            results.append({'slug': e['slug'], 'name': e['name'], 'kind': e.get('kind', 'character'),
+                            'status': 'failed', 'verified': False, 'retargetable': False, 'error': str(exc)})
+    chars = [r for r in results if r['kind'] == 'character']
+    noun = 'characters' if len(chars) == len(entries) else 'models'
+    ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     good = sum(r['verified'] for r in results)
-    mapped = sum(r['retargetable'] for r in results)
-    return {'status': 'complete' if good == mapped == len(entries) and entries else 'partial',
+    mapped = sum(r['retargetable'] for r in chars)
+    return {'status': 'complete' if entries and good == len(entries) and mapped == len(chars) else 'partial',
             'game_id': game['game_id'], 'extractor': name, 'collected': good, 'total': len(entries),
-            'retargetable': mapped, 'entries': results}
+            'retargetable': mapped, 'characters': len(chars), 'entries': results}
 
 
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
