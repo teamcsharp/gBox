@@ -482,12 +482,15 @@ def tool_specs() -> list[dict]:
            "eq|ne|lt|gt: value}, found with memory_search. op start|stop|status.",
            {"op": s, "host": s, "guest": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"},
             "on_win": s, "on_lose": s}, ["op", "host", "guest"]),
-        fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
-           "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
-           "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
-           "extracted model; false opens a live Bevy window on the operator's PC.",
+        fn("bevy_scene", "The gBox Bevy viewer (Rust/Bevy, real-time 3D): render collection entries (items=[{character: slug} "
+           "or {environment: slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation "
+           "[x,y,z], scale, rotation_y_deg; camera={eye, target}. op=render + screenshot=true (default) returns a PNG shown "
+           "in the chat - use it to look at an extracted model or stage a scene. Reactive: op=open starts a live window on "
+           "the operator's PC; then react to what you see with op=snapshot (capture the live window to {name}.png), "
+           "op=set_camera (move it), op=add (more items), op=remove (drop item index), op=close (stop it); op=list shows "
+           "live sessions and saved scenes/renders.",
            {"name": s, "items": {"type": "array", "items": {"type": "object"}}, "camera": {"type": "object"},
-            "screenshot": {"type": "boolean"}}, ["items"]),
+            "screenshot": {"type": "boolean"}, "op": s, "index": {"type": "integer"}}, []),
         fn("video", "Video knowledge (YouTube etc.). op=search (query, n) -> videos to suggest or play; ingest (url) -> transcript "
            "with timestamps + description + chapters + top comments saved to the gBox knowledge base (then plan from it); "
            "frame (url, at seconds) -> still image; knowledge (query) -> videos already ingested. Put a video's url in your "
@@ -976,8 +979,13 @@ class Agent:
                                     "lose": lose or {}, "on_win": on_win, "on_lose": on_lose}, worker=host.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
-        j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
+    def bevy_scene(self, items=None, name="scene", camera=None, screenshot=True, op=None, index=None):
+        inp = {"name": name, "items": items or [], "camera": camera or {}, "screenshot": bool(screenshot)}
+        if op:
+            inp["op"] = op
+        if index is not None:
+            inp["index"] = index
+        j = self._job("bevy_scene", inp, "windows", 3600)
         out = j.get("output") or {}
         if j["state"] != "succeeded":
             return {"state": j["state"], "error": j.get("error")}
