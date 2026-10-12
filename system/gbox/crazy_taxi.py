@@ -27,9 +27,15 @@ replace blobs. The `.shp` name list at 0x80135158 is still unread (candidate par
 `motDC.bin` starts with a big-endian u32 table of 18 offsets (0x5b, 0x12, 0x8d, ...) followed by keyed
 (frame, f32 x3) tracks: the driver animation bank.
 
-This module is read-only; it never writes the disc. The writer (re-encoding a donor into the driver parts) is the
-next stage of #608 and is intentionally not routed in `characters` yet.
+This module's reader never writes the disc; the writer below replaces only the bank's driver blobs.
 """
+
+# ----------------------------------------------------------------------------------------------- writer (stage 2)
+# The donor swap keeps every bank name/record in place and replaces only the plyrA blobs. Each part is re-encoded
+# with the same header, material block (except the per-material display-list pointers), texture names and tail;
+# only the arrays and display lists are rewritten. All driver parts share white.tex, so UVs are all (0, 0) and the
+# driver's material colours carry the look (baked vertex colours are written for the parts that have CLR0).
+
 from __future__ import annotations
 
 import math
@@ -149,16 +155,22 @@ def decode_dl(dl: bytes, attrs: list[str]) -> list[tuple]:
     return tris
 
 
-def _material_lists(b: bytes, mat_off: int, dl_base: int, end: int) -> list[tuple[int, int]]:
-    """Find the (offset, size) display-list pointers in the material block: u32 pairs pointing at a GX
-    primitive inside [dl_base, end)."""
+def _material_list_slots(b: bytes, mat_off: int, dl_base: int, end: int) -> list[tuple[int, int, int]]:
+    """(slot offset, pointed-to offset, size) for every per-material display-list pointer pair found in
+    [mat_off, dl_base)."""
     out = []
     for o in range(mat_off, dl_base - 7, 4):
         off, size = _u32(b, o), _u32(b, o + 4)
         if dl_base <= off < end and 0 < size <= end - off and size % 0x20 == 0 and b[off] & 0xF8 in (0x90, 0x98, 0xA0):
-            if not out or out[-1][0] + out[-1][1] <= off:
-                out.append((off, size))
+            if not out or out[-1][1] + out[-1][2] <= off:
+                out.append((o, off, size))
     return out
+
+
+def _material_lists(b: bytes, mat_off: int, dl_base: int, end: int) -> list[tuple[int, int]]:
+    """Find the (offset, size) display-list pointers in the material block: u32 pairs pointing at a GX
+    primitive inside [dl_base, end)."""
+    return [(off, size) for _slot, off, size in _material_list_slots(b, mat_off, dl_base, end)]
 
 
 def read_shape(b: bytes, name: str = "") -> Shape:
@@ -256,3 +268,449 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+# --------------------------------------------------------------------------------------------------- writer stage 2
+import hashlib
+import time
+from collections import Counter
+
+import numpy as np
+
+ATTR_WORDS = (("pos", 0xCC), ("nrm", 0xD0), ("clr", 0xD4), ("tex", 0xDC))
+# Crazy Taxi part -> donor rig role name (the PSO/HUcast convention; earlier slots accept other common names).
+CT_ROLE = {"koshi": ["hip", "hips", "pelvis"], "mune": ["chest", "torso"], "atama": ["head"],
+           "kata_l": ["l_upper", "upperarm_l", "shoulder_l"], "ude_l": ["l_fore", "forearm_l"],
+           "te_l": ["l_hand", "hand_l"], "kata_r": ["r_upper", "upperarm_r", "shoulder_r"],
+           "ude_r": ["r_fore", "forearm_r"], "te_r": ["r_hand", "hand_r"],
+           "momo_l": ["l_thigh", "thigh_l"], "sune_l": ["l_shin", "shin_l"],
+           "kakato_l": ["l_foot", "foot_l"], "momo_r": ["r_thigh", "thigh_r"],
+           "sune_r": ["r_shin", "shin_r"], "kakato_r": ["r_foot", "foot_r"]}
+
+
+def resolve_roles(roles: dict) -> dict:
+    """Donor rig roles (whatever names) -> the Crazy Taxi part each one feeds. Raises when a body part is missing."""
+    out = {}
+    for part, names in CT_ROLE.items():
+        r = next((n for n in names if n in roles), None)
+        if r is None:
+            raise ValueError(f"the donor rig has no role for the {part} part (have: {sorted(roles)})")
+        out[part] = r
+    return out
+
+
+def _pack_strips(tris: list[tuple], cap: int, rev: bool = False) -> tuple[list[list[int]], list[tuple]]:
+    """Greedy GX strips (winding preserved) with growth capped at `cap` vertices per strip; rev=True iterates the
+    seed candidates in reverse order (different packings strand different triangles)."""
+    left = set(range(len(tris)))
+    edge = {}
+    for i, (a, b, c) in enumerate(tris):
+        for e, w in (((a, b), c), ((b, c), a), ((c, a), b)):
+            edge.setdefault(e, []).append((i, w))
+    strips, singles = [], []
+    while left:
+        seeds = sorted(left, reverse=rev)
+        best_v, best_used, best_seed = None, None, None
+        for i in seeds:
+            t0 = tris[i]
+            for rot in range(3):
+                v = [t0[rot], t0[(rot + 1) % 3], t0[(rot + 2) % 3]]
+                used, k = [], 1
+                while len(v) < cap:
+                    e = (v[-2], v[-1]) if k % 2 == 0 else (v[-1], v[-2])
+                    nxt = next(((j, w) for j, w in edge.get(e, ())
+                                if j in left and j != i and j not in used), None)
+                    if nxt is None:
+                        break
+                    used.append(nxt[0])
+                    v.append(nxt[1])
+                    k += 1
+                if best_used is None or len(used) > len(best_used):
+                    best_v, best_used, best_seed = v, used, i
+        v, used, i = best_v, best_used, best_seed
+        left.discard(i)
+        for j in used:
+            left.discard(j)
+        if used:
+            strips.append(v)
+        else:
+            singles.append(tuple(v))
+    return strips, singles
+
+
+def strips_cw(tris: list[tuple]) -> tuple[list[list[int]], list[tuple]]:
+    """Triangle strips that keep every triangle's winding (GX strip parity: triangle k of a strip is
+    (v[k], v[k+1], v[k+2]) for even k, (v[k+1], v[k], v[k+2]) for odd k). Several strip-length caps and both
+    seed orders are tried and the byte-smallest packing wins (the game's own parts use short strips).
+    Returns (strips, leftover triangles)."""
+    tris = [tuple(map(int, t)) for t in tris]
+    best = None
+    for cap in (4, 5, 6, 8, 10, 12, 16, 20, 24, 999):
+        for rev in (False, True):
+            st, si = _pack_strips(tris, cap, rev)
+            cost = sum(3 + 6 * len(v) for v in st) + (3 + 18 * len(si) if si else 0)
+            if best is None or cost < best[0]:
+                best = (cost, st, si)
+    return best[1], best[2]
+
+
+def _encode_dl(tris, attrs: list[str], nverts: int) -> bytes:
+    """One display list: 0x98 strips then one 0x90 batch of leftover triangles; corner = one u16 index per
+    attribute (nrm/clr use the vertex index, tex always 0: every part shares the solid white.tex)."""
+    out = bytearray()
+    strips, singles = strips_cw([tuple(map(int, t)) for t in tris])
+    for v in strips:
+        out += b"\x98" + struct.pack(">H", len(v))
+        for i in v:
+            out += struct.pack(f">{len(attrs)}H", *[0 if a in ("tex", "clr") else i for a in attrs])
+    if singles:
+        out += b"\x90" + struct.pack(">H", 3 * len(singles))
+        for t in singles:
+            for i in t:
+                out += struct.pack(f">{len(attrs)}H", *[0 if a in ("tex", "clr") else i for a in attrs])
+    return bytes(out)
+
+
+def _dl_bytes(tris, attrs: list[str]) -> int:
+    """Exact display-list bytes for a triangle set (a strip of n vertices costs 3 + 2*|attrs|*n; singles
+    3 + 6*|attrs| each). Padding (<= 0x1f per chunk) is added by the caller's budget check."""
+    strips, singles = strips_cw([tuple(map(int, t)) for t in tris])
+    s = 2 * len(attrs)
+    return sum(3 + s * len(v) for v in strips) + (3 + 3 * s * len(singles) if singles else 0)
+
+
+def _umeyama(src, dst):
+    """Rigid + uniform-scale fit of src onto dst (equal point counts): returns R, t, s with dst ~= s * src @ R.T + t."""
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    cov = (src - mu_s).T @ (dst - mu_d)
+    U, S, Vt = np.linalg.svd(cov)
+    d = np.eye(3)
+    d[-1, -1] = np.sign(np.linalg.det(U @ Vt))
+    R = Vt.T @ d @ U.T
+    var = ((src - mu_s) ** 2).sum()
+    s = float(np.trace(d @ np.diag(S)) / var) if var > 1e-12 else 1.0
+    return R, mu_d - s * (mu_s @ R.T), s
+
+
+def _farthest(pts, k: int) -> np.ndarray:
+    """Farthest-point sampling: k indices spread over the point set."""
+    if k >= len(pts):
+        return np.arange(len(pts))
+    chosen = [0]
+    d2 = ((pts - pts[0]) ** 2).sum(1)
+    while len(chosen) < k:
+        i = int(d2.argmax())
+        chosen.append(i)
+        d2 = np.minimum(d2, ((pts - pts[i]) ** 2).sum(1))
+    return np.asarray(chosen)
+
+
+def _fit_rigid(src, dst) -> tuple:
+    """Fit a (dense) donor point set onto a (coarse) target cloud: farthest-point-subsample the larger set to the
+    smaller one's cardinality, then one Umeyama (ICP degrades when |src| >> |dst|). Returns R, t, s
+    (dst ~= s * src @ R.T + t)."""
+    if len(src) > len(dst):
+        return _umeyama(src[_farthest(src, len(dst))], dst)
+    if len(dst) > len(src):
+        return _umeyama(src, dst[_farthest(dst, len(src))])
+    return _umeyama(src, dst)
+
+
+def _cluster(pos, nrm, tris, k: int):
+    """Vertex-cluster decimation: k cluster centres chosen by farthest-point sampling, every vertex joins its
+    nearest centre (position/normal averaged), degenerate triangles drop. Empty centres (duplicate positions)
+    are dropped. Returns (pos, nrm, tris) arrays."""
+    if k >= len(pos):
+        return pos, nrm, list(tris)
+    c = pos[_farthest(pos, k)]
+    idx = ((pos[:, None, :] - c[None, :, :]) ** 2).sum(-1).argmin(1)
+    keep = np.flatnonzero(np.bincount(idx, minlength=k) > 0)
+    remap = np.zeros(k, np.int64)
+    remap[keep] = np.arange(len(keep))
+    npos = np.stack([pos[idx == j].mean(0) for j in keep])
+    nnrm = np.stack([nrm[idx == j].mean(0) for j in keep])
+    ln = np.linalg.norm(nnrm, axis=1, keepdims=True)
+    nnrm = nnrm / np.maximum(ln, 1e-9)
+    T = [(int(remap[idx[a]]), int(remap[idx[b]]), int(remap[idx[c]])) for a, b, c in tris
+         if idx[a] != idx[b] and idx[b] != idx[c] and idx[a] != idx[c]]
+    return npos, nnrm, T
+
+
+def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
+    """Rewrite one .shp's arrays + display lists, keeping the header, material records (the DL pointer pairs get
+    the new packed offsets/sizes), texture names and tail. pos/nrm are in the template's local frame and are
+    quantised with the template's own scale/frac, so the game animates the part exactly as before. Returns a blob
+    of the same size."""
+    if len(template) < 0x120 or struct.unpack_from(">f", template, 0)[0] != 1.0:
+        raise ValueError(f"{name}: not a Crazy Taxi .shp")
+    scale = struct.unpack_from(">3f", template, 0x2C)
+    offs = {a: struct.unpack_from(">I", template, o)[0] for a, o in ATTR_WORDS}
+    attrs = [a for a in ("pos", "nrm", "clr", "tex") if offs.get(a)]
+    if "pos" not in attrs or "tex" not in attrs:
+        raise ValueError(f"{name}: needs POS and TEX0 arrays")
+    mat_off = _u32(template, 0x110)
+    first = _u32(template, 0x114)
+    dl_base = _u32(template, 0x118)
+    tex_off = _u32(template, 0x11C)
+    frac = read_shape(template, name).frac()
+    pos, nrm, tris = np.asarray(pos, float), (np.asarray(nrm, float) if len(nrm) else np.zeros((len(pos), 3))), \
+        [tuple(map(int, t)) for t in tris]
+    V = len(pos)
+    if V < 3 or not tris:
+        raise ValueError(f"{name}: a part needs >= 3 vertices and >= 1 triangle")
+    sizes = {"pos": 6 * V, "nrm": 6 * V if "nrm" in attrs else 0, "clr": 4 if "clr" in attrs else 0, "tex": 4}
+    if first + sum(sizes.values()) > mat_off:
+        raise ValueError(f"{name}: {V} vertices need {sum(sizes.values())} array bytes, region has {mat_off - first}")
+    out = bytearray(template)
+    out[first:mat_off] = b"\x00" * (mat_off - first)
+    cur = first
+    new_offs = {}
+    for a in ("pos", "nrm", "clr", "tex"):
+        if a in attrs:
+            new_offs[a] = cur
+            cur += sizes[a]
+    for a, word in ATTR_WORDS:
+        if a in attrs:
+            struct.pack_into(">I", out, word, new_offs[a])
+    k = 1 << frac
+    q = np.clip(np.rint(pos * (k / np.asarray(scale))), -32767, 32767).astype(int)
+    qn = np.clip(np.rint(nrm * 16384.0), -32767, 32767).astype(int)
+    for i in range(V):
+        struct.pack_into(">3h", out, new_offs["pos"] + 6 * i, *q[i])
+    if "nrm" in attrs:
+        for i in range(V):
+            struct.pack_into(">3h", out, new_offs["nrm"] + 6 * i, *qn[i])
+    if "clr" in attrs:
+        # the driver's palette for this part (one flat colour: CLR0 corners all index entry 0)
+        bounds = sorted({o for _, o in ATTR_WORDS if struct.unpack_from(">I", template, o)[0]} |
+                        {mat_off, dl_base, tex_off, len(template)})
+        nclr = (min(x for x in bounds if x > offs["clr"]) - offs["clr"]) // 4
+        tclr = np.frombuffer(template, np.uint8, offs["clr"], 4 * max(nclr, 1)).reshape(-1, 4).mean(0).round() \
+            .astype(np.uint8)
+        out[new_offs["clr"]:new_offs["clr"] + 4] = tclr.tobytes()
+    struct.pack_into(">2h", out, new_offs["tex"], 0, 0)
+    pairs = _material_list_slots(template, mat_off, dl_base, tex_off or len(template))
+    if not pairs:
+        raise ValueError(f"{name}: no per-material display-list pointers found")
+    out[dl_base:tex_off] = b"\x00" * (tex_off - dl_base)
+    chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    cur = dl_base
+    for k in range(len(pairs)):
+        block = _encode_dl(chunks[k] if k < len(chunks) else [], attrs, V)
+        block += b"\x00" * ((0x20 - len(block) % 0x20) % 0x20)
+        if cur + len(block) > tex_off:
+            raise ValueError(f"{name}: display lists need {cur + len(block) - dl_base} bytes, region is "
+                             f"{tex_off - dl_base} ({len(tris)} triangles)")
+        out[cur:cur + len(block)] = block
+        struct.pack_into(">II", out, pairs[k][0], cur, len(block))
+        cur += len(block)
+    return bytes(out)
+
+
+def donor_segments(glb, part_roles: dict, joint_roles: dict) -> dict:
+    """A library GLB + {Crazy Taxi part: donor role name} + {donor role: joint name} -> {part: (pos, nrm, tris)}
+    in donor rest-pose space. Empty roles ride the nearest non-empty parent role (hand -> forearm -> upperarm,
+    foot -> shin -> thigh, head -> chest)."""
+    from .characters import rig_from_gltf
+    rig = rig_from_gltf(Path(glb), dict(joint_roles))
+    rmap = rig["roles"]                                       # role -> joint index
+    parent = rig["parent"]
+    jrole = {}
+    for j in range(len(rig["joints"])):
+        p, r = j, None
+        while p != -1:
+            for role, rj in rmap.items():
+                if p == rj:
+                    r = role
+                    break
+            if r is not None:
+                break
+            p = parent[p]
+        jrole[j] = r
+    P, N, O, T = [], [], [], []
+    for pr in rig["prims"]:
+        own = np.asarray(pr["owner"], int)
+        P.append(np.asarray(pr["pos"], float))
+        N.append(np.asarray(pr["nrm"], float))
+        O.append(own)
+        T.append(np.asarray(pr["tris"], int) + len(P[-1]) - len(pr["pos"]))
+    P = np.concatenate(P) if P else np.zeros((0, 3))
+    N = np.concatenate(N) if N else np.zeros((0, 3))
+    O = np.concatenate(O) if O else np.zeros(0, int)
+    T = np.concatenate(T) if T else np.zeros((0, 3), int)
+    role_of_vert = np.array([jrole.get(int(j), "hip") for j in O])   # joints outside the role tree ride the hips
+    # each triangle goes to the role of the majority of its corners, so no cross-role triangle is dropped
+    tris_by_role = {r: [] for r in set(part_roles.values())}
+    for t in T:
+        r = Counter(role_of_vert[[int(c) for c in t]].tolist()).most_common(1)[0][0]
+        tris_by_role[r].append(tuple(map(int, t)))
+    segs = {}
+    for part, role in part_roles.items():
+        ts = tris_by_role.get(role, [])
+        refs = sorted({c for t in ts for c in t})
+        remap = {c: i for i, c in enumerate(refs)}
+        segs[part] = (P[refs], N[refs], [(remap[a], remap[b], remap[c]) for a, b, c in ts])
+    # Empty roles ride the nearest available segment: within-side parent first, then the mirrored left side
+    # (the PSO export leaves the right arm/hand and both feet/shin verts unreferenced by triangles).
+    for leaf, alt in (("mune", "koshi"), ("atama", "mune"),
+                      ("kata_l", "mune"), ("kata_r", "kata_l"), ("kata_r", "mune"),
+                      ("ude_l", "kata_l"), ("ude_r", "ude_l"), ("ude_r", "kata_r"),
+                      ("te_l", "ude_l"), ("te_r", "te_l"), ("te_r", "ude_r"),
+                      ("momo_l", "koshi"), ("momo_r", "momo_l"),
+                      ("sune_l", "momo_l"), ("sune_r", "sune_l"), ("sune_r", "momo_r"),
+                      ("kakato_l", "sune_l"), ("kakato_r", "kakato_l"), ("kakato_r", "sune_r")):
+        if len(segs[leaf][0]) == 0:
+            segs[leaf] = segs[alt]
+    return segs
+
+
+def part_budgets(template: bytes, attrs: list[str]) -> tuple[int, int]:
+    """(max vertices, display-list region bytes) for a part blob: pos+nrm cost 6 bytes per vertex each, clr and
+    tex are single entries (8 bytes together)."""
+    mat_off, first, dl_base, tex_off = (_u32(template, o) for o in (0x110, 0x114, 0x118, 0x11C))
+    per = 6 * (1 + int("nrm" in attrs))
+    fixed = 4 + (4 if "clr" in attrs else 0)
+    return (mat_off - first - fixed) // per, tex_off - dl_base
+
+
+def _fit_segment(template: bytes, seg, name: str) -> tuple:
+    """Fit one donor segment into one part blob: Umeyama onto the part's decoded cloud, then farthest-point
+    clustering down to the vertex and display-list budgets. Returns (pos, nrm, tris)."""
+    cloud = np.asarray(read_shape(template, name).positions(), float)
+    if len(cloud) < 3:
+        raise ValueError(f"{name}: target cloud too small")
+    if len(seg[0]) < 3 or len(seg[2]) < 1:
+        raise ValueError(f"{name}: the donor segment is empty")
+    R, t, s = _fit_rigid(np.asarray(seg[0], float), cloud)
+    pos = seg[0] @ R.T * s + t
+    nrm = seg[1] @ R.T
+    attrs = [a for a in ("pos", "nrm", "clr", "tex") if struct.unpack_from(">I", template, dict(ATTR_WORDS)[a])[0]]
+    vmax, dlbudget = part_budgets(template, attrs)
+    kpairs = len(_material_lists(template, _u32(template, 0x110), _u32(template, 0x118),
+                                 _u32(template, 0x11C) or len(template)))
+    best = None
+    for k in range(min(vmax, len(pos)), 2, -1):
+        mp, mn, mt = _cluster(pos, nrm, seg[2], k)
+        if not mt:
+            continue
+        # lower bound: even one perfect strip needs 6*(T+2)+3 bytes
+        if 6 * len(mt) + 15 + 0x1F * kpairs > dlbudget:
+            continue
+        if _dl_bytes(mt, attrs) + 0x1F * kpairs <= dlbudget:
+            return mp, mn, mt
+        best = (mp, mn, mt)
+    raise ValueError(f"{name}: the donor segment won't fit: {len(best[0])} verts > {vmax} or "
+                     f"{_dl_bytes(best[2], attrs)} DL bytes > {dlbudget}")
+
+
+def _part_of(name: str) -> str:
+    """'MP_YH_plyrA_sl_te_l_ok' -> 'te_l'."""
+    k = name.split(".", 1)[0]
+    for pre in ("MP_YH_plyrA_",):
+        if k.startswith(pre):
+            k = k[len(pre):]
+    if k.startswith("sl_"):
+        k = k[3:]
+    for suf in ("_ok", "_ch", "_gu", "B", "C", "D"):
+        if k.endswith(suf):
+            k = k[:-len(suf)]
+    return k
+
+
+def swap_driver(bank: bytes, glb, part_roles: dict, joint_roles: dict, letter: str = "A", progress=None) -> \
+        tuple[bytes, dict]:
+    """Every MP_YH_plyr<letter>_*.shp blob -> the donor (Axel's parts, hand poses, head variants and sl_ LODs
+    included, so no stock mesh ever appears). Returns (new bank, per-part stats)."""
+    entries = read_bank(bank)
+    pre = f"MP_YH_plyr{letter}_"
+    parts = [(n, o, s) for n, o, s in entries if n.startswith(pre)]
+    if not parts:
+        raise ValueError(f"no {pre}* parts in the bank")
+    segs = donor_segments(glb, part_roles, joint_roles)
+    out = bytearray(bank)
+    stats, done = {}, 0
+    for n, o, s in parts:
+        part = _part_of(n)
+        seg = segs.get(part)
+        if seg is None:
+            raise ValueError(f"{n}: role for {part} missing from the donor rig")
+        template = bytes(bank[o:o + s])
+        mp, mn, mt = _fit_segment(template, seg, n)
+        out[o:o + s] = encode_shape(template, mp, mn, mt, n)
+        stats[n] = {"verts": len(mp), "tris": len(mt), "size": s}
+        done += 1
+        if progress:
+            progress(10 + 80 * done / len(parts), f"Fitting {n}")
+    return bytes(out), stats
+
+
+def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: str, progress=None) -> dict:
+    """A Crazy Taxi file mod: a copy of the disc image with ct/polDC0.all replaced in place (same size)."""
+    import shutil
+    import types
+    from . import filemods
+    work = Path(cfg.cache) / "characters_build" / "crazy_taxi" / name
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    bankfile = work / "polDC0.all"
+    bankfile.write_bytes(bank)
+    progress = progress or (lambda p, m: None)
+    progress(90, f"Writing the disc image {image_name}")
+    b = filemods.build_image(types.SimpleNamespace(cache=Path(cfg.cache)), game["game_id"], iso, name,
+                             {BANK: {"from": str(bankfile)}})
+    return b | {"files": [BANK]}
+
+
+def use(ctx, meta: dict, game: dict, inp) -> dict:
+    """characters op=use for Crazy Taxi (GC): slot=player -> Axel the driver (MP_YH_plyrA_*: 15 rigid parts plus
+    his hand-pose, head and sl_ LOD variants) rebuilt from the library character (mod ct_<slug>)."""
+    from . import characters as C
+    from . import filemods
+    gid = game["game_id"]
+    name = f"ct_{meta['slug']}"
+    have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
+    built = None
+    if inp.rebuild or not have:
+        joint_roles = dict(meta.get("rig", {}).get("roles") or {})
+        roles = resolve_roles(joint_roles)
+        if C.library_root(ctx.config).is_dir():
+            from .gcdisc import GCDisc
+            glb = C._local_or_fetch(ctx, meta, meta["model"])
+            iso = C._gc_iso(ctx, game)
+            bank = GCDisc(iso).read(BANK)
+            src_sha = hashlib.sha256(bank).hexdigest()[:16]
+            new_bank, stats = swap_driver(bank, glb, roles, joint_roles, "A", progress=ctx.progress)
+            built = build_mod(ctx.config, game, iso, new_bank, name, f"Crazy Taxi {meta['slug']}.iso",
+                              progress=ctx.progress)
+            built["stats"] = stats
+            C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
+                   json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
+                         "notes": f"replaces Axel the driver (MP_YH_plyrA_*: {len(stats)} .shp parts; source bank "
+                                  f"{src_sha}…); his skeleton/animations stay"})
+        else:
+            cp = next((w["id"] for w in C._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"
+                       and w.get("online")), None)
+            ctx.progress(10, "Building the Crazy Taxi mod on the control-plane node (the collection lives there)")
+            j = C._job(ctx, "characters", {"op": "use", "character": meta["slug"], "game_id": gid,
+                                           "rebuild": inp.rebuild, "launch": False, "slot": inp.slot}, cp, 3600)
+            r = (j.get("output") or {}).get("result") or {}
+            if j.get("state") != "succeeded" or r.get("status") not in ("built", "ready"):
+                return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
+            built = r.get("build")
+    res = {"mod": name, "build": built,
+           "replaces": "Axel the driver (MP_YH_plyrA_* .shp parts, all LODs and hand poses)"}
+    if not inp.launch:
+        return res | {"status": "built" if built else "ready"}
+    ctx.progress(90, f"Launching Crazy Taxi with {meta['name']} (mod {name})")
+    lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": name, "node": "idle"}})
+    t0 = time.time()
+    while lj.get("state") in ("queued", "running") and time.time() - t0 < 1800:
+        time.sleep(2)
+        lj = C._api(ctx, "GET", f"/api/jobs/{lj['id']}")
+    ok = lj.get("state") == "succeeded"
+    launch = {"job": lj.get("id"), "state": lj.get("state"),
+              "session_id": (lj.get("output") or {}).get("session_id"), "error": lj.get("error")}
+    return res | {"status": ("built+launched" if built else "launched") if ok else "launch " + str(lj.get("state")),
+                  "launch": launch,
+                  "message": f"Crazy Taxi is running with {meta['name']} as the driver (mod {name})." if ok else
+                  f"Mod {name} is {'built' if built else 'ready'} but the launch {lj.get('state')}: {lj.get('error')}"}

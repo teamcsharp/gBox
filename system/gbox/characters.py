@@ -1928,6 +1928,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import pso_player
     if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
+    from . import crazy_taxi
+    if gid in crazy_taxi.GAME_IDS and inp.slot == "player":    # Crazy Taxi GC: Axel the driver -> ct_<slug>
+        return {"result": out | crazy_taxi.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
