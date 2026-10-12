@@ -517,7 +517,7 @@ def write_group(rom: OW.Rom, group: dict, parts: dict, mats: list, regions=None)
 def find_skeletons(obj: bytes) -> list[int]:
     """Skeleton headers in an object: a segment-6 pointer to a table of `count` limb pointers, then the count."""
     out = []
-    for o in range(0, len(obj) - 12, 4):
+    for o in range(0, len(obj) - 7, 4):                # a 12-byte header may end the object (object_link_boy)
         w = OW.u32(obj, o)
         cnt = obj[o + 4]
         if w >> 24 != 6 or not 2 <= cnt <= 80 or obj[o + 5:o + 8] != b"\0\0\0":
