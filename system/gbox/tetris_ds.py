@@ -506,6 +506,7 @@ def extract_run(ctx, game, entry, work):
     files = [f for s in report['sets'].values() for f in s['files']]
     tiles = sum(s['tiles'] for s in report['sets'].values())
     return {'files': files, 'roles': {}, 'kind': 'sprites',
+            'tool': 'gbox.tetris_ds (TetrisDSReader.extract)',
             'source_files': ['Tetris DS (USA).nds (WRG dump, ATRE)'],
             'notes': (f"tetris_ds reader on {reader.rom.build_id()}: "
                       f"{len(report['sets'])} set(s), {tiles} tiles")}

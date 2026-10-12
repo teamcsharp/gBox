@@ -124,10 +124,19 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
         elif f.resolve() != (d / f.name).resolve():
             shutil.copy2(f, d / f.name)
     model = d / Path(files[0]).name
-    st = model_stats(model)
-    render_preview(model, d / "preview.png", **(preview or {}))
+    # 2D sprite sheets (PNG) are valid "models" for sprite-based games; skip glTF stats/render.
+    if str(model).lower().endswith('.png'):
+        kind = 'sprites'
+        preview_path = d / "preview.png"
+        _sprite_preview(model, preview_path, size=preview.get('size', 384) if preview else 384)
+        st = {"triangles": 0, "vertices": 0, "textures": 1, "meshes": 0}
+        rig_out = rig or {}
+    else:
+        st = model_stats(model)
+        render_preview(model, d / "preview.png", **(preview or {}))
+        rig_out = {**st.pop("rig"), **(rig or {})}
     meta = {"slug": slug, "name": name, "kind": kind, "aliases": list(aliases), "source": source, "extraction_tool": tool,
-            "model": model.name, "preview": "preview.png", "rig": {**st.pop("rig"), **(rig or {})}, "stats": st,
+            "model": model.name, "preview": "preview.png", "rig": rig_out, "stats": st,
             "licence": LICENCE, "notes": notes, "targets": targets or {}, "added": time.time(), **(extra or {})}
     old = d / "meta.json"
     if old.exists():                                       # keep targets recorded by earlier builds
@@ -136,6 +145,17 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
             meta["targets"].setdefault(gid, [])
             meta["targets"][gid] += [t for t in lst if t not in meta["targets"][gid]]
     return put_meta(root, meta)
+
+
+def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
+    """Use the sprite sheet itself as the collection preview, fitted to a square."""
+    from PIL import Image
+    im = Image.open(src).convert("RGBA")
+    im.thumbnail((size, size))
+    canvas = Image.new("RGBA", (size, size), (38, 40, 48, 255))
+    canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
+    canvas.save(out, "PNG")
+    return out
 
 
 # ---------------------------------------------------------------- glTF helpers
@@ -358,7 +378,10 @@ def verify_entry(root: Path, meta: dict) -> dict:
     out = {"model": str(model), "model_bytes": model.stat().st_size if model.is_file() else 0,
            "triangles": meta.get("stats", {}).get("triangles", 0), "textures": meta.get("stats", {}).get("textures", 0)}
     out["preview"] = check_preview(prev) if prev.is_file() else {"ok": False, "error": "no preview"}
-    out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
+    if meta.get("kind") == "sprites":
+        out["ok"] = bool(out["model_bytes"] and out["preview"].get("ok"))
+    else:
+        out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
     return out
 
 
