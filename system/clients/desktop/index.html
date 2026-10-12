@@ -1042,7 +1042,7 @@ window.taskVizCreate = canvas => {
           <p class="mut" style="margin-top:0">items — collection entries (<code>{"character": "slug"}</code>, <code>{"environment": "slug"}</code>) and UAP packages (<code>{"package": "pso_dc_forest01"}</code>):</p>
           <textarea id="bv-items" rows="4" style="width:100%;font:13px ui-monospace,Consolas,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:6px">[
   { "package": "pso_dc_forest01" },
-  { "character": "savage_wolf", "translation": [120, 0, 40], "scale": 1.0 }
+  { "package": "pso_v2_savage_wolf", "translation": [120, 0, 40], "scale": 1.0 }
 ]</textarea>
           <div class="bar" style="margin-top:8px">
             <label style="color:var(--mut);font-size:13px"><input type="checkbox" id="bv-shot" checked> screenshot (PNG in chat)</label>
@@ -4863,7 +4863,7 @@ document.querySelector('aside button[data-s="tools"]').addEventListener("click",
 
 // ---------------- Bevy: the gBox Bevy viewer (scenes, renders, live windows the LLM drives reactively) ----------------
 const BV = { data: null };
-const BV_DEMO = () => [{ package: "pso_dc_forest01" }, { character: "savage_wolf", translation: [120, 0, 40], scale: 1.0 }];
+const BV_DEMO = () => [{ package: "pso_dc_forest01" }, { package: "pso_v2_savage_wolf", translation: [120, 0, 40], scale: 1.0 }];
 async function bvJob(input, os) {
   const req = { tool: "bevy_scene", input };
   if (os) req.require_os = os;
