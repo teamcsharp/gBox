@@ -9,6 +9,8 @@ from __future__ import annotations
 import struct
 import zlib
 
+import pytest
+
 from gbox import doa6_inventory as d6
 
 
@@ -100,6 +102,7 @@ def test_sniff():
     assert d6.sniff_magic(b"_DRK0000\x20\x00") == "drk"
     assert d6.sniff_magic(b"G1MX....") == "g1m"
     assert d6.sniff_magic(b"GT1G....") == "g1t"
+    assert d6.sniff_magic(b"KTID....") == "ktid"
     assert d6.sniff_magic(b"\x89PNG\r\n\x1a\n....") == "png"
     assert d6.sniff_magic(b"\x00\x01\x02") == "unknown"
 
@@ -148,3 +151,34 @@ def test_read_bin_entry_and_classify():
         summary = d6.classify_bin_entries(rdb, sample=None)
         assert summary[bin_path.name]["sampled"] == 3
         assert summary[bin_path.name]["content"] == {"g1t": 1, "g1m": 1, "rnk": 1}
+
+
+def test_read_bin_entry_rejects_truncated_header(tmp_path):
+    first = build_idrk_entry(None, 1, b"GT1G0600" + b"\0" * 20)
+    bad = tmp_path / "RRPreview.rdb.bin"
+    bad.write_bytes(first + d6.IDRK_MAGIC + b"\0" * 10)      # the last magic has 18 of its 56 header bytes
+    with pytest.raises(ValueError):
+        d6._header_length(d6.IDRK_MAGIC + b"\0" * 10)
+    with pytest.raises(ValueError):
+        d6.read_bin_entry(bad, len(first), limit=8)
+
+
+def test_read_bin_entry_rejects_entry_size_smaller_than_header(tmp_path):
+    head = d6.IDRK_MAGIC + struct.pack("<QQQI", 10, 0, 100, 0) + struct.pack("<5I", 1, 2, 0x100000, 0, 0)
+    bad = tmp_path / "RRPreview.rdb.bin"
+    bad.write_bytes(head + b"\xAB" * 4096)                   # entry_size 10 < its 56-byte header: never read on
+    with pytest.raises(ValueError):
+        d6.read_bin_entry(bad, 0, limit=8)
+
+
+def test_classify_counts_window_straddling_magic_and_survives_truncated_tail(tmp_path):
+    (tmp_path / "DOA6.exe").write_bytes(b"MZ" + b"\0" * 10)
+    idx = tmp_path / "RRPreview.rdb"
+    idx.write_bytes(build_rdb([("tex", 1, b""), ("mdl", 2, b"")]))
+    first = build_idrk_entry(None, 1, b"GT1G0600" + b"\0" * 20)
+    second = build_idrk_entry(None, 2, b"_M1G7300" + b"\0" * 20)
+    (tmp_path / "RRPreview.rdb.bin").write_bytes(first + second + d6.IDRK_MAGIC + b"\0" * 10)
+    # a window edge 4 bytes into the second magic, and a magic at the tail with no header behind it
+    summary = d6.classify_bin_entries(d6.Rdb(idx), sample=None, initial_chunk=len(first) + 4)
+    assert summary["RRPreview.rdb.bin"]["sampled"] == 3
+    assert summary["RRPreview.rdb.bin"]["content"] == {"g1t": 1, "g1m": 1, "unreadable": 1}

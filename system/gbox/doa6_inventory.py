@@ -194,7 +194,9 @@ def sniff_magic(data: bytes) -> str:
         return "rnk"
     if data[:4] in (b"G1M\x00", b"G1MX", b"G1M_", b"_M1G"):
         return "g1m"
-    if data[:4] in (b"G1TG", b"G1T\x00", b"KTID", b"GT1G"):
+    if data[:4] == b"KTID":
+        return "ktid"
+    if data[:4] in (b"G1TG", b"G1T\x00", b"GT1G"):
         return "g1t"
     if data[:4] in (b"G1AG", b"G1A\x00", b"G1A_", b"_A1G"):
         return "g1a"
@@ -225,6 +227,8 @@ def _header_length(head: bytes) -> int:
     """Compute the payload offset inside an IDRK entry from its 56-byte header."""
     if head[:8] != IDRK_MAGIC:
         raise ValueError(f"not an IDRK header (magic {head[:8]!r})")
+    if len(head) < 56:
+        raise ValueError(f"truncated IDRK header ({len(head)} of 56 bytes)")
     num1, num2 = struct.unpack_from("<II", head, 32)[0], struct.unpack_from("<I", head, 52)[0]
     hlen = 56 + 12 * num2 + num1
     return (hlen + 3) & ~3
@@ -244,6 +248,8 @@ def read_bin_entry(path: str | Path, offset: int, limit: int | None = 8) -> byte
         entry_size = struct.unpack_from("<Q", head, 8)[0]
         size = struct.unpack_from("<Q", head, 24)[0]
         payload_len = entry_size - hlen
+        if payload_len < 0:
+            raise ValueError(f"IDRK entry at {path}:{offset:#x}: entry_size {entry_size} is smaller than its header ({hlen})")
         # Position at the start of the compressed payload.
         f.seek(offset + hlen)
         # Read enough for the first chunk; a chunk never exceeds CHUNK_SIZE.
@@ -302,7 +308,7 @@ def classify_bin_entries(rdb: Rdb, sample: int | None = 200,
                     extra = f.read(initial_chunk)
                     if not extra:
                         break
-                    search_from = len(window)
+                    search_from = max(0, len(window) - (len(IDRK_MAGIC) - 1))  # a magic may straddle the edge
                     window += extra
                     continue
                 # Skip overlapping re-detections: move past this magic.
@@ -313,7 +319,7 @@ def classify_bin_entries(rdb: Rdb, sample: int | None = 200,
             try:
                 data = read_bin_entry(bin_path, offset, limit=16)
                 kind = sniff_magic(data)
-            except (ValueError, zlib.error, OSError):
+            except (ValueError, struct.error, zlib.error, OSError):
                 kind = "unreadable"
             counts[kind] = counts.get(kind, 0) + 1
         summary[bin_path.name] = {
