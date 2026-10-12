@@ -353,19 +353,20 @@ function detail(s) {
       break;
     case "llm": {
       const r = d.recommend || {}, sz = d.sizes || {}, want = d.want || [r.tools, r.vision];
+      const installed = d.models || [];     // every model installed on this PC is selectable for either role
       const opt = (v, list) => [...new Set([v, ...list])].filter(Boolean).map(x => `<option ${x === v ? "selected" : ""}>${esc(x)}</option>`).join("");
       body = `<div class="kv"><span>Ollama</span><span>${d.running ? '<span class="ok">running</span>' : d.installed ? '<span class="warn">installed, not running</span>' : '<span class="warn">not installed</span>'}</span>
           <span>Models here</span><span>${(d.models || []).map(esc).join(", ") || "none"}</span><span>For this GPU</span><span>${esc(r.why || "run step 1 first")}</span></div>
         ${!d.installed && d.running === false ? `<div class="row"><button class="btn pri" id="oll" ${F.offline ? "disabled" : ""}>Install Ollama (ollama.com, about 1 GB)</button><button class="btn" id="ollh">I have OllamaSetup.exe…</button></div>`
           : d.installed && !d.running ? `<div class="row"><button class="btn pri" id="olls">Start Ollama</button></div>` : ""}
         <h3>Models</h3>
-        <div class="row"><span class="mut">Tools</span><select id="mt">${opt(want[0] || r.tools, ["gpt-oss:20b", "qwen3:8b", "qwen3:4b"])}</select>
-          <span class="mut" style="margin-left:10px">Vision</span><select id="mv">${opt(want[1] || r.vision, ["qwen2.5vl:7b", "qwen2.5vl:3b"])}</select>
+        <div class="row"><span class="mut">Tools</span><select id="mt">${opt(want[0] || r.tools, ["gpt-oss:20b", "qwen3:8b", "qwen3:4b", ...installed])}</select>
+          <span class="mut" style="margin-left:10px">Vision</span><select id="mv">${opt(want[1] || r.vision, ["qwen2.5vl:7b", "qwen2.5vl:3b", ...installed])}</select>
           <button class="btn" id="use">Use these</button></div>
         <table>${want.filter(Boolean).map(m => { const have = (d.models || []).some(x => x === m || x === m + ":latest");
           return `<tr><td>${esc(m)}</td><td>${have ? '<span class="ok">✓ here</span>' : `<span class="warn">not pulled</span> <span class="note">${esc(sz[m] || "")}</span>`}</td>
           <td style="text-align:right">${have || !d.running ? "" : `<button class="btn sm pri" data-pull="${esc(m)}" ${F.offline ? "disabled" : ""}>Pull ${esc(sz[m] || "")}</button>`}</td></tr>`; }).join("")}</table>
-        <p class="note">Recommended: gpt-oss:20b for tools and qwen2.5vl:7b for vision (a 16 GB GPU runs both). Offline: copy <code>%USERPROFILE%\\.ollama\\models</code> from a PC that has them.</p>
+        <p class="note">Every model installed on this PC is detected automatically and listed in the menus above — pick one and gBox runs it. Recommended: gpt-oss:20b for tools and qwen2.5vl:7b for vision (a 16 GB GPU runs both). Offline: copy <code>%USERPROFILE%\.ollama\models</code> from a PC that has them.</p>
         <div class="row"><button class="btn" id="go" ${busy ? "disabled" : ""}>${d.recommend ? "Check again" : "Check Ollama"}</button>${skip}${nextBtn}</div>`;
       break;
     }
@@ -436,7 +437,7 @@ function select(id) {
 }
 
 // ---------------- polling
-let prevSig = "";
+let prevSig = "", scanAt = 0;
 async function refresh() {
   let f; try { f = await get("/api/flow"); } catch { return; }
   const first = !F;
@@ -451,7 +452,12 @@ async function refresh() {
   $("#net").textContent = f.offline ? "offline" : "online"; $("#net").classList.toggle("off", !!f.offline);
   $("#where").textContent = `${f.host} · ${f.install_dir}`;
   renderNodes();
-  const s = step(sel), sig = `${sel}:${s.status}:${s.error}:${JSON.stringify(s.data).length}:${f.offline}`;
+  const s = step(sel), sig = `${sel}:${s.status}:${s.error}:${JSON.stringify(s.data).length}:${f.offline}` +
+    (sel === "llm" ? `:${(s.data?.models || []).join(",")}` : "");
+  if (sel === "llm" && s.status !== "running" && Date.now() - (scanAt || 0) > 4000) {
+    scanAt = Date.now();                      // keep the installed-model list fresh while this step is open
+    post("/api/flow/llm", { action: "scan" }).catch(() => {});
+  }
   if (first || sig !== prevSig) { if (!document.activeElement?.matches("input, select")) { detail(s); prevSig = sig; } }
   else if (s.status === "running") { const b = document.querySelector("#detail .pbar i"); if (b) b.style.width = Math.max(3, s.progress) + "%"; }
   if (first) renderLines(s, true); else if (s.lines.length !== (shown[s.id] ?? 0)) { renderLines(s); pulse(0.6, s.progress); }
