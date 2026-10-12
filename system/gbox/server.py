@@ -1256,50 +1256,60 @@ def create_app(config: Config) -> FastAPI:
 
     def _accept_result(wid: str, r: JobResult, actor):
         j = store.get("job", r.job_id)
-        if not j or j.get("worker_id") != wid or j.get('cancel'):
+        if not j or j.get("worker_id") != wid:
             raise HTTPException(409, "job not running on this worker")
         identity = result_digest(r.model_dump())
+        if j.get('cancel') and j['state'] == JobState.RUNNING and not j.get('result_sha256'):
+            # Cancel asks a running tool to stop; the worker's answer (usually "cancelled by the
+            # operator") is the job's outcome. Refusing it left the PC offline at its next start.
+            j = {k: v for k, v in j.items() if k != 'cancel'} | {'cancel_requested': True}
+            store.put("job", j["id"], j)
         t = REGISTRY[j["tool"]]
         recovering = bool(j.get('result_sha256')) or j['state'] != JobState.RUNNING
         if recovering:
             saved = store.get('receipt', j.get('receipt_id') or '')
             if not j.get('result_sha256'):
-                from .legacy_results import verify_legacy_success
-                # Bind verified historical bytes; never replay a callback.
                 try:
-                    store.db.execute('BEGIN IMMEDIATE')
-                    j = store.get('job', r.job_id)
-                    saved = store.get('receipt', (j or {}).get('receipt_id') or '')
-                    t = REGISTRY.get((j or {}).get('tool'))
-                    if not t or (t.on_accept and t.on_accept is not _builtin._launch_accept):
-                        raise HTTPException(409, 'legacy callback completion needs review')
+                    from .legacy_results import verify_legacy_success
+                    # Bind verified historical bytes; never replay a callback.
                     try:
-                        receipt = Receipt.model_validate(saved)
-                        verify_legacy_success(store, j, saved, r.model_dump(), wid)
-                    except (ValueError, TypeError, KeyError, AttributeError):
-                        raise HTTPException(409, 'legacy completion evidence does not verify this result')
-                    j.update(result_sha256=identity, result_acceptance='complete', result_state=j['state'])
-                    changed = store.db.execute("UPDATE docs SET body=? WHERE kind='job' AND id=? "
-                        "AND json_extract(body,'$.state')='succeeded' "
-                        "AND json_extract(body,'$.worker_id')=? "
-                        "AND json_extract(body,'$.result_sha256') IS NULL "
-                        "AND coalesce(json_extract(body,'$.cancel'),0)=0",
-                        (json.dumps(j), j['id'], wid)).rowcount
-                    if changed != 1:
-                        raise HTTPException(409, 'legacy result reconciliation changed')
-                    previous = store.db.execute('SELECT hash FROM audit ORDER BY seq DESC LIMIT 1').fetchone()
-                    prev, ts = previous[0] if previous else '0' * 64, time.time()
-                    data = {'receipt': saved['id'], 'result_sha256': identity,
-                            'original_audit_seq': saved['audit_seq'], 'callbacks_replayed': False}
-                    digest = sha256(prev.encode() + canon({'ts': ts, 'actor': actor,
-                        'action': 'job.result_reconciled', 'subject': j['id'], 'data': data}))
-                    store.db.execute('INSERT INTO audit(ts,actor,action,subject,data,prev,hash) VALUES(?,?,?,?,?,?,?)',
-                        (ts, actor, 'job.result_reconciled', j['id'], json.dumps(data), prev, digest))
-                    store.db.commit()
-                except BaseException:
-                    store.db.rollback()
-                    raise
-                return _result_ack(wid, j, receipt)
+                        store.db.execute('BEGIN IMMEDIATE')
+                        j = store.get('job', r.job_id)
+                        saved = store.get('receipt', (j or {}).get('receipt_id') or '')
+                        t = REGISTRY.get((j or {}).get('tool'))
+                        if not t or (t.on_accept and t.on_accept is not _builtin._launch_accept):
+                            raise HTTPException(409, 'legacy callback completion needs review')
+                        try:
+                            receipt = Receipt.model_validate(saved)
+                            verify_legacy_success(store, j, saved, r.model_dump(), wid)
+                        except (ValueError, TypeError, KeyError, AttributeError):
+                            raise HTTPException(409, 'legacy completion evidence does not verify this result')
+                        j.update(result_sha256=identity, result_acceptance='complete', result_state=j['state'])
+                        changed = store.db.execute("UPDATE docs SET body=? WHERE kind='job' AND id=? "
+                            "AND json_extract(body,'$.state')='succeeded' "
+                            "AND json_extract(body,'$.worker_id')=? "
+                            "AND json_extract(body,'$.result_sha256') IS NULL "
+                            "AND coalesce(json_extract(body,'$.cancel'),0)=0",
+                            (json.dumps(j), j['id'], wid)).rowcount
+                        if changed != 1:
+                            raise HTTPException(409, 'legacy result reconciliation changed')
+                        previous = store.db.execute('SELECT hash FROM audit ORDER BY seq DESC LIMIT 1').fetchone()
+                        prev, ts = previous[0] if previous else '0' * 64, time.time()
+                        data = {'receipt': saved['id'], 'result_sha256': identity,
+                                'original_audit_seq': saved['audit_seq'], 'callbacks_replayed': False}
+                        digest = sha256(prev.encode() + canon({'ts': ts, 'actor': actor,
+                            'action': 'job.result_reconciled', 'subject': j['id'], 'data': data}))
+                        store.db.execute('INSERT INTO audit(ts,actor,action,subject,data,prev,hash) VALUES(?,?,?,?,?,?,?)',
+                            (ts, actor, 'job.result_reconciled', j['id'], json.dumps(data), prev, digest))
+                        store.db.commit()
+                    except BaseException:
+                        store.db.rollback()
+                        raise
+                    return _result_ack(wid, j, receipt)
+                except HTTPException:
+                    # The job ended without this result (retired, cancelled, timed out, or finished
+                    # before results were fingerprinted). Keep the bytes and settle the delivery.
+                    return _settle_late_result(wid, r, j, identity, actor)
             if (j.get('result_sha256') != identity or not saved
                     or saved.get('worker_id') != wid or saved.get('job_id') != r.job_id):
                 raise HTTPException(409, 'finished job does not verify this exact worker result')
@@ -1339,6 +1349,26 @@ def create_app(config: Config) -> FastAPI:
             "receipt": receipt.id, "artifacts": [a.sha256 for a in refs], "problems": problems, "error": r.error}))
         _result_followups(j, r, t, state, actor)
         return _result_ack(wid, j, receipt)
+
+    def _settle_late_result(wid, r, j, identity, actor):
+        """Settle a result for a job that already ended without it: no state change, no callback.
+
+        The worker's exact bytes are stored as evidence and audited, and the worker gets a
+        verifiable acknowledgement so it can release them. Answering 409 instead marked the
+        result refused, and a refused result holds the worker offline at every start.
+        """
+        key = f"{j['id']}.{identity}"
+        doc = store.get('late_result', key)
+        if not doc:
+            ref = store.put_artifact(canon(r.model_dump()), 'late-result.json', 'application/json',
+                                     {'job': j['id'], 'worker': wid, 'result_sha256': identity})
+            doc = {'job_id': j['id'], 'worker_id': wid, 'result_sha256': identity, 'evidence': ref.sha256,
+                   'job_state': j['state'], 'job_error': j.get('error'), 'ok': r.ok, 'ts': time.time()}
+            store.put('late_result', key, doc)
+            store.audit(actor, 'job.late_result', j['id'], {k: doc[k] for k in ('evidence', 'result_sha256', 'job_state', 'ok')})
+        state = j['state'] if j['state'] in (JobState.SUCCEEDED, JobState.FAILED, JobState.INVALID) else JobState.FAILED
+        return {'state': state, 'receipt': 'late-' + doc['evidence'][:32], 'accepted': True, 'late': True,
+                'job_id': j['id'], 'worker_id': wid, 'result_sha256': identity}
 
     def _admit_result(wid, r, j, t, identity):
         refs, blobs = [], {}

@@ -117,3 +117,31 @@ def test_native_extended_and_packed_vertices_keep_normals_and_uv(shader):
     mesh = model["meshes"][0]
     assert mesh["triangles"] == [(1, 0, 2)]
     assert mesh["vertices"][0][3:] == (0, -1, 1, 0.25, 0.75)
+
+
+def test_glb_export_loads_with_collection_stats(tmp_path):
+    from gbox import characters
+    blob = b'\0' * 8 + _model() + _model(texture=9)
+    models = naomilib.scan(blob)
+    glb = naomilib.to_glb(models, tmp_path / 'x.glb', 'X')
+    stats = characters.model_stats(glb)
+    assert stats['meshes'] == 2 and stats['triangles'] == 4 and stats['vertices'] == 6
+    gl, _acc, _img, _world = characters._load(glb)
+    assert [n['name'] for n in gl['nodes']] == [f"model_{m['offset']:08x}" for m in models]
+    assert [p['extras']['texture_id'] for me in gl['meshes'] for p in me['primitives']] == [3, 9]
+    src = tmp_path / 'X.CHR'
+    src.write_bytes(blob)
+    assert naomilib.main([str(src), '--glb', str(tmp_path / 'out')]) == 0
+    assert characters.model_stats(tmp_path / 'out/X.CHR.glb')['triangles'] == 4
+    with pytest.raises(ValueError):
+        naomilib.to_glb([], tmp_path / 'empty.glb')
+
+
+@pytest.mark.skipif(not GDI.exists(), reason='owned DOA2 LE disc not unpacked on this node')
+def test_glb_export_of_real_chr_keeps_every_triangle(tmp_path):
+    from gbox import characters
+    from gbox.gdrom import GDRom
+    models = naomilib.scan(GDRom(GDI).read('DOA2/KAS00.CHR'))
+    stats = characters.model_stats(naomilib.to_glb(models, tmp_path / 'KAS00.glb', 'KAS00'))
+    assert stats['meshes'] == len(models) == 56
+    assert stats['triangles'] == sum(m['triangle_count'] for m in models) == 8672
