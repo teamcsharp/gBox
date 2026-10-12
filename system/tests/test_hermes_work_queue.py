@@ -89,6 +89,18 @@ def test_automatic_repairs_and_manual_children_are_not_forgotten(env):
     assert {i['request_id'] for _, i in q.candidates(env, reqs, [], set(), set(), now=2)} == {'2' * 16}
 
 
+def test_explicit_pickwhip_has_first_pass_priority_without_starving_old_work(env):
+    reqs = [request(created=1, automated=True, context={'auto_report': True}),
+            request('1' * 16, created=99, automated=True,
+                    context={'native_replacement': True, 'replacement_requested': True})]
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=100)
+    options = q.candidates(env, reqs, [], set(), set(), now=100)
+    selected = q.choose(options, env)
+    assert selected[1]['request_id'] == '1' * 16
+    selected[1]['last_dispatched'] = 100
+    assert q.choose(options, env)[1]['request_id'] == R
+
+
 def test_completed_occurrence_backoff_and_idempotence(env):
     q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=10)
     item = env['items']['favorite:' + G]

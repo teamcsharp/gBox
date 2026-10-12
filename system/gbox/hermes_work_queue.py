@@ -126,6 +126,7 @@ def sync(data, favorites, requests, *, now):
             'lane': 'inbox', 'request_id': request['id'], 'attempts': 0, 'last_dispatched': 0,
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
+                    operator_requested=bool(context.get('replacement_requested')),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
     data.update(favorites_count=len(favorite_ids), synced_at=now)
@@ -203,7 +204,7 @@ def choose(options, data):
     lane = [v for v in options if v[1]['lane'] == preferred] or options
     return min(lane, key=lambda v: (
         v[1].get('last_dispatched', 0),
-        0 if v[1].get('repair') else 1 if v[1].get('on_main') else 2,
+        0 if v[1].get('operator_requested') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
         v[1].get('created', 0), v[0])) if lane else None
 
 
