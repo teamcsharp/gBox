@@ -71,6 +71,22 @@ def test_fairness_and_merged_work_priority(env):
     assert q.choose(choices, env)[0] != selected[0]
     env['last_lane'] = 'favorite'
     assert q.choose(choices, env)[1]['request_id'] == R
+    env['items']['inbox:' + R]['last_dispatched'] = 2
+    assert q.choose(choices, env)[1]['request_id'] == 'f' * 16
+
+
+def test_automatic_repairs_and_manual_children_are_not_forgotten(env):
+    reqs = [request(automated=True, context={'auto_report': True, 'game_id': G}),
+            request('1' * 16, automated=True, source='gap', parent_request_id=P,
+                    context={'character': 'amy', 'game_id': G}),
+            request('2' * 16, parent_request_id=P),
+            request('3' * 16, automated=True, body='gBox request review')]
+    q.sync(env, {'count': 1, 'items': [favorite()]}, reqs, now=1)
+    options = q.candidates(env, reqs, [], set(), set(), now=2)
+    assert {i['request_id'] for _, i in options} == {R, '1' * 16, '2' * 16}
+    assert all(i['lane'] == 'inbox' for _, i in options)  # repair owns this favorite
+    env['items']['inbox:' + R]['dispatch_state'] = 'queued'
+    assert {i['request_id'] for _, i in q.candidates(env, reqs, [], set(), set(), now=2)} == {'2' * 16}
 
 
 def test_completed_occurrence_backoff_and_idempotence(env):
@@ -130,7 +146,7 @@ def test_wrong_request_missing_artifact_and_changed_build_refused(env, monkeypat
 
 def test_pump_reserves_capacity_and_repeated_tick_does_not_duplicate(env, monkeypatch):
     jobs = [{'id': 'controller', 'name': q.mode.NAME, 'enabled': True, 'no_agent': True}]
-    reqs = [request(P), request(R)]
+    reqs = [request(P), request(R, context={'resolution_chat_id': 'old-chat'}), request('f' * 16)]
     favorites = [favorite(f'{i:016x}') for i in range(5)]
     monkeypatch.setattr(q.mode, '_job', lambda: jobs[0])
     monkeypatch.setattr(q.mode, '_jobs', lambda: jobs)
@@ -141,6 +157,7 @@ def test_pump_reserves_capacity_and_repeated_tick_does_not_duplicate(env, monkey
     monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
     monkeypatch.setattr(q.mode, '_handoff', lambda: '')
     def api(path, body=None):
+        if path == '/api/chat': return [{'id': 'old-chat', 'busy': False}]
         if path == '/api/favorites': return {'count': len(favorites), 'items': favorites}
         if path == '/api/requests' and body is None: return reqs
         if path == '/api/requests':
@@ -158,7 +175,7 @@ def test_pump_reserves_capacity_and_repeated_tick_does_not_duplicate(env, monkey
     monkeypatch.setattr(q.mode, '_run', run)
     result = q.tick(now=1000)
     assert len(result['dispatched']) == 4
-    assert sum(d['lane'] == 'favorite' for d in result['dispatched']) == 3
+    assert sum(d['lane'] == 'favorite' for d in result['dispatched']) == 2
     assert q.tick(now=1060)['dispatched'] == []
     assert len(calls) == 4
     jobs[0]['enabled'] = False

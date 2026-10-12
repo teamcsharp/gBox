@@ -239,10 +239,12 @@ operator's configured parent request. No catalog page limit truncates the queue.
 
 The pump reserves capacity before creating or resuming genuine one-shots. It
 uses the existing configured cloud route, excludes known provider cooldowns,
-and counts both queued and running agent jobs. At most four agents run; while
-favorites remain eligible, at most one slot serves inbox work, prioritizing
-published branches already on main for acceptance. The rest serve distinct
-favorite games. Two pending heavyweight native analysis jobs defer new inventory
+and counts both queued and running agent jobs. At most four agents run, balanced
+between inbox work and favorite-game analysis when both have eligible work.
+Failed native replacements and published branches already on main receive first-pass
+priority, then last-dispatch ordering prevents repeated attempts starving older requests.
+Automatic replacement failures, writer gaps and operator child requests remain actionable.
+Two pending heavyweight native analysis jobs defer new inventory
 and analysis admissions while allowing independent writer or acceptance work.
 This is admission backpressure, not a new worker execution limit.
 
@@ -264,6 +266,14 @@ new checkpoints back off from five minutes to six hours. Games rotate by last
 dispatch, so one difficult title cannot monopolize the queue. Unfavoriting
 stops new admissions while preserving existing work and evidence. Disabling
 task mode pauses pending queue jobs and allows already active work to finish.
+
+Pick-whip replacement/rebuild requests preserve the donor slug, selected actor name,
+normalized game point, session, screenshot and saved moment. Managed Hermes queues
+own these requests without also launching a local chat. An existing local resolution
+still reserves its request. Same-game repair and favorite work cannot be admitted
+together. Missing writers return an incomplete native result and a durable repair
+request; an overlay is available only as an explicit operator action. The desktop
+offers target identification/correction and marking the selected actor for rebuild.
 
 The Z.AI quota monitor continues cheap account checks. Under queue control it
 only restores an eligible route after quota recovery; it does not launch its

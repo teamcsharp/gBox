@@ -1413,15 +1413,17 @@ def create_app(config: Config) -> FastAPI:
             outcome = (r.output or {}).get("result") or {}
             status = str(outcome.get("status") or "") if isinstance(outcome, dict) else ""
             failed_swap = (state != JobState.SUCCEEDED or status.startswith(("unsupported", "failed", "error"))
-                           or status in ("not_in_collection", "overlay") or (isinstance(outcome, dict) and
+                           or status in ("not_in_collection", "overlay", "missing", "blocked", "reverted") or (isinstance(outcome, dict) and
                             (outcome.get("ok") is False or bool(outcome.get("error")))))
-            if failed_swap and not j.get("parent_request_id"):
+            gap_request = (outcome.get("request") or {}).get("id") if isinstance(outcome, dict) else None
+            if failed_swap and not j.get("parent_request_id") and not gap_request:
                 def _report_failed_swap():
                     try:
                         i = j.get("input") or {}
                         req_auto_mod_failure(AutoFailureIn(session_id=i.get("session_id") or "", game=i.get("game") or "",
                             model=i.get("character") or i.get("name") or "", action=f"{t.name} {i.get('op') or ''}".strip(),
-                            target=i.get("slot") or "", moment=f"x={i.get('x')}, y={i.get('y')}",
+                            target=i.get("slot") or "", character=i.get("character") or "",
+                            x=i.get('x'), y=i.get('y'), moment=f"x={i.get('x')}, y={i.get('y')}",
                             detail=j.get("error") or (outcome.get("message") if isinstance(outcome, dict) else "") or status,
                             job_id=j["id"]), "gbox-auto")
                     except Exception as exc:
@@ -1479,6 +1481,10 @@ def create_app(config: Config) -> FastAPI:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
+        elif t.name == "re_executable":
+            # Analysis output belongs on Spark; RAM is read remotely through the
+            # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
+            job.require_worker, job.require_os = None, "linux"
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
         if job.require_worker in ("idle", "other"):
@@ -2981,6 +2987,12 @@ def create_app(config: Config) -> FastAPI:
         detail: str = ""
         image_b64: str | None = None
         job_id: str = ""
+        character: str = ""
+        target_kind: str = ""
+        x: float | None = Field(default=None, ge=0, le=1)
+        y: float | None = Field(default=None, ge=0, le=1)
+        needs_rebuild: bool = False
+        replacement_requested: bool = False
 
     @app.post("/api/requests/auto-mod-failure")
     def req_auto_mod_failure(f: AutoFailureIn, actor=Depends(auth)):
@@ -2995,15 +3007,28 @@ def create_app(config: Config) -> FastAPI:
             existing = next((x for x in store.all("request") if x.get("source") == "automation"
                              and (x.get("context") or {}).get("job_id") == f.job_id), None) if f.job_id else None
             if existing:
+                context = existing.setdefault("context", {})
+                for key in ("character", "target", "target_kind", "x", "y"):
+                    value = getattr(f, key)
+                    if value is not None and value != "":
+                        context[key] = value
+                if f.needs_rebuild:
+                    context["needs_rebuild"] = True
                 if f.image_b64 and not existing.get("image"):
                     existing["messages"].append({"author": "agent", "text": f.detail or "Additional failure screenshot", "ts": time.time(),
                         "attachments": _attach(existing["id"], [{"name": "failed-moment.png", "type": "image/png", "b64": f.image_b64}])})
-                    store.put("request", existing["id"], existing)
+                store.put("request", existing["id"], existing)
                 return _clean(existing)
-            report = req_create(RequestIn(title=f"Auto report: {f.action} failed in {game}"[:140], body=details,
+            title = (f"Character replacement: {f.model} in {game}" if f.replacement_requested else
+                     f"Auto report: {f.action} failed in {game}")
+            report = req_create(RequestIn(title=title[:140], body=details,
                 source="automation", kind="screenshot" if f.image_b64 else "text", image_b64=f.image_b64,
                 author="system", automated=True, context={"session_id": f.session_id, "session": f.session_id, "game_id": s_.get("game_id"),
                                                             "game": game, "model": f.model, "moment": f.moment,
+                                                            "character": f.character, "target": f.target,
+                                                            "target_kind": f.target_kind, "x": f.x, "y": f.y,
+                                                            "needs_rebuild": f.needs_rebuild, "native_replacement": True,
+                                                            "replacement_requested": f.replacement_requested,
                                                             "job_id": f.job_id, "auto_report": True}), actor)
         rid = report["id"]
         if f.session_id and s_.get("state") == "running":
@@ -3020,19 +3045,30 @@ def create_app(config: Config) -> FastAPI:
             except Exception as exc:
                 report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
         store.put("request", rid, report)
+        from . import hermes_task_mode
+        controller = hermes_task_mode._job() or {}
+        managed = bool(controller.get("no_agent"))
         try:
-            chat = hub.get(new_id())
-            store.put("chat", chat["id"], chat)
             prompt = (f"Resolve gBox auto report #{report['number']} ({rid}). {details}\n"
                       "Inspect the exact failure, fix the relevant model writer or mod path, verify the result in the game, "
                       "attach screenshots to this request, report each attempt and outcome, record actual token usage, "
                       "and mark the request done only after verification. Preserve the operator's running game and save state.")
-            hub.post(chat["id"], prompt, {"request_id": rid, "session_id": f.session_id,
+            if managed:
+                report["context"]["resolution_dispatch"] = "hermes_queue"
+                report["messages"].append({"author": "agent", "text":
+                    "Native replacement queued for Hermes. Identify the selected actor, repair or rebuild its native "
+                    "assets, and verify this donor in gameplay. Preview and overlay do not complete this request.",
+                    "ts": time.time(), "attachments": [], "task_step": {"action": "dispatch resolution",
+                    "attempt": "1", "result": "durable Hermes queue", "status": "queued"}})
+            else:
+                chat = hub.get(new_id())
+                store.put("chat", chat["id"], chat)
+                hub.post(chat["id"], prompt, {"request_id": rid, "session_id": f.session_id,
                                           "resolve_auto_report": True}, api_requests, None, [])
-            report = store.get("request", rid) or report
-            report["context"]["resolution_chat_id"] = chat["id"]
-            report["status"], report["started"] = "in_progress", time.time()
-            report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
+                report = store.get("request", rid) or report
+                report["context"]["resolution_chat_id"] = chat["id"]
+                report["status"], report["started"] = "in_progress", time.time()
+                report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
                                        "task_step": {"action": "dispatch resolution", "attempt": "1", "result": chat["id"], "status": "running"}})
         except Exception as exc:
             report = store.get("request", rid) or report

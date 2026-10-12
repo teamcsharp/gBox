@@ -114,7 +114,10 @@ def sync(data, favorites, requests, *, now):
         if request['id'] in {r['id'] for r in children.values()}:
             continue
         # Automatic recurring review reminders are never engineering work.
-        if (request.get('automated') or request.get('parent_request_id')
+        context = request.get('context') or {}
+        repair = bool(context.get('auto_report') or context.get('native_replacement')
+                      or request.get('source') == 'gap' and context.get('character'))
+        if ((request.get('automated') and not repair)
                 or str(request.get('body', '')).lstrip().startswith('gBox request review')):
             continue
         if request.get('status') not in ('open', 'in_progress'):
@@ -122,7 +125,9 @@ def sync(data, favorites, requests, *, now):
         item = data['items'].setdefault('inbox:' + request['id'], {
             'lane': 'inbox', 'request_id': request['id'], 'attempts': 0, 'last_dispatched': 0,
             'created': request.get('created', now)})
-        item.update(number=request.get('number'), title=request.get('title'))
+        item.update(number=request.get('number'), title=request.get('title'), repair=repair,
+                    game_id=context.get('game_id'), target=context.get('target'),
+                    character=context.get('character'))
     data.update(favorites_count=len(favorite_ids), synced_at=now)
 
 
@@ -165,11 +170,14 @@ def candidates(data, requests, native, owned, on_main, *, now):
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
     busy_games = {(j.get('input') or {}).get('game_id') or
                   ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
+    busy_games.update(i.get('game_id') for i in data['items'].values()
+                      if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned)
     heavy = sum(j.get('tool') in ('analyze_binary', 'ghidra_script', 'characters', 'doa2_assets') for j in native)
     result = []
     for key, item in data['items'].items():
         rid = item.get('request_id')
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
+                or item.get('game_id') and item['game_id'] in busy_games
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
@@ -185,7 +193,8 @@ def candidates(data, requests, native, owned, on_main, *, now):
             continue
         item['on_main'] = rid in on_main
         result.append((key, item))
-    return result
+    repair_games = {i.get('game_id') for _, i in result if i.get('repair') and i.get('game_id')}
+    return [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
 
 
 def choose(options, data):
@@ -193,8 +202,9 @@ def choose(options, data):
     preferred = 'favorite' if data.get('last_lane') == 'inbox' else 'inbox'
     lane = [v for v in options if v[1]['lane'] == preferred] or options
     return min(lane, key=lambda v: (
-        0 if v[1]['lane'] == 'favorite' or v[1].get('on_main') else 1,
-        v[1].get('last_dispatched', 0), v[1].get('created', 0), v[0])) if lane else None
+        v[1].get('last_dispatched', 0),
+        0 if v[1].get('repair') else 1 if v[1].get('on_main') else 2,
+        v[1].get('created', 0), v[0])) if lane else None
 
 
 def _prompt(item):
@@ -203,6 +213,16 @@ def _prompt(item):
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
     if item['lane'] == 'inbox':
+        if item.get('repair'):
+            header += ('This is an unfinished native character replacement. Read the preserved donor, target, '
+                       'normalized pick point, exact game build, screenshot and checkpoint from the request. '
+                       'Identify the selected actor and its native model/skeleton/animation slot using REA and '
+                       'Ghidra evidence; do not silently replace the player when a different actor was selected. '
+                       'Implement the missing reader/writer or rebuild marked assets, preserve source hashes, '
+                       'test the round trip and replay this donor/target in the game. A preview, overlay, build '
+                       'or successful tool exit is not completion. Require gameplay evidence of the actual '
+                       'replacement, animations and controls. Record exact pending job IDs and the next step; '
+                       'keep the request open until verified, or name a concrete external blocker. ')
         header += ('Its published branch is recorded on main. Confirm the exact deployed files and perform '
                    'the outstanding acceptance check before writing more source. ' if item.get('on_main') else '')
         return header + mode._handoff()
@@ -267,21 +287,28 @@ def tick(*, now=None):
                         and (j.get('schedule') or {}).get('kind') == 'once')
         from .hermes_recovery import _active_requests
         owned = _active_requests()
+        # A legacy/local resolution still owns its request until its chat finishes.
+        chat_ids = {(r.get('context') or {}).get('resolution_chat_id'): r['id'] for r in requests
+                    if (r.get('context') or {}).get('resolution_chat_id')}
+        if chat_ids:
+            owned.update(chat_ids[c['id']] for c in _api('/api/chat')
+                         if c.get('busy') and c.get('id') in chat_ids)
         native = _native_jobs()
         options = candidates(data, requests, native, owned, _on_main(), now=now)
         dispatched = []
         for _ in range(max(0, limit - len(reserved))):
-            # Reserve at most one slot for inbox completion; spend the remaining
-            # capacity on independent favorite games while that backlog exists.
-            inbox_busy = any(j.get('name', '').startswith(PREFIX + 'inbox ') and j['id'] in reserved for j in jobs)
-            inbox_busy = inbox_busy or any(d['lane'] == 'inbox' for d in dispatched)
-            if inbox_busy and any(v[1]['lane'] == 'favorite' for v in options):
-                options = [v for v in options if v[1]['lane'] == 'favorite']
-            chosen = choose(options, data)
+            # Give both backlogs capacity; spare slots go to whichever has work.
+            counts = {lane: sum(j.get('name', '').startswith(PREFIX + lane + ' ') and
+                               j['id'] in reserved for j in jobs) +
+                      sum(d['lane'] == lane for d in dispatched) for lane in ('inbox', 'favorite')}
+            least = min((counts[v[1]['lane']] for v in options), default=0)
+            chosen = choose([v for v in options if counts[v[1]['lane']] == least], data)
             if not chosen:
                 break
             key, item = chosen
             options.remove(chosen)
+            if item.get('game_id'):
+                options = [v for v in options if v[1].get('game_id') != item['game_id']]
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
             prompt = _prompt(item)

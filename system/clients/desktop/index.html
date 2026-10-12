@@ -2918,8 +2918,10 @@ async function gameJob(tool, input, wait = true) {
   const r = await gbox.api("/api/jobs", { tool, input: { session_id: sid, ...input }, require_worker: sid.split("-")[0] });
   if (!r.ok) throw new Error(r.error); let j = r.data;
   while (wait && ["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 400)); j = (await gbox.api(`/api/jobs/${j.id}`)).data; }
-  if (j.state === "failed") throw new Error(j.error || "failed");
-  return j.output?.result || j.output || {};
+  if (["failed", "rejected", "cancelled"].includes(j.state)) {
+    const error = new Error(j.error || j.state); error.jobId = j.id; throw error;
+  }
+  return { ...(j.output?.result || j.output || {}), job_id: j.id };
 }
 function toast(t, ms = 3500) { const b = $("#chatbusy"); b.textContent = t; clearTimeout(toast.t); toast.t = setTimeout(() => b.textContent = CH.busy ? "● working…" : "", ms); }
 function gameSettings(anchor) {
@@ -4355,11 +4357,12 @@ async function whipMenu(ev) {
   return whipMenuGame(ev);
 }
 // a character card <-> something in the game: replace that thing with the character (in-game swap, or an overlay now)
-async function autoWhipFailure({ sid, game, model, target, moment, detail, shot, jobId }) {
+async function autoWhipFailure({ sid, game, model, character, target, targetKind, x, y, moment, detail, shot, jobId, rebuild = false, requested = false }) {
   const r = await gbox.api("/api/requests/auto-mod-failure", { session_id: sid || "", game, model,
     action: "pick whip model replacement", target, moment, detail, job_id: jobId || "",
-    image_b64: shot || null }).catch(() => null);
-  if (r?.ok) { toast(`Auto report #${r.data.number} filed; resolution dispatched`, 12000); refreshInbox(); }
+    character: character || "", target_kind: targetKind || "", x, y,
+    needs_rebuild: rebuild, replacement_requested: requested, image_b64: shot || null }).catch(() => null);
+  if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); }
   else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
 }
 async function whipCardMenu(card, gp, ev) {
@@ -4369,16 +4372,38 @@ async function whipCardMenu(card, gp, ev) {
   m.style.left = Math.min(innerWidth - 330, gp[0] + 12) + "px"; m.style.top = Math.min(innerHeight - 300, Math.max(40, gp[1] - 20)) + "px";
   m.innerHTML = `<b>${esc(card.name)} → ${esc(game)}</b><p class="mut">Looking at what you dropped it on…</p>`; m.classList.add("on");
   const shot = ev.shot ? ev.shot.split(",")[1] : null;
-  // The native writer resolves the precise game point. A model-card drop needs no vision/model call.
-  const T = { name: "the character at this point", kind: "character" };
+  let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
     <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="x"><span>…</span>Something else (type it)</button>`;
+  m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
+  if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
+  m.insertAdjacentHTML("beforeend", '<button data-w="rebuild">Identify target and mark for rebuild</button>');
   m.onclick = async e => {
-    const bt = e.target.closest("button[data-w]"); if (!bt) return; m.classList.remove("on");
+    const bt = e.target.closest("button[data-w]"); if (!bt) return;
+    if (bt.dataset.w === "identify") {
+      bt.disabled = true;
+      const point = [gp[0] / innerWidth, gp[1] / innerHeight];
+      const identified = await gbox.api("/api/whip/identify", { image: shot, a: point, b: point, game }).catch(() => null);
+      bt.disabled = false;
+      if (identified?.ok && identified.data?.b?.name && EMB.sid === targetSid && m.contains(bt)) {
+        T = identified.data.b; m.querySelector("#whip-target-name").value = T.name;
+      } else toast("Character identification unavailable; enter a name or mark this point for rebuild.");
+      return;
+    }
+    m.classList.remove("on");
+    T.name = m.querySelector("#whip-target-name")?.value.trim() || T.name;
+    if (!targetSid || EMB.sid !== targetSid) { toast("The selected game changed; pick the target again."); return; }
+    const reportContext = { sid: targetSid, game, model: card.name, character: card.slug,
+      target: T.name, targetKind: T.kind, x: +f[0].toFixed(4), y: +f[1].toFixed(4), moment: at, shot };
+    if (["swap", "rebuild"].includes(bt.dataset.w)) {
+      await autoWhipFailure({ ...reportContext, requested: true, rebuild: bt.dataset.w === "rebuild",
+        detail: "Identify the selected native actor and replace it with this donor. Repair missing readers/writers, rebuild marked assets, and verify the replacement with animations and controls in gameplay. Preserve the current game until a verified build is ready." });
+      return;
+    }
     if (bt.dataset.w === "live") {
       const sid = targetSid;
       if (!sid || EMB.sid !== sid) { toast("The selected game changed; pick the target again."); return; }
@@ -4387,12 +4412,10 @@ async function whipCardMenu(card, gp, ev) {
         const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
           x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
         toast(res.message || res.status, 12000);
-        if (/unsupported|failed|error|not_in_collection/i.test(res.status || ""))
-          await autoWhipFailure({ sid, game, model: card.name, target: T.name, moment: at,
-            detail: res.message || res.status, shot });
+        if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
+          await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });
       } catch (err) {
-        await autoWhipFailure({ sid, game, model: card.name, target: T.name, moment: at,
-          detail: err.message, shot, jobId: err.jobId });
+        await autoWhipFailure({ ...reportContext, detail: err.message, jobId: err.jobId });
       }
       return;
     }
