@@ -151,6 +151,10 @@ def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
     """Use the sprite sheet itself as the collection preview, fitted to a square."""
     from PIL import Image
     im = Image.open(src).convert("RGBA")
+    if im.width and im.height and max(im.size) < size:
+        # a handful of 8x8 tiles would cover <1% of the canvas: enlarge pixel-exact so check_preview judges the sprites
+        f = size // max(im.size)
+        im = im.resize((im.width * f, im.height * f), Image.NEAREST)
     im.thumbnail((size, size))
     canvas = Image.new("RGBA", (size, size), (38, 40, 48, 255))
     canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
@@ -379,7 +383,7 @@ def verify_entry(root: Path, meta: dict) -> dict:
            "triangles": meta.get("stats", {}).get("triangles", 0), "textures": meta.get("stats", {}).get("textures", 0)}
     out["preview"] = check_preview(prev) if prev.is_file() else {"ok": False, "error": "no preview"}
     if meta.get("kind") == "sprites":
-        out["ok"] = bool(out["model_bytes"] and prev.is_file())
+        out["ok"] = bool(out["model_bytes"] and out["preview"].get("ok"))
     else:
         out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
     return out

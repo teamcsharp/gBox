@@ -100,6 +100,36 @@ def test_collect_reports_failed_and_unrigged_models(monkeypatch, tmp_path):
     assert C.collect(ctx, C.CharIn(op='collect'))['status'] == 'partial'  # all meshes exist, one lacks a rig
 
 
+def test_collect_counts_sprite_sets_as_done_without_a_rig(monkeypatch, tmp_path):
+    """A 2D reader's roster says character but its stored meta says sprites (tetris_ds): no rig is ever expected."""
+    game = {'game_id': 'fixture', 'title': 'Fixture', 'platform': 'test'}
+    entries = [{'slug': 'sheet', 'name': 'sheet', 'aliases': []}]
+    monkeypatch.setattr(C, 'DEDICATED', [('fixture', lambda t, p: True, lambda: entries, None)])
+    monkeypatch.setattr(C, '_game', lambda ctx, inp: game)
+    monkeypatch.setattr(C, 'library_root', lambda cfg: tmp_path)
+    monkeypatch.setattr(C, 'extract_dedicated',
+                        lambda ctx, game, slug, root, prepared: {'status': 'in_collection', 'entry': {'slug': slug}})
+    monkeypatch.setattr(C, 'get', lambda root, slug: {'slug': slug, 'name': slug, 'kind': 'sprites', 'rig': {'roles': {}}})
+    monkeypatch.setattr(C, 'verify_entry', lambda root, meta: {'ok': True})
+    ctx = SimpleNamespace(config=None, progress=lambda *args: None)
+    result = C.collect(ctx, C.CharIn(op='collect'))
+    assert result['status'] == 'complete' and result['characters'] == 0 and result['collected'] == 1
+    assert result['entries'][0]['kind'] == 'sprites' and result['entries'][0]['message'] == ''
+
+
+def test_sprite_preview_of_a_small_sheet_passes_check_preview(tmp_path):
+    """Tiny sheets are enlarged pixel-exact so check_preview judges the sprites, not the empty canvas."""
+    from PIL import Image, ImageDraw
+    sheet = Image.new('RGBA', (64, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(sheet)
+    for i, colour in enumerate(((255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 0, 255))):
+        draw.rectangle([i * 8, 0, i * 8 + 7, 7], fill=colour)
+    sheet.save(tmp_path / 'sheet.png')
+    C._sprite_preview(tmp_path / 'sheet.png', tmp_path / 'preview.png')
+    assert Image.open(tmp_path / 'preview.png').size == (384, 384)
+    assert C.check_preview(tmp_path / 'preview.png')['ok']
+
+
 def test_collect_scales_each_extractor_progress_across_roster(monkeypatch, tmp_path):
     game = {'game_id': 'fixture', 'title': 'Fixture', 'platform': 'test'}
     entries = [{'slug': s, 'name': s, 'aliases': []} for s in ('first', 'second')]
