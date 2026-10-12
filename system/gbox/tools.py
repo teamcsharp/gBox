@@ -325,6 +325,13 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         src = rom_path(g, ctx.config)
         if not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
+        if isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
+            eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
+            if not eboot:
+                raise FileNotFoundError(f"no PS3_GAME/USRDIR/EBOOT.BIN in the folder for {src.name} under {src.parent}")
+            ad.serial = ad.serial or catalog.ps3_title_id(eboot)    # per-game RPCS3 config (Sessions -> Graphics)
+            ctx.progress(8, f"PS3 game: {eboot}")
+            src = eboot
         if g.game_id == "0871eee3b68cdea3":                # Resident Evil 6 (X360): boot profile "Everything unlocked"
             try:
                 from . import re6_tool
@@ -455,6 +462,20 @@ def _stageable(src: Path) -> bool:
     return src.suffix.lower() not in (".cue", ".gdi", ".m3u")
 
 
+def _rpc_answerer(sid: str, client):
+    """Answer live-channel requests (pause/resume, reset, inspector reads) through one keep-alive client. A new httpx
+    client per reply builds an SSL context and opens a TCP connection every time, on the path of every click (#1123)."""
+    def answer(ev):
+        try:
+            result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {})}
+        except Exception as e:
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        try:
+            client.post(f"/api/sessions/{sid}/rpc/{ev['rpc']}", json=result)
+        except httpx.HTTPError:
+            pass
+    return answer
+
 def _pump(sid: str, ad, server: str, headers: dict):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -481,15 +502,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
             except httpx.HTTPError:
                 time.sleep(1)
 
-    def answer(ev):
-        try:
-            result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {})}
-        except Exception as e:
-            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        try:
-            httpx.post(f"{server}/api/sessions/{sid}/rpc/{ev['rpc']}", json=result, headers=headers, timeout=10)
-        except httpx.HTTPError:
-            pass
+    answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10))
 
     def inputs():
         # one channel carries pad/keyboard events and read-only inspector requests ({"rpc": id, "op", "args"})
@@ -573,11 +586,15 @@ def session_rpc(sid: str, op: str, args: dict):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')}: open its controller settings from its own window")
         ad.cmd("MENU_TOGGLE")
         return {"menu": "toggled"}
+    if op in ("pause", "resume"):                      # the pause button, instantly (no job queue, #1123)
+        if op not in getattr(ad, "supported", ()):
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} cannot {op} from gBox")
+        return getattr(ad, op)() or {}
     if op == "reset":                                  # the console's reset switch, instantly (no job queue)
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
         return ad.reset() or {"reset": True}
-    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, debug_*)")
+    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, pause, resume, debug_*)")
 
 
 def _semantic_state(ad, g: dict, player_only: bool = False):
@@ -722,6 +739,9 @@ def session_op(inp: SessionIn, ctx: Ctx):
         except Exception:
             pass
     if inp.op == "stop_game":
+        proc = getattr(ad, 'proc', None)
+        if proc is not None and proc.poll() is None:
+            raise RuntimeError('Emulator process is still running; stop was not confirmed')
         SESSIONS.pop(inp.session_id, None)
         track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
@@ -2871,6 +2891,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
+                              "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
                               "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
     import importlib
     import subprocess

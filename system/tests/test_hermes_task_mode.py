@@ -27,7 +27,7 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
 
     def fake_run(*args):
         calls.append(args)
-        job = mode._job() or {"id": "hermes-job", "name": mode.NAME, "model": "qwen3.6:35b"}
+        job = mode._job() or {"id": "hermes-job", "name": mode.NAME, "model": "qwen3.6:35b", "no_agent": True}
         job["enabled"] = args[0] != "pause"
         (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [job]}))
 
@@ -39,19 +39,18 @@ def test_task_mode_toggle_controls_one_hermes_job(cfg, monkeypatch, tmp_path):
     assert enabled.json()["enabled"] is True
     assert enabled.json()["model"] == "qwen3.6:35b"
     assert calls[0][0] == "create"
-    assert calls[0][1] == "every 30m"
+    assert calls[0][1] == "every 1m"
+    assert '--no-agent' in calls[0] and '--script' in calls[0]
+    assert calls[0][calls[0].index('--script') + 1] == 'gbox-work-queue.py'
     assert calls[0][calls[0].index('--reasoning-effort') + 1] == 'high'
     assert "--skill" not in calls[0]
     assert "--workdir" in calls[0]
     assert client.post("/api/hermes/task-mode", json={"enabled": True}).status_code == 200
-    assert [c[0] for c in calls] == ["create", "create"]
-    assert dt.datetime.fromisoformat(calls[1][1]) > dt.datetime.now(dt.timezone.utc)
-    assert '--repeat' in calls[1]
+    assert [c[0] for c in calls] == ["create"]
     assert client.post("/api/hermes/task-mode", json={"enabled": False}).json()["enabled"] is False
     assert calls[-1] == ("pause", "hermes-job")
     assert client.post("/api/hermes/task-mode", json={"enabled": True}).json()["enabled"] is True
-    assert [c[0] for c in calls[-3:]] == ["edit", "resume", "create"]
-    assert calls[-3][1:3] == ("hermes-job", "--clear-skills")
+    assert calls[-1] == ('resume', 'hermes-job')
 
 
 def test_task_mode_follows_connected_provider_and_releases_its_legacy_local_pin(monkeypatch, tmp_path):

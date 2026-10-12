@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 
 from .models import Job, JobState
 
+WINDOW_SURFACE = 'window-surface'   # adapters.WINDOW_SURFACE: the emulator window rendered itself
+
 
 # Versioned recipes keep the menu and the backend execution plan in sync. Add new
 # repairs here after reproducing and testing them, rather than accepting shell text.
@@ -32,6 +34,13 @@ RECIPES = [
     {'id': 'best_graphics', 'label': 'Apply this PC’s GPU preset',
      'detail': 'Record current settings, save the GPU preset, restart and load the checkpoint.'},
 ]
+
+
+# Probe frames are resized to 96x72; the top ~20% is where HUD timers, score and
+# status text are drawn by the CPU even while every 3D/textured layer stays black
+# (angrylion RDP + HLE RSP on MK4). A changing timer must not count as gameplay
+# motion, so the recovery motion check ignores this band.
+HUD_BAND_ROWS = 14
 
 
 class IncidentIn(BaseModel):
@@ -113,28 +122,45 @@ class Incident:
         image = Image.open(io.BytesIO(raw)).convert('RGB').resize((96, 72))
         luma = ImageStat.Stat(image.convert('L')).mean[0]
         covered = out.get('covered', 0)
+        self.frame_source = out.get('capture_source')
+        surface = covered and self.frame_source == WINDOW_SURFACE
         self.step(label, f'Game screenshot captured; mean RGB luminance {luma:.2f}'
-                         + (f'; {covered}/9 capture points covered by another window.' if covered else '.'),
+                         + (f'; {covered}/9 capture points covered by another window'
+                            + (", pixels rendered from the emulator's own window." if surface else '.')
+                            if covered else '.'),
                   attachment={'sha256': ref['sha256'], 'name': label.replace(' ', '-') + '.png',
                               'type': 'image/png', 'size': ref['size']})
         return image, luma, covered
 
     def observe(self):
         previous, visible, covered_error = None, False, None
+        previous_source = None
         errors = []
         for delay in (0, 2, 4, 8):
             self.sleep(delay)
             try:
                 image, luma, covered = self.frame('verify recovery frame')
-                if covered:
+                # PrintWindow renders the emulator's own surface, so its pixels are the game even when
+                # another window covers it. Compare only frames captured the same way (#1057).
+                source = WINDOW_SURFACE if covered and getattr(self, 'frame_source', None) == WINDOW_SURFACE else 'screen'
+                if source != previous_source:
+                    previous = None
+                previous_source = source
+                if covered and source != WINDOW_SURFACE:
                     covered_error = f'frame capture had {covered}/9 points covered by another window (pixels are the window surface)'
                     # A newly exposed static game is not motion relative to an
                     # obscuring window. Start a fresh clear-frame comparison.
                     previous = None
                     continue
                 visible |= luma > 3
-                if previous is not None and luma > 3 and ImageStat.Stat(ImageChops.difference(previous, image)).mean[0] > .6:
-                    return {'visible': True, 'motion': True}
+                if previous is not None and luma > 3:
+                    diff = ImageChops.difference(previous, image)
+                    if diff.height > HUD_BAND_ROWS:
+                        # HUD timers keep ticking on a dead scene; motion must
+                        # come from the playfield below the HUD band.
+                        diff = diff.crop((0, HUD_BAND_ROWS, diff.width, diff.height))
+                    if ImageStat.Stat(diff).mean[0] > .6:
+                        return {'visible': True, 'motion': True}
                 previous = image
             except Exception as exc:
                 errors.append(str(exc)[:500])

@@ -17,7 +17,7 @@ EXT_PLATFORM = {
     ".n64": "n64", ".z64": "n64", ".v64": "n64", ".md": "genesis", ".gen": "genesis", ".smd": "genesis", ".sms": "sms",
     ".gg": "gamegear", ".pce": "pce", ".gdi": "dreamcast", ".cdi": "dreamcast", ".gcm": "gamecube", ".gcz": "gamecube",
     ".rvz": "gamecube_wii", ".wbfs": "wii", ".wua": "wiiu", ".pbp": "psp", ".cso": "psp", ".nds": "nds",
-    ".3ds": "3ds", ".xci": "switch", ".nsp": "switch",
+    ".3ds": "3ds", ".xci": "switch", ".nsp": "switch", ".lst": "naomi",
 }
 SNIFF_EXT = {".iso", ".bin", ".img", ".cue", ".chd"}   # container formats: platform needs header sniffing
 REGION_TAGS = {"USA": "US", "Europe": "EU", "Japan": "JP", "World": "World", "Korea": "KR", "Australia": "AU"}
@@ -42,6 +42,34 @@ def param_sfo(b: bytes) -> dict:
         v = b[dt + do:dt + do + ln]
         out[key] = struct.unpack("<I", v[:4])[0] if fmt == 0x0404 else v.rstrip(b"\x00").decode("utf-8", "replace")
     return out
+
+
+def ps3_stub_eboot(stub: Path) -> Path | None:
+    """HyperSpin PS3 "<name>.txt" stub -> its game's EBOOT.BIN, by RocketLauncher's RPCS3.ahk rules, or None.
+
+    The stub's first line may name the game folder (relative to the stub's folder, or absolute); an empty stub means
+    the folder beside it with the stub's own name. Disc dumps keep PS3_GAME/USRDIR/EBOOT.BIN, PSN games USRDIR/EBOOT.BIN.
+    """
+    stub = Path(stub)
+    try:
+        lines = stub.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    named = lines[0].strip().strip('"').strip() if lines else ""
+    for folder in ([stub.parent / named] if named else []) + [stub.parent / stub.stem]:
+        for rel in (("PS3_GAME", "USRDIR", "EBOOT.BIN"), ("USRDIR", "EBOOT.BIN")):
+            f = folder.joinpath(*rel)
+            if f.is_file():
+                return f
+    return None
+
+
+def ps3_title_id(eboot: Path) -> str | None:
+    """TITLE_ID (e.g. BLUS30736) from the PARAM.SFO two levels above a PS3 game's USRDIR/EBOOT.BIN."""
+    try:
+        return param_sfo((Path(eboot).parent.parent / "PARAM.SFO").read_bytes()).get("TITLE_ID") or None
+    except Exception:                                      # noqa: BLE001 - unreadable/odd SFO: no per-game settings
+        return None
 
 
 def sniff(path: Path) -> tuple[str | None, dict]:
@@ -132,6 +160,30 @@ def _referenced_tracks(path: Path) -> set[Path]:
     return out
 
 
+GD_LIST_LINE = re.compile(r'^\d+\s+\d+\s+\d+\s+\d+\s+(?:"[^"]*"|\S+)\s+\d+$')
+
+
+def is_gd_list(path: Path) -> bool:
+    """True when a .lst file looks like a NAOMI/Atomiswave GD-ROM track list
+    (Demul/Flycast format: session mode type sectorsize "filename" offset)."""
+    try:
+        text = path.read_text(errors="replace")[:4096]
+    except OSError:
+        return False
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith(("#", ";"))]
+    return bool(lines) and all(GD_LIST_LINE.match(ln) for ln in lines)
+
+
+def _lst_tracks(path: Path) -> set[Path]:
+    """Data files referenced by a .lst GD-ROM list; cataloged as part of the set, not separately."""
+    out = set()
+    for ln in path.read_text(errors="replace").splitlines():
+        m = re.findall(r'"[^"]+"|\S+', ln)
+        if len(m) >= 5:
+            out.add((path.parent / m[4].strip('"')).resolve())
+    return out
+
+
 def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = None,
          lib_id: str | None = None, do_hash: bool = True, platform_hint: str | None = None,
          recursive: bool = True, exclude_dirs: list[str] | None = None,
@@ -155,7 +207,9 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 fnmatch(Path(dirpath, n).relative_to(root).as_posix().lower(), pattern.lower())
                 for pattern in (exclude_files or []))]
     sheets = [f for f in files if f.suffix.lower() in (".cue", ".gdi")]
-    tracks = set().union(*(_referenced_tracks(s) for s in sheets)) if sheets else set()
+    lsts = [f for f in files if f.suffix.lower() == ".lst" and is_gd_list(f)]
+    tracks = set().union(*(_referenced_tracks(s) for s in sheets), *(_lst_tracks(s) for s in lsts)) \
+        if sheets or lsts else set()
 
     by_hash: dict[str, CatalogEntry] = {}
     ps3 = {f.parents[2] for f in files if f.name.upper() == "EBOOT.BIN" and f.parent.name.upper() == "USRDIR"
@@ -218,6 +272,21 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                     problems.append(f"sheet references no existing tracks: {f}")
                     continue
                 hash_target = max(candidates, key=lambda r: r.stat().st_size)
+            if ext == ".lst":
+                # NAOMI/Atomiswave GD-ROM list sets: the .lst is the game, its data files are not separate entries.
+                if not is_gd_list(f):
+                    continue
+                if not (platform_hint in ("naomi", "naomi2", "atomiswave")
+                        or re.search(r"naomi|atomiswave", str(f).lower())):
+                    problems.append(f"unidentified platform: {f}")
+                    continue
+                candidates = [r for r in sorted(_lst_tracks(f)) if r.exists()]
+                if not candidates:
+                    problems.append(f"list references no existing tracks: {f}")
+                    continue
+                hash_target = max(candidates, key=lambda r: r.stat().st_size)
+                platform_ = platform_hint if platform_hint in ("naomi", "naomi2", "atomiswave") else "naomi"
+                conf = "extension"
             if ext in SNIFF_EXT or ext in (".gdi", ".gcm"):
                 for c in candidates:
                     p2, meta = sniff(c)

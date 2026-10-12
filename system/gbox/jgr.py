@@ -651,7 +651,9 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     return int(digits)
 
 
-CACHE_VERSION = 3  # Multi-root writer invalidates prior single-root caches.
+CACHE_VERSION = 5  # 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
+                   # put new vertices past the native cache span and drew no body in gameplay (#1153 live).
+                   # 5: new vertices stay inside every group's native span (#1156).
 
 
 def donor_fingerprint(model, roles: dict, scale=None) -> str:
@@ -780,11 +782,14 @@ def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = No
 
 
 def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
-    """Other textured full-body groups with exactly equivalent native bind state.
+    """Other textured full-body groups whose native bind state matches up to node-local translations.
 
-    Parent counts alone cannot establish interchangeable local model coordinates.
-    Refuse a matching body graph with different transforms/evaluation flags before
-    fitting or rewriting. Selection of these groups remains runtime-unverified.
+    Parent counts alone cannot establish interchangeable local model coordinates. A group that moves only
+    node-local positions (archive 04's gameplay bodies 0x8da4/0x2039c place hand node 15 elsewhere than the
+    max-triangle body) is accepted: build_swap re-expresses the new geometry of every node whose bind origin
+    moves in that group's own frame (`twin_offsets`), so the group's bind pose matches the primary's.
+    Different rotations, scales or evaluation flags are still refused before fitting or rewriting.
+    Selection of these groups remains runtime-unverified.
     """
     from . import ninja
     primary = ninja.tree_nodes(buf, root)
@@ -804,11 +809,41 @@ def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[
             raise ValueError(f"Cannot classify JGR draw group {candidate:#x}") from error
         if not any(texture >= 0 and faces for texture, faces in geometry.tris.items()):
             continue
-        if any(a["trs"] != b["trs"] or (a["flags"] & ~8) != (b["flags"] & ~8)
-               for a, b in zip(primary, nodes)):
+        if any(a["trs"][12:] != b["trs"][12:] or (a["flags"] & ~8) != (b["flags"] & ~8)
+               for a, b in zip(primary, nodes)):         # trs = pos 3f | ang 3i | scl 3f: only pos may move
             raise ValueError(f"JGR body group {candidate:#x} has a different native bind/evaluation state; "
                              "independent retargeting is required before rewriting it")
         out[candidate] = nodes
+    return out
+
+
+def _bind_world(nodes: list[dict]) -> list:
+    """World bind matrices of a depth-first node list (Ninja UNIT_POS/ANG/SCL and ZXY_ANG flags honoured)."""
+    from .ninja import _mat_mul, _node_matrix
+    out = []
+    for nd in nodes:
+        fl = nd["flags"]
+        pos = (0.0, 0.0, 0.0) if fl & 1 else struct.unpack_from("<3f", nd["trs"], 0)
+        ang = (0, 0, 0) if fl & 2 else struct.unpack_from("<3i", nd["trs"], 12)
+        scl = (1.0, 1.0, 1.0) if fl & 4 else struct.unpack_from("<3f", nd["trs"], 24)
+        local = _node_matrix(pos, ang, scl, bool(fl & 0x20))
+        out.append(local if nd["parent"] is None else _mat_mul(out[nd["parent"]], local))
+    return out
+
+
+def twin_offsets(primary: list[dict], twin: list[dict], tol: float = 1e-6) -> dict[int, tuple[float, float, float]]:
+    """{node: local offset} that re-expresses primary-frame geometry in a translation-only twin's node frame.
+
+    body_twins guarantees equal rotations, scales and evaluation flags, so inv(W_twin) @ W_primary is a pure
+    translation for every node; adding it to the new vertices keeps the twin's bind pose identical."""
+    import numpy as np
+    out = {}
+    for j, (a, b) in enumerate(zip(_bind_world(primary), _bind_world(twin))):
+        m = np.linalg.inv(np.array(b, float)) @ np.array(a, float)
+        if not np.allclose(m[:3, :3], np.eye(3), atol=1e-5):
+            raise ValueError(f"JGR twin node {j} differs by more than a translation; independent retargeting is required")
+        if float(np.abs(m[:3, 3]).max()) > tol:
+            out[j] = tuple(float(x) for x in m[:3, 3])
     return out
 
 
@@ -823,9 +858,12 @@ def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
 def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender: str | None = None,
                progress=lambda p, m: None, scale: dict | None = None) -> dict:
     """-> {files {PLAYER_AFS: bytes}, report, rigged, atlas}: character `index`'s high-detail body drawn as `model`
-    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh); every node keeps its original vertex
-    chunks (the game's skinning reads them), the new vertices go after them in the vertex cache and the new strips
-    draw those with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
+    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh). Each rewritten node carries only its
+    own new vertices (JGR vertex chunks are plain 0x29, not SA2's weighted ones, so no original chunk has to run
+    first), placed at the node's native cache base and clamped so every slot stays inside the native vertex span of
+    EVERY group that draws the shared models (`vertex_slots`): on Beat, slots 368-529 past the stock 0-354 (low LOD
+    0-178) drew no body at all in gameplay while the cutscene renderer drew it (#1153 live, #1156). The new strips
+    draw with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
     their own AFS room, so PLAYER.AFS keeps its size; the model is decimated until it fits."""
     import numpy as np
     from pathlib import Path
@@ -844,6 +882,22 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     mat, tiny_fl, tex_fl, strip_fl = _material(buf, nodes)
     twins = body_twins(buf, data, play, root)
     twin_nodes = [nd for group in twins.values() for nd in group]
+    offsets = {g: twin_offsets(nodes, group) for g, group in twins.items()}
+    copies = {}                                    # (node, offset) -> blob key >= 20; twins with one offset share it
+    for g, offs in offsets.items():
+        for j, d in sorted(offs.items()):
+            copies.setdefault((j, tuple(round(x, 6) for x in d)), len(nodes) + len(copies))
+
+    def copy_key(g, j):
+        d = offsets[g].get(j)
+        return None if d is None else copies[(j, tuple(round(x, 6) for x in d))]
+    spans = {}
+    for group_root in [root, *twins]:
+        cache = nj.vbuf if group_root == root else play_model(buf, group_root).vbuf
+        if not cache:
+            raise ValueError(f"JGR body group {group_root:#x} writes no vertex cache slots")
+        spans[group_root] = max(cache) + 1
+    vlimit = min(spans.values())                           # every group must find each new slot in its own span
     mine = {nd["off"] for nd in nodes + twin_nodes}
     others = []
     for r in play_model_roots(data, play):
@@ -909,35 +963,48 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     tail = (len(buf) + 3) & ~3
     spare = [(tail, room)] if room - tail >= 4 else []     # the AFS padding after the entry: a last resort
 
-    def orig_vlist(nd):
+    def orig_base(nd):
         if not nd["model"]:
-            return b""
+            return 0
         vl = struct.unpack_from("<I", buf, nd["model"])[0]
-        return buf[vl:vl + ninja.chunk_list_len(buf, vl, "v") - 4] if vl else b""
-    vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
+        return struct.unpack_from("<H", buf, vl + 4)[0] if vl else 0
     homes = {}                                             # where each node's old vlist / plist / model sat
     for j, nd in enumerate(nodes):
         if nd["model"]:
             vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
             homes.update({("v", j): vl or nd["model"], ("p", j): pl_ or nd["model"], ("m", j): nd["model"]})
+    for g, group in twins.items():                         # a re-expressed copy goes back where its twin's lists sat
+        for j, nd in enumerate(group):
+            key = copy_key(g, j)
+            if key is not None and nd["model"] and ("m", key) not in homes:
+                vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
+                homes.update({("v", key): vl or nd["model"], ("p", key): pl_ or nd["model"], ("m", key): nd["model"]})
 
     def encode(geo):
-        # every blob (vertex lists, which carry the kept original chunks, poly lists, model structs) is sized
+        # every blob (new-only vertex lists, poly lists, model structs) is sized
         # first, then packed into the freed holes + the entry's AFS padding together (pack_blobs), so a node
         # whose new lists outgrow its own hole no longer spills past the entry while other holes sit empty
         built, blobs = {}, {}
         for j, nd in enumerate(nodes):
-            keep = orig_vlist(nd)
             if j in geo:
                 P, N, T = geo[j]
+                if len(P) > vlimit:                         # ValueError: fit() retries a smaller budget
+                    raise ValueError(f"node {j}: {len(P)} vertices > {vlimit} native vertex cache slots")
                 built[j] = ninja.cnk_model_lists(P, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
-                                                 base=vbase, keep_vlist=keep)
+                                                 base=min(orig_base(nd), vlimit - len(P)))
                 blobs[("v", j)] = built[j][0]
                 blobs[("p", j)] = built[j][1]
-            elif keep:
-                blobs[("v", j)] = keep + struct.pack("<I", 0xFF)
             if nd["model"]:
                 blobs[("m", j)] = bytes(24)
+        for (j, d), key in copies.items():                 # the same strips, expressed in a twin's own node frame
+            if j in geo:
+                P, N, T = geo[j]
+                moved = [[p[0] + d[0], p[1] + d[1], p[2] + d[2]] for p in P]
+                built[key] = ninja.cnk_model_lists(moved, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
+                                                   base=min(orig_base(nodes[j]), vlimit - len(P)))
+                blobs[("v", key)] = built[key][0]
+                blobs[("p", key)] = built[key][1]
+                blobs[("m", key)] = bytes(24)
         if any(nd["model"] and j not in built for j, nd in enumerate(nodes)):
             blobs[("e", 0)] = struct.pack("<HH", 0xFF, 0)
         sizes = {k: len(v) for k, v in blobs.items()}
@@ -962,15 +1029,20 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
             elif nd["model"]:
                 c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
                 blobs[("m", j)] = struct.pack("<II4f", at.get(("v", j), 0), at[("e", 0)], *c_r)
+        for key in sorted(k for k in built if k >= len(nodes)):
+            _vl, _pl, c, r = built[key]
+            blobs[("m", key)] = struct.pack("<II4f", at[("v", key)], at[("p", key)], *c, r)
         for k, v in blobs.items():
             out[at[k]:at[k] + len(v)] = v
         for j, nd in enumerate(nodes):
             flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
             struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
-        for group in twins.values():
+        for g, group in twins.items():
             for j, nd in enumerate(group):
                 flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
-                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
+                key = copy_key(g, j)
+                key = key if key is not None and key in built else j
+                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", key), 0))
         if len(out) > room:
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)
@@ -991,9 +1063,12 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                          "native_id": native_id_for_archive(data, index),
                          "source_afs_sha256": hashlib.sha256(data).hexdigest(),
                          "body_root": f"{root:#x}", "body_groups": [f"{r:#x}" for r in [root, *twins]],
+                         "bind_offsets": {f"{g:#x}": {str(j): [round(x, 5) for x in d] for j, d in sorted(o.items())}
+                                          for g, o in offsets.items() if o},
                          "body_selection": "max_triangles_unverified",
                          "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
-                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
+                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_slots": vlimit,
+                         "group_vertex_spans": {f"{k:#x}": v for k, v in spans.items()}}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
 

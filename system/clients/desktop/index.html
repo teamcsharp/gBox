@@ -940,7 +940,7 @@ window.taskVizCreate = canvas => {
     <button id="ch-close" title="Close">✕</button></div>
   <div id="chatlog"></div><div id="chatimgs"></div>
   <div id="chatcomp"><textarea id="chatin2" rows="1" placeholder="Reply to gBox…" title="Enter sends · Shift+Enter new line · paste or drop images" autocomplete="off"></textarea>
-    <button id="chatvoice" title="Voice mode: talk with gBox hands-free (click again to end)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4"/><path d="M7 6v12"/><path d="M11 3v18"/><path d="M15 7v10"/><path d="M19 10v4"/></svg></button>
+    <button id="chatvoice" title="Voice mode: talk with gBox hands-free (click again to end)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg></button>
     <button id="chatsend" title="Send (Enter)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></button></div></div></div>
 <div class="pickhint" id="pickhint">Eyedropper: hover any element · ↑/↓ = parent/child · click to select · Esc to cancel</div>
 <div id="report"><div class="stage">
@@ -2904,11 +2904,16 @@ function pipMenu(x, y) {
 
 async function gameClose() {                                  // ✕ on the game's bar: stop the game, take its window away
   if (!EMB.sid) { pipHandle(null); await gbox.embedKill?.(); await gbox.embedSync(null); EMB.pid = EMB.rect = null; EMB.last = ""; return; }   // a leftover window: just close it
-  const sid = EMB.sid; EMB.closed.add(sid); pipHandle(null); EMB.last = "";          // no confirm: ✕ closes, at once
-  await gbox.embedKill?.(); await gbox.embedSync(null); EMB.pid = EMB.sid = EMB.rect = null;   // gone now
-  gameJob("session_op", { session_id: sid, op: "stop_game", args: {} }).catch(() => {});        // session cleanup in the background
-  gbox.api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "close button" }).catch(() => {});  // even if its worker lost it
-  toast("Closed");
+  const sid = EMB.sid;
+  try {
+    const j = await gameJob("session_op", { session_id: sid, op: "stop_game", args: {} });
+    if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error('Emulator stop was not confirmed');
+    EMB.closed.add(sid);
+    if (EMB.sid === sid) {
+      pipHandle(null); await gbox.embedSync(null); EMB.pid = EMB.sid = EMB.rect = null; EMB.last = "";
+    }
+    toast("Closed");
+  } catch (error) { toast('Could not stop game: ' + error.message); }
 }
 // ---------------- game menu actions (right click on the game, the PiP bar or its ⋮ button) ----------------
 const GM = { menu: false, auto: false, slot: 0 };
@@ -2918,8 +2923,10 @@ async function gameJob(tool, input, wait = true) {
   const r = await gbox.api("/api/jobs", { tool, input: { session_id: sid, ...input }, require_worker: sid.split("-")[0] });
   if (!r.ok) throw new Error(r.error); let j = r.data;
   while (wait && ["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 400)); j = (await gbox.api(`/api/jobs/${j.id}`)).data; }
-  if (j.state === "failed") throw new Error(j.error || "failed");
-  return j.output?.result || j.output || {};
+  if (["failed", "rejected", "cancelled"].includes(j.state)) {
+    const error = new Error(j.error || j.state); error.jobId = j.id; throw error;
+  }
+  return { ...(j.output?.result || j.output || {}), job_id: j.id };
 }
 function toast(t, ms = 3500) { const b = $("#chatbusy"); b.textContent = t; clearTimeout(toast.t); toast.t = setTimeout(() => b.textContent = CH.busy ? "● working…" : "", ms); }
 function gameSettings(anchor) {
@@ -4118,7 +4125,7 @@ document.addEventListener("click", e => {
   const a = e.target.closest("#chatlog a[data-href], #live a[data-href]");
   if (a) { e.preventDefault(); gbox.browser ? gbox.browser("open", a.dataset.href).then(r => r?.ok && toast("🌐 Opened in AutoBrowse")) : gbox.openExternal(a.dataset.href); }
 });
-const CH = { cid: null, n: 0, busy: false, poll: null, models: null, loadRevision: 0 };
+const CH = { cid: null, n: 0, busy: false, poll: null, models: null, loadRevision: 0, seen: false };
 try { CH.cid = localStorage.getItem("gbox_chat") || null; } catch {}
 // ponytail: game -> conversation map lives in localStorage (per PC); move server-side if chats must follow the operator across PCs
 function chatSave() {
@@ -4129,7 +4136,7 @@ async function chatForGame() {             // switch to the active game's own co
   const ctx = await chatContext().catch(() => ({})), g = ctx.game_id || "";
   if (CH.game === g && CH.cid) return;
   let m = {}; try { m = JSON.parse(localStorage.getItem("gbox_chats") || "{}"); } catch {}
-  CH.game = g; CH.n = 0;
+  CH.game = g; CH.n = 0; CH.seen = false;
   CH.cid = m[g] || (g ? null : CH.cid);
   $("#chatlog").innerHTML = CH.cid ? "" : `<div class="mut">New conversation${ctx.game_title ? " for " + esc(ctx.game_title) : ""}. Ask anything about the game you're playing.</div>`;
   if (CH.cid) chatLoad(CH.cid);
@@ -4266,7 +4273,7 @@ async function chatLoad(cid, full = true) {
     if (e) { const b = $("#chatbusy"); b.title = "Click to open the conversation";
       b.textContent = e.type === "tool_call" ? `● ${e.name}…` : (e.type === "error" ? "⚠ " : "gBox: ") + String(e.text || e.question || "").replace(/\s+/g, " ").slice(0, 180); }
   }
-  CH.n = (full ? 0 : CH.n) + c.events.length;
+  CH.n = (full ? 0 : CH.n) + c.events.length; if (full) CH.seen = true;
   const cs = [...$("#chatlog").querySelectorAll(".cm")]; cs.forEach((el, i) => { if (el.classList.contains("choices") && cs.slice(i + 1).some(x => x.classList.contains("user"))) el.classList.add("done"); });
   if (c.events.length) $("#chatlog").scrollTop = $("#chatlog").scrollHeight;
   $("#sb-chat")?.classList.toggle("busy", !!c.busy);
@@ -4289,7 +4296,7 @@ $("#chathist").onclick = async e => {
   const ci = e.target.closest(".ci");
   if (!ci) return;
   clearInterval(CH.poll); CH.poll = null;
-  CH.cid = ci.dataset.c; CH.n = 0; chatSave();
+  CH.cid = ci.dataset.c; CH.n = 0; CH.seen = false; chatSave();
   $("#chatpanel").classList.add("on");
   $("#chatlog").innerHTML = `<div class="mut">Loading conversation…</div>`;
   await Promise.all([chatHistory(), chatLoad(CH.cid)]);
@@ -4355,11 +4362,12 @@ async function whipMenu(ev) {
   return whipMenuGame(ev);
 }
 // a character card <-> something in the game: replace that thing with the character (in-game swap, or an overlay now)
-async function autoWhipFailure({ sid, game, model, target, moment, detail, shot, jobId }) {
+async function autoWhipFailure({ sid, game, model, character, target, targetKind, x, y, moment, detail, shot, jobId, rebuild = false, requested = false }) {
   const r = await gbox.api("/api/requests/auto-mod-failure", { session_id: sid || "", game, model,
     action: "pick whip model replacement", target, moment, detail, job_id: jobId || "",
-    image_b64: shot || null }).catch(() => null);
-  if (r?.ok) { toast(`Auto report #${r.data.number} filed; resolution dispatched`, 12000); refreshInbox(); }
+    character: character || "", target_kind: targetKind || "", x, y,
+    needs_rebuild: rebuild, replacement_requested: requested, image_b64: shot || null }).catch(() => null);
+  if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); }
   else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
 }
 async function whipCardMenu(card, gp, ev) {
@@ -4369,16 +4377,38 @@ async function whipCardMenu(card, gp, ev) {
   m.style.left = Math.min(innerWidth - 330, gp[0] + 12) + "px"; m.style.top = Math.min(innerHeight - 300, Math.max(40, gp[1] - 20)) + "px";
   m.innerHTML = `<b>${esc(card.name)} → ${esc(game)}</b><p class="mut">Looking at what you dropped it on…</p>`; m.classList.add("on");
   const shot = ev.shot ? ev.shot.split(",")[1] : null;
-  // The native writer resolves the precise game point. A model-card drop needs no vision/model call.
-  const T = { name: "the character at this point", kind: "character" };
+  let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
     <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="x"><span>…</span>Something else (type it)</button>`;
+  m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
+  if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
+  m.insertAdjacentHTML("beforeend", '<button data-w="rebuild">Identify target and mark for rebuild</button>');
   m.onclick = async e => {
-    const bt = e.target.closest("button[data-w]"); if (!bt) return; m.classList.remove("on");
+    const bt = e.target.closest("button[data-w]"); if (!bt) return;
+    if (bt.dataset.w === "identify") {
+      bt.disabled = true;
+      const point = [gp[0] / innerWidth, gp[1] / innerHeight];
+      const identified = await gbox.api("/api/whip/identify", { image: shot, a: point, b: point, game }).catch(() => null);
+      bt.disabled = false;
+      if (identified?.ok && identified.data?.b?.name && EMB.sid === targetSid && m.contains(bt)) {
+        T = identified.data.b; m.querySelector("#whip-target-name").value = T.name;
+      } else toast("Character identification unavailable; enter a name or mark this point for rebuild.");
+      return;
+    }
+    m.classList.remove("on");
+    T.name = m.querySelector("#whip-target-name")?.value.trim() || T.name;
+    if (!targetSid || EMB.sid !== targetSid) { toast("The selected game changed; pick the target again."); return; }
+    const reportContext = { sid: targetSid, game, model: card.name, character: card.slug,
+      target: T.name, targetKind: T.kind, x: +f[0].toFixed(4), y: +f[1].toFixed(4), moment: at, shot };
+    if (["swap", "rebuild"].includes(bt.dataset.w)) {
+      await autoWhipFailure({ ...reportContext, requested: true, rebuild: bt.dataset.w === "rebuild",
+        detail: "Identify the selected native actor and replace it with this donor. Repair missing readers/writers, rebuild marked assets, and verify the replacement with animations and controls in gameplay. Preserve the current game until a verified build is ready." });
+      return;
+    }
     if (bt.dataset.w === "live") {
       const sid = targetSid;
       if (!sid || EMB.sid !== sid) { toast("The selected game changed; pick the target again."); return; }
@@ -4387,12 +4417,10 @@ async function whipCardMenu(card, gp, ev) {
         const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
           x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
         toast(res.message || res.status, 12000);
-        if (/unsupported|failed|error|not_in_collection/i.test(res.status || ""))
-          await autoWhipFailure({ sid, game, model: card.name, target: T.name, moment: at,
-            detail: res.message || res.status, shot });
+        if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
+          await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });
       } catch (err) {
-        await autoWhipFailure({ sid, game, model: card.name, target: T.name, moment: at,
-          detail: err.message, shot, jobId: err.jobId });
+        await autoWhipFailure({ ...reportContext, detail: err.message, jobId: err.jobId });
       }
       return;
     }
@@ -4604,7 +4632,13 @@ async function loadHistory() { const r = await gbox.api("/api/chat/suggest?limit
 $("#chatsug").onmousedown = e => { const d = e.target.closest("[data-i]"); if (!d) return; e.preventDefault();
   $("#chatin").value = SUG.items[+d.dataset.i].text; $("#chatsug").style.display = "none"; $("#chatin").focus(); };
 $("#chatin").oninput = () => { clearTimeout(SUG.t); SUG.t = setTimeout(suggest, 150); };
-$("#chatin").addEventListener("focus", () => { loadHistory(); if (!CH.n) suggest(); });   // suggest on focus only for a fresh chat
+function chatFresh() {                    // #71: suggestions on focus only when the current conversation is known empty
+  if (CH.busy) return false;             // a reply is streaming: don't cover it
+  if (CH.n > 0) return false;            // the conversation already has messages
+  if (!CH.cid) return true;              // no conversation yet: first question
+  return CH.seen;                        // created or loaded and empty (fresh conversation)
+}
+$("#chatin").addEventListener("focus", () => { loadHistory(); if (chatFresh()) suggest(); });
 $("#chatin").addEventListener("blur", () => setTimeout(() => $("#chatsug").style.display = "none", 150));
 $("#chatin").onkeydown = e => {
   const open = $("#chatsug").style.display === "block" && SUG.items.length;
@@ -4678,7 +4712,7 @@ $("#chathistbtn").onclick = () => {
 new MutationObserver(() => $("#chathistbtn").setAttribute("aria-expanded", String($("#chatpanel").classList.contains("on") && $("#chatpanel").classList.contains("hist"))))
   .observe($("#chatpanel"), { attributes:true, attributeFilter:["class"] });
 $("#chatnew").onclick = async () => { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; chatSave();
-  $("#chatlog").innerHTML = `<div class="mut">New conversation. Ask anything about the game you're playing, or what to find, launch, edit or extract.</div>`; CH.n = 0;
+  $("#chatlog").innerHTML = `<div class="mut">New conversation. Ask anything about the game you're playing, or what to find, launch, edit or extract.</div>`; CH.n = 0; CH.seen = true;
   chatHistory(); $("#chatin").focus(); toast("New conversation"); };
 // conversation composer + clickable options + voice-mode mic
 $("#chatlog").addEventListener("click", e => {
@@ -4692,6 +4726,7 @@ const compFit = () => { const t = $("#chatin2"); t.style.height = "auto"; t.styl
 $("#chatin2").addEventListener("input", compFit);
 $("#chatsend").onclick = compSend;
 $("#chatvoice").onclick = () => TALK.on ? talkStop() : talkStart();
+$("#chatvoice").oncontextmenu = e => window.gboxMicMenu($("#chatvoice"), e);   // right-click: default microphone
 setInterval(() => $("#chatvoice").classList.toggle("on", TALK.on), 500);
 new MutationObserver(() => { if ($("#chatpanel").classList.contains("on")) { window.__micDecorate?.($("#chatcomp")); } })
   .observe($("#chatpanel"), { attributes: true, attributeFilter: ["class"] });

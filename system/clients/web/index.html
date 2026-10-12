@@ -1862,6 +1862,41 @@ function modWatch(gid, sid, mods) {                       // re-apply kept patch
   MODWATCH.mods = mods; MODWATCH.tick = tick;
   tick(); MODWATCH.t = setInterval(tick, 20000);
 }
+const observerWatch = { timer: null };
+function sessionObserverWatch(sid) {
+  clearTimeout(observerWatch.timer);
+  const element = document.getElementById('session-observers');
+  if (!element) return;
+  const path = `/api/sessions/${encodeURIComponent(sid)}/observers`;
+  const tick = async () => {
+    if (!element.isConnected) return;
+    try {
+      const r = await api(path);
+      if (!element.isConnected) return;
+      const latest = r.latest || {}, models = r.models || {}, result = models.result || {};
+      const state = r.service_online ? (r.gameplay_state || r.state) : 'Observer service offline';
+      const list = (label, values) => values?.length ? `<p><b>${label}</b> ${values.map(esc).join('; ')}</p>` : '';
+      element.innerHTML = `<p><b>${esc(state || 'Waiting')}</b> <button data-observer-toggle>${r.enabled === false ? 'Resume observers' : 'Pause observers'}</button></p>
+        <p>Models: ${esc(models.state || 'Waiting')}${result.collected != null ? ` · ${+result.collected} / ${+result.total} collected` : ''}</p>
+        ${models.request_id ? `<p>Model repair tracked in inbox <code>${esc(models.request_id)}</code></p>` : ''}
+        ${r.observation_request_id ? `<p>Observation repair tracked in inbox <code>${esc(r.observation_request_id)}</code></p>` : ''}
+        ${latest.summary ? `<p>${esc(latest.summary)}</p><small>${new Date(latest.captured * 1000).toLocaleTimeString()} · ${+r.samples || 0} observations</small>` : '<p>Waiting for the first gameplay observation.</p>'}
+        ${list('Actors:', latest.actors)}${list('Changes:', latest.changes)}${list('HUD:', latest.hud)}
+        ${list('Possible mechanics:', latest.mechanics_hypotheses)}${list('Uncertain:', latest.uncertainties)}
+        ${r.error || r.service_error ? `<p class="mut">${esc(r.error || r.service_error)}</p>` : ''}
+        <details><summary>Recent observations</summary>${(r.history || []).slice(-10).reverse().map(o =>
+          `<p>${new Date(o.captured * 1000).toLocaleTimeString()} · ${esc(o.summary)} <a target="_blank" href="/api/artifacts/${encodeURIComponent(o.frame)}?${tq()}">Frame</a></p>`).join('')}</details>`;
+      element.querySelector('[data-observer-toggle]').onclick = async e => {
+        e.currentTarget.disabled = true;
+        try { await api(path, { enabled: r.enabled === false }); await tick(); }
+        catch (error) { element.textContent = error.message; }
+      };
+    } catch (error) { if (element.isConnected) element.textContent = 'Session observers unavailable: ' + error.message; }
+    clearTimeout(observerWatch.timer);
+    if (element.isConnected) observerWatch.timer = setTimeout(tick, 5000);
+  };
+  tick();
+}
 async function wbInit() {
   const el = $("#wb"); if (!el) return;
   const gid = el.dataset.gid, sid = el.dataset.sid;
@@ -1889,7 +1924,8 @@ async function wbInit() {
         ${m.video ? `<a class="b" target="_blank" href="/api/artifacts/${m.video}?${tq()}">Play video</a>` : ""}<i></i></div>
       <details><summary>How it works</summary>${m.desc ? `<p>${esc(m.desc)}</p>` : ""}${m.calls.map(c => `<div class="call"><b>${esc(c.tool)}</b>
         <div>${esc((tdesc[c.tool] || "").split("\n")[0].slice(0, 220))}</div><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}</details></div>`;
-  el.innerHTML = `<details open data-dock="mods" class="sect"><summary draggable="true">Mods <span class="mut">${mods.length} switch${mods.length === 1 ? "" : "es"} for this game: every change that worked</span></summary>
+  el.innerHTML = `<details open data-dock="observers" class="sect"><summary draggable="true">Session agents <span class="mut">models and gameplay</span></summary><div id="session-observers"><p>Connecting observers...</p></div></details>
+    <details open data-dock="mods" class="sect"><summary draggable="true">Mods <span class="mut">${mods.length} switch${mods.length === 1 ? "" : "es"} for this game: every change that worked</span></summary>
       <div class="wbms">${mods.map(mod).join("") || '<p class="mut">Ask gBox to change the game ("infinite red shells", "skip the Deku Tree"); when it works it lands here as a switch.</p>'}</div></details>
     <details open data-dock="controls" class="sect"><summary draggable="true">🎚 Controls <span class="mut">${d.controls.length} from your conversations</span></summary>
       <div class="wbcs">${d.controls.map(ctl).join("") || '<p class="mut">Ask gBox for a slider ("give me a slider for car speed") and it lands here.</p>'}</div></details>
@@ -1899,6 +1935,7 @@ async function wbInit() {
       <div id="chars" data-gid="${esc(gid)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>`;
   const host = el.closest(".play") || el;
   dockApply();
+  sessionObserverWatch(sid);
   charsInit();
   modWatch(gid, sid, mods);
   const curMod = ((await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {}).mod || "";
@@ -2357,13 +2394,17 @@ async function runJob(body) {
   while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id); }
   return j;
 }
-async function hardStop(sid, btn) {                         // no confirm: the emulator is killed at once, then the game list
+async function hardStop(sid, btn) {
   if (btn) btn.disabled = true;
-  if (active?.sid === sid) { active = null; pip(); }
-  // ended first: the app stops showing it at once (no picture-in-picture of a game that's being killed), then the kill
-  await api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "stop button" }).catch(() => {});
-  runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
-  show("Library");
+  try {
+    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
+    if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error(j.error || 'Emulator stop was not confirmed');
+    if (active?.sid === sid) { active = null; pip(); }
+    show("Library");
+  } catch (error) {
+    if (btn) btn.title = 'Could not stop game: ' + error.message;
+    const status = $('#sopres'); if (status) status.textContent = 'Could not stop game: ' + error.message;
+  } finally { if (btn) btn.disabled = false; }
 }
 async function resetGame(sid, btn, hard) {
   if (hard) return hardReset(sid, btn);                       // no confirm: console reset, else relaunch the same game (+ mod)
@@ -2412,8 +2453,12 @@ function watchSessionPause(sid) {
   const control = GBoxSessionPause.create({
     read: async () => (await rpc(sid, 'info', {})).runtime,
     command: async op => {
+      // The live session channel reaches the emulator in one round trip; the job queue waits for a worker claim.
+      // Older servers/workers refuse pause over it, and pause/resume are idempotent, so falling back is safe (#1123).
+      try { return await rpc(sid, op, {}); } catch {}
       const j = await runJob({ tool: 'session_op', input: { session_id: sid, op }, require_worker: sid.split('-')[0] });
       if (j.state !== 'succeeded') throw new Error(j.error || `${op}: ${j.state}`);
+      return j.output?.result;
     },
     render: ({ paused, busy }) => {
       if (!current()) return;
@@ -2445,6 +2490,11 @@ function watchSessionPause(sid) {
   poll();
 }
 async function sop(sid, op) {
+  if ((op === 'pause' || op === 'resume') && sessionPause?.sid === sid) {
+    const state = await sessionPause.control.refresh().catch(() => undefined);
+    if (state === (op === 'pause')) { const el = $("#sopres"); if (el) el.textContent = `${op}: already ${state ? 'paused' : 'running'}`; return; }
+    if (state !== undefined) return sessionPause.control.toggle();   // live session channel, no job queue (#1123)
+  }
   const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });
   if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }
   const el = $("#sopres"); if (el) el.textContent = `${op}: ${j.state} ${j.error || JSON.stringify(j.output?.result || "")}`;

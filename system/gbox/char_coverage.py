@@ -19,6 +19,7 @@ WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
+    ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
@@ -32,6 +33,7 @@ WRITERS = [
      "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
+    ("crazy_taxi", ["player"], "Crazy Taxi GC: Axel the driver (15 rigid .shp parts + hand/head variants and sl_ LODs)"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
@@ -41,7 +43,7 @@ SPECIAL = [                                               # writers routed by co
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
 DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
              ("Mario Kart 64", "n64"), ("Resident Evil The Mercenaries 3D", "3ds"), ("Super Smash Bros. Melee", "gamecube"),
-             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto III", "ps2"), ("Grand Theft Auto Vice City", "ps2"),
+             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
              ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
              ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
@@ -187,6 +189,12 @@ def markdown(cov: dict) -> str:
 def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
     """File (once) an inbox gap report: no swap writer for this game (agent._gap_report's layout, source "gap")."""
     title = f"GAP: character writer for {game['title']}"
+    parent = getattr(ctx, "parent_request_id", None)
+    if parent:
+        request = api(ctx, "GET", f"/api/requests/{parent}")
+        if (request.get("context") or {}).get("native_replacement"):
+            _post_message(ctx, api, parent, f"Native writer missing: {json.dumps(need)}. Attempt: {asked}")
+            return {"number": request.get("number"), "id": parent, "existing": True}
     for r in api(ctx, "GET", "/api/requests", params={"status": "open,in_progress"}):
         if r.get("title") == title:
             return {"number": r.get("number"), "id": r["id"], "existing": True}
@@ -200,10 +208,12 @@ def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
         "Build the writer for this game like gbox/pe_swap.py / ff7_swap.py / sm64_swap.py (read the player model, rigid "
         "retarget with sm64_swap.retarget + a role map onto the game's skeleton, fit the game's budgets, rebuild the "
         "file/disc as a file mod), route it in characters_tool, add it to char_coverage.WRITERS, verify in an emulator "
-        "on the Spark and reply here. Meanwhile the operator has the overlay (characters op=overlay)."])
+        "on a test worker and reply here. A donor preview or overlay does not satisfy this native replacement request."])
     r = api(ctx, "POST", "/api/requests", json={"title": title, "body": body, "source": "gap", "kind": "text",
                                                  "parent_request_id": getattr(ctx, "parent_request_id", None),
-                                                 "context": {"character": meta["slug"], "game_id": game["game_id"], "job_id": ctx.job_id}})
+                                                 "context": {"character": meta["slug"], "game_id": game["game_id"],
+                                                             "native_replacement": True, "needs_rebuild": True,
+                                                             "job_id": ctx.job_id}})
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 
@@ -288,11 +298,13 @@ def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -
 
 
 def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
-    """characters op=use on a game without a writer: the overlay now (when a session runs it), plus a gap report.
+    """characters op=use without a native writer leaves a durable repair request.
     A running session also gets its moment preserved on the gap report (#1146): checkpoint, portable export, frame."""
-    asked = f"characters op=use character={meta['slug']} game={game['title']} slot={inp.slot}"
+    asked = (f"characters op=use character={meta['slug']} game={game['title']} slot={inp.slot} "
+             f"session_id={inp.session_id} x={inp.x} y={inp.y}")
     req = gap(ctx, api, meta, game, need, asked)
-    res = {"status": "missing", "missing": need, "request": req, "fallback": "overlay"}
+    _post_message(ctx, api, req['id'], f"Replacement still required: {asked}")
+    res = {"status": "missing", "missing": need, "request": req, "native_replacement": False}
     sid = inp.session_id
     if sid:
         running = False
@@ -308,15 +320,6 @@ def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
                 _post_message(ctx, api, req["id"], f"Moment preservation failed: {e}.",
                               {"action": "preserve pickwhip moment", "attempt": "1", "result": str(e)[:400],
                                "status": "failed"})
-        try:
-            from . import overlay_swap
-            ov = overlay_swap.start(ctx, api, meta, sid, inp.x, inp.y)
-            return res | {"status": "overlay", "overlay": ov,
-                          "message": f"{game['title']} has no in-engine swap writer yet, so {meta['name']} is drawn over the "
-                                     f"player as an overlay in the desktop app now (the game itself is unchanged). Gap report "
-                                     f"#{req.get('number')} asks for the writer."}
-        except Exception as e:                             # noqa: BLE001 - session not running / not on screen
-            res["overlay_error"] = str(e)
-    return res | {"message": f"{game['title']} has no in-engine swap writer yet (gap report #{req.get('number')} filed so it "
-                             f"gets built). Right now: characters op=overlay character={meta['slug']} session_id=<the "
-                             "running game> draws it over the player in the desktop app (an overlay, not in-engine)."}
+    return res | {"message": f"{meta['name']} has not replaced the character in {game['title']}. "
+                             f"Native writer work is tracked in request #{req.get('number')}; "
+                             "the saved target must be rebuilt and verified in gameplay."}

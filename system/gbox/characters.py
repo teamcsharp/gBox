@@ -1069,12 +1069,51 @@ def _shenmue_run(ctx, game, e, work):
             "source_files": ["MISC/COLDINIT.PKS", "MISC/COLDINIT.PKF (YKB_M.CHRM)"]}
 
 
+SM64_MARIO_CHAINS = [("hip", "chest", "head"), ("chest", "l_upper", "l_fore", "l_hand"),
+                     ("chest", "r_upper", "r_fore", "r_hand"), ("hip", "l_thigh", "l_shin", "l_foot"),
+                     ("hip", "r_thigh", "r_shin", "r_foot")]
+
+
+def sm64_mario_roles(path: Path) -> dict[str, str]:
+    """Body roles of gbox.sm64_mario's glTF. Its joints j00..j19 are Mario's geo-layout animated parts in the order
+    gbox.sm64_swap.MARIO indexes (and the writer keeps), so the roles are {role: f"j{index:02d}"}. A model whose joint
+    names, tree (each limb a parent chain below the torso) or frame (+Y up, Mario's left +X, face toward +Z) differ is
+    refused instead of being mapped by position."""
+    from .sm64_swap import MARIO
+    gl, _acc, _img, Wn = _load(path)
+    sk = max(gl.get("skins") or [{"joints": []}], key=lambda s: len(s["joints"]))["joints"]
+    names = [gl["nodes"][j].get("name", f"node{j}") for j in sk]
+    if names != [f"j{k:02d}" for k in range(20)]:
+        raise ValueError(f"{Path(path).name}: not gbox.sm64_mario's 20-joint skeleton ({len(sk)} joints)")
+    roles = validate_rig_roles(Path(path), {r: f"j{k:02d}" for r, k in MARIO.items()})
+    node = {r: sk[names.index(n)] for r, n in roles.items()}
+    par = {c: i for i, nd in enumerate(gl["nodes"]) for c in nd.get("children", [])}
+
+    def below(a, b):                                       # is role b's joint a descendant of role a's?
+        k = par.get(node[b])
+        while k is not None and k != node[a]:
+            k = par.get(k)
+        return k == node[a]
+    bad = [f"{b} under {a}" for ch in SM64_MARIO_CHAINS for a, b in zip(ch, ch[1:]) if not below(a, b)]
+    p = {r: np.asarray(Wn[j])[:3, 3] for r, j in node.items()}
+    if not p["head"][1] > p["chest"][1] > p["hip"][1] > max(p["l_foot"][1], p["r_foot"][1]):
+        bad.append("+Y up (head > chest > hip > feet)")
+    bad += [f"left +X ({s})" for s in ("upper", "fore", "hand", "thigh", "shin", "foot")
+            if not p["l_" + s][0] > 0 > p["r_" + s][0]]
+    if not p["head"][2] > p["chest"][2]:
+        bad.append("face toward +Z")
+    if bad:
+        raise ValueError(f"{Path(path).name}: Mario's joint layout differs: " + ", ".join(bad))
+    return roles
+
+
 def _sm64_run(ctx, game, e, work):
     from . import sm64_mario as S, n64_rom
     data = n64_rom.read(_rom(ctx, game))
     out = work / "sm64_mario.gltf"
     S.to_gltf(S.extract(data, anim=197), out)
-    return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"]}
+    return {"files": [out], "tool": "gbox.sm64_mario", "source_files": ["ROM segment 04 + geo 0x17002DD4 (anim 197 pose)"],
+            "roles": sm64_mario_roles(out)}
 
 
 def _doa2_roster():
@@ -1133,6 +1172,48 @@ def _oot_run(ctx, game, entry, work):
             'source_files': [entry['key']], 'notes': 'Native Link skeleton, display lists and textures.'}
 
 
+# Snake's 16 KMD objects (= motion bones) by body role. The MetalMintSolid glTF keeps KMD object i as node i but
+# names the nodes in its own order (object 2 = "bone_4"), so roles are resolved to node names per decode.
+MGS_VR_SNAKE_OBJECTS = {"hip": 0, "chest": 1, "neck": 5, "head": 6,
+                        "r_upper": 2, "r_fore": 3, "r_hand": 4, "l_upper": 7, "l_fore": 8, "l_hand": 9,
+                        "r_thigh": 10, "r_shin": 11, "r_foot": 12, "l_thigh": 13, "l_shin": 14, "l_foot": 15}
+MGS_VR_SNAKE_PARENTS = [-1, 0, 1, 2, 3, 1, 5, 1, 7, 8, 0, 10, 11, 0, 13, 14]   # KMD object parent indices
+
+
+def mgs_vr_snake_roles(path: Path) -> dict[str, str]:
+    """Body roles {role: joint name} of the decoded VR Missions Snake. tree_roles can't read this rig (the legs and the
+    spine both hang off the root, arms hang down), so the fixed KMD object map is used, after checking that the
+    decoded glTF really is Snake's tree (same parents) in the library frame (+Y up, left = +X, toes toward +Z)."""
+    gl = _load(path)[0]
+    from .re4gc_models import _node_world
+    nodes, n = gl["nodes"], len(MGS_VR_SNAKE_PARENTS)
+    joints = set(max(gl.get("skins") or [{"joints": []}], key=lambda s: len(s["joints"]))["joints"])
+    if len(nodes) < n or not set(range(n)) <= joints:
+        raise ValueError(f"not the 16-object VR Missions Snake rig ({len(joints)} joints)")
+    par = {c: i for i, nd in enumerate(nodes) for c in nd.get("children", [])}
+    got = [par.get(i, -1) if par.get(i, -1) < n else -1 for i in range(n)]
+    if got != MGS_VR_SNAKE_PARENTS:
+        raise ValueError(f"joint tree {got} is not Snake's KMD tree {MGS_VR_SNAKE_PARENTS}")
+    W = _node_world(gl)
+    pos = {r: np.asarray(W[i])[:3, 3] for r, i in MGS_VR_SNAKE_OBJECTS.items()}
+    for limb in ("upper", "fore", "hand", "thigh", "shin", "foot"):
+        if not pos[f"l_{limb}"][0] > 0 > pos[f"r_{limb}"][0]:
+            raise ValueError(f"{limb}: left/right are mirrored (left must be +X)")
+    ys = [p[1] for p in pos.values()]
+    if not (pos["head"][1] == max(ys) and min(pos["l_foot"][1], pos["r_foot"][1]) == min(ys)
+            and pos["chest"][1] <= pos["neck"][1] < pos["head"][1]):
+        raise ValueError("rig is not upright (+Y up, head highest, feet lowest)")
+    names = [nodes[i].get("name", f"node{i}") for i in range(n)]
+    roles = {r: names[i] for r, i in MGS_VR_SNAKE_OBJECTS.items()}
+    rig = rig_from_gltf(path, roles)
+    for side in "lr":                                      # toes point forward: the foot mesh lies toward +Z
+        j = rig["roles"][f"{side}_foot"]
+        foot = np.concatenate([p["pos"][p["owner"] == j] for p in rig["prims"]])
+        if not len(foot) or foot[:, 2].mean() <= rig["joints"][j][2]:
+            raise ValueError("rig does not face +Z (the toes point backward)")
+    return roles
+
+
 def _mgs_vr_run(ctx, game, entry, work):
     """Decode the original Snake from the owned US disc, using a Windows worker for MetalMintSolid."""
     from . import mgs_vr_swap
@@ -1157,9 +1238,10 @@ def _mgs_vr_run(ctx, game, entry, work):
             failures.append(f"{worker.get('name')}: decoded model artifact was absent")
         if not out.is_file():
             raise RuntimeError('No Windows worker could decode the VR Missions Snake model: ' + '; '.join(failures))
-    return {'files': [out], 'roles': {}, 'tool': 'gbox.mgs_vr_swap / MetalMintSolid',
+    return {'files': [out], 'roles': mgs_vr_snake_roles(out), 'tool': 'gbox.mgs_vr_swap / MetalMintSolid',
             'source_files': ['MGS/STAGE.DIR', 'init.stg', '0_0.dar:39213.kmd', '1_0.dar:PS1 textures'],
-            'notes': 'Original US VR Missions Snake mesh, 16 KMD joints and embedded PS1 textures. No cross-game retarget map yet.'}
+            'notes': 'Original US VR Missions Snake mesh, 16 KMD joints and embedded PS1 textures. Body roles from '
+                     'the fixed KMD object map (characters.MGS_VR_SNAKE_OBJECTS), checked against the decoded tree.'}
 
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
@@ -1189,6 +1271,9 @@ DEDICATED = [
      _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
+    ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
+     lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
@@ -1200,7 +1285,8 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.yukes_sd", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("worldtour", lambda t, p: "world tour" in t and "wcw" in t and p == "n64", lambda: __import__("gbox.aki_wcw", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
-    ("revenge", lambda t, p: "revenge" in t and "wcw" in t and p == "n64", lambda: [],
+    ("revenge", lambda t, p: "revenge" in t and "wcw" in t and p == "n64",
+     lambda: __import__("gbox.aki_wcw", fromlist=["x"]).revenge_roster(),
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1231,6 +1317,26 @@ def dedicated_entries(config, game, name, roster):
     return entries
 
 
+# extractor -> body roles read from an entry's stored model, for entries collected before the reader reported roles
+ROLE_BACKFILL = {"sm64": sm64_mario_roles}
+
+
+def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
+    """A verified entry collected before its reader reported body roles (rig.roles) gets them from its own model file,
+    so collect() can call it retargetable without re-extracting. A model the role reader refuses stays unmapped."""
+    rig = dict(meta.get("rig") or {})
+    fn = ROLE_BACKFILL.get(extractor)
+    if fn is None or rig.get("roles"):
+        return meta
+    try:
+        roles = fn(Path(root) / meta["slug"] / meta["model"])
+    except (OSError, KeyError, IndexError, ValueError):
+        return meta
+    if not roles:
+        return meta
+    return put_meta(root, {**meta, "rig": {**rig, "roles": roles}})
+
+
 def collect(ctx, inp):
     """Collect a supported disc roster without vision/LLM calls or gameplay interruption."""
     game, root = _game(ctx, inp), library_root(ctx.config)
@@ -1240,7 +1346,10 @@ def collect(ctx, inp):
         return {"status": "unsupported", "game_id": game['game_id'],
                 "message": "No native model reader for this game; no unrigged capture was substituted."}
     name, _, roster, _ = reader
-    entries = [e for e in dedicated_entries(ctx.config, game, name, roster) if e.get('kind', 'character') == 'character']
+    # Characters always; other kinds only when the reader opts a fully assembled entry in (`collect`: True), e.g. the
+    # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
+    entries = [e for e in dedicated_entries(ctx.config, game, name, roster)
+               if e.get('kind', 'character') == 'character' or e.get('collect') is True]
     results = []
     for i, e in enumerate(entries):
         total = max(1, len(entries))
@@ -1261,18 +1370,23 @@ def collect(ctx, inp):
             checked = verify_entry(root, meta)
             roles = (meta.get('rig') or {}).get('roles') or {}
             ready = checked['ok'] and bool(roles)
-            results.append({'slug': meta['slug'], 'name': meta['name'], 'status': res['status'],
+            kind = e.get('kind', 'character')
+            done = ready or (kind != 'character' and checked['ok'])
+            results.append({'slug': meta['slug'], 'name': meta['name'], 'kind': kind, 'status': res['status'],
                             'verified': checked['ok'], 'retargetable': ready,
-                            'message': '' if ready else 'Model or mapped rig needs verification before retargeting.'})
+                            'message': '' if done else ('Model needs verification.' if kind != 'character' else
+                                                        'Model or mapped rig needs verification before retargeting.')})
         except Exception as exc:
-            results.append({'slug': e['slug'], 'name': e['name'], 'status': 'failed',
-                            'verified': False, 'retargetable': False, 'error': str(exc)})
-    ctx.progress(100, f"Collected {len(entries)} characters from {game['title']}")
+            results.append({'slug': e['slug'], 'name': e['name'], 'kind': e.get('kind', 'character'),
+                            'status': 'failed', 'verified': False, 'retargetable': False, 'error': str(exc)})
+    chars = [r for r in results if r['kind'] == 'character']
+    noun = 'characters' if len(chars) == len(entries) else 'models'
+    ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     good = sum(r['verified'] for r in results)
-    mapped = sum(r['retargetable'] for r in results)
-    return {'status': 'complete' if good == mapped == len(entries) and entries else 'partial',
+    mapped = sum(r['retargetable'] for r in chars)
+    return {'status': 'complete' if entries and good == len(entries) and mapped == len(chars) else 'partial',
             'game_id': game['game_id'], 'extractor': name, 'collected': good, 'total': len(entries),
-            'retargetable': mapped, 'entries': results}
+            'retargetable': mapped, 'characters': len(chars), 'entries': results}
 
 
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
@@ -1290,7 +1404,7 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
             existing = get(root, e["slug"])
             refresh = _doa2_needs_refresh(ctx, game, existing)
             if verify_entry(root, existing)['ok'] and not refresh:
-                return {"status": "in_collection", "extractor": name, "entry": existing}
+                return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
@@ -1912,6 +2026,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import gta_stories_models as lcs
     if gid in lcs.GAME_IDS and inp.slot == "player":              # GTA LCS (PS2): every Toni outfit -> lcs_<slug>
         return {"result": out | lcs.use(ctx, meta, game, inp)}
+    from . import gta3_swap
+    if gid in gta3_swap.GAME_IDS and inp.slot == "player":         # GTA III (PS2): Claude -> gta3_<slug> (disc image)
+        return {"result": out | gta3_swap.use(ctx, meta, game, inp)}
     from . import re6_tool
     if gid in re6_tool.GAME_IDS and (inp.slot in ("player", "enemies") or inp.slot.startswith("enemy:")):
         # RE6 (X360, Xenia): player = Leon's every costume -> re6_<slug>; enemies / enemy:<family> -> zombies, J'avo
@@ -1928,6 +2045,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import pso_player
     if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
+    from . import crazy_taxi
+    if gid in crazy_taxi.GAME_IDS and inp.slot == "player":    # Crazy Taxi GC: Axel the driver -> ct_<slug>
+        return {"result": out | crazy_taxi.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
@@ -1941,7 +2061,7 @@ def characters_tool(inp: CharIn, ctx):
     if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
         return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
     from . import mgs_vr_swap
-    if gid in mgs_vr_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":
+    if gid in mgs_vr_swap.GAME_IDS and inp.slot == "player":
         return {"result": out | mgs_vr_swap.use(ctx, meta, game, inp)}
     from . import mgs1_swap
     if gid in mgs1_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":

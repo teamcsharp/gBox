@@ -169,8 +169,12 @@ def _ps2_iso(cfg, game: dict, rom: Path, progress) -> Path:
     from . import filemods
     if rom.suffix.lower() == ".iso":
         return rom
+    if rom.suffix.lower() == ".cso":                                      # CISO: decompressed once, cached
+        from .cso import cached_iso
+        return cached_iso(rom, filemods.base_dir(cfg, game["game_id"]) / (rom.stem + ".iso"),
+                          lambda p, m: progress(5 + int(p * 40), m))
     if rom.suffix.lower() != ".chd":
-        raise ValueError(f"{rom.name}: PS2 discs are read as .iso or .chd (CSO isn't supported here)")
+        raise ValueError(f"{rom.name}: PS2 discs are read as .iso, .cso or .chd")
     from .gta_stories_models import lcs_iso_from_rom                      # chdman -> plain .iso, cached
     return lcs_iso_from_rom(rom, filemods.base_dir(cfg, game["game_id"]) / (rom.stem + ".iso"),
                             lambda p, m: progress(p, m))

@@ -482,12 +482,30 @@ def ensure_ghidra(cfg: Config) -> dict:
 
 _blender_cache: dict[tuple, tuple[float, str | None]] = {}
 
+_EM_X86_64, _EM_AARCH64 = 62, 183
+
+
+def _elf_machine(path: Path) -> int | None:
+    """e_machine of an ELF executable (0x3e = x86-64, 0xb7 = aarch64); None when not an ELF or unreadable."""
+    try:
+        head = open(path, "rb").read(20)
+    except OSError:
+        return None
+    if len(head) < 20 or head[:4] != b"\x7fELF":
+        return None
+    return int.from_bytes(head[18:20], "little")
+
 
 def find_blender(cfg: Config) -> str | None:
     """Newest Blender under blender_search. Builds sit 1-3 folders deep (Builds/daily/blender-x/blender.exe);
-    a full rglob of a build library took ~100 s, so search shallow and cache for 10 min."""
+    a full rglob of a build library took ~100 s, so search shallow and cache for 10 min.
+    On Linux the chosen binary must match the host architecture: an x86-64 Blender on aarch64 dies with
+    'ld-linux-x86-64.so.2', and PATH order alone hands back /usr/local/bin/blender before /usr/bin/blender."""
     if cfg.blender_path and Path(cfg.blender_path).exists():
-        return cfg.blender_path
+        foreign = (HOST_OS == "linux" and ARCH == "aarch64"
+                   and _elf_machine(Path(cfg.blender_path)) == _EM_X86_64)
+        if not foreign:
+            return cfg.blender_path
     key = tuple(cfg.blender_search)
     hit = _blender_cache.get(key)
     if hit and time.time() - hit[0] < 600 and (hit[1] is None or Path(hit[1]).exists()):
@@ -495,7 +513,25 @@ def find_blender(cfg: Config) -> str | None:
     exe = "blender.exe" if HOST_OS == "windows" else "blender"
     found = [p for d in cfg.blender_search if Path(d).is_dir()
              for pat in (exe, f"*/{exe}", f"*/*/{exe}", f"*/*/*/{exe}") for p in Path(d).glob(pat)]
-    best = str(max(found, key=lambda p: p.stat().st_mtime)) if found else shutil.which("blender")   # newest build
+    if not found and HOST_OS == "windows":
+        # A shared config can name another PC's user directory. Discover local
+        # installations before declaring conversion unavailable on this worker.
+        roots = [Path.home() / "Desktop" / "Blender Builds"]
+        roots += [Path(value) / "Blender Foundation" for key in ("ProgramFiles", "ProgramFiles(x86)")
+                  if (value := os.environ.get(key))]
+        found = [p for d in dict.fromkeys(roots) if d.is_dir()
+                 for pat in (exe, f"*/{exe}", f"*/*/{exe}", f"*/*/*/{exe}")
+                 for p in d.glob(pat) if p.is_file()]
+    if not found:
+        cands = [shutil.which("blender")] if HOST_OS == "windows" else \
+                [shutil.which("blender"), "/usr/local/bin/blender", "/usr/bin/blender"]
+        found = [Path(c) for c in dict.fromkeys(cands) if c and Path(c).exists()]
+    if found and HOST_OS == "linux" and ARCH in ("aarch64", "x86_64"):
+        native = _EM_AARCH64 if ARCH == "aarch64" else _EM_X86_64
+        nat = [p for p in found if _elf_machine(p) == native]
+        if nat:
+            found = nat                                 # never run an emulated foreign-arch Blender
+    best = str(max(found, key=lambda p: p.stat().st_mtime)) if found else None   # newest build
     _blender_cache[key] = (time.time(), best)
     return best
 

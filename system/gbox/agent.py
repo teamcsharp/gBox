@@ -82,10 +82,14 @@ How to work:
   the tools that reach them - live RAM (read_memory, memory_search/memory_filter, write_memory, freeze_memory, poke), cheat codes
   (cheats), the debugger (breakpoints on reads/writes to find the code that touches a value), Ghidra (ghidra_scripts to pick one, run_tool ghidra_script /
   analyze_binary on the game executable to find and patch routines), script_patch / mod for code patches, game-specific tools
-  (zelda_oot, pso_drops, ...), look_at_screen to see results. Then do it, step by step, verifying each change.
+  (zelda_oot, pso_drops, stage_warp, ...), look_at_screen to see results. Then do it, step by step, verifying each change.
   Ask (ask_user, 2-5 concrete options) only when the request is genuinely ambiguous in a way that changes the outcome (which
   character, which save, permanent vs. toggle); otherwise pick the sensible reading, say which one you picked, and act. Never ask
   permission for something the operator already asked for, and never answer "I can't" before trying the tools above.
+- "Skip this talking / dialogue / text", "skip to the end of the conversation" (Zelda: Ocarina of Time): zelda op=skip_text
+  on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
+  "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
+  session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
 - "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (pso_mods op=noclip, zelda op=noclip), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
@@ -414,7 +418,10 @@ def tool_specs() -> list[dict]:
            "hookshot', Ctrl+click an item + 'give me this'); equip item=<name> button=b|a|y|x|z|c-left|c-down|c-right "
            "('put the bow on Y', 'equip this'; swords/shields/tunics are just worn); all_items ('give me everything'); "
            "unrestrict ('let me use/equip anything': OoT any age, MM any form, other games the gear that opens every path); "
-           "noclip on=true|false (walk through walls/doors); hearts count=N; rupees count=N; max; remove item=<name>; list "
+           "noclip on=true|false (walk through walls/doors); skip_text [count=max seconds, default 90] ('skip this talking', "
+           "'skip the dialogue/cutscene', 'skip to the end of the conversation': taps A until the whole conversation ends; "
+           "Ocarina of Time only - other games report that no text detector exists); "
+           "hearts count=N; rupees count=N; max; remove item=<name>; list "
            "(what Link has + what is on each button); games. Item names are fuzzy ('hook shot', 'bow and arrows', 'master "
            "sword', 'bottle', 'fire arrows'). Results carry before/after bytes and verified (read-back). For Ocarina of Time "
            "story skips / warps use zelda_oot (skip_deku_tree, goto).",
@@ -453,6 +460,14 @@ def tool_specs() -> list[dict]:
            "and auto-restores a save state if the game hangs.",
            {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "cutscene": b},
            ["session_id", "op"]),
+        fn("stage_warp", "Put the player on a named stage / level of the live game: 'put me on the final world', 'take me to "
+           "the last stage', 'stage 3'. op=games (supported games) | stages (the live game's stages, or pass game='super mario "
+           "world'/'tmnt') | warp stage=<name> ('final world', \"bowser's castle\", 'stage 5'; names are fuzzy). Super Mario World "
+           "(SNES) writes the level's translevel number to $7E13BF + submap to $7E13C3 (verified read-back), then the next level "
+           "reload (die, or exit and enter a level) lands there; Teenage Mutant Ninja Turtles (FBNeo arcade) sends the built-in "
+           "title-screen stage-select sequence (down x5, right x7, B, A, Start), then the operator picks the stage. Recipes are "
+           "cited per game; use op=stages to see them.",
+           {"session_id": s, "op": s, "stage": s, "game": s}, ["session_id", "op"]),
         fn("autoplay", "Take control: gBox plays the live game itself (scripted mission through the debugger). op=list | "
            "start (mission optional; assist=true holds the player's HP so it can't die) | stop (hand control back) | status.",
            {"session_id": s, "op": s, "mission": s, "assist": b}, ["session_id", "op"]),
@@ -1182,6 +1197,25 @@ class Agent:
             messages.append({"role": "assistant", "content": answer})
             emit({"type": "assistant", "text": answer})
             return {"usage": {"in": 0, "out": 0}, "tools": {}}
+        continued = False
+        if len(messages) >= 3 and messages[-1].get("role") == "user" and messages[-2].get("role") == "tool" \
+                and str(messages[-2].get("content") or "").startswith("asked;") and messages[-3].get("role") == "assistant":
+            # continuation of a questionnaire: the operator's message IS their clicked answer. Rewrite the pending
+            # tool result so the ask_user call literally returns the answer, and reframe the user message so the
+            # model's "current request" reads unambiguously - weak local models otherwise repeat the question.
+            answer = str(messages[-1].get("content") or "").split("\n[context:", 1)[0].strip()
+            q = ""
+            for tc in messages[-3].get("tool_calls") or []:
+                if tc["function"]["name"] == "ask_user":
+                    try:
+                        q = str(json.loads(tc["function"].get("arguments") or "{}").get("question") or "").strip()
+                    except ValueError:
+                        pass
+                    break
+            messages[-2]["content"] = f"the operator answered: {answer}"
+            tail = " Go ahead with this." if answer.endswith((".", "!", "?")) else ". Go ahead with this."
+            messages[-1]["content"] = f"My answer{(' to the question \"' + q + '\"') if q else ''}: {answer}{tail}"
+            continued = True
         sid = context.get("session_id")
         if sid:                                                # the app can hand over a stale id (game relaunched): use the live one
             try:
@@ -1199,6 +1233,8 @@ class Agent:
                 pass
         self.context_session_id = context.get("session_id") or ""
         tools, usage, used = tool_specs(), {"in": 0, "out": 0}, {}
+        if continued:                                           # this turn answers a questionnaire: no re-asking mid-flow
+            tools = [t for t in tools if t["function"]["name"] != "ask_user"]
         self.recipes = {}
         try:                                                   # learned tools for this game (and any-game ones)
             for r in self.api.get("/api/recipes").json():
@@ -1266,6 +1302,7 @@ class Agent:
                              "as your answer; act on the operator's CURRENT request with tools ('answer' entries may be unverified, "
                              "'fact'/'wiki' are stronger). Use them to skip web searches they already answer:\n"
                              + "\n---\n".join(f"[{h['kind']}] {h['title']} ({h['source']}): {h['text'][:900]}" for h in hits)})
+        tool_names = {t["function"]["name"] for t in tools}     # tools the model may call this turn
         for _ in range(max_steps):
             for attempt in range(3):                           # retry transient runner OOMs and malformed tool calls
                 r = httpx.post(f"{self.llm_url}/chat/completions", timeout=600,
@@ -1309,13 +1346,26 @@ class Agent:
                 return {"usage": usage, "tools": used}
             for c in calls:
                 name = c["function"]["name"]
-                if name == "ask_user":                              # questionnaire: show clickable options, wait for the click
+                if name == "ask_user":
+                    if name not in tool_names:                  # withheld on answer turns: the operator already answered
+                        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                                         "content": "ask_user is not available in this turn: the operator already answered "
+                                                    "your question. Act on their answer now and reply."})
+                        continue
+                    # questionnaire: show clickable options, wait for the click
                     try:
                         a = json.loads(c["function"].get("arguments") or "{}")
                     except ValueError:
                         a = {}
-                    opts = [str(o) for o in a.get("options") or []][:8]
-                    emit({"type": "choices", "question": a.get("question", ""), "options": opts})
+                    q = str(a.get("question") or "").strip()
+                    opts = list(dict.fromkeys(str(o).strip() for o in a.get("options") or []
+                                              if o is not None and str(o).strip()))[:8]
+                    if not opts:                                    # nothing clickable: fall back to plain text, never an empty box
+                        emit({"type": "assistant", "text": q or "What would you like?"})
+                        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                                         "content": "asked; no clickable options were provided"})
+                        return {"usage": usage, "tools": used}
+                    emit({"type": "choices", "question": q, "options": opts})
                     messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": "asked; the operator's choice is the next message"})
                     return {"usage": usage, "tools": used}
                 try:
@@ -1373,11 +1423,11 @@ class Agent:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay"}
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
