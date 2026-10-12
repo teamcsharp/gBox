@@ -325,6 +325,13 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         src = rom_path(g, ctx.config)
         if not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
+        if isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
+            eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
+            if not eboot:
+                raise FileNotFoundError(f"no PS3_GAME/USRDIR/EBOOT.BIN in the folder for {src.name} under {src.parent}")
+            ad.serial = ad.serial or catalog.ps3_title_id(eboot)    # per-game RPCS3 config (Sessions -> Graphics)
+            ctx.progress(8, f"PS3 game: {eboot}")
+            src = eboot
         if g.game_id == "0871eee3b68cdea3":                # Resident Evil 6 (X360): boot profile "Everything unlocked"
             try:
                 from . import re6_tool

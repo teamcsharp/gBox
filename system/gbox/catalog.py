@@ -44,6 +44,34 @@ def param_sfo(b: bytes) -> dict:
     return out
 
 
+def ps3_stub_eboot(stub: Path) -> Path | None:
+    """HyperSpin PS3 "<name>.txt" stub -> its game's EBOOT.BIN, by RocketLauncher's RPCS3.ahk rules, or None.
+
+    The stub's first line may name the game folder (relative to the stub's folder, or absolute); an empty stub means
+    the folder beside it with the stub's own name. Disc dumps keep PS3_GAME/USRDIR/EBOOT.BIN, PSN games USRDIR/EBOOT.BIN.
+    """
+    stub = Path(stub)
+    try:
+        lines = stub.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    named = lines[0].strip().strip('"').strip() if lines else ""
+    for folder in ([stub.parent / named] if named else []) + [stub.parent / stub.stem]:
+        for rel in (("PS3_GAME", "USRDIR", "EBOOT.BIN"), ("USRDIR", "EBOOT.BIN")):
+            f = folder.joinpath(*rel)
+            if f.is_file():
+                return f
+    return None
+
+
+def ps3_title_id(eboot: Path) -> str | None:
+    """TITLE_ID (e.g. BLUS30736) from the PARAM.SFO two levels above a PS3 game's USRDIR/EBOOT.BIN."""
+    try:
+        return param_sfo((Path(eboot).parent.parent / "PARAM.SFO").read_bytes()).get("TITLE_ID") or None
+    except Exception:                                      # noqa: BLE001 - unreadable/odd SFO: no per-game settings
+        return None
+
+
 def sniff(path: Path) -> tuple[str | None, dict]:
     """Identify platform from disc/ROM headers. Returns (platform, metadata)."""
     head = _read(path, 0, 0x40000)
