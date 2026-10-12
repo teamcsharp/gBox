@@ -92,3 +92,55 @@ def test_owned_disc_driver_inventory():
     assert (head["verts"], head["tris"]) == (64, 73)
     o, s = ct.driver_parts(entries, "A")["atama"]
     assert ct.read_shape(bank[o:o + s]).frac() == 8
+
+
+def test_car_part_names_and_roster():
+    assert ct.car_part_name("CZ_CADI", "shp") == "CZ_CADI.shp"
+    assert ct.car_part_name("CZ_CADI", "stop_ON") == "CZ_CADIstop_ON.shp"
+    assert ct.car_part_name("CZ_CADI", "flw") == "CZ_CADI_flw.shp"
+    entries = [("CZ_CADI.shp", b"\1" * 0x40), ("CZ_CADIstop_ON.shp", b"\2" * 0x20)]
+    data = ct.write_bank(entries)
+    parts = ct.car_parts(ct.read_bank(data), "CZ_CADI")
+    assert set(parts) == {"shp", "stop_ON"}
+    roster = ct.roster()
+    assert any(e["slug"] == "crazy_taxi_yellow" and e["kind"] == "vehicle" for e in roster)
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned Crazy Taxi GC disc not present")
+def test_owned_disc_yellow_taxi_glb():
+    """Request #459: the yellow taxi (CZ_CADI) assembles into a posed GLB + OBJ from the owned disc."""
+    import json
+    from gbox.gcdisc import GCDisc
+    disc = GCDisc(ISO)
+    bank = disc.read(ct.BANK)
+    entries = ct.read_bank(bank)
+    parts = ct.car_parts(entries, "CZ_CADI")
+    assert set(parts) >= {"shp", "flw", "frw", "rlw", "rrw", "taxiON", "stop_OFF"}
+    glb, stats = ct.car_glb(bank, "CZ_CADI")
+    assert glb[:4] == b"glTF" and stats["tris"] > 2000 and stats["verts"] > 1100
+    jl = struct.unpack("<I", glb[12:16])[0]
+    gl = json.loads(glb[20:20 + jl])
+    nodes = {n["name"]: n for n in gl["nodes"]}
+    assert "translation" not in nodes["shp"]
+    hubs = {}
+    for w in ("flw", "frw", "rlw", "rrw"):
+        t = nodes[w]["translation"]
+        sw = ct.read_shape(bank[parts[w][0]:parts[w][0] + parts[w][1]], w)
+        hub = (sw.centre[0] + t[0], sw.centre[1] + t[1], sw.centre[2] + t[2])
+        hubs[w] = hub
+        assert abs(abs(hub[0]) - 1.025) < 1e-3, w       # track width carried by the header centre
+        assert hub[1] > 2.0                              # hub above the ground plane
+    assert hubs["flw"][2] < 0 < hubs["rlw"][2]           # front wheels ahead of the rear ones
+    obj, ostats = ct.car_obj(bank, "CZ_CADI")
+    assert sum(v["tris"] for v in ostats.values()) == stats["tris"]
+    # the TAXI sign sits inside the body's bounding box (on the roof), in one car space
+    body = ct.read_shape(bank[parts["shp"][0]:parts["shp"][0] + parts["shp"][1]], "body")
+    sign = ct.read_shape(bank[parts["taxiON"][0]:parts["taxiON"][0] + parts["taxiON"][1]], "sign")
+    bys = [p[1] for p in body.positions()]
+    sys_ = [p[1] for p in sign.positions()]
+    assert min(sys_) > (min(bys) + max(bys)) / 2 and max(sys_) <= max(bys) + 1e-3
+    # posed wheels reach the ground and stay inside the body's height
+    for w, hub in hubs.items():
+        wheel = ct.read_shape(bank[parts[w][0]:parts[w][0] + parts[w][1]], w)
+        wys = [p[1] + hub[1] for p in wheel.positions()]
+        assert min(wys) >= -0.1 and max(wys) < max(bys)

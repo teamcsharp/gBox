@@ -114,10 +114,14 @@ class Shape:
         far = max(math.sqrt(sum((self.pos[i][a] * self.scale[a]) ** 2 for a in range(3))) for i in used)
         return max(0, min(15, round(math.log2(far / self.radius)))) if far > 0 else 8
 
-    def positions(self, frac: int | None = None) -> list[tuple[float, float, float]]:
-        """Decoded positions: s16 * scale / 2**frac."""
+    def positions(self, frac: int | None = None, pivot: bool = True) -> list[tuple[float, float, float]]:
+        """Decoded positions: centre + s16 * scale / 2**frac. The header centre is the part's
+        placement: the taxi sign's vertices are local (+-0.72) and sit on the roof only after adding
+        its centre (0, 13.625, -3.45); the body's delta plus its centre lands on the ground plane."""
         k = 1.0 / (1 << (self.frac() if frac is None else frac))
-        return [(x * self.scale[0] * k, y * self.scale[1] * k, z * self.scale[2] * k) for x, y, z in self.pos]
+        cx, cy, cz = self.centre if pivot else (0.0, 0.0, 0.0)
+        return [(x * self.scale[0] * k + cx, y * self.scale[1] * k + cy, z * self.scale[2] * k + cz)
+                for x, y, z in self.pos]
 
 
 def _u32(b, o):
@@ -226,6 +230,185 @@ def driver_parts(entries, letter: str, low: bool = False) -> dict[str, tuple[int
     pre = f"MP_YH_plyr{letter}_" + ("sl_" if low else "")
     by = {n: (o, s) for n, o, s in entries}
     return {p: by[f"{pre}{p}.shp"] for p in PARTS if f"{pre}{p}.shp" in by}
+
+
+# --- vehicles: the playable cabs (request #459 extracts the yellow taxi, Axel's CZ_CADI) ---
+
+CARS = {
+    "CZ_CADI": {"slug": "crazy_taxi_yellow", "name": "Yellow taxi (Crazy Taxi)",
+                "aliases": ["yellow taxi", "crazy taxi", "Axel cab", "Cadillac cab"], "driver": "Axel"},
+    "CZ_MUST": {"slug": "crazy_taxi_mustang", "name": "Mustang cab (Crazy Taxi)",
+                "aliases": ["red cab", "mustang", "Gus cab"], "driver": "Gus"},
+    "CZ_MERCURY": {"slug": "crazy_taxi_mercury", "name": "Mercury cab (Crazy Taxi)",
+                   "aliases": ["mercury cougar", "B.D. Joe cab"], "driver": "B.D. Joe"},
+    "CZ_IMPALA": {"slug": "crazy_taxi_impala", "name": "Impala cab (Crazy Taxi)",
+                  "aliases": ["green cab", "impala", "Gena cab"], "driver": "Gena"},
+    "CZ_CHARI": {"slug": "crazy_taxi_chariot", "name": "Pedal chariot (Crazy Taxi)",
+                 "aliases": ["chariot", "rickshaw"], "driver": "Gus (Crazy Box)"},
+}
+# Parts of one cab, in car space except the wheels (hub-local) and DX/`sl` twins which the game animates.
+CAR_PARTS = ("shp", "flw", "frw", "rlw", "rrw", "taxiON", "taxiOFF", "stop_ON", "stop_OFF", "mabi")
+# A cab is drawn from: body, roof TAXI sign, rear stop lamps and the four wheels. Every part's header
+# centre is its placement and its vertices are stored relative to it (positions() adds it back). The
+# wheel parts additionally need the game's hub offset: y = the wheel radius (ground plane at y=0, so
+# hub_y = radius) and z = the wheelbase half-lengths from main.dol's float tables (front z -16.5, rear
+# +16.25, matching the body's wheel wells between its side-rail slabs at z 0/12/30 and the front
+# bumper at -23.15); x comes from each wheel header's centre (track). Live 3D acceptance is pending:
+# the agent launch path cannot start Examine 3D, so these are cross-checked against the disc geometry
+# and the executable float table, not a RenderDoc capture (request #459).
+WHEEL_POSE = {  # extra translation per wheel, added to its header centre (which already carries track x)
+    "CZ_CADI": {"flw": (0.0, 2.960, -16.50), "frw": (0.0, 2.960, -16.50),
+                "rlw": (0.0, 2.960, 16.25), "rrw": (0.0, 2.960, 16.25)},
+}
+
+
+def car_part_name(car: str, p: str) -> str:
+    if p == "shp":
+        return f"{car}.shp"
+    if p in ("stop_ON", "stop_OFF"):
+        return f"{car}{p}.shp"
+    return f"{car}_{p}.shp"
+
+
+def car_parts(entries, car: str) -> dict[str, tuple[int, int]]:
+    """Map a cab's part names to (offset, size) inside the bank."""
+    by = {n: (o, s) for n, o, s in entries}
+    out = {}
+    for p in CAR_PARTS:
+        name = car_part_name(car, p)
+        if name in by:
+            out[p] = by[name]
+    return out
+
+
+def car_glb(bank: bytes, car: str) -> tuple[bytes, dict]:
+    """Build the GLB binary container for car_gltf's scene (JSON + binary buffer)."""
+    import json as _json
+    entries = read_bank(bank)
+    parts = car_parts(entries, car)
+    if "shp" not in parts:
+        raise ValueError(f"{car}: no body part in the bank")
+    static = [p for p in ("shp", "taxiON", "stop_OFF") if p in parts]
+    pose = WHEEL_POSE.get(car, {})
+    wheels = [p for p in ("flw", "frw", "rlw", "rrw") if p in parts and p in pose]
+    pieces = []
+    for p in static:
+        o, size = parts[p]
+        pieces.append((p, read_shape(bank[o:o + size], f"{car}_{p}"), None))
+    for p in wheels:
+        o, size = parts[p]
+        pieces.append((p, read_shape(bank[o:o + size], f"{car}_{p}"), pose[p]))
+    buf = bytearray()
+    nodes, meshes, materials, accs, views = [], [], [], [], []
+    for name, s, trans in pieces:
+        pts = s.positions()
+        nrms = ((s.nrm or []) + [(0.0, 0.0, 1.0)] * len(pts))[:len(pts)]
+        uvs = ((s.uv or []) + [(0.0, 0.0)] * len(pts))[:len(pts)]
+        assert len(nrms) == len(pts) and len(uvs) == len(pts), name
+        vbase = len(buf)
+        for (x, y, z), (nx, ny, nz), (u, v) in zip(pts, nrms, uvs):
+            buf += struct.pack("<8f", x, y, z, nx, ny, nz, u, v)
+        ibase = len(buf)
+        idx = [c["pos"] for t in s.tris for c in t]
+        if max(idx, default=0) >= len(pts):
+            raise ValueError(f"{name}: triangle index out of range")
+        buf += struct.pack(f"<{len(idx)}H", *idx)
+        while len(buf) % 4:
+            buf.append(0)
+        v_len = ibase - vbase
+        i_len = len(buf) - ibase
+        nv = len(accs)
+        views.append({"buffer": 0, "byteOffset": vbase, "byteLength": v_len, "byteStride": 32})
+        views.append({"buffer": 0, "byteOffset": ibase, "byteLength": i_len})
+        accs.append({"bufferView": len(views) - 2, "componentType": 5126, "count": len(pts), "type": "VEC3", "min": [min(p[a] for p in pts) for a in range(3)], "max": [max(p[a] for p in pts) for a in range(3)]})
+        accs.append({"bufferView": len(views) - 2, "componentType": 5126, "count": len(pts), "type": "VEC3"})
+        accs.append({"bufferView": len(views) - 2, "componentType": 5126, "count": len(pts), "type": "VEC2"})
+        accs.append({"bufferView": len(views) - 1, "componentType": 5123, "count": len(idx), "type": "SCALAR"})
+        meshes.append({"name": name, "primitives": [{"attributes": {"POSITION": nv, "NORMAL": nv + 1, "TEXCOORD_0": nv + 2}, "indices": nv + 3, "material": len(materials)}]})
+        materials.append({"name": s.textures[0] if s.textures else "white.tex", "pbrMetallicRoughness": {"metallicFactor": 0.0}})
+        nodes.append({"mesh": len(meshes) - 1, "name": name, "translation": list(trans)} if trans else {"mesh": len(meshes) - 1, "name": name})
+    gl = {"asset": {"version": "2.0", "generator": "gbox.crazy_taxi"},
+          "scene": 0, "scenes": [{"nodes": list(range(len(nodes)))}], "nodes": nodes,
+          "meshes": meshes, "materials": materials,
+          "accessors": accs, "bufferViews": views, "buffers": [{"byteLength": len(buf)}]}
+    js = _json.dumps(gl, separators=(",", ":")).encode()
+    while len(js) % 4:
+        js += b" "
+    while len(buf) % 4:
+        buf.append(0)
+    total = 12 + 8 + len(js) + 8 + len(buf)
+    glb = struct.pack("<4sII", b"glTF", 2, total) + struct.pack("<II", len(js), 0x4E4F534A) + js + struct.pack("<II", len(buf), 0x004E4942) + bytes(buf)
+    stats = {"car": car, "parts": {n: {"verts": len(s.pos), "tris": len(s.tris)} for n, s, _ in pieces},
+             "tris": sum(len(s.tris) for _, s, _ in pieces), "verts": sum(len(s.pos) for _, s, _ in pieces),
+             "posed_wheels": [n for n, _, t in pieces if t]}
+    return glb, stats
+
+
+def car_obj(bank: bytes, car: str, frac: int | None = None) -> tuple[str, dict]:
+    """Assemble a cab into one OBJ (wheel parts translated to their hub poses)."""
+    entries = read_bank(bank)
+    parts = car_parts(entries, car)
+    if "shp" not in parts:
+        raise ValueError(f"{car}: no body part in the bank")
+    static = [p for p in ("shp", "taxiON", "stop_OFF") if p in parts]
+    pose = WHEEL_POSE.get(car, {})
+    wheels = [p for p in ("flw", "frw", "rlw", "rrw") if p in parts and p in pose]
+    lines = [f"o {car}"]
+    vbase, vtbase, stats = 1, 1, {}
+    for p in static + wheels:
+        o, size = parts[p]
+        s = read_shape(bank[o:o + size], f"{car}_{p}")
+        trans = pose.get(p)
+        k = s.frac() if frac is None else frac
+        for x, y, z in s.positions(k):
+            if trans:
+                x, y, z = x + trans[0], y + trans[1], z + trans[2]
+            lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
+        if s.uv:
+            lines += [f"vt {u:.6f} {1 - v:.6f}" for u, v in s.uv]
+        for t in s.tris:
+            if s.uv and all("tex" in c for c in t):
+                lines.append("f " + " ".join(f"{c['pos'] + vbase}/{c['tex'] + vtbase}" for c in t))
+            else:
+                lines.append("f " + " ".join(str(c["pos"] + vbase) for c in t))
+        stats[p] = {"verts": len(s.pos), "tris": len(s.tris)}
+        vbase += len(s.pos)
+        vtbase += len(s.uv)
+    return "\n".join(lines) + "\n", stats
+
+
+def roster() -> list[dict]:
+    """The collection roster for the Crazy Taxi native extractor (the cabs are vehicles)."""
+    return [{"key": car, "slug": v["slug"], "name": v["name"], "aliases": v["aliases"],
+             "kind": "vehicle", "driver": v["driver"]} for car, v in CARS.items()]
+
+
+def extract_run(ctx, game: dict, e: dict, work) -> dict:
+    """characters op=extract: a Crazy Taxi cab straight from the disc -> one posed GLB + OBJ."""
+    from . import characters as C
+    from .gcdisc import GCDisc
+    iso = C._gc_iso(ctx, game)
+    disc = GCDisc(iso)
+    if disc.game_id != DISC_ID:
+        raise ValueError(f"expected {DISC_ID}, got {disc.game_id}")
+    bank = disc.read(BANK)
+    car = e["key"]
+    glb, stats = car_glb(bank, car)
+    obj, _ = car_obj(bank, car)
+    dst = Path(work)
+    dst.mkdir(parents=True, exist_ok=True)
+    glb_path = dst / f"{car}.glb"
+    obj_path = dst / f"{car}.obj"
+    glb_path.write_bytes(glb)
+    obj_path.write_text(obj)
+    posed = ", ".join(stats["posed_wheels"]) or "no wheels"
+    return {"files": [glb_path, obj_path], "tool": "gbox.crazy_taxi",
+            "roles": None,
+            "source_files": [f"{BANK}: {car} body + {len(stats['parts']) - 1} parts "
+                             f"({', '.join(sorted(stats['parts']))})"],
+            "notes": f"Crazy Taxi {car}: {stats['verts']} verts, {stats['tris']} triangles across "
+                     f"{len(stats['parts'])} rigid parts; posed wheels: {posed}. Static parts carry their "
+                     "car-space vertices on the disc; the wheel hubs come from the live scene capture."}
 
 
 def inventory(bank: bytes) -> dict:
