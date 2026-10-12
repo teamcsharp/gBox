@@ -20,6 +20,7 @@ WRITERS = [
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
+    ("gta_vc_swap", ["player"], "Tommy Vercetti, the GTA Vice City player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
@@ -43,7 +44,7 @@ SPECIAL = [                                               # writers routed by co
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
 DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
              ("Mario Kart 64", "n64"), ("Resident Evil The Mercenaries 3D", "3ds"), ("Super Smash Bros. Melee", "gamecube"),
-             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto Vice City", "ps2"),
+             ("Phantasy Star Online Ver. 2", "dreamcast"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
              ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
              ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
@@ -74,6 +75,11 @@ def writer_for(game: dict) -> dict | None:
     o = _mod("oot_swap")
     if o is not None and getattr(o, "is_oot", None) and o.is_oot(game):
         return {"writer": "gbox.oot_swap", "routed": "oot_swap.tool(" in src, "slots": SPECIAL[1][2], "replaces": SPECIAL[1][3]}
+    # Vice City uses a placeholder catalog ID until the owned disc is scanned; route by title/platform.
+    vc = _mod("gta_vc_swap")
+    if vc is not None and getattr(vc, "_title_matches_vc", None) and vc._title_matches_vc(game):
+        return {"writer": "gbox.gta_vc_swap", "routed": "gta_vc_swap.use(" in src, "slots": ["player"],
+                "replaces": "Tommy Vercetti, the GTA Vice City player"}
     return None
 
 

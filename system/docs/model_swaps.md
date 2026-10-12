@@ -245,6 +245,15 @@ Feasibility: **Hard.** The exporter is experimental, the skeletons are different
 - Ganondorf exists **only for San Andreas** (SA's skeleton is different, so these skins need converting to III/VC): https://www.gtainside.com/en/sanandreas/skins/169001-ganondorf-3ds/download/ and https://www.gtainside.com/en/sanandreas/skins/114752-super-smash-bros-brawl-ganondorf/
 - Leon (RE4 Remake) also exists only for SA: https://www.gtaall.com/gta-san-andreas/skins/214911-resident-evil-4-remake-demo-leon-kennedy.html
 
+### Vice City (PS2): built into gBox (`gbox/gta_vc_models.py`, `gbox/gta_vc_swap.py`)
+
+Status: **reader and writer implemented; real-disc integration pending disc scan**. Vice City uses the same RenderWare `.dff`/`.txd` archive layout as GTA III PC/PS2, so the GTA III swap engine (`gbox/gta3_swap.py`) was parameterized by skeleton role map and reused. The PS2 player clump is `player.dff`/`player.txd` inside `MODELS/GTA3.IMG`.
+
+- `VC_ROLES` maps the canonical 17-bone rigid frame set to Vice City's `tommy_*` frame names.
+- `gta_vc_models.extract_run` reads `player.dff` and `player.txd` from an owned disc ISO and emits a skinned glTF collection entry.
+- `gta_vc_swap.use` rebuilds `player.dff`/`player.txd` with a donor model while preserving Tommy's frame hierarchy and animations, then writes a modded disc image.
+- Routing uses title/platform fallback until the owned PS2 disc is scanned and assigned a real catalog ID.
+
 ### LCS (PS2): built into gBox (`gbox/gta_stories_models.py`, 2026-10-07)
 
 Status: **works on the PS2 USA disc (SLUS-21423)**. gBox identifies the player, extracts him, and builds a disc-image mod that puts any rigged collection character in his place. It was checked in game on the Spark with HUcast: walking, running, getting into a car, driving and getting out, with no crash. Frames are in `gbox-cache/lcs_re/frames/` on the Spark. VCS and the PSP versions are not done (see "What's left").

@@ -74,19 +74,21 @@ def iso_from_rom(rom: Path, dst: Path, progress=None) -> Path:
 
 # ------------------------------------------------------------------------------------------------- the rig
 class Rig:
-    """Claude's clump: frames (world matrices, GTA Z up), atomics (frame, geometry) and the role -> frame map."""
+    """Claude's clump: frames (world matrices, GTA Z up), atomics (frame, geometry) and the role -> frame map.
+    Pass `roles` to adapt the same parser to another GTA ped (e.g. Vice City)."""
 
-    def __init__(self, dff: bytes):
+    def __init__(self, dff: bytes, roles: dict | None = None):
         self.raw = dff
         self.root, self.tail = R.parse(dff)
         self.frames = R.frames_read(self.root.first(R.FRAMELIST))
         self.geoms = self.root.first(R.GEOMLIST).find(R.GEOMETRY)
         self.atomics = [struct.unpack_from("<II", a.first(R.STRUCT).data) for a in self.root.find(R.ATOMIC)]
         names = [f["name"].lower() for f in self.frames]
-        missing = [n for n in set(GTA3_ROLES.values()) if n not in names]
+        role_map = roles or GTA3_ROLES
+        missing = [n for n in set(role_map.values()) if n not in names]
         if missing:
             raise ValueError(f"not a GTA III ped clump: frames {missing} missing (have {names})")
-        self.roles = {r: names.index(n) for r, n in GTA3_ROLES.items()}
+        self.roles = {r: names.index(n) for r, n in role_map.items()}
 
     # duck-typed re4gc template: bones (index, parent|0xFF), joint positions in mm, glTF axes
     @property
@@ -225,13 +227,13 @@ def build_txd(txd: bytes, atlases: list[np.ndarray]) -> bytes:
 
 # ------------------------------------------------------------------------------------------------------ build
 def swap_files(disc: R.GtaDisc, src_model: Path, src_roles: dict, work: Path, blender: str | None = None,
-               progress=None, skin: str = "player") -> dict:
+               progress=None, skin: str = "player", roles: dict | None = None) -> dict:
     """New <skin>.dff + <skin>.txd bytes that fit their IMG slots (skin = one of SKINS)."""
     dname, tname = f"{skin}.dff", f"{skin}.txd"
     from .gta_stories_models import pack_atlases
     progress = progress or (lambda p, m: None)
     dff, txd = disc.entry(dname), disc.entry(tname)
-    rig = Rig(dff)
+    rig = Rig(dff, roles=roles)
     rasters = [r for r in txd_rasters(txd)]
     if not rasters or any(r.depth != 8 for r in rasters):
         raise ValueError(f"{tname} rasters {[(r.name, r.depth) for r in rasters]}: only 8-bit is written")
@@ -270,7 +272,7 @@ def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: str, progress=None) -> dict:
+def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: str, progress=None, mod_roles: dict | None = None) -> dict:
     """The disc-image mod gta3_<slug>: a copy of the vanilla image with player.dff/.txd replaced in every IMG copy."""
     from . import filemods
     progress = progress or (lambda p, m: None)
@@ -290,7 +292,7 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
             if f"{skin}.dff" not in disc.index or f"{skin}.txd" not in disc.index:
                 continue
             try:
-                fits.append(swap_files(disc, Path(src_model), roles, work, bl, progress, skin=skin))
+                fits.append(swap_files(disc, Path(src_model), roles, work, bl, progress, skin=skin, roles=mod_roles))
             except ValueError as e:
                 if skin == "player":
                     raise

@@ -1279,6 +1279,9 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
+    ("gta_vc", lambda t, p: "grand theft auto" in t and "vice city" in t and "stories" not in t and p == "ps2",
+     lambda: __import__("gbox.gta_vc_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta_vc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -2036,6 +2039,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import gta3_swap
     if gid in gta3_swap.GAME_IDS and inp.slot == "player":         # GTA III (PS2): Claude -> gta3_<slug> (disc image)
         return {"result": out | gta3_swap.use(ctx, meta, game, inp)}
+    from . import gta_vc_swap
+    if (gid in gta_vc_swap.GAME_IDS or gta_vc_swap._title_matches_vc(game)) and inp.slot == "player":
+        return {"result": out | gta_vc_swap.use(ctx, meta, game, inp)}
     from . import re6_tool
     if gid in re6_tool.GAME_IDS and (inp.slot in ("player", "enemies") or inp.slot.startswith("enemy:")):
         # RE6 (X360, Xenia): player = Leon's every costume -> re6_<slug>; enemies / enemy:<family> -> zombies, J'avo
