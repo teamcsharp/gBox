@@ -1164,7 +1164,10 @@ def _mgs_vr_run(ctx, game, entry, work):
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
-    ('mgs_vr', lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
+    ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
+     lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("mgs_vr", lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
      _one('SNAKE', 'mgs_vr_snake', 'Solid Snake (VR Missions)', ['Snake', 'MGS VR Snake']), _mgs_vr_run),
     ('oot', lambda t, p: 'ocarina of time' in t and p == 'n64',
      lambda: [{'key': f'{age} link', 'slug': f'oot_link_{age}', 'name': label,
