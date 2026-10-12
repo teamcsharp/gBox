@@ -238,10 +238,14 @@ CARS = {
 CAR_PARTS = ("shp", "flw", "frw", "rlw", "rrw", "taxiON", "taxiOFF", "stop_ON", "stop_OFF", "mabi")
 # A cab is drawn from: body, roof TAXI sign, rear stop lamps and the four wheels. Every part's header
 # centre is its placement and its vertices are stored relative to it (positions() adds it back). The
-# wheel parts additionally need the game's hub offset (main.dol part table; measured on the live
-# GCTE51 disc via scene capture at gameplay start, request #459): the final hub is centre + WHEEL_POSE.
+# wheel parts additionally need the game's hub offset: y = the wheel radius (ground plane at y=0, so
+# hub_y = radius) and z = the wheelbase half-lengths from main.dol's float tables (front z -16.5, rear
+# +16.25, matching the body's wheel wells between its side-rail slabs at z 0/12/30 and the front
+# bumper at -23.15); x comes from each wheel header's centre (track). Live 3D acceptance is pending:
+# the agent launch path cannot start Examine 3D, so these are cross-checked against the disc geometry
+# and the executable float table, not a RenderDoc capture (request #459).
 WHEEL_POSE = {  # extra translation per wheel, added to its header centre (which already carries track x)
-    "CZ_CADI": {"flw": (0.0, 2.960, -16.25), "frw": (0.0, 2.960, -16.25),
+    "CZ_CADI": {"flw": (0.0, 2.960, -16.50), "frw": (0.0, 2.960, -16.50),
                 "rlw": (0.0, 2.960, 16.25), "rrw": (0.0, 2.960, 16.25)},
 }
 
@@ -273,15 +277,15 @@ def car_glb(bank: bytes, car: str) -> tuple[bytes, dict]:
     if "shp" not in parts:
         raise ValueError(f"{car}: no body part in the bank")
     static = [p for p in ("shp", "taxiON", "stop_OFF") if p in parts]
-    wheels = [p for p in ("flw", "frw", "rlw", "rrw") if p in parts]
     pose = WHEEL_POSE.get(car, {})
+    wheels = [p for p in ("flw", "frw", "rlw", "rrw") if p in parts and p in pose]
     pieces = []
     for p in static:
         o, size = parts[p]
         pieces.append((p, read_shape(bank[o:o + size], f"{car}_{p}"), None))
     for p in wheels:
         o, size = parts[p]
-        pieces.append((p, read_shape(bank[o:o + size], f"{car}_{p}"), pose.get(p)))
+        pieces.append((p, read_shape(bank[o:o + size], f"{car}_{p}"), pose[p]))
     buf = bytearray()
     nodes, meshes, materials, accs, views = [], [], [], [], []
     for name, s, trans in pieces:
@@ -335,8 +339,8 @@ def car_obj(bank: bytes, car: str, frac: int | None = None) -> tuple[str, dict]:
     if "shp" not in parts:
         raise ValueError(f"{car}: no body part in the bank")
     static = [p for p in ("shp", "taxiON", "stop_OFF") if p in parts]
-    wheels = [p for p in ("flw", "frw", "rlw", "rrw") if p in parts]
     pose = WHEEL_POSE.get(car, {})
+    wheels = [p for p in ("flw", "frw", "rlw", "rrw") if p in parts and p in pose]
     lines = [f"o {car}"]
     vbase, vtbase, stats = 1, 1, {}
     for p in static + wheels:
