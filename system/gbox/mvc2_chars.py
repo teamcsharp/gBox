@@ -42,6 +42,7 @@ def _pack_shelves(rects: list[tuple[int, int, int]], max_width: int = 4096) -> t
     """Shelf pack rectangles (w, h, id) with a max shelf width. Returns (atlas_w, atlas_h, [(x, y), ...])."""
     if not rects:
         return 0, 0, []
+    order = rects                                         # positions are returned in the caller's tile order
     rects = sorted(rects, key=lambda r: (-r[1], -r[0]))
     shelves: list[tuple[int, int, list[tuple[int, int, int]]]] = []
     for rid, w, h in ((r[2], r[0], r[1]) for r in rects):
@@ -60,7 +61,7 @@ def _pack_shelves(rects: list[tuple[int, int, int]], max_width: int = 4096) -> t
         for rid, x, _ in items:
             positions[rid] = (x, y)
         y += h
-    return atlas_w, y, [positions[r[2]] for r in rects]
+    return atlas_w, y, [positions[r[2]] for r in order]
 
 
 def _build_atlas(tiles: list[tuple[int, int, int, bytes]], name: str,
@@ -279,9 +280,13 @@ def roster() -> list[dict]:
 
 
 def _dc_gdi(ctx, game: dict) -> Path:
-    """Resolve a Dreamcast gdi path for this exact game, mirroring characters._dc_gdi."""
-    from .characters import library_root
-    root = library_root(ctx.config)
+    """Resolve a Dreamcast gdi path for this exact game: the shared resolver first (GDI/CDI, CHD via chdman),
+    then the 7z/zip archives this title ships in."""
+    from . import characters as CH
+    try:
+        return CH._dc_gdi(ctx, game)
+    except Exception:                                     # no GDI/CHD through the shared path: try the archives below
+        pass
     cached = Path(ctx.config.cache) / "dc" / game["game_id"] / "disc.gdi"
     if cached.exists():
         return cached

@@ -85,3 +85,5 @@ def test_pack_shelves():
     w, h, pos = C._pack_shelves(rects, max_width=100)
     assert w <= 100
     assert len(pos) == 3
+    w2, h2, pos2 = C._pack_shelves([(10, 10, 0), (30, 10, 1)], max_width=100)
+    assert pos2 == [(30, 0), (0, 0)]          # caller's tile order, not the packing order (atlas was clipping wide tiles)
