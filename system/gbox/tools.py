@@ -58,7 +58,7 @@ def echo_artifact(inp: EchoIn, ctx: Ctx):
 class ScanIn(BaseModel):
     libraries: list[str] | None = None    # library ids; default: all configured libraries
     roots: list[str] | None = None        # ad-hoc plain folders (content-hashed), in addition to libraries
-    include_steam: bool = True
+    include_steam: bool | None = None  # None: Steam only when steam_root is configured; true: also auto-detect the install (Windows registry); false: skip
 
 class ScanOut(BaseModel):
     count: int
@@ -124,9 +124,11 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
-    if inp.include_steam and cfg.steam_root:
-        e, p = catalog.scan_steam(cfg.steam_root)
-        entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}
+    if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
+        steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
+        if steam_root:
+            e, p = catalog.scan_steam(steam_root)
+            entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}
     try:                                                # decanted install: the recipes' ids for this PC's matching copies
         remap = json.loads((cfg.data_dir / "game_ids.json").read_text())   # (written by `python -m gbox.decant match`)
     except (OSError, ValueError):
@@ -2631,6 +2633,99 @@ def pick(inp: PickIn, ctx: Ctx):
     return {"result": out}
 
 
+class PickPreviewIn(BaseModel):
+    session_id: str
+    x: float                               # click, 0..1 across the game window
+    y: float                               # click, 0..1 down the game window
+    window_aspect: float = 4 / 3           # width / height of the window the click was in (letterboxing)
+
+
+class PickPreviewOut(BaseModel):
+    result: dict
+
+
+@tool("pick_preview", "1.0", PickPreviewIn, PickPreviewOut, capabilities=["runtime", "memory"], timeout_s=30)
+def pick_preview(inp: PickPreviewIn, ctx: Ctx):
+    """Fast live preview for the game eyedropper.  Reads semantic state without pausing/extracting,
+    projects the entities through the game's camera, and returns the one under the cursor together
+    with a snapshot of its live RAM and the profile evidence that describes where it lives in code."""
+    from . import semantic
+    ad, g = SESSIONS[inp.session_id]
+    st = _semantic_state(ad, g)
+    prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
+    if not prof or not prof.get("camera"):
+        return {"result": {"picked": None, "note": f"no camera mapping for {g.get('title')} yet (profile.camera)"}}
+    cam = prof["camera"]
+    try:
+        cam_raw = (ad.read_memory(int(cam["eye"], 16), 12), ad.read_memory(int(cam["target"], 16), 12))
+    except Exception as e:
+        return {"result": {"picked": None, "note": f"could not read camera: {e}"}}
+    end = ">" if g.get("platform") in BIG_ENDIAN else "<"
+    eye, tgt = struct.unpack(end + "3f", cam_raw[0]), struct.unpack(end + "3f", cam_raw[1])
+    cx, cy = inp.x, inp.y
+    if inp.window_aspect > 4 / 3:
+        w = (4 / 3) / inp.window_aspect
+        cx = (inp.x - (1 - w) / 2) / w
+    elif inp.window_aspect < 4 / 3:
+        h = inp.window_aspect / (4 / 3)
+        cy = (inp.y - (1 - h) / 2) / h
+    hits = []
+    for e in st.get("entities", []):
+        if e.get("kind") == "player":
+            continue
+        depth = math.dist(eye, (e.get("x", 0), e.get("y", 0), e.get("z", 0)))
+        if depth > 700:
+            continue
+        p = project_point(eye, tgt, (e.get("x", 0), e.get("y", 0) + 12, e.get("z", 0)), cam.get("fov", 45))
+        if p and -0.1 <= p[0] <= 1.1 and -0.1 <= p[1] <= 1.1:
+            hits.append((math.hypot(p[0] - cx, p[1] - cy), e, p, depth))
+    if not hits:
+        return {"result": {"picked": None, "note": "nothing projectable near the click"}}
+    me = next((x for x in st.get("entities", []) if x.get("kind") == "player"), {})
+    near = [h for h in hits if h[0] < (0.2 if h[1].get("kind") in ("enemy", "npc") else 0.1)] or sorted(hits, key=lambda h: h[0])[:1]
+    rank = {"enemy": 0, "npc": 1, "object": 2, "gate": 3}
+    near.sort(key=lambda h: (h[1].get("room") != me.get("room"), rank.get(h[1].get("kind"), 2), h[3], h[0]))
+    hits = near + [h for h in sorted(hits, key=lambda h: h[0]) if h not in near]
+    dist, e, p, _ = hits[0]
+    ptr_int = None
+    if e.get("ptr"):
+        try:
+            ptr_int = int(str(e["ptr"]), 16)
+        except Exception:
+            ptr_int = None
+    ram = None
+    if ptr_int:
+        try:
+            ram = ad.read_memory(ptr_int, 64)
+        except Exception as ex:
+            ram = f"read failed: {ex}".encode()
+    hex_dump = None
+    if ram:
+        if isinstance(ram, bytes):
+            hex_dump = " ".join(f"{b:02x}" for b in ram)
+        else:
+            hex_dump = str(ram)
+    evidence = prof.get("evidence", {})
+    # Surface evidence that names this class, its entity struct, or its model.
+    class_ev = {}
+    needle = e.get("class", "")
+    for k, v in evidence.items():
+        if k in ("entities", "camera", "models") or (needle and (k == needle or (isinstance(v, (str, int)) and needle in str(v)))):
+            class_ev[k] = v
+    model = (prof.get("models") or {}).get(e.get("class"))
+    out = {
+        "picked": {k: e.get(k) for k in ("class", "kind", "entity_id", "ptr", "x", "y", "z", "hp", "room")},
+        "screen": [round(p[0], 3), round(p[1], 3)],
+        "click": [round(cx, 3), round(cy, 3)],
+        "miss": round(dist, 3),
+        "hex": hex_dump,
+        "evidence": class_ev,
+        "model": model,
+        "others": [{"class": h[1].get("class"), "miss": round(h[0], 3)} for h in hits[1:4]],
+    }
+    return {"result": out}
+
+
 class BlenderIn(BaseModel):
     package_dir: str
 
@@ -2881,6 +2976,7 @@ AGENTS = [
 def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
+                              "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
@@ -2889,10 +2985,13 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
+                              "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
-                              "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
+                              "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "stranglehold")):   # stranglehold: PS3 bullet-time interception systems and chat driver
     import importlib
     import subprocess
     import sys

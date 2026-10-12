@@ -10,9 +10,25 @@ from pathlib import Path
 import pytest
 
 from gbox import mvc2_dat as M
+from gbox.gdrom import GDRom
 
-DAT = Path.home() / "gbox-cache/dc/02db6d37c0e20375/an/PL00_DAT.BIN"
-EXE = Path.home() / "gbox-cache/dc/02db6d37c0e20375/an/1ST_READ.BIN"
+GDI = Path.home() / "gbox-cache/dc/02db6d37c0e20375/disc.gdi"
+_EXE = None
+_DAT = None
+
+
+def _exe():
+    global _EXE
+    if _EXE is None:
+        _EXE = GDRom(str(GDI)).read("1ST_READ.BIN")
+    return _EXE
+
+
+def _dat():
+    global _DAT
+    if _DAT is None:
+        _DAT = GDRom(str(GDI)).read("PL00_DAT.BIN")
+    return _DAT
 
 
 # ---------------------------------------------------------------- GFX1 codec
@@ -116,27 +132,27 @@ def test_synthetic_dat_roundtrip():
 
 # ------------------------------------------------- real-disc checks (PL00 = Ryu)
 
-@pytest.mark.skipif(not DAT.exists(), reason="unpacked MVC2 disc cache not present")
+@pytest.mark.skipif(not GDI.exists(), reason="unpacked MVC2 disc cache not present")
 class TestRealPL00:
     def test_file_identity(self):
-        assert hashlib.sha256(DAT.read_bytes()).hexdigest() == (
+        assert hashlib.sha256(_dat()).hexdigest() == (
             "751165ed1fc9f001961a8ed02ec437c5171c7712bf9718694e6a09b97667597b")
 
     def test_sections_and_part_count(self):
-        dat = DAT.read_bytes()
+        dat = _dat()
         tab = M.dat_sections(dat)
         assert tab[0] == 0x40 and tab[1] == 0x67F40 and tab[2] == 0x6E440
         assert tab[3] == 0x6EB60 and tab[5] == 0x7EB60 and tab[6] == 0x83D40
         assert M.part_count(dat) == 1533
 
     def test_part_geometry(self):
-        dat = DAT.read_bytes()
+        dat = _dat()
         for sel, wh in ((0, (8, 32)), (1, (32, 128)), (2, (16, 32)), (3, (8, 8))):
             _, _, _, w, h = M.part_geom(dat, sel)
             assert (w, h) == wh
 
     def test_part_decode_checksums(self):
-        dat = DAT.read_bytes()
+        dat = _dat()
         for sel, want in ((0, "ca9c29af1a2c1461efd44b444a756196"),
                           (1, "9e42fe3ca5cd0da515feb1adb1da0d3b"),
                           (2, "8ac10af2d1a5f98dea695b2dd86ebc85"),
@@ -145,20 +161,20 @@ class TestRealPL00:
             assert hashlib.md5(idx).hexdigest() == want
 
     def test_palette_bank0_ryu(self):
-        pal = M.palette_bank(DAT.read_bytes(), 0)
+        pal = M.palette_bank(_dat(), 0)
         assert pal[0] == (0, 0, 0, 0)
         assert pal[1] == (17, 17, 17, 255)
         assert pal[2] == (255, 204, 153, 255)   # Ryu skin tone
         assert pal[3] == (255, 170, 119, 255)
 
     def test_sprites_and_assembly(self):
-        dat = DAT.read_bytes()
+        dat = _dat()
         assert struct.unpack_from("<I", dat, 0x67F40)[0] // 4 == 441
         assert M.sprite_records(dat, 0) == [
             {"dx": 120, "dy": -70, "part": 0, "flip": False, "flipy": False}]
 
     def test_animation_groups_match_catalog(self):
-        anim = M.animation_groups(DAT.read_bytes(), 0)
+        anim = M.animation_groups(_dat(), 0)
         assert len(anim) == 26
         assert len(anim[0]) == 8
         assert [c["sprite_id"] for c in anim[0][0][:3]] == [61, 62, 63]
@@ -166,21 +182,21 @@ class TestRealPL00:
                    for c in anim[0][0])
 
     def test_render_first_frame(self):
-        w, h, rgba = M.render_cell(DAT.read_bytes(), 0, group=0, sub=0, cell=0)
+        w, h, rgba = M.render_cell(_dat(), 0, group=0, sub=0, cell=0)
         assert (w, h) == (79, 128)
         assert hashlib.md5(rgba).hexdigest() == "219a8b0d1499b5134c1ddf92bac00fdc"
         assert sum(1 for i in range(3, len(rgba), 4) if rgba[i]) == 2947
 
 
-@pytest.mark.skipif(not EXE.exists(), reason="unpacked MVC2 disc cache not present")
+@pytest.mark.skipif(not GDI.exists(), reason="unpacked MVC2 disc cache not present")
 class TestRealExe:
     def test_decoder_is_in_rom(self):
-        boot = EXE.read_bytes()
+        boot = _exe()
         # loc_8c0354c0 = file offset 0x254c0: the GFX1 LZSS decompressor
         assert boot[0x254C0:0x254C0 + 20].hex() == "e62f00e7c62f0fecb62fa62f962f5369669a6c39"
 
     def test_asset_name_table(self):
-        boot = EXE.read_bytes()
+        boot = _exe()
         vals = struct.unpack_from("<401I", boot, M.NAME_TABLE_OFF)
         names = [boot[v - M.EXE_BASE:v - M.EXE_BASE + 12].split(b"\0")[0].decode()
                  for v in vals]
