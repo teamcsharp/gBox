@@ -58,7 +58,7 @@ def test_cached_layout_is_revalidated_when_the_rom_changes():
     s10, p10 = oot.LAYOUTS["ntsc-1.0"]
     ad = Fake(s10, p10)
     assert oot.layout(ad)["version"] == "ntsc-1.0"
-    ad.put(s10 + 0x1C, b"\0" * 6)                                       # another ROM in the same session
+    ad.put(s10 + 0x1C, bytes(6))                                        # another ROM in the same session
     ad.put(oot.SAVE + 0x1C, b"ZELDAZ")
     assert oot.layout(ad)["version"] == "ntsc-1.2"
 
@@ -71,7 +71,9 @@ def test_skip_deku_tree_edits_the_ntsc10_save():
     ev = struct.unpack(">H", ad.get(s10 + oot.S_EVENTCHKINF, 2))[0]
     assert ev >> 7 & 1 and ev >> 9 & 1                                   # Gohma beaten, in the 1.0 SaveContext
     assert struct.unpack(">H", ad.get(p10 + oot.P_NEXT_ENTRANCE, 2))[0] == 0x211
-    assert not any(oot.SAVE <= a < oot.SAVE + oot.SAVE_SIZE for a in ad.mem)   # nothing landed at the 1.2 address
+    # nothing landed at the v1.2 field addresses (the two SaveContexts overlap numerically, so compare fields, not ranges)
+    assert ad.get(oot.SAVE + oot.S_EVENTCHKINF, 2) == bytes(2) and ad.get(oot.SAVE + oot.S_ITEMS + 6, 1) == bytes(1)
+    assert ad.get(oot.PLAY + oot.P_NEXT_ENTRANCE, 2) == bytes(2)
     assert "slingshot" in r["state"]["items"] and oot.state(ad)["deku_tree_done"]
 
 
@@ -105,4 +107,4 @@ def test_zelda_tool_run_on_ntsc10():
     out = zelda_tool.run(ad, "Legend of Zelda, The: Ocarina of Time (USA)", "n64", op="rupees", count=321)
     assert out["game"] == "Ocarina of Time"
     assert struct.unpack(">H", ad.get(s10 + 0x34, 2))[0] == 321
-    assert not any(oot.SAVE <= a < oot.SAVE + oot.SAVE_SIZE for a in ad.mem)
+    assert ad.get(oot.SAVE + 0x34, 2) == bytes(2)                               # the v1.2 rupee address stayed untouched

@@ -194,6 +194,7 @@ def build(base_url: str, token: str) -> Server:
             return await get('/api/workers/idle', tool=tool)
         candidates = [w for w in await get('/api/workers') if w.get('online') and w.get('os') == 'windows'
                       and protected not in (w.get('id'), w.get('name')) and tool in w.get('tools', [])
+                      and w.get('background_testing', True)                       # unticked in the Tasks menu (#1383)
                       and ((assigned and assigned in (w.get('id'), w.get('name'))) or
                            (not assigned and w.get('idle_seconds') is not None and w['idle_seconds'] >= 60))
                       and w.get('active_jobs', 0) < 4]

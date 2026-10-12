@@ -1958,6 +1958,22 @@ async function tvOpen(id, kind = "job") {
   await tvPoll(); TV.timer = setInterval(tvPoll, 2000);
 }
 $("#tv-close").onclick = tvClose;
+$("#tb-tasks").oncontextmenu = async e => {                  // which PCs background testing may use (#1383)
+  e.preventDefault(); e.stopPropagation();
+  let m = $("#testpcmenu"); if (!m) { m = document.createElement("div"); m.id = "testpcmenu"; document.body.append(m); }
+  m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;box-shadow:0 10px 30px #000a;min-width:290px;font-size:13px;display:block";
+  m.innerHTML = `<b>Background testing may use</b><div class="mut" style="margin:2px 0 6px">Unticked PCs are never used for automated tests, so you can play on them.</div><div data-list>loading…</div>`;
+  fitMenu(m, e.clientX, e.clientY, 8, 40);
+  const render = r => { m.querySelector("[data-list]").innerHTML = (r.workers || []).filter(w => w.os === "windows").map(w =>
+      `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer"><input type="checkbox" data-w="${esc(w.name)}" ${w.background_testing ? "checked" : ""}> ${esc(w.name)} <span class="mut">${w.online ? "online" : "offline"}</span></label>`).join("")
+      || `<div class="mut">no Windows PCs are registered</div>`; fitMenu(m, e.clientX, e.clientY, 8, 40); };
+  const r = await gbox.api("/api/testing/workers"); if (r.ok) render(r.data); else m.querySelector("[data-list]").textContent = "✗ " + r.error;
+  m.onchange = async ev => { const cb = ev.target.closest("input[data-w]"); if (!cb) return; cb.disabled = true;
+    const x = await gbox.api(`/api/testing/workers/${encodeURIComponent(cb.dataset.w)}`, { available: cb.checked });
+    if (x.ok) render(x.data); else { cb.checked = !cb.checked; cb.disabled = false; toast("Could not change it: " + x.error); } };
+  const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
+  setTimeout(() => document.addEventListener("mousedown", close), 0);
+};
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
   clearInterval(TK.t); if (on) { tkView(TK.view); tasksLoad(); TK.t = setInterval(() => { if (TK.view === "technical") tasksLocalLoad(); tasksLoad(); }, 5000); }
   else { TK.graph?.stop(); TK.graph = null; } };
@@ -2714,6 +2730,34 @@ document.addEventListener("click", e => {
 }, true);
 document.addEventListener("contextmenu", e => { const f = e.target.closest(".reqmod"); if (!f) return;
   const m = MODS.list.find(x => x.id === f.dataset.mod); if (m?.video) { e.preventDefault(); modPlay(m, "video"); } });
+// Right-click anything in the app and file a specific request about it (#1386). Element-level menus (capture,
+// recording, microphone, mod videos, the game bar, PC chips) run first and keep their own behaviour.
+document.addEventListener("contextmenu", e => {
+  if (e.defaultPrevented || e.target.closest("input, textarea, select, webview, #testpcmenu, #reqmenu, #chipmenu")) return;
+  const opt = e.target.closest("button, a, label, li, .card, .req, .chc, .reqmod, .ci, h1, h2, h3, h4, [title], section") || e.target;
+  const text = String(opt.innerText || opt.title || opt.getAttribute("aria-label") || opt.id || opt.tagName).trim().replace(/\s+/g, " ").slice(0, 100);
+  if (!text) return; e.preventDefault();
+  let m = $("#reqmenu"); if (!m) { m = document.createElement("div"); m.id = "reqmenu"; document.body.append(m); }
+  m.style.cssText = "position:fixed;z-index:96;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;box-shadow:0 10px 30px #000a;width:320px;font-size:13px;display:block";
+  m.innerHTML = `<b>Request about “${esc(text)}”</b><textarea placeholder="What should gBox do with this?" style="width:100%;height:64px;margin-top:6px;box-sizing:border-box"></textarea>
+    <button class="act" data-send style="width:100%;margin-top:6px">Send to the inbox</button><div class="mut" style="margin-top:4px">Ctrl+Enter sends</div>`;
+  fitMenu(m, e.clientX, e.clientY, 8, 40);
+  const ta = m.querySelector("textarea"); setTimeout(() => ta.focus(), 0);
+  const view = document.querySelector("aside button.on")?.dataset.s || "";
+  const send = async () => {
+    const note = ta.value.trim(); if (!note) { ta.focus(); return; }
+    m.querySelector(".mut").textContent = "Filing…";
+    const r = await gbox.api("/api/requests/issue", { session_id: EMB.sid || "", save_state: false, what: "Request about: " + text, note,
+      title: ("Request: " + text + " — " + note).slice(0, 140),
+      element: { text, tag: opt.tagName, cls: opt.className || "", id: opt.id || "", view },
+      context: { shell_section: view, window: { w: innerWidth, h: innerHeight }, docked: EMB.sid || null, game: EMB.title || null } });
+    if (r.ok) { m.querySelector(".mut").textContent = `✓ Request #${r.data.number} is in the inbox`; try { refreshInbox(); } catch {} setTimeout(() => m.style.display = "none", 2000); }
+    else m.querySelector(".mut").textContent = "✗ " + r.error;
+  };
+  m.querySelector("[data-send]").onclick = send; ta.onkeydown = k => { if (k.key === "Enter" && (k.ctrlKey || k.metaKey)) send(); };
+  const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
+  setTimeout(() => document.addEventListener("mousedown", close), 0);
+});
 document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
@@ -4314,6 +4358,8 @@ async function chatHistory() {
     || `<p class="mut" style="padding:8px">No conversations yet.</p>`);
 }
 $("#chathist").onclick = async e => {
+  const chip = e.target.closest(".gchip");
+  if (chip) { e.stopPropagation(); chipMenu(chip, e); return; }        // #152: load the game this conversation is about
   const ci = e.target.closest(".ci");
   if (!ci) return;
   clearInterval(CH.poll); CH.poll = null;
@@ -4322,6 +4368,24 @@ $("#chathist").onclick = async e => {
   $("#chatlog").innerHTML = `<div class="mut">Loading conversation…</div>`;
   await Promise.all([chatHistory(), chatLoad(CH.cid)]);
 };
+function chipMenu(chip, e) {                                   // a conversation's game chip: load it or open the talk
+  let m = $("#chipmenu"); if (!m) { m = document.createElement("div"); m.id = "chipmenu"; document.body.append(m); }
+  m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:220px;font-size:13px;display:block";
+  m.innerHTML = `<button class="act" data-load style="width:100%;text-align:left">▶ Load ${esc(chip.dataset.t)}</button>
+    <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>`;
+  fitMenu(m, e.clientX, e.clientY, 8, 40);
+  m.onclick = ev => { const b = ev.target.closest("button"); if (!b) return; m.style.display = "none";
+    if (b.dataset.load !== undefined) playInView(chip.dataset.g); else chip.closest(".ci")?.click(); };
+  const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
+  setTimeout(() => document.addEventListener("mousedown", close), 0);
+}
+function playInView(gid) {                                     // ask the embedded gBox view to launch a game
+  document.querySelector('aside button[data-s="play"]')?.click();
+  const run = () => $("#wv")?.executeJavaScript(`typeof play === "function" && play(${JSON.stringify(gid)})`).catch(() => {});
+  const wv = $("#wv");
+  if (wv?.dataset.ready === "true") run();
+  else setTimeout(() => { const w = $("#wv"); if (w) w.addEventListener("dom-ready", run, { once: true }); }, 300);
+}
 $("#chathist").onkeydown = e => {
   if ((e.key === "Enter" || e.key === " ") && e.target.closest(".ci")) {
     e.preventDefault(); $("#chathist").onclick(e);

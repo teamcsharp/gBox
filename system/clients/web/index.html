@@ -440,25 +440,30 @@ addEventListener("keydown", e => { if (LB.el.style.display === "none") return;
   if (e.key === "Escape") lbClose(); else if (e.key === "+" || e.key === "=") lbZoom(1.25); else if (e.key === "-") lbZoom(0.8); else if (e.key === "0") lbFit(); });
 document.addEventListener("click", e => { const im = e.target.closest(".wbm > img, .wbm img[data-moment]"); if (!im || e.target.closest("button")) return;
   e.preventDefault(); e.stopPropagation(); lbOpen(im.src.replace(/([?&])w=\d+/, "$1")); }, true);   // capture: before the card's own click (Load moment stays a button)
-// right-click any option while a game is open: report that it doesn't work with this title (game, what was tried,
-// what the card showed, the session's recent jobs and a frame go into the inbox for a fix)
+// right-click any option: with a game open, report that it doesn't work with this title (game, what was tried, what the
+// card showed, the session's recent jobs and a frame go into the inbox for a fix); otherwise file a request about that
+// element (#1386): what it is, where it is and what the operator wants done with it
 document.addEventListener("contextmenu", e => {
-  if (e.target.closest(".tchip, .card[data-gid], input, textarea")) return;
-  const scr = document.querySelector(".screen[data-sid]"), opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a");
-  if (!scr || !opt) return; e.preventDefault();
-  const sid = scr.dataset.sid, box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
+  if (e.target.closest(".tchip, .card[data-gid], input, textarea, select")) return;
+  const scr = document.querySelector(".screen[data-sid]"),
+        opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a, label, li, h2, h3, h4, section") || e.target;
+  if (!opt) return; e.preventDefault();
+  const sid = scr?.dataset.sid || "", box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
   const what = ((opt.closest(".chc")?.dataset.name ? opt.closest(".chc").dataset.name + ": " : "") + (opt.innerText || opt.title || opt.getAttribute("aria-label") || "").trim()).replace(/\s+/g, " ").slice(0, 120);
   const detail = (box.innerText || "").trim().replace(/\n{2,}/g, "\n").slice(0, 1500);
   let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m);
     m.style.cssText = "position:fixed;z-index:99;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:260px;font-size:13px"; }
   m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
-  m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">⚑ Report: “${esc(what || "this")}” doesn't work in this game</button>
-    <input placeholder="What did you expect? (optional)" style="width:100%;margin-top:6px;box-sizing:border-box"><div class="mut" style="margin-top:4px"></div>`;
+  m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">${scr ? `⚑ Report: “${esc(what || "this")}” doesn't work in this game` : `✎ Request about “${esc(what || "this")}”`}</button>
+    <input placeholder="${scr ? "What did you expect? (optional)" : "What should gBox do with it?"}" style="width:100%;margin-top:6px;box-sizing:border-box"><div class="mut" style="margin-top:4px"></div>`;
   m.style.display = "block"; fitMenu(m, e.clientX, e.clientY);
   const send = async () => {
-    m.querySelector(".mut").textContent = "Filing the report with the game, what you tried and its output…";
-    try { const r = await api("/api/requests/issue", { session_id: sid, what: what || "an option", detail, note: m.querySelector("input").value,
-            element: { text: what, cls: opt.className || "", tag: opt.tagName } });
+    const note = m.querySelector("input").value.trim();
+    if (!scr && !note) { m.querySelector(".mut").textContent = "Say what you want done with it first."; return; }
+    m.querySelector(".mut").textContent = scr ? "Filing the report with the game, what you tried and its output…" : "Filing the request…";
+    try { const r = await api("/api/requests/issue", { session_id: sid, save_state: !!scr, what: scr ? (what || "an option") : "Request about: " + (what || "this"), detail, note,
+            title: scr ? "" : ("Request: " + (what || "this") + " — " + note).slice(0, 140),
+            element: { text: what, cls: opt.className || "", tag: opt.tagName, view: typeof cur === "string" ? cur : "" } });
           m.querySelector(".mut").textContent = `✓ Report #${r.number} is in the inbox`; setTimeout(() => m.style.display = "none", 2500); }
     catch (err) { m.querySelector(".mut").textContent = "✗ " + err.message; }
   };
@@ -2338,6 +2343,7 @@ document.addEventListener("contextmenu", async e => {
   const characterNote = (name, targetSlot) => targetSlot && targetSlot !== "player"
     ? `${name} selected: choose ${targetSlot} on the game's character selection screen.` : `${name} selected: every Play of this game uses them.`;
   el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><button class="act" data-models type="button" style="width:100%;margin-bottom:8px">Models · view, assign, export</button>
+    <button class="act" data-cover type="button" style="width:100%;margin-bottom:8px">Attach game cover (online)</button>
     <div class="gms"><b>Play as (saved: every Play uses it)</b>
       <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(ch.slug, ch.name, ch.preview_url, readyMod(ch), readyTarget(ch)?.slot)).join("")}</div>
       ${other.length ? `<label><select id="gmbuild"><option value="">+ another character for this game…</option>${other.map(ch => `<option value="${esc(ch.slug)}">${esc(ch.name)}${ch.source?.game_title ? " · " + esc(ch.source.game_title) : ""}</option>`).join("")}</select></label>` : ""}
@@ -2402,10 +2408,24 @@ document.addEventListener("contextmenu", async e => {
     }
   };
   el.onclick = ev => { if (ev.target.closest("[data-models]")) { el.classList.remove("on"); show("GameModels", gid, c.dataset.title); return; }
+    if (ev.target.closest("[data-cover]")) { attachCover(gid, c, ev.target.closest("[data-cover]")); return; }
     const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");
     const go = g.dataset.go; play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined); };
 });
 document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $("#gmenu")?.classList.remove("on"); });
+async function attachCover(gid, card, btn, url = "") {        // #1067: fetch box art online (or a chosen picture) and keep it for this game
+  btn.disabled = true; btn.textContent = url ? "Fetching that picture…" : "Looking for the cover online…";
+  try {
+    const r = await api(`/api/catalog/${encodeURIComponent(gid)}/cover`, { url, kind: "boxart" });
+    btn.textContent = `✓ Cover attached (${Math.round(r.bytes / 1024)} KB)`;
+    card.querySelectorAll("img").forEach(im => { const u = im.src.replace(/([?&])v=\d+/, ""); im.src = u + (u.includes("?") ? "&" : "?") + "v=" + Date.now(); });
+  } catch (err) {
+    btn.disabled = false;
+    const u = prompt("No cover was found online for this title. Paste a picture URL to use instead:", "");
+    if (u && u.trim()) return attachCover(gid, card, btn, u.trim());
+    btn.textContent = "Attach game cover (online)";
+  }
+}
 async function moveHere(sid, btn) {                        // pull the game onto THIS PC (from the Spark or another PC)
   btn.disabled = true; btn.textContent = "Moving… (save, launch here, load)";
   try {
