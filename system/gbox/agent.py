@@ -1182,6 +1182,25 @@ class Agent:
             messages.append({"role": "assistant", "content": answer})
             emit({"type": "assistant", "text": answer})
             return {"usage": {"in": 0, "out": 0}, "tools": {}}
+        continued = False
+        if len(messages) >= 3 and messages[-1].get("role") == "user" and messages[-2].get("role") == "tool" \
+                and str(messages[-2].get("content") or "").startswith("asked;") and messages[-3].get("role") == "assistant":
+            # continuation of a questionnaire: the operator's message IS their clicked answer. Rewrite the pending
+            # tool result so the ask_user call literally returns the answer, and reframe the user message so the
+            # model's "current request" reads unambiguously - weak local models otherwise repeat the question.
+            answer = str(messages[-1].get("content") or "").split("\n[context:", 1)[0].strip()
+            q = ""
+            for tc in messages[-3].get("tool_calls") or []:
+                if tc["function"]["name"] == "ask_user":
+                    try:
+                        q = str(json.loads(tc["function"].get("arguments") or "{}").get("question") or "").strip()
+                    except ValueError:
+                        pass
+                    break
+            messages[-2]["content"] = f"the operator answered: {answer}"
+            tail = " Go ahead with this." if answer.endswith((".", "!", "?")) else ". Go ahead with this."
+            messages[-1]["content"] = f"My answer{(' to the question \"' + q + '\"') if q else ''}: {answer}{tail}"
+            continued = True
         sid = context.get("session_id")
         if sid:                                                # the app can hand over a stale id (game relaunched): use the live one
             try:
@@ -1199,6 +1218,8 @@ class Agent:
                 pass
         self.context_session_id = context.get("session_id") or ""
         tools, usage, used = tool_specs(), {"in": 0, "out": 0}, {}
+        if continued:                                           # this turn answers a questionnaire: no re-asking mid-flow
+            tools = [t for t in tools if t["function"]["name"] != "ask_user"]
         self.recipes = {}
         try:                                                   # learned tools for this game (and any-game ones)
             for r in self.api.get("/api/recipes").json():
@@ -1266,6 +1287,7 @@ class Agent:
                              "as your answer; act on the operator's CURRENT request with tools ('answer' entries may be unverified, "
                              "'fact'/'wiki' are stronger). Use them to skip web searches they already answer:\n"
                              + "\n---\n".join(f"[{h['kind']}] {h['title']} ({h['source']}): {h['text'][:900]}" for h in hits)})
+        tool_names = {t["function"]["name"] for t in tools}     # tools the model may call this turn
         for _ in range(max_steps):
             for attempt in range(3):                           # retry transient runner OOMs and malformed tool calls
                 r = httpx.post(f"{self.llm_url}/chat/completions", timeout=600,
@@ -1309,13 +1331,26 @@ class Agent:
                 return {"usage": usage, "tools": used}
             for c in calls:
                 name = c["function"]["name"]
-                if name == "ask_user":                              # questionnaire: show clickable options, wait for the click
+                if name == "ask_user":
+                    if name not in tool_names:                  # withheld on answer turns: the operator already answered
+                        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                                         "content": "ask_user is not available in this turn: the operator already answered "
+                                                    "your question. Act on their answer now and reply."})
+                        continue
+                    # questionnaire: show clickable options, wait for the click
                     try:
                         a = json.loads(c["function"].get("arguments") or "{}")
                     except ValueError:
                         a = {}
-                    opts = [str(o) for o in a.get("options") or []][:8]
-                    emit({"type": "choices", "question": a.get("question", ""), "options": opts})
+                    q = str(a.get("question") or "").strip()
+                    opts = list(dict.fromkeys(str(o).strip() for o in a.get("options") or []
+                                              if o is not None and str(o).strip()))[:8]
+                    if not opts:                                    # nothing clickable: fall back to plain text, never an empty box
+                        emit({"type": "assistant", "text": q or "What would you like?"})
+                        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                                         "content": "asked; no clickable options were provided"})
+                        return {"usage": usage, "tools": used}
+                    emit({"type": "choices", "question": q, "options": opts})
                     messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": "asked; the operator's choice is the next message"})
                     return {"usage": usage, "tools": used}
                 try:
