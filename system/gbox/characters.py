@@ -550,7 +550,7 @@ class CharIn(BaseModel):
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | enemy:<name> (RE6 family; PSO Ver.2: booma, gobooma, gigobooma, boomas or a BM_ENE pack, on the enemy's own motions) | roster (DOA2: every fighter, see pairs)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -1319,6 +1319,12 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
+    # GTA Vice City, classic RenderWare PC port (models/gta3.img): Tommy + peds. The owned windows_native entries
+    # (5eacc9f11d9a5956, 1fd42f50b10252e6) are HyperSpin launchers; gta_vc_models.locate_install tells the classic
+    # port from the UE4 Definitive Edition (no gta3.img) and from the PS2 .chd the first entry points at.
+    ("gta_vc_pc", lambda t, p: "vice city" in t and "stories" not in t and p == "windows_native",
+     lambda: __import__("gbox.gta_vc_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta_vc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -2080,6 +2086,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import gta3_swap
     if gid in gta3_swap.GAME_IDS and inp.slot == "player":         # GTA III (PS2): Claude -> gta3_<slug> (disc image)
         return {"result": out | gta3_swap.use(ctx, meta, game, inp)}
+    from . import gta_vc_swap
+    if gid in gta_vc_swap.GAME_IDS and (inp.slot in ("player", "peds:all", "all") or inp.slot.startswith("ped:")):
+        # GTA Vice City (classic PC port): Tommy / one ped / every ped -> gtavc_<slug>[_<slot>] (rebuilt gta3.img);
+        # a Definitive Edition install gets the overlay fallback + gap report from inside use()
+        return {"result": out | gta_vc_swap.use(ctx, meta, game, inp)}
     from . import re6_tool
     if gid in re6_tool.GAME_IDS and (inp.slot in ("player", "enemies") or inp.slot.startswith("enemy:")):
         # RE6 (X360, Xenia): player = Leon's every costume -> re6_<slug>; enemies / enemy:<family> -> zombies, J'avo
