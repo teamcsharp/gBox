@@ -28,6 +28,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from .ninja import NJ
+
 GAME_ID = "03927f87b167f81c"
 TITLE = "Time Stalkers (USA)"
 SOURCE_CHD_SHA256 = "9bf9e7b6699dbaa8223ec5f793b28f0e059a66812d2000cd7ce7c816059fa5b2"
@@ -138,6 +140,100 @@ def cnk_model(data: bytes, off: int) -> dict | None:
         return None
     return {"offset": off, "vlist": vlist, "plist": plist, "center": [round(x, 4) for x in center[:3]],
             "radius": round(center[3], 4), "vtype": vtype, "vbase": base, "verts": count}
+
+
+class ObjNj(NJ):
+    """NJ chunk parser over one OBJnnn.BIN. Unlike the PSO/Sonic NJCM dumps, an OBJ has no NJCM wrapper: every
+    pointer is file-relative, so the whole file is the chunk data. There is no object tree either; feed each part's
+    NJS_CNK_MODEL (from parse_obj) in turn. Vertices land in the shared cache under their chunk base slots, and
+    strips snapshot at draw time, so feeding parts sequentially preserves the game's global-cache semantics."""
+
+    def __init__(self, data: bytes):
+        self.e = "<"
+        self.d = data
+        self.bones = [{"name": "part000", "parent": None, "t": [0, 0, 0], "r": [0, 0, 0, 1],
+                       "s": [1, 1, 1], "m": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]}]
+        self.vbuf: dict[int, dict] = {}
+        self.tris: dict[int, list] = {}
+        self.tex = 0
+        self.plcache: dict[int, int] = {}
+
+    def feed_part(self, model: dict, bone: int) -> dict:
+        """Walk one part's vertex list then its polygon list in model space. Returns {verts, tris, tex_ids}."""
+        before = {t: len(v) for t, v in self.tris.items()}
+        self._vertices(model["vlist"], self.bones[0]["m"], bone)
+        self._polys(model["plist"])
+        after = {t: len(v) for t, v in self.tris.items()}
+        return {"verts": model["verts"], "vtype": model["vtype"],
+                "tris": sum(after.get(t, 0) - before.get(t, 0) for t in set(after) | set(before)),
+                "tex_ids": sorted(t for t, n in after.items() if n > before.get(t, 0))}
+
+
+def decode_obj_geometry(data: bytes) -> tuple[ObjNj, dict, list[dict]]:
+    """Decode every full part (the A array; vertex-only twins are skipped) of one OBJnnn.BIN.
+
+    -> (parser, parse_obj header, per-part stats). Part indices are used as provisional bone ids until the
+    part->node table is recovered from MAIN.BIN."""
+    h = parse_obj(data)
+    nj = ObjNj(data)
+    stats = []
+    for i, p in enumerate(h["parts"]):
+        m = p["model"]
+        stats.append(nj.feed_part(m, bone=i) if m else {"verts": 0, "vtype": None, "tris": 0, "tex_ids": []})
+    return nj, h, stats
+
+
+def obj_wavefront(nj: ObjNj, textures: list[str] | None = None) -> str:
+    """The decoded geometry as a Wavefront OBJ (one group per Ninja texture id, de-indexed corners)."""
+    lines = []
+    vi = vti = vni = 0
+    for tex, tris in sorted(nj.tris.items()):
+        name = f"tex{tex}_{textures[tex]}" if textures and tex < len(textures) else f"tex{tex}"
+        lines.append(f"o {name}")
+        for a, b, c in tris:
+            corners = []
+            for (_idx, uv, snap) in (a, b, c):
+                if snap is None:
+                    corners.append(None)
+                    continue
+                vi += 1
+                lines.append(f"v {' '.join(f'{x:.5f}' for x in snap['pos'])}")
+                corner = str(vi)
+                if uv:
+                    vti += 1
+                    lines.append(f"vt {uv[0]:.5f} {uv[1]:.5f}")
+                    corner += f"/{vti}"
+                    if snap["nrm"]:
+                        vni += 1
+                        lines.append(f"vn {' '.join(f'{x:.5f}' for x in snap['nrm'])}")
+                        corner += f"/{vni}"
+                elif snap["nrm"]:
+                    vni += 1
+                    lines.append(f"vn {' '.join(f'{x:.5f}' for x in snap['nrm'])}")
+                    corner += f"//{vni}"
+                corners.append(corner)
+            if all(corners):
+                lines.append("f " + " ".join(corners))
+    return "\n".join(lines) + "\n"
+
+
+def man_link_chains(nodes: list[dict]) -> list[list[int]]:
+    """The node link fields as directed chains: link & 0xff is the next node index (values >= len(nodes) end a
+    chain), and the low/high byte split is bank-dependent (it differs across MAN00000/01/02/05/10 while the
+    skeleton stays 18 nodes). Returns each chain as node indices, plus trailing [next] when it runs off-list."""
+    n = len(nodes)
+    nxt = [x["link"] & 0xFF for x in nodes]
+    chains, seen = [], set()
+    for i in range(n):
+        if i in seen:
+            continue
+        chain, j = [], i
+        while j not in seen and j < n:
+            chain.append(j)
+            seen.add(j)
+            j = nxt[j]
+        chains.append(chain + ([j] if j >= n else []) if j not in chain else chain + ["cycle"])
+    return chains
 
 
 def pvm_names(data: bytes) -> list[str]:

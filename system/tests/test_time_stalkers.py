@@ -135,3 +135,69 @@ def test_parse_obj_reads_texlist_and_chunk_parts():
     assert (m["vtype"], m["verts"], m["radius"], m["vlist"], m["plist"]) == (0x29, 1, 2.0, 48, 84)
     assert h["parts"][1]["twin"] is None
     assert ts.cnk_model(data, 20) is None                                      # texture-name bytes are no model
+
+
+def _obj_with_tris():
+    """A tiny OBJ: one part whose vlist has 3 vertices and whose plist draws them as one 0x40 strip."""
+    head = struct.pack("<2I", 196, 0) + ts.SIG + b"tex\0\xff\xff\xff\xff"          # names_end = 28
+    texnames = struct.pack("<3I", 20, 0, 0)
+    texlist = struct.pack("<2I", 28, 1)
+    vlist = struct.pack("<BBHHH", 0x29, 0, 19, 0, 3) + b"".join(struct.pack("<6f", 0, 0, 0, 0, 1, 0)
+                                                                  for _ in range(3)) + b"\xff\0\0\0"   # at 48, 84 bytes
+    plist = struct.pack("<HH", 8 | (0x34 << 8), 0) + struct.pack("<HH", 0x40 | (0x12 << 8), 5) \
+        + struct.pack("<Hh3H", 1, 3, 0, 1, 2) + struct.pack("<2H", 0xFF, 0) + b"\0\0"           # at 132, pads to 156
+    model = struct.pack("<2I4f", 48, 132, 0.0, 0.0, 0.0, 1.0)                    # at 156
+    arrays = struct.pack("<4I", 0, 156, 0, 0)                                   # at 180, 188
+    tail = struct.pack("<I2f4I", 0x118, 18.0, 6.0, 40, 180, 188, 0)              # trailer at 196
+    data = head + texnames + texlist + vlist + plist + model + arrays + tail
+    assert len(data) == 196 + 28 and data[196:196 + 28] == tail                   # trailer offset is exact
+    return data
+
+
+def test_obj_nj_decodes_strip_geometry():
+    nj, h, stats = ts.decode_obj_geometry(_obj_with_tris())
+    assert len(h["parts"]) == 2 and h["textures"] == ["tex"]
+    assert stats[0]["tris"] == 0 and stats[1] == {"verts": 3, "vtype": 0x29, "tris": 1, "tex_ids": [0]}
+    assert nj.tris[0][0][0][2]["pos"] == [0.0, 0.0, 0.0]
+    out = ts.obj_wavefront(nj, h["textures"])
+    assert "o tex0_tex" in out and "f 1//1 2//2 3//3" in out and "vn 0.00000 1.00000 0.00000" in out
+
+
+def test_man_link_chains_follow_link_low_bytes():
+    nodes = [{"link": 1}, {"link": 2}, {"link": 0}, {"link": 0xFF}]           # 0->1->2 cycle + a terminator
+    assert ts.man_link_chains(nodes) == [[0, 1, 2, "cycle"], [3, 255]]
+
+
+@pytest.mark.skipif(not GDI.exists(), reason="owned Time Stalkers GD-ROM not unpacked on this node")
+def test_owned_disc_obj000_geometry_decode():
+    from gbox.gdrom import GDRom
+
+    g = GDRom(GDI)
+    data = g.read("LANDERS/MANDATA/OBJ000.BIN")
+    nj, h, stats = ts.decode_obj_geometry(data)
+    assert len(h["parts"]) == 24 and len(stats) == 24
+    assert sum(s["tris"] for s in stats) == 3233 and len(nj.tris) == 19        # 19 texture groups = texlist count
+    assert stats[2]["verts"] == 322 and stats[1]["tris"] == 66
+    assert len(nj.vbuf) > 300
+    # the B array holds vertex-only (0x22) twins of the parts: usually decimated, but not strictly hulls
+    assert all(p["twin"] is None or p["twin"]["vtype"] == 0x22 for p in h["parts"])
+    assert all(p["model"] is None or p["model"]["vtype"] == 0x29 for p in h["parts"])
+    out = ts.obj_wavefront(nj, h["textures"])
+    assert "o tex0_s_fuku_f" in out and "o tex1_s_fuku_r" in out and out.count("\nf ") == 3233
+    assert "vn " in out and "vt " in out                                     # normals and UV strips decoded
+
+
+@pytest.mark.skipif(not GDI.exists(), reason="owned Time Stalkers GD-ROM not unpacked on this node")
+def test_owned_disc_man00000_link_chains():
+    from gbox.gdrom import GDRom
+
+    g = GDRom(GDI)
+    d = g.read("LANDERS/MANDATA/MAN00000.BIN")
+    nodes = ts.parse_man(d)["nodes"]
+    chains = ts.man_link_chains(nodes)
+    assert [0, 12, 13, 9, 16, 3, 6, 19] in chains                            # chain ends at 19 (>= 18 nodes)
+    assert any(c[-1] == "cycle" and set(c[:-1]) == {4, 5} for c in chains)   # the shin/hip pair is a 2-cycle
+    # the same skeleton in a different motion bank keeps the node count but rewires the chains
+    d1 = g.read("LANDERS/MANDATA/MAN00001.BIN")
+    nodes1 = ts.parse_man(d1)["nodes"]
+    assert len(nodes1) == 18 and ts.man_link_chains(nodes1) != chains
