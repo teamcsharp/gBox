@@ -124,9 +124,11 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
-    if inp.include_steam and cfg.steam_root:
-        e, p = catalog.scan_steam(cfg.steam_root)
-        entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}
+    if inp.include_steam:
+        steam_root = cfg.steam_root or catalog.default_steam_root()
+        if steam_root:
+            e, p = catalog.scan_steam(steam_root)
+            entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}
     try:                                                # decanted install: the recipes' ids for this PC's matching copies
         remap = json.loads((cfg.data_dir / "game_ids.json").read_text())   # (written by `python -m gbox.decant match`)
     except (OSError, ValueError):
@@ -2881,6 +2883,7 @@ AGENTS = [
 def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
+                              "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
