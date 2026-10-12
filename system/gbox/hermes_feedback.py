@@ -251,10 +251,21 @@ def finalize_summaries() -> dict:
         return {'status': 'deferred', 'error_type': type(error).__name__}
 
 
+def finalize_cleanup() -> dict:
+    """Stop servers ended task runs left in their worktrees (#1304); never block routing."""
+    from . import hermes_cleanup
+    from .hermes_availability import _api
+    try:
+        return hermes_cleanup.sweep(_api, home=hermes_task_mode._home())
+    except Exception as error:  # /proc, Hermes's databases or the inbox may be unavailable
+        return {'status': 'deferred', 'error_type': type(error).__name__}
+
+
 def adjust_routes() -> dict:
     accounting = finalize_usage()
     merges = finalize_merges()
     summaries = finalize_summaries()
+    cleanup = finalize_cleanup()
     data, config = scan(), hermes_task_mode._config()
     cli = str(hermes_task_mode._cli())
     repaired = canonical_mcp(config)
@@ -306,6 +317,7 @@ def adjust_routes() -> dict:
     return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
             'completed_usage': accounting, 'merges': merges, 'summaries': summaries,
+            'cleanup': cleanup,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
 
 
