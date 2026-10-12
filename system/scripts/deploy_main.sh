@@ -39,15 +39,35 @@ if [ "$HEAD" = "$PREV" ]; then
 fi
 
 # Files to deploy: everything tracked under system/ that differs from the share (ignoring line endings).
-changed=()
+# A share file that differs from BOTH the new main and the previously deployed main was edited on the share by
+# someone else since the last deploy (the share has no .git): it is left alone and logged, never overwritten,
+# until that edit reaches main. With no previous deploy recorded, only files identical to some main version are
+# safe to replace, so a first run also skips files that differ from the new main and from HEAD~50..HEAD.
+changed=(); kept=()
+share_edited() {                                   # $1 = rel path: does the share copy match any known main version?
+  local rel="$1" dst="$DST/$1" ref
+  if [ -n "$PREV" ]; then
+    git -C "$SRC" show "$PREV:system/$rel" 2>/dev/null | diff -q --strip-trailing-cr - "$dst" >/dev/null 2>&1 && return 1
+    return 0
+  fi
+  for ref in $(git -C "$SRC" rev-list --max-count=50 HEAD -- "system/$rel"); do
+    git -C "$SRC" show "$ref:system/$rel" 2>/dev/null | diff -q --strip-trailing-cr - "$dst" >/dev/null 2>&1 && return 1
+  done
+  return 0
+}
 while IFS= read -r f; do
   rel="${f#system/}"
   src="$SRC/system/$rel"
   dst="$DST/$rel"
-  if [ ! -f "$dst" ] || ! diff -q --strip-trailing-cr "$src" "$dst" >/dev/null 2>&1; then
+  if [ ! -f "$dst" ]; then
     changed+=("$rel")
+  elif ! diff -q --strip-trailing-cr "$src" "$dst" >/dev/null 2>&1; then
+    if share_edited "$rel"; then kept+=("$rel"); else changed+=("$rel"); fi
   fi
 done < <(git -C "$SRC" ls-files system)
+if [ "${#kept[@]}" -gt 0 ]; then
+  log "share-side edits kept, not on main yet (commit them to main to deploy): ${kept[*]}"
+fi
 
 if [ "${#changed[@]}" -eq 0 ]; then
   log "main $HEAD: share already matches"
