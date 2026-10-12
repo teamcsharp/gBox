@@ -108,8 +108,36 @@ def parse_obj(data: bytes) -> dict:
     t = data[trailer:trailer + 28]
     words = list(struct.unpack("<7I", t))
     floats = [round(x, 4) for x in struct.unpack_from("<2f", t, 4)]
+    # trailer word 3 -> NJS_TEXLIST {NJS_TEXNAME *textures (12-byte records at names_end), count}; words 4 and 5 ->
+    # two equal-length arrays of NJS_CNK_MODEL pointers (full parts with normals, and vertex-only twins), file-relative
+    texlist = None
+    if words[3] + 8 <= len(data):
+        texlist = dict(zip(("textures", "count"), struct.unpack_from("<2I", data, words[3])))
+    parts = []
+    if words[4] < words[5] <= trailer and (words[5] - words[4]) == (trailer - words[5]):
+        k = (words[5] - words[4]) // 4
+        full = struct.unpack_from(f"<{k}I", data, words[4])
+        twin = struct.unpack_from(f"<{k}I", data, words[5])
+        parts = [{"model": cnk_model(data, a) if a else None, "twin": cnk_model(data, b) if b else None}
+                 for a, b in zip(full, twin)]
     return {"size": len(data), "trailer": trailer, "word4": zero, "textures": names, "names_end": o,
-            "trailer_words": words, "trailer_floats": floats}
+            "trailer_words": words, "trailer_floats": floats, "texlist": texlist, "parts": parts}
+
+
+def cnk_model(data: bytes, off: int) -> dict | None:
+    """An NJS_CNK_MODEL {vlist*, plist*, center[3], r} with file-relative pointers and its first vertex chunk header
+    (type 0x20-0x32, flags, size in 4-byte words, index offset, vertex count). None when it doesn't check out."""
+    if off + 24 > len(data):
+        return None
+    vlist, plist = struct.unpack_from("<2I", data, off)
+    center = struct.unpack_from("<4f", data, off + 8)
+    if not (vlist + 8 <= len(data) and plist < len(data) and _finite(*center)):
+        return None
+    vtype, _flags, words, base, count = struct.unpack_from("<BBHHH", data, vlist)
+    if not 0x20 <= vtype <= 0x32 or vlist + 4 + words * 4 > len(data):
+        return None
+    return {"offset": off, "vlist": vlist, "plist": plist, "center": [round(x, 4) for x in center[:3]],
+            "radius": round(center[3], 4), "vtype": vtype, "vbase": base, "verts": count}
 
 
 def pvm_names(data: bytes) -> list[str]:
@@ -196,8 +224,11 @@ def inventory(gdi: str | Path, source_sha256: str | None = None) -> dict:
         try:
             if m.group(2) == "BIN":
                 h = parse_obj(g.read(n))
+                models = [p["model"] for p in h["parts"] if p["model"]]
                 rec.update(textures=h["textures"], trailer_words=h["trailer_words"],
-                           trailer_floats=h["trailer_floats"])
+                           trailer_floats=h["trailer_floats"], texlist=h["texlist"], parts=len(h["parts"]),
+                           models=len(models), verts=sum(m["verts"] for m in models),
+                           vertex_types=sorted({m["vtype"] for m in models}))
             elif m.group(2) == "PVM":
                 rec["textures"] = pvm_names(g.read(n))
         except ValueError as e:

@@ -112,3 +112,26 @@ def test_owned_disc_inventory():
     assert s["errors"] == []
     assert inv["characters"]["000"]["00"]["nodes"] == 18
     assert inv["objects"]["000"]["label"] == "swd" and inv["objects"]["000"]["pvm_matches_mesh"] is True
+    sword = inv["objects"]["000"]["bin"]
+    assert sword["parts"] == 24 and sword["models"] >= 20 and sword["texlist"]["count"] == 19
+    assert 0x29 in sword["vertex_types"] and sword["verts"] > 0
+
+
+def test_parse_obj_reads_texlist_and_chunk_parts():
+    head = struct.pack("<2I", 128, 0) + ts.SIG + b"a_tex\0\xff\xff"            # names_end = 28
+    texnames = struct.pack("<3I", 20, 0, 0)                                    # NJS_TEXNAME at 28
+    texlist = struct.pack("<2I", 28, 1)                                        # NJS_TEXLIST at 40
+    vlist = struct.pack("<BBHHH", 0x29, 0, 7, 0, 1) + struct.pack("<6f", 0, 1, 0, 0, 1, 0) + b"\xff\0\0\0"  # at 48
+    plist = b"\xff\0\0\0"                                                      # at 84
+    model = struct.pack("<2I4f", 48, 84, 0.0, 1.0, 0.0, 2.0)                   # NJS_CNK_MODEL at 88
+    arrays = struct.pack("<4I", 0, 88, 0, 0)                                   # full parts at 112, twins at 120
+    tail = struct.pack("<I2f4I", 0x118, 18.0, 6.0, 40, 112, 120, 0)            # trailer at 128
+    data = head + texnames + texlist + vlist + plist + model + arrays + tail
+    assert len(head + texnames + texlist + vlist + plist + model + arrays) == 128
+    h = ts.parse_obj(data)
+    assert h["textures"] == ["a_tex"] and h["texlist"] == {"textures": 28, "count": 1}
+    assert len(h["parts"]) == 2 and h["parts"][0] == {"model": None, "twin": None}
+    m = h["parts"][1]["model"]
+    assert (m["vtype"], m["verts"], m["radius"], m["vlist"], m["plist"]) == (0x29, 1, 2.0, 48, 84)
+    assert h["parts"][1]["twin"] is None
+    assert ts.cnk_model(data, 20) is None                                      # texture-name bytes are no model
