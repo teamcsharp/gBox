@@ -184,7 +184,7 @@ def part_count(dat: bytes) -> int:
     return struct.unpack_from("<I", dat, gfx1)[0] // 4
 
 
-def part_geom(dat: bytes, sel: int) -> tuple[int, int, int, int]:
+def part_geom(dat: bytes, sel: int) -> tuple[int, int, int, int, int]:
     """(gfx1_base, blob_start, blob_end, W, H) for part `sel`."""
     gfx1 = dat_sections(dat)[0]
     n = part_count(dat)
