@@ -231,8 +231,19 @@ def finalize_usage() -> dict:
             'tokens_out_added': sum(item.get('tokens_out_added', 0) for item in results)}
 
 
+def finalize_merges() -> dict:
+    """Post merged/closed PR outcomes on their requests (#1300); never block routing."""
+    from . import hermes_merges
+    from .hermes_availability import _api
+    try:
+        return hermes_merges.reconcile(_api)
+    except Exception as error:  # GitHub or the inbox may be unreachable
+        return {'status': 'deferred', 'error_type': type(error).__name__}
+
+
 def adjust_routes() -> dict:
     accounting = finalize_usage()
+    merges = finalize_merges()
     data, config = scan(), hermes_task_mode._config()
     cli = str(hermes_task_mode._cli())
     repaired = canonical_mcp(config)
@@ -283,7 +294,7 @@ def adjust_routes() -> dict:
     from .hermes_recovery import recover
     return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
-            'completed_usage': accounting,
+            'completed_usage': accounting, 'merges': merges,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
 
 
