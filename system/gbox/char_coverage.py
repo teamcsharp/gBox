@@ -28,7 +28,9 @@ WRITERS = [
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
-    ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
+    ("pso_player", ["player", "enemy:<name>", "enemies"],
+     "a PSO class (Ninja node tree, not drawn by the game yet); enemy:booma / gobooma / gigobooma / boomas or any BM_ENE "
+     "pack on the enemy's own motions (gbox.pso_enemy, unverified in game)"),
     ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
      "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
@@ -75,6 +77,26 @@ def writer_for(game: dict) -> dict | None:
     if o is not None and getattr(o, "is_oot", None) and o.is_oot(game):
         return {"writer": "gbox.oot_swap", "routed": "oot_swap.tool(" in src, "slots": SPECIAL[1][2], "replaces": SPECIAL[1][3]}
     return None
+
+
+def cast_slots(game: dict) -> list[dict]:
+    """The slots a game's writer can put a collection character into, for the cast menu (characters op=collect
+    "slots"): the writer module's own list (cast_slots(): PSO's enemies, gbox.pso_enemy.slots) plus the fixed slot
+    names from WRITERS (placeholders like enemy:<family> are left to the module)."""
+    w = writer_for(game)
+    if not w or not w["routed"]:
+        return []
+    out: list[dict] = []
+    m = _mod(w["writer"].split(".")[-1])
+    if m is not None and callable(getattr(m, "cast_slots", None)):
+        try:
+            out += [dict(s, writer=s.get("writer", w["writer"])) for s in m.cast_slots()]
+        except Exception:                                  # noqa: BLE001 - a writer that can't list keeps its fixed slots
+            pass
+    for s in w["slots"]:
+        if "<" not in s and not any(o.get("slot") == s for o in out):
+            out.append({"slot": s, "name": s, "kind": "player" if s == "player" else "slot", "writer": w["writer"]})
+    return out
 
 
 def extractor_for(game: dict) -> tuple[str | None, list[dict]]:
