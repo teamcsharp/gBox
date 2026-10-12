@@ -259,14 +259,26 @@ def tim_parse(t: bytes) -> dict:
 
 
 def tim_build(tim: dict) -> bytes:
-    cx, cy, cw, ch = tim["clut_xy"]
+    """tim_parse's dict -> TIM bytes. CLUT-less TIMs (16-bpp pages, e.g. CAW group 0x111) have no "clut_xy"."""
     px, py, pw, ph = tim["rect"]
-    clut = np.asarray(tim["clut"], "<u2").tobytes()
     pix = np.asarray(tim["pix"], np.uint8).tobytes()
-    if len(clut) != 2 * cw * ch or len(pix) != 2 * pw * ph:
-        raise ValueError("TIM CLUT / pixel sizes don't match the header")
-    return (struct.pack("<II", 0x10, 8 | tim.get("bpp", 1)) + struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut +
-            struct.pack("<IHHHH", 12 + len(pix), px, py, pw, ph) + pix)
+    flags, clut_block = tim.get("bpp", 1), b""
+    if tim.get("clut_xy") is not None:
+        cx, cy, cw, ch = tim["clut_xy"]
+        clut = np.asarray(tim["clut"], "<u2").tobytes()
+        if len(clut) != 2 * cw * ch:
+            raise ValueError("TIM CLUT size doesn't match the header")
+        flags, clut_block = flags | 8, struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut
+    if len(pix) != 2 * pw * ph:
+        raise ValueError("TIM pixel size doesn't match the header")
+    return struct.pack("<II", 0x10, flags) + clut_block + struct.pack("<IHHHH", 12 + len(pix), px, py, pw, ph) + pix
+
+
+def repaintable(tim: dict) -> bool:
+    """True for an 8-bpp TIM with one 256-colour CLUT, which build_entry repaints. It keeps every other TIM as it is:
+    4-bpp detail pages (16-colour CLUTs on rows 253-255/257 of 30 wrestlers' legs) and CLUT-less 16-bpp pages."""
+    c = tim.get("clut_xy")
+    return tim.get("bpp") == 1 and c is not None and c[2] * c[3] == 256
 
 
 def rgba5551(c: np.ndarray) -> np.ndarray:
@@ -811,7 +823,7 @@ def build_entry(fit_file: dict) -> bytes:
     tx = (tpage & 0xF) * 64
     tims = []
     for t in tmpl["tims"]:
-        if t["bpp"] != 1 or t["clut_xy"][2] * t["clut_xy"][3] != 256:   # 4-bpp detail TIMs (16-colour CLUTs): as they are
+        if not repaintable(t):                             # 4-bpp detail / CLUT-less TIMs: as they are
             tims.append(t)
             continue
         px, py, pw, ph = t["rect"]
@@ -825,6 +837,8 @@ def build_entry(fit_file: dict) -> bytes:
         t2["clut"] = clut
         tims.append(t2)
     texpac = pac_build([(i, bpe_encode(tim_build(t))) for i, t in enumerate(tims)])
+    # ids must ascend (80027aa4 binary-searches them). Head ids 2/3 (attachment EMD + ASCII placement) are left out on
+    # purpose: 8003e0c4 null-checks both, so the replaced head carries no leftover attachment of the target wrestler.
     return pac_build([(0, emd_bytes), (0x0A, texpac)])
 
 
