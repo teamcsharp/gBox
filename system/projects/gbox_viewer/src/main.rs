@@ -38,7 +38,6 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let scene_path = args.get(1).cloned().unwrap_or_else(|| "scene.json".into());
     let shot = args.iter().position(|a| a == "--screenshot").and_then(|i| args.get(i + 1).cloned());
-    let live = args.iter().any(|a| a == "--live");
     let scene: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&scene_path).expect("read scene.json")).expect("parse scene.json");
     let root = scene["assets_root"].as_str().unwrap_or(".").to_string();
