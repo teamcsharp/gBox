@@ -58,7 +58,7 @@ def echo_artifact(inp: EchoIn, ctx: Ctx):
 class ScanIn(BaseModel):
     libraries: list[str] | None = None    # library ids; default: all configured libraries
     roots: list[str] | None = None        # ad-hoc plain folders (content-hashed), in addition to libraries
-    include_steam: bool = True
+    include_steam: bool | None = None  # None: Steam only when steam_root is configured; true: also auto-detect the install (Windows registry); false: skip
 
 class ScanOut(BaseModel):
     count: int
@@ -124,8 +124,8 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
-    if inp.include_steam:
-        steam_root = cfg.steam_root or catalog.default_steam_root()
+    if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
+        steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
         if steam_root:
             e, p = catalog.scan_steam(steam_root)
             entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}

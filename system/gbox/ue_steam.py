@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from .catalog import parse_vdf
+from .catalog import default_steam_root, parse_vdf
 from .models import Permission as P
 from .registry import tool, Ctx
 
@@ -92,17 +92,10 @@ LOCOMOTION_TERMS = [
 
 
 def steam_root(cfg=None) -> Path | None:
-    """Return configured Steam root, or try the Windows registry."""
+    """The configured Steam root, else the install the Windows registry names (catalog.default_steam_root)."""
     if cfg is not None and getattr(cfg, "steam_root", None):
         return Path(cfg.steam_root)
-    if sys.platform == "win32":
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
-                return Path(winreg.QueryValueEx(k, "SteamPath")[0])
-        except OSError:
-            return None
-    return None
+    return default_steam_root()
 
 
 def game_dir(appid: str, cfg=None) -> Path:
@@ -336,6 +329,11 @@ def run_static_analysis(gd: Path, ctx: Ctx | None, include_dlls: bool = True, ma
     }
 
 
+def _pak_count(gd: Path) -> int:
+    """How many .pak files the install has, without reading them (status must stay cheap on a 30 GB game)."""
+    return sum(1 for p in gd.rglob("*.pak") if p.is_file())
+
+
 def run_pak_index(gd: Path) -> list[dict]:
     """List .pak files with sizes; newest patch last."""
     paks = sorted(gd.rglob("*.pak"), key=lambda p: p.name)
@@ -381,7 +379,7 @@ def ue_steam_tool(inp: UESteamIn, ctx: Ctx):
         try:
             d = game_dir(inp.appid, ctx.config)
             return {"result": {"appid": inp.appid, "title": inp.title, "game_dir": str(d), "installed": True,
-                               "engine": engine_version(d), "safety": safety(d), "paks": len(run_pak_index(d))}}
+                               "engine": engine_version(d), "safety": safety(d), "paks": _pak_count(d)}}
         except FileNotFoundError as e:
             return {"result": {"appid": inp.appid, "title": inp.title, "installed": False, "error": str(e)}}
 
@@ -407,9 +405,3 @@ def ue_steam_tool(inp: UESteamIn, ctx: Ctx):
         return {"result": {"safe": True, "paks": paks, "note": "asset extraction not yet implemented (this run adds static analysis only)"}}
 
     raise ValueError(f"unknown op {inp.op}")
-
-
-try:
-    from pydantic import BaseModel
-except ImportError:  # pragma: no cover
-    pass

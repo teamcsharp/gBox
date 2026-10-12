@@ -50,8 +50,23 @@ def fake_ue_game(tmp_path: Path):
     return gd, cfg
 
 
-def test_default_steam_root_is_none_on_linux():
+def test_default_steam_root_is_none_off_windows(monkeypatch):
+    monkeypatch.setattr(catalog.sys, "platform", "linux")
     assert catalog.default_steam_root() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads the Steam registry key of this PC")
+def test_default_steam_root_on_windows_is_a_path_or_none():
+    root = catalog.default_steam_root()
+    assert root is None or isinstance(root, Path)
+
+
+def test_steam_root_prefers_config_then_registry(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(ue_steam, "default_steam_root", lambda: tmp_path / "registry-steam")
+    assert ue_steam.steam_root(config.Config(steam_root=tmp_path / "cfg-steam")) == tmp_path / "cfg-steam"
+    assert ue_steam.steam_root(config.Config()) == tmp_path / "registry-steam"
+    monkeypatch.setattr(ue_steam, "default_steam_root", lambda: None)
+    assert ue_steam.steam_root(config.Config()) is None
 
 
 def test_scan_steam_finds_ue_game(fake_ue_game):
@@ -104,6 +119,19 @@ def test_pak_index(fake_ue_game):
     assert "Content/Paks/fake-WindowsNoEditor_P.pak" in names
     for p in paks:
         assert p["sha256"] is not None
+
+
+def test_status_counts_paks_without_hashing(fake_ue_game, monkeypatch):
+    gd, cfg = fake_ue_game
+
+    def _no_hash(p):
+        raise AssertionError(f"status must not hash {p}")
+
+    monkeypatch.setattr(ue_steam, "_sha256", _no_hash)
+    out = ue_steam.ue_steam_tool(ue_steam.UESteamIn(op="status", appid="12345"), Ctx(cfg))
+    assert out["result"]["installed"] is True
+    assert out["result"]["paks"] == 2
+    assert out["result"]["engine"]["version"] == "4.27.2"
 
 
 def test_locomotion_classifier():
@@ -169,5 +197,5 @@ def test_ue_steam_tool_status_not_installed(tmp_path: Path):
     cfg = config.Config(steam_root=_make_steam_root(tmp_path, "99999", "OtherGame"))
     ctx = Ctx(cfg)
     from gbox.registry import REGISTRY
-    out = REGISTRY["ue_steam"].fn({"op": "status", "appid": "12345"}, ctx)
+    out = REGISTRY["ue_steam"].fn(ue_steam.UESteamIn(op="status", appid="12345"), ctx)
     assert out["result"]["installed"] is False
