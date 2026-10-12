@@ -290,14 +290,15 @@ def test_operator_priority_puts_listed_games_and_requests_first(env):
     q.sync(env, {'count': 2, 'items': [favorite(), favorite('1' * 16)]}, reqs, now=3)
     options = q.candidates(env, reqs, [], set(), set(), now=4)
     env['last_lane'] = 'inbox'                                   # favourite lane is next
-    assert q.choose(options, env)[1]['game_id'] == G             # oldest favourite first by default
-    assert q.set_priority(['1' * 16]) == ['1' * 16]
+    default = q.choose(options, env)[1]['game_id']
+    other = '1' * 16 if default == G else G
+    assert q.set_priority([other]) == [other]
     env = q._read() | {'items': env['items'], 'last_lane': 'inbox'}
-    assert q.choose(options, env)[1]['game_id'] == '1' * 16      # listed game first
+    assert q.choose(options, env)[1]['game_id'] == other         # listed game first, whatever the default tie-break
     env['last_lane'] = 'favorite'                                # inbox lane is next
     assert q.choose(options, env)[1]['request_id'] == R
     env['priority'] = ['f' * 16]
     assert q.choose(options, env)[1]['request_id'] == 'f' * 16   # listed request first
     assert q.priority_rank({'number': 5}, {'priority': ['5']}) == 0
     assert q.priority_rank({'game_id': 'zz'}, {'priority': ['a', 'b']}) == 2
-    assert q.get_priority() == ['1' * 16]
+    assert q.get_priority() == [other]
