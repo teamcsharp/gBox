@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .agent_contracts import validate_cheat_call
 
-from . import adapters, catalog, provision, uap
+from . import adapters, catalog, provision, rewind, uap
 from .models import CatalogEntry, Permission as P
 from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
@@ -58,7 +58,7 @@ def echo_artifact(inp: EchoIn, ctx: Ctx):
 class ScanIn(BaseModel):
     libraries: list[str] | None = None    # library ids; default: all configured libraries
     roots: list[str] | None = None        # ad-hoc plain folders (content-hashed), in addition to libraries
-    include_steam: bool = True
+    include_steam: bool | None = None  # None: Steam only when steam_root is configured; true: also auto-detect the install (Windows registry); false: skip
 
 class ScanOut(BaseModel):
     count: int
@@ -124,9 +124,11 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
-    if inp.include_steam and cfg.steam_root:
-        e, p = catalog.scan_steam(cfg.steam_root)
-        entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}
+    if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
+        steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
+        if steam_root:
+            e, p = catalog.scan_steam(steam_root)
+            entries, problems, per["steam"] = entries + e, problems + p, {"entries": len(e)}
     try:                                                # decanted install: the recipes' ids for this PC's matching copies
         remap = json.loads((cfg.data_dir / "game_ids.json").read_text())   # (written by `python -m gbox.decant match`)
     except (OSError, ValueError):
@@ -215,6 +217,7 @@ class LaunchIn(BaseModel):
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -273,6 +276,7 @@ def _close_previous_games(ctx):
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
+            rewind.stop(sid)
             SESSIONS.pop(sid, None)
             continue
         ctx.progress(71, 'Saving the previous game before switching')
@@ -292,6 +296,7 @@ def _close_previous_games(ctx):
             snapshot = next(s for s in checkpoints if s['session_id'] == sid)
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
+        rewind.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
     return checkpoints
@@ -393,12 +398,17 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if launch_mod != inp.mod:
         detail["collection_mod"] = inp.mod
     detail['previous_checkpoints'] = checkpoints
-    if sys.platform == "win32" and getattr(ad, "name", "") == "retroarch":
-        threading.Thread(target=_ff_ramp, args=(sid, ad), daemon=True).start()
+    # Select+L2 rewind / Select+R2 fast-forward on the operator's own pad, in every game (#454, #1382): RetroArch's own
+    # rewind where it is on, gBox's checkpoint ring elsewhere, the 2x/4x/16x ramp for R2 in both cases (gbox/rewind.py)
+    try:
+        detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+    except Exception as e:                                     # noqa: BLE001 - never block the launch
+        detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
-    return {"session_id": sid, "adapter": ad.name, "capabilities": ad.get_capabilities(), "detail": detail}
+    return {"session_id": sid, "adapter": ad.name, "capabilities": rewind.capabilities(sid, ad.get_capabilities()),
+            "detail": detail}
 
 
 _HOTKEY = {"thread": None}
@@ -514,6 +524,8 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     for e in events:
                         if "rpc" in e:
                             threading.Thread(target=answer, args=(e,), daemon=True).start()
+                    if pad:
+                        rewind.feed(sid, pad)                 # Select+L2 / Select+R2 on a streamed session's pad
                     if pad and "send_input" in ad.supported:
                         ad.send_input(pad)
                 except Exception:
@@ -536,6 +548,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
                     c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
+                    rewind.stop(sid)
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
@@ -576,7 +589,7 @@ def session_rpc(sid: str, op: str, args: dict):
     if op == "info":
         return {"platform": g.get("platform"), "core": g.get("core"), "title": g.get("title"), "emulator": ad.name, "game_id": g.get("game_id"),
                 "rom": Path(g["_rom_path"]).name if g.get("_rom_path") else None,
-                "capabilities": ad.get_capabilities(), "runtime": ad.query_runtime()}
+                "capabilities": rewind.capabilities(sid, ad.get_capabilities()), "runtime": ad.query_runtime()}
     if op.startswith("debug_"):
         return _debug_rpc(ad, g, op[6:], args)
     if op == "state":
@@ -723,12 +736,16 @@ def session_op(inp: SessionIn, ctx: Ctx):
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
     ad, _ = SESSIONS[inp.session_id]
-    try:
-        res = getattr(ad, inp.op)(**inp.args)
-    except TypeError:
-        if "slot" not in inp.args:
-            raise
-        res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
+    if inp.op == "rewind" and rewind.mode(inp.session_id) == "checkpoint":   # gBox's checkpoint ring, not the emulator's buffer
+        res = rewind.step(inp.session_id, float(inp.args.get("seconds", 5.0)))
+    else:
+        with rewind.guard(inp.session_id, inp.op):                          # the ring takes no checkpoint during a save / load
+            try:
+                res = getattr(ad, inp.op)(**inp.args)
+            except TypeError:
+                if "slot" not in inp.args:
+                    raise
+                res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
     if inp.op == "save_state" and isinstance(res, dict):            # thumbnail for the save-state film strip
         if getattr(ad, 'name', '') == 'retroarch' and res.get('path'):
             _validate_state_container(Path(res['path']).read_bytes(), 'retroarch')
@@ -742,6 +759,7 @@ def session_op(inp: SessionIn, ctx: Ctx):
         proc = getattr(ad, 'proc', None)
         if proc is not None and proc.poll() is None:
             raise RuntimeError('Emulator process is still running; stop was not confirmed')
+        rewind.stop(inp.session_id)
         SESSIONS.pop(inp.session_id, None)
         track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
@@ -2551,6 +2569,38 @@ def project_point(eye, tgt, pt, fov_deg):
     return 0.5 + xc / zc * s * 0.5 * 0.75, 0.5 - yc / zc * s * 0.5               # 0.75 = 4:3; sign checked on a still frame
 
 
+PICK_FRAME = (640, 480)                   # picture the probe projects into (4:3; the click is mapped into it)
+
+
+def _picture_xy(inp: PickIn):
+    """The 4:3 picture is centred in the window: map the click into picture coordinates (0..1)."""
+    cx, cy = inp.x, inp.y
+    if inp.window_aspect > 4 / 3:
+        w = (4 / 3) / inp.window_aspect
+        cx = (inp.x - (1 - w) / 2) / w
+    elif inp.window_aspect < 4 / 3:
+        h = inp.window_aspect / (4 / 3)
+        cy = (inp.y - (1 - h) / 2) / h
+    return cx, cy
+
+
+def _pick_from_probe(scan: dict, cx: float, cy: float) -> dict:
+    """Pick result from a gbox.entity_probe scan (profiles with entities.layout struct_array + camera pos_angles_fov)."""
+    from . import entity_probe
+    w, h = scan["frame"]
+    hit = entity_probe.Probe.under_point(cx * w, cy * h, scan)
+    e = hit["entity"]
+    out = {"picked": entity_probe.summary(e) if e else None, "contained": hit["contained"], "miss": hit["miss"],
+           "click": [round(cx, 3), round(cy, 3)], "click_px": [round(cx * w, 1), round(cy * h, 1)],
+           "others": [entity_probe.summary(o) for o in hit["others"]], "camera": scan["camera"],
+           "entities": len(scan["entities"]), "diagnostics": scan["diagnostics"][:20]}
+    if e is None:
+        out["note"] = "nothing projectable near the click" if scan["camera"] else "camera unreadable (see diagnostics)"
+    elif e.get("model"):
+        out["asset_note"] = f"model {e['model']}: extracting it from the disc is the next stage (no reader for this game yet)"
+    return out
+
+
 @tool("pick", "1.0", PickIn, PickOut, capabilities=["runtime", "memory", "asset"], timeout_s=900)
 def pick(inp: PickIn, ctx: Ctx):
     """Live picker (plan phase 6): what is under this click in the running game? Projects every entity through the game's
@@ -2568,9 +2618,12 @@ def pick(inp: PickIn, ctx: Ctx):
         pass
     try:
         st = _semantic_state(ad, g)
-        cam_raw = None
+        cam_raw = probe_scan = None
         prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
-        if prof and prof.get("camera"):
+        if prof and (prof.get("camera") or {}).get("layout") == "pos_angles_fov":      # table-of-records games (AUF)
+            from . import entity_probe
+            probe_scan = entity_probe.Probe(prof, ad.read_memory).scan(*PICK_FRAME, entities=st.get("entities"))
+        elif prof and prof.get("camera"):
             cam_raw = (ad.read_memory(int(prof["camera"]["eye"], 16), 12), ad.read_memory(int(prof["camera"]["target"], 16), 12))
     finally:
         if paused:
@@ -2581,17 +2634,12 @@ def pick(inp: PickIn, ctx: Ctx):
     if not prof or not prof.get("camera"):
         raise Unsupported(f"no camera mapping for {g.get('title')} yet (profile.camera)")
     cam = prof["camera"]
+    cx, cy = _picture_xy(inp)
+    if probe_scan is not None:
+        return {"result": _pick_from_probe(probe_scan, cx, cy)}
     e_, t_ = cam_raw
     end = ">" if g.get("platform") in BIG_ENDIAN else "<"
     eye, tgt = S.unpack(end + "3f", e_), S.unpack(end + "3f", t_)
-    # the 4:3 picture is centred in the window: map the click into picture coordinates
-    cx, cy = inp.x, inp.y
-    if inp.window_aspect > 4 / 3:
-        w = (4 / 3) / inp.window_aspect
-        cx = (inp.x - (1 - w) / 2) / w
-    elif inp.window_aspect < 4 / 3:
-        h = inp.window_aspect / (4 / 3)
-        cy = (inp.y - (1 - h) / 2) / h
     hits = []
     for e in st.get("entities", []):
         if e["kind"] == "player":
@@ -2632,6 +2680,99 @@ def pick(inp: PickIn, ctx: Ctx):
         out["package"] = name
     elif not model:
         out["asset_note"] = f"no model mapping for {e['class']} yet (profile.models)"
+    return {"result": out}
+
+
+class PickPreviewIn(BaseModel):
+    session_id: str
+    x: float                               # click, 0..1 across the game window
+    y: float                               # click, 0..1 down the game window
+    window_aspect: float = 4 / 3           # width / height of the window the click was in (letterboxing)
+
+
+class PickPreviewOut(BaseModel):
+    result: dict
+
+
+@tool("pick_preview", "1.0", PickPreviewIn, PickPreviewOut, capabilities=["runtime", "memory"], timeout_s=30)
+def pick_preview(inp: PickPreviewIn, ctx: Ctx):
+    """Fast live preview for the game eyedropper.  Reads semantic state without pausing/extracting,
+    projects the entities through the game's camera, and returns the one under the cursor together
+    with a snapshot of its live RAM and the profile evidence that describes where it lives in code."""
+    from . import semantic
+    ad, g = SESSIONS[inp.session_id]
+    st = _semantic_state(ad, g)
+    prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
+    if not prof or not prof.get("camera"):
+        return {"result": {"picked": None, "note": f"no camera mapping for {g.get('title')} yet (profile.camera)"}}
+    cam = prof["camera"]
+    try:
+        cam_raw = (ad.read_memory(int(cam["eye"], 16), 12), ad.read_memory(int(cam["target"], 16), 12))
+    except Exception as e:
+        return {"result": {"picked": None, "note": f"could not read camera: {e}"}}
+    end = ">" if g.get("platform") in BIG_ENDIAN else "<"
+    eye, tgt = struct.unpack(end + "3f", cam_raw[0]), struct.unpack(end + "3f", cam_raw[1])
+    cx, cy = inp.x, inp.y
+    if inp.window_aspect > 4 / 3:
+        w = (4 / 3) / inp.window_aspect
+        cx = (inp.x - (1 - w) / 2) / w
+    elif inp.window_aspect < 4 / 3:
+        h = inp.window_aspect / (4 / 3)
+        cy = (inp.y - (1 - h) / 2) / h
+    hits = []
+    for e in st.get("entities", []):
+        if e.get("kind") == "player":
+            continue
+        depth = math.dist(eye, (e.get("x", 0), e.get("y", 0), e.get("z", 0)))
+        if depth > 700:
+            continue
+        p = project_point(eye, tgt, (e.get("x", 0), e.get("y", 0) + 12, e.get("z", 0)), cam.get("fov", 45))
+        if p and -0.1 <= p[0] <= 1.1 and -0.1 <= p[1] <= 1.1:
+            hits.append((math.hypot(p[0] - cx, p[1] - cy), e, p, depth))
+    if not hits:
+        return {"result": {"picked": None, "note": "nothing projectable near the click"}}
+    me = next((x for x in st.get("entities", []) if x.get("kind") == "player"), {})
+    near = [h for h in hits if h[0] < (0.2 if h[1].get("kind") in ("enemy", "npc") else 0.1)] or sorted(hits, key=lambda h: h[0])[:1]
+    rank = {"enemy": 0, "npc": 1, "object": 2, "gate": 3}
+    near.sort(key=lambda h: (h[1].get("room") != me.get("room"), rank.get(h[1].get("kind"), 2), h[3], h[0]))
+    hits = near + [h for h in sorted(hits, key=lambda h: h[0]) if h not in near]
+    dist, e, p, _ = hits[0]
+    ptr_int = None
+    if e.get("ptr"):
+        try:
+            ptr_int = int(str(e["ptr"]), 16)
+        except Exception:
+            ptr_int = None
+    ram = None
+    if ptr_int:
+        try:
+            ram = ad.read_memory(ptr_int, 64)
+        except Exception as ex:
+            ram = f"read failed: {ex}".encode()
+    hex_dump = None
+    if ram:
+        if isinstance(ram, bytes):
+            hex_dump = " ".join(f"{b:02x}" for b in ram)
+        else:
+            hex_dump = str(ram)
+    evidence = prof.get("evidence", {})
+    # Surface evidence that names this class, its entity struct, or its model.
+    class_ev = {}
+    needle = e.get("class", "")
+    for k, v in evidence.items():
+        if k in ("entities", "camera", "models") or (needle and (k == needle or (isinstance(v, (str, int)) and needle in str(v)))):
+            class_ev[k] = v
+    model = (prof.get("models") or {}).get(e.get("class"))
+    out = {
+        "picked": {k: e.get(k) for k in ("class", "kind", "entity_id", "ptr", "x", "y", "z", "hp", "room")},
+        "screen": [round(p[0], 3), round(p[1], 3)],
+        "click": [round(cx, 3), round(cy, 3)],
+        "miss": round(dist, 3),
+        "hex": hex_dump,
+        "evidence": class_ev,
+        "model": model,
+        "others": [{"class": h[1].get("class"), "miss": round(h[0], 3)} for h in hits[1:4]],
+    }
     return {"result": out}
 
 
@@ -2885,6 +3026,7 @@ AGENTS = [
 def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
+                              "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
@@ -2893,10 +3035,14 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
+                              "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
-                              "gta_mods_tool")):   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
+                              "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
+                              "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "stranglehold")):   # stranglehold: PS3 bullet-time interception systems and chat driver
     import importlib
     import subprocess
     import sys
@@ -2963,7 +3109,7 @@ def _validate_state_container(data: bytes, adapter_name: str) -> None:
 
 @tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
-    with _STATE_TRANSFER_LOCK:
+    with _STATE_TRANSFER_LOCK, rewind.guard(inp.session_id, "transfer"):   # no checkpoint while the state moves
         return _state_transfer(inp, ctx)
 
 
@@ -3107,53 +3253,7 @@ def _running_file(config) -> Path:
     return Path(config.runtime) / "gbox-running.json"
 
 
-def _ff_ramp(sid: str, ad) -> None:
-    """Hold Select + R2 on the operator's pad = fast-forward that ramps 2x (first 1.5 s) -> 4x (to 3.5 s) -> 16x.
-    RetroArch runs fast-forward at one fixed ratio (16x here), so lower speeds come from switching it on for part of the
-    frames: each 1/60 s tick earns (speed - 1) extra frames, a fast-forwarded tick spends 15.
-    ponytail: 2x/4x advance in small bursts (16 frames at once); a smooth ratio needs RetroArch to accept a runtime ratio."""
-    import ctypes
-    try:
-        xi = ctypes.windll.xinput1_4
-    except OSError:
-        return
-
-    class GP(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-
-    class ST(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gp", GP)]
-    st, t0, credit, on = ST(), None, 0.0, False
-
-    def ff(want):
-        nonlocal on
-        if want != on:
-            try:
-                ad.cmd("FAST_FORWARD")                         # a toggle
-                on = want
-            except Exception:
-                pass
-    while sid in SESSIONS:
-        time.sleep(1 / 60)
-        held = xi.XInputGetState(0, ctypes.byref(st)) == 0 and st.gp.buttons & 0x0020 and st.gp.rt > 60   # Back + RT
-        if not held:
-            t0, credit = None, 0.0
-            ff(False)
-            continue
-        t0 = t0 or time.time()
-        el = time.time() - t0
-        speed = 2.0 if el < 1.5 else 4.0 if el < 3.5 else 16.0
-        if speed >= 16:
-            ff(True)
-            continue
-        credit += speed - 1.0
-        if credit >= 15.0:
-            credit -= 15.0
-            ff(True)
-        else:
-            ff(False)
-    ff(False)
+# Select + R2 fast-forward ramp and Select + L2 rewind: gbox/rewind.py (started per session in _launch_game)
 
 
 def track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:

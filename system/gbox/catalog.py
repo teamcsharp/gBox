@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import zlib
 from pathlib import Path
@@ -521,6 +522,18 @@ def parse_vdf(text: str) -> dict:
                 d[key], i = nxt_s, i + 2
         return d, i
     return block(0)[0]
+
+
+def default_steam_root() -> Path | None:
+    """Auto-detect the Steam install root on Windows when it is not configured."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+                return Path(winreg.QueryValueEx(k, "SteamPath")[0])
+        except OSError:
+            return None
+    return None
 
 
 def scan_steam(steam_root: Path) -> tuple[list[CatalogEntry], list[str]]:

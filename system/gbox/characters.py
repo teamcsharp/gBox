@@ -151,6 +151,10 @@ def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
     """Use the sprite sheet itself as the collection preview, fitted to a square."""
     from PIL import Image
     im = Image.open(src).convert("RGBA")
+    if im.width and im.height and max(im.size) < size:
+        # a handful of 8x8 tiles would cover <1% of the canvas: enlarge pixel-exact so check_preview judges the sprites
+        f = size // max(im.size)
+        im = im.resize((im.width * f, im.height * f), Image.NEAREST)
     im.thumbnail((size, size))
     canvas = Image.new("RGBA", (size, size), (38, 40, 48, 255))
     canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
@@ -1269,7 +1273,10 @@ def _mgs_vr_run(ctx, game, entry, work):
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
-    ('mgs_vr', lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
+    ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
+     lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("mgs_vr", lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
      _one('SNAKE', 'mgs_vr_snake', 'Solid Snake (VR Missions)', ['Snake', 'MGS VR Snake']), _mgs_vr_run),
     ('oot', lambda t, p: 'ocarina of time' in t and p == 'n64',
      lambda: [{'key': f'{age} link', 'slug': f'oot_link_{age}', 'name': label,
@@ -1403,7 +1410,7 @@ def collect(ctx, inp):
             checked = verify_entry(root, meta)
             roles = (meta.get('rig') or {}).get('roles') or {}
             ready = checked['ok'] and bool(roles)
-            kind = e.get('kind', 'character')
+            kind = meta.get('kind', e.get('kind', 'character'))
             done = ready or (kind != 'character' and checked['ok'])
             results.append({'slug': meta['slug'], 'name': meta['name'], 'kind': kind, 'status': res['status'],
                             'verified': checked['ok'], 'retargetable': ready,
