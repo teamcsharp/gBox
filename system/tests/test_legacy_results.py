@@ -35,6 +35,20 @@ def legacy(cfg, *, previous_checkpoint=False):
     return app, plane, result, copy.deepcopy(job), copy.deepcopy(session)
 
 
+def settled_late(response, store):
+    """Unverifiable legacy evidence is never bound to the job and never replays a callback.
+
+    The worker still gets a verifiable "late" acknowledgement and the bytes are kept as
+    audited evidence, because a refusal would hold that worker offline at every start.
+    """
+    body = response.json()
+    assert response.status_code == 200 and body['accepted'] is True and body['late'] is True
+    assert not store.get('job', 'launch').get('result_sha256')
+    assert not [row for row in store.audit_log() if row['action'] == 'job.result_reconciled']
+    assert len(store.all('late_result')) == 1 and not store.db.in_transaction
+    return body
+
+
 def test_legacy_success_reconciles_exact_result_once_without_resurrecting_game(cfg):
     app, plane, result, before, session = legacy(cfg)
     store = app.state.store
@@ -82,17 +96,14 @@ def test_legacy_ambiguous_or_changed_evidence_stays_unbound(cfg, change):
     elif change == 'blob_absent': store.artifact_path(receipt['artifacts'][0]['sha256']).unlink()
     store.put('job', job['id'], job)
     store.put('receipt', receipt['id'], receipt)
-    assert plane.post('/api/workers/old-worker/result', json=result).status_code == 409
-    assert not store.get('job', 'launch').get('result_sha256')
-    assert not [row for row in store.audit_log() if row['action'] == 'job.result_reconciled']
-    assert not store.db.in_transaction
+    settled_late(plane.post('/api/workers/old-worker/result', json=result), store)
 
 
-def test_legacy_foreign_worker_and_unknown_callback_refused(cfg, monkeypatch):
+def test_legacy_foreign_worker_refused_and_unknown_callback_never_rerun(cfg, monkeypatch):
     app, plane, result, before, session = legacy(cfg)
     assert plane.post('/api/workers/foreign-worker/result', json=result).status_code == 409
     monkeypatch.setattr(REGISTRY['launch_game'], 'on_accept', lambda *_: pytest.fail('callback rerun'))
-    assert plane.post('/api/workers/old-worker/result', json=result).status_code == 409
+    settled_late(plane.post('/api/workers/old-worker/result', json=result), app.state.store)
     assert app.state.store.get('session', session['session_id']) == session
 
 
@@ -152,7 +163,10 @@ def test_legacy_previous_checkpoint_requires_persisted_bytes(cfg, change):
         checkpoint.pop('artifact')
         job = store.get('job', 'launch'); job['output'] = result['output']; store.put('job', 'launch', job)
     response = plane.post('/api/workers/old-worker/result', json=result)
-    assert response.status_code == (200 if change is None else 409)
+    if change is None:
+        assert response.status_code == 200 and not response.json().get('late')
+    else:
+        settled_late(response, store)
 
 
 @pytest.mark.parametrize('invalid', [1, 0, 'true', 'false'])
@@ -169,7 +183,7 @@ def test_legacy_stored_output_is_compared_as_canonical_json(cfg):
     job = app.state.store.get('job', 'launch')
     job['output']['detail']['pid'] = 4321.0
     app.state.store.put('job', 'launch', job)
-    assert plane.post('/api/workers/old-worker/result', json=result).status_code == 409
+    settled_late(plane.post('/api/workers/old-worker/result', json=result), app.state.store)
 
 
 @pytest.mark.parametrize('key', ['started', 'finished'])
@@ -186,4 +200,4 @@ def test_legacy_job_timestamps_require_numbers_not_booleans(cfg, key):
         receipt['finished'] = 1
     else: job['started'] = True
     store.put('job', job['id'], job); store.put('receipt', receipt['id'], receipt)
-    assert plane.post('/api/workers/old-worker/result', json=result).status_code == 409
+    settled_late(plane.post('/api/workers/old-worker/result', json=result), store)
