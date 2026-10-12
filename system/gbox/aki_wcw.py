@@ -70,6 +70,22 @@ PROFILES = {
                   (0x8000C264, 0x3C018003, "sets_hi"), (0x8000C26C, 0x8C2260F0, "sets_lo")],
         "profile_area": (0x80037000, 0x80048000),
     },
+    # WCW/nWo Revenge (Europe, NW2P rev 0; .zip member is byte-swapped .v64 data under a .z64 name). Same 0x1DEA-word
+    # file table as NW2E (assets 0x2A70 bytes earlier in ROM); every NW2E patch site was matched uniquely in the PAL
+    # code with immediates masked (code -0xE0, data tables -0x28B0, slot arrays -0x2CD0/-0x2CE0). Derived by
+    # gbox.aki_wcw_inventory.derive_profile(us_rom, eu_rom) and re-checked by tests/test_aki_wcw_revenge_pal.py (#1317).
+    ("NW2P", 0): {
+        "game": "revenge", "layout": "rv", "first": 0xD81E0, "ft": 0xCDFCE2, "nfiles": 0x1DE9, "nmodels": 17,
+        "set_tbl": 0x8002F0E8, "groups": 10, "costume_lists": 0x80033840, "sets": 5, "head_tbl": 0x80030294,
+        "body_tbl": 0x8002EF40, "bodies": 52, "part_map": 0x8002E7D8, "slot_code": 0x800675D4, "slot_costume": 0x8007B2DC,
+        "patch": [(0x800033E0, 0x0C00020C, "malloc"), (0x800033E8, 0x3C0400CE, "ft_hi"), (0x800033EC, 0x2484FCE2, "ft_lo"),
+                  (0x80003400, 0x240677A8, "total"), (0x80003408, 0x240477A4, "sizes"), (0x8000349C, 0x2E421DE9, "loop_count"),
+                  (0x800034E0, 0x2C421DEA, "bound"), (0x800035C4, 0x2C421DEA, "bound"),
+                  (0x8000BE00, 0x3C018003, "body_hi"), (0x8000BE08, 0x8C22EF40, "body_lo"),
+                  (0x8000BDB4, 0x3C038003, "sets_hi"), (0x8000BDBC, 0x8C633840, "sets_lo"),
+                  (0x8000C184, 0x3C018003, "sets_hi"), (0x8000C18C, 0x8C223840, "sets_lo")],
+        "profile_area": (0x80035000, 0x80046000),
+    },
 }
 
 # body model index -> (name, joint); 19 body models + the head's face / back (keys 19, 20)
@@ -375,6 +391,46 @@ WT_NAMES = [("0-1", "Hulk Hogan"), ("0-3", "Buff Bagwell"), ("0-4", "Eric Bischo
 def roster_entries() -> list[dict]:
     """characters.DEDICATED roster (World Tour): keys = 'group-member'."""
     return [{"key": k, "slug": slug_of(n), "name": n, "aliases": [f"World Tour {n}"], "kind": "character"} for k, n in WT_NAMES]
+
+
+# Revenge (NW2E/NW2P): snapshot of aki_wcw.roster() on the owned builds (92 wrestlers, 13 hidden slots keep their
+# generated "Wrestler g-m" placeholder because no profile string exists for them; #1317).
+RV_NAMES = [
+    (0, 1, "Sting"), (0, 2, "Giant"), (0, 3, "Lex Luger"), (0, 4, "Diamond Dallas Page"), (0, 5, "Rick Steiner"),
+    (0, 6, "Wrestler 0-6"), (0, 7, "Roddy Piper"), (0, 8, "Bret Hart"), (0, 9, "Chris Benoit"), (0, 10, "Goldberg"),
+    (0, 11, "Booker T"), (0, 12, "Disco Inferno"),
+    (1, 1, "Fit Finley"), (1, 2, "Wrestler 1-2"), (1, 3, "Wrestler 1-3"), (1, 4, "Wrestler 1-4"), (1, 5, "Meng"),
+    (1, 6, "Barbarian"), (1, 7, "Larry Zbysko"), (1, 8, "Stevie Ray"), (1, 9, "Wrestler 1-9"),
+    (1, 10, "Wrestler 1-10"), (1, 11, "British Bulldog"), (1, 12, "Wrestler 1-12"), (1, 13, "Yugi Nagata"),
+    (1, 14, "Jim Neidhart"), (1, 15, "Alex Wright"), (1, 16, "Wrestler 1-16"),
+    (2, 1, "Hollywood Hogan"), (2, 2, "Macho Man Randy Savage"), (2, 3, "Kevin Nash"), (2, 4, "Scott Hall"),
+    (2, 5, "Buff Bagwell"), (2, 6, "Scott Steiner"), (2, 7, "Curt Hennig"), (2, 8, "Konnan"), (2, 9, "Scott Norton"),
+    (2, 10, "Wrestler 2-10"), (2, 11, "Wrestler 2-11"), (2, 12, "Brian Adams"), (2, 13, "Eric Bischoff"),
+    (2, 14, "Wrestler 2-14"),
+    (3, 1, "Ultimo Dragon"), (3, 2, "Eddy Guerrero"), (3, 3, "Chris Jericho"), (3, 4, "Rey Mysterio Jr."),
+    (3, 5, "Juventud Guerrera"), (3, 6, "Dean Malenko"), (3, 7, "Chavo Guerrero Jr."), (3, 8, "La Parka"),
+    (3, 9, "Psychosis"), (3, 10, "Wrestler 3-10"),
+    (4, 1, "Glacier"), (4, 2, "Wrestler 4-2"), (4, 3, "Wrath"), (4, 4, "Kanyon"),
+    (5, 1, "Raven"), (5, 2, "Saturn"), (5, 3, "Kidman"), (5, 4, "Riggs"), (5, 5, "Van Hammer"), (5, 6, "Sick Boy"),
+    (5, 7, "Lodi"), (5, 8, "Reese"),
+    (6, 1, "AKI man"), (6, 2, "Shogun"), (6, 3, "Executioner"), (6, 4, "Dr. Frank"), (6, 5, "Jekel"),
+    (6, 6, "Maya Inca Boy"),
+    (7, 1, "Hawk Hana"), (7, 2, "Kim Chee"), (7, 3, "Dake Ken"), (7, 4, "Brickowski"), (7, 5, "Ming Chee"),
+    (7, 6, "Han Zo Mon"),
+    (8, 1, "Eric Bischoff"), (8, 2, "Onoo"), (8, 3, "Jimmy Hart"), (8, 4, "Rick Rude"), (8, 5, "Dusty Rhodes"),
+    (8, 6, "Ted Debisas"), (8, 7, "James Bandenderg"), (8, 8, "Vincent"),
+    (9, 1, "Elizabeth"), (9, 2, "Kimberly"), (9, 3, "Jackreen"), (9, 4, "Sister Sherri"), (9, 5, "Woman"),
+    (9, 6, "WHITE"), (9, 7, "RED"), (9, 8, "DRIVER"),
+]
+
+
+def revenge_roster() -> list[dict]:
+    """characters.DEDICATED roster (Revenge): keys = 'group-member'; slugs match dedicated_entries' rv_* scheme."""
+    out = []
+    for g, m, n in RV_NAMES:
+        out.append({"key": f"{g}-{m}", "slug": f"rv_{g}_{m}_{re.sub(r'[^a-z0-9]+', '_', n.lower()).strip('_')}",
+                    "name": n, "aliases": [f"Revenge {n}", f"{g}-{m}"], "kind": "character"})
+    return out
 
 
 def extract_run(ctx, game, e, work):
