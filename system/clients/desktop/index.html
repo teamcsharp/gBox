@@ -4118,7 +4118,7 @@ document.addEventListener("click", e => {
   const a = e.target.closest("#chatlog a[data-href], #live a[data-href]");
   if (a) { e.preventDefault(); gbox.browser ? gbox.browser("open", a.dataset.href).then(r => r?.ok && toast("🌐 Opened in AutoBrowse")) : gbox.openExternal(a.dataset.href); }
 });
-const CH = { cid: null, n: 0, busy: false, poll: null, models: null, loadRevision: 0 };
+const CH = { cid: null, n: 0, busy: false, poll: null, models: null, loadRevision: 0, seen: false };
 try { CH.cid = localStorage.getItem("gbox_chat") || null; } catch {}
 // ponytail: game -> conversation map lives in localStorage (per PC); move server-side if chats must follow the operator across PCs
 function chatSave() {
@@ -4129,7 +4129,7 @@ async function chatForGame() {             // switch to the active game's own co
   const ctx = await chatContext().catch(() => ({})), g = ctx.game_id || "";
   if (CH.game === g && CH.cid) return;
   let m = {}; try { m = JSON.parse(localStorage.getItem("gbox_chats") || "{}"); } catch {}
-  CH.game = g; CH.n = 0;
+  CH.game = g; CH.n = 0; CH.seen = false;
   CH.cid = m[g] || (g ? null : CH.cid);
   $("#chatlog").innerHTML = CH.cid ? "" : `<div class="mut">New conversation${ctx.game_title ? " for " + esc(ctx.game_title) : ""}. Ask anything about the game you're playing.</div>`;
   if (CH.cid) chatLoad(CH.cid);
@@ -4266,7 +4266,7 @@ async function chatLoad(cid, full = true) {
     if (e) { const b = $("#chatbusy"); b.title = "Click to open the conversation";
       b.textContent = e.type === "tool_call" ? `● ${e.name}…` : (e.type === "error" ? "⚠ " : "gBox: ") + String(e.text || e.question || "").replace(/\s+/g, " ").slice(0, 180); }
   }
-  CH.n = (full ? 0 : CH.n) + c.events.length;
+  CH.n = (full ? 0 : CH.n) + c.events.length; if (full) CH.seen = true;
   const cs = [...$("#chatlog").querySelectorAll(".cm")]; cs.forEach((el, i) => { if (el.classList.contains("choices") && cs.slice(i + 1).some(x => x.classList.contains("user"))) el.classList.add("done"); });
   if (c.events.length) $("#chatlog").scrollTop = $("#chatlog").scrollHeight;
   $("#sb-chat")?.classList.toggle("busy", !!c.busy);
@@ -4289,7 +4289,7 @@ $("#chathist").onclick = async e => {
   const ci = e.target.closest(".ci");
   if (!ci) return;
   clearInterval(CH.poll); CH.poll = null;
-  CH.cid = ci.dataset.c; CH.n = 0; chatSave();
+  CH.cid = ci.dataset.c; CH.n = 0; CH.seen = false; chatSave();
   $("#chatpanel").classList.add("on");
   $("#chatlog").innerHTML = `<div class="mut">Loading conversation…</div>`;
   await Promise.all([chatHistory(), chatLoad(CH.cid)]);
@@ -4604,7 +4604,13 @@ async function loadHistory() { const r = await gbox.api("/api/chat/suggest?limit
 $("#chatsug").onmousedown = e => { const d = e.target.closest("[data-i]"); if (!d) return; e.preventDefault();
   $("#chatin").value = SUG.items[+d.dataset.i].text; $("#chatsug").style.display = "none"; $("#chatin").focus(); };
 $("#chatin").oninput = () => { clearTimeout(SUG.t); SUG.t = setTimeout(suggest, 150); };
-$("#chatin").addEventListener("focus", () => { loadHistory(); if (!CH.n) suggest(); });   // suggest on focus only for a fresh chat
+function chatFresh() {                    // #71: suggestions on focus only when the current conversation is known empty
+  if (CH.busy) return false;             // a reply is streaming: don't cover it
+  if (CH.n > 0) return false;            // the conversation already has messages
+  if (!CH.cid) return true;              // no conversation yet: first question
+  return CH.seen;                        // created or loaded and empty (fresh conversation)
+}
+$("#chatin").addEventListener("focus", () => { loadHistory(); if (chatFresh()) suggest(); });
 $("#chatin").addEventListener("blur", () => setTimeout(() => $("#chatsug").style.display = "none", 150));
 $("#chatin").onkeydown = e => {
   const open = $("#chatsug").style.display === "block" && SUG.items.length;
@@ -4678,7 +4684,7 @@ $("#chathistbtn").onclick = () => {
 new MutationObserver(() => $("#chathistbtn").setAttribute("aria-expanded", String($("#chatpanel").classList.contains("on") && $("#chatpanel").classList.contains("hist"))))
   .observe($("#chatpanel"), { attributes:true, attributeFilter:["class"] });
 $("#chatnew").onclick = async () => { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; chatSave();
-  $("#chatlog").innerHTML = `<div class="mut">New conversation. Ask anything about the game you're playing, or what to find, launch, edit or extract.</div>`; CH.n = 0;
+  $("#chatlog").innerHTML = `<div class="mut">New conversation. Ask anything about the game you're playing, or what to find, launch, edit or extract.</div>`; CH.n = 0; CH.seen = true;
   chatHistory(); $("#chatin").focus(); toast("New conversation"); };
 // conversation composer + clickable options + voice-mode mic
 $("#chatlog").addEventListener("click", e => {
