@@ -10,10 +10,11 @@ The DATA partition ships Eighting's own build tree (.svn dirs, makefile, autofpk
   fpack/chr/<code>/NNNN.fpk  per-costume pack built by fpkbat/fpack_chr_<code>_NNNN.bat ("fpack -a -b"):
                   the costume's seq/brres/mot/brtex/brplt + cam/chr brsca + cpu seq + eft/chr effects, compressed.
 
-FPK layout (big-endian):  0x00 u32 unknown (0x3f13 in chr packs), 0x04 u32 entry count, 0x08 u32 table offset
-(0x10), 0x0C u32 file size; entries 0x30 bytes = name[0x20] (NUL padded path), u32 0, u32 data offset,
-u32 stored (compressed) size, u32 original size.  The payload codec is an Eighting LZ variant not yet decoded
-(analysis stage: find the loader/decompressor in main.dol); `fpk_index` only reads the table.
+FPK layout (big-endian):  0x00 u32 checksum (low 16 bits = byte sum of every entry payload; verified on all
+224 shipped packs), 0x04 u32 entry count, 0x08 u32 table offset (0x10), 0x0C u32 file size; entries 0x30
+bytes = name[0x20] (NUL padded path), u32 0, u32 data offset, u32 stored size, u32 original size.
+Payloads are Eighting PRS streams (`prs_decompress`); an entry with stored == original is stored raw
+(the shipped packs only use that for zero-length placeholder entries).
 
 BRRES (NW4R resource archive, documented by BrawlBox/BrawlCrate): "bres" FEFF, u16 pad, u32 size, u16 root
 offset, u16 section count; root "root" + size + index group.  Index group: u32 size, u32 count, then
@@ -56,6 +57,88 @@ def fpk_index(data: bytes) -> list[dict]:
             raise ValueError(f"fpk entry {name} runs past the end")
         out.append({"name": name, "offset": off, "stored": stored, "size": orig, "flag": zero,
                     "compressed": stored != orig})
+    return out
+
+
+def prs_decompress(data: bytes, size: int) -> bytes:
+    """Decompress an Eighting PRS stream (the fpack payload codec) to exactly `size` bytes.
+
+    MSB-first flag bits: 1 = one literal byte; 0 0 = short copy (2 length bits, length 2-5,
+    8-bit back-offset); 0 1 = long copy (13-bit back-offset, length in the low 3 bits or in a
+    following byte).  Port of GNTool PRSUncompressor (tpu / Luigi Auriemma QuickBMS spec).
+    Verified byte-equal against the loose disc copies of all 3,599 shipped RNYEDA entries that
+    have one (chr/*/0000.brres 307200 B included)."""
+    out = bytearray(size)
+    i = bits_left = o = 0
+    flag = 0
+
+    def byte() -> int:
+        nonlocal i
+        if i >= len(data):
+            raise ValueError("truncated PRS stream")
+        b = data[i]
+        i += 1
+        return b
+
+    def getbits(n: int) -> int:
+        nonlocal i, bits_left, flag
+        v = 0
+        for _ in range(n):
+            v <<= 1
+            if bits_left == 0:
+                flag = byte()
+                bits_left = 8
+            if flag & 0x80:
+                v |= 1
+            flag = (flag << 1) & 0xFF
+            bits_left -= 1
+        return v
+
+    while i < len(data):
+        if getbits(1) == 1:
+            if o < size:
+                out[o] = byte()
+                o += 1
+            else:
+                byte()
+        else:
+            if getbits(1) == 0:  # short copy
+                length = getbits(2) + 2
+                pos = (byte() | 0xFFFFFF00) - 0x100000000  # signed back-offset
+            else:  # long copy
+                pos = (byte() << 8) | 0xFFFF0000
+                pos |= byte()
+                pos -= 0x100000000
+                length = pos & 0x07
+                pos >>= 3
+                if length == 0:
+                    length = byte() + 1
+                else:
+                    length += 2
+            pos += o
+            for _ in range(length):
+                if o < size:
+                    out[o] = out[pos]
+                    o += 1
+                    pos += 1
+    return bytes(out)
+
+
+def fpk_checksum(data: bytes) -> int:
+    """The low 16 bits of the header u32: the byte sum of every entry payload (224/224 packs)."""
+    total = 0
+    for e in fpk_index(data):
+        total += sum(data[e["offset"]:e["offset"] + e["stored"]])
+    return total & 0xFFFF
+
+
+def fpk_decompress(data: bytes) -> list[tuple[str, bytes]]:
+    """(name, raw bytes) for every entry of an Eighting .fpk pack; PRS entries are decoded,
+    stored == original entries pass through unchanged."""
+    out = []
+    for e in fpk_index(data):
+        blob = data[e["offset"]:e["offset"] + e["stored"]]
+        out.append((e["name"], blob if not e["compressed"] else prs_decompress(blob, e["size"])))
     return out
 
 
