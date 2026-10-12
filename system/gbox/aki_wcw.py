@@ -70,6 +70,22 @@ PROFILES = {
                   (0x8000C264, 0x3C018003, "sets_hi"), (0x8000C26C, 0x8C2260F0, "sets_lo")],
         "profile_area": (0x80037000, 0x80048000),
     },
+    # WCW/nWo Revenge (Europe, NW2P rev 0; .zip member is byte-swapped .v64 data under a .z64 name). Same 0x1DEA-word
+    # file table as NW2E (assets 0x2A70 bytes earlier in ROM); every NW2E patch site was matched uniquely in the PAL
+    # code with immediates masked (code -0xE0, data tables -0x28B0, slot arrays -0x2CD0/-0x2CE0). Derived by
+    # gbox.aki_wcw_inventory.derive_profile(us_rom, eu_rom) and re-checked by tests/test_aki_wcw_revenge_pal.py (#1317).
+    ("NW2P", 0): {
+        "game": "revenge", "layout": "rv", "first": 0xD81E0, "ft": 0xCDFCE2, "nfiles": 0x1DE9, "nmodels": 17,
+        "set_tbl": 0x8002F0E8, "groups": 10, "costume_lists": 0x80033840, "sets": 5, "head_tbl": 0x80030294,
+        "body_tbl": 0x8002EF40, "bodies": 52, "part_map": 0x8002E7D8, "slot_code": 0x800675D4, "slot_costume": 0x8007B2DC,
+        "patch": [(0x800033E0, 0x0C00020C, "malloc"), (0x800033E8, 0x3C0400CE, "ft_hi"), (0x800033EC, 0x2484FCE2, "ft_lo"),
+                  (0x80003400, 0x240677A8, "total"), (0x80003408, 0x240477A4, "sizes"), (0x8000349C, 0x2E421DE9, "loop_count"),
+                  (0x800034E0, 0x2C421DEA, "bound"), (0x800035C4, 0x2C421DEA, "bound"),
+                  (0x8000BE00, 0x3C018003, "body_hi"), (0x8000BE08, 0x8C22EF40, "body_lo"),
+                  (0x8000BDB4, 0x3C038003, "sets_hi"), (0x8000BDBC, 0x8C633840, "sets_lo"),
+                  (0x8000C184, 0x3C018003, "sets_hi"), (0x8000C18C, 0x8C223840, "sets_lo")],
+        "profile_area": (0x80035000, 0x80046000),
+    },
 }
 
 # body model index -> (name, joint); 19 body models + the head's face / back (keys 19, 20)
