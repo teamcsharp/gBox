@@ -44,6 +44,7 @@ class Mem:
 
     def __init__(self, ad, platform: str):
         self.ad, self.platform, self.native, self.log, self.base = ad, platform, None, [], 0
+        self.remap = None                                         # table address -> live address (per ROM revision)
         self.be = platform in ("n64", "gamecube", "wii")          # multi-byte values are big-endian there
 
     def _addr(self, a: int, n: int) -> int:
@@ -55,8 +56,11 @@ class Mem:
                 self.native = False
         return a if self.native else _ra_offset(self.platform, a)
 
+    def _map(self, a: int) -> int:
+        return self.remap(a) if self.remap else a + self.base
+
     def rd(self, a: int, n: int = 1) -> bytes:
-        a += self.base
+        a = self._map(a)
         if self.platform == "n64":
             from . import oot
             return oot._rd(self.ad, a, n)
@@ -64,14 +68,15 @@ class Mem:
 
     def wr(self, a: int, data: bytes):
         before = self.rd(a, len(data))
-        a += self.base
+        table_addr = a
+        a = self._map(a)
         if before != data:
             if self.platform == "n64":
                 from . import oot
                 oot._wr(self.ad, a, data)
             else:
                 self.ad.write_memory(self._addr(a, len(data)), data)
-        self.log.append({"addr": hex(a - self.base), "before": before.hex(), "after": data.hex()})
+        self.log.append({"addr": hex(table_addr), "before": before.hex(), "after": data.hex()})
 
     def poke(self, a: int, data: bytes, old: bytes | None = None):
         """Unlogged write (HUD refresh flags, held noclip tables). With `old`, only the changed spans are sent; big
@@ -88,7 +93,7 @@ class Mem:
                     i = j
                 else:
                     i += 1
-        a += self.base
+        a = self._map(a)
         for lo, hi in spans:
             for k in range(lo, hi, 256):
                 piece = data[k:min(hi, k + 256)]
@@ -761,6 +766,7 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
         return g["delegate"](ad, g, op, item, count, button)
     m = Mem(ad, platform)
     m.base = g.get("base", 0)
+    m.remap = g["remap"](ad) if g.get("remap") else None       # OoT: tables are v1.2-relative, the ROM may be 1.0/1.1
     _ready(m, g)
     res = {"game": g["name"], "op": op}
     # 'give me hearts / rupees / everything' through give

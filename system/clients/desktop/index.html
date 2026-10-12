@@ -1039,6 +1039,27 @@ window.taskVizCreate = canvas => {
 <script src="game-surface.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+
+// Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
+// when it would run past the bottom, clamp it to the edges, and let it scroll inside when it is taller than the window.
+// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously).
+function fitMenu(el, x, y, pad = 8, minTop = pad) {
+  if (!el) return;
+  el._fitXY = [x, y, pad, minTop];
+  if (!el._fitRO && window.ResizeObserver) {
+    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.offsetParent !== null) refitMenu(el); });
+    el._fitRO.observe(el);
+  }
+  refitMenu(el);
+}
+function refitMenu(el) {
+  const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
+  el.style.maxHeight = ""; el.style.overflowY = "";
+  const w = el.offsetWidth; let h = el.offsetHeight;
+  if (h > vh - pad - minTop) { h = vh - pad - minTop; el.style.maxHeight = h + "px"; el.style.overflowY = "auto"; }
+  const top = y + h > vh - pad ? (y - h >= minTop ? y - h : vh - pad - h) : y;      // flip above the pointer, else clamp
+  el.style.left = Math.max(pad, Math.min(x, vw - w - pad)) + "px"; el.style.top = Math.max(minTop, top) + "px";
+}
 const volumeSlider = $("#top-volume input"), volumeLabel = $("#top-volume output");
 let volumeTimer;
 gbox.audioVolume().then(({ volume, available }) => {
@@ -2376,10 +2397,10 @@ function rpUndo(redo) {
 // ---------------- one-click issue report (right-click the Capture icon) ----------------
 function captureMenu(x, y) {                                 // reuses #whipmenu: click-away (POPS) + cut out of the docked game
   let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
-  m.style.left = Math.max(8, Math.min(innerWidth - 330, x - 20)) + "px"; m.style.top = Math.min(innerHeight - 200, y + 14) + "px";
+  m.style.left = (x - 20) + "px"; m.style.top = (y + 14) + "px";
   m.innerHTML = `<b>Capture</b><div class="mut">Describe an issue and paste images or files. A screenshot, game details and available logs are attached when you send.</div>
     <button data-c="issue"><span>⚑</span>Report issue</button><button data-c="sketch"><span>✎</span>Capture and sketch…</button>`;
-  m.classList.add("on"); EMB.last = "";
+  m.classList.add("on"); fitMenu(m, x - 20, y + 14, 8, 40); EMB.last = "";
   m.onclick = e => { const b = e.target.closest("button[data-c]"); if (!b) return; m.classList.remove("on"); EMB.last = "";
     b.dataset.c === "issue" ? reportIssue() : openReport("screenshot"); };
 }
@@ -2899,7 +2920,7 @@ function pipMenu(x, y) {
   m.innerHTML = items.map(([a, t]) => a === "-" ? "<hr>" : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { m.style.display = "none"; GM.menu = false; EMB.last = ""; gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
-  Object.assign(m.style, { display: "block", left: Math.min(x, innerWidth - 260) + "px", top: Math.max(40, Math.min(y, innerHeight - 640)) + "px" });
+  Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
 }
 
 async function gameClose() {                                  // ✕ on the game's bar: stop the game, take its window away
@@ -4374,8 +4395,9 @@ async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
   let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
-  m.style.left = Math.min(innerWidth - 330, gp[0] + 12) + "px"; m.style.top = Math.min(innerHeight - 300, Math.max(40, gp[1] - 20)) + "px";
+  m.style.left = (gp[0] + 12) + "px"; m.style.top = Math.max(40, gp[1] - 20) + "px";
   m.innerHTML = `<b>${esc(card.name)} → ${esc(game)}</b><p class="mut">Looking at what you dropped it on…</p>`; m.classList.add("on");
+  fitMenu(m, gp[0] + 12, Math.max(40, gp[1] - 20), 8, 40);
   const shot = ev.shot ? ev.shot.split(",")[1] : null;
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
@@ -4445,8 +4467,9 @@ async function whipMenuGame(ev) {
   const fr = p => [Math.min(1, Math.max(0, (p[0] - r.x) / r.w)), Math.min(1, Math.max(0, (p[1] - r.y) / r.h))];
   let m = $("#whipmenu");
   if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
-  m.style.left = Math.min(innerWidth - 330, ev.b[0] + 12) + "px"; m.style.top = Math.min(innerHeight - 380, Math.max(40, ev.b[1] - 20)) + "px";
+  m.style.left = (ev.b[0] + 12) + "px"; m.style.top = Math.max(40, ev.b[1] - 20) + "px";
   m.innerHTML = `<b>Pick whip</b><p class="mut">Looking at both ends…</p>`; m.classList.add("on");
+  fitMenu(m, ev.b[0] + 12, Math.max(40, ev.b[1] - 20), 8, 40);
   const shot = ev.shot ? ev.shot.split(",")[1] : null;
   // the shot is the whole app window; points are app coordinates, so fractions of the window locate them in the shot
   const fw = p => [p[0] / innerWidth, p[1] / innerHeight];
