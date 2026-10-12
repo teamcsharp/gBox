@@ -19,6 +19,7 @@ WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
+    ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
@@ -42,7 +43,7 @@ SPECIAL = [                                               # writers routed by co
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
 DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
              ("Mario Kart 64", "n64"), ("Resident Evil The Mercenaries 3D", "3ds"), ("Super Smash Bros. Melee", "gamecube"),
-             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto III", "ps2"), ("Grand Theft Auto Vice City", "ps2"),
+             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
              ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
              ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
