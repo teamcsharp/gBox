@@ -72,3 +72,33 @@ def test_real_disc_player_swap_fits_and_round_trips(tmp_path):
         assert S.Rig(d.entry("player.dff")).raw == orig            # the source image is never written
     finally:
         d.close()
+
+
+def test_swap_covers_the_prison_skin():
+    # #1311 live: a fresh game's Callahan Bridge / Kuruma drive runs on the PLAYERP skin, so it must be written too
+    assert S.SKINS[0] == "player" and "playerp" in S.SKINS
+
+
+@pytest.mark.skipif(not ISO.exists() or not (AMY / "meta.json").exists() or not Path("/usr/bin/blender").exists(),
+                    reason="owned GTA III image / Amy / native Blender not here")
+def test_real_disc_prison_skin_swap_fits(tmp_path):
+    import json
+    meta = json.loads((AMY / "meta.json").read_text())
+    d = R.GtaDisc(ISO)
+    try:
+        orig = d.entry("playerp.dff")
+        rig = S.Rig(orig)
+        r = S.swap_files(d, AMY / meta["model"], meta["rig"]["roles"], tmp_path, "/usr/bin/blender", skin="playerp")
+        assert r["skin"] == "playerp" and set(r["orig_sha256"]) == {"playerp.dff", "playerp.txd"}
+        assert len(r["dff"]) <= d.slot_sectors("playerp.dff") * R.SECTOR
+        assert len(r["txd"]) <= d.slot_sectors("playerp.txd") * R.SECTOR
+        for k in ("dff", "txd"):
+            root, tail = R.parse(r[k])
+            assert root.to_bytes() + tail == r[k]
+        new_rig = S.Rig(r["dff"])
+        assert [f["name"] for f in new_rig.frames] == [f["name"] for f in rig.frames]
+        assert new_rig.atomics == rig.atomics
+        assert sum(p["triangles"] for p in S.dff_parts(r["dff"]).values()) >= 600      # 33-sector slot: ~670 tris after decimation
+        assert S.Rig(d.entry("playerp.dff")).raw == orig
+    finally:
+        d.close()

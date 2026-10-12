@@ -34,6 +34,10 @@ GTA3_ROLES = {"pelvis": "swaist", "hip": "smid", "chest": "storso", "neck": "she
               "l_thigh": "supperlegl", "l_shin": "slowerlegl", "l_foot": "sfootl",
               "r_thigh": "supperlegr", "r_shin": "slowerlegr", "r_foot": "sfootr"}
 ENTRIES = ("player.dff", "player.txd")
+# Claude's outfits are separate special-model skins in GTA3.IMG. The opening mission (Callahan Bridge, the Kuruma drive
+# to the safehouse) runs with the prison skin: main.scm swaps the player to 'PLAYERP' and only later back to 'PLAYER'.
+# A swap must write every skin, or the player keeps Claude's stock body there (#1311 live run: prison Claude on foot).
+SKINS = ("player", "playerp", "playerx")
 
 
 # --------------------------------------------------------------------------------------------------- disc image
@@ -221,16 +225,17 @@ def build_txd(txd: bytes, atlases: list[np.ndarray]) -> bytes:
 
 # ------------------------------------------------------------------------------------------------------ build
 def swap_files(disc: R.GtaDisc, src_model: Path, src_roles: dict, work: Path, blender: str | None = None,
-               progress=None) -> dict:
-    """New player.dff + player.txd bytes that fit their IMG slots."""
+               progress=None, skin: str = "player") -> dict:
+    """New <skin>.dff + <skin>.txd bytes that fit their IMG slots (skin = one of SKINS)."""
+    dname, tname = f"{skin}.dff", f"{skin}.txd"
     from .gta_stories_models import pack_atlases
     progress = progress or (lambda p, m: None)
-    dff, txd = disc.entry("player.dff"), disc.entry("player.txd")
+    dff, txd = disc.entry(dname), disc.entry(tname)
     rig = Rig(dff)
     rasters = [r for r in txd_rasters(txd)]
     if not rasters or any(r.depth != 8 for r in rasters):
-        raise ValueError(f"PLAYER.TXD rasters {[(r.name, r.depth) for r in rasters]}: only 8-bit is written")
-    budget = disc.slot_sectors("player.dff") * SECTOR
+        raise ValueError(f"{tname} rasters {[(r.name, r.depth) for r in rasters]}: only 8-bit is written")
+    budget = disc.slot_sectors(dname) * SECTOR
     src, tried = Path(src_model), []
     for attempt in range(5):
         progress(20 + 12 * attempt, f"Fitting onto Claude's {len(rig.frames)} frames")
@@ -245,19 +250,19 @@ def swap_files(disc: R.GtaDisc, src_model: Path, src_roles: dict, work: Path, bl
         if len(new_dff) <= budget:
             break
         if not blender:
-            raise ValueError(f"player.dff {len(new_dff)} bytes > its {budget}-byte slot and no Blender to decimate")
+            raise ValueError(f"{dname} {len(new_dff)} bytes > its {budget}-byte slot and no Blender to decimate")
         target = int(tris * budget / len(new_dff) * 0.92)
         from .re4gc_enemies import decimate
         progress(22 + 12 * attempt, f"Too big ({len(new_dff)} > {budget}): decimating to ~{target} triangles (Blender)")
-        src = decimate(Path(src_model), Path(work) / f"_gta3_dec_{attempt}.glb", target, blender)
+        src = decimate(Path(src_model), Path(work) / f"_gta3_{skin}_dec_{attempt}.glb", target, blender)
     else:
-        raise ValueError(f"player.dff doesn't fit its {budget}-byte slot: {tried}")
+        raise ValueError(f"{dname} doesn't fit its {budget}-byte slot: {tried}")
     new_txd = build_txd(txd, atlases[:len(rasters)])
-    if len(new_txd) > disc.slot_sectors("player.txd") * SECTOR:
-        raise ValueError("player.txd grew past its slot")
+    if len(new_txd) > disc.slot_sectors(tname) * SECTOR:
+        raise ValueError(f"{tname} grew past its slot")
     return {"dff": new_dff, "txd": new_txd, "tried": tried, "parts": dff_parts(new_dff), "atlas": atlases[0],
             "source": str(src), "rasters": [(r.name, r.width, r.height, len(mip_levels(r))) for r in rasters],
-            "orig_sha256": {"player.dff": _sha(dff), "player.txd": _sha(txd)}}
+            "skin": skin, "orig_sha256": {dname: _sha(dff), tname: _sha(txd)}}
 
 
 def _sha(b: bytes) -> str:
@@ -279,10 +284,20 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
     except Exception:                    # noqa: BLE001 - decimation is optional
         bl = None
     disc = R.GtaDisc(base)
+    fits, skipped = [], {}
     try:
-        r = swap_files(disc, Path(src_model), roles, work, bl, progress)
+        for skin in SKINS:
+            if f"{skin}.dff" not in disc.index or f"{skin}.txd" not in disc.index:
+                continue
+            try:
+                fits.append(swap_files(disc, Path(src_model), roles, work, bl, progress, skin=skin))
+            except ValueError as e:
+                if skin == "player":
+                    raise
+                skipped[skin] = str(e)
     finally:
         disc.close()
+    r = fits[0]
     out = filemods.mod_dir(cfg, gid, name)
     if out.exists():
         shutil.rmtree(out)
@@ -292,21 +307,24 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
     shutil.copyfile(base, out / image)
     d = R.GtaDisc(out / image, writable=True)
     try:
-        writes = [d.replace("player.dff", r["dff"]), d.replace("player.txd", r["txd"])]
+        writes = [w for f in fits for w in (d.replace(f"{f['skin']}.dff", f["dff"]), d.replace(f"{f['skin']}.txd", f["txd"]))]
     finally:
         d.close()
     chk = R.GtaDisc(out / image)
     try:
-        back = {n: [_sha(chk.entry(n, c)[:len(r[n.split('.')[1]])]) for c in range(len(chk.imgs))] for n in ENTRIES}
+        back = {f"{f['skin']}.{k}": [_sha(chk.entry(f"{f['skin']}.{k}", c)[:len(f[k])]) for c in range(len(chk.imgs))]
+                for f in fits for k in ("dff", "txd")}
     finally:
         chk.close()
-    want = {"player.dff": _sha(r["dff"]), "player.txd": _sha(r["txd"])}
+    want = {f"{f['skin']}.{k}": _sha(f[k]) for f in fits for k in ("dff", "txd")}
+    orig = {n: h for f in fits for n, h in f["orig_sha256"].items()}
     bad = {n: v for n, v in back.items() if set(v) != {want[n]}}
     if bad:
         raise RuntimeError(f"IMG copies didn't read back the new files: {bad}")
     (out / ".gbox-mod.json").write_text(json.dumps({
         "name": name, "game_id": gid, "image": image, "built": time.time(), "files": ["MODELS/GTA3.IMG", "MODELS/GTA3.DIR"],
-        "entries": list(ENTRIES), "source_sha256": r["orig_sha256"], "new_sha256": want}))
+        "entries": list(want), "source_sha256": orig, "new_sha256": want, "skins": [f["skin"] for f in fits],
+        "skipped_skins": skipped}))
     try:
         from PIL import Image
         Image.fromarray(r["atlas"]).save(work / "atlas.png")
@@ -314,7 +332,8 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
     except Exception:                    # noqa: BLE001 - previews are informational
         pass
     return {"mod": name, "image": image, "dir": str(out), "writes": writes, "tried": r["tried"], "parts": r["parts"],
-            "rasters": r["rasters"], "source_sha256": r["orig_sha256"], "new_sha256": want}
+            "rasters": r["rasters"], "source_sha256": orig, "new_sha256": want, "skins": [f["skin"] for f in fits],
+            "skin_tried": {f["skin"]: f["tried"] for f in fits}, "skipped_skins": skipped}
 
 
 # ------------------------------------------------------------------------------------------------ characters op=use
@@ -336,7 +355,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                           progress=ctx.progress)
         C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
-                     "notes": "replaces Claude (player.dff/.txd in every GTA3.IMG copy; his 17 frames and animations stay)"})
+                     "notes": "replaces Claude (player + prison playerp skins, .dff/.txd in every GTA3.IMG copy; his 17 frames and animations stay)"})
     res = {"mod": name, "build": built, "replaces": "Claude, the GTA III player (model 0, special model 'player')"}
     if not inp.launch:
         return res | {"status": "built" if built else "ready"}
