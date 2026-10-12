@@ -2319,6 +2319,22 @@ def create_app(config: Config) -> FastAPI:
         from . import hermes_task_mode
         return hermes_task_mode.status()
 
+    class QueuePriorityIn(BaseModel):
+        ids: list[str] = []            # game ids and/or request ids (or numbers), most important first
+
+    @app.get("/api/hermes/queue/priority")
+    def hermes_queue_priority(actor=Depends(auth)):
+        from . import hermes_work_queue
+        return {"priority": hermes_work_queue.get_priority()}
+
+    @app.post("/api/hermes/queue/priority")
+    def hermes_queue_priority_set(body: QueuePriorityIn, actor=Depends(auth)):
+        """Operator priority for the Hermes queue: these games/requests are worked first in their lane."""
+        from . import hermes_work_queue
+        ids = hermes_work_queue.set_priority(body.ids)
+        store.audit(actor, "hermes.queue_priority", "", {"ids": ids})
+        return {"priority": ids}
+
     class TaskModeIn(BaseModel):
         enabled: bool
 

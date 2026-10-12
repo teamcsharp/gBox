@@ -124,10 +124,19 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
         elif f.resolve() != (d / f.name).resolve():
             shutil.copy2(f, d / f.name)
     model = d / Path(files[0]).name
-    st = model_stats(model)
-    render_preview(model, d / "preview.png", **(preview or {}))
+    # 2D sprite sheets (PNG) are valid "models" for sprite-based games; skip glTF stats/render.
+    if str(model).lower().endswith('.png'):
+        kind = 'sprites'
+        preview_path = d / "preview.png"
+        _sprite_preview(model, preview_path, size=preview.get('size', 384) if preview else 384)
+        st = {"triangles": 0, "vertices": 0, "textures": 1, "meshes": 0}
+        rig_out = rig or {}
+    else:
+        st = model_stats(model)
+        render_preview(model, d / "preview.png", **(preview or {}))
+        rig_out = {**st.pop("rig"), **(rig or {})}
     meta = {"slug": slug, "name": name, "kind": kind, "aliases": list(aliases), "source": source, "extraction_tool": tool,
-            "model": model.name, "preview": "preview.png", "rig": {**st.pop("rig"), **(rig or {})}, "stats": st,
+            "model": model.name, "preview": "preview.png", "rig": rig_out, "stats": st,
             "licence": LICENCE, "notes": notes, "targets": targets or {}, "added": time.time(), **(extra or {})}
     old = d / "meta.json"
     if old.exists():                                       # keep targets recorded by earlier builds
@@ -136,6 +145,17 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
             meta["targets"].setdefault(gid, [])
             meta["targets"][gid] += [t for t in lst if t not in meta["targets"][gid]]
     return put_meta(root, meta)
+
+
+def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
+    """Use the sprite sheet itself as the collection preview, fitted to a square."""
+    from PIL import Image
+    im = Image.open(src).convert("RGBA")
+    im.thumbnail((size, size))
+    canvas = Image.new("RGBA", (size, size), (38, 40, 48, 255))
+    canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
+    canvas.save(out, "PNG")
+    return out
 
 
 # ---------------------------------------------------------------- glTF helpers
@@ -358,7 +378,10 @@ def verify_entry(root: Path, meta: dict) -> dict:
     out = {"model": str(model), "model_bytes": model.stat().st_size if model.is_file() else 0,
            "triangles": meta.get("stats", {}).get("triangles", 0), "textures": meta.get("stats", {}).get("textures", 0)}
     out["preview"] = check_preview(prev) if prev.is_file() else {"ok": False, "error": "no preview"}
-    out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
+    if meta.get("kind") == "sprites":
+        out["ok"] = bool(out["model_bytes"] and out["preview"].get("ok"))
+    else:
+        out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
     return out
 
 
@@ -523,7 +546,7 @@ class CharIn(BaseModel):
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only) | roster (DOA2: every fighter, see pairs)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -547,7 +570,7 @@ class CharIn(BaseModel):
     near: str = ""                         # place: next to this actor ("Saria", "Deku Tree")
     yaw: float | None = None               # place: facing, degrees (default: towards the player)
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
-    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM
+    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
 
     @model_validator(mode="after")
@@ -1246,7 +1269,10 @@ def _mgs_vr_run(ctx, game, entry, work):
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
-    ('mgs_vr', lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
+    ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
+     lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("mgs_vr", lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
      _one('SNAKE', 'mgs_vr_snake', 'Solid Snake (VR Missions)', ['Snake', 'MGS VR Snake']), _mgs_vr_run),
     ('oot', lambda t, p: 'ocarina of time' in t and p == 'n64',
      lambda: [{'key': f'{age} link', 'slug': f'oot_link_{age}', 'name': label,
@@ -1269,11 +1295,17 @@ DEDICATED = [
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
      _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
+    ("tetris_ds", lambda t, p: t.startswith("tetris ds") and p == "nds",
+     lambda: __import__("gbox.tetris_ds", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("gta3", lambda t, p: ("grand theft auto iii" in t or t.startswith("gta iii") or t == "gta 3") and p == "ps2",
+     lambda: __import__("gbox.gta3_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here

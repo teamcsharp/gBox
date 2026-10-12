@@ -32,7 +32,8 @@ How to work:
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
-  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods);
+  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods,
+  mario_kart for Mario Kart 64 items);
   (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
   memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
   surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
@@ -95,6 +96,12 @@ How to work:
   on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
   "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
   session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
+- Mario Kart 64 items ("infinite red shells", "always have a star", "give me a blue shell", "never lose my item"): mario_kart on
+  the live session, nothing else first (no cheat database, no web search). op=always item=<name> holds the item in the player's
+  slot so using it never consumes it ("infinite red shells" = op=always item="red shell"; "triple red shells" only when triples
+  are asked for); op=infinite keeps whatever item the player picks up; op=give writes it once; player=1-4, split=3p4p on a 3-4
+  player screen; on=false or op=release stops it. The result's verified field is the proof: report the item, the player and
+  the undo (op=release). Other Mario Kart games: the cheats / memory_search playbook below.
 - "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (zelda op=noclip; PSO has no noclip op), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
@@ -114,6 +121,7 @@ How to work:
   edit: open_in_blender, then characters op=add from_clipboard=true.
 - ACT, DON'T SEARCH. A request to change the running game ("infinite red shells", "max money", "make cars fly") is a job to
   DO on the live session, not a question. Break it into steps and run them, in this order, stopping at the first that works:
+  (0) the game's own tool when it has the op (Mario Kart 64 "infinite red shells" = mario_kart op=always item="red shell");
   (1) recall / an existing recipe_*; (2) cheats op=list query=<1-2 key words, e.g. "shell", "item", "money"> on the session -
   the emulator's cheat database has thousands of codes; enable the match, or cheats op=add with a code built from what you
   learn (e.g. an "Item Select" code shows the item byte's address: hold it with cheats op=add "<addr> <value>");
@@ -227,7 +235,9 @@ def tool_specs() -> list[dict]:
            "thumbnails.", {"query": s, "n": i}, ["query"]),
         fn("show_gif", "Show a reaction GIF in the chat when it fits the moment (a win, a fail, excitement). Use sparingly.",
            {"query": s}, ["query"]),
-        fn("search_games", "Search the gBox library (63k games).", {"query": s, "platform": s}, ["query"]),
+        fn("search_games", "Search the gBox library (63k games) by title, or pass game_id(s) (16-hex, comma/space separated) "
+           "to get their full catalog entries (source_paths, rel_path, library, format, size, launch recipe, serial, platform).",
+           {"query": s, "platform": s}, ["query"]),
         fn("launch_game", "Launch a game. where='local' runs natively on the operator's PC (default), 'spark' streams from the DGX Spark. "
            "debug=true runs it on the Spark in an emulator with a full CPU debugger (GameCube/Wii, GBA, PS1, arcade). "
            "mod=<file mod name> boots a built model/file mod, e.g. RE4 'play as Mario' = mod re4_mario (see the MODELS rule).",
@@ -466,6 +476,14 @@ def tool_specs() -> list[dict]:
            "and auto-restores a save state if the game hangs.",
            {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "cutscene": b},
            ["session_id", "op"]),
+        fn("mario_kart", "Mario Kart 64 (N64) items on the live session, verified by read-back. op=always item=<name> holds that "
+           "item in the player's slot so using it never consumes it ('infinite red shells' = op=always item='red shell'; 'always "
+           "have a star'); op=infinite keeps whatever item the player picks up ('never lose my item', 'infinite items'); op=give "
+           "item=<name> writes it once; op=state shows what every player holds; op=release (or on=false) stops the hold; op=items "
+           "lists the names. Items: banana, banana bunch, green shell, triple green shells, red shell, triple red shells, blue "
+           "shell, lightning, fake item box, star, boo, mushroom, double mushrooms, triple mushrooms, super mushroom. player=1-4; "
+           "split=3p4p when 3-4 players share the screen (default 1p2p).",
+           {"session_id": s, "op": s, "item": s, "player": i, "split": s, "on": b}, ["session_id", "op"]),
         fn("stage_warp", "Put the player on a named stage / level of the live game: 'put me on the final world', 'take me to "
            "the last stage', 'stage 3'. op=games (supported games) | stages (the live game's stages, or pass game='super mario "
            "world'/'tmnt') | warp stage=<name> ('final world', \"bowser's castle\", 'stage 5'; names are fuzzy). Super Mario World "
@@ -488,6 +506,12 @@ def tool_specs() -> list[dict]:
            "eq|ne|lt|gt: value}, found with memory_search. op start|stop|status.",
            {"op": s, "host": s, "guest": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"},
             "on_win": s, "on_lose": s}, ["op", "host", "guest"]),
+        fn("stranglehold_shot", "Stranglehold bullet-time interception: op=systems (list the minimum systems), locate (find the "
+           "profile functions in RAM), arm (infinite life), fire verdict=hit|miss (immediate override), or link with a guest "
+           "session_id and memory watch specs (trigger/win/lose) to let a minigame decide the result. session_id is the "
+           "running Stranglehold host.",
+           {"op": s, "session_id": s, "verdict": s, "guest_session_id": s, "trigger": {"type": "object"},
+            "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
         fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
            "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
            "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
@@ -820,6 +844,13 @@ class Agent:
         return r if r["images"] else {"error": "no gif found"}
 
     def search_games(self, query, platform=""):
+        ids = __import__("re").findall(r"\b[0-9a-f]{16}\b", (query or "").lower())
+        if ids:                                  # game_id lookup: the full catalog entry, not just the title row
+            out = []
+            for gid in dict.fromkeys(ids):
+                r = self.api.get(f"/api/catalog/{gid}")
+                out.append(r.json() if r.status_code == 200 else {"game_id": gid, "error": f"not in catalog (http {r.status_code})"})
+            return {"games": out}
         items = self.api.get("/api/catalog/best", params={"q": query, "limit": 12}).json()
         if platform:
             items = [g for g in items if g.get("platform") == platform] or items
@@ -963,6 +994,11 @@ class Agent:
                                   "query": query, "goal": goal, "force": force}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def mario_kart(self, session_id, op="state", item="", player=1, split="1p2p", on=True):
+        j = self._job("mario_kart", {"session_id": session_id, "op": op, "item": item, "player": int(player or 1),
+                                     "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False):
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
                                     "kit": kit, "factor": factor, "cutscene": cutscene}, worker=session_id.rsplit("-", 1)[0])
@@ -980,6 +1016,12 @@ class Agent:
     def game_link(self, op, host, guest, trigger=None, win=None, lose=None, on_win="god_hit", on_lose="god_miss"):
         j = self._job("game_link", {"op": op, "host": host, "guest": guest, "trigger": trigger or {}, "win": win or {},
                                     "lose": lose or {}, "on_win": on_win, "on_lose": on_lose}, worker=host.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def stranglehold_shot(self, op, session_id="", verdict="hit", guest_session_id="", trigger=None, win=None, lose=None):
+        j = self._job("stranglehold_shot", {"op": op, "session_id": session_id, "verdict": verdict,
+                                            "guest_session_id": guest_session_id, "trigger": trigger or {},
+                                            "win": win or {}, "lose": lose or {}}, worker=session_id.rsplit("-", 1)[0] if session_id else None)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
@@ -1429,11 +1471,11 @@ class Agent:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp"}
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
@@ -1444,7 +1486,7 @@ def _modifies_game(name: str, args: dict) -> bool:
     if name == "mod":
         return op == "apply"     # list/verify are reads; save/delete edit files, not the running game
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games"}
 
 
 class ChatHub:
