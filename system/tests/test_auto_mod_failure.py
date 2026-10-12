@@ -1,5 +1,6 @@
 import base64
 import time
+import pytest
 from io import BytesIO
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,52 @@ from PIL import Image
 
 from gbox.agent import ChatHub
 from gbox.server import create_app
+
+
+@pytest.fixture(autouse=True)
+def isolated_hermes_home(monkeypatch, tmp_path):
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path / 'hermes'))
+
+
+def test_native_target_is_durable_and_managed_queue_has_one_owner(cfg, monkeypatch):
+    from gbox import hermes_task_mode
+    monkeypatch.setattr(hermes_task_mode, '_job', lambda: {'no_agent': True, 'enabled': False})
+    def unexpected(*args):
+        raise AssertionError('A managed repair must not also launch a local resolution')
+    monkeypatch.setattr(ChatHub, 'post', unexpected)
+    app = create_app(cfg)
+    app.state.store.put('session', 'test-session', {'session_id': 'test-session', 'state': 'ended',
+        'title': 'GTA III', 'game_id': 'gta3'})
+    client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    response = client.post('/api/requests/auto-mod-failure', json={
+        'session_id': 'test-session', 'character': 'sa2_amy_rose', 'model': 'Amy Rose',
+        'target': 'Claude', 'target_kind': 'player', 'x': .47, 'y': .57,
+        'needs_rebuild': True, 'replacement_requested': True, 'job_id': 'attempt-1'})
+    assert response.status_code == 200
+    report = response.json()
+    assert report['status'] == 'open'
+    assert report['context']['resolution_dispatch'] == 'hermes_queue'
+    assert report['context']['character'] == 'sa2_amy_rose'
+    assert report['context']['target'] == 'Claude' and report['context']['x'] == .47
+    assert report['context']['needs_rebuild'] and report['context']['game_id'] == 'gta3'
+    again = client.post('/api/requests/auto-mod-failure', json={'job_id': 'attempt-1', 'target': 'Corrected actor'}).json()
+    assert again['id'] == report['id'] and again['context']['target'] == 'Corrected actor'
+    assert client.post('/api/requests/auto-mod-failure', json={'x': 1.1}).status_code == 422
+
+
+def test_ram_analysis_runs_on_spark_and_keeps_windows_session_for_rpc(cfg):
+    app = create_app(cfg)
+    client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    client.post('/api/workers/register', json={'id': 'spark', 'name': 'Spark', 'os': 'linux',
+                                             'tools': ['re_executable']}).raise_for_status()
+    client.post('/api/workers/register', json={'id': 'pc', 'name': 'PC', 'os': 'windows',
+                                             'tools': ['re_executable']}).raise_for_status()
+    job = client.post('/api/jobs', json={'tool': 're_executable', 'require_os': 'linux',
+        'require_worker': 'pc', 'input': {'game_id': 'gta3', 'source': 'ram', 'session_id': 'pc-session'}}).json()
+    assert job['require_os'] == 'linux' and job['require_worker'] is None
+    assert job['input']['session_id'] == 'pc-session'
+    assert client.post('/api/workers/pc/claim').status_code == 204
+    assert client.post('/api/workers/spark/claim').json()['id'] == job['id']
 
 
 def test_auto_mod_failure_files_evidence_dispatches_and_deduplicates(cfg, monkeypatch):
