@@ -126,5 +126,7 @@ Legend: [x] done and verified on the real systems · [~] partly done (what is mi
       Flow view, draggable/resizable pop-ups, push-to-talk, per-game window mode, screenshot-report overlays
 - [x] Deployment: `gBox.sh` wizard (Linux + Windows), docker-compose stack, per-machine settings overlay
 - [ ] Background agents for mashups: blocked by the permission system (operator approval)
-- [ ] PUBG locomotion analysis: game not installed (operator)
+- [~] PUBG locomotion analysis: new `ue_steam` tool handles Steam auto-discovery, anti-cheat refusal,
+  and static Ghidra locomotion/animation symbol inference; PUBG is not installed and its anti-cheat
+  prevents live runtime work (operator)
 - [ ] decomp.me / IDA Pro / N64Recomp integration: not started (decomp.me publishes code publicly; N64Recomp is a source build)

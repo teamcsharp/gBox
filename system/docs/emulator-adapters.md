@@ -1,6 +1,6 @@
 # Emulator / runtime adapters
 
-Interface: `gbox/adapters.py`. The ops list in `OPS` mirrors plan §6. `get_capabilities()` maps every op to `supported`/`unsupported`, and unsupported calls raise `Unsupported`.
+Interface: `gbox/adapters.py`. The ops list in `OPS` mirrors plan §6. `get_capabilities()` maps every op to `supported`/`unsupported`, and unsupported calls raise `Unsupported`. A live session's capabilities also carry `rewind = native | checkpoint | unsupported | off`: Select+L2 rewind / Select+R2 fast-forward on the operator's pad in every game, through the emulator's own rewind or gBox's checkpoint ring (`gbox/rewind.py`, [rewind.md](rewind.md)).
 
 | Adapter | Platforms | Supported | Status |
 |---|---|---|---|
