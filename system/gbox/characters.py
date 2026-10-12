@@ -523,7 +523,7 @@ class CharIn(BaseModel):
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only) | roster (DOA2: every fighter, see pairs)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -547,7 +547,7 @@ class CharIn(BaseModel):
     near: str = ""                         # place: next to this actor ("Saria", "Deku Tree")
     yaw: float | None = None               # place: facing, degrees (default: towards the player)
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
-    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM
+    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
 
     @model_validator(mode="after")
