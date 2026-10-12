@@ -1204,6 +1204,10 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Def Jam: Vendetta (GDTE69 rev 0): static model-space meshes from data/sNNNx/*.gpl; rig not decoded yet
+    ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
+     lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
