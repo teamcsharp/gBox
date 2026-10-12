@@ -22,6 +22,16 @@ def _nodes(base, parents=None):
     return nodes
 
 
+def _world_points(tree):
+    pts = []
+    for tris in tree.tris.values():
+        for tri in tris:
+            for corner in tri:
+                v = corner[2] if len(corner) > 2 and corner[2] else tree.vbuf.get(corner[0])
+                pts.append(tuple(round(float(x), 4) for x in v["pos"]))
+    return sorted(pts)
+
+
 def _classification(monkeypatch):
     primary = _nodes(100)
     other = _nodes(2000)
@@ -39,15 +49,30 @@ def test_twins_require_a_textured_full_graph(monkeypatch):
     assert list(jgr.body_twins(b"", b"", 0, 100)) == [2000]
 
 
-@pytest.mark.parametrize("changed", ["transform", "evaluation"])
+@pytest.mark.parametrize("changed", ["rotation", "scale", "evaluation"])
 def test_different_bind_state_refused_before_any_rewrite(monkeypatch, changed):
     trees = _classification(monkeypatch)
-    if changed == "transform":
-        trees[2000][3]["trs"] = struct.pack("<3f3i3f", 1, 0, 0, 0, 0, 0, 1, 1, 1)
+    if changed == "rotation":
+        trees[2000][3]["trs"] = struct.pack("<3f3i3f", 0, 0, 0, 0x1000, 0, 0, 1, 1, 1)
+    elif changed == "scale":
+        trees[2000][3]["trs"] = struct.pack("<3f3i3f", 0, 0, 0, 0, 0, 0, 2, 1, 1)
     else:
         trees[2000][3]["flags"] = 2
     with pytest.raises(ValueError, match="different native bind"):
         jgr.body_twins(b"", b"", 0, 100)
+
+
+@pytest.mark.parametrize("node, moved", [(15, {15}), (13, {13, 14, 15})])
+def test_translation_only_twin_gets_bind_preserving_offsets(monkeypatch, node, moved):
+    # Beat's gameplay bodies (archive 04: 0x8da4, 0x2039c) differ from the max-triangle body only in hand
+    # node 15's local position (#1151); a moved parent moves its whole chain.
+    trees = _classification(monkeypatch)
+    trees[2000][node]["trs"] = struct.pack("<3f3i3f", 0.25, -0.5, 0, 0, 0, 0, 1, 1, 1)
+    assert list(jgr.body_twins(b"", b"", 0, 100)) == [2000]
+    offsets = jgr.twin_offsets(trees[100], trees[2000])
+    assert set(offsets) == moved
+    for d in offsets.values():
+        assert d == pytest.approx((-0.25, 0.5, 0.0))
 
 
 def test_visibility_flag_can_differ_without_changing_bind_space(monkeypatch):
@@ -87,15 +112,17 @@ def _binary_groups():
     return bytes(out), roots
 
 
-@pytest.mark.parametrize("variant", ["equivalent", "divergent", "shared_object"])
+@pytest.mark.parametrize("variant", ["equivalent", "translated", "divergent", "shared_object"])
 def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monkeypatch, tmp_path, variant):
     from PIL import Image
     from gbox import gdrom, ninja_swap
     original, roots = _binary_groups()
     if variant != "equivalent":
         changed = bytearray(original)
-        if variant == "divergent":
-            struct.pack_into("<f", changed, roots[1] + 8, 1.0)
+        if variant == "translated":     # like archive 04's gameplay bodies: only hand node 15 sits elsewhere
+            struct.pack_into("<f", changed, ninja.tree_nodes(original, roots[1])[15]["off"] + 8, 0.5)
+        elif variant == "divergent":
+            struct.pack_into("<i", changed, roots[1] + 20, 0x2000)
         else:
             # The accessory traverses the selected body's live object nodes.
             # Protecting model storage alone cannot prevent its pointer rewrite.
@@ -125,7 +152,7 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
         return {"data": encode(geo), "atlas": Image.new("RGB", (8, 8)),
                 "rigged": "fixture.gltf", "report": {"triangles": 19}}
     monkeypatch.setattr(ninja_swap, "fit", fit)
-    if variant != "equivalent":
+    if variant not in ("equivalent", "translated"):
         message = "different native bind" if variant == "divergent" else "shares an object node"
         with pytest.raises(ValueError, match=message):
             jgr.build_swap("fixture.gdi", tmp_path / "fixture.glb", {"hip": "x"}, tmp_path, "Donor", 4)
@@ -144,3 +171,11 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
         assert rewritten[start:end] == original[start:end]
     assert result["report"]["body_groups"] == [hex(root) for root in roots[:-1]]
     assert result["report"]["runtime_verified"] is False
+    points = [_world_points(jgr.play_model(rewritten, root)) for root in roots[:-1]]
+    assert points[1] == points[0] == points[2]      # every group draws the donor in the same bind pose
+    models = [[n["model"] for n in ninja.tree_nodes(rewritten, root)] for root in roots[:-1]]
+    if variant == "translated":
+        assert models[1][15] != models[0][15] and models[1][:15] == models[0][:15]
+        assert result["report"]["bind_offsets"] == {hex(roots[1]): {"15": [-0.5, 0.0, 0.0]}}
+    else:
+        assert models[1] == models[0] and result["report"]["bind_offsets"] == {}
