@@ -189,6 +189,34 @@
       footEl.textContent = "Progress illustration · following the worker's reported stage";
       root.append(head, stage, meta, logEl, footEl);
       doc.body.append(root);
+      draggable(root);
+    }
+
+    // The popup can be moved by pressing on its header, meta or footer and dragging (#1415); the 3D stage, the log and
+    // the hide button keep their own behaviour. A drag never counts as a click.
+    function draggable(el) {
+      el.addEventListener("pointerdown", e => {
+        if (e.button !== 0 || e.target.closest("button, a, canvas, .pp-log, .pp-stage")) return;
+        const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, id = e.pointerId;
+        let moving = false;
+        const move = ev => {
+          const dx = ev.clientX - x0, dy = ev.clientY - y0;
+          if (!moving) {
+            if (Math.abs(dx) + Math.abs(dy) < 4) return;
+            moving = true;
+            try { el.setPointerCapture(id); } catch (err) { /* capture is optional */ }
+            el.style.right = "auto"; el.style.bottom = "auto";
+          }
+          el.style.left = Math.max(0, Math.min(el.ownerDocument.defaultView.innerWidth - 40, r.left + dx)) + "px";
+          el.style.top = Math.max(0, Math.min(el.ownerDocument.defaultView.innerHeight - 24, r.top + dy)) + "px";
+          ev.preventDefault();
+        };
+        const up = () => {
+          el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up);
+          if (moving) { try { el.releasePointerCapture(id); } catch (err) { /* already released */ } }
+        };
+        el.addEventListener("pointermove", move); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+      });
     }
 
     function teardown(instant) {

@@ -1052,6 +1052,37 @@ function fitMenu(el, x, y, pad = 8, minTop = pad) {
   }
   refitMenu(el);
 }
+
+// Any popup can be moved by pressing on a spot that is not a control and dragging (#1415); it stays where it was
+// dropped, and a drag never counts as a click. Controls, text fields, the 3D stage and scrollable logs keep their job.
+function dragAnywhere(el) {
+  if (!el || el._dragAny) return el;
+  el._dragAny = true;
+  el.addEventListener("pointerdown", e => {
+    if (e.button !== 0 || e.target.closest("button, a, input, select, textarea, label, option, canvas, video, [contenteditable], .pp-log, .scroll")) return;
+    const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, id = e.pointerId;
+    let moving = false;
+    const move = ev => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      if (!moving) {
+        if (Math.abs(dx) + Math.abs(dy) < 4) return;
+        moving = true; el._fitXY = null;
+        try { el.setPointerCapture(id); } catch {}
+        Object.assign(el.style, { position: "fixed", right: "auto", bottom: "auto", margin: "0", transform: "none" });
+      }
+      el.style.left = Math.max(0, Math.min(innerWidth - 40, r.left + dx)) + "px";
+      el.style.top = Math.max(0, Math.min(innerHeight - 24, r.top + dy)) + "px";
+      ev.preventDefault();
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up);
+      if (moving) { try { el.releasePointerCapture(id); } catch {} el._dragged = true; setTimeout(() => { el._dragged = false; }, 0); }
+    };
+    el.addEventListener("pointermove", move); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+  });
+  el.addEventListener("click", e => { if (el._dragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  return el;
+}
 function refitMenu(el) {
   const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
   el.style.maxHeight = ""; el.style.overflowY = "";
@@ -1960,7 +1991,7 @@ async function tvOpen(id, kind = "job") {
 $("#tv-close").onclick = tvClose;
 $("#tb-tasks").oncontextmenu = async e => {                  // which PCs background testing may use (#1383)
   e.preventDefault(); e.stopPropagation();
-  let m = $("#testpcmenu"); if (!m) { m = document.createElement("div"); m.id = "testpcmenu"; document.body.append(m); }
+  let m = $("#testpcmenu"); if (!m) { m = document.createElement("div"); m.id = "testpcmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;box-shadow:0 10px 30px #000a;min-width:290px;font-size:13px;display:block";
   m.innerHTML = `<b>Background testing may use</b><div class="mut" style="margin:2px 0 6px">Unticked PCs are never used for automated tests, so you can play on them.</div><div data-list>loading…</div>`;
   fitMenu(m, e.clientX, e.clientY, 8, 40);
@@ -2413,6 +2444,7 @@ function rpUndo(redo) {
 // ---------------- one-click issue report (right-click the Capture icon) ----------------
 function captureMenu(x, y) {                                 // reuses #whipmenu: click-away (POPS) + cut out of the docked game
   let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
+  dragAnywhere(m);
   m.style.left = (x - 20) + "px"; m.style.top = (y + 14) + "px";
   m.innerHTML = `<b>Capture</b><div class="mut">Describe an issue and paste images or files. A screenshot, game details and available logs are attached when you send.</div>
     <button data-c="issue"><span>⚑</span>Report issue</button><button data-c="sketch"><span>✎</span>Capture and sketch…</button>`;
@@ -2737,7 +2769,7 @@ document.addEventListener("contextmenu", e => {
   const opt = e.target.closest("button, a, label, li, .card, .req, .chc, .reqmod, .ci, h1, h2, h3, h4, [title], section") || e.target;
   const text = String(opt.innerText || opt.title || opt.getAttribute("aria-label") || opt.id || opt.tagName).trim().replace(/\s+/g, " ").slice(0, 100);
   if (!text) return; e.preventDefault();
-  let m = $("#reqmenu"); if (!m) { m = document.createElement("div"); m.id = "reqmenu"; document.body.append(m); }
+  let m = $("#reqmenu"); if (!m) { m = document.createElement("div"); m.id = "reqmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:96;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;box-shadow:0 10px 30px #000a;width:320px;font-size:13px;display:block";
   m.innerHTML = `<b>Request about “${esc(text)}”</b><textarea placeholder="What should gBox do with this?" style="width:100%;height:64px;margin-top:6px;box-sizing:border-box"></textarea>
     <button class="act" data-send style="width:100%;margin-top:6px">Send to the inbox</button><div class="mut" style="margin-top:4px">Ctrl+Enter sends</div>`;
@@ -2948,7 +2980,7 @@ function pipHandle(rect, title) {
 const isFull = () => VIEW.mode === "full" || !!document.fullscreenElement || window.outerHeight >= screen.height && window.outerWidth >= screen.width;
 function pipMenu(x, y) {
   let m = $("#pipmenu");
-  if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m);
+  if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
   const items = [...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
@@ -4369,7 +4401,7 @@ $("#chathist").onclick = async e => {
   await Promise.all([chatHistory(), chatLoad(CH.cid)]);
 };
 function chipMenu(chip, e) {                                   // a conversation's game chip: load it or open the talk
-  let m = $("#chipmenu"); if (!m) { m = document.createElement("div"); m.id = "chipmenu"; document.body.append(m); }
+  let m = $("#chipmenu"); if (!m) { m = document.createElement("div"); m.id = "chipmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:220px;font-size:13px;display:block";
   m.innerHTML = `<button class="act" data-load style="width:100%;text-align:left">▶ Load ${esc(chip.dataset.t)}</button>
     <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>`;
@@ -4459,6 +4491,7 @@ async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
   let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
+  dragAnywhere(m);
   m.style.left = (gp[0] + 12) + "px"; m.style.top = Math.max(40, gp[1] - 20) + "px";
   m.innerHTML = `<b>${esc(card.name)} → ${esc(game)}</b><p class="mut">Looking at what you dropped it on…</p>`; m.classList.add("on");
   fitMenu(m, gp[0] + 12, Math.max(40, gp[1] - 20), 8, 40);

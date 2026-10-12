@@ -333,6 +333,37 @@ function fitMenu(el, x, y, pad = 8, minTop = pad) {
   }
   refitMenu(el);
 }
+
+// Any popup can be moved by pressing on a spot that is not a control and dragging (#1415); it stays where it was
+// dropped, and a drag never counts as a click. Controls, text fields, the 3D stage and scrollable logs keep their job.
+function dragAnywhere(el) {
+  if (!el || el._dragAny) return el;
+  el._dragAny = true;
+  el.addEventListener("pointerdown", e => {
+    if (e.button !== 0 || e.target.closest("button, a, input, select, textarea, label, option, canvas, video, [contenteditable], .pp-log, .scroll")) return;
+    const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, id = e.pointerId;
+    let moving = false;
+    const move = ev => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      if (!moving) {
+        if (Math.abs(dx) + Math.abs(dy) < 4) return;
+        moving = true; el._fitXY = null;
+        try { el.setPointerCapture(id); } catch {}
+        Object.assign(el.style, { position: "fixed", right: "auto", bottom: "auto", margin: "0", transform: "none" });
+      }
+      el.style.left = Math.max(0, Math.min(innerWidth - 40, r.left + dx)) + "px";
+      el.style.top = Math.max(0, Math.min(innerHeight - 24, r.top + dy)) + "px";
+      ev.preventDefault();
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up);
+      if (moving) { try { el.releasePointerCapture(id); } catch {} el._dragged = true; setTimeout(() => { el._dragged = false; }, 0); }
+    };
+    el.addEventListener("pointermove", move); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+  });
+  el.addEventListener("click", e => { if (el._dragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  return el;
+}
 function refitMenu(el) {
   const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
   el.style.maxHeight = ""; el.style.overflowY = "";
@@ -451,7 +482,7 @@ document.addEventListener("contextmenu", e => {
   const sid = scr?.dataset.sid || "", box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
   const what = ((opt.closest(".chc")?.dataset.name ? opt.closest(".chc").dataset.name + ": " : "") + (opt.innerText || opt.title || opt.getAttribute("aria-label") || "").trim()).replace(/\s+/g, " ").slice(0, 120);
   const detail = (box.innerText || "").trim().replace(/\n{2,}/g, "\n").slice(0, 1500);
-  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m);
+  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m); dragAnywhere(m);
     m.style.cssText = "position:fixed;z-index:99;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:260px;font-size:13px"; }
   m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
   m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">${scr ? `⚑ Report: “${esc(what || "this")}” doesn't work in this game` : `✎ Request about “${esc(what || "this")}”`}</button>
@@ -2322,6 +2353,7 @@ function bootBadge(gid) {
   c.querySelector(".bootmod")?.remove(); c.insertAdjacentHTML("afterbegin", bootBadgeHTML(gid));
 }
 document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div>');
+dragAnywhere($("#gmenu"));
 document.addEventListener("contextmenu", async e => {
   const c = e.target.closest(".card[data-gid]"); if (!c) return; e.preventDefault();
   const gid = c.dataset.gid, el = $("#gmenu"), b = bootGet(gid);
