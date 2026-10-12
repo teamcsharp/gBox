@@ -1,0 +1,251 @@
+"""Devil May Cry 2 (PS2, NTSC-U SLUS_204.84) owned-disc inventory.
+
+Layout of the owned USA Disc 1 (chdman extractcd of the catalog CHD -> 2048-byte MODE1 ISO):
+
+* ``SYSTEM.CNF`` boots ``cdrom0:\\SLUS_204.84;1`` (VER 1.03, NTSC); ``IOPRP255.IMG`` / ``MODULE.BIZ`` are IOP
+  modules; ``0FLIST.DVD`` lists the three data archives.
+* ``X_DATA.BIN``, ``Y_DATA.BIN`` and ``Z_DATA.BIN`` are standard CRI AFS archives ("AFS\\0", u32 count, then
+  (u32 offset, u32 size) pairs).  The (offset, size) of each CRI filename directory is recorded, but the
+  directory itself lies past the archive's ISO extent (it was cut at mastering), so entries are nameless.
+  - X_DATA (3488 entries) is the game data: mostly ``MOMO`` packages.
+  - Y_DATA (148 entries) is streamed audio (``0x80000020``-style headers).
+  - Z_DATA (11 entries) is MPEG-2 program streams (FMV, ``00 00 01 BA``).
+* ``MOMO`` package: "MOMO", u32 count, then count (u32 offset, u32 size) pairs relative to the package start.
+  Packages nest (a child can itself be MOMO).
+* Some X_DATA entries are compressed: two flag bytes followed by a literal-first stream, so the original magic
+  appears at +2 (``00 00 'MOMO'``, ``41 04 'TIM2'``).  The decompressor is analysis-stage work.
+* Model children start ``<b0> <b1> <b2> 01`` followed by u32 part count and u32 byte size (<= child size), then
+  16-byte part records (u16 kind, u16 count, u32 offset, 0, 0).  Texture banks start u32 n followed by n
+  u32 0x21 type words; textures are ``TIM2``.
+
+Nothing here writes to the disc; ``inventory`` only reads the extracted image.
+"""
+from __future__ import annotations
+
+import collections
+import hashlib
+import json
+import struct
+from pathlib import Path
+
+SECTOR = 2048
+SERIAL = "SLUS_204.84"
+ARCHIVES = ("X_DATA.BIN", "Y_DATA.BIN", "Z_DATA.BIN")
+GAME_IDS = {"01bb1fe7c84e8e79": "Devil May Cry 2 (USA) (Disc 1)"}
+
+
+def afs_table(head: bytes, archive_size: int | None = None) -> dict:
+    """Parse an AFS header (at least 8 + 8*count + 8 bytes). Returns offsets, sizes and the name-dir pair."""
+    if len(head) < 8 or head[:4] != b"AFS\x00":
+        raise ValueError(f"not an AFS archive (magic {head[:4]!r})")
+    n = struct.unpack_from("<I", head, 4)[0]
+    if len(head) < 8 + 8 * n:
+        raise ValueError(f"AFS header truncated: {n} entries need {8 + 8 * n} bytes")
+    tab = struct.unpack_from(f"<{2 * n}I", head, 8)
+    offs, sizes = list(tab[0::2]), list(tab[1::2])
+    for o, z in zip(offs, sizes):
+        if archive_size is not None and o + z > archive_size:
+            raise ValueError("AFS entry extends outside the archive")
+    names = None
+    if len(head) >= 16 + 8 * n:
+        names = struct.unpack_from("<II", head, 8 + 8 * n)
+        if names == (0, 0) and offs and offs[0] >= 8:
+            names = None
+    return {"count": n, "offsets": offs, "sizes": sizes, "name_dir": names}
+
+
+def afs_name_dir(table: dict, pre_first: bytes | None = None) -> tuple[int, int] | None:
+    """The CRI name directory pair: after the table, or in the 8 bytes before the first entry (CRI layout)."""
+    nd = table.get("name_dir")
+    if nd and nd[1] == 48 * table["count"]:
+        return tuple(nd)
+    if pre_first and len(pre_first) == 8:
+        o, z = struct.unpack("<II", pre_first)
+        if z == 48 * table["count"]:
+            return (o, z)
+    return None
+
+
+def momo_children(b: bytes) -> list[tuple[int, int]]:
+    """(offset, size) of each child of a MOMO package; raises ValueError on a bad table."""
+    if b[:4] != b"MOMO":
+        raise ValueError("not a MOMO package")
+    n = struct.unpack_from("<I", b, 4)[0]
+    if 8 + 8 * n > len(b):
+        raise ValueError(f"MOMO table of {n} entries exceeds {len(b)} bytes")
+    out = []
+    for j in range(n):
+        o, z = struct.unpack_from("<II", b, 8 + 8 * j)
+        if z and o + z > len(b):
+            raise ValueError(f"MOMO child {j} extends outside the package")
+        out.append((o, z))
+    return out
+
+
+def model_header(b: bytes) -> dict | None:
+    """Recognise a DMC2 model child: <b0> <b1> <b2> 01, u32 parts, u32 size, 16-byte part records."""
+    if len(b) < 0x30 or b[3] != 1:
+        return None
+    parts, size = struct.unpack_from("<II", b, 4)
+    if not (1 <= parts <= 512) or not (len(b) - 0x1000 <= size <= len(b)):
+        return None
+    return {"tag": b[:4].hex(), "parts": parts, "size": size}
+
+
+def texbank_header(b: bytes) -> dict | None:
+    if len(b) < 8:
+        return None
+    n = struct.unpack_from("<I", b, 0)[0]
+    if not (1 <= n <= 64) or len(b) < 4 + 4 * n:
+        return None
+    if all(struct.unpack_from("<I", b, 4 + 4 * k)[0] == 0x21 for k in range(n)):
+        return {"textures": n}
+    return None
+
+
+def classify(b: bytes) -> str:
+    if not b:
+        return "empty"
+    m = b[:4]
+    if m == b"MOMO":
+        return "momo"
+    if m == b"TIM2":
+        return "tim2"
+    if m == b"HITS":
+        return "hits"
+    if m == b"ipum":
+        return "ipum"
+    if m == b"\x00\x00\x01\xba":
+        return "mpeg_ps"
+    if b[2:6] in (b"MOMO", b"TIM2"):
+        return "compressed_" + b[2:6].decode().lower()
+    mh = model_header(b)
+    if mh:
+        # b1 == 0x22: the mesh family (57-262 parts, 150-210 KB, repeated across stage packages). Other headed
+        # records (01 01 01 01, 01 12 01 01, ...) share the count/size header but hold float tracks; they are
+        # motion/collision candidates until the analysis stage maps their loaders.
+        return "mesh" if b[1] == 0x22 else "rec01"
+    if texbank_header(b):
+        return "texbank"
+    if m[0] == 0x80 and m[1] == 0 and len(b) > 0x10000:
+        return "stream_audio"
+    return "unknown"
+
+
+def walk_package(b: bytes, path: str, out: list, depth: int = 0):
+    """Append (path, kind, size, sha256, extra) for a package and its MOMO children, recursively."""
+    kind = classify(b)
+    rec = {"path": path, "kind": kind, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+    if kind in ("mesh", "rec01"):
+        rec["model"] = model_header(b)
+    elif kind == "texbank":
+        rec["texbank"] = texbank_header(b)
+    out.append(rec)
+    if kind == "momo" and depth < 4:
+        try:
+            kids = momo_children(b)
+        except ValueError as e:
+            rec["error"] = str(e)
+            return
+        rec["children"] = len(kids)
+        for j, (o, z) in enumerate(kids):
+            if z:
+                walk_package(b[o:o + z], f"{path}/{j}", out, depth + 1)
+
+
+def character_candidates(uniq: dict, models: list, min_copies: int = 20) -> list[dict]:
+    """Unique meshes repeated in >= min_copies stage packages: playable/recurring-character candidates.
+
+    Names are NOT assigned here; the analysis stage must tie each to the SLUS_204.84 loader tables."""
+    by = {m["sha256"]: m for m in models}
+    out = [{"sha256": k, "first": v[0], "copies": len(v), "parts": by[k]["model"]["parts"],
+            "size": by[k]["size"], "tag": by[k]["model"]["tag"]} for k, v in uniq.items() if len(v) >= min_copies]
+    return sorted(out, key=lambda c: (-c["copies"], c["first"]))
+
+
+def inventory(iso: Path, deep: bool = True) -> dict:
+    """Read-only inventory of the extracted disc image."""
+    from .gta_rw import iso_files
+    iso = Path(iso)
+    with iso.open("rb") as f:
+        files = iso_files(f)
+        disc = {}
+        for name, (lba, size) in sorted(files.items()):
+            f.seek(lba * SECTOR)
+            h, left = hashlib.sha256(), size
+            while left:
+                c = f.read(min(left, 1 << 24))
+                if not c:
+                    raise ValueError(f"{name} truncated in {iso}")
+                h.update(c)
+                left -= len(c)
+            disc[name] = {"lba": lba, "size": size, "sha256": h.hexdigest()}
+        cnf = files.get("SYSTEM.CNF")
+        boot = None
+        if cnf:
+            f.seek(cnf[0] * SECTOR)
+            txt = f.read(cnf[1]).decode("ascii", "replace")
+            for line in txt.splitlines():
+                if line.upper().startswith("BOOT2"):
+                    boot = line.split("\\", 1)[-1].split(";")[0].strip()
+        archives, entries = {}, []
+        for an in ARCHIVES:
+            if an not in files:
+                continue
+            lba, size = files[an]
+            base = lba * SECTOR
+            f.seek(base)
+            n = struct.unpack("<I", f.read(8)[4:])[0]
+            f.seek(base)
+            tab = afs_table(f.read(16 + 8 * n), size)
+            f.seek(base + tab["offsets"][0] - 8)
+            nd = afs_name_dir(tab, f.read(8))
+            kinds = collections.Counter()
+            for i, (o, z) in enumerate(zip(tab["offsets"], tab["sizes"])):
+                if not z:
+                    kinds["empty"] += 1
+                    continue
+                if an == "X_DATA.BIN" and deep:
+                    f.seek(base + o)
+                    rows: list = []
+                    walk_package(f.read(z), f"{an}:{i}", rows)
+                    kinds[rows[0]["kind"]] += 1
+                    entries.extend(rows)
+                else:
+                    f.seek(base + o)
+                    kinds[classify(f.read(16 if an != "Y_DATA.BIN" else 0x10001)[:0x10001])] += 1
+            archives[an] = {"entries": n, "kinds": dict(kinds), "name_dir": list(nd) if nd else None,
+                            "name_dir_on_disc": bool(nd and nd[0] + nd[1] <= size)}
+    models = [e for e in entries if e["kind"] == "mesh"]
+    uniq = {}
+    for e in models:
+        uniq.setdefault(e["sha256"], []).append(e["path"])
+    tex = sum(1 for e in entries if e["kind"] == "tim2")
+    return {"serial": boot, "disc": disc, "archives": archives,
+            "x_kinds": dict(collections.Counter(e["kind"] for e in entries)),
+            "models": len(models), "unique_models": len(uniq), "tim2_textures": tex,
+            "character_candidates": character_candidates(uniq, models),
+            "model_packages": sorted({e["path"].split("/")[0] for e in models},
+                                     key=lambda p: int(p.split(":")[1])),
+            "unique_model_index": [{"sha256": k, "parts": next(m["model"]["parts"] for m in models
+                                                               if m["sha256"] == k), "paths": v[:8], "copies": len(v)}
+                                   for k, v in sorted(uniq.items(), key=lambda kv: kv[1][0])],
+            "entries": entries}
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="DMC2 PS2 disc inventory (read-only)")
+    ap.add_argument("iso")
+    ap.add_argument("--out", help="write the full manifest JSON here")
+    a = ap.parse_args(argv)
+    inv = inventory(Path(a.iso))
+    if a.out:
+        Path(a.out).write_text(json.dumps(inv, indent=1))
+    summary = {k: v for k, v in inv.items() if k not in ("entries", "unique_model_index")}
+    summary["model_packages"] = len(inv["model_packages"])
+    print(json.dumps(summary, indent=1))
+
+
+if __name__ == "__main__":
+    main()
