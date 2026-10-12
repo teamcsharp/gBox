@@ -28,7 +28,7 @@ def test_store_job_filter_and_limit_keep_historical_slice_order(tmp_path, limit,
 
 
 def _client(cfg, monkeypatch):
-    monkeypatch.setattr(hermes_tasks, "list_runs", lambda: [])
+    monkeypatch.setattr(hermes_tasks, "list_runs", lambda limit=20: [])
     app = create_app(cfg)
     return app, TestClient(app, headers={"authorization": f"Bearer {cfg.token()}"})
 

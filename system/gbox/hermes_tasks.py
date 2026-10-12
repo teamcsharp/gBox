@@ -46,10 +46,14 @@ def _jobs(home: Path) -> dict[str, str]:
 def _session(db: sqlite3.Connection, job_id: str, started: float | None):
     # An unsuccessful scheduler claim has no Hermes conversation. A real run
     # creates a session within seconds of its execution start.
+    # Match by start time, not among the job's newest sessions: a busy job has
+    # far more than 10 sessions, and older runs would lose their model/tickets.
+    if not started:
+        return None
     rows = db.execute(
-        "SELECT * FROM sessions "
-        "WHERE source='cron' AND id LIKE ? ORDER BY started_at DESC LIMIT 10",
-        (f"cron_{job_id}_%",),
+        "SELECT * FROM sessions WHERE source='cron' AND id LIKE ? "
+        "AND started_at BETWEEN ? AND ? ORDER BY started_at DESC LIMIT 10",
+        (f"cron_{job_id}_%", started - 120, started + 120),
     ).fetchall()
     nearest = min(rows, key=lambda s: abs(s["started_at"] - started)) if rows and started else None
     return nearest if nearest and abs(nearest["started_at"] - started) < 120 else None
@@ -168,8 +172,17 @@ def _script_output(home, job_id, finished):
     return nearest.read_text(encoding='utf-8')[-70000:] if nearest and abs(nearest.stat().st_mtime - finished) < 120 else ''
 
 
-def list_runs(limit: int = 8) -> list[dict]:
-    """Return actual Hermes agent runs, omitting scheduler claims that never started."""
+DEFAULT_RUNS, MAX_RUNS = 20, 100
+
+
+def list_runs(limit: int = DEFAULT_RUNS) -> list[dict]:
+    """Return actual Hermes agent runs, omitting scheduler claims that never started.
+
+    Maintenance scripts run every few minutes and outnumber agent runs, so the
+    scan reads many more execution rows than it returns; a job without a Hermes
+    session (a script) keeps only its newest finished row.
+    """
+    limit = max(1, min(int(limit or DEFAULT_RUNS), MAX_RUNS))
     home = _home()
     try:
         db = _db(home / "cron" / "executions.db")
@@ -182,11 +195,13 @@ def list_runs(limit: int = 8) -> list[dict]:
             rows = db.execute(
                 "SELECT id,job_id,status,started_at,finished_at,error FROM executions "
                 "WHERE started_at IS NOT NULL ORDER BY CASE WHEN status='running' "
-                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(40, min(limit, 20) * 10),),
+                "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(200, limit * 25),),
             ).fetchall()
         names = _jobs(home)
         out, terminal_scripts = [], set()
         for r in rows:
+            if len(out) >= limit:
+                break
             started = _stamp(r["started_at"])
             session = _session(state, r["job_id"], started) if state else None
             if not session and r['status'] not in ('claimed', 'running'):
@@ -207,7 +222,7 @@ def list_runs(limit: int = 8) -> list[dict]:
         db.close()
         if state:
             state.close()
-        return out[:max(1, min(limit, 20))]
+        return out[:limit]
     except (OSError, ValueError, sqlite3.Error):
         return []
 

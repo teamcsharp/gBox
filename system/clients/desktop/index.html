@@ -292,6 +292,7 @@
   #taskpanel .hermes-run { border:1px solid var(--line); border-radius:7px; padding:8px 10px; margin:6px 0; }
   #taskpanel .hermes-run summary { line-height:1.5; } #taskpanel .hermes-run .nm { max-width:none; font-weight:600; }
   #taskpanel .hermes-run .meta { color:var(--mut); margin:5px 0 0 16px; }
+  #taskpanel .hermes-run .tk-ticket { color:var(--acc, #8e9dff); margin-right:6px; }
   #taskpanel .hermes-run pre { max-height:360px; margin:8px 0 0; padding:10px; background:var(--card); border-radius:5px;
     font:11px/1.4 ui-monospace,Consolas,monospace; }
   #taskpanel .task-progress, #taskviz .task-progress { display:flex; align-items:center; gap:7px; margin:5px 0; color:var(--mut); }
@@ -1385,7 +1386,7 @@ $("#rp-close").onclick = () => {
 const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
   focus: false, focusEvents: [], visualOpenSteps: new Set(), artifacts: [],
   expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map(),
-  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0 };
+  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0, hermesLimit: 20 };
 function tkView(view) {
   TK.view = view;
   $("#taskpanel").classList.toggle("visual-mode", view === "visual");
@@ -1695,6 +1696,13 @@ const tkProgress = (pct, active) => {
 // Keep the reader's place when the Technical task list refreshes (#1289). The 5 s poll used to
 // replace the whole list, which threw the panel and every open log back to the top.
 const TK_OWNER = "[data-detail-hermes],[data-resolution-id],[data-detail-job],[data-local-task],[data-tk-key]";
+const TK_HERMES_STEP = 20, TK_HERMES_MAX = 100;
+// How many Hermes runs the list asks for; "Show more runs" adds a step.
+const tkHermesLimit = () => Math.min(TK_HERMES_MAX, Math.max(TK_HERMES_STEP, Number(TK.hermesLimit) || 0));
+// "#1300 title" for each inbox ticket a Hermes run confirmed work on.
+function tkRunTickets(run) {
+  return (run.tickets || []).map(t => `<span class="tk-ticket" title="${esc(t.status || "")}">#${esc(t.number ?? "?")} ${esc(t.title || "")}</span>`).join(" ");
+}
 function tkKey(el, host) {
   const owner = el.parentElement?.closest(TK_OWNER), scope = owner && host.contains(owner) ? owner : host;
   const id = scope === host ? "" : [...scope.attributes].filter(a => a.name.startsWith("data-")).map(a => `${a.name}=${a.value}`).join("&");
@@ -1763,7 +1771,7 @@ async function tasksLoad() {
   if (TK.busy) return;
   TK.busy = true;
   let r;
-  try { r = await gbox.api("/api/tasks"); } finally { TK.busy = false; }
+  try { r = await gbox.api(`/api/tasks?hermes_limit=${tkHermesLimit()}`); } finally { TK.busy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
   if (!r.ok) { tkRender($("#tk-body"), `<p class="mut" style="padding:12px">${esc(r.error)}</p>`, $("#tk-technical")); return; }
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
@@ -1775,11 +1783,12 @@ async function tasksLoad() {
   tkVisualUpdate(d);
   tkRender($("#tk-body"), `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
-        <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> <span class="mut">${esc(run.progress || "")}</span></summary>
+        <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> ${tkRunTickets(run)} <span class="mut">${esc(run.progress || "")}</span></summary>
         <div class="meta">${esc(run.provider || "")} ${esc(run.model || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
         <button class="act" data-hermes-evidence="${esc(run.id)}">View detailed report</button>
         <button class="act" data-hermes-visual="${esc(run.id)}">View 3D task stages</button>
-        <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}</div>` +
+        <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}
+      ${(d.hermes || []).length >= tkHermesLimit() && tkHermesLimit() < TK_HERMES_MAX ? `<button class="act" data-hermes-more>Show more runs</button>` : ""}</div>` +
     `<div class="mc"><div class="mh"><b>Automatic resolution jobs</b><span class="mut">${(d.resolutions || []).length}</span></div>
       ${(d.resolutions || []).map(a => `<div class="hermes-run"><details data-resolution-id="${esc(a.id)}" ${TK.resolutionExpanded.has(a.id) ? "open" : ""}><summary>${kind(a.state)} <span class="nm">#${a.number} ${esc(a.name)}</span> <span class="mut">${esc(a.progress)}</span></summary>
         <button class="act" data-resolution-evidence="${esc(a.id)}">View screenshots and all attempts</button>
@@ -1941,6 +1950,11 @@ $("#tk-body").onclick = async e => {
     const r = await gbox.api(`/api/tasks/resolutions/${encodeURIComponent(resolution.dataset.resolutionEvidence)}`);
     if (r.ok) evRequest(resolution.dataset.resolutionEvidence, null, r.data);
     else toast(r.error || "Could not load resolution job");
+    return;
+  }
+  if (e.target.closest("[data-hermes-more]")) {
+    TK.hermesLimit = Math.min(TK_HERMES_MAX, tkHermesLimit() + TK_HERMES_STEP);
+    tasksLoad();
     return;
   }
   const hermesEvidence = e.target.closest("[data-hermes-evidence]");
