@@ -50,6 +50,7 @@ F_EQUIP = 0x8C022428                              # (player, TItem*, slot): what
 EQUIPPED = {"mag": 0xBD0, "armor": 0xBD4, "weapon": 0xBE4}   # TObjPlayer -> equipped TItem*
 EQUIP_SLOTS = 0xBCC                               # 7 equip slot pointers (index = item vtable+0x80()); 6 = weapon
 ITEM_FLAGS = 0xE4                                 # TItem u32: 1 = in inventory, |2 = equipped (E marker)
+ITEM_RECORD = 0x134                               # TItem: the 20-byte item data record, data bytes spaced 2 apart
 BASE_STATS = 0xC00                                # TObjPlayer: character base stats u16 atp mst evp hp dfp ata lck
 STATS = ["atp", "mst", "evp", "hp", "dfp", "ata", "lck"]
 LIVE = {"atp": (0x1A2, 0x1AA), "evp": (0x1A6, 0x1AE), "dfp": (0x1A8, 0x1B0), "ata": (0x1B2,), "lck": (0x1B4,),
@@ -327,21 +328,60 @@ class PSO:
 
     def give(self, code: str, count: int = 1, item_id0: int | None = None) -> list:
         """Create `count` real inventory items for player 0 through the game's own 6x2B path. Returns TItem pointers."""
+        item_id0 = self.next_ids(count) if item_id0 is None else item_id0
+        return self.give_records([self.item_data(code, item_id0 + i) for i in range(count)])
+
+    def give_records(self, records: list[bytes]) -> list:
+        """Create one real inventory item per 20-byte item record through the game's own 6x2B path."""
         g = give_addr()
         self.hook()
-        item_id0 = self.next_ids(count) if item_id0 is None else item_id0
-        made = []
-        n = 0
-        while n < count:
-            k = min(QMAX, count - n, (BUF_END - BUF) // 24)
+        made, n = [], 0
+        while n < len(records):
+            k = min(QMAX, len(records) - n, (BUF_END - BUF) // 24)
             calls = []
             for i in range(k):
                 a = BUF + 24 * i
-                self.write(a, self.item_data(code, item_id0 + n + i))
+                self.write(a, records[n + i])
                 calls.append((g, a))
             made += self.call(calls)
             n += k
         return made
+
+    def item_record(self, obj: int) -> bytes:
+        """The 20-byte item data record stored in a TItem (data bytes spaced 2 apart from ITEM_RECORD)."""
+        if not 0x8C000000 <= obj < 0x8D000000:
+            raise ValueError(f"not an item object: {obj:#x}")
+        return bytes(self.read(obj + ITEM_RECORD + 2 * i, 1)[0] for i in range(20))
+
+    def dupe(self, target, count: int = 1, equip: bool = False) -> dict:
+        """Clone an inventory item exactly: read its live 20-byte record (stats, percentages, grind and stack count
+        all come along) and create `count` copies through the game's own 6x2B create-item path - the classic dupe
+        glitch, without the disconnect trick. equip: also equip the first copy (the 6x25 path)."""
+        p = self.check()
+        x = self._find(target)
+        if x is None:
+            raise ValueError(f"no inventory item matches {target!r}")
+        rec = self.item_record(x["obj"])
+        if struct.unpack("<I", rec[12:16])[0] != x["id"]:
+            raise RuntimeError(f"item {x['code']} record id mismatch ({rec[12:16].hex()} vs {x['id']:#x}) - "
+                               f"different game version or wrong record offset?")
+        ids = self.next_ids(count)
+        records = []
+        for i in range(count):
+            r = bytearray(rec)
+            struct.pack_into("<I", r, 12, ids + i)          # every copy needs its own unique id
+            records.append(bytes(r))
+        made = self.give_records(records)
+        equipped = False
+        if equip:
+            first = next((o for o in made if o), None)
+            equipped = bool(first) and self.equip(first)
+        inv2 = self.inventory()
+        return {"source": {"slot": x["slot"], "code": x["code"], "equipped": x["equipped"], "id": hex(x["id"])},
+                "created": sum(1 for o in made if o), "requested": count, "objects": [hex(o) for o in made if o],
+                "record": rec.hex(), "equipped_first": equipped,
+                "slots_with_code_now": [y["slot"] for y in inv2 if y["code"] == x["code"]],
+                "verified": sum(1 for o in made if o) == count}
 
     def equip(self, obj: int, slot: int = 0) -> bool:
         """Equip an inventory TItem the way the 6x25 handler does (the old item in that slot comes off)."""
@@ -593,7 +633,7 @@ def _flush_jit(ad) -> bool:
 # --- the gBox tool ---------------------------------------------------------------------------------------------------
 class ModsIn(BaseModel):
     session_id: str
-    op: str = "status"          # status | list | item_set | multi_equip | attack_speed | meseta_max | meseta | crit_always | equip_any | give | stat | floor_spawn | floor_rares | floor_clear | floor_list | unhook
+    op: str = "status"          # status | list | item_set | multi_equip | dupe | attack_speed | meseta_max | meseta | crit_always | equip_any | give | stat | floor_spawn | floor_rares | floor_clear | floor_list | unhook
     on: bool = True             # crit_always / equip_any: on/off
     value: int = 999999         # meseta: amount
     code: str = ""              # give / floor_spawn: item code hex (e.g. 000105 = DB's Saber) or name
@@ -645,7 +685,9 @@ def pso_mods(inp: ModsIn, ctx):
     equip restrictions) | give code=000105 count=15 equip=true (real inventory items via the game's own create-item
     routine; equip = also equip the first) | stat name=atp value=900 (status-screen value; moves the saved base stat) |
     list (live inventory in menu order) | item_set target=<slot|weapon|armor|mag|code> code=<code|name> or rare=true (replace
-    that item in place; re-equipped if it was equipped) | floor_spawn code=.. count=N (real floor items around the player) | floor_rares count=N | floor_clear on=true (all floor
+    that item in place; re-equipped if it was equipped) | dupe target=<slot|weapon|armor|mag|code> count=N equip=true
+    (exact clones - stats, percentages, grind and stack count all copied; equip = also equip the first copy) |
+    floor_spawn code=.. count=N (real floor items around the player) | floor_rares count=N | floor_clear on=true (all floor
     items on this floor; on=false: only gBox-spawned ones) | floor_list | status."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
@@ -676,6 +718,8 @@ def pso_mods(inp: ModsIn, ctx):
             res["equipped"] = m.equip(next(o for o in objs if o))
     elif inp.op == "multi_equip":
         res = m.multi_equip(inp.target, inp.on)
+    elif inp.op == "dupe":
+        res = m.dupe(inp.target, max(1, min(30, inp.count)), inp.equip)
     elif inp.op == "attack_speed":
         res = m.attack_speed(inp.value if inp.on and inp.value != 999999 else (10 if inp.on else 1), rapid=inp.on)
         res["code_cache_flushed"] = _flush_jit(ad)

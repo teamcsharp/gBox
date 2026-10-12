@@ -308,6 +308,8 @@ def tool_specs() -> list[dict]:
            "'make this item a Durandal', 'make my weapon rare'; for a Ctrl+clicked item, op=list first and match the name), "
            "multi_equip (target = slot | item code | weapon/armor/mag: equip it ON TOP of what's equipped, stats stack - the "
            "'multi-equip bug'; on=false target='' unequips all extras), "
+           "dupe (target = slot | item code | weapon/armor/mag: exact clone with stats, percentages, grind and stack count "
+           "- 'duplicate my weapon', 'dupe it x5'; count=N, equip=true also equips the first copy), "
            "status, unhook. give with equip=true also equips the first item ('equip me with a DB saber' = give code count=1 "
            "equip=true; add equip_any first if the class can't normally use it).",
            {"session_id": s, "op": s, "on": b, "value": i, "code": s, "count": i, "equip": b, "name": s, "target": s, "rare": b},
