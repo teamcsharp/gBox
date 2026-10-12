@@ -1274,6 +1274,9 @@ DEDICATED = [
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("gta3", lambda t, p: ("grand theft auto iii" in t or t.startswith("gta iii") or t == "gta 3") and p == "ps2",
+     lambda: __import__("gbox.gta3_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
