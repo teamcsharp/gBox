@@ -82,7 +82,7 @@ def split_cue_bin_to_gdi(bin_path: Path, cue_path: Path, out_dir: Path, name: st
         data_lines = [
             f'{no} {start} 4 {SECTOR_SIZE} "{track_file.name}" 0'
             for no, start, end, track_file, is_data in data_tracks
-            if is_data and len(track_file.read_bytes()) > 0
+            if is_data and track_file.stat().st_size > 0
         ]
         f.write(f"{len(data_lines)}\n")
         for line in data_lines:

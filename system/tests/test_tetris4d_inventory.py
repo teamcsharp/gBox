@@ -26,8 +26,8 @@ def test_inventory_matches_known_build():
 
 
 @pytest.mark.skipif(not CHD.exists() or not (CACHE / "disc.gdi").exists(), reason="needs cached CHD/GDI")
-def test_ensure_inventory_idempotent():
-    out = CACHE / "tetris4d_test_manifest.json"
+def test_ensure_inventory_idempotent(tmp_path):
+    out = tmp_path / "tetris4d_test_manifest.json"
     m1 = ensure_inventory(CHD, CACHE, out)
     m2 = ensure_inventory(CHD, CACHE, out)
     assert m1["chd_sha256"] == m2["chd_sha256"]
