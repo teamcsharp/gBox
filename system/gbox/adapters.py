@@ -1225,6 +1225,14 @@ class RetroArchAdapter(CommandAdapter):
             return {"sent": len(events), "network_gamepad": sent}
         if HOST_OS != "linux" or not self.display:
             raise Unsupported("send_input needs a linux session display")
+        total, gamepad = len(events), 0
+        if getattr(self, "remote_port", None):
+            # Pad buttons go through RetroArch's network gamepad here too: on lilspark's Xvfb sessions Flycast never
+            # saw xdotool keys although its window held focus (#1153), while the UDP pad reached the game at once.
+            # L2/R2 stay keyboard hotkeys (rewind / fast-forward) when trigger_hotkeys is on.
+            hot = [self.trigger_hotkeys and ev["key"] in ("l2", "r2") and int(ev.get("player", 1)) == 1 for ev in events]
+            gamepad, rest = self.remote_input([ev for ev, h in zip(events, hot) if not h])
+            events = [ev for ev, h in zip(events, hot) if h] + rest
         args, pressed = [], set()
         for ev in events:
             keys = PAD_KEYS.get(int(ev.get("player", 1)), PAD_KEYS[1])
@@ -1240,7 +1248,7 @@ class RetroArchAdapter(CommandAdapter):
             args += ["keydown" if down else "keyup", key]
         if args:
             subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5)
-        return {"sent": len(events)}
+        return {"sent": total, "network_gamepad": gamepad} if gamepad else {"sent": total}
 
     # Native address -> RetroAchievements RAM offset, for cores without a libretro memory map (Flycast, Dolphin):
     # (segment mask, segment value, offset mask): Dreamcast main RAM 0x0C000000 with P1/P2 mirrors 0x8C/0xAC000000
