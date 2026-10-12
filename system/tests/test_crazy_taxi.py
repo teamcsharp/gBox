@@ -144,3 +144,136 @@ def test_owned_disc_yellow_taxi_glb():
         wheel = ct.read_shape(bank[parts[w][0]:parts[w][0] + parts[w][1]], w)
         wys = [p[1] + hub[1] for p in wheel.positions()]
         assert min(wys) >= -0.1 and max(wys) < max(bys)
+
+
+# --- request #1369: registered reader for the session observer, exact build, skeleton/animation findings ---
+
+def test_roster_collects_only_posed_cabs_and_no_bone_local_drivers():
+    roster = ct.roster()
+    assert {e["kind"] for e in roster} == {"vehicle"}
+    assert [e["slug"] for e in roster if e.get("collect")] == ["crazy_taxi_yellow"]
+    assert all(e["collect"] is (e["key"] in ct.WHEEL_POSE) for e in roster)
+
+
+def _f(v: float) -> int:
+    return struct.unpack(">I", struct.pack(">f", v))[0]
+
+
+def _motion(frames: int, groups) -> bytes:
+    """A motDC.bin motion: u32 frames + 17 group word offsets, then 3 channel tracks per group of
+    u32 count + count x (u32 frame, value word, tangent-in word, tangent-out word)."""
+    body, offs = b"", []
+    for g in groups:
+        offs.append(18 + len(body) // 4)
+        for keys in g:
+            body += struct.pack(">I", len(keys)) + b"".join(struct.pack(">4I", f, w, 0, 0) for f, w in keys)
+    return struct.pack(">18I", frames, *offs) + body
+
+
+def test_motion_bank_channel_groups_on_synthetic_bank():
+    groups = []
+    for g in range(1, 18):
+        if g in ct.POSITION_GROUPS:
+            groups.append([[(0, _f(-4.4)), (12, _f(-5.38))], [(0, _f(9.8))], [(0, _f(2.62)), (30, _f(0.0))]])
+        else:
+            groups.append([[(0, 0)], [(0, (-0xC000) & 0xFFFFFFFF), (30, 0x4000)], []])
+    m0 = _motion(30, groups)                     # last key may sit on the frame count (looping motions)
+    bad = struct.pack(">18I", 30, 18, *range(19, 35)) + struct.pack(">I", 2) + struct.pack(">4I", 5, 0, 0, 0) * 2
+    got = ct.motion_bank(m0 + m0 + bad)
+    assert len(got["motions"]) == 2 and got["end"] == 2 * len(m0)
+    a = got["motions"][0]
+    assert a.frames == 30 and a.size == len(m0) and got["motions"][1].offset == len(m0)
+    assert max(abs(v - w) for v, w in zip(a.at_frame0(1), (-4.4, 9.8, 2.62))) < 1e-6
+    assert a.at_frame0(2) == (0.0, -270.0, 0.0) and a.groups[1][1][1][1] == 90.0
+    worse = list(groups)
+    worse[1] = [[(0, _f(1.5))], [(0, 0)], []]    # a float word in an angle group breaks the layout
+    assert ct.parse_motion(_motion(30, worse)) is None
+    assert ct.motion_bank(m0[:-4])["motions"] == []
+
+
+def test_dol_shape_names_reads_the_rig_order_list():
+    names = [b"MP_YH_plyrA_koshi.shp", b"MP_YH_plyrA_momo_r.shp", b"MP_YH_Man_koshi.shp", b"not a shape"]
+    data = b""
+    for n in names:
+        data += n + b"\0" * (4 - len(n) % 4)
+    va = 0x80003100
+    dol = bytearray(0x100)
+    struct.pack_into(">I", dol, 0x1C, 0x100)            # data section 0: file offset, address, size
+    struct.pack_into(">I", dol, 0x64, va)
+    struct.pack_into(">I", dol, 0xAC, len(data))
+    dol = bytes(dol) + data
+    assert ct.dol_va_to_offset(dol, va + 4) == 0x104 and ct.dol_va_to_offset(dol, va - 4) is None
+    assert ct.dol_shape_names(dol, va) == ["MP_YH_plyrA_koshi", "MP_YH_plyrA_momo_r", "MP_YH_Man_koshi"]
+    assert ct.driver_bones_from_dol(dol[:0x100] + data, "A") == ()     # default VA is not in this fixture
+    assert set(ct.PARTS) <= set(ct.DRIVER_BONES) and ct.DRIVER_BONES[0] == "koshi"
+
+
+def test_collect_includes_opted_in_vehicle_without_rig(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from gbox import characters as C
+    game = {"game_id": "fixture", "title": "Fixture", "platform": "test"}
+    entries = [{"slug": "cab", "name": "cab", "aliases": [], "kind": "vehicle", "collect": True},
+               {"slug": "unposed", "name": "unposed", "aliases": [], "kind": "vehicle", "collect": False}]
+    monkeypatch.setattr(C, "DEDICATED", [("fixture", lambda t, p: True, lambda: entries, None)])
+    monkeypatch.setattr(C, "_game", lambda ctx, inp: game)
+    monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path)
+    called = []
+    monkeypatch.setattr(C, "extract_dedicated", lambda ctx, g, slug, root, prep: called.append(slug) or
+                        {"status": "extracted", "entry": {"slug": slug}})
+    monkeypatch.setattr(C, "get", lambda root, slug: {"slug": slug, "name": slug, "rig": {}})
+    monkeypatch.setattr(C, "verify_entry", lambda root, meta: {"ok": True})
+    res = C.collect(SimpleNamespace(config=None, progress=lambda *a: None), C.CharIn(op="collect"))
+    assert called == ["cab"] and res["status"] == "complete" and res["characters"] == 0
+    assert res["entries"][0]["kind"] == "vehicle" and res["entries"][0]["retargetable"] is False
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned Crazy Taxi GC disc not present")
+def test_owned_disc_build_identity_bone_local_drivers_and_motion_bank():
+    """#1369: exact build, why the drivers are not collected yet, and the motDC.bin key-track layout."""
+    from gbox.gcdisc import GCDisc
+    disc = GCDisc(ISO)
+    head = ISO.open("rb").read(0x40)
+    assert head[:6] == b"GCTE51" and head[6] == 0 and head[7] == 0 and head[0x20:0x2a] == b"Crazy Taxi"
+    assert hashlib.sha256(disc.dol()).hexdigest() == ct.DOL_SHA256
+    bank = disc.read(ct.BANK)
+    assert hashlib.sha256(bank).hexdigest() == ct.BANK_SHA256
+    for letter in ct.DRIVERS:
+        ext = ct.driver_part_extents(bank, letter)
+        assert set(ext) == set(ct.PARTS)
+        for p, (lo, hi) in ext.items():                  # every part sits at its own joint origin
+            assert all(abs(lo[a] + hi[a]) / 2 < 3.0 for a in range(3)), (letter, p, lo, hi)
+        for foot in ("kakato_l", "kakato_r"):            # head and feet overlap: unassembled bone-local parts
+            (alo, ahi), (flo, fhi) = ext["atama"], ext[foot]
+            assert all(alo[a] < fhi[a] and flo[a] < ahi[a] for a in range(3)), (letter, foot)
+    mot = disc.read(ct.MOTION)
+    assert hashlib.sha256(mot).hexdigest() == ct.MOTION_SHA256
+    got = ct.motion_bank(mot)
+    ms = got["motions"]
+    assert len(ms) == 278 and got["end"] == 1525560 and ms[1].offset == 7556   # sequential walk; see findings
+    m0 = ms[0]
+    assert m0.frames == 91 and [len(c) for c in m0.groups[0]] == [10, 10, 10]
+    assert [k[0] for k in m0.groups[0][0][:4]] == [0, 12, 21, 27]
+    assert max(abs(v - w) for v, w in zip(m0.at_frame0(1), (-4.4, 9.8, 2.62))) < 1e-5
+    assert m0.at_frame0(2) == (0.0, -270.0, 0.0)
+    assert ms[6].offset == 0x8a18 and ms[6].frames == 61 and [k[0] for k in ms[6].groups[0][0]][-2:] == [75, 60]
+    assert ct.driver_bones_from_dol(disc.dol()) == ct.DRIVER_BONES
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned Crazy Taxi GC disc not present")
+def test_owned_disc_collect_registers_the_posed_yellow_cab(monkeypatch, tmp_path):
+    """#1369: the registered reader's background collection yields a verified native model (the yellow cab)."""
+    from types import SimpleNamespace
+    from gbox import characters as C
+    game = {"game_id": "bc02bb68790ce2e7", "title": "Crazy Taxi (USA)", "platform": "gamecube"}
+    assert any(r[0] == "crazy_taxi" and r[1](game["title"].lower(), "gamecube") for r in C.DEDICATED)
+    monkeypatch.setattr(C, "_game", lambda ctx, inp: game)
+    monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path / "lib")
+    monkeypatch.setattr(C, "_gc_iso", lambda ctx, g: ISO)
+    ctx = SimpleNamespace(config=SimpleNamespace(cache=str(tmp_path / "cache")), progress=lambda *a: None)
+    res = C.collect(ctx, C.CharIn(op="collect"))
+    assert res["status"] == "complete" and res["total"] == res["collected"] == 1 and res["characters"] == 0
+    (entry,) = res["entries"]
+    assert entry["slug"] == "crazy_taxi_yellow" and entry["kind"] == "vehicle" and entry["verified"]
+    meta = C.get(tmp_path / "lib", "crazy_taxi_yellow")
+    stats = C.model_stats(tmp_path / "lib" / "crazy_taxi_yellow" / meta["model"])
+    assert stats["triangles"] > 2000 and meta.get("kind", "vehicle") == "vehicle"
