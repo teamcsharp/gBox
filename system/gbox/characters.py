@@ -1133,6 +1133,48 @@ def _oot_run(ctx, game, entry, work):
             'source_files': [entry['key']], 'notes': 'Native Link skeleton, display lists and textures.'}
 
 
+# Snake's 16 KMD objects (= motion bones) by body role. The MetalMintSolid glTF keeps KMD object i as node i but
+# names the nodes in its own order (object 2 = "bone_4"), so roles are resolved to node names per decode.
+MGS_VR_SNAKE_OBJECTS = {"hip": 0, "chest": 1, "neck": 5, "head": 6,
+                        "r_upper": 2, "r_fore": 3, "r_hand": 4, "l_upper": 7, "l_fore": 8, "l_hand": 9,
+                        "r_thigh": 10, "r_shin": 11, "r_foot": 12, "l_thigh": 13, "l_shin": 14, "l_foot": 15}
+MGS_VR_SNAKE_PARENTS = [-1, 0, 1, 2, 3, 1, 5, 1, 7, 8, 0, 10, 11, 0, 13, 14]   # KMD object parent indices
+
+
+def mgs_vr_snake_roles(path: Path) -> dict[str, str]:
+    """Body roles {role: joint name} of the decoded VR Missions Snake. tree_roles can't read this rig (the legs and the
+    spine both hang off the root, arms hang down), so the fixed KMD object map is used, after checking that the
+    decoded glTF really is Snake's tree (same parents) in the library frame (+Y up, left = +X, toes toward +Z)."""
+    gl = _load(path)[0]
+    from .re4gc_models import _node_world
+    nodes, n = gl["nodes"], len(MGS_VR_SNAKE_PARENTS)
+    joints = set(max(gl.get("skins") or [{"joints": []}], key=lambda s: len(s["joints"]))["joints"])
+    if len(nodes) < n or not set(range(n)) <= joints:
+        raise ValueError(f"not the 16-object VR Missions Snake rig ({len(joints)} joints)")
+    par = {c: i for i, nd in enumerate(nodes) for c in nd.get("children", [])}
+    got = [par.get(i, -1) if par.get(i, -1) < n else -1 for i in range(n)]
+    if got != MGS_VR_SNAKE_PARENTS:
+        raise ValueError(f"joint tree {got} is not Snake's KMD tree {MGS_VR_SNAKE_PARENTS}")
+    W = _node_world(gl)
+    pos = {r: np.asarray(W[i])[:3, 3] for r, i in MGS_VR_SNAKE_OBJECTS.items()}
+    for limb in ("upper", "fore", "hand", "thigh", "shin", "foot"):
+        if not pos[f"l_{limb}"][0] > 0 > pos[f"r_{limb}"][0]:
+            raise ValueError(f"{limb}: left/right are mirrored (left must be +X)")
+    ys = [p[1] for p in pos.values()]
+    if not (pos["head"][1] == max(ys) and min(pos["l_foot"][1], pos["r_foot"][1]) == min(ys)
+            and pos["chest"][1] <= pos["neck"][1] < pos["head"][1]):
+        raise ValueError("rig is not upright (+Y up, head highest, feet lowest)")
+    names = [nodes[i].get("name", f"node{i}") for i in range(n)]
+    roles = {r: names[i] for r, i in MGS_VR_SNAKE_OBJECTS.items()}
+    rig = rig_from_gltf(path, roles)
+    for side in "lr":                                      # toes point forward: the foot mesh lies toward +Z
+        j = rig["roles"][f"{side}_foot"]
+        foot = np.concatenate([p["pos"][p["owner"] == j] for p in rig["prims"]])
+        if not len(foot) or foot[:, 2].mean() <= rig["joints"][j][2]:
+            raise ValueError("rig does not face +Z (the toes point backward)")
+    return roles
+
+
 def _mgs_vr_run(ctx, game, entry, work):
     """Decode the original Snake from the owned US disc, using a Windows worker for MetalMintSolid."""
     from . import mgs_vr_swap
@@ -1157,9 +1199,10 @@ def _mgs_vr_run(ctx, game, entry, work):
             failures.append(f"{worker.get('name')}: decoded model artifact was absent")
         if not out.is_file():
             raise RuntimeError('No Windows worker could decode the VR Missions Snake model: ' + '; '.join(failures))
-    return {'files': [out], 'roles': {}, 'tool': 'gbox.mgs_vr_swap / MetalMintSolid',
+    return {'files': [out], 'roles': mgs_vr_snake_roles(out), 'tool': 'gbox.mgs_vr_swap / MetalMintSolid',
             'source_files': ['MGS/STAGE.DIR', 'init.stg', '0_0.dar:39213.kmd', '1_0.dar:PS1 textures'],
-            'notes': 'Original US VR Missions Snake mesh, 16 KMD joints and embedded PS1 textures. No cross-game retarget map yet.'}
+            'notes': 'Original US VR Missions Snake mesh, 16 KMD joints and embedded PS1 textures. Body roles from '
+                     'the fixed KMD object map (characters.MGS_VR_SNAKE_OBJECTS), checked against the decoded tree.'}
 
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
