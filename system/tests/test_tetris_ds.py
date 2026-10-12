@@ -300,3 +300,24 @@ def test_roster_covers_verified_inventory():
     assert {e["key"] for e in entries} == set(tetris_ds.TETRIS_DS_SETS)
     assert all(e["slug"].startswith("tetris_ds_") for e in entries)
     assert all(e["kind"] == "character" for e in entries)
+
+
+def test_extract_run_returns_collection_keys(tmp_path):
+    """extract_run must return the metadata the characters collection pipeline expects."""
+    rom = _build_rom_full(files=[("ct_.chr", bytes([5] * 64)), ("ct_.objs", b"\x00" * 12)])
+    # Patch the canonical locate helper to use our synthetic ROM.
+    orig = tetris_ds._locate_rom
+    tetris_ds._locate_rom = lambda: rom
+    try:
+        class Ctx:
+            job_id = "test"
+            def progress(self, pct, msg): pass
+        res = tetris_ds.extract_run(Ctx(), {"game_id": "646664179043720f", "title": "Tetris DS (USA)", "platform": "nds"},
+                                      {"key": "ct_", "slug": "tetris_ds_ct_", "name": "Tetris DS sprites: ct_"}, tmp_path)
+        assert res.get("kind") == "sprites"
+        assert res.get("tool"), "extractor tool name required by characters.add"
+        assert res.get("files"), "sprite PNG output required"
+        assert all(str(f).endswith(".png") or str(f).endswith(".json") for f in res["files"])
+        assert res.get("source_files")
+    finally:
+        tetris_ds._locate_rom = orig
