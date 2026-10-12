@@ -1950,13 +1950,36 @@ def create_app(config: Config) -> FastAPI:
                                          "cond": threading.Condition()})
 
     @app.get("/api/sessions")
-    def sessions(actor=Depends(auth)):
+    def sessions(actor=Depends(auth), include_ended: bool = True):
         out = []
         now = time.time()
         for s_ in store.all("session", reverse=True):
+            if not include_ended and s_.get('state') != 'running':
+                continue
             lv = live.get(s_["session_id"], {})
             out.append(s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None})
         return out
+
+    @app.get("/api/sessions/{sid}/observers")
+    def session_observers(sid: str, actor=Depends(auth)):
+        store.get('session', sid) or _404()
+        runtime = store.get('setting', 'session_observers_runtime') or {}
+        return (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
+            'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
+            'service_error': runtime.get('error'), 'interval_seconds': 30}
+
+    class ObserverIn(BaseModel):
+        enabled: StrictBool
+
+    @app.post("/api/sessions/{sid}/observers")
+    def session_observers_setting(sid: str, setting: ObserverIn, actor=Depends(auth)):
+        store.get('session', sid) or _404()
+        with store.lock:
+            row = store.get('session_observer', sid) or {'session_id': sid}
+            store.put('session_observer', sid, row | {'enabled': setting.enabled,
+                      'state': 'waiting' if setting.enabled else 'paused'})
+        store.audit(actor, 'session.observers', sid, {'enabled': setting.enabled})
+        return session_observers(sid, actor)
 
     class LiveModelIn(BaseModel):
         mod: str = ""

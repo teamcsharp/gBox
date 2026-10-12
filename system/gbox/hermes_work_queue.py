@@ -131,6 +131,7 @@ def sync(data, favorites, requests, *, now):
             'lane': 'inbox', 'request_id': request['id'], 'attempts': 0, 'last_dispatched': 0,
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
+                    session_observer=bool(context.get('session_observer')),
                     operator_requested=bool(context.get('replacement_requested')),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
@@ -211,7 +212,7 @@ def choose(options, data):
         followup = data.get('last_' + lane[0][1]['lane'] + '_kind') == 'new'
         lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
     return min(lane, key=lambda v: (
-        0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
+        0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') or v[1].get('session_observer') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
         v[1].get('last_dispatched', 0),
         v[1].get('created', 0), v[0])) if lane else None
 
@@ -222,7 +223,14 @@ def _prompt(item):
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
     if item['lane'] == 'inbox':
-        if item.get('repair'):
+        if item.get('session_observer'):
+            header += ('This task supports passive observation of an operator gameplay session. '
+                       'Read its observations, capture evidence and exact game build. Repair the native '
+                       'model reader or read-only observation capability. Never send input, pause, stop, '
+                       'reset, move, relaunch, or capture GPU draws on the operator session. Work from '
+                       'owned files with REA/Ghidra and publish tested readers and reusable assets. '
+                       'Keep replacement testing on a separate agent-owned session. ')
+        elif item.get('repair'):
             header += ('This is unfinished native character work. Follow the request scope: extraction needs an '
                        'identified reusable native asset with validation; replacement additionally needs gameplay '
                        'acceptance. Read the preserved donor, target, '
