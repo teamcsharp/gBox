@@ -2982,6 +2982,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
+                              "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game

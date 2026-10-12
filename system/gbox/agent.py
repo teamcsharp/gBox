@@ -518,6 +518,11 @@ def tool_specs() -> list[dict]:
            "extracted model; false opens a live Bevy window on the operator's PC.",
            {"name": s, "items": {"type": "array", "items": {"type": "object"}}, "camera": {"type": "object"},
             "screenshot": {"type": "boolean"}}, ["items"]),
+        fn("mashup", "Cross-title mashup planner: turn a request like 'put Mario 64 in Ocarina of Time' into a resolved source "
+           "character + target game, a feasibility check (native writer vs overlay-only) and an ordered plan. Explicit source "
+           "(character name/slug) and target (game title/id) override the parsed request. auto_dispatch=true submits the "
+           "characters collect/use jobs; dry_run=true only returns the plan.",
+           {"request": s, "source": s, "target": s, "dry_run": {"type": "boolean"}, "auto_dispatch": {"type": "boolean"}}, []),
         fn("video", "Video knowledge (YouTube etc.). op=search (query, n) -> videos to suggest or play; ingest (url) -> transcript "
            "with timestamps + description + chapters + top comments saved to the gBox knowledge base (then plan from it); "
            "frame (url, at seconds) -> still image; knowledge (query) -> videos already ingested. Put a video's url in your "
@@ -1036,6 +1041,11 @@ class Agent:
         except Exception:
             pass
         return res
+
+    def mashup(self, request="", source="", target="", dry_run=False, auto_dispatch=False):
+        j = self._job("mashup", {"request": request, "source": source, "target": target, "dry_run": bool(dry_run),
+                                 "auto_dispatch": bool(auto_dispatch)}, limit=1300)
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def scene_capture(self, session_id):
         j = self._job("scene_capture", {"session_id": session_id}, worker=session_id.split("-")[0], limit=900)
