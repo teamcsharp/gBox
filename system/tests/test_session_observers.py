@@ -227,3 +227,58 @@ def test_session_repair_is_admitted_with_passive_prompt():
     item = data['items']['inbox:' + request['id']]
     assert item['session_observer']
     assert 'Never send input' in q._prompt(item)
+
+
+def failed_frame(o, error):
+    """Queue the observer's get_frame job, then fail it the way the worker reports it."""
+    o.session['last_frame_age'] = None
+    o.sample(o.session)
+    job = next(j for j in o.store.all('job') if j['state'] == 'queued')
+    o.store.put('job', job['id'], job | {'state': 'failed', 'finished': 999, 'error': error})
+    o.sample(o.session)
+
+
+def test_closed_game_window_after_frames_is_not_a_capture_repair(observer):
+    # #1371: Dolphin kept running without a window and the operator's own load_state failed too.
+    o = observer
+    o.sample(o.session)  # a real frame proves the capture route for this session
+    for _ in range(4):
+        failed_frame(o, "RuntimeError: the game window isn't open")
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'no_window' and row['failures'] == 0
+    assert row['window_failures'] == 4 and row['window_missing_since'] == 1000
+    assert row['next_sample'] == 1000 + 120 and "window isn't open" in row['error']
+    assert not o.store.all('request') and all(c[0] != '/api/requests' for c in o.calls)
+    assert all(j['tool'] == 'get_frame' for j in o.store.all('job'))  # still passive: no session_op
+
+
+def test_window_never_captured_still_files_one_capture_repair(observer):
+    # Without one frame the window lookup itself may be broken (e.g. a launcher PID): keep it repairable.
+    o = observer
+    for _ in range(3):
+        failed_frame(o, "RuntimeError: the game window isn't open")
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'blocked' and row['failures'] == 3
+    assert row['observation_request_id'] == 'request0' and len(o.store.all('request')) == 1
+
+
+def test_covered_window_waits_and_the_next_frame_clears_the_miss(observer):
+    o = observer
+    o.sample(o.session)
+    failed_frame(o, 'RuntimeError: the game window is covered by another app; bring gBox or the emulator '
+                    'forward before capturing')
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'covered' and row['window_failures'] == 1 and not o.store.all('request')
+    o.session['last_frame_age'] = 1
+    o.sample(o.session)  # the same picture comes back: unchanged, and the window is visible again
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'unchanged' and row['window_failures'] == 0
+    assert row['window_missing_since'] is None and row['failures'] == 0
+
+
+def test_capture_for_an_ended_session_is_stopped_not_a_repair(observer):
+    o = observer
+    for _ in range(3):
+        failed_frame(o, 'game session ended before the job could run')
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')

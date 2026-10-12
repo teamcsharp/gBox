@@ -1,4 +1,5 @@
 """VR Missions Snake body roles (#1364): the collected model must carry rig.roles so it is retargetable."""
+import hashlib
 import json
 import os
 import shutil
@@ -122,3 +123,21 @@ def test_collected_library_snake_self_retarget_is_identity():
     P, out, rep = _self_retarget(LIBRARY_GLB)
     assert len(P) == 580 and rep["scale"] == 1.0 and len(rep["roles_used"]) == 16
     assert np.abs(out - P).max() < 1e-6
+
+
+# Forced re-extract evidence (#1364 run 3): characters op=mgs_vr_decode, job 3952f6506c6f437e (receipt
+# 6917cb4e7b6042e7, JAYBUILTFINALE) decoded the US disc (SLUS_009.57) to exactly this GLB, byte-identical to the
+# collected library file.
+DECODED_SNAKE_GLB_SHA256 = "d92d171ddeee7a1eddf82e27976caab62ba3a5183c1654007d706d232ac2fa89"
+
+
+@pytest.mark.skipif(not LIBRARY_GLB.is_file(), reason="no collected VR Missions Snake in the local library")
+def test_reextracting_the_verified_decode_keeps_the_library_roles():
+    """A forced re-collect decodes this same GLB, so the reader's roles must equal the stored rig.roles. Otherwise a
+    re-extract would silently drop or change retargetability."""
+    if hashlib.sha256(LIBRARY_GLB.read_bytes()).hexdigest() != DECODED_SNAKE_GLB_SHA256:
+        pytest.skip("the library holds a different Snake decode")
+    meta = json.loads((LIBRARY_GLB.parent / "meta.json").read_text())
+    roles = C.mgs_vr_snake_roles(LIBRARY_GLB)
+    assert roles == meta["rig"]["roles"] and len(roles) == 16
+    assert C.verify_entry(LIBRARY_GLB.parent.parent, meta)["ok"]

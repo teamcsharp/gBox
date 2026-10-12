@@ -24,6 +24,29 @@ class WaitingForFrame(RuntimeError):
     pass
 
 
+# Capture errors about the game window itself, not the read-only capture route. The operator's own
+# controls fail the same way: in #1371 Dolphin pid 54448 kept running without a window and the
+# operator's load_state failed with the same error, so these must not file "repair the capture" requests.
+# (error fragment, gameplay_state, applies only after this session produced a frame)
+PRESENTATION_ERRORS = (
+    ("window isn't open", 'no_window', True),
+    ('window is covered', 'covered', True),
+    ('session ended before the job could run', 'stopped', False),
+)
+
+
+def presentation_state(error, frames_seen):
+    """The gameplay_state for a capture error caused by the game window, or None for a route failure.
+
+    Until a session has produced a frame, a missing or covered window may mean the window lookup
+    itself is broken (for example a launcher PID), so it still counts toward a repair request."""
+    text = str(error).lower()
+    for fragment, state, needs_frame in PRESENTATION_ERRORS:
+        if fragment in text and (frames_seen or not needs_frame):
+            return state
+    return None
+
+
 def analyze(config, frame, previous):
     """A vision-only agent: game pixels cannot authorize tool calls or game input."""
     cfg = config.agent
@@ -174,7 +197,8 @@ class SessionObservers:
                 digest = hashlib.sha256(image.tobytes()).hexdigest()
                 stream = io.BytesIO(); image.save(stream, 'PNG'); frame = stream.getvalue()
             if digest == record.get('frame_digest'):
-                self._put(sid, gameplay_state='unchanged', next_sample=captured + 30, last_checked=captured)
+                self._put(sid, gameplay_state='unchanged', next_sample=captured + 30, last_checked=captured,
+                          window_failures=0, window_missing_since=None)
                 return
             self._put(sid, gameplay_state='analyzing')
             result = self.observe(self.config, frame, record.get('latest'))
@@ -190,10 +214,19 @@ class SessionObservers:
             history = (record.get('history', []) + [observation])[-40:]
             self._put(sid, gameplay_state='watching', latest=observation, history=history,
                       samples=record.get('samples', 0) + 1, frame_digest=digest, failures=0,
-                      error=None, next_sample=self.clock() + 30, last_checked=captured)
+                      error=None, next_sample=self.clock() + 30, last_checked=captured,
+                      window_failures=0, window_missing_since=None)
         except WaitingForFrame as exc:
             self._put(sid, gameplay_state='waiting_for_frame', error=str(exc), next_sample=self.clock() + 5)
         except Exception as exc:
+            state = presentation_state(exc, record.get('samples', 0) or record.get('frame_digest'))
+            if state:
+                # The game window is closed, covered or gone: watch for it again without a repair request.
+                misses = record.get('window_failures', 0) + 1
+                self._put(sid, gameplay_state=state, window_failures=misses, error=str(exc)[:600],
+                          window_missing_since=record.get('window_missing_since') or captured,
+                          next_sample=self.clock() + min(300, 30 * misses))
+                return
             failures = record.get('failures', 0) + 1
             self._put(sid, gameplay_state='blocked', failures=failures, error=str(exc)[:600],
                       next_sample=self.clock() + min(300, 15 * 2 ** min(failures, 5)))
