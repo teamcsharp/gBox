@@ -241,9 +241,20 @@ def finalize_merges() -> dict:
         return {'status': 'deferred', 'error_type': type(error).__name__}
 
 
+def finalize_summaries() -> dict:
+    """Post each ended run's outcome on the tickets it worked on (#1300); never block routing."""
+    from . import hermes_summaries
+    from .hermes_availability import _api
+    try:
+        return hermes_summaries.reconcile(_api, home=hermes_task_mode._home())
+    except Exception as error:  # the inbox or Hermes's databases may be unavailable
+        return {'status': 'deferred', 'error_type': type(error).__name__}
+
+
 def adjust_routes() -> dict:
     accounting = finalize_usage()
     merges = finalize_merges()
+    summaries = finalize_summaries()
     data, config = scan(), hermes_task_mode._config()
     cli = str(hermes_task_mode._cli())
     repaired = canonical_mcp(config)
@@ -294,7 +305,7 @@ def adjust_routes() -> dict:
     from .hermes_recovery import recover
     return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
-            'completed_usage': accounting, 'merges': merges,
+            'completed_usage': accounting, 'merges': merges, 'summaries': summaries,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
 
 
