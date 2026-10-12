@@ -123,6 +123,32 @@ def special_inventory(disc: LcsDisc, parse: bool = True) -> list[dict]:
     return out
 
 
+def anim_blocks(disc: LcsDisc) -> dict:
+    """The GAME.DTZ ped-animation tables, located like the game does.
+
+    GAME.DTZ = zlib(GTAG relocatable chunk). The loader FUN_001045a8 (SLUS_214.23) opens
+    cdrom0:\\CHK\\PS2\\GAME.DTZ, inflates it and dispatches the 36-u32 table at +0x20; the field at
+    +0x20+0x18*4 goes to the animation manager (DAT_003d9d24). That field points at a struct:
+
+      +0x00  anim table base:   num_anims entries of 0x24 bytes {u32 key_data_ptr, char name[...],
+                                u32 likely bone_count, f32 likely frame_time} - searched by name
+                                hash from 0x1F73A0
+      +0x04  block dir base:    num_blocks entries of 0x28 bytes {char name[8], ..., u32, u32} -
+                                the cutscene anim-block names, searched by name, 0x1F72D0
+      +0x08  num_anims          (this build: 444)
+      +0x0C  num_blocks         (this build: 55)
+
+    The 444 per-animation key-data pointers land in one ~0.4-1.0 MB region of the decompressed
+    GAME.DTZ (first entry ~0x3FC400): the gameplay ped animations are NOT separate disc files.
+    (Cutscene anims do live outside: ANIM/CUTS.IMG ifp files, looked up through ANIM/CUTS.DIR by
+    CDirectory::FindItem 0x1450D8 from 0x357530.)
+    """
+    g = disc.game
+    p = g.u32(0x20 + 0x18 * 4)
+    return {"manager": p, "anims_base": g.u32(p), "blocks_base": g.u32(p + 4),
+            "num_anims": g.u32(p + 8), "num_blocks": g.u32(p + 0xC)}
+
+
 def ped_model_infos(disc: LcsDisc) -> list[dict]:
     g = disc.game
     out = []
