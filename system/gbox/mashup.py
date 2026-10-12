@@ -17,7 +17,6 @@ import httpx
 from pydantic import BaseModel, Field
 
 from . import char_coverage as CC
-from . import characters as CH
 from .models import Permission as P
 from .registry import tool
 
@@ -33,8 +32,10 @@ def _words(s: str) -> set[str]:
 
 def _api(ctx, method: str, path: str, **kw):
     """Call the gBox control plane."""
-    server = getattr(ctx, "server", None) or "http://127.0.0.1:8765"
-    headers = getattr(ctx, "headers", {})
+    server = getattr(ctx, "server", None)
+    if not server:
+        raise RuntimeError("mashup needs the control plane: ctx.server is not set on this worker")
+    headers = getattr(ctx, "headers", None) or {}
     r = httpx.request(method, f"{server}{path}", headers=headers, timeout=kw.pop("timeout", 60), **kw)
     r.raise_for_status()
     return r.json() if "json" in r.headers.get("content-type", "") else r.content
@@ -94,13 +95,26 @@ def _parse_request(request: str) -> tuple[str, str]:
     """Very rough source/target extraction from a free-form request.
 
     Examples:
-      "Mario 64 sprite in Ocarina of Time" -> source "mario 64", target "ocarina of time"
-      "replace Link with Ganondorf" -> source "ganondorf", target "ocarina of time" (target ambiguous)
-      "metal gear solid 2 snake in metal gear solid 1" -> source "snake mgs2", target "metal gear solid 1"
+      "Mario 64 sprite in Ocarina of Time" -> source "mario 64 sprite", target "ocarina of time"
+      "replace Link with Ganondorf" -> source "ganondorf", target "link" (the replaced character, not a game:
+                                       say "... in Ocarina of Time" or pass target= for the game)
+      "replace Link with Ganondorf in Ocarina of Time" -> source "ganondorf", target "ocarina of time"
+      "swap Link and Ganondorf" -> source "ganondorf", target "link"
+      "metal gear solid 2 snake in metal gear solid 1" -> source "metal gear solid 2 snake", target "metal gear solid 1"
     """
     r = request.lower()
+    places = (" in ", " into ", " inside ", " within ")
+    # "replace X with Y" / "swap A and B" first: their "with" / "and" are not the source/target separators below
+    m = re.search(r"replace\s+(.+?)\s+with\s+(.+)", r) or re.search(r"swap\s+(.+?)\s+and\s+(.+)", r)
+    if m:
+        src, replaced = m.group(2).strip(), m.group(1).strip()
+        for splitter in places:                          # "... with Ganondorf in Ocarina of Time": the game wins
+            if splitter in src:
+                src, game = src.split(splitter, 1)
+                return src.strip(), game.strip()
+        return src, replaced
     # split on common prepositions that separate source and target
-    for splitter in (" in ", " into ", " inside ", " within "):
+    for splitter in places:
         if splitter in r:
             parts = r.split(splitter, 1)
             return parts[0].strip(), parts[1].strip()
@@ -108,14 +122,6 @@ def _parse_request(request: str) -> tuple[str, str]:
         if splitter in r:
             parts = r.split(splitter, 1)
             return parts[1].strip(), parts[0].strip()
-    # "replace X with Y" -> source=Y, target=X
-    m = re.search(r"replace\s+(.+?)\s+with\s+(.+)", r)
-    if m:
-        return m.group(2).strip(), m.group(1).strip()
-    # "swap A and B" -> source=B, target=A
-    m = re.search(r"swap\s+(.+?)\s+and\s+(.+)", r)
-    if m:
-        return m.group(2).strip(), m.group(1).strip()
     return r.strip(), ""
 
 
@@ -136,7 +142,7 @@ def _slot_default(game: dict) -> str:
     if "super mario 64" in title:
         return "player"
     if "ocarina" in title or ("zelda" in title and plat == "n64"):
-        return "link"
+        return "player"                    # gbox.oot_swap: "player" is Link; any other slot names an NPC
     if "parasite eve" in title:
         return "player"
     if "final fantasy vii" in title:
