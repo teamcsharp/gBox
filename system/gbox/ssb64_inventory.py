@@ -342,10 +342,9 @@ def inventory(rom_path: str | Path, out: str | Path | None = None) -> dict:
         "compressed_files": sum(1 for f in files if f["compressed"]),
         "raw_files": sum(1 for f in files if not f["compressed"]),
         "characters": {
-            "roster": sorted(
-                k for k in FIGHTERS if not k.startswith(("n", "m", "g"))),
+            "roster": list(ROSTER),
             "variants": ["mmario", "gdonkey"],
-            "polygon_team": [k for k in FIGHTERS if k.startswith("n")],
+            "polygon_team": list(POLYGON_TEAM),
             "bosses": ["boss"],
             "costumes_per_fighter": FIGHTERS_COSTUMES,
         },
