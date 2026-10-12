@@ -2156,7 +2156,13 @@ def for_game(game: dict, config: Config, debug: bool = False) -> Adapter:
     override = config.emulators.get(plat)
     if override and override.adapter == "command":
         return CommandAdapter(override)
-    if plat == "ps3" and game.get("launch", {}).get("kind") != "attract":
+    launch = game.get("launch") or {}
+    # A HyperSpin PS3 entry is an empty "<name>.txt" stub beside its disc folder. RocketLauncher's RPCS3.ahk only
+    # resolves that folder's EBOOT.BIN, and on the test PCs every RocketLauncher run throws "RLDLL.Start - Exception
+    # thrown: -2" and exits 0 within ~15 s: a black screen with no save state (#1093). Boot the stub's EBOOT in
+    # gBox's own RPCS3 instead (tools._launch_game resolves it), which keeps save/load state for recovery.
+    if plat == "ps3" and (launch.get("kind") != "attract"
+                          or str(launch.get("rel_path") or game.get("rel_path") or "").lower().endswith(".txt")):
         if HOST_OS != "windows":
             raise ToolUnavailable("PS3 games run in RPCS3 on a Windows node")
         return RPCS3Adapter(config)
