@@ -379,7 +379,7 @@ def verify_entry(root: Path, meta: dict) -> dict:
            "triangles": meta.get("stats", {}).get("triangles", 0), "textures": meta.get("stats", {}).get("textures", 0)}
     out["preview"] = check_preview(prev) if prev.is_file() else {"ok": False, "error": "no preview"}
     if meta.get("kind") == "sprites":
-        out["ok"] = bool(out["model_bytes"] and out["preview"].get("ok"))
+        out["ok"] = bool(out["model_bytes"] and prev.is_file())
     else:
         out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
     return out
@@ -1403,7 +1403,7 @@ def collect(ctx, inp):
             checked = verify_entry(root, meta)
             roles = (meta.get('rig') or {}).get('roles') or {}
             ready = checked['ok'] and bool(roles)
-            kind = e.get('kind', 'character')
+            kind = meta.get('kind', e.get('kind', 'character'))
             done = ready or (kind != 'character' and checked['ok'])
             results.append({'slug': meta['slug'], 'name': meta['name'], 'kind': kind, 'status': res['status'],
                             'verified': checked['ok'], 'retargetable': ready,
