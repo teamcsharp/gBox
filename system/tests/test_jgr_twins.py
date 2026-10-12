@@ -179,3 +179,75 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
         assert result["report"]["bind_offsets"] == {hex(roots[1]): {"15": [-0.5, 0.0, 0.0]}}
     else:
         assert models[1] == models[0] and result["report"]["bind_offsets"] == {}
+
+
+def _patched_writer(monkeypatch, original, roots, geo):
+    from PIL import Image
+    from gbox import gdrom, ninja_swap
+    monkeypatch.setattr(gdrom, "GDRom", lambda path: SimpleNamespace(read=lambda name: b"synthetic owned AFS"))
+    monkeypatch.setattr(jgr, "character_pair", lambda *args: (0, 1))
+    monkeypatch.setattr(jgr, "entry_room", lambda *args: len(original) + 4096)
+    monkeypatch.setattr(jgr, "entry_size", lambda *args: 16)
+    monkeypatch.setattr(jgr, "play_bytes", lambda *args: original)
+    monkeypatch.setattr(jgr, "body_root", lambda *args: roots[0])
+    monkeypatch.setattr(jgr, "play_model_roots", lambda *args: roots)
+    monkeypatch.setattr(jgr, "native_id_for_archive", lambda *args: 0)
+    monkeypatch.setattr(jgr, "_material", lambda *args: (b"", 0x34, 0x4000, 0x12))
+    monkeypatch.setattr(jgr, "ptex_textures", lambda *args: [{"bytes": b"x" * 16, "offset": 0}])
+    monkeypatch.setattr(ninja, "pvr_like", lambda old, image: old)
+    monkeypatch.setattr(ninja_swap, "target_from_nj", lambda *args: object())
+    monkeypatch.setattr(jgr, "replace_entries", lambda old, entries: entries)
+    monkeypatch.setattr(ninja_swap, "fit", lambda model, roles, target, work, name, budgets, blender, encode, size,
+                        scale, progress: {"data": encode(geo), "atlas": Image.new("RGB", (8, 8)),
+                                          "rigged": "fixture.gltf", "report": {}})
+
+
+def _vertex_lists(buf, root):
+    out = []
+    for nd in ninja.tree_nodes(buf, root):
+        if nd["model"]:
+            vl = struct.unpack_from("<I", buf, nd["model"])[0]
+            heads, o = [], vl
+            while vl and buf[o] != 0xFF:
+                head, base, count = struct.unpack_from("<IHH", buf, o)
+                heads.append((head & 0xFF, base, count))
+                o += 4 + (head >> 16) * 4
+            out.append(heads)
+    return out
+
+
+def test_new_vertices_stay_inside_every_groups_native_cache_span(monkeypatch, tmp_path):
+    """#1156: on Beat, new slots 368-529 (stock body 0-354, low LOD 0-178) drew NO body in gameplay
+    (#1153 live) although the cutscene renderer drew the same models. Every rewritten group must find
+    each slot inside its own native span, and no original vertex chunk may run ahead of the new one."""
+    original, roots = _binary_groups()
+    span = min(max(jgr.play_model(original, r).vbuf) + 1 for r in roots[:-1])
+    assert span == 60
+    triangle = [((0, 1, 2), ((0, 0), (1, 0), (0, 1)))]
+    geo = {i: ([[0, 0, 0], [0.25, 0, 0], [0, 0.25, 0]], [[0, 0, 1]] * 3, triangle) for i in range(1, 20)}
+    _patched_writer(monkeypatch, original, roots, geo)
+    result = jgr.build_swap("fixture.gdi", tmp_path / "fixture.glb", {"hip": "x"}, tmp_path, "Donor", 4)
+    rewritten = result["files"][jgr.PLAYER_AFS][0]
+    assert result["report"]["vertex_slots"] == span
+    for root in roots[:-1]:
+        tree = jgr.play_model(rewritten, root)
+        assert sum(len(t) for t in tree.tris.values()) == 19
+        assert max(tree.vbuf) < span
+        lists = [heads for heads in _vertex_lists(rewritten, root) if heads]
+        assert len(lists) == 19 and all(len(heads) == 1 and heads[0][0] == 0x29 for heads in lists)
+        # the native per-node base is kept where it fits (node i natively starts at slot 3 * i)
+        assert sorted(h[0][1] for h in lists) == [3 * i for i in range(1, 20)]
+
+
+def test_node_larger_than_the_native_span_is_refused_for_a_smaller_budget(monkeypatch, tmp_path):
+    original, roots = _binary_groups()
+    big = [[k * 0.01, 0, 0] for k in range(61)]
+    triangle = [((0, 1, 2), ((0, 0), (1, 0), (0, 1)))]
+    _patched_writer(monkeypatch, original, roots, {1: (big, [[0, 0, 1]] * 61, triangle)})
+    with pytest.raises(ValueError, match="61 vertices > 60 native vertex cache slots"):
+        jgr.build_swap("fixture.gdi", tmp_path / "fixture.glb", {"hip": "x"}, tmp_path, "Donor", 4)
+
+
+def test_span_clamped_writer_never_reuses_a_pre_1156_cached_build():
+    # v3 builds (slots past the native span) drew no body in gameplay; `use` must not serve them again.
+    assert jgr.CACHE_VERSION >= 5
