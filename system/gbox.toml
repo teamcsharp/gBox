@@ -7,7 +7,7 @@ api_port = 8765
 public_url = "http://10.89.1.246:8765"
 cache_limit_gb = 200
 stage_min_mb = 32                 # disc images above this are copied to the node's local cache before launch
-cache_dirs = { linux = "/home/ehm_eckx/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified)
+cache_dirs = { linux = "/home/ehm_eckx/samples/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified)
 cache_limits_gb = { linux = 150, windows = 250 }
 runtime_dirs = { windows = "D:/gBox/runtime" }   # emulators/cores on the local SSD, not the share
 
