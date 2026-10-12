@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 
 from .models import Job, JobState
 
+WINDOW_SURFACE = 'window-surface'   # adapters.WINDOW_SURFACE: the emulator window rendered itself
+
 
 # Versioned recipes keep the menu and the backend execution plan in sync. Add new
 # repairs here after reproducing and testing them, rather than accepting shell text.
@@ -120,20 +122,31 @@ class Incident:
         image = Image.open(io.BytesIO(raw)).convert('RGB').resize((96, 72))
         luma = ImageStat.Stat(image.convert('L')).mean[0]
         covered = out.get('covered', 0)
+        self.frame_source = out.get('capture_source')
+        surface = covered and self.frame_source == WINDOW_SURFACE
         self.step(label, f'Game screenshot captured; mean RGB luminance {luma:.2f}'
-                         + (f'; {covered}/9 capture points covered by another window.' if covered else '.'),
+                         + (f'; {covered}/9 capture points covered by another window'
+                            + (", pixels rendered from the emulator's own window." if surface else '.')
+                            if covered else '.'),
                   attachment={'sha256': ref['sha256'], 'name': label.replace(' ', '-') + '.png',
                               'type': 'image/png', 'size': ref['size']})
         return image, luma, covered
 
     def observe(self):
         previous, visible, covered_error = None, False, None
+        previous_source = None
         errors = []
         for delay in (0, 2, 4, 8):
             self.sleep(delay)
             try:
                 image, luma, covered = self.frame('verify recovery frame')
-                if covered:
+                # PrintWindow renders the emulator's own surface, so its pixels are the game even when
+                # another window covers it. Compare only frames captured the same way (#1057).
+                source = WINDOW_SURFACE if covered and getattr(self, 'frame_source', None) == WINDOW_SURFACE else 'screen'
+                if source != previous_source:
+                    previous = None
+                previous_source = source
+                if covered and source != WINDOW_SURFACE:
                     covered_error = f'frame capture had {covered}/9 points covered by another window (pixels are the window surface)'
                     # A newly exposed static game is not motion relative to an
                     # obscuring window. Start a fresh clear-frame comparison.

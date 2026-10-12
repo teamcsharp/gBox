@@ -299,6 +299,68 @@ def _win_title(hwnd):
     return title.value
 
 
+WINDOW_SURFACE = "window-surface"   # PrintWindow of the emulator's own HWND (#1057)
+
+
+def _print_window_png(hwnd, width: int, height: int) -> bytes | None:
+    """PNG of one window's own surface via PrintWindow(PW_RENDERFULLCONTENT), or None.
+
+    Works while other windows cover it. Returns None when the API is missing,
+    refuses, or produces a uniformly empty bitmap (some GPU swap chains do)."""
+    if width <= 0 or height <= 0 or width * height > 16384 * 16384:
+        return None
+    try:
+        import ctypes
+        user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+        src = user.GetWindowDC(hwnd)
+        if not src:
+            return None
+        mem = bmp = None
+        try:
+            mem = gdi.CreateCompatibleDC(src)
+            bmp = gdi.CreateCompatibleBitmap(src, width, height)
+            old = gdi.SelectObject(mem, bmp)
+            ok = user.PrintWindow(hwnd, mem, 2)              # PW_RENDERFULLCONTENT
+            gdi.SelectObject(mem, old)
+            if not ok:
+                return None
+
+            class BIH(ctypes.Structure):
+                _fields_ = [("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32), ("biHeight", ctypes.c_int32),
+                            ("biPlanes", ctypes.c_uint16), ("biBitCount", ctypes.c_uint16),
+                            ("biCompression", ctypes.c_uint32), ("biSizeImage", ctypes.c_uint32),
+                            ("biXPelsPerMeter", ctypes.c_int32), ("biYPelsPerMeter", ctypes.c_int32),
+                            ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32)]
+            info = BIH(ctypes.sizeof(BIH), width, -height, 1, 32, 0, 0, 0, 0, 0, 0)
+            buf = ctypes.create_string_buffer(width * height * 4)
+            if gdi.GetDIBits(mem, bmp, 0, height, buf, ctypes.byref(info), 0) != height:
+                return None
+        finally:
+            if bmp:
+                gdi.DeleteObject(bmp)
+            if mem:
+                gdi.DeleteDC(mem)
+            user.ReleaseDC(hwnd, src)
+        return print_window_bitmap_png(buf.raw, width, height)
+    except Exception:
+        return None
+
+
+def print_window_bitmap_png(bgra: bytes, width: int, height: int) -> bytes | None:
+    """Encode a top-down BGRA PrintWindow bitmap; None for an empty (one-colour) result."""
+    import io
+    from PIL import Image
+    if len(bgra) != width * height * 4:
+        return None
+    image = Image.frombuffer("RGB", (width, height), bgra, "raw", "BGRX", 0, 1)
+    lo, hi = zip(*image.getextrema())
+    if lo == hi:                                             # nothing rendered: let the caller report occlusion
+        return None
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    return out.getvalue()
+
+
 def win_grab(pid: int) -> bytes:
     """PNG of a local emulator window (docked or not), as the screen shows it."""
     global _last_grab
@@ -338,7 +400,14 @@ def win_grab(pid: int) -> bytes:
         if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != pid:
             foreign += 1
     if foreign >= 3:
-        raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
+        # The compositor would return the covering app. Ask the emulator's own
+        # window to render itself instead; its pixels are never another app's.
+        data = _print_window_png(h, r.right - r.left, r.bottom - r.top)
+        if not data:
+            raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
+        _last_grab = dict(pid=pid, covered=foreign, source=WINDOW_SURFACE, frame_age_s=0,
+                         sha256=sha256(data).hexdigest())
+        return data
     buf = io.BytesIO()
     ImageGrab.grab((r.left, r.top, r.right, r.bottom), all_screens=True).save(buf, "PNG")
     data = buf.getvalue()
