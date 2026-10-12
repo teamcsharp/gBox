@@ -320,6 +320,27 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script>
 const tabs = { Library: library, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+
+// Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
+// when it would run past the bottom, clamp it to the edges, and let it scroll inside when it is taller than the window.
+// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously).
+function fitMenu(el, x, y, pad = 8, minTop = pad) {
+  if (!el) return;
+  el._fitXY = [x, y, pad, minTop];
+  if (!el._fitRO && window.ResizeObserver) {
+    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.offsetParent !== null) refitMenu(el); });
+    el._fitRO.observe(el);
+  }
+  refitMenu(el);
+}
+function refitMenu(el) {
+  const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
+  el.style.maxHeight = ""; el.style.overflowY = "";
+  const w = el.offsetWidth; let h = el.offsetHeight;
+  if (h > vh - pad - minTop) { h = vh - pad - minTop; el.style.maxHeight = h + "px"; el.style.overflowY = "auto"; }
+  const top = y + h > vh - pad ? (y - h >= minTop ? y - h : vh - pad - h) : y;      // flip above the pointer, else clamp
+  el.style.left = Math.max(pad, Math.min(x, vw - w - pad)) + "px"; el.style.top = Math.max(minTop, top) + "px";
+}
 let tok = ""; try { tok = localStorage.getItem("gbox_tok") || ""; } catch {}
 const HASH = new URLSearchParams(location.hash.slice(1));      // deep links: #token=…&session=<sid>&mode=inspect
 if (HASH.get("token")) { tok = HASH.get("token"); try { localStorage.setItem("gbox_tok", tok); } catch {} }
@@ -430,10 +451,10 @@ document.addEventListener("contextmenu", e => {
   const detail = (box.innerText || "").trim().replace(/\n{2,}/g, "\n").slice(0, 1500);
   let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m);
     m.style.cssText = "position:fixed;z-index:99;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:260px;font-size:13px"; }
-  m.style.left = Math.min(innerWidth - 300, e.clientX) + "px"; m.style.top = Math.min(innerHeight - 140, e.clientY) + "px";
+  m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
   m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">⚑ Report: “${esc(what || "this")}” doesn't work in this game</button>
     <input placeholder="What did you expect? (optional)" style="width:100%;margin-top:6px;box-sizing:border-box"><div class="mut" style="margin-top:4px"></div>`;
-  m.style.display = "block";
+  m.style.display = "block"; fitMenu(m, e.clientX, e.clientY);
   const send = async () => {
     m.querySelector(".mut").textContent = "Filing the report with the game, what you tried and its output…";
     try { const r = await api("/api/requests/issue", { session_id: sid, what: what || "an option", detail, note: m.querySelector("input").value,
@@ -2299,8 +2320,8 @@ document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div
 document.addEventListener("contextmenu", async e => {
   const c = e.target.closest(".card[data-gid]"); if (!c) return; e.preventDefault();
   const gid = c.dataset.gid, el = $("#gmenu"), b = bootGet(gid);
-  el.style.left = Math.min(innerWidth - 352, e.clientX) + "px"; el.style.top = Math.max(8, Math.min(innerHeight - 420, e.clientY)) + "px";
-  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><p class="mut">loading mods…</p>`; el.classList.add("on");
+  el.style.left = e.clientX + "px"; el.style.top = e.clientY + "px";
+  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><p class="mut">loading mods…</p>`; el.classList.add("on"); fitMenu(el, e.clientX, e.clientY);
   const [mods, chars] = await Promise.all([api(`/api/mods?game_id=${encodeURIComponent(gid)}`).catch(() => []),
     api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => [])]);
   const kept = modKeepGet(gid), dmod = m => m.calls.find(x => x.tool === "@launch").input.mod;
