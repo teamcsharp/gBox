@@ -297,6 +297,39 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
     raise ValueError('Native allocation cannot fit donor geometry after bounded LOD attempts: '+str(attempts))
 
 
+def limit_influences(prims: list[dict], max_influences: int = 2) -> tuple[list[dict], dict]:
+    """Keep each vertex's heaviest joints only (native SUP stores at most two) and renormalise their weights.
+
+    The retarget keeps every mapped weight on purpose; this is the explicit reduction the SUP planner asks for.
+    Duplicate joints in a row are merged first, so a vertex that only looks over-influenced is left exact. Returns
+    (primitives, report) with how many vertices were reduced and the largest weight that was dropped."""
+    import numpy as np
+    out, reduced, dropped = [], 0, 0.0
+    for primitive in prims:
+        joints, weights = np.asarray(primitive['J'], dtype=int), np.asarray(primitive['W'], dtype=float)
+        if joints.ndim != 2 or joints.shape != weights.shape:
+            raise ValueError('skin arrays must be (vertices, influences) and share a shape')
+        new_j = np.repeat(joints[:, :1], max_influences, axis=1)
+        new_w = np.zeros((len(joints), max_influences), float)
+        for vertex in range(len(joints)):
+            merged: dict[int, float] = {}
+            for j, w in zip(joints[vertex], weights[vertex]):
+                if w > 0:
+                    merged[int(j)] = merged.get(int(j), 0.0) + float(w)
+            ranked = sorted(merged.items(), key=lambda item: (-item[1], item[0]))
+            if len(ranked) > max_influences:
+                reduced += 1
+                dropped = max(dropped, ranked[max_influences][1] / max(sum(w for _, w in ranked), 1e-12))
+                ranked = ranked[:max_influences]
+            total = sum(w for _, w in ranked) or 1.0
+            for column, (j, w) in enumerate(ranked):
+                new_j[vertex, column], new_w[vertex, column] = j, w / total
+            if not ranked:
+                new_w[vertex, 0] = 1.0
+        out.append({**primitive, 'J': new_j, 'W': new_w, 'owner': new_j[:, 0]})
+    return out, {'max_influences': max_influences, 'vertices_reduced': reduced, 'largest_weight_dropped': round(dropped, 4)}
+
+
 def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
           fighter: str, costume: str, profile: dict, *, allow_downscale: bool = False,
           progress=lambda p, m: None) -> dict:
@@ -331,6 +364,9 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
     progress(10, "Retargeting donor onto verified DOA2 body transforms")
     rig = load_rig(model, roles, [p["node"] for p in meta.get("props") or []])
     prims, fit = retarget(rig, target, (meta.get("rig") or {}).get("scale"), target["jmap"])
+    if fit.get("max_influences", 0) > 2:                       # native SUP holds two influences per vertex
+        prims, fit["influence_reduction"] = limit_influences(prims, 2)
+        progress(20, f"Reduced {fit['influence_reduction']['vertices_reduced']} vertices to two bone influences")
     lba, original_bytes = disc.files[stem + ".CHR"]
     next_lba = min((l for l, _ in disc.files.values() if l > lba), default=lba+(original_bytes+2047)//2048)
     sup_lba, sup_bytes = disc.files[stem + '.SUP']
