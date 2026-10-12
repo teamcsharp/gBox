@@ -513,6 +513,15 @@ def find_blender(cfg: Config) -> str | None:
     exe = "blender.exe" if HOST_OS == "windows" else "blender"
     found = [p for d in cfg.blender_search if Path(d).is_dir()
              for pat in (exe, f"*/{exe}", f"*/*/{exe}", f"*/*/*/{exe}") for p in Path(d).glob(pat)]
+    if not found and HOST_OS == "windows":
+        # A shared config can name another PC's user directory. Discover local
+        # installations before declaring conversion unavailable on this worker.
+        roots = [Path.home() / "Desktop" / "Blender Builds"]
+        roots += [Path(value) / "Blender Foundation" for key in ("ProgramFiles", "ProgramFiles(x86)")
+                  if (value := os.environ.get(key))]
+        found = [p for d in dict.fromkeys(roots) if d.is_dir()
+                 for pat in (exe, f"*/{exe}", f"*/*/{exe}", f"*/*/*/{exe}")
+                 for p in d.glob(pat) if p.is_file()]
     if not found:
         cands = [shutil.which("blender")] if HOST_OS == "windows" else \
                 [shutil.which("blender"), "/usr/local/bin/blender", "/usr/bin/blender"]

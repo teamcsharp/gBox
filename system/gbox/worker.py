@@ -40,9 +40,14 @@ def user_idle_seconds() -> float | None:
 
 
 def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
+    if _builtin.LOAD_ERRORS:
+        _builtin._load_tool_modules(tuple(_builtin.LOAD_ERRORS))
     ok, bad = [], {}
-    for t in REGISTRY.values():
-        reason = t.unavailable_reason(config)
+    for t in tuple(REGISTRY.values()):
+        try:
+            reason = t.unavailable_reason(config)
+        except Exception as exc:
+            reason = f'availability check failed: {type(exc).__name__}: {exc}'
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
     features = ['independent_heartbeat', 'durable_result_delivery'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])

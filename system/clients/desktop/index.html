@@ -2904,11 +2904,16 @@ function pipMenu(x, y) {
 
 async function gameClose() {                                  // ✕ on the game's bar: stop the game, take its window away
   if (!EMB.sid) { pipHandle(null); await gbox.embedKill?.(); await gbox.embedSync(null); EMB.pid = EMB.rect = null; EMB.last = ""; return; }   // a leftover window: just close it
-  const sid = EMB.sid; EMB.closed.add(sid); pipHandle(null); EMB.last = "";          // no confirm: ✕ closes, at once
-  await gbox.embedKill?.(); await gbox.embedSync(null); EMB.pid = EMB.sid = EMB.rect = null;   // gone now
-  gameJob("session_op", { session_id: sid, op: "stop_game", args: {} }).catch(() => {});        // session cleanup in the background
-  gbox.api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "close button" }).catch(() => {});  // even if its worker lost it
-  toast("Closed");
+  const sid = EMB.sid;
+  try {
+    const j = await gameJob("session_op", { session_id: sid, op: "stop_game", args: {} });
+    if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error('Emulator stop was not confirmed');
+    EMB.closed.add(sid);
+    if (EMB.sid === sid) {
+      pipHandle(null); await gbox.embedSync(null); EMB.pid = EMB.sid = EMB.rect = null; EMB.last = "";
+    }
+    toast("Closed");
+  } catch (error) { toast('Could not stop game: ' + error.message); }
 }
 // ---------------- game menu actions (right click on the game, the PiP bar or its ⋮ button) ----------------
 const GM = { menu: false, auto: false, slot: 0 };

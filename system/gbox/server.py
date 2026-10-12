@@ -1579,7 +1579,8 @@ def create_app(config: Config) -> FastAPI:
                 if assigned and assigned not in worker_ids:
                     worker_ids[assigned] = _wid(assigned)
                 worker_id = worker_ids.get(assigned)
-                reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running")
+                cleanup = job.get('tool') == 'session_op' and (job.get('input') or {}).get('op') == 'stop_game'
+                reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running") and not cleanup
                           else "assigned worker is no longer available" if worker_id and now - (job.get("created") or now) > 3600
                           and worker_id not in available else None)
                 if not reason:

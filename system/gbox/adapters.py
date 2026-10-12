@@ -74,6 +74,7 @@ def _kill_tree(proc: subprocess.Popen | None):
         proc.wait(10)
     except subprocess.TimeoutExpired:
         proc.kill()
+        proc.wait(5)  # No successful stop until the native process has actually exited.
 
 
 class CommandAdapter(Adapter):
@@ -312,6 +313,19 @@ def _print_window_png(hwnd, width: int, height: int) -> bytes | None:
     try:
         import ctypes
         user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+        from ctypes import wintypes as wt
+        for function, args, result in (
+                (user.GetWindowDC, [wt.HWND], wt.HDC),
+                (user.ReleaseDC, [wt.HWND, wt.HDC], ctypes.c_int),
+                (user.PrintWindow, [wt.HWND, wt.HDC, wt.UINT], wt.BOOL),
+                (gdi.CreateCompatibleDC, [wt.HDC], wt.HDC),
+                (gdi.CreateCompatibleBitmap, [wt.HDC, ctypes.c_int, ctypes.c_int], wt.HBITMAP),
+                (gdi.SelectObject, [wt.HDC, wt.HANDLE], wt.HANDLE),
+                (gdi.DeleteObject, [wt.HANDLE], wt.BOOL),
+                (gdi.DeleteDC, [wt.HDC], wt.BOOL),
+                (gdi.GetDIBits, [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT,
+                                ctypes.c_void_p, ctypes.c_void_p, wt.UINT], ctypes.c_int)):
+            function.argtypes, function.restype = args, result
         src = user.GetWindowDC(hwnd)
         if not src:
             return None
@@ -678,6 +692,8 @@ def _link_lst_names(lst: Path) -> list[str]:
     bins = [f for f in lst.parent.iterdir() if f.suffix.lower() in (".bin", ".dat")]
     linked = []
     for want in wants:
+        if Path(want).name != want or '/' in want or '\\' in want or ':' in want or want in ('.', '..'):
+            raise ValueError('GD list reference must be a sibling filename')
         if len(bins) != 1 or (lst.parent / want).exists():
             continue
         try:
@@ -1069,18 +1085,19 @@ class RetroArchAdapter(CommandAdapter):
         return self._set_paused(False)
 
     def _set_paused(self, wanted: bool) -> dict:
-        """Idempotent pause/resume in two status round-trips (about one frame each on the local RetroArch).
-        PAUSE_TOGGLE is a virtual hotkey press that RetroArch applies after the command poll that receives it, so the
-        status read sent right behind it only proves the press arrived and still reports the previous state. Return
-        the state the press produces instead of that stale reply, so callers don't have to poll (#1123)."""
+        """Send at most one toggle and return only an observed requested state.
+        RetroArch may report stale status in the command poll receiving the hotkey.
+        Bound the follow-up reads; an unconfirmed transition remains a failure."""
         before = self.query_runtime()
-        if (before["state"] == "PAUSED") == wanted:
+        if before.get("state") in ("PLAYING", "PAUSED") and (before["state"] == "PAUSED") == wanted:
             return before
         self.cmd("PAUSE_TOGGLE")
-        after = self.query_runtime()                      # same command poll as the toggle: delivery barrier
-        if before["state"] in ("PLAYING", "PAUSED") and after["state"] in ("PLAYING", "PAUSED"):
-            return after | {"state": "PAUSED" if wanted else "PLAYING"}
-        return after
+        for _ in range(12):
+            after = self.query_runtime()
+            if (after.get("state") == "PAUSED") == wanted and after.get("state") in ("PLAYING", "PAUSED"):
+                return after
+            time.sleep(0.05)
+        raise RuntimeError("Emulator did not confirm " + ("pause" if wanted else "resume"))
 
     def reset(self) -> dict:
         """Reset the emulated console (RetroArch RESET = the core's soft reset / power cycle); unpauses first."""

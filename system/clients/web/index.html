@@ -2394,13 +2394,17 @@ async function runJob(body) {
   while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id); }
   return j;
 }
-async function hardStop(sid, btn) {                         // no confirm: the emulator is killed at once, then the game list
+async function hardStop(sid, btn) {
   if (btn) btn.disabled = true;
-  if (active?.sid === sid) { active = null; pip(); }
-  // ended first: the app stops showing it at once (no picture-in-picture of a game that's being killed), then the kill
-  await api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "stop button" }).catch(() => {});
-  runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
-  show("Library");
+  try {
+    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
+    if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error(j.error || 'Emulator stop was not confirmed');
+    if (active?.sid === sid) { active = null; pip(); }
+    show("Library");
+  } catch (error) {
+    if (btn) btn.title = 'Could not stop game: ' + error.message;
+    const status = $('#sopres'); if (status) status.textContent = 'Could not stop game: ' + error.message;
+  } finally { if (btn) btn.disabled = false; }
 }
 async function resetGame(sid, btn, hard) {
   if (hard) return hardReset(sid, btn);                       // no confirm: console reset, else relaunch the same game (+ mod)

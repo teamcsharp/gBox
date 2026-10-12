@@ -199,13 +199,46 @@ def test_get_frame_real_capture(tmp_path):
 
 
 def test_retroarch_pause_reports_the_state_its_toggle_produces():
-    """#1123: a status read sent straight behind PAUSE_TOGGLE is stale; pause/resume answer with the new state in two
-    status round-trips, stay idempotent and never send a blind toggle."""
+    """#1123: a status read sent straight behind PAUSE_TOGGLE is stale; pause/resume wait for an observed new state,
+    stay idempotent and never send a blind toggle."""
     fake = DeferredToggleRetroArch()
     fake.start()
     ad = adapters.RetroArchAdapter(EmulatorConfig(adapter="retroarch", executable="x", core="y"), port=fake.port)
     assert ad.pause()["state"] == "PAUSED" and fake.paused
-    assert fake.log == ["GET_STATUS", "PAUSE_TOGGLE", "GET_STATUS"]
+    assert fake.log == ["GET_STATUS", "PAUSE_TOGGLE", "GET_STATUS", "GET_STATUS"]
     assert ad.pause()["state"] == "PAUSED" and fake.paused and fake.log.count("PAUSE_TOGGLE") == 1
     assert ad.resume()["state"] == "PLAYING" and not fake.paused and fake.log.count("PAUSE_TOGGLE") == 2
     assert ad.resume()["content"] == "dreamcast,PSO,crc32=0" and not fake.paused and fake.log.count("PAUSE_TOGGLE") == 2
+
+
+def test_retroarch_pause_never_claims_an_unconfirmed_transition(monkeypatch):
+    ad = adapters.RetroArchAdapter(EmulatorConfig(adapter="retroarch", executable="x", core="y"))
+    sent = []
+    monkeypatch.setattr(ad, "query_runtime", lambda: {"state": "PLAYING"})
+    monkeypatch.setattr(ad, "cmd", lambda *args, **kwargs: sent.append(args))
+    monkeypatch.setattr(adapters.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="did not confirm pause"):
+        ad.pause()
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("reference", ["../escape.bin", "sub/escape.bin", r"sub\escape.bin", "C:escape.bin"])
+def test_gd_list_links_cannot_escape_staging(tmp_path, reference):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "data.bin").write_bytes(b"original")
+    lst = stage / "game.lst"
+    lst.write_text('1 0 4 2352 "' + reference + '" 0\n')
+    with pytest.raises(ValueError, match="sibling filename"):
+        adapters._link_lst_names(lst)
+    assert sorted(p.name for p in stage.iterdir()) == ["data.bin", "game.lst"]
+    assert not (tmp_path / "escape.bin").exists()
+
+
+def test_gd_list_repairs_a_missing_sibling_name(tmp_path):
+    (tmp_path / "data.bin").write_bytes(b"original")
+    lst = tmp_path / "game.lst"
+    lst.write_text('1 0 4 2352 "expected.bin" 0\n')
+    assert adapters._link_lst_names(lst) == ["expected.bin"]
+    assert (tmp_path / "expected.bin").read_bytes() == b"original"
+    assert adapters._link_lst_names(lst) == []

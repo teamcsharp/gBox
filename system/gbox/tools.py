@@ -739,6 +739,9 @@ def session_op(inp: SessionIn, ctx: Ctx):
         except Exception:
             pass
     if inp.op == "stop_game":
+        proc = getattr(ad, 'proc', None)
+        if proc is not None and proc.poll() is None:
+            raise RuntimeError('Emulator process is still running; stop was not confirmed')
         SESSIONS.pop(inp.session_id, None)
         track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
