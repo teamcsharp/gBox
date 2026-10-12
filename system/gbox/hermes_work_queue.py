@@ -204,14 +204,37 @@ def candidates(data, requests, native, owned, on_main, *, now):
     return [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
 
 
+def priority_rank(item, data) -> int:
+    """Position of this item's game or request in the operator's priority list; past the end when not listed."""
+    order = [str(x) for x in (data.get('priority') or [])]
+    for key in (item.get('game_id'), item.get('request_id'), str(item.get('number') or '')):
+        if key and key in order:
+            return order.index(key)
+    return len(order)
+
+
+def set_priority(ids) -> list[str]:
+    """Operator priority: game ids and/or request ids (or numbers) worked first in their lane; saved in the queue data."""
+    data = _read()
+    data['priority'] = [str(x).strip() for x in ids if str(x).strip()]
+    _save(data)
+    return data['priority']
+
+
+def get_priority() -> list[str]:
+    return list(_read().get('priority') or [])
+
+
 def choose(options, data):
-    """Alternate lanes and first attempts/follow-ups so acceptance is not postponed indefinitely."""
+    """Alternate lanes and first attempts/follow-ups so acceptance is not postponed indefinitely; inside a lane the
+    operator's priority list (games or requests) comes first."""
     preferred = 'favorite' if data.get('last_lane') == 'inbox' else 'inbox'
     lane = [v for v in options if v[1]['lane'] == preferred] or options
     if lane and len({v[1]['lane'] for v in lane}) == 1:
         followup = data.get('last_' + lane[0][1]['lane'] + '_kind') == 'new'
         lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
     return min(lane, key=lambda v: (
+        priority_rank(v[1], data),
         0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') or v[1].get('session_observer') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
         v[1].get('last_dispatched', 0),
         v[1].get('created', 0), v[0])) if lane else None
