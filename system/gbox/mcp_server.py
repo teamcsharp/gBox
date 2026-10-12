@@ -15,7 +15,9 @@ import httpx
 import mcp_types as T
 from mcp.server.lowlevel import Server
 
-from . import hermes_tasks
+from . import hermes_merges, hermes_tasks
+
+READY_LIMIT = 25        # ready_to_verify entries list_requests returns (#1308)
 S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
 ADDR = {"type": ["string", "integer"], "description": "hex string (0x80001234) or integer"}
 PREFIX = "job_"                                   # registry tools; unprefixed names are the conveniences below
@@ -72,7 +74,7 @@ CONVENIENCE = {
     "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
-    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists.",
+    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
                       obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
                     obj({"request_id": S}, ["request_id"])),
@@ -151,6 +153,14 @@ def build(base_url: str, token: str) -> Server:
             last = {r['id']: max([m.get('ts') or 0 for m in r.get('messages') or []
                                   if m.get('author') == 'operator'] or [0.0]) for r in rows}
             return {rid: s for rid, s in hermes_tasks.ticket_streaks(runs, last).items() if rid in last}
+        except Exception:
+            return {}
+
+    def _on_main_requests(rows):
+        """Listed tickets whose published branch is fully on main (#1308); {} on any error."""
+        try:
+            listed = {r["id"] for r in rows}
+            return {rid: sha for rid, sha in hermes_merges.on_main_requests().items() if rid in listed}
         except Exception:
             return {}
 
@@ -263,13 +273,25 @@ def build(base_url: str, token: str) -> Server:
                 rows = [r for r in rows if not (r.get("title") or "").startswith("gBox request review (recurring")]
             offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
             capped = await _capped_requests(rows)
-            return {"total": len(rows), "offset": offset, "items": [
+            merged = _on_main_requests(rows)
+            out = {"total": len(rows), "offset": offset, "items": [
                 {"id": r["id"], "number": r.get("number"), "title": r.get("title"), "status": r.get("status"),
                  "source": r.get("source"), "automated": r.get("automated"), "parent_request_id": r.get("parent_request_id"),
                  "created": r.get("created"), "summary": (r.get("body") or "")[:350]}
                 | ({"hermes_capped": {"runs": capped[r["id"]]["runs"],
                                       "note": hermes_tasks.capped_note(capped[r["id"]])}} if r["id"] in capped else {})
+                | ({"hermes_on_main": {"sha": merged[r["id"]],
+                                       "note": hermes_merges.VERIFY_NOTE.format(sha=merged[r["id"]][:12])}}
+                   if r["id"] in merged else {})
                 for r in rows[offset:offset + limit]]}
+            if merged:
+                # Whole inbox, not just this page: the oldest merged tickets sit far below the newest chat.
+                out["ready_to_verify"] = [
+                    {"id": r["id"], "number": r.get("number"), "title": (r.get("title") or "")[:100],
+                     "status": r.get("status"), "sha": merged[r["id"]][:12]}
+                    | ({"hermes_capped": True} if r["id"] in capped else {})
+                    for r in rows if r["id"] in merged][:READY_LIMIT]
+            return out
         if name == "get_request":
             return await get(f"/api/requests/{a['request_id']}")
         if name == "reply_request":
