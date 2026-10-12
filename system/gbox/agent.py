@@ -31,18 +31,23 @@ How to work:
   for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
-- Cheats like "infinite lives/health/money": web_search for the game's GameShark/Action Replay/Pro Action Replay codes or a RAM map,
-  convert the code to an address (e.g. N64/GameCube GameShark 80XXXXXX YY = 8-bit write of YY at 0x80XXXXXX, 81XXXXXX YYYY = 16-bit;
-  NES Game Genie needs decoding, Pro Action Replay 7EXXXXYY = SNES WRAM 0x7EXXXX), read_memory there to sanity-check the current value,
-  then freeze_memory to hold it. If no code is found, use memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec",
-  then "eq" with the shown value) and freeze the surviving address. Tell the operator what you changed and how to undo it.
+- Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
+  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods);
+  (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
+  memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
+  surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
+  address (N64/GameCube GameShark 80XXXXXX YY = 8-bit write of YY at 0x80XXXXXX, 81XXXXXX YYYY = 16-bit; NES Game Genie needs
+  decoding, Pro Action Replay 7EXXXXYY = SNES WRAM 0x7EXXXX), read_memory there to sanity-check the current value, then freeze_memory.
+  Whatever worked: remember it. Tell the operator what you changed and how to undo it.
 - Sprites/graphics: extract_tiles from the ROM (cartridge systems) with the right format (nes, gb, snes, md, lin8, one); it lands on the
   gBox clipboard so the operator presses Ctrl+Shift+V in Blender. Try several offsets/formats if the first looks like noise.
 - CPU-level work: debugger(op="break", kind="write", address=<HP/lives address>) then resume and wait for the hit to find the code
   that changes a value; debugger(op="info") shows registers, op="disasm" the code. Always resume the CPU when you're done.
 - Reverse engineering: ghidra_scripts to find a script, analyze_binary / ghidra_script to run Ghidra on an executable.
 - "Put me on <stage/world/level>", "play as <character>", "skip to <boss>": DO IT, don't explain how the operator could.
-  Playbook, in order, until it works: (1) web_search the game's RAM map / level-select or debug code / "level ID list"
+  Playbook, in order, until it works: (0) recall + re_dossier op=read (addresses gBox already verified) and the game's own
+  tool when it has the warp (zelda_oot op=goto / skip_deku_tree, stage_warp op=warp, re_mods, gta_mods, pso autoplay);
+  (1) otherwise web_search the game's RAM map / level-select or debug code / "level ID list"
   (datacrystal.tcrf.net, tcrf.net, smwcentral.net, gamehacking.org, speedrun wikis), web_fetch the page for exact addresses and IDs;
   (2) read_memory those addresses to confirm the live values match (current level/world/character); (3) write_memory the target
   level/world/character ID (plus any "unlocked/cleared" flags and the transition/load trigger, e.g. set the level number and force
@@ -90,7 +95,7 @@ How to work:
   on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
   "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
   session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
-- "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (pso_mods op=noclip, zelda op=noclip), else
+- "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (zelda op=noclip; PSO has no noclip op), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
 - After mercenaries_unlock the title menu rebuilds once the attract demo plays (~60 s idle) then Start; Up once from LOAD
@@ -202,8 +207,9 @@ def tool_specs() -> list[dict]:
            {"game": s, "source": s, "session_id": s, "analyze": b}),
         fn("remember", "Save a verified fact to gBox's knowledge base so later questions are answered instantly (e.g. 'PSO v2 DC: meseta "
            "u32 at 0x8C...; verified by write'). Only facts you verified.", {"text": s, "title": s}, ["text"]),
-        fn("web_search", "Search the web (SearXNG). Use for cheat codes, RAM maps, game facts, wikis (Fandom, Wikipedia, "
-           "game wikis), tool docs. The operator sees the results as link cards with page thumbnails.", {"query": s, "n": i}, ["query"]),
+        fn("web_search", "Search the web (SearXNG). Use for game facts, wikis (Fandom, Wikipedia, game wikis) and tool docs; for "
+           "cheat codes and RAM maps only after recall, the game's own tool and cheats op=list came up empty. The operator sees "
+           "the results as link cards with page thumbnails.", {"query": s, "n": i}, ["query"]),
         fn("web_fetch", "Read a web page (wiki article, guide, FAQ) as plain text (first ~6000 chars); shown to the operator "
            "as a card with the page's thumbnail.", {"url": s}, ["url"]),
         fn("wiki", "Read a wiki article through the MediaWiki API (reliable; web pages of wikis are often bot-blocked). "

@@ -1499,7 +1499,7 @@ class OotOut(BaseModel):
 
 @tool("zelda_oot", "1.0", OotIn, OotOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=180)
 def zelda_oot(inp: OotIn, ctx: Ctx):
-    """Zelda: Ocarina of Time (N64 USA v1.2) on a live session: skip the Deku Tree, warp anywhere (dungeons, boss rooms,
+    """Zelda: Ocarina of Time (N64 USA 1.0 / 1.1 / 1.2) on a live session: skip the Deku Tree, warp anywhere (dungeons, boss rooms,
     the final battle) with the gear for it, give/equip items, resize Link. Warps are guarded: a save state is taken first
     and reloaded automatically if the game hangs; the result says whether the warp landed."""
     import struct as _s
@@ -1518,7 +1518,7 @@ def zelda_oot(inp: OotIn, ctx: Ctx):
     if inp.op == "full_inventory":
         return {"result": oot.full_inventory(ad)}
     if inp.op == "scale":
-        pl = _s.unpack(">I", oot._rd(ad, oot.PLAY + 0x1C44, 4))[0]
+        pl = _s.unpack(">I", oot._rd(ad, oot.play(ad) + 0x1C44, 4))[0]
         if not pl:
             raise RuntimeError("no Link actor right now (title screen / scene loading)")
         oot._wr(ad, pl + 0x50, _s.pack(">3f", *[0.01 * inp.factor] * 3))

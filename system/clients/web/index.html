@@ -1854,9 +1854,17 @@ function modWatch(gid, sid, mods) {                       // re-apply kept patch
     if (pso) { const j = await runJob({ tool: "pso_mods", input: { session_id: sid, op: "status" }, require_worker: sid.split("-")[0] }).catch(() => null); st = j?.output?.result?.status; }
     for (const m of keep) {
       const off = m.calls.some(c => c.tool === "pso_mods" && st && st[c.input.op] === "off");
+      if (m._gaveUp) continue;                            // three failed re-applies: stop retrying (#1130); the card says why
       if (off || (!m._applied && !pso)) { m._applied = true; modApply(m, sid).then(r => {
         const i = mods.indexOf(m), card = document.querySelector(`.wbm[data-m="${i}"]`);
-        if (card) { card.classList.add("on"); card.querySelector(".row i").textContent = "kept on · " + r.summary; } }).catch(() => { m._applied = false; }); }
+        m._fails = 0;
+        if (card) { card.classList.add("on"); card.querySelector(".row i").textContent = "kept on · " + r.summary; } }).catch(e => {
+        m._applied = false; m._fails = (m._fails || 0) + 1;
+        if (m._fails >= 3) {
+          m._gaveUp = String((e && e.message) || e);
+          const i = mods.indexOf(m), card = document.querySelector(`.wbm[data-m="${i}"]`);
+          if (card) { card.classList.remove("on"); card.querySelector(".row i").textContent = "kept off · failed 3 times: " + m._gaveUp + " (turn it on again to retry)"; }
+        } }); }
     }
   };
   MODWATCH.mods = mods; MODWATCH.tick = tick;
@@ -1971,7 +1979,7 @@ async function wbInit() {
       try {
         if (turnOff) { const res = await modOff(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.remove("on");
                        modKeep(gid, m.id, false); if (modOffable(m)) btn.textContent = "Turn on"; }
-        else { const res = await modApply(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.add("on");
+        else { m._gaveUp = null; m._fails = 0; const res = await modApply(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.add("on");
                if (modOffable(m)) btn.textContent = "Turn off";
                if (modSticky(m)) modKeep(gid, m.id, true);
                if (!m.thumb && !m.calls.some(c => c.tool === "@launch")) setTimeout(() => modShot(m, sid, card, false), 1500); } }
