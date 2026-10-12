@@ -9,7 +9,7 @@ from gbox import mvc2_inventory as inv
 from gbox.gdrom import GDRom, gdi_fields
 
 START = 45000
-OWNED = Path.home() / "gbox-cache/dc/02db6d37c0e20375/disc.gdi"
+OWNED = Path.home() / "gbox-cache/dc/mvc2_usa_chd/disc.gdi"
 
 
 def _rec(extent: int, size: int, flags: int, name: bytes) -> bytes:
