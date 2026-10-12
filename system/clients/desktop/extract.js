@@ -138,11 +138,16 @@ async function select(it) {
   if (it.kind === "mesh") {
     const g = it.obj.geometry, m = it.obj.material, img = m.map?.image;
     let thumb = "";
-    if (img) { const c = document.createElement("canvas"); c.width = 128; c.height = 128 * (img.height / img.width || 1); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height); thumb = `<img class="xtex" title="Click to inspect the texture" src="${c.toDataURL()}">`; X.texImg = img; }
+    let full = "";
+    if (img) {                                              // thumbnail in the inspector; the full texture opens in the texture pop-up (#186)
+      const c = document.createElement("canvas"); c.width = img.width; c.height = img.height; c.getContext("2d").drawImage(img, 0, 0); full = c.toDataURL();
+      const t = document.createElement("canvas"); t.width = 128; t.height = Math.max(1, Math.round(128 * (img.height / img.width || 1))); t.getContext("2d").drawImage(img, 0, 0, t.width, t.height);
+      thumb = `<img class="xtex tpable" title="Click to inspect the texture: zoom, channels, histogram, save" data-name="${esc(m.name || it.name)}" src="${t.toDataURL()}">`;
+    }
     ins.innerHTML = `<h4>${esc(it.name)}</h4><table class="kv"><tr><td>type</td><td>area mesh</td></tr><tr><td>vertices</td><td>${g.attributes.position.count}</td></tr>
       <tr><td>triangles</td><td>${(g.index ? g.index.count : g.attributes.position.count) / 3}</td></tr><tr><td>material</td><td>${esc(m.name || "")}</td></tr>
       <tr><td>package</td><td>${esc(X.area.name)}</td></tr></table>${thumb}<p class="mut">Textures and geometry come from the disc (d.rel + PVM).</p>`;
-    ins.querySelector(".xtex")?.addEventListener("click", () => texView(X.texImg, m.name || it.name));
+    const tex = ins.querySelector(".xtex"); if (tex) tex.tpSrc = full;   // the pop-up reads the full-size pixels from here
     return;
   }
   const e = it.e;
@@ -154,67 +159,6 @@ async function select(it) {
     const h = typeof hex === "string" ? hex : hex.hex || "";
     q("#xt-hex").textContent = h.match(/.{1,32}/g).map((l, i) => `+${(i * 16).toString(16).padStart(3, "0")}  ${l.match(/../g).join(" ")}`).join("\n");
   } catch (err) { q("#xt-hex").textContent = err.message; }
-}
-
-// ---------------- texture inspector: zoom / pan, channels, histogram ----------------
-function texView(img, name) {
-  let p = document.querySelector("#texv");
-  if (!p) {
-    document.body.insertAdjacentHTML("beforeend", `<div id="texv"><div class="ah"><b id="tv-name"></b><span class="mut" id="tv-info"></span>
-      <span class="tvch">${["RGB", "R", "G", "B", "A", "Luma"].map(c => `<button data-c="${c}">${c}</button>`).join("")}</span>
-      <label class="mut"><input type="checkbox" id="tv-px" checked> pixels</label><button class="act" id="tv-fit">Fit</button>
-      <button class="act" id="tv-close">✕</button></div>
-      <div class="tvbody"><canvas id="tv-cv"></canvas><canvas id="tv-hist" width="512" height="120"></canvas><div id="tv-px-info" class="mut"></div></div></div>`);
-    p = document.querySelector("#texv");
-    if (window.floating) floating(p, p.querySelector(".ah"), "texv");
-    p.querySelector("#tv-close").onclick = () => p.classList.remove("on");
-    p.querySelector(".tvch").onclick = e => { const c = e.target.dataset?.c; if (c) { TV.ch = c; tvDraw(); } };
-    p.querySelector("#tv-px").onchange = tvDraw;
-    p.querySelector("#tv-fit").onclick = () => { tvFit(); tvDraw(); };
-    const cv = p.querySelector("#tv-cv");
-    cv.addEventListener("wheel", e => { e.preventDefault(); const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
-      const k = e.deltaY < 0 ? 1.25 : 0.8; TV.x = mx - (mx - TV.x) * k; TV.y = my - (my - TV.y) * k; TV.z *= k; tvDraw(); }, { passive: false });
-    cv.addEventListener("pointerdown", e => { const sx = e.clientX - TV.x, sy = e.clientY - TV.y; cv.setPointerCapture(e.pointerId);
-      cv.onpointermove = ev => { TV.x = ev.clientX - sx; TV.y = ev.clientY - sy; tvDraw(); }; cv.onpointerup = () => cv.onpointermove = null; });
-    cv.addEventListener("mousemove", e => { const r = cv.getBoundingClientRect(), u = Math.floor((e.clientX - r.left - TV.x) / TV.z), v = Math.floor((e.clientY - r.top - TV.y) / TV.z);
-      if (u < 0 || v < 0 || u >= TV.w || v >= TV.h) return; const i = (v * TV.w + u) * 4, d = TV.data;
-      p.querySelector("#tv-px-info").textContent = `x ${u} y ${v} · R ${d[i]} G ${d[i + 1]} B ${d[i + 2]} A ${d[i + 3]} · #${[d[i], d[i + 1], d[i + 2]].map(x => x.toString(16).padStart(2, "0")).join("")}`; });
-    new ResizeObserver(tvDraw).observe(cv);
-  }
-  const c = document.createElement("canvas"); c.width = img.width; c.height = img.height; c.getContext("2d").drawImage(img, 0, 0);
-  Object.assign(TV, { w: img.width, h: img.height, data: c.getContext("2d").getImageData(0, 0, img.width, img.height).data, ch: "RGB" });
-  p.querySelector("#tv-name").textContent = name; p.querySelector("#tv-info").textContent = `${img.width}×${img.height}`;
-  p.classList.add("on"); requestAnimationFrame(() => { tvFit(); tvDraw(); });
-}
-const TV = { z: 1, x: 0, y: 0, ch: "RGB" };
-function tvFit() { const cv = document.querySelector("#tv-cv"); TV.z = Math.min(cv.clientWidth / TV.w, cv.clientHeight / TV.h) * 0.95;
-  TV.x = (cv.clientWidth - TV.w * TV.z) / 2; TV.y = (cv.clientHeight - TV.h * TV.z) / 2; }
-function tvDraw() {
-  const cv = document.querySelector("#tv-cv"); if (!cv || !TV.data) return;
-  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
-  const g = cv.getContext("2d"), src = new ImageData(TV.w, TV.h), d = TV.data, o = src.data, ch = TV.ch;
-  for (let i = 0; i < d.length; i += 4) {
-    const L = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
-    const v = ch === "R" ? d[i] : ch === "G" ? d[i + 1] : ch === "B" ? d[i + 2] : ch === "A" ? d[i + 3] : L;
-    if (ch === "RGB") { o[i] = d[i]; o[i + 1] = d[i + 1]; o[i + 2] = d[i + 2]; o[i + 3] = d[i + 3]; }
-    else { o[i] = o[i + 1] = o[i + 2] = v; o[i + 3] = 255; }
-  }
-  const t = document.createElement("canvas"); t.width = TV.w; t.height = TV.h; t.getContext("2d").putImageData(src, 0, 0);
-  for (let y = 0; y < cv.height; y += 16) for (let x = 0; x < cv.width; x += 16) { g.fillStyle = (x + y) / 16 % 2 ? "#2a2a30" : "#1e1e24"; g.fillRect(x, y, 16, 16); }
-  g.imageSmoothingEnabled = !document.querySelector("#tv-px").checked;
-  g.drawImage(t, TV.x, TV.y, TV.w * TV.z, TV.h * TV.z);
-  document.querySelectorAll("#texv .tvch button").forEach(b => b.classList.toggle("on", b.dataset.c === ch));
-  // histogram of the channel(s) shown
-  const hc = document.querySelector("#tv-hist"), hg = hc.getContext("2d"); hg.clearRect(0, 0, 512, 120); hg.fillStyle = "#111"; hg.fillRect(0, 0, 512, 120);
-  const sets = ch === "RGB" ? [[0, "#ff5a5a"], [1, "#5aff7a"], [2, "#5a8cff"]] : [[{ R: 0, G: 1, B: 2, A: 3, Luma: -1 }[ch], "#ddd"]];
-  hg.globalCompositeOperation = "lighter";
-  for (const [k, col] of sets) {
-    const h = new Uint32Array(256);
-    for (let i = 0; i < d.length; i += 4) h[k < 0 ? Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) : d[i + k]]++;
-    const max = Math.max(...h) || 1; hg.fillStyle = col;
-    for (let b = 0; b < 256; b++) { const v = Math.sqrt(h[b] / max) * 116; hg.fillRect(b * 2, 120 - v, 2, v); }
-  }
-  hg.globalCompositeOperation = "source-over";
 }
 
 function focus(o) {
