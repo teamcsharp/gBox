@@ -2643,9 +2643,10 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu") and not req.op.startswith("debug_"):
-            raise HTTPException(422, "read-only, reset and debug_* ops only; edits go through the write_memory job")
-        if req.op in ("reset", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
+        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume") \
+                and not req.op.startswith("debug_"):
+            raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
+        if req.op in ("reset", "pause", "resume", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
             store.audit(actor, f"session.{req.op}", sid, req.args)
         rid, lv = new_id(), _live(sid)
         with lv["cond"]:

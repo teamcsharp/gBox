@@ -949,14 +949,24 @@ class RetroArchAdapter(CommandAdapter):
                 "content": parts[2] if len(parts) > 2 else None}
 
     def pause(self) -> dict:
-        if self.query_runtime()["state"] != "PAUSED":
-            self.cmd("PAUSE_TOGGLE")
-        return self.query_runtime()
+        return self._set_paused(True)
 
     def resume(self) -> dict:
-        if self.query_runtime()["state"] == "PAUSED":
-            self.cmd("PAUSE_TOGGLE")
-        return self.query_runtime()
+        return self._set_paused(False)
+
+    def _set_paused(self, wanted: bool) -> dict:
+        """Idempotent pause/resume in two status round-trips (about one frame each on the local RetroArch).
+        PAUSE_TOGGLE is a virtual hotkey press that RetroArch applies after the command poll that receives it, so the
+        status read sent right behind it only proves the press arrived and still reports the previous state. Return
+        the state the press produces instead of that stale reply, so callers don't have to poll (#1123)."""
+        before = self.query_runtime()
+        if (before["state"] == "PAUSED") == wanted:
+            return before
+        self.cmd("PAUSE_TOGGLE")
+        after = self.query_runtime()                      # same command poll as the toggle: delivery barrier
+        if before["state"] in ("PLAYING", "PAUSED") and after["state"] in ("PLAYING", "PAUSED"):
+            return after | {"state": "PAUSED" if wanted else "PLAYING"}
+        return after
 
     def reset(self) -> dict:
         """Reset the emulated console (RetroArch RESET = the core's soft reset / power cycle); unpauses first."""

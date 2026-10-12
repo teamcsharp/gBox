@@ -47,6 +47,25 @@ class FakeRetroArch(threading.Thread):
                 self.s.sendto(f"WRITE_CORE_MEMORY {cmd[1]} {len(bs)}".encode(), addr)
 
 
+class DeferredToggleRetroArch(FakeRetroArch):
+    """Like RetroArch itself: PAUSE_TOGGLE is a virtual hotkey press applied after the command poll that received it,
+    so a status read in that same poll still reports the previous state (#1123)."""
+
+    def run(self):
+        pending = False
+        while True:
+            data, addr = self.s.recvfrom(65536)
+            cmd = data.decode().split()[0]
+            self.log.append(cmd)
+            if cmd == "GET_STATUS":
+                shown = self.paused
+                if pending:
+                    self.paused, pending = not self.paused, False
+                self.s.sendto(f"GET_STATUS {'PAUSED' if shown else 'PLAYING'} dreamcast,PSO,crc32=0".encode(), addr)
+            elif cmd == "PAUSE_TOGGLE":
+                pending = True
+
+
 @pytest.fixture
 def ra():
     fake = FakeRetroArch()
@@ -177,3 +196,16 @@ def test_get_frame_real_capture(tmp_path):
     t = REGISTRY["get_frame"]
     assert (out["width"], out["height"]) == (32, 24)
     assert t.validate(t.Out.model_validate(out), arts) == []
+
+
+def test_retroarch_pause_reports_the_state_its_toggle_produces():
+    """#1123: a status read sent straight behind PAUSE_TOGGLE is stale; pause/resume answer with the new state in two
+    status round-trips, stay idempotent and never send a blind toggle."""
+    fake = DeferredToggleRetroArch()
+    fake.start()
+    ad = adapters.RetroArchAdapter(EmulatorConfig(adapter="retroarch", executable="x", core="y"), port=fake.port)
+    assert ad.pause()["state"] == "PAUSED" and fake.paused
+    assert fake.log == ["GET_STATUS", "PAUSE_TOGGLE", "GET_STATUS"]
+    assert ad.pause()["state"] == "PAUSED" and fake.paused and fake.log.count("PAUSE_TOGGLE") == 1
+    assert ad.resume()["state"] == "PLAYING" and not fake.paused and fake.log.count("PAUSE_TOGGLE") == 2
+    assert ad.resume()["content"] == "dreamcast,PSO,crc32=0" and not fake.paused and fake.log.count("PAUSE_TOGGLE") == 2

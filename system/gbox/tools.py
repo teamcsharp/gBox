@@ -455,6 +455,20 @@ def _stageable(src: Path) -> bool:
     return src.suffix.lower() not in (".cue", ".gdi", ".m3u")
 
 
+def _rpc_answerer(sid: str, client):
+    """Answer live-channel requests (pause/resume, reset, inspector reads) through one keep-alive client. A new httpx
+    client per reply builds an SSL context and opens a TCP connection every time, on the path of every click (#1123)."""
+    def answer(ev):
+        try:
+            result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {})}
+        except Exception as e:
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        try:
+            client.post(f"/api/sessions/{sid}/rpc/{ev['rpc']}", json=result)
+        except httpx.HTTPError:
+            pass
+    return answer
+
 def _pump(sid: str, ad, server: str, headers: dict):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -481,15 +495,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
             except httpx.HTTPError:
                 time.sleep(1)
 
-    def answer(ev):
-        try:
-            result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {})}
-        except Exception as e:
-            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        try:
-            httpx.post(f"{server}/api/sessions/{sid}/rpc/{ev['rpc']}", json=result, headers=headers, timeout=10)
-        except httpx.HTTPError:
-            pass
+    answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10))
 
     def inputs():
         # one channel carries pad/keyboard events and read-only inspector requests ({"rpc": id, "op", "args"})
@@ -573,11 +579,15 @@ def session_rpc(sid: str, op: str, args: dict):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')}: open its controller settings from its own window")
         ad.cmd("MENU_TOGGLE")
         return {"menu": "toggled"}
+    if op in ("pause", "resume"):                      # the pause button, instantly (no job queue, #1123)
+        if op not in getattr(ad, "supported", ()):
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} cannot {op} from gBox")
+        return getattr(ad, op)() or {}
     if op == "reset":                                  # the console's reset switch, instantly (no job queue)
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
         return ad.reset() or {"reset": True}
-    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, debug_*)")
+    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, pause, resume, debug_*)")
 
 
 def _semantic_state(ad, g: dict, player_only: bool = False):

@@ -2449,8 +2449,12 @@ function watchSessionPause(sid) {
   const control = GBoxSessionPause.create({
     read: async () => (await rpc(sid, 'info', {})).runtime,
     command: async op => {
+      // The live session channel reaches the emulator in one round trip; the job queue waits for a worker claim.
+      // Older servers/workers refuse pause over it, and pause/resume are idempotent, so falling back is safe (#1123).
+      try { return await rpc(sid, op, {}); } catch {}
       const j = await runJob({ tool: 'session_op', input: { session_id: sid, op }, require_worker: sid.split('-')[0] });
       if (j.state !== 'succeeded') throw new Error(j.error || `${op}: ${j.state}`);
+      return j.output?.result;
     },
     render: ({ paused, busy }) => {
       if (!current()) return;
@@ -2482,6 +2486,11 @@ function watchSessionPause(sid) {
   poll();
 }
 async function sop(sid, op) {
+  if ((op === 'pause' || op === 'resume') && sessionPause?.sid === sid) {
+    const state = await sessionPause.control.refresh().catch(() => undefined);
+    if (state === (op === 'pause')) { const el = $("#sopres"); if (el) el.textContent = `${op}: already ${state ? 'paused' : 'running'}`; return; }
+    if (state !== undefined) return sessionPause.control.toggle();   // live session channel, no job queue (#1123)
+  }
   const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });
   if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }
   const el = $("#sopres"); if (el) el.textContent = `${op}: ${j.state} ${j.error || JSON.stringify(j.output?.result || "")}`;
