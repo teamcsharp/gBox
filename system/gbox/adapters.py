@@ -35,6 +35,10 @@ FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
 # Keep rendered textures in emulated VRAM, so future states can include them.
 # Unthreaded rendering also keeps serialization size stable between query/write.
 FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+# Windows N64 (docked, resizable window) uses parallel_n64's software angrylion RDP, whose output scales with the window.
+# angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
+# angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
+N64_WINDOWS_OPTS = {"parallel-n64-gfxplugin": "angrylion", "parallel-n64-rspplugin": "cxd4"}
 
 
 def _set_core_opts(path: Path, values: dict[str, str]) -> None:
@@ -649,9 +653,7 @@ class RetroArchAdapter(CommandAdapter):
                 "suspend_screensaver_enable": "false", "video_font_enable": "false"}
         co = d["retroarch"] / "core-options.cfg"              # Flycast: threaded rendering lets the state grow between the size
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
-            set_opt = {"parallel-n64-gfxplugin": "angrylion"}             # draw at launch size -> squeezed/cropped picture;
-            lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if l.split(" =")[0] not in set_opt]   # software
-            co.write_text("\n".join(lines + [f'{k} = "{v}"' for k, v in set_opt.items()]) + "\n")                        # output scales
+            _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") in FLYCAST_PLATFORMS:
             _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
