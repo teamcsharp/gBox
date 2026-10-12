@@ -108,3 +108,41 @@ def test_fit_kmd_retargets_library_model_inside_budget():
     # each limb lands in its own Snake object's local frame (arms hang down like Snake's)
     for i in (2, 7, 10, 13):
         assert fitted.objects[i].bbox[1] < -200 and fitted.objects[i].bbox[4] < 200
+
+
+def test_weld_seams_snaps_and_pairs_only_seam_vertices_of_pairing_objects():
+    model = two_bones(flag_child_weld=False)
+    child = model.objects[1]
+    # unwelded rigid fit: one vertex 3 units off the parent's (10,0,0), one far away
+    child.vertices = [(13, 0, 0, -1), (0, -100, 0, -1), (5, -100, 0, -1)]
+    original = two_bones()
+    welded, n = K.weld_seams(original, model, radius=8)
+    assert n == 1
+    assert welded.objects[1].vertices[0] == (10, 0, 0, 1)          # snapped onto parent vertex 1 and paired
+    assert welded.objects[1].vertices[1][3] == -1
+    # normalize ran: parent corner of vertex 1 now exports the weld, nothing else does
+    assert welded.objects[0].face_normals == [(0, 0x80, 0x80, 0)]
+    assert K.check_compatible(original, welded) == []
+    # an object whose game record lacks the pair flag never welds
+    plain = two_bones()
+    for o in plain.objects:
+        o.flags = 0x1
+    model.objects[0].flags = model.objects[1].flags = 0x1
+    _, n = K.weld_seams(plain, model, radius=8)
+    assert n == 0
+
+
+def test_fitted_hucast_is_welded_and_still_fits_the_disc_allocation():
+    import json
+    from gbox import mgs_vr_swap as W, oot_swap
+    lib = HOME / "gbox-cache/characters/hucast"
+    if not (DISC_KMD.exists() and (lib / "meta.json").exists()):
+        pytest.skip("owned disc KMD / HUcast library model not on this machine")
+    raw = DISC_KMD.read_bytes()
+    meta = json.loads((lib / "meta.json").read_text())
+    data, rep = W.fit_kmd(raw, lib / meta["model"], oot_swap.roles_of(meta, lib / meta["model"]))
+    model = K.loads(data)
+    assert len(data) <= len(raw) and rep["welds"] > 0
+    assert K.check_compatible(K.loads(raw), model, raw=data) == []
+    paired = {i for i, o in enumerate(model.objects) for v in o.vertices if v[3] >= 0}
+    assert paired <= {i for i, o in enumerate(K.loads(raw).objects) if o.flags & K.PAIR_FLAG}

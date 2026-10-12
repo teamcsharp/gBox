@@ -65,14 +65,19 @@ def _object_mesh(pos, nrm, tris, cell: float):
     return vp[used], vn[used], remap[t]
 
 
-def fit_kmd(original_bytes: bytes, glb: Path, roles: dict, budget: int | None = None) -> tuple[bytes, dict]:
+WELD_RADIUS = 48.0   # KMD units (Snake is ~1800 tall): seam vertices this close to the parent are welded
+
+
+def fit_kmd(original_bytes: bytes, glb: Path, roles: dict, budget: int | None = None,
+            weld_radius: float = WELD_RADIUS) -> tuple[bytes, dict]:
     """Rigidly retarget a skinned library GLB onto Snake's 16 KMD objects.
 
     Every vertex goes to the Snake joint sm64_swap.retarget assigns it; it is stored
     in that object's local frame (world - joint).  No welds are emitted, so no
     export flags are needed.  Objects are vertex-clustered until the KMD fits
     *budget* bytes (the disc allocation of the original) and the u8 vertex /
-    7-bit normal indices.
+    7-bit normal indices.  With *weld_radius*, child vertices that lie that close
+    to a parent vertex are welded to it (mgs_kmd.weld_seams) so joints stay shut.
     """
     import numpy as np
     from . import sm64_swap as S
@@ -131,13 +136,17 @@ def fit_kmd(original_bytes: bytes, glb: Path, roles: dict, budget: int | None = 
         if not ok:
             continue
         model = mgs_kmd.Kmd(original.bones, original.bbox, objs)
+        welds = 0
+        if weld_radius:
+            # welded child vertices follow the parent bone, so joints stay shut when Snake's motion plays
+            model, welds = mgs_kmd.weld_seams(original, model, radius=weld_radius)
         data = mgs_kmd.dumps(model, recompute_bbox=True)
         if len(data) <= budget:
             issues = mgs_kmd.check_compatible(original, model, raw=data)
             if issues:
                 raise ValueError("fitted KMD breaks the game contract: " + "; ".join(issues[:5]))
             rep.update({"kmd_bytes": len(data), "budget": budget, "cluster_cell": round(cell, 2),
-                        "triangles": sum(len(o.faces) for o in objs),
+                        "triangles": sum(len(o.faces) for o in objs), "welds": welds,
                         "per_object_triangles": [len(o.faces) for o in objs]})
             return data, rep
     raise ValueError(f"could not fit the model into the {budget}-byte KMD allocation")
