@@ -96,6 +96,9 @@ How to work:
   on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
   "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
   session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
+- Rewind / fast-forward: the operator holds Select+L2 / Select+R2 on their own pad, in every game. The session's
+  capabilities say which rewind it has: native (RetroArch's buffer), checkpoint (gBox's save state every 2 s, held L2
+  steps back one per repeat), unsupported (Xenia, Yuzu, RPCS3). session_op op=rewind args seconds=N does it from here.
 - Mario Kart 64 items ("infinite red shells", "always have a star", "give me a blue shell", "never lose my item"): mario_kart on
   the live session, nothing else first (no cheat database, no web search). op=always item=<name> holds the item in the player's
   slot so using it never consumes it ("infinite red shells" = op=always item="red shell"; "triple red shells" only when triples

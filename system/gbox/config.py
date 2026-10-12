@@ -43,6 +43,15 @@ class LLMEndpoint(BaseModel):
     api_key_env: str | None = None    # name of env var holding the key, never the key itself
 
 
+class RewindConfig(BaseModel):
+    """Select+L2 rewind where the emulator has no native rewind (gbox/rewind.py): a ring of periodic save states."""
+    checkpoints: bool = True          # off: Select+L2 does nothing on those emulators (launch_game rewind= overrides per session)
+    interval_s: float = 2.0           # seconds between checkpoints (one save state each)
+    depth: int = 60                   # checkpoints kept per session (about two minutes at the default interval)
+    max_mb: int = 2048                # disk cap per session's ring; the oldest checkpoints go first
+    repeat_s: float = 0.6             # holding Select+L2: one older checkpoint per repeat
+
+
 class Config(BaseModel):
     data_dir: Path = Path("gbox-data")
     libraries: list[Library] = []
@@ -69,6 +78,7 @@ class Config(BaseModel):
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -133,6 +143,12 @@ cache_limit_gb = 20
 granted_permissions = ["read", "execute", "stage", "network"]   # add memory_write / file_mutation / binary_patch explicitly
 # smb_credentials = "/etc/nas.cred"     # linux: username=/password= file used for SMB mounts
 # blender_search = ["C:/Users/me/Desktop/Blender Builds/Builds"]
+
+# [rewind]                        # Select+L2 rewind on emulators without a native one: periodic save states (docs/rewind.md)
+# checkpoints = true              # false: those emulators get no rewind (RetroArch's own rewind is unaffected)
+# interval_s = 2.0                # seconds between checkpoints
+# depth = 60                      # checkpoints kept per session
+# max_mb = 2048                   # disk cap per session
 
 # [[libraries]]
 # id = "roms"

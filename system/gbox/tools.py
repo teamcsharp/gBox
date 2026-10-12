@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .agent_contracts import validate_cheat_call
 
-from . import adapters, catalog, provision, uap
+from . import adapters, catalog, provision, rewind, uap
 from .models import CatalogEntry, Permission as P
 from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
@@ -217,6 +217,7 @@ class LaunchIn(BaseModel):
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -275,6 +276,7 @@ def _close_previous_games(ctx):
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
+            rewind.stop(sid)
             SESSIONS.pop(sid, None)
             continue
         ctx.progress(71, 'Saving the previous game before switching')
@@ -294,6 +296,7 @@ def _close_previous_games(ctx):
             snapshot = next(s for s in checkpoints if s['session_id'] == sid)
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
+        rewind.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
     return checkpoints
@@ -395,12 +398,17 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if launch_mod != inp.mod:
         detail["collection_mod"] = inp.mod
     detail['previous_checkpoints'] = checkpoints
-    if sys.platform == "win32" and getattr(ad, "name", "") == "retroarch":
-        threading.Thread(target=_ff_ramp, args=(sid, ad), daemon=True).start()
+    # Select+L2 rewind / Select+R2 fast-forward on the operator's own pad, in every game (#454, #1382): RetroArch's own
+    # rewind where it is on, gBox's checkpoint ring elsewhere, the 2x/4x/16x ramp for R2 in both cases (gbox/rewind.py)
+    try:
+        detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+    except Exception as e:                                     # noqa: BLE001 - never block the launch
+        detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
-    return {"session_id": sid, "adapter": ad.name, "capabilities": ad.get_capabilities(), "detail": detail}
+    return {"session_id": sid, "adapter": ad.name, "capabilities": rewind.capabilities(sid, ad.get_capabilities()),
+            "detail": detail}
 
 
 _HOTKEY = {"thread": None}
@@ -516,6 +524,8 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     for e in events:
                         if "rpc" in e:
                             threading.Thread(target=answer, args=(e,), daemon=True).start()
+                    if pad:
+                        rewind.feed(sid, pad)                 # Select+L2 / Select+R2 on a streamed session's pad
                     if pad and "send_input" in ad.supported:
                         ad.send_input(pad)
                 except Exception:
@@ -538,6 +548,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
                     c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
+                    rewind.stop(sid)
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
@@ -578,7 +589,7 @@ def session_rpc(sid: str, op: str, args: dict):
     if op == "info":
         return {"platform": g.get("platform"), "core": g.get("core"), "title": g.get("title"), "emulator": ad.name, "game_id": g.get("game_id"),
                 "rom": Path(g["_rom_path"]).name if g.get("_rom_path") else None,
-                "capabilities": ad.get_capabilities(), "runtime": ad.query_runtime()}
+                "capabilities": rewind.capabilities(sid, ad.get_capabilities()), "runtime": ad.query_runtime()}
     if op.startswith("debug_"):
         return _debug_rpc(ad, g, op[6:], args)
     if op == "state":
@@ -725,12 +736,16 @@ def session_op(inp: SessionIn, ctx: Ctx):
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
     ad, _ = SESSIONS[inp.session_id]
-    try:
-        res = getattr(ad, inp.op)(**inp.args)
-    except TypeError:
-        if "slot" not in inp.args:
-            raise
-        res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
+    if inp.op == "rewind" and rewind.mode(inp.session_id) == "checkpoint":   # gBox's checkpoint ring, not the emulator's buffer
+        res = rewind.step(inp.session_id, float(inp.args.get("seconds", 5.0)))
+    else:
+        with rewind.guard(inp.session_id, inp.op):                          # the ring takes no checkpoint during a save / load
+            try:
+                res = getattr(ad, inp.op)(**inp.args)
+            except TypeError:
+                if "slot" not in inp.args:
+                    raise
+                res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
     if inp.op == "save_state" and isinstance(res, dict):            # thumbnail for the save-state film strip
         if getattr(ad, 'name', '') == 'retroarch' and res.get('path'):
             _validate_state_container(Path(res['path']).read_bytes(), 'retroarch')
@@ -744,6 +759,7 @@ def session_op(inp: SessionIn, ctx: Ctx):
         proc = getattr(ad, 'proc', None)
         if proc is not None and proc.poll() is None:
             raise RuntimeError('Emulator process is still running; stop was not confirmed')
+        rewind.stop(inp.session_id)
         SESSIONS.pop(inp.session_id, None)
         track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
@@ -3058,7 +3074,7 @@ def _validate_state_container(data: bytes, adapter_name: str) -> None:
 
 @tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
-    with _STATE_TRANSFER_LOCK:
+    with _STATE_TRANSFER_LOCK, rewind.guard(inp.session_id, "transfer"):   # no checkpoint while the state moves
         return _state_transfer(inp, ctx)
 
 
@@ -3202,53 +3218,7 @@ def _running_file(config) -> Path:
     return Path(config.runtime) / "gbox-running.json"
 
 
-def _ff_ramp(sid: str, ad) -> None:
-    """Hold Select + R2 on the operator's pad = fast-forward that ramps 2x (first 1.5 s) -> 4x (to 3.5 s) -> 16x.
-    RetroArch runs fast-forward at one fixed ratio (16x here), so lower speeds come from switching it on for part of the
-    frames: each 1/60 s tick earns (speed - 1) extra frames, a fast-forwarded tick spends 15.
-    ponytail: 2x/4x advance in small bursts (16 frames at once); a smooth ratio needs RetroArch to accept a runtime ratio."""
-    import ctypes
-    try:
-        xi = ctypes.windll.xinput1_4
-    except OSError:
-        return
-
-    class GP(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-
-    class ST(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gp", GP)]
-    st, t0, credit, on = ST(), None, 0.0, False
-
-    def ff(want):
-        nonlocal on
-        if want != on:
-            try:
-                ad.cmd("FAST_FORWARD")                         # a toggle
-                on = want
-            except Exception:
-                pass
-    while sid in SESSIONS:
-        time.sleep(1 / 60)
-        held = xi.XInputGetState(0, ctypes.byref(st)) == 0 and st.gp.buttons & 0x0020 and st.gp.rt > 60   # Back + RT
-        if not held:
-            t0, credit = None, 0.0
-            ff(False)
-            continue
-        t0 = t0 or time.time()
-        el = time.time() - t0
-        speed = 2.0 if el < 1.5 else 4.0 if el < 3.5 else 16.0
-        if speed >= 16:
-            ff(True)
-            continue
-        credit += speed - 1.0
-        if credit >= 15.0:
-            credit -= 15.0
-            ff(True)
-        else:
-            ff(False)
-    ff(False)
+# Select + R2 fast-forward ramp and Select + L2 rewind: gbox/rewind.py (started per session in _launch_game)
 
 
 def track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:
