@@ -34,6 +34,13 @@ RECIPES = [
 ]
 
 
+# Probe frames are resized to 96x72; the top ~20% is where HUD timers, score and
+# status text are drawn by the CPU even while every 3D/textured layer stays black
+# (angrylion RDP + HLE RSP on MK4). A changing timer must not count as gameplay
+# motion, so the recovery motion check ignores this band.
+HUD_BAND_ROWS = 14
+
+
 class IncidentIn(BaseModel):
     image_b64: str | None = None
     attachments: list[dict] = Field(default_factory=list)
@@ -133,8 +140,14 @@ class Incident:
                     previous = None
                     continue
                 visible |= luma > 3
-                if previous is not None and luma > 3 and ImageStat.Stat(ImageChops.difference(previous, image)).mean[0] > .6:
-                    return {'visible': True, 'motion': True}
+                if previous is not None and luma > 3:
+                    diff = ImageChops.difference(previous, image)
+                    if diff.height > HUD_BAND_ROWS:
+                        # HUD timers keep ticking on a dead scene; motion must
+                        # come from the playfield below the HUD band.
+                        diff = diff.crop((0, HUD_BAND_ROWS, diff.width, diff.height))
+                    if ImageStat.Stat(diff).mean[0] > .6:
+                        return {'visible': True, 'motion': True}
                 previous = image
             except Exception as exc:
                 errors.append(str(exc)[:500])
