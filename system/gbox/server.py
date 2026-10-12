@@ -1052,7 +1052,10 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/workers")
     def list_workers(actor=Depends(auth)):
-        return workers()
+        # running_jobs is the Spark's own count. A worker reporting busy slots with none running here
+        # has leaked them and will never claim the queued launch (#1294); the loader says so.
+        running = store.running_job_counts()
+        return [w | {"running_jobs": running.get(w["id"], 0)} for w in workers()]
 
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""

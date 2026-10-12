@@ -348,6 +348,22 @@ test('online workers: idle says nothing, busy says it is next once the wait is n
   assert.equal(f(queued(), null, 'auto', NOW), '');
 });
 
+test('#1294: slots held with nothing running on the Spark are reported as a stuck worker, not busy', () => {
+  const f = helpers();
+  const stuck = nuc({ online: true, last_seen: NOW / 1000 - 4, active_jobs: 4, running_jobs: 0 });
+  const note = f(queued({ require_worker: nuc().id, created: NOW / 1000 - 480 }), [stuck, jay()], 'i9-NUC', NOW);
+  assert.match(note, /^i9-NUC is online but stuck: it reports 4 job slots in use while the Spark has no job running there/);
+  assert.match(note, /Restart gBox on i9-NUC/);
+  assert.doesNotMatch(note, /busy with/);
+  // under a minute it may just be a result in flight: keep the plain busy note
+  assert.match(f(queued({ require_worker: nuc().id, created: NOW / 1000 - 30 }), [stuck], 'i9-NUC', NOW), /still busy with 4 other jobs/);
+  // genuinely busy (the Spark has jobs running there), or an older server without the field: busy note
+  assert.match(f(queued({ require_worker: nuc().id, created: NOW / 1000 - 480 }), [{ ...stuck, running_jobs: 2 }], 'i9-NUC', NOW),
+    /still busy with 4 other jobs/);
+  const { running_jobs, ...old } = stuck;
+  assert.match(f(queued({ require_worker: nuc().id, created: NOW / 1000 - 480 }), [old], 'i9-NUC', NOW), /still busy with 4 other jobs/);
+});
+
 // The real play() loop: an offline worker is shown on the loader, the launch keeps waiting
 // (no five-minute failure), and it opens the session once the worker reconnects and runs it.
 test('play() shows the offline worker, keeps waiting, then opens the game when it reconnects', async () => {
