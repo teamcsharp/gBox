@@ -3298,6 +3298,8 @@ async function eyeStart() {
     <div id="eyepip"><div class="ah"><b>✏ Inspector</b><span class="mut" id="eye-sub">${esc(EYE.ctx.game_title || "")}</span>
       <button class="act" onclick="this.closest('#eyepip').remove()" title="Close">✕</button></div>
       <div class="eyebody"><canvas id="eye-zoom" width="160" height="120"></canvas><div id="eye-info" class="mut">move over the game…</div></div>
+      <div id="eye-meta" class="mut" style="padding:0 8px 6px"></div>
+      <pre id="eye-ram" style="margin:0 8px 8px" title="live RAM at the entity pointer"></pre>
       <pre id="eye-hex"></pre><div id="eye-log" class="mut"></div></div>`);
   const ov = $("#eye"), cv = ov.querySelector("canvas");
   Object.assign(ov.style, { left: R.x + "px", top: R.y + "px", width: R.w + "px", height: R.h + "px" });
@@ -3314,6 +3316,11 @@ function eyeStop() {
   removeEventListener("keydown", EYE.esc); EMB.last = ""; embedTick();
 }
 function eyeHover() {                                          // flood-fill the colour region under the cursor (pre-selection)
+  if (EYE.at) {
+    const at = [...EYE.at];
+    clearTimeout(EYE.previewTimer);
+    EYE.previewTimer = setTimeout(() => eyePreview(at), 150);
+  }
   const { W, H, px } = EYE, d = px.data, x0 = Math.min(W - 1, Math.floor(EYE.at[0] * W)), y0 = Math.min(H - 1, Math.floor(EYE.at[1] * H));
   const i0 = (y0 * W + x0) * 4, ref = [d[i0], d[i0 + 1], d[i0 + 2]], tol = 34 * 34 * 3;
   const mask = new Uint8Array(W * H), st = [y0 * W + x0]; mask[st[0]] = 1;
@@ -3343,6 +3350,45 @@ function eyeHover() {                                          // flood-fill the
   }
   $("#eye-hex").textContent = rows.join("\n");
 }
+async function eyePreview(at) {                                 // live semantic preview of the pre-selected region
+  if (!EYE.on || !EYE.box || !EMB.sid || !EMB.rect || String(EYE.at) !== String(at)) return;
+  const R = EMB.rect, b = EYE.box;
+  const x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
+  try {
+    const r = await gbox.api("/api/jobs", { tool: "pick_preview", input: { session_id: EMB.sid, x, y, window_aspect: R.w / R.h } });
+    if (!r.ok || !r.data?.id) return;
+    const id = r.data.id;
+    const poll = async () => {
+      const s = await gbox.api(`/api/jobs/${id}`);
+      if (!s.ok) return;
+      const j = s.data;
+      if (j.state === "queued" || j.state === "running") { setTimeout(poll, 200); return; }
+      if (j.state !== "succeeded" || String(EYE.at) !== String(at)) return;
+      eyePreviewUpdate(j.output?.result || {});
+    };
+    poll();
+  } catch (e) { console.warn("pick_preview:", e); }
+}
+function eyePreviewUpdate(p) {                                  // update the inspector PiP with entity + RAM + RE evidence
+  const meta = $("#eye-meta"), ram = $("#eye-ram");
+  if (!p?.picked) { meta.innerHTML = ""; ram.textContent = ""; return; }
+  const e = p.picked;
+  const fmt = n => (typeof n === "number" ? n.toFixed(1) : n);
+  let html = `<b>${esc(e.class || e.kind || "entity")}</b> · ${e.kind || ""} <code>${esc(e.ptr || "?")}</code>`;
+  if (e.entity_id != null) html += ` · id ${e.entity_id}`;
+  if (e.hp != null) html += ` · HP ${e.hp}`;
+  if (e.x != null) html += `<br>world ${fmt(e.x)}, ${fmt(e.y)}, ${fmt(e.z)}`;
+  if (e.room != null) html += ` · room ${e.room}`;
+  html += `<br>screen miss ${p.miss != null ? p.miss.toFixed(3) : "-"} · click ${(p.click || []).map(v => v.toFixed(2)).join(",")}`;
+  if (p.evidence && Object.keys(p.evidence).length) {
+    html += `<br><span style="color:#9fd">reverse-engineering:</span> ` +
+      Object.entries(p.evidence).map(([k, v]) => `${esc(k)}=${esc(JSON.stringify(v).slice(0, 120))}`).join(" · ");
+  }
+  if (p.model) html += `<br><span style="color:#9fd">model:</span> ${esc(Array.isArray(p.model) ? p.model.join(" / ") : JSON.stringify(p.model))}`;
+  if (p.others?.length) html += `<br><span style="color:#999">near:</span> ${p.others.map(o => `${esc(o.class)}(${o.miss})`).join(", ")}`;
+  meta.innerHTML = html;
+  ram.textContent = p.hex ? `RAM @ ${esc(e.ptr || "?")}: ${p.hex}` : "";
+}
 function eyeDraw() {
   const c = EYE.cv.getContext("2d"), F = EYE.full; c.drawImage(F, 0, 0);
   if (!EYE.mask) return;
@@ -3362,12 +3408,33 @@ async function eyeGrab() {
   crop.getContext("2d").drawImage(F, x, y, w, h, 0, 0, crop.width, crop.height);
   const marked = EYE.cv.toDataURL("image/png").split(",")[1], cut = crop.toDataURL("image/png").split(",")[1];
   const game = EYE.ctx.game_title || "the game I'm playing";
+  let pickText = "", pick = null;
+  if (EMB.sid && EMB.rect) {                                   // try a semantic pick/extraction at the centre of the selection
+    try {
+      const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, window_aspect: EMB.rect.w / EMB.rect.h } });
+      if (r.ok && r.data?.id) {
+        const id = r.data.id;
+        const wait = async () => { let j; while ((j = (await gbox.api(`/api/jobs/${id}`)).data).state === "queued" || j.state === "running") await new Promise(r => setTimeout(r, 200)); return j; };
+        const j = await wait();
+        if (j.state === "succeeded") { pick = j.output?.result || {}; EYE.pick = pick; }
+      }
+    } catch (e) { console.warn("eyeGrab pick:", e); }
+    if (pick?.picked) {
+      const p = pick.picked, fmt = n => typeof n === "number" ? n.toFixed(1) : n;
+      pickText = `The semantic picker found ${p.class || p.kind} (id ${p.entity_id}, ptr ${p.ptr || "?"}, world ${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}). `;
+      if (pick.package) {
+        $("#chatpanel").classList.add("on");
+        $("#chatlog").insertAdjacentHTML("beforeend", `<div class="cm assistant">Eyedropper picked <b>${esc(p.class || p.kind)}</b> (entity ${p.entity_id}, RAM ${esc(p.ptr || "")})${renderEvent({ type: "cards", kind: "asset", items: [{ package: pick.package }] })}</div>`);
+        $("#chatlog").scrollTop = $("#chatlog").scrollHeight;
+        gbox.api(`/api/uap/${encodeURIComponent(pick.package)}/clipboard`, {});
+      }
+    }
+  }
   EYE.keepPip = true; eyeStop();
   $("#eye-log").textContent = "Sent to gBox: identifying and extracting…";
   CH.imgs = [{ type: "image/png", b64: marked, name: "eyedropper-frame.png" }, { type: "image/png", b64: cut, name: "eyedropper-selection.png" }];
   $("#chatpanel").classList.add("on");
-  await chatSend(`Eyedropper: in ${game}, identify the thing I outlined in blue (first image: whole frame, second: close-up). `
-    + `Tell me what it is, find where it lives in the game's files / RAM, extract it as an asset, and show it with show_asset when you can.`);
+  await chatSend(`Eyedropper: in ${game}, identify the thing I outlined in blue (first image: whole frame, second: close-up). ${pickText}Tell me what it is, find where it lives in the game's files / RAM, extract it as an asset, and show it with show_asset when you can.`);
   EYE.follow = setInterval(async () => {                        // the inspector follows what gBox is doing about it
     if (!$("#eyepip") || !CH.cid) return clearInterval(EYE.follow);
     const r = await gbox.api(`/api/chat/${CH.cid}`); if (!r.ok) return;
