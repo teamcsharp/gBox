@@ -70,6 +70,12 @@ CONVENIENCE = {
                              obj({'request_id': S, 'title': S, 'files': {'type': 'array', 'items': S},
                                   'tests': {'type': 'array', 'items': S}}, ['request_id', 'title', 'files'])),
     "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
+    "get_game_work_queue": ("Read the persistent all-favorites character-replacement queue. Supply game_id for detailed exact-build checkpoints and evidence. A completed agent run is not game readiness.", obj({"game_id": S})),
+    "record_game_work": ("Checkpoint the assigned favorite game's inventory, analysis, reader, writer or native gameplay verification. Verified stages require stored artifact hashes and the same owned-source hash; runtime also requires an actual gameplay image. Partial/blocked checkpoints preserve the next step.",
+                         obj({"game_id": S, "request_id": S, "stage": {"type": "string", "enum": ["inventory", "analysis", "reader", "writer", "runtime"]},
+                              "status": {"type": "string", "enum": ["partial", "verified", "blocked"]}, "note": S,
+                              "source_sha256": S, "artifacts": {"type": "array", "items": S}, "next_step": S},
+                             ["game_id", "request_id", "stage", "status", "note"])),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
     "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists.",
@@ -315,6 +321,12 @@ def build(base_url: str, token: str) -> Server:
             page = await get("/api/catalog", favorites=True, limit=max(1, min(a.get("limit", 100), 1000)))
             return {"total": page["total"], "items": [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "playable")}
                                                      for g in page["items"]]}
+        if name == "get_game_work_queue":
+            from .hermes_work_queue import snapshot
+            return await asyncio.to_thread(snapshot, **a)
+        if name == "record_game_work":
+            from .hermes_work_queue import checkpoint
+            return await asyncio.to_thread(checkpoint, **a)
         if name == "game_roster":
             return await get(f"/api/games/{a['game_id']}/roster")
         if name == "start_job":
