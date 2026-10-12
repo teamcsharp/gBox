@@ -516,6 +516,7 @@ def build(rom: bytes, model: Path, roles: dict, work: Path, name: str, max_tris:
     src = body_rigged
     tris = sum(len(p["tris"]) for p in prims)
     rep["source_triangles"] = tris
+    prev = None
     for target in (max_tris, int(max_tris * 0.75), int(max_tris * 0.55), int(max_tris * 0.4)):
         btarget = max(200, target - ptris)
         if tris - (ptris if pprims else 0) > btarget:
@@ -531,7 +532,10 @@ def build(rom: bytes, model: Path, roles: dict, work: Path, name: str, max_tris:
             fitted, frep = fit_budget(parts, mats, uses)
             break
         except ValueError as e:
-            last = e
+            if prev is not None and tris >= prev:          # a lower target gave no fewer triangles (#1292)
+                raise ValueError(f"{e}; the Blender decimation stopped at {tris} triangles (asked for {btarget}), "
+                                 "so lower targets can't fit it") from e
+            prev, last = tris, e
     else:
         raise last
     if prop_rep:                                           # did the texture budget flatten a prop's texture?
