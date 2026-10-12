@@ -410,20 +410,33 @@ def merge_executable_patches(original, patches):
     return bytes(result)
 
 
+def fighter_edits(disc, audit, gdi, character_dir, out_dir, family, costume='all', *, allow_downscale=False,
+                  progress=lambda p, m: None):
+    """Every costume of one fighter replaced by one donor: (file changes, reports, executable patches)."""
+    from . import doa2_rig, doa2_lab
+    selected = doa2_lab.selected_costumes(disc.files, family, costume)
+    changes, reports, patches = {}, [], []
+    for index, (key, number) in enumerate(selected):
+        profile = doa2_rig.for_archive(disc, f'DOA2/{key}{number}.CHR', audit)
+
+        def update(p, m, index=index):
+            progress(100 * (index + p / 100) / len(selected), m)
+        edits, report = prepare(gdi, character_dir, out_dir, key, number, profile, allow_downscale=allow_downscale, progress=update)
+        if '1ST_READ.BIN' in edits:
+            patches.append(edits.pop('1ST_READ.BIN'))
+        changes.update(edits)
+        reports.append(report)
+    return changes, reports, patches
+
+
 def build_fighter(gdi, character_dir, out_dir, fighter, costume='all', *, allow_downscale=False, progress=lambda p,m:None):
     from .gdrom import GDRom
-    from . import doa2_rig, doa2_lab
+    from . import doa2_rig
     family, specified=fighter_slot(fighter)
     costume=specified or costume
     disc=GDRom(gdi); audit=doa2_rig.collect_axes(disc)
-    selected=doa2_lab.selected_costumes(disc.files,family,costume)
-    changes={}; reports=[]; patches=[]
-    for index,(key,number) in enumerate(selected):
-        profile=doa2_rig.for_archive(disc,f'DOA2/{key}{number}.CHR',audit)
-        def update(p,m): progress(60*(index+p/100)/len(selected),m)
-        edits,report=prepare(gdi,character_dir,out_dir,key,number,profile,allow_downscale=allow_downscale,progress=update)
-        if '1ST_READ.BIN' in edits: patches.append(edits.pop('1ST_READ.BIN'))
-        changes.update(edits);reports.append(report)
+    changes, reports, patches = fighter_edits(disc, audit, gdi, character_dir, out_dir, family, costume,
+                                              allow_downscale=allow_downscale, progress=lambda p, m: progress(0.6 * p, m))
     if patches: changes['1ST_READ.BIN']=merge_executable_patches(disc.read('1ST_READ.BIN'),patches)
     meta=json.loads(Path(character_dir,'meta.json').read_text(encoding='utf-8'))
     suffix='' if costume=='all' else str(costume).zfill(2)
@@ -431,9 +444,131 @@ def build_fighter(gdi, character_dir, out_dir, fighter, costume='all', *, allow_
     return write_mod(gdi,out_dir,name,meta['slug'],changes,reports,progress)
 
 
-def use(ctx, meta, game, inp):
-    """Build one named fighter/costume into a copied native ROM, then optionally launch."""
+ROSTER = [key for key, _name, _aliases in doa2_chars.FIGHTERS]      # the 14 selectable fighters, boss variants excluded
+
+
+def plan_roster(pairs: list[tuple[str, str]], seed: str = "") -> list[tuple[str, str]]:
+    """[(fighter or '', donor slug)] -> [(family, donor slug)] covering every selectable fighter once (#1385).
+
+    Pairs that name a fighter are fixed. The donors of pairs without a fighter are dealt over the remaining fighters
+    in a shuffled order that depends only on `seed` (and repeat when there are fewer donors than fighters), so the same
+    request always builds the same disc and 'the whole cast as Sonic Adventure 2 characters' is one deterministic plan."""
+    import random
+    fixed, free = {}, []
+    for fighter, donor in pairs:
+        if not donor:
+            raise ValueError("Every roster entry needs a character")
+        if fighter:
+            family, costume = fighter_slot(fighter)
+            if costume is not None:
+                raise ValueError("A roster replaces every costume of a fighter; drop the :costume suffix")
+            if family not in ROSTER:
+                raise ValueError(f"{family} is a story/boss variant, not a selectable fighter")
+            if family in fixed and fixed[family] != donor:
+                raise ValueError(f"{family} was assigned twice")
+            fixed[family] = donor
+        else:
+            free.append(donor)
+    remaining = [f for f in ROSTER if f not in fixed]
+    if remaining and not free:
+        raise ValueError(f"No donors left for {', '.join(remaining)}; add characters without a fighter to fill the rest")
+    rng = random.Random(f"doa2-roster:{seed}:{','.join(free)}")
+    order = list(remaining)
+    rng.shuffle(order)
+    pool = list(free)
+    rng.shuffle(pool)
+    plan = dict(fixed)
+    for index, family in enumerate(order):
+        plan[family] = pool[index % len(pool)]
+    return [(family, plan[family]) for family in ROSTER]
+
+
+def build_roster(gdi, donors: dict[str, Path], out_dir, plan: list[tuple[str, str]], *, allow_downscale=False,
+                 progress=lambda p, m: None):
+    """One disc with every selectable fighter replaced per `plan` ([(family, donor slug)]; donors: slug -> character dir)."""
+    from .gdrom import GDRom
+    from . import doa2_rig
+    disc = GDRom(gdi)
+    audit = doa2_rig.collect_axes(disc)
+    changes, reports, patches = {}, [], []
+    for index, (family, slug) in enumerate(plan):
+        if slug not in donors:
+            raise ValueError(f"Unknown donor {slug!r}")
+
+        def update(p, m, index=index):
+            progress(0.6 * (index + p / 100) / len(plan), f"{family}: {m}")
+        edits, fighter_reports, fighter_patches = fighter_edits(disc, audit, gdi, donors[slug], out_dir, family, 'all',
+                                                                allow_downscale=allow_downscale, progress=update)
+        overlap = set(edits) & set(changes)
+        if overlap:
+            raise ValueError(f"{family} and an earlier fighter share disc files: {sorted(overlap)[:3]}")
+        changes.update(edits)
+        for report in fighter_reports:
+            report['donor'] = slug
+        reports.extend(fighter_reports)
+        patches.extend(fighter_patches)
+    if patches:
+        changes['1ST_READ.BIN'] = merge_executable_patches(disc.read('1ST_READ.BIN'), patches)
+    digest = hashlib.sha256(json.dumps(plan).encode()).hexdigest()[:8]
+    name = f"doa2_roster_{digest}"
+    result = write_mod(gdi, out_dir, name, ','.join(sorted({slug for _f, slug in plan})), changes, reports, progress)
+    marker = Path(out_dir, '.gbox-mod.json')
+    record = json.loads(marker.read_text(encoding='utf-8'))
+    record['roster'] = [{'fighter': family, 'character': slug} for family, slug in plan]
+    marker.write_text(json.dumps(record), encoding='utf-8')
+    return result | {'roster': record['roster']}
+
+
+def _donor_dirs(root: Path, slugs: set[str]) -> dict[str, Path]:
+    """slug -> character directory for every donor the plan names; exact slugs only, missing ones listed."""
+    found, missing = {}, []
+    for slug in sorted(slugs):
+        d = Path(root) / slug
+        if (d / 'meta.json').is_file():
+            found[slug] = d
+        else:
+            missing.append(slug)
+    if missing:
+        raise ValueError(f"Not in the collection (use exact slugs from characters op=list): {', '.join(missing)}")
+    return found
+
+
+def use_roster(ctx, meta, game, inp):
+    """slot='roster': every selectable fighter replaced in one disc (#1385). `pairs` = [{character, slot?}]: entries
+    with a fighter are fixed, the rest are dealt at random (deterministically) over the remaining fighters."""
     from . import characters as C, filemods
+    pairs = [(str(p.get('slot') or ''), str(p.get('character') or '')) for p in (inp.pairs or [])]
+    if not pairs:
+        pairs = [('', meta['slug'])]
+    plan = plan_roster(pairs, seed=inp.title or '')
+    donors = _donor_dirs(C.library_root(ctx.config), {slug for _f, slug in plan})
+    digest = hashlib.sha256(json.dumps(plan).encode()).hexdigest()[:8]
+    name = f"doa2_roster_{digest}"
+    output = filemods.mod_dir(ctx.config, game['game_id'], name)
+    marker = output / '.gbox-mod.json'
+    try:
+        cached = json.loads(marker.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        cached = {}
+    result = None
+    if inp.rebuild or cached.get('writer_sha256') != writer_fingerprint():
+        gdi = C._dc_gdi(ctx, game)
+        result = build_roster(gdi, donors, output, plan, progress=ctx.progress)
+        for family, slug in plan:
+            C._api(ctx, 'POST', f"/api/characters/{slug}/targets",
+                   json={'game_id': game['game_id'], 'slot': f'fighter:{family}:all', 'mod': name, 'nodes': [C.HOST_OS],
+                         'notes': 'Roster build: every selectable fighter replaced in one disc. Gameplay verification required per fighter.'})
+    launch = C._launch(ctx, game['game_id'], name, C.HOST_OS) if inp.launch else None
+    return {'status': 'built_unverified', 'mod': name, 'build': result,
+            'roster': [{'fighter': family, 'character': slug} for family, slug in plan], 'launch': launch,
+            'gameplay_verified': False, 'replacement_kind': 'native_rom'}
+
+
+def use(ctx, meta, game, inp):
+    """Build one named fighter/costume into a copied native ROM, then optionally launch; slot='roster' builds the cast."""
+    from . import characters as C, filemods
+    if (inp.slot or '').strip().casefold() in ('roster', 'cast', 'everyone', 'all fighters'):
+        return use_roster(ctx, meta, game, inp)
     family, costume = fighter_slot(inp.slot)
     costume = costume or "all"
     name = f"doa2_{family.lower()}{costume if costume != 'all' else ''}_{meta['slug']}"

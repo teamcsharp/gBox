@@ -227,7 +227,9 @@ def tool_specs() -> list[dict]:
            "thumbnails.", {"query": s, "n": i}, ["query"]),
         fn("show_gif", "Show a reaction GIF in the chat when it fits the moment (a win, a fail, excitement). Use sparingly.",
            {"query": s}, ["query"]),
-        fn("search_games", "Search the gBox library (63k games).", {"query": s, "platform": s}, ["query"]),
+        fn("search_games", "Search the gBox library (63k games) by title, or pass game_id(s) (16-hex, comma/space separated) "
+           "to get their full catalog entries (source_paths, rel_path, library, format, size, launch recipe, serial, platform).",
+           {"query": s, "platform": s}, ["query"]),
         fn("launch_game", "Launch a game. where='local' runs natively on the operator's PC (default), 'spark' streams from the DGX Spark. "
            "debug=true runs it on the Spark in an emulator with a full CPU debugger (GameCube/Wii, GBA, PS1, arcade). "
            "mod=<file mod name> boots a built model/file mod, e.g. RE4 'play as Mario' = mod re4_mario (see the MODELS rule).",
@@ -820,6 +822,13 @@ class Agent:
         return r if r["images"] else {"error": "no gif found"}
 
     def search_games(self, query, platform=""):
+        ids = __import__("re").findall(r"\b[0-9a-f]{16}\b", (query or "").lower())
+        if ids:                                  # game_id lookup: the full catalog entry, not just the title row
+            out = []
+            for gid in dict.fromkeys(ids):
+                r = self.api.get(f"/api/catalog/{gid}")
+                out.append(r.json() if r.status_code == 200 else {"game_id": gid, "error": f"not in catalog (http {r.status_code})"})
+            return {"games": out}
         items = self.api.get("/api/catalog/best", params={"q": query, "limit": 12}).json()
         if platform:
             items = [g for g in items if g.get("platform") == platform] or items
