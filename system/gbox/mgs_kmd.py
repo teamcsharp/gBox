@@ -222,6 +222,47 @@ def check_compatible(original: Kmd, candidate: Kmd, *, textures: set | None = No
     return out
 
 
+PAIR_FLAG = 0x10000   # object flag: set on every disc object whose vertices weld to its parent
+
+
+def weld_seams(original: Kmd, candidate: Kmd, *, radius: float = 48.0) -> tuple[Kmd, int]:
+    """Close joint gaps of a rigidly fitted candidate the way the game's own models do.
+
+    In bind pose, every vertex of a child object that lies within *radius* of a
+    parent vertex (child local + joint offset vs parent local) is snapped onto
+    that parent vertex and paired to it, so the renderer moves it with the
+    parent and the seam stays shut while animating.  Vertices farther than
+    4 x *radius* from the joint are never welded.  Only objects whose game
+    record carries :data:`PAIR_FLAG` are welded (the others never pair on the
+    disc), and :func:`normalize` then sets the parent corners' export flags.
+    Returns the welded model and the number of new welds.
+    """
+    if len(candidate.objects) != len(original.objects):
+        raise ValueError("candidate and game model differ in object count")
+    objects = [replace(c, vertices=list(c.vertices)) for c in candidate.objects]
+    welds, r2 = 0, radius * radius
+    for i, (o, c) in enumerate(zip(original.objects, objects)):
+        if o.parent < 0 or not o.flags & PAIR_FLAG:
+            continue
+        parent = objects[o.parent].vertices
+        if not parent:
+            continue
+        pos = o.pos
+        for k, (x, y, z, pair) in enumerate(c.vertices):
+            if pair >= 0 or x * x + y * y + z * z > 16 * r2:   # only seam vertices near the joint itself
+                continue
+            w = (x + pos[0], y + pos[1], z + pos[2])
+            j, d = min(((j, sum((p[a] - w[a]) ** 2 for a in range(3))) for j, p in enumerate(parent)),
+                       key=lambda t: t[1])
+            if d > r2:
+                continue
+            p = parent[j]
+            c.vertices[k] = (p[0] - pos[0], p[1] - pos[1], p[2] - pos[2], j)
+            welds += 1
+    model, _notes = normalize(original, Kmd(candidate.bones, candidate.bbox, objects))
+    return model, welds
+
+
 def normalize(original: Kmd, candidate: Kmd, *, tolerance: int = 2) -> tuple[Kmd, list[str]]:
     """Make a fitted candidate obey the game's KMD contract without moving geometry.
 
