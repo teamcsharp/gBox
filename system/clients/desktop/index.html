@@ -1989,8 +1989,10 @@ async function tvOpen(id, kind = "job") {
   await tvPoll(); TV.timer = setInterval(tvPoll, 2000);
 }
 $("#tv-close").onclick = tvClose;
-$("#tb-tasks").oncontextmenu = async e => {                  // which PCs background testing may use (#1383)
-  e.preventDefault(); e.stopPropagation();
+$("#tb-tasks").oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); testPcMenu(e.clientX, e.clientY); };
+$("#tb-task-mode-label").oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); testPcMenu(e.clientX, e.clientY); };   // #1435
+async function testPcMenu(x, y) {                             // which PCs background testing may use (#1383)
+  const e = { clientX: x, clientY: y };
   let m = $("#testpcmenu"); if (!m) { m = document.createElement("div"); m.id = "testpcmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;box-shadow:0 10px 30px #000a;min-width:290px;font-size:13px;display:block";
   m.innerHTML = `<b>Background testing may use</b><div class="mut" style="margin:2px 0 6px">Unticked PCs are never used for automated tests, so you can play on them.</div><div data-list>loading…</div>`;

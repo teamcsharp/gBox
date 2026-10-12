@@ -283,3 +283,21 @@ def test_mcp_queue_checkpoint_roundtrip(env, monkeypatch):
             game = json.loads(snapshot.content[0].text)['games'][0]
             assert game['stages']['inventory']['next_step'] == 'Hash and inspect the asset table'
     asyncio.run(check())
+
+
+def test_operator_priority_puts_listed_games_and_requests_first(env):
+    reqs = [request(created=1), request('f' * 16, created=2)]
+    q.sync(env, {'count': 2, 'items': [favorite(), favorite('1' * 16)]}, reqs, now=3)
+    options = q.candidates(env, reqs, [], set(), set(), now=4)
+    env['last_lane'] = 'inbox'                                   # favourite lane is next
+    assert q.choose(options, env)[1]['game_id'] == G             # oldest favourite first by default
+    assert q.set_priority(['1' * 16]) == ['1' * 16]
+    env = q._read() | {'items': env['items'], 'last_lane': 'inbox'}
+    assert q.choose(options, env)[1]['game_id'] == '1' * 16      # listed game first
+    env['last_lane'] = 'favorite'                                # inbox lane is next
+    assert q.choose(options, env)[1]['request_id'] == R
+    env['priority'] = ['f' * 16]
+    assert q.choose(options, env)[1]['request_id'] == 'f' * 16   # listed request first
+    assert q.priority_rank({'number': 5}, {'priority': ['5']}) == 0
+    assert q.priority_rank({'game_id': 'zz'}, {'priority': ['a', 'b']}) == 2
+    assert q.get_priority() == ['1' * 16]
