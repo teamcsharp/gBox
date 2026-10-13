@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -94,6 +95,12 @@ def create_app(config: Config) -> FastAPI:
         # every live stream viewer and worker input long-poll holds a worker thread
         import anyio.to_thread
         anyio.to_thread.current_default_thread_limiter().total_tokens = 256
+
+    @app.on_event("startup")
+    async def _audio_cpp_autostart():
+        # audio.cpp runs beside the control plane when its binary is on this machine (docs/audio_cpp.md); absent = no-op
+        from . import audio_cpp
+        threading.Thread(target=audio_cpp.autostart, args=(config,), name="audio_cpp-autostart", daemon=True).start()
 
     def auth(request: Request) -> str:
         # ?token= is accepted so <img>/<video> tags can load frames and artwork
@@ -486,7 +493,7 @@ def create_app(config: Config) -> FastAPI:
         exe = config.runtime / "bevy-target" / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
         try:
             from . import characters
-            n_char = len(characters.list_all(characters.library_root(config).parent))
+            n_char = len(characters.list_all(characters.library_root(config)))
             n_env = len(characters.list_all(characters.env_root(config)))
         except Exception:
             n_char, n_env = None, None
@@ -1036,7 +1043,10 @@ def create_app(config: Config) -> FastAPI:
     # --- tools & workers ---
     def workers() -> list[dict]:
         now = time.time()
-        return [w | {"online": now - w["last_seen"] < WORKER_TTL} for w in store.all("worker")]
+        from . import background_testing
+        ex = background_testing.excluded(store)
+        return [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex)}
+                for w in store.all("worker")]
 
     @app.get("/api/tools")
     def list_tools(actor=Depends(auth)):
@@ -1107,8 +1117,10 @@ def create_app(config: Config) -> FastAPI:
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
         online = [w for w in workers() if w["online"] and w["os"] == "windows"]
-        capable = [w for w in online if tool in (w.get("tools") or [])]
+        capable = [w for w in online if tool in (w.get("tools") or []) and w.get("background_testing", True)]
         if len(online) < 2 or not capable:
+            if online and not any(w.get("background_testing", True) for w in online):
+                raise HTTPException(409, "No PC is marked available for background testing (right-click the Tasks icon)")
             raise HTTPException(409, "Two online Windows workers and the requested tool are needed for other-PC testing")
         running = [s for s in store.all("session") if s.get("state") == "running"]
         newest = max(running, key=lambda s: s.get("started") or 0, default={})
@@ -1132,6 +1144,24 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/workers/idle")
     def get_idle_worker(tool: str = "launch_game", actor=Depends(auth)):
         return idle_worker(tool)
+
+    # --- which PCs background testing may use (#1383): ticked in the Tasks icon menu, keyed by worker name ---
+    class TestingIn(BaseModel):
+        available: bool
+
+    @app.get("/api/testing/workers")
+    def testing_workers(actor=Depends(auth)):
+        from . import background_testing
+        return {"excluded": sorted(background_testing.excluded(store)),
+                "workers": [{k: w.get(k) for k in ("id", "name", "os", "online", "background_testing")} for w in workers()]}
+
+    @app.post("/api/testing/workers/{wid}")
+    def testing_worker_set(wid: str, body: TestingIn, actor=Depends(auth)):
+        from . import background_testing
+        w = store.get("worker", _wid(wid)) or next((x for x in workers() if x.get("name") == wid), None) or _404()
+        background_testing.set_available(store, w["name"], body.available)
+        store.audit(actor, "worker.background_testing", w["id"], {"name": w["name"], "available": body.available})
+        return testing_workers(actor)
 
     class WorkerActivity(BaseModel):
         idle_seconds: float | None = None
@@ -1838,7 +1868,19 @@ def create_app(config: Config) -> FastAPI:
             hit = art_dirs[str(d)] = (time.time(), names)
         return hit[1]
 
+    art_dir = config.data_dir / "art"                 # covers fetched online (#1067): art/<game_id>/<kind>.<ext> wins over the library
+
+    def _local_art(gid: str, kind: str) -> Path | None:
+        d = art_dir / gid
+        if gid and d.is_dir():
+            for f in sorted(d.glob(f"{kind}.*")):
+                return f
+        return None
+
     def _resolve_art(e: dict, kinds) -> Path | None:
+        for kind in kinds:
+            if local := _local_art(e.get("game_id") or "", kind):
+                return local
         root = config.library(e["library"]).root() if e.get("library") else None
         if not root:
             return None
@@ -1912,6 +1954,39 @@ def create_app(config: Config) -> FastAPI:
             art_hits[key] = _resolve_art(e, BEST if kind == "best" else (kind,))
         f = art_hits[key]
         return FileResponse(f, headers={"cache-control": "max-age=86400"}) if f else _404()
+
+    class CoverIn(BaseModel):
+        url: str = ""              # a picture the operator chose; empty = look it up online by platform + title
+        kind: str = "boxart"       # boxart | snap | wheel
+
+    @app.post("/api/catalog/{gid}/cover")
+    def catalog_cover(gid: str, body: CoverIn, actor=Depends(auth)):
+        """Attach cover art to a game (#1067): libretro-thumbnails by platform + title, or the given picture URL."""
+        from . import cover_art
+        e = store.catalog_get(gid) or _404()
+        kind = body.kind if body.kind in cover_art.KINDS else "boxart"
+        if body.url:
+            try:
+                data, src, tried = cover_art.fetch(body.url), body.url, []
+            except Exception as exc:                  # noqa: BLE001
+                raise HTTPException(400, f"could not fetch that picture: {exc}") from exc
+        else:
+            src, data, tried = cover_art.find(e.get("title") or "", e.get("platform") or "", kind)
+            if not data:
+                raise HTTPException(404, {"error": "no online cover found for this title", "title": e.get("title"),
+                                          "platform": e.get("platform"), "tried": tried})
+        d = art_dir / gid
+        d.mkdir(parents=True, exist_ok=True)
+        for old in d.glob(f"{kind}.*"):
+            old.unlink()
+        f = d / f"{kind}.{cover_art.image_type(data)}"
+        f.write_bytes(data)
+        for key in [k for k in art_hits if k[0] == gid]:
+            art_hits.pop(key, None)
+        for t in (thumbs / gid[:2]).glob(f"{gid}-*"):
+            t.unlink(missing_ok=True)
+        store.audit(actor, "catalog.cover", gid, {"kind": kind, "source": src, "bytes": len(data)})
+        return {"ok": True, "kind": kind, "source": src, "bytes": len(data), "file": str(f)}
 
     @app.get("/api/thumbs/stats")
     def thumb_stats(actor=Depends(auth)):
@@ -2077,18 +2152,15 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
+        from .live_stream import mjpeg_parts
         lv = _live(sid)
 
-        def gen():                                   # wakes on every new frame: stream fps = source fps
-            seq, idle = -1, time.time()
-            while time.time() - idle < 30:
-                with lv["cond"]:
-                    lv["cond"].wait_for(lambda: lv["seq"] != seq and lv["frame"] is not None, 1.0)
-                    if lv["seq"] == seq or lv["frame"] is None:
-                        continue
-                    seq, frame, idle = lv["seq"], lv["frame"], time.time()
-                yield b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=f",
+        def alive() -> bool:                         # stop streaming once the session has ended or was replaced
+            s = store.get("session", sid)
+            return s is None or s.get("state") != "ended"
+        # Wakes on every new frame (stream fps = source fps) and repeats the newest frame while the source pauses,
+        # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
+        return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
     class InputEvents(BaseModel):
@@ -2297,6 +2369,22 @@ def create_app(config: Config) -> FastAPI:
     def hermes_task_mode_state(actor=Depends(auth)):
         from . import hermes_task_mode
         return hermes_task_mode.status()
+
+    class QueuePriorityIn(BaseModel):
+        ids: list[str] = []            # game ids and/or request ids (or numbers), most important first
+
+    @app.get("/api/hermes/queue/priority")
+    def hermes_queue_priority(actor=Depends(auth)):
+        from . import hermes_work_queue
+        return {"priority": hermes_work_queue.get_priority()}
+
+    @app.post("/api/hermes/queue/priority")
+    def hermes_queue_priority_set(body: QueuePriorityIn, actor=Depends(auth)):
+        """Operator priority for the Hermes queue: these games/requests are worked first in their lane."""
+        from . import hermes_work_queue
+        ids = hermes_work_queue.set_priority(body.ids)
+        store.audit(actor, "hermes.queue_priority", "", {"ids": ids})
+        return {"priority": ids}
 
     class TaskModeIn(BaseModel):
         enabled: bool
@@ -2583,13 +2671,21 @@ def create_app(config: Config) -> FastAPI:
         items.sort(key=lambda x: (score(x["text"]) if ql else 0, {"mod": 0, "history": 1}.get(x["kind"], 2)))
         return items[:max(1, min(limit, 30))]
 
+    def voice_default() -> str:
+        """[voice] default_assistant, unless the operator picked another one at runtime (PUT /api/voice/default)."""
+        return (store.get("setting", "voice") or {}).get("default_assistant") or config.voice.default_assistant
+
     @app.get("/api/voice/voices")
     def voice_list(actor=Depends(auth)):
-        from . import speech
-        return {"engine": agent_cfg.get("tts_engine", "xtts"),
-                "groups": [{"label": "XTTS v2 · cloned voices (Pine Box library)",
-                            "voices": [{"id": f"xtts:{v['id']}", "name": v["name"]} for v in speech.voices(agent_cfg.get("voice_library", ""))]},
-                           {"label": "Kokoro · fast", "voices": [{"id": f"kokoro:{vid}", "name": n} for vid, n in speech.KOKORO_VOICES]}]}
+        from . import audio_cpp, speech
+        groups = [{"label": "XTTS v2 · cloned voices (Pine Box library)",
+                   "voices": [{"id": f"xtts:{v['id']}", "name": v["name"]} for v in speech.voices(agent_cfg.get("voice_library", ""))]},
+                  {"label": "Kokoro · fast", "voices": [{"id": f"kokoro:{vid}", "name": n} for vid, n in speech.KOKORO_VOICES]}]
+        if audio_cpp.available(config) is None:     # audio.cpp on this machine: its voices, always served by audio.cpp
+            ids = audio_cpp.voices(config) or ([v for v, _ in speech.KOKORO_VOICES] if config.audio_cpp.tts_family == "kokoro_tts" else [])
+            names = dict(speech.KOKORO_VOICES)
+            groups.append({"label": "audio.cpp · local", "voices": [{"id": f"audio_cpp:{v}", "name": names.get(v, v)} for v in ids]})
+        return {"engine": agent_cfg.get("tts_engine", "xtts"), "default_assistant": voice_default(), "groups": groups}
 
     class TtsIn(BaseModel):
         text: str
@@ -2598,25 +2694,61 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/tts")
     async def text_to_speech(t: TtsIn, actor=Depends(auth)):
-        """Speak a reply: Pine Box Voice Director (XTTS v2 voice clones) with Piper as the fallback."""
+        """Speak a reply: the default speech assistant (Voice Director or audio.cpp), the other one when it is busy, Piper last."""
         from . import speech
-        wav, used = await asyncio.to_thread(speech.tts, t.text, agent_cfg.get("voice_director", "http://127.0.0.1:8090"),
-                                            t.engine or agent_cfg.get("tts_engine", "xtts"), t.voice)
+        wav, used = await asyncio.to_thread(speech.route_tts, config, t.text, t.engine, t.voice, voice_default())
         return Response(wav, media_type="audio/wav", headers={"x-gbox-tts-engine": used})
 
     @app.post("/api/stt")
     async def speech_to_text(request: Request, language: str = "en", actor=Depends(auth)):
-        """Dictation: browser audio -> Spark faster-whisper (Wyoming :10300) -> text."""
+        """Dictation: browser audio -> the default assistant (Spark faster-whisper over Wyoming, or audio.cpp) -> text."""
         from . import speech
         audio = await request.body()
         if not audio:
             raise HTTPException(422, "no audio")
         try:
-            text = await asyncio.to_thread(speech.transcribe, audio, agent_cfg.get("stt_host", "127.0.0.1"),
-                                           int(agent_cfg.get("stt_port", 10300)), language or None)
+            text, used = await asyncio.to_thread(speech.route_stt, config, audio, language or None, voice_default())
         except Exception as e:
             raise HTTPException(502, f"speech service: {e}")
-        return {"text": text}
+        return {"text": text, "assistant": used}
+
+    @app.get("/api/voice/assistants")
+    def voice_assistants(actor=Depends(auth)):
+        """Both speech assistants, which one is the default, and how requests were routed (docs/audio_cpp.md)."""
+        from . import speech
+        return speech.assistants(config, voice_default())
+
+    class VoiceDefaultIn(BaseModel):
+        assistant: Literal["director", "audio_cpp"] | None = None   # None = back to gbox.toml [voice] default_assistant
+
+    @app.put("/api/voice/default")
+    def voice_set_default(v: VoiceDefaultIn, actor=Depends(auth)):
+        """Make audio.cpp (or the Voice Director) the default speech assistant without editing gbox.toml."""
+        from . import audio_cpp
+        if v.assistant == "audio_cpp" and (why := audio_cpp.available(config)):
+            raise HTTPException(409, f"audio.cpp can't be the default here: {why}")
+        store.put("setting", "voice", (store.get("setting", "voice") or {}) | {"default_assistant": v.assistant, "by": actor,
+                                                                                "ts": time.time()})
+        return {"default_assistant": voice_default()}
+
+    @app.get("/api/audio_cpp/status")
+    def audio_cpp_status(actor=Depends(auth)):
+        from . import audio_cpp
+        return audio_cpp.service(config).status()
+
+    @app.post("/api/audio_cpp/{op}")
+    async def audio_cpp_control(op: Literal["start", "stop"], actor=Depends(auth)):
+        """Start (and keep alive) or stop the control plane's own audiocpp_server."""
+        from . import audio_cpp
+        svc = audio_cpp.service(config)
+        if op == "stop":
+            return await asyncio.to_thread(svc.stop)
+        try:
+            st = await asyncio.to_thread(svc.start, True)
+        except audio_cpp.Down as e:
+            raise HTTPException(409, str(e))
+        svc.keep_alive()
+        return st
 
     @app.get("/api/llm/models")
     def llm_models(actor=Depends(auth)):
@@ -2758,6 +2890,13 @@ def create_app(config: Config) -> FastAPI:
     def _attach(rid: str, items: list[dict]) -> list[dict]:
         out = []
         for a in items[:20]:
+            if a.get("sha256") and not a.get("b64"):        # an artifact gBox already holds (a replay clip, #1084)
+                meta = store.get("artifact", str(a["sha256"]))
+                if not meta:
+                    raise HTTPException(422, f"unknown artifact {str(a['sha256'])[:12]}")
+                out.append({"sha256": meta["sha256"], "name": a.get("name") or meta.get("name"),
+                            "type": a.get("type") or meta.get("media_type"), "size": meta.get("size")})
+                continue
             name = a.get("name") or "image.png"
             mt = a.get("type") or ("image/png" if name.lower().endswith(".png") else "application/octet-stream")
             ref = store.put_artifact(base64.b64decode(a["b64"]), name, mt, {"request": rid, "attachment": True})

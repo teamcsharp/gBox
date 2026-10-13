@@ -105,7 +105,9 @@ def provider_failure(error):
     text = str(error or '').lower()
     if any(word in text for word in ('insufficient_quota', 'usage limit', 'usage_limit',
                                     'quota exceeded', 'quota exhausted', 'quota limit',
-                                    'insufficient credits', 'credit balance')) or re.search(
+                                    'insufficient credits', 'insufficient available credits', 'credit balance',
+                                    'add credits', 'limit_remaining', 'payment required')) or re.search(
+            '(^|[^0-9a-z])402([^0-9]|$)', text) or re.search(
             r'["\'](?:error_code|code)["\']\s*:\s*["\']?(?:1113|1308|1310|131[6-9]|132[01])\b', text):
         return 'quota'
     if re.search(r'\b429\b', text) or any(word in text for word in ('rate limit', 'rate_limit', 'too many requests')):

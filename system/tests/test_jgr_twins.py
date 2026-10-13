@@ -50,7 +50,9 @@ def test_twins_require_a_textured_full_graph(monkeypatch):
 
 
 @pytest.mark.parametrize("changed", ["rotation", "scale", "evaluation"])
-def test_different_bind_state_refused_before_any_rewrite(monkeypatch, changed):
+def test_turned_or_scaled_twin_is_re_expressed_not_refused(monkeypatch, changed):
+    # The spray-can bodies of Bis / Combo / the Love Shockers' leader turn or scale hand node 15 and differ in its
+    # UNIT_ANG / UNIT_SCL eval bits; Gum's low-detail body rescales limbs. twin_transforms carries those.
     trees = _classification(monkeypatch)
     if changed == "rotation":
         trees[2000][3]["trs"] = struct.pack("<3f3i3f", 0, 0, 0, 0x1000, 0, 0, 1, 1, 1)
@@ -58,8 +60,22 @@ def test_different_bind_state_refused_before_any_rewrite(monkeypatch, changed):
         trees[2000][3]["trs"] = struct.pack("<3f3i3f", 0, 0, 0, 0, 0, 0, 2, 1, 1)
     else:
         trees[2000][3]["flags"] = 2
+        trees[100][3]["trs"] = struct.pack("<3f3i3f", 0, 0, 0, 0x1000, 0, 0, 1, 1, 1)
+    assert list(jgr.body_twins(b"", b"", 0, 100)) == [2000]
+    moved = jgr.twin_transforms(trees[100], trees[2000])
+    assert set(moved) == {3, 4}                         # the node and its child below it
+    assert all(jgr._translation(m) is None for m in moved.values())
+
+
+def test_twin_with_another_traversal_or_a_degenerate_node_is_refused(monkeypatch):
+    trees = _classification(monkeypatch)
+    trees[2000][3]["flags"] = 0x10                       # NJD_EVAL_BREAK: the twin stops traversing here
     with pytest.raises(ValueError, match="different native bind"):
         jgr.body_twins(b"", b"", 0, 100)
+    trees[2000][3]["flags"] = 0
+    trees[2000][3]["trs"] = struct.pack("<3f3i3f", 0, 0, 0, 0, 0, 0, 0, 1, 1)
+    with pytest.raises(ValueError, match="degenerate"):
+        jgr.twin_transforms(trees[100], trees[2000])
 
 
 @pytest.mark.parametrize("node, moved", [(15, {15}), (13, {13, 14, 15})])
@@ -112,7 +128,7 @@ def _binary_groups():
     return bytes(out), roots
 
 
-@pytest.mark.parametrize("variant", ["equivalent", "translated", "divergent", "shared_object"])
+@pytest.mark.parametrize("variant", ["equivalent", "translated", "turned", "divergent", "shared_object"])
 def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monkeypatch, tmp_path, variant):
     from PIL import Image
     from gbox import gdrom, ninja_swap
@@ -121,8 +137,10 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
         changed = bytearray(original)
         if variant == "translated":     # like archive 04's gameplay bodies: only hand node 15 sits elsewhere
             struct.pack_into("<f", changed, ninja.tree_nodes(original, roots[1])[15]["off"] + 8, 0.5)
-        elif variant == "divergent":
+        elif variant == "turned":       # the whole group turned: every node is re-expressed in its own frame
             struct.pack_into("<i", changed, roots[1] + 20, 0x2000)
+        elif variant == "divergent":    # NJD_EVAL_BREAK on one node: the group traverses differently
+            struct.pack_into("<I", changed, ninja.tree_nodes(original, roots[1])[3]["off"], 0x10)
         else:
             # The accessory traverses the selected body's live object nodes.
             # Protecting model storage alone cannot prevent its pointer rewrite.
@@ -139,6 +157,7 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
     monkeypatch.setattr(jgr, "native_id_for_archive", lambda *args: 0)
     monkeypatch.setattr(jgr, "_material", lambda *args: (b"", 0x34, 0x4000, 0x12))
     monkeypatch.setattr(jgr, "ptex_textures", lambda *args: [{"bytes": b"x" * 16, "offset": 0}])
+    monkeypatch.setattr(jgr, "group_texture_ids", lambda data, play, ptex, roots: (0, {r: 0 for r in roots}))
     monkeypatch.setattr(ninja, "pvr_like", lambda old, image: old)
     monkeypatch.setattr(ninja_swap, "target_from_nj", lambda *args: object())
     monkeypatch.setattr(jgr, "replace_entries", lambda old, entries: entries)
@@ -152,7 +171,7 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
         return {"data": encode(geo), "atlas": Image.new("RGB", (8, 8)),
                 "rigged": "fixture.gltf", "report": {"triangles": 19}}
     monkeypatch.setattr(ninja_swap, "fit", fit)
-    if variant not in ("equivalent", "translated"):
+    if variant not in ("equivalent", "translated", "turned"):
         message = "different native bind" if variant == "divergent" else "shares an object node"
         with pytest.raises(ValueError, match=message):
             jgr.build_swap("fixture.gdi", tmp_path / "fixture.glb", {"hip": "x"}, tmp_path, "Donor", 4)
@@ -177,6 +196,9 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
     if variant == "translated":
         assert models[1][15] != models[0][15] and models[1][:15] == models[0][:15]
         assert result["report"]["bind_offsets"] == {hex(roots[1]): {"15": [-0.5, 0.0, 0.0]}}
+    elif variant == "turned":
+        assert all(a != b for a, b in zip(models[0][1:], models[1][1:])) and models[2] == models[0]
+        assert set(result["report"]["bind_transforms"][hex(roots[1])]) == {str(j) for j in range(20)}
     else:
         assert models[1] == models[0] and result["report"]["bind_offsets"] == {}
 
@@ -194,6 +216,7 @@ def _patched_writer(monkeypatch, original, roots, geo):
     monkeypatch.setattr(jgr, "native_id_for_archive", lambda *args: 0)
     monkeypatch.setattr(jgr, "_material", lambda *args: (b"", 0x34, 0x4000, 0x12))
     monkeypatch.setattr(jgr, "ptex_textures", lambda *args: [{"bytes": b"x" * 16, "offset": 0}])
+    monkeypatch.setattr(jgr, "group_texture_ids", lambda data, play, ptex, roots: (0, {r: 0 for r in roots}))
     monkeypatch.setattr(ninja, "pvr_like", lambda old, image: old)
     monkeypatch.setattr(ninja_swap, "target_from_nj", lambda *args: object())
     monkeypatch.setattr(jgr, "replace_entries", lambda old, entries: entries)

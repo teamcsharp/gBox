@@ -80,9 +80,124 @@ def test_scene_spec_keeps_portable_src(tmp_path):
     finally:
         tools._bevy_resolve = orig
     assert spec["_src"] == [{"package": "pso_dc_forest01"}]
-    assert spec["items"][0]["gltf"] == "/data/uap/pso/pso.gltf"
+    assert spec["items"][0]["gltf"] == _abs(Path("/data/uap/pso/pso.gltf"))   # C:/data/... on Windows
 
 
 def test_abs_forward_slashes():
     p = _abs(Path("/tmp/a/b.gltf"))
     assert "\\" not in p and p.endswith("/tmp/a/b.gltf")
+
+
+class _Proc:
+    """A live viewer process stand-in: running until wait() (the viewer saw <name>.quit) or terminate()."""
+    _pid = 4000
+
+    def __init__(self, args, cwd=None):
+        _Proc._pid += 1
+        self.args, self.pid, self.code = args, _Proc._pid, None
+
+    def poll(self):
+        return self.code
+
+    def wait(self, timeout=None):
+        self.code = 0
+        return 0
+
+    def terminate(self):
+        self.code = -1
+
+
+def _drive(monkeypatch, tmp_path):
+    """bevy_scene with the viewer build, glTF resolution and process start replaced; returns (call, artifacts)."""
+    from gbox import tools
+    arts = []
+    ctx = _FakeCtx(tmp_path)
+    ctx.config.runtime = tmp_path / "runtime"
+    ctx.artifact = lambda name, data, mime, **kw: arts.append((name, data))
+    monkeypatch.setattr(tools, "BEVY", {})
+    monkeypatch.setattr(tools, "_bevy_build", lambda ctx, target, exe: None)
+    monkeypatch.setattr(tools, "_bevy_resolve",
+                        lambda ctx, items: [(tmp_path / "m" / f"{list(i.values())[0]}.gltf", {k: v for k, v in i.items() if k == "scale"})
+                                            for i in items])
+    monkeypatch.setattr(tools.subprocess, "Popen", _Proc)
+    call = lambda **kw: tools.bevy_scene(BevyIn.model_validate(kw), ctx)   # @tool returns the function itself
+    return call, arts, tools
+
+
+def test_live_ops_drive_the_open_window(monkeypatch, tmp_path):
+    call, arts, tools = _drive(monkeypatch, tmp_path)
+    scene = tmp_path / "bevy" / "demo.json"
+    out = call(name="demo", op="open", items=[{"package": "a"}, {"package": "b", "scale": 2.0}],
+               camera={"eye": [1, 2, 3], "target": [0, 0, 0]})
+    proc = tools.BEVY["demo"]["proc"]
+    assert out["pid"] == proc.pid and "--live" in proc.args and len(out["items"]) == 2
+    assert json.loads(scene.read_text())["camera"]["eye"] == [1, 2, 3]
+
+    out = call(name="demo", op="set_camera", camera={"eye": [9, 9, 9], "target": [1, 1, 1]})
+    assert json.loads(scene.read_text())["camera"] == {"eye": [9, 9, 9], "target": [1, 1, 1]}
+    out = call(name="demo", op="add", items=[{"package": "c"}])
+    assert [i["gltf"].rsplit("/", 1)[1] for i in json.loads(scene.read_text())["items"]] == ["a.gltf", "b.gltf", "c.gltf"]
+    out = call(name="demo", op="remove", index=0)
+    assert [i["gltf"].rsplit("/", 1)[1] for i in out["items"]] == ["b.gltf", "c.gltf"]
+    assert json.loads(scene.read_text())["items"] == out["items"]
+
+    listed = call(name="demo", op="list")
+    assert [(l["name"], l["items"]) for l in listed["live"]] == [("demo", 2)]
+    assert [s["name"] for s in listed["scenes"]] == ["demo"]
+
+    call(name="demo", op="close")
+    assert "demo" not in tools.BEVY and proc.poll() == 0
+    assert (tmp_path / "bevy" / "demo.quit").exists()        # the request the --live viewer polls for
+    assert call(name="demo", op="list")["live"] == []
+
+
+def test_live_ops_without_a_window_are_refused(monkeypatch, tmp_path):
+    import pytest
+    call, arts, tools = _drive(monkeypatch, tmp_path)
+    for op in ("snapshot", "set_camera", "add", "remove"):
+        with pytest.raises(ValueError, match="no live viewer named ghost"):
+            call(name="ghost", op=op, items=[{"package": "x"}])
+    with pytest.raises(ValueError, match="needs items"):
+        call(name="never_saved", op="open")
+    assert call(name="ghost", op="close")["scene"].endswith("ghost.json")   # closing nothing is a no-op
+
+
+def test_snapshot_returns_the_live_window_png(monkeypatch, tmp_path):
+    call, arts, tools = _drive(monkeypatch, tmp_path)
+    call(name="demo", op="open", items=[{"package": "a"}])
+    png = tmp_path / "bevy" / "demo.png"
+
+    def viewer_saves(path, timeout_s=60.0):                   # the viewer answers <name>.shot with the PNG
+        assert (tmp_path / "bevy" / "demo.shot").read_text() == _abs(png)
+        png.write_bytes(b"\x89PNG-live")
+        return png
+    monkeypatch.setattr(tools, "_bevy_wait_png", viewer_saves)
+    out = call(name="demo", op="snapshot")
+    assert out["screenshot"] == str(png) and arts == [("bevy.png", b"\x89PNG-live")]
+
+
+def test_agent_pins_live_ops_to_the_worker_that_opened_the_window():
+    from gbox.agent import Agent
+    a = Agent.__new__(Agent)
+    jobs = []
+
+    def job(tool, inp, node=None, limit=900, worker=None):
+        jobs.append((inp.get("op"), node, worker))
+        return {"state": "succeeded", "worker_id": "nuc" if inp.get("op") == "open" else worker,
+                "output": {"scene": "s", "live": [{"name": "s"}]}, "receipt_id": None}
+    a._job = job
+    a.api = type("Api", (), {"get": lambda self, *x, **k: (_ for _ in ()).throw(RuntimeError("no receipts"))})()
+    a.bevy_scene(items=[{"package": "a"}], name="s", op="open")
+    a.bevy_scene(name="s", op="snapshot")
+    assert a.bevy_scene(name="s", op="list")["live"] == [{"name": "s"}]
+    a.bevy_scene(name="s", op="close")
+    a.bevy_scene(name="s", op="snapshot")
+    assert jobs == [("open", "windows", None), ("snapshot", None, "nuc"), ("list", "windows", None),
+                    ("close", None, "nuc"), ("snapshot", "windows", None)]
+
+
+def test_snapshot_wait_returns_only_a_finished_png(tmp_path, monkeypatch):
+    from gbox import tools
+    png, sizes = tmp_path / "s.png", iter([0, 10, 25, 25])
+    monkeypatch.setattr(tools.time, "sleep", lambda s: png.write_bytes(b"x" * next(sizes, 25)))
+    assert tools._bevy_wait_png(png, timeout_s=30) == png and png.stat().st_size == 25

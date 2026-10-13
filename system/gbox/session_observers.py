@@ -47,6 +47,82 @@ def presentation_state(error, frames_seen):
     return None
 
 
+OBSERVATION_LISTS = ('actors', 'changes', 'hud', 'mechanics_hypotheses', 'uncertainties')
+# Small vision models answer list fields in other shapes than the prompt's strings. In #1374 (Def Jam
+# Vendetta, qwen2.5vl:7b) "actors" came back as objects and three valid observations were discarded
+# as "invalid actors", which filed a repair request. Objects become "name (role): details" text.
+_NAME_KEYS = ('name', 'actor', 'character', 'label', 'id', 'object', 'entity', 'title')
+_ROLE_KEYS = ('role', 'roles', 'type', 'team', 'side')
+_VALUE_KEYS = ('value', 'description', 'text', 'status', 'state', 'action', 'details')
+
+
+def _item_text(item):
+    """One observation entry as plain text; None and empty values become ''."""
+    if isinstance(item, str):
+        return ' '.join(item.split())
+    if item is None:
+        return ''
+    if isinstance(item, bool):
+        return 'true' if item else 'false'
+    if isinstance(item, (int, float)):
+        return str(item)
+    if isinstance(item, (list, tuple)):
+        return ', '.join(t for t in map(_item_text, item) if t)
+    if isinstance(item, dict):
+        parts = {str(k): t for k, t in ((k, _item_text(v)) for k, v in item.items()) if t}
+        name = next((parts.pop(k) for k in _NAME_KEYS if k in parts), '')
+        role = next((parts.pop(k) for k in _ROLE_KEYS if k in parts), '')
+        details = [parts.pop(k) for k in _VALUE_KEYS if k in parts] + [f'{k}: {v}' for k, v in parts.items()]
+        text = f'{name} ({role})' if name and role else name or role
+        return text + (': ' if text and details else '') + '; '.join(details)
+    return ' '.join(str(item).split())
+
+
+def observation_list(value, key):
+    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping. A bare
+    true/false ("actors": false on an empty ring, "hud": true on a fight with health bars) carries no item."""
+    if value is None or isinstance(value, bool):
+        items = []
+    elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        items = [value]
+    elif isinstance(value, dict):
+        items = [{'name': k, 'value': v} for k, v in value.items()]
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ValueError('Vision model returned invalid ' + key)
+    return [text[:500] for text in map(_item_text, items) if text][:20]
+
+
+def parse_observation(raw):
+    """The observation in a vision reply: code fences, leading prose and trailing notes are allowed."""
+    text = raw.strip()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find('{')
+        if start < 0:
+            raise ValueError('Vision model returned no JSON observation') from None
+        try:
+            value = json.JSONDecoder().raw_decode(text, start)[0]
+        except json.JSONDecodeError as exc:
+            raise ValueError('Vision model returned malformed JSON: ' + str(exc)) from None
+    summary = value.get('summary') if isinstance(value, dict) else None
+    summary = _item_text(summary) if isinstance(summary, (str, list, dict)) else ''
+    if not summary:
+        raise ValueError('Vision model returned no usable observation')
+    result = {'summary': summary[:2000]}
+    normalized = []
+    for key in OBSERVATION_LISTS:
+        items = value.get(key)
+        result[key] = observation_list(items, key)
+        if items is not None and (not isinstance(items, list) or any(not isinstance(x, str) for x in items)):
+            normalized.append(key)
+    if normalized:
+        result['normalized_fields'] = normalized
+    return result
+
+
 def analyze(config, frame, previous):
     """A vision-only agent: game pixels cannot authorize tool calls or game input."""
     cfg = config.agent
@@ -57,9 +133,10 @@ def analyze(config, frame, previous):
         'unseen events between samples. Distinguish observations from hypotheses about mechanics. '
         'Use descriptive actor names unless identity is visually certain. Do not invent memory '
         'addresses, skeletons, rigs, extracted assets or verified replacement support. '
-        'JSON only: {"summary":"what is happening now", "actors":["visible actors and roles"], '
+        'JSON only: {"summary":"what is happening now", "actors":["visible actor and its role"], '
         '"changes":["changes since previous sample"], "hud":["readable counters/status"], '
         '"mechanics_hypotheses":["tentative gameplay rules"], "uncertainties":["unknowns"]}. '
+        'Every list item is one plain string, never an object. '
         'Previous observation: ' + json.dumps(previous or {}, ensure_ascii=False)[:5000])
     with httpx.Client(timeout=75) as client:
         r = client.post(cfg['llm_url'].rstrip('/') + '/chat/completions', json={
@@ -69,19 +146,8 @@ def analyze(config, frame, previous):
                 {'type': 'image_url', 'image_url': {
                     'url': 'data:image/png;base64,' + base64.b64encode(frame).decode()}}]}]})
         r.raise_for_status()
-        raw = r.json()['choices'][0]['message']['content'].strip()
-    if raw.startswith('```'):
-        raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
-    value = json.loads(raw)
-    if not isinstance(value, dict) or not isinstance(value.get('summary'), str) or not value['summary'].strip():
-        raise ValueError('Vision model returned no usable observation')
-    result = {'summary': value['summary'][:2000]}
-    for key in ('actors', 'changes', 'hud', 'mechanics_hypotheses', 'uncertainties'):
-        items = value.get(key, [])
-        if not isinstance(items, list) or any(not isinstance(x, str) for x in items):
-            raise ValueError('Vision model returned invalid ' + key)
-        result[key] = [x[:500] for x in items[:20]]
-    return result | {'model': model}
+        raw = r.json()['choices'][0]['message']['content'] or ''
+    return parse_observation(raw) | {'model': model}
 
 
 class SessionObservers:
@@ -104,12 +170,11 @@ class SessionObservers:
             return row
 
     def _user_session(self, session):
+        from .background_testing import agent_owned
         sid = session['session_id']
         label = self.store.get('slabel', sid) or {}
-        if label.get('owner') == 'you':
-            return True
         job = self.store.get('job', sid.split('-', 1)[-1]) or {}
-        return label.get('owner') != 'agent' and not job.get('agent_use')
+        return not agent_owned(label, job)
 
     def _gap(self, session, role, reason, frame=None):
         """One durable request per game/role; reconcile before POST after a restart."""
