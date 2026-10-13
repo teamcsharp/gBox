@@ -25,9 +25,13 @@ HULL = 0.1
 
 
 # ------------------------------------------------------------------ synthetic PLAY / PTEX builders
+SIDE_X = {2: -0.3, 5: 0.3, 12: -0.3, 16: 0.3}     # right leg / clavicle on -X, left on +X (jgr.body_roles checks it)
+
+
 def _nodes(parents, step=0.5):
-    nodes = [{"flags": 0, "trs": struct.pack("<3f3i3f", 0, step if p >= 0 else 0, 0, 0, 0, 0, 1, 1, 1),
-              "parent": None if p < 0 else p, "child": None, "sibling": None} for p in parents]
+    nodes = [{"flags": 0, "trs": struct.pack("<3f3i3f", SIDE_X.get(i, 0) if len(parents) == 20 else 0,
+                                             step if p >= 0 else 0, 0, 0, 0, 0, 1, 1, 1),
+              "parent": None if p < 0 else p, "child": None, "sibling": None} for i, p in enumerate(parents)]
     for parent in range(len(nodes)):
         kids = [i for i, n in enumerate(nodes) if n["parent"] == parent]
         if kids:
@@ -260,7 +264,7 @@ def test_extract_run_reports_parts_and_reader_version(afs, tmp_path, monkeypatch
     assert r["extra"]["jgr_reader"] == jgr.READER_VERSION
     assert [p["role"] for p in r["extra"]["parts"]][:1] == ["outline"]
     assert tmp_path / "parts" in r["files"]
-    assert r.get("roles") == jgr.BODY_ROLES or "Rig roles not derived" in r["notes"]
+    assert r["roles"] == jgr.BODY_ROLES and "Rig roles not derived" not in r["notes"]
 
 
 # ------------------------------------------------------------------ writer: per-group atlas ids

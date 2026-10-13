@@ -797,8 +797,8 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
     play, ptex = character_pair(data, int(e["key"]))
     ctx.progress(50, f"Decoding PLAY +{play:#x} draw groups")
     x = export_character(data, int(e["key"]), str(work), e["slug"])
-    root = x["root"]
-    files = [x["glb"], work / "textures", work / "manifest.json"]
+    root, glb = x["root"], x["glb"]
+    files = [glb, work / "textures", work / "manifest.json"]
     if (work / "parts").is_dir():
         files.append(work / "parts")
     extras = [p for p in x["parts"] if p.get("file")]
@@ -1052,13 +1052,14 @@ def group_texture_ids(data: bytes, play: int, ptex: int, roots: list[int]) -> tu
 
 
 def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
-    """Other textured full-body groups whose native bind state matches up to node-local translations.
+    """Other textured full-body groups on the same 20-node graph, whose nodes may sit, turn or scale differently.
 
-    Parent counts alone cannot establish interchangeable local model coordinates. A group that moves only
-    node-local positions (archive 04's gameplay bodies 0x8da4/0x2039c place hand node 15 elsewhere than the
-    max-triangle body) is accepted: build_swap re-expresses the new geometry of every node whose bind origin
-    moves in that group's own frame (`twin_offsets`), so the group's bind pose matches the primary's.
-    Different rotations, scales or evaluation flags are still refused before fitting or rewriting.
+    Parent counts alone cannot establish interchangeable local model coordinates, so build_swap re-expresses the
+    new geometry of every node whose bind matrix differs in that group's own node frame (`twin_transforms`:
+    inv(W_twin) @ W_primary), and the group's bind pose matches the primary's. Archive 04's gameplay bodies move
+    hand node 15 only (a translation); the spray-can bodies of Bis, Combo and the Love Shockers' leader also turn
+    or scale it (eval flags UNIT_ANG / UNIT_SCL differ), and Gum's low-detail body rescales whole limbs. Groups whose
+    traversal differs (eval flags other than UNIT_POS/ANG/SCL, HIDE and ZXY_ANG) are refused before fitting.
     Selection of these groups remains runtime-unverified.
     """
     from . import ninja
@@ -1079,12 +1080,14 @@ def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[
             raise ValueError(f"Cannot classify JGR draw group {candidate:#x}") from error
         if not any(texture >= 0 and faces for texture, faces in geometry.tris.items()):
             continue
-        if any(a["trs"][12:] != b["trs"][12:] or (a["flags"] & ~8) != (b["flags"] & ~8)
-               for a, b in zip(primary, nodes)):         # trs = pos 3f | ang 3i | scl 3f: only pos may move
+        if any((a["flags"] & ~TWIN_FLAGS) != (b["flags"] & ~TWIN_FLAGS) for a, b in zip(primary, nodes)):
             raise ValueError(f"JGR body group {candidate:#x} has a different native bind/evaluation state; "
                              "independent retargeting is required before rewriting it")
         out[candidate] = nodes
     return out
+
+
+TWIN_FLAGS = 0x1 | 0x2 | 0x4 | 0x8 | 0x20   # Ninja eval bits a twin may differ in: UNIT_POS/ANG/SCL, HIDE, ZXY_ANG
 
 
 def _bind_world(nodes: list[dict]) -> list:
@@ -1115,6 +1118,27 @@ def twin_offsets(primary: list[dict], twin: list[dict], tol: float = 1e-6) -> di
         if float(np.abs(m[:3, 3]).max()) > tol:
             out[j] = tuple(float(x) for x in m[:3, 3])
     return out
+
+
+def twin_transforms(primary: list[dict], twin: list[dict], tol: float = 1e-6) -> dict[int, tuple]:
+    """{node: 3x4 row-major affine (12 floats, rounded to 1e-6)} re-expressing primary-frame geometry in a twin's node
+    frame: inv(W_twin) @ W_primary. Nodes whose bind matrices agree are left out; a degenerate twin node is refused."""
+    import numpy as np
+    out = {}
+    for j, (a, b) in enumerate(zip(_bind_world(primary), _bind_world(twin))):
+        B = np.array(b, float)
+        if abs(float(np.linalg.det(B[:3, :3]))) < 1e-9:
+            raise ValueError(f"JGR twin node {j} has a degenerate bind matrix; independent retargeting is required")
+        m = np.linalg.inv(B) @ np.array(a, float)
+        if not np.allclose(m, np.eye(4), atol=tol):
+            out[j] = tuple(round(float(x), 6) + 0.0 for x in m[:3, :4].reshape(-1))
+    return out
+
+
+def _translation(m: tuple) -> tuple | None:
+    """The offset of a pure-translation twin_transforms entry, else None."""
+    return (m[3], m[7], m[11]) if (m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]) == (1, 0, 0, 0, 1, 0, 0, 0, 1) \
+        else None
 
 
 def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
@@ -1153,16 +1177,16 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     mat, tiny_fl, tex_fl, strip_fl = _material(buf, nodes)
     twins = body_twins(buf, data, play, root)
     twin_nodes = [nd for group in twins.values() for nd in group]
-    offsets = {g: twin_offsets(nodes, group) for g, group in twins.items()}
+    xforms = {g: twin_transforms(nodes, group) for g, group in twins.items()}
     # Each group draws the atlas under ITS texlist's id for it (Yo-Yo's spray-can bodies: id 1, the gameplay bodies:
     # id 0; #1396), so a twin whose id differs from the primary's gets its own copy of the strips, like a moved node.
     atlas, tex_ids = group_texture_ids(data, play, ptex, [root, *twins])
     prim_tex = tex_ids[root]
 
     def _copy_id(g, j):
-        d, t = offsets[g].get(j), tex_ids[g]
-        return None if d is None and t == prim_tex else (j, tuple(round(x, 6) for x in (d or (0.0, 0.0, 0.0))), t)
-    copies = {}                                    # (node, offset, texture id) -> blob key >= 20; equal twins share it
+        d, t = xforms[g].get(j), tex_ids[g]
+        return None if d is None and t == prim_tex else (j, d or (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0), t)
+    copies = {}                                    # (node, transform, texture id) -> blob key >= 20; equal twins share it
     for g in twins:
         for j in range(len(nodes)):
             if _copy_id(g, j) is not None:
@@ -1274,13 +1298,16 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                                                  base=min(orig_base(nd), vlimit - len(P)))
                 blobs[("v", j)] = built[j][0]
                 blobs[("p", j)] = built[j][1]
-            if nd["model"]:
+            if nd["model"] or j in built:                 # a node with no native model may still get geometry
                 blobs[("m", j)] = bytes(24)
         for (j, d, t), key in copies.items():              # the same strips in a twin's own node frame / texlist
             if j in geo:
                 P, N, T = geo[j]
-                moved = [[p[0] + d[0], p[1] + d[1], p[2] + d[2]] for p in P]
-                built[key] = ninja.cnk_model_lists(moved, N, T, t, mat, tiny_fl, tex_fl, strip_fl,
+                M = np.array(d, float).reshape(3, 4)
+                moved = (np.asarray(P, float) @ M[:, :3].T + M[:, 3]).tolist()
+                nn = np.asarray(N, float) @ np.linalg.inv(M[:, :3])      # inverse-transpose for the normals
+                nn = (nn / np.maximum(np.linalg.norm(nn, axis=1, keepdims=True), 1e-9)).tolist()
+                built[key] = ninja.cnk_model_lists(moved, nn, T, t, mat, tiny_fl, tex_fl, strip_fl,
                                                    base=min(orig_base(nodes[j]), vlimit - len(P)))
                 blobs[("v", key)] = built[key][0]
                 blobs[("p", key)] = built[key][1]
@@ -1343,8 +1370,12 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                          "native_id": native_id_for_archive(data, index),
                          "source_afs_sha256": hashlib.sha256(data).hexdigest(),
                          "body_root": f"{root:#x}", "body_groups": [f"{r:#x}" for r in [root, *twins]],
-                         "bind_offsets": {f"{g:#x}": {str(j): [round(x, 5) for x in d] for j, d in sorted(o.items())}
-                                          for g, o in offsets.items() if o},
+                         "bind_offsets": {f"{g:#x}": {str(j): [round(x, 5) for x in _translation(m)]
+                                                      for j, m in sorted(o.items()) if _translation(m)}
+                                          for g, o in xforms.items() if any(_translation(m) for m in o.values())},
+                         "bind_transforms": {f"{g:#x}": {str(j): [round(x, 5) for x in m]
+                                                         for j, m in sorted(o.items()) if not _translation(m)}
+                                             for g, o in xforms.items() if any(not _translation(m) for m in o.values())},
                          "body_selection": "max_triangles_unverified",
                          "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
                          "atlas": list(r["atlas"].size), "atlas_texture": atlas,
