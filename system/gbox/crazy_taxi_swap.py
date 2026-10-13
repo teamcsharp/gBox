@@ -28,11 +28,20 @@ cabs' TAXI sign only lands on the roof with its centre added, gbox.crazy_taxi). 
 centre-included cloud and stored centre-subtracted. The s16 range at the part's own scale/frac covers exactly its
 bounding radius, so a fit that pokes out is shrunk about the cloud's mean to fit (`fit_blob`).
 
-Materials: the material records carry no colour, only display-list pointers and indices into game-side tables (e.g.
-plyrA_atama's records index 0xc/0xd/0xe, 0x15/0x16/0x17 ...), every part shares the solid white.tex and UV (0, 0), so
-the donor's colours and textures cannot be written. The donor's triangles are dealt to the part's materials by region:
-each material keeps the centroid of the triangles it drew in the stock part (hair on top of the head, face in front)
-and takes the donor triangles nearest it, so the stock colours land roughly where they did before.
+Materials: the material records carry display-list pointers and indices into game-side tables (e.g. plyrA_atama's
+records index 0xc/0xd/0xe, 0x15/0x16/0x17 ...) through which the game binds each material's texture (Axel's shirt
+pattern on the select screen), although every part names only white.tex; the donor's own colours and textures cannot
+be written. Each material gets one UV, the centre of the largest triangle it drew in the stock part
+(`gbox.crazy_taxi.material_uvs`: a UV of (0, 0) sampled a see-through corner texel and the select screen showed the
+head missing). The donor's triangles are dealt to the part's materials by region: each material keeps the centroid of
+the triangles it drew in the stock part (hair on top of the head, face in front) and takes the donor triangles nearest
+it, so the stock colours land roughly where they did before.
+
+Display lists (`gbox.crazy_taxi.encode_shape` / `check_written`): every material record's list is found whatever its
+address order (Axel's head draws a fifth list at 0x9e0 before the fourth record's 0xa20; skipping it left that record
+pointing into the repacked lists and hung the driver-select screen with "GFX FIFO: Unknown Opcode 0x18"), written on
+the stock list's VAT (2 for the people parts, 3 for Axel's head accessories; VAT 0 drew the donor at the wrong scale),
+and every written blob is checked: each pointer names whole GX primitives inside its own 32-byte-aligned span.
 
 Budget: a blob keeps its size and the bank keeps every name and order (main.dol's shape enum addresses bank positions).
 Vertices must fit the array region and the display lists the DL region of the template; `encode_shape` strips each
