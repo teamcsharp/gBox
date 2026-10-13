@@ -213,11 +213,16 @@ class CheckpointRing:
 
     def _take(self) -> dict:
         with self._adapter_lock():
+            self._follow_slot()
             self._protect_manual()
+            protected = self.origin
             started, t0 = time.time_ns(), self.timer()
             res = self._call("checkpoint_save", "save_state")
             path = self._locate(res if isinstance(res, dict) else {}, started)
             self.last_cost = max(0.0, self.timer() - t0)   # the emulator-side save (an upper bound: includes polling)
+            if self.kind == "path" and protected is not None and path != protected:
+                # The save went to a slot the ring had not protected (#1488): never copy another slot's backup onto it.
+                self._has_manual, self._written = False, None
             self._adopt_stash()
             self.seq += 1
             dst = self.dir / f"ckpt-{self.seq:06d}.bin"
@@ -266,6 +271,26 @@ class CheckpointRing:
             self.sleep(0.1)
 
     # --- the operator's own slot file ("path" adapters borrow the operator's slot) ---
+    def _follow_slot(self) -> bool:
+        """The operator (or a diagnostic save, #1488) switched the emulator to another slot since the ring last saved:
+        give the old slot file back and protect the new one before the ring's next save lands in it. Without this the
+        ring copied slot 0's backup over the freshly preserved slot-15 checkpoint of a frozen PSO session."""
+        if self.kind != "path" or self.origin is None:
+            return False
+        fn = getattr(self.adapter, "checkpoint_target", None)
+        try:
+            target = fn() if callable(fn) else None
+        except Exception:                          # noqa: BLE001 - adapter that cannot tell: keep the known slot
+            target = None
+        if not target or Path(target) == self.origin:
+            return False
+        if _identity(self.origin) == self._written:
+            self._restore_manual()                 # the old slot is the operator's again
+        # else the operator saved to the old slot since the ring last wrote it: that newer save stays, the backup is stale
+        self._manual.unlink(missing_ok=True)
+        self.origin, self._has_manual, self._written = Path(target), False, None
+        return True
+
     def _protect_manual(self) -> None:
         if self.kind != "path":
             return
@@ -334,6 +359,8 @@ class CheckpointRing:
             with self._adapter_lock():
                 if self.origin is None:
                     raise RuntimeError("no save state file to load into yet")
+                if self._follow_slot():            # load through the slot the emulator is on now, operator file kept
+                    self._protect_manual()
                 shutil.copyfile(entry["file"], self.origin)
                 self._written = _identity(self.origin)
                 self._call("checkpoint_load", "load_state")

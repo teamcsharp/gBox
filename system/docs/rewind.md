@@ -34,6 +34,9 @@ session ends; rings of a previous worker run are swept at the next launch).
 - RetroArch (`checkpoint_state = "path"`) saves to the operator's current slot. The ring copies the operator's slot
   file aside before its first save and puts it back after every one of its saves and loads, so what is on disk in
   the slot stays the operator's own save; the operator's manual save / load / session swap work as before.
+  When the slot changes (an operator or emulation-issue save to slot 15, #1488), the ring follows it: the old slot
+  file is given back, the new one (`RetroArchAdapter.checkpoint_target()`) is protected before the ring's next save,
+  and a save that lands in an unprotected slot never receives another slot's backup.
 - Dolphin (`checkpoint_state = "dir"`) saves the ring in its slot 8 (`Shift+F8` / `F8`), found as the fresh file
   under `User/StateSaves`; the operator keeps slot 1.
 - Holding the chord freezes the ring; stepping walks from the newest entry to the oldest. Letting go drops the
