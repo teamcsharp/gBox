@@ -1389,6 +1389,12 @@ DEDICATED = [
     ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
      lambda: __import__("gbox.defjam_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Dead Or Alive ++ (arcade, Tecmo TPS; MAME doapp / doappk): 11 fighters x 4 costumes, rigged with the game's own
+    # stance-frame bone matrices (motion player + skeleton build run on the decoded program; #1340,
+    # docs/doapp_pipeline.md). Needs doapp.zip + coh1002m.zip beside the catalog's zip.
+    ("doapp", lambda t, p: t.startswith("dead or alive ++") and p == "arcade",
+     lambda: __import__("gbox.doapp_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.doapp_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
