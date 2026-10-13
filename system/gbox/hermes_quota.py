@@ -28,14 +28,29 @@ def route(item):
     return dict(zip(('provider', 'model'), (v.strip() for v in values)))
 
 
+# Providers Hermes must never run cron work on. The CPU-only llama.cpp model pins the Spark (load ~40) and slows every
+# build; EhmBird answered every call with HTTP 500. Routes are a union of the Hermes config and the saved list, so
+# removing one from the config alone never sticks: it has to be filtered here. GBOX_HERMES_EXCLUDED_PROVIDERS
+# (comma list, "" for none) overrides the default.
+EXCLUDED_PROVIDERS = ('llamacpp', 'EhmBird')
+
+
+def excluded_providers():
+    import os
+    raw = os.environ.get('GBOX_HERMES_EXCLUDED_PROVIDERS')
+    names = EXCLUDED_PROVIDERS if raw is None else [x for x in raw.split(',')]
+    return {n.strip().casefold() for n in names if n.strip()}
+
+
 def routes(config, saved=()):
     cron = config.get('cron') or {}
     candidates = [{'provider': cron.get('model_provider'), 'model': cron.get('model')},
                   *(config.get('fallback_providers') or []), *saved]
+    skip = excluded_providers()
     result = []
     for item in candidates:
         clean = route(item)
-        if clean and clean not in result:
+        if clean and clean not in result and clean['provider'].casefold() not in skip:
             result.append(clean)
     return result
 
