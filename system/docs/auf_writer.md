@@ -46,6 +46,7 @@ no contradicting code. **Low** means inferred.
 | Palette record = `MtxFromQuat(slerp(q_b, q_a, w), pos_a)` of the animated pose (vertex rotates about bone a's joint) | `BuildMatrixList` 0x8017A674 | high |
 | Palette matrices come from a per-frame bump allocator, 0x84 bytes each, **no bounds check** (`ObjCntrl_AllocMatrices` 0x8017A13C) → a rewritten model never uses more records than the slot had (+ those of a head it stubs) | code | high |
 | Geometry: sections → groups (≤ 10 palette records loaded into PNMTX0..9 = ids 0,3..27) → GX triangle strips over u16 ent_vtx indices; strip byte 7 = current matrix or 0xFF = per-vertex PNMTXIDX from the u8 list | `R_DrawGeomSection` 0x80179C44 | high |
+| The group and strip loops (and each strip's vertex loop) are do-while: every section needs ≥ 1 group, every group ≥ 1 strip, every strip ≥ 3 vertices (the matrix-load loop is a while) | `R_DrawGeomSection` 0x80179D00..0x80179E94; 558/558 unique shipped `.gcm` follow it (`auf_gcm.decode_check`) | high |
 | Positions s16 in the palette record's frame, dequantised by the 3x4 matrix at the geometry body start (full ±32767 range used per axis); normals s8 (length 127) in the same frame but transformed by `R_BuildNormalMtx(view·palette)`, i.e. without the dequantisation matrix; UV s16 frac 11 | `BuildViewMatrixList` 0x8017A5A4 + data | high (note: `auf_ngc.mesh` multiplies normals by the dequant matrix, harmless after normalising) |
 | Character shaders: 1 group, 1 pass, flags 0x20000, CMPR texture (every actor shader in dm1) | data | medium |
 | restxtrs records 0x44 bytes, image offsets chunk-relative (`TexMgr_InitTexture` 0x80185CFC) → a record can point at data appended to the chunk | code | high |
@@ -62,7 +63,8 @@ about the shipped size. `auto_roles` finds all 18 body roles on all 127.
   (`max_palette`). Skin weights are quantised in 0.1 steps, then 0.25, then 0.5, then rigid, until the records
   fit.
 * **Matrices**: at most 10 palette records per group. Indices are u16 (65535 strips, list entries and vertices)
-  and the palette index is a u8.
+  and the palette index is a u8. No section, group or strip is empty, because the draw loops are do-while. A
+  section whose faces all collapse is dropped, and a head stub draws one zero-area strip.
 * **Triangles**: the donor gets at most 1.2 × the triangles of the slot's own LOD (body plus the head it stubs),
   and at least 300. Quadric-error decimation (`auf_swap.decimate`) brings it under budget. Each LOD gets its own
   budget, so `_h`/`_m`/`_l` stay graded. The whole restable is held in RAM, so the budget keeps memory growth
@@ -124,6 +126,11 @@ For each level and each body model:
 | `all` | everyone |
 | `model:<body>` | one body everywhere (e.g. `model:thug_orchid`, 21 levels) |
 | `cast` | `pairs` = `[{target, donor}]`. A target is a body, `model:<body>` or a group. Narrower targets win over groups. Donors without a target are dealt over every body nobody named, using a seeded shuffle (`title` is the seed), so one body gets one donor across all levels and the same request builds the same disc. |
+
+Pick whip (#1438): `auf_swap.slot_for_entity(model)` turns an entity's model string into its slot. The model
+string is `Entity+0x28`, read by `gbox.entity_probe` with `profiles/auf-gcn-us.json`, e.g.
+`models/mp_player_griffen.men` for a bot. That one gives `model:griffin_body`, so a whipped bot or enemy maps to
+the body this writer replaces.
 
 `op=collect` on the game lists these slots (`auf_swap.cast_slots`, kind `slot`, nothing extracted).
 `characters op=coverage` lists the writer (`char_coverage.WRITERS`). The mod is named

@@ -12,7 +12,7 @@ Where the characters live (read from the owned disc, docs/auf_writer.md): every 
 so each character is a body model (one per LOD, ``_h``/``_m``/``_l`` with switch distances) plus a head model, and the
 ``classname`` says who it is: ``Player`` (Bond in the missions), ``actor`` (enemies, bosses, allies, hostages, Bond in
 cut scenes), ``DeathmatchPlayer`` (the 16 multiplayer characters the bots and players pick).  ``level_cast`` reads
-that for any level; CAST below is the snapshot of all 38 levels (45 body models).
+that for any level; NAMES, MEN and level_keys() below are the snapshot of all 38 levels (45 body models).
 
 How a donor goes in (per level, per body model):
   * target skeleton = the body model's own bones and rest pose; body roles from its topology (auf_gcm.auto_roles,
@@ -188,7 +188,6 @@ def select(slot: str, levels: dict | None = None) -> set[tuple[str, str]]:
     """A slot -> the (level, body key) pairs it replaces."""
     levels = levels or level_keys()
     s = (slot or "player").strip().lower()
-    out = set()
     if s.startswith("model:"):
         key = body_key(s[6:])
         if key not in NAMES:
