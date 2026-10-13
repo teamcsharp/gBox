@@ -37,6 +37,8 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
+from .scene_support import session_support, support  # noqa: F401  (capability matrix, #971)
+
 
 def _cfg():
     from . import config
@@ -916,6 +918,10 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
     if not hooked(proc):
         if reason := getattr(ad, "examine_unavailable_reason", None):
             raise Unsupported(reason)
+        if getattr(ad, "name", None):                      # the capability matrix says why and what would work
+            row = session_support(ad, "windows")
+            if row["status"] == "unsupported" or row["driver"]:
+                raise Unsupported(row["reason"])
         raise Unsupported("this session was started without Examine 3D (RenderDoc isn't inside the emulator): "
                           "relaunch the game with Examine 3D on (save state first)")
     out_dir = Path(out_dir)

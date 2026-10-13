@@ -1,5 +1,6 @@
-"""N64 Zeldas for the `zelda` tool. Ocarina of Time reuses gbox/oot.py (NTSC v1.2 SaveContext, word-swapped RDRAM
-access through zelda_tool.Mem -> oot._rd/_wr); Majora's Mask uses the zeldaret/mm SaveContext (NTSC-U)."""
+"""N64 Zeldas for the `zelda` tool. Ocarina of Time reuses gbox/oot.py (tables below are written against the NTSC v1.2
+SaveContext and remapped to the running revision by oot.remap; word-swapped RDRAM access through zelda_tool.Mem ->
+oot._rd/_wr); Majora's Mask uses the zeldaret/mm SaveContext (NTSC-U)."""
 from . import oot
 from .zelda_games import N, O, S
 from .zelda_tool import GAMES
@@ -141,7 +142,7 @@ def _oot_any_age(m, g, count):
 
 OOT = dict(
     name="Ocarina of Time", platforms=("n64",), match=r"ocarina of time|toki no ocarina", exclude=r"master quest|ura",
-    items=_oot_items(), ready_fn=_oot_ready,
+    items=_oot_items(), ready_fn=_oot_ready, remap=oot.remap,
     aliases={"sword": "kokiri sword", "shield": "deku shield", "fairy bow": "bow", "heros bow": "bow", "arrows": "bow",
              "hammer": "megaton hammer", "lens": "lens of truth", "beans": "magic beans", "chus": "bombchu", "bombchus": "bombchu",
              "ocarina": "ocarina of time", "din": "dins fire", "farore": "farores wind", "nayru": "nayrus love",
