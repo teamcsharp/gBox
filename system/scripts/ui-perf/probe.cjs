@@ -18,6 +18,7 @@
 //            --interact (section switch latency)   --visible (show the window on screen; default: off-screen, no focus)
 //            --update-pending (the logo's "update ready" state, as after a deploy while the app runs)
 //            --simulate-etag (tag /api/requests by a body hash when the control plane does not send ETags yet)
+//            --profile (JavaScript self time per function in both renderers)
 "use strict";
 const { app, BrowserWindow, ipcMain, protocol, net, session, screen } = require("electron");
 const fs = require("fs");
@@ -34,6 +35,7 @@ const SECTION = opt("section", "play"), DOCKED = !!opt("docked", false), INTERAC
 const OUT = opt("out", "");
 const UPDATE_PENDING = !!opt("update-pending", false);   // the logo's "update ready" state (new code on disk since the app started)
 const SIMULATE_ETAG = !!opt("simulate-etag", false);
+const PROFILE = !!opt("profile", false);                  // V8 sampling profile of both renderers over the window
 const WORKER = "PERF-PROBE";
 const TOKEN = process.env.GBOX_TOKEN || fs.readFileSync(TOKEN_FILE, "utf8").trim();
 
@@ -175,11 +177,28 @@ app.whenReady().then(async () => {
   if (SECTION !== "play") await win.webContents.executeJavaScript(`document.querySelector('aside button[data-s="${SECTION}"]')?.click()`);
   await sleep(WARMUP * 1000);
   for (const wc of Object.values(wcs)) await wc.executeJavaScript(INSTRUMENT).catch(() => {});
+  if (PROFILE) for (const wc of Object.values(wcs)) {
+    await wc.debugger.sendCommand("Profiler.enable"); await wc.debugger.sendCommand("Profiler.setSamplingInterval", { interval: 500 });
+    await wc.debugger.sendCommand("Profiler.start");
+  }
   const m0 = {}; for (const [k, wc] of Object.entries(wcs)) m0[k] = await metrics(wc);
   const c0 = cpuNow(); const t0 = Date.now(); measuring = true;
   await sleep(SECONDS * 1000);
   measuring = false; const dt = (Date.now() - t0) / 1000; const c1 = cpuNow();
   const result = { clients: CLIENTS, section: SECTION, docked: DOCKED, seconds: +dt.toFixed(1), renderers: {}, cpu: {}, requests: {}, embedSyncPerMin: +(STATS.embedSync * 60 / dt).toFixed(1) };
+  if (PROFILE) {                                 // JavaScript self time per function, from the V8 sampling profiler
+    result.profileTopMs = {};
+    for (const [k, wc] of Object.entries(wcs)) {
+      const { profile } = await wc.debugger.sendCommand("Profiler.stop");
+      const per = new Map(), total = profile.endTime - profile.startTime, samples = profile.samples.length || 1;
+      for (const n of profile.nodes) {
+        const f = n.callFrame, name = `${f.functionName || "(anonymous)"} ${String(f.url).split("/").pop()}:${f.lineNumber + 1}`;
+        per.set(name, (per.get(name) || 0) + n.hitCount);
+      }
+      result.profileTopMs[k] = [...per.entries()].filter(([n]) => !/^\((idle|program|root|garbage collector)\)/.test(n))
+        .sort((a, b) => b[1] - a[1]).slice(0, 12).map(([n, h]) => [n, Math.round(h / samples * total / 1000)]);
+    }
+  }
   for (const [k, wc] of Object.entries(wcs)) {
     const a = m0[k], b = await metrics(wc), page = await wc.executeJavaScript(READ).catch(() => ({}));
     const d = n => (b[n] ?? 0) - (a[n] ?? 0);
