@@ -886,6 +886,12 @@ SPECS: dict[str, dict] = {
     "gbox.doa2_swap": {"skeleton": "DOA2 fighter: native model parts per body joint", "roles": "REQUIRED_ROLES",
                        "required": "REQUIRED_ROLES", "influences": 2, "tex": 256, "decimate": True,
                        "budget": "CHR/SUP bytes of the fighter's costume (decimated 0.8^k until it fits)"},
+    "gbox.soulcalibur_swap": {"skeleton": "SoulCalibur fighter: the shared 18-bone motion skeleton (+ cloth / face "
+                                            "bones)", "roles": "REQUIRED_ROLES", "required": "REQUIRED_ROLES",
+                              "influences": 4, "tex": 256, "decimate": True,
+                              "budget": "the costume's stock model bytes before its tail and its vertex / normal "
+                                        "counts; the LZ model's room in the costume entry; 2-3 256x256 YUV422 pages "
+                                        "(decimated 0.8^k until it fits)"},
     "gbox.sm64_swap": {"skeleton": "Mario, 20 joints", "joints": 20, "roles": "ORDER", "tris": "MAX_TRIS", "tex": 64,
                        "influences": 1, "decimate": True, "budget": "Mario's 0x1CD20 bytes; textures RGBA16 <= 64x32"},
     "gbox.gta_stories_models": {"skeleton": "Toni, 24 bones", "joints": 24, "roles": "LCS_ROLES", "influences": 4,
@@ -924,6 +930,12 @@ SPECS: dict[str, dict] = {
     "gbox.twin_snakes_swap": {"skeleton": "MGS2 21-bone .kms (Snake, soldiers, bosses, NPCs)", "joints": 21,
                               "roles": "all", "influences": 1, "tex": 256, "decimate": True,
                               "budget": "the stock model's bytes; each stage stays in its own disc space"},
+    "gbox.mgs2_swap": {"skeleton": "MGS2 kms (each model's own skeleton: Snake, Raiden, soldiers, bosses)", "roles": "all",
+                       "influences": 2, "tex": 256, "decimate": True,
+                       "budget": "the stock model's bytes; donor textures in one atlas inside the model's texture pack"},
+    "gbox.soulcalibur2_swap": {"skeleton": "Soul Calibur II fighter VMG (21 body bones + fingers, face, swing bones)",
+                                "roles": "all", "influences": 1, "tex": 256, "decimate": True,
+                                "budget": "the costume's VMG bytes (human.olk package child 0, rewritten in place)"},
     "gbox.mgs1_swap": {"skeleton": "Snake, 16-bone KMD", "joints": 16, "roles": "all", "influences": 1, "tex": 256,
                        "decimate": True, "budget": "the original KMD's bytes", "donors": ["hucast"]},
     "gbox.clayfighter_swap": {"skeleton": "sprite frames (no skeleton)", "kind": "sprite", "roles": [],

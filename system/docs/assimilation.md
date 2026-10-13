@@ -197,6 +197,20 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
   - Technique: header-invariant analysis.
   - Status: probe stage. PRs #126 #153.
 
+### SoulCalibur (Dreamcast, USA)
+
+- **Formats:** `*.DAT` olnk archives of counted tables, plus a Namco LZ codec. Fighters are accumulation-skinned
+  models: the weight's low 12 mantissa bits hold the output slot, and the first bone stores while the rest add. Pages
+  are 256x256 YUV422 twiddled. The voice banks are AICA SOSB/SOSP/SOSD with ADPCM. The executable's strings
+  (`human%1x%02x.dat`, `buki%1x%02x.dat`, `HUMAN MEMORY OVER!`) led to the HUMAN loader `0x8c02e37a`.
+- **Technique:** `string-xref-loader` plus `instruction-pattern`. Ghidra headless, SH-4 at `0x8c010000`. A literal
+  pool scan for the `olnk`/`SOSB` magics found the archive loader and the sound driver. The loader's callees then led
+  to the LZ codec `0x8c0ee76c` and the model relocation. The disc, all 45 costumes and the writer were proved by round
+  trip (`round-trip-proof`), and the GD-ROM CHD (v4, `CHT2`) is unpacked by `chd.write_gdi` without chdman.
+- **Effort:** one session, 2026-10-13. Reader `gbox.soulcalibur_dc`, writer `gbox.soulcalibur_swap`, docs
+  `docs/soulcalibur_dc.md`. `assimilate op=fingerprint` on the disc names `gbox.soulcalibur_dc` as nearest
+  (olnk x10).
+
 ## GameCube and Wii
 
 ### Crazy Taxi (GameCube)
@@ -365,6 +379,32 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
 - **Reusable:** it reuses the `aki_wrestling` bake/decimate helpers and `sm64_swap`. Its ISO walk is now
   `gbox.formats.iso9660`.
 
+### Metal Gear Solid 2: Substance (PS2, Konami)
+
+- **Modules:** `mgs2_inventory`, `mgs2_models`, `mgs2_swap` and `ps2_gs` (a GS memory model).
+- **Doc:** `mgs2.md`.
+- **Container:** a DVD-9 with two ISO9660 layers (layer 1 has its own PVD at the layer break).
+  - `MGS2/STAGE.DAT` and `STAGE2.DAT` hold an encrypted TOC of `{name[8], sector}` rows.
+  - Each stage has an encrypted header of `(type << 24 | 24-bit name hash, offset)` rows, grouped into pages.
+- **Codec:** zlib 1.1.3 pages under a 32-bit LCG xor stream (`k = k * 0x02e90edd + step`). The keys come from the
+  archive time stamp and the stage name hash; a page's key comes from its first u16. The first u16 is stored minus
+  0x8f3.
+- **Model:** kms (type 0x0a). Bone records hold rest offsets and parents. Parts are <= 32-vertex triangle strips:
+  s16 position + weight word, s16 normal + ADC flag, s16 uv.
+- **Texture:** packs (type 0x13). The VRAM image is uploaded page-linearly as PSMCT32 and sampled as PSMT8 / PSMT4
+  sub-rects with their own TEX0 / CLAMP / CLUT.
+- **Skeleton:** in the kms (rest pose without rotations, mm).
+- **Animation:** type 0x0c / 0x12, not decoded.
+- **How it was cracked:**
+  - `string-xref-loader`: `stage.dat` -> the ELF file table (`0x180b08`) -> the readers (`0x1008b0`, `0x101448`) ->
+    the cipher (`0x1007a8` / `0x1007d8`) and the name hash (`0x1424c8`).
+  - Model names came from the stage overlay's strings (`sna_def`, `rai_def`, `gbs_def`).
+  - Characters were identified by rendering every 18-role kms on the disc.
+  - `round-trip-proof`: page re-deflate + re-encrypt reads back identically.
+- **Effort:** 2026-10-13, one session (branch `mgs2-cast`).
+- **Reusable:** `ps2_gs` for any PS2 texture swizzle, and the two-layer `Disc` for any DVD-9. It reuses `sm64_swap`
+  (load_rig / retarget), `gta_stories_models.pack_atlases` and `defjam_writer.quantize`.
+
 ### GTA III (PS2), Vice City (PC), Liberty City Stories and Vice City Stories (PS2)
 
 - **Modules:** `gta_rw` (shared), `gta3_*`, `gta_vc_models`, `gta_vc_swap`, `gta_stories_models`,
@@ -453,6 +493,25 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
 - **WCW Mayhem** (`mayhem_inventory`): EA BIGF members with RefPack (`gbox.refpack`, facade in `gbox.formats.lz`).
   #1512, PR #218.
 
+## Nintendo DS
+
+### Super Mario 64 DS (USA)
+
+- **Not NSBMD.** The game predates the NITRO-System G3D formats. Its 450 models are the game's own `.bmd` (bones,
+  GX display lists, materials, textures, palettes) and its animations are `.bca`/`.btp`. Most files are an `LZ77` tag
+  followed by an LZ10 stream. The player models are in `ARCHIVE/arc0.narc`.
+- **Shared pieces it added (`gbox.formats.nitro`):** NitroFS (FNT with the directory table, FAT, ARM9 overlay table),
+  NARC, LZ77 tag + LZ10/LZ11, all seven DS texel formats (the 4x4 format's palette-index data, colour-0
+  transparency), and a GX display-list interpreter that records each vertex's matrix slot. An NSBMD `MDL0` draws
+  through the same lists and texel formats, so a later NSBMD reader only adds its container. `formats.disc.listing`
+  now lists `.nds` ROMs, which lets the fingerprinter read DS games.
+- **Skinning:** rigid. `MTX_RESTORE` slot -> the list's transform id -> the bone map. The scale shift multiplies
+  vertex coordinates only, not bone translations. Getting this wrong makes Bowser's limbs look like sticks.
+- **Technique:** `community-spec` (the BMD layout as the SM64DS editing community documents it), checked on all 26
+  characters against the owned ROM by rendering previews. The playable four attach their separate head model at
+  `face_1`, as the game does.
+- **Effort:** one session, 2026-10-13 (inbox #1652). Reader: `gbox.sm64ds_chars`, docs: `docs/sm64ds.md`.
+
 ## RE tools that landed alongside
 
 | Tool | What it does | When it landed |
@@ -498,6 +557,7 @@ The migrations were checked two ways:
 | `texture.tim_parse/tim_build` | `yukes_sd` | yukes_sd |
 | `rig.role_of_joint` | `re4gc_enemies._role_of_joint` | re4gc_enemies, doa2_weighted_retarget, sm64_swap |
 | `rig.check_role_map` | `pso_player.check_roles` body | pso_player |
+| `nitro` (NitroFS, NARC, LZ77/LZ11, DS texels, GX lists) | new (SM64DS) | sm64ds_chars, formats.disc |
 
 The new shared pieces are:
 
