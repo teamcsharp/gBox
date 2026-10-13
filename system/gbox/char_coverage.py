@@ -28,6 +28,9 @@ WRITERS = [
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
                                                 "(gbox.aki_wcw); Revenge has no writer yet"),
     ("yukes_sd", ["<wrestler>"], "any wrestler, every costume (several per disc: op=match); SmackDown! 2 (PS1)"),
+    ("defjam_writer", ["<wrestler>", "player"],
+     "Def Jam Vendetta PS2: any of the 58 wrestler containers (player = the four story heroes, every costume); "
+     "BODY/BODY2 + texture page rebuilt, read back by the reader; not yet verified in an emulator"),
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
     ("pe2_swap", ["player"], "PE2 Aya, every outfit file (STAGE0.CDF 10200..10600: model + page + CLUT); unverified in game"),
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),

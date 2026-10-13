@@ -79,8 +79,9 @@ def _item_text(item):
 
 
 def observation_list(value, key):
-    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping."""
-    if value is None:
+    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping. A bare
+    true/false ("actors": false on an empty ring, "hud": true on a fight with health bars) carries no item."""
+    if value is None or isinstance(value, bool):
         items = []
     elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
         items = [value]

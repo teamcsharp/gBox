@@ -1384,6 +1384,11 @@ DEDICATED = [
     ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Def Jam: Vendetta PS2 (SLUS_206.39 v1.00): the 58 data.bin WRS wrestlers, BODY + FACE + hands on one rigged
+    # skeleton with body roles and the fighter's texture page (#1305; formats in docs/defjam_pipeline.md)
+    ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
+     lambda: __import__("gbox.defjam_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.defjam_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
@@ -2099,11 +2104,12 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, yukes_sd
+        from . import aki_wrestling, defjam_writer, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
+        mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2198,6 +2204,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import yukes_sd
     if gid in yukes_sd.GAME_IDS or gid in yukes_sd.SD1_IDS:   # Yuke's SmackDown! 2 (PS1): slot = a wrestler (The Rock)
         return {"result": out | yukes_sd.use(ctx, meta, game, inp)}
+    from . import defjam_writer
+    if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
+        return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
     from . import clayfighter_swap
     if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
         # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>
