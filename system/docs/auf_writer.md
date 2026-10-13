@@ -8,7 +8,9 @@ characters from the list"). Tickets: #1438 (pick-whip program, stage 3 "writer f
 readiness, writer stage), #1529.
 
 Status: built and checked offline (encoder round trip on every shipped character model, rebuilt levels read back
-by the reader, disc image read back). **Not yet run in Dolphin**; the live check is in section 7.
+by the reader, disc image read back). On 2026-10-13 the two whole-cast builds (section 5, "Builds for #1529 and
+#1385") booted in an agent-owned Dolphin on the test PC: the first mission's opening cut scene and multiplayer bot
+matches showed the donors textured and animated, with no crash. The other checks in section 7 are still open.
 
 ## 1. Where the characters are
 
@@ -123,8 +125,12 @@ For each level and each body model:
 | `bosses` | Malprave (suit, gown), Bloch (zero, jetpack), Griffin, Jackal, the twins |
 | `npcs` | Zoe, Natalya, hostages, the G8 leaders, R (scientist), embassy guards, missile officer, rig diver, the escort VIP |
 | `bots` | every `DeathmatchPlayer` body in the 17 multiplayer levels (the 16 characters bots and players pick) |
+| `campaign` | everyone in the 20 mission levels |
+| `multiplayer` | everyone in the 17 multiplayer maps (the 16 bot characters and the escort VIP) |
 | `all` | everyone |
 | `model:<body>` | one body everywhere (e.g. `model:thug_orchid`, 21 levels) |
+| `campaign:<body>` | one body in the mission levels only (e.g. `campaign:henchmen_vest`: m6_1, m6_2, m6_3) |
+| `mp:<body>` (`bot:<body>`) | one body in the multiplayer maps only (e.g. `mp:henchmen_vest`: the henchman bot in all 17 maps) |
 | `cast` | `pairs` = `[{target, donor}]`. A target is a body, `model:<body>` or a group. Narrower targets win over groups. Donors without a target are dealt over every body nobody named, using a seeded shuffle (`title` is the seed), so one body gets one donor across all levels and the same request builds the same disc. |
 
 Pick whip (#1438): `auf_swap.slot_for_entity(model)` turns an entity's model string into its slot. The model
@@ -152,7 +158,80 @@ the body this writer replaces.
 `auf_<slot>_<plan hash>` and is built on the control plane, where the collection is.
 
 "Replace every character with wrestlers" is one build: `slot=cast pairs=[{donor: sd2_the_rock}, {donor: nm_kane},
-… every wrestler …]`.
+… every wrestler …]`, or (better) the whole-cast swap below.
+
+### Whole-cast swap (`characters op=cast_swap`, #1529, #1385)
+
+`cast_slots()` lists three kinds of rows. The groups (`player`, `enemies`, `bosses`, `npcs`, `bots`, `all`, `cast`,
+`campaign`, `multiplayer`) and the 45 `model:<body>` rows are marked `aggregate`. Under them are the **57 context
+slots** that `gbox.cast_swap` plans: `campaign:<body>` for each of the 40 bodies seen in the missions, and `mp:<body>`
+for each of the 17 bodies in the multiplayer maps (16 bots, kind `bot`, and the escort VIP, kind `npc`). Every (level,
+body) pair of the 372 belongs to exactly one context slot, so the campaign henchman and the henchman bot can wear
+different donors. Each row carries `groups` (for example `mp:henchmen_vest` → `bots, all, multiplayer,
+model:henchmen_vest`), its `levels` and its `kind`.
+
+Before this, `cast_swap` treated `gbox.auf_swap` as a one-slot writer, so `slots=all` planned only `player`. The
+writer now has a pairs path, `auf_swap.build_cast(ctx, game, [(slot, donor meta)], name)`:
+
+* The level map is read off the disc itself (`disc_level_keys`: `level_cast` on all 37 levels, about 45 s from the GCZ,
+  cached in `cache/<game>/auf_level_cast.json`). On the owned disc it equals the `level_keys()` snapshot in all 37
+  levels. `cast_slots_live` feeds the cached map to the planner.
+* Every slot's (level, body) pairs go into one plan, and each level is rebuilt once with every donor it needs
+  (`build_mod`, 6 worker processes).
+* A donor that does not load fails only its own slots. A level that cannot be rebuilt (for example too few free
+  textures for its donors) stays stock, and its slots report `partial` with the level's reason (`_swap_job`).
+* The marker gets the cast rows, `what` ("Replaces N mission characters (…) and M multiplayer characters (bots) with
+  K donor characters in L levels") and `where_to_look`, which feed the Mods cards, the Builds rows and Special builds
+  (`gbox.build_summary`).
+
+Calls:
+
+```
+characters op=cast_swap target_game=65b7187589166b26 source=wrestlers assign=random seed=wrestlers \
+    prefer=smackdown2,nomercy mod_name=auf_cast_wrestlers               # all 57 slots, distinct WWF wrestlers
+characters op=cast_swap target_game=65b7187589166b26 source=sa2 assign=random seed=sonic \
+    slots=campaign,bots mod_name=auf_cast_sonic_random                 # 40 campaign + 16 bot slots, SA2 at random
+characters op=cast_swap target_game=65b7187589166b26 source=wrestlers slots=player,bosses,npcs,bots   # 48 slots
+```
+
+`slots=` takes groups, kinds and slot names, comma-joined (the union). The cast menu offers the target's own groups
+(`slot_sets`: Everyone, Enemies, Bosses, NPCs, Bots, Campaign, Multiplayer, Campaign + multiplayer bots).
+
+### Builds for #1529 and #1385 (2026-10-13)
+
+Both were built on the Windows test PC through the same path as the Spark job (`cast_swap.plan` → `cast_swap.build`
+→ `auf_swap.build_cast` → `special_builds.record_call`). The collection and the donor files came from the control
+plane's API with GET requests only, and the Play-as target POSTs were not sent. Both builds are installed in the node
+cache, `cache/mods/65b7187589166b26/<name>/` (`.gbox-mod.json` next to `007 - Agent Under Fire (USA).iso`).
+
+| Mod | Call | Result |
+|---|---|---|
+| `auf_cast_wrestlers` (#1529) | `source=wrestlers assign=random seed=wrestlers prefer=smackdown2,nomercy`, all 57 slots | 57/57 built. 57 distinct WWF wrestlers (29 No Mercy, 28 SmackDown! 2; no name twice) on 372 (level, body) pairs; 37 levels, 416 LOD models, 0 level errors; 298 s |
+| `auf_cast_sonic_random` (#1385) | `source=sa2 assign=random seed=sonic slots=campaign,bots` | 56/56 built. The 12 SA2 characters dealt at random over 40 campaign and 16 bot slots (each character once per round of 12); 370 pairs, 37 levels; the escort VIP left stock; 293 s |
+
+Read back (`readback_*.json` in `D:\gBox\research\auf\evidence\`): every changed level was re-read from the mod's
+image against the stock disc. The checks were the package walk, the restable sort, the build record's sha256, every
+planned body's LOD models new and passing `decode_check`, every section textured, and the heads either stubbed (zero
+area) or, when worn outside the plan, unchanged. Every other restable file was byte-identical, the texture records and
+chunk length were unchanged, the mip chains were exact, and the levels outside the plan were stock. Both builds
+passed with 0 problems: the wrestlers build had 37 levels and 416 models, the Sonic build 37 levels and 414 models
+(the escort VIP stays stock).
+
+Live (agent-owned Dolphin 2609a with its own User folder, the window off-screen and a private DSU pad; never the
+operator's Dolphin):
+* **Campaign.** "Trouble in Paradise" loads `maps/orc_1.ngc`. In its opening cut scene, wrestlers: the Orchid guard
+  (`campaign:thug_orchid`) is Grand Master Sexay (SmackDown! 2, textured), and the passenger leaving the helicopter
+  with the briefcase (`campaign:g8russia_body`) is Rikishi (No Mercy). In Sonic: the guard is Chaos 0, the passenger
+  is Metal Sonic, and Bond on the ledge (`campaign:bond_combat`) is Rouge. All of them walk and gesture with the
+  native animations, and no Bond or guard head is drawn over them. Gameplay in orc_1 ran without a crash.
+* **Multiplayer.** In Combat Training with bots, wrestlers on Dungeon (`dm3`): the Rig Diver bot is Mae Young (No
+  Mercy, flat skin tone), the Griffin bot is Cactus Jack and the Bloch bot is Debra. The match ran to 25 points and
+  the results screen with no crash. Sonic on Cooling Station (`dm1`): the Jackal bot is Shadow and the Malprave bot
+  is Dr. Eggman, both running and aiming.
+* **Not checked yet.** Enemies in campaign gameplay (only the cut scenes were captured; the first mission's guards are
+  behind the decryptor door), the other mission levels, hit registration on donors, and the escort maps.
+* No Mercy donors look like flat skin tone in game, the same as their collection previews (section 6, known cosmetic
+  limits). The SmackDown! 2 and SA2 donors are textured.
 
 CLI (offline):
 
@@ -164,7 +243,10 @@ python -m gbox.auf_swap build <source.gcz|.iso> <library> <cache dir> --slot pla
 
 ## 6. Evidence (offline)
 
-* `tests/test_auf_swap.py`: 22 synthetic tests and 2 owned-disc tests.
+* `tests/test_auf_swap.py`: 25 synthetic tests and 2 owned-disc tests. Three of the synthetic tests cover the
+  whole-cast path: the context slots and their groups, a `cast_swap` build of every context slot into one synthetic
+  disc (`disc_level_keys` and its cache, per-slot report, marker `what` / `where_to_look`, `build_summary`), and a
+  level that fails staying stock while its slots report it.
   * The synthetic tests build a skeleton, a `.gcm`, a whole level package (`.men` scripts, script dictionary,
     textures, shaders, BSP, restable) and a tiny GameCube image.
   * They cover the encoder round trip, palette limits, strips and winding, CMPR, in-place texture pages, the level

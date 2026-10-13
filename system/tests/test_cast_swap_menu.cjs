@@ -30,6 +30,11 @@ test('the source picker groups first, games after, labels escaped', () => {
   for (const k of ['source', 'mapping', 'slots', 'seed', 'status', 'plan']) assert.match(form, new RegExp(`data-cs="${k}"`));
   assert.match(form, /data-cs-go="build" type="button" disabled/);
   assert.match(form, /<option value="auto">/); assert.match(form, /<option value="enemies">Enemies only/);
+  // a target with its own slot groups (007 Agent Under Fire: campaign, bots ...) offers those instead
+  const auf = CS.formHTML('007 Agent Under Fire', SOURCES, [['all', 'Everyone (57)'], ['campaign', 'Campaign (story mode) (40)'],
+                                                            ['bots', 'Bots (16)'], ['campaign,bots', 'Campaign + multiplayer bots (56)']]);
+  assert.match(auf, /<option value="campaign,bots">Campaign \+ multiplayer bots \(56\)<\/option>/);
+  assert.match(auf, /<option value="bots">Bots \(16\)/); assert.ok(!auf.includes('Enemies only'));
 });
 
 test('plan rows: slot -> thumbnail + donor picker (selected donor, stale flagged), skipped / refused / re-extracted listed', () => {

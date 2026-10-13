@@ -557,3 +557,100 @@ def test_crazy_taxi_drivers_get_four_sonic_adventure_characters_by_height(tmp_pa
     assert p == CS.plan(CT, chars, "Sonic Adventure", "by_role", "", slots="drivers", root=tmp_path)   # deterministic
     again = CS.plan(CT, chars, "sa1", "auto", "", slots="drivers", root=tmp_path)
     assert {r["slot"]: r["character"] for r in again["assignments"]} == got
+
+
+# ---------------------------------------------------------------- 007 Agent Under Fire: every slot, assign=random
+
+AUF = {"game_id": "65b7187589166b26", "title": "007 - Agent Under Fire (USA)", "platform": "gamecube"}
+NM = ("WWF No Mercy (USA)", "n64")
+RV = ("WCW-nWo Revenge (USA)", "n64")
+SA2 = ("Sonic Adventure 2 (USA)", "dreamcast")
+
+
+def wrestler_chars():
+    """SmackDown! 2 + No Mercy (WWF), Revenge (WCW) and Def Jam entries; The Rock and Kane are in two games."""
+    out = [entry(f"sd2_{n}", n.replace("_", " ").title(), *SD2, gid="276334ad218ffb46")
+           for n in ("the_rock", "kane", "x_pac", "rikishi", "edge")]
+    out += [entry(f"nm_{n}", n.replace("_", " ").title(), *NM, gid="9b4aa1ef62e4ff07")
+            for n in ("the_rock", "kane", "triple_h", "mankind", "chyna")]
+    out += [entry(f"rv_{n}", n.replace("_", " ").title(), *RV, gid="1fa1a05a7ca43ca2") for n in ("sting", "goldberg")]
+    return out + [m for m in CHARS if m["slug"].startswith("djv_")]
+
+
+def sa2_chars():
+    names = ("Sonic", "Shadow", "Knuckles", "Rouge", "Tails", "Dr. Eggman", "Amy Rose", "Metal Sonic", "Tikal",
+             "Chaos 0", "Super Sonic", "Super Shadow")
+    return [entry("sa2_" + "".join(c for c in n.lower() if c.isalnum()), n, *SA2, gid="5a20000000000000") for n in names]
+
+
+def test_auf_cast_slots_cover_every_level_body_once_with_groups():
+    from gbox import auf_swap as A
+    rows = CS.slot_rows(AUF)
+    assert len(rows) == 57 and len({r["slot"] for r in rows}) == 57          # 40 campaign + 16 bots + the escort VIP
+    pairs = [A.select(r["slot"]) for r in rows]
+    assert sum(len(p) for p in pairs) == len(set().union(*pairs)) == len(A.select("all")) == 372
+    by = {g: [r["slot"] for r in CS.filter_slots(rows, g)] for g in ("campaign", "bots", "multiplayer", "bosses",
+                                                                    "npcs", "enemies", "player", "model:zoe_body")}
+    assert len(by["campaign"]) == 40 and len(by["bots"]) == 16 and len(by["multiplayer"]) == 17
+    assert all(s.startswith("campaign:") for s in by["campaign"]) and all(s.startswith("mp:") for s in by["bots"])
+    assert "mp:vip_body" in by["npcs"] and "mp:vip_body" not in by["bots"] and len(by["bosses"]) == 7
+    assert set(by["player"]) == {"campaign:bond_tux", "campaign:bond_combat", "campaign:bond_graysuit",
+                                 "campaign:bond_jetpack", "mp:bond_tux", "mp:bond_combat"}
+    assert by["model:zoe_body"] == ["campaign:zoe_body", "mp:zoe_body"]
+    # the lead's call that used to plan only 'player'
+    mixed = CS.filter_slots(rows, "player,bosses,npcs,bots")
+    assert len(mixed) == 48 and [r["slot"] for r in mixed] == [r["slot"] for r in rows if r in mixed]
+    assert len(CS.filter_slots(rows, "campaign,bots")) == 56
+    with pytest.raises(ValueError, match="nobody"):
+        CS.filter_slots(rows, "campaign,nobody")
+    sets = dict(CS.slot_sets(rows))
+    assert {"campaign", "bots", "bosses", "npcs", "campaign,bots"} <= set(sets) and sets["campaign"].endswith("(40)")
+    assert CS.strategy("gbox.auf_swap")[0] == "pairs" and "gbox.auf_swap" in CS.BUILDERS
+
+
+def test_auf_wrestlers_plan_every_slot_distinct_and_preferring_wwf():
+    p = CS.plan(AUF, wrestler_chars(), "wrestlers", "random", "w", "all", prefer="smackdown2,nomercy")
+    assert p["status"] == "planned" and p["strategy"] == "pairs" and not p["skipped"] and len(p["assignments"]) == 57
+    first = p["assignments"][:8]                         # 8 distinct WWF names (The Rock and Kane once each) first
+    names = [next(d["name_key"] for d in p["donors"] if d["slug"] == r["character"]) for r in first]
+    assert len(set(names)) == 8 and all(r["character"][:3] in ("sd2", "nm_") for r in first)
+    assert all("preferred source" in r["why"] for r in first)
+    assert p == CS.plan(AUF, wrestler_chars(), "wrestlers", "random", "w", "all", prefer="smackdown2,nomercy")
+    with pytest.raises(ValueError):
+        CS.plan(AUF, sa2_chars() + wrestler_chars(), "SA2", "random", "w", prefer="nomercy")   # prefer outside source
+
+
+def test_assign_random_is_a_general_option_and_deals_the_whole_source_before_repeating():
+    inp = SimpleNamespace(assign="random", mapping="by_role")
+    assert CS.mapping_of(inp) == "random" and CS.mapping_of(SimpleNamespace(mapping="by_role")) == "by_role"
+    p = CS.plan(AUF, sa2_chars(), "SA2", CS.mapping_of(inp), "sonic", "campaign,bots")
+    rows = p["assignments"]
+    assert len(rows) == 56 and {r["slot"].split(":")[0] for r in rows} == {"campaign", "mp"}
+    for i in range(0, 48, 12):                            # every SA2 character once per round of 12
+        assert len({r["character"] for r in rows[i:i + 12]}) == 12
+    assert rows == CS.plan(AUF, sa2_chars(), "SA2", "random", "sonic", "campaign,bots")["assignments"]
+    assert rows != CS.plan(AUF, sa2_chars(), "SA2", "random", "other", "campaign,bots")["assignments"]
+    # the same option on another writer (PSO): random over its enemy slots
+    pso = CS.plan(PSO, sa2_chars(), "SA2", CS.mapping_of(inp), "sonic")
+    assert pso["status"] == "planned" and all(r["why"].startswith("random") for r in pso["assignments"])
+
+
+def test_spread_puts_each_name_once_and_preferred_first_and_keeps_plain_decks():
+    deck = [{"slug": "a", "name_key": "rock"}, {"slug": "b", "name_key": "kane", "preferred": True},
+            {"slug": "c", "name_key": "rock", "preferred": True}, {"slug": "d", "name_key": "sting"}]
+    assert [d["slug"] for d in CS.spread(deck)] == ["b", "c", "d", "a"]
+    plain = [{"slug": s, "name_key": s} for s in "xyzw"]
+    assert CS.spread(plain) == plain
+    assert CS.name_key({"name": "Briggs (costume 2) (Def Jam Vendetta PS2)"}) == "briggs"
+    assert CS.name_key({"name": "The Rock"}) == CS.name_key({"name": "THE ROCK (No Mercy)"}) == "therock"
+
+
+def test_mashup_marks_a_random_cast_request_as_assign_random(monkeypatch):
+    monkeypatch.setattr(mashup, "_resolve_game", lambda name, ctx: AUF)
+    inp = mashup.MashupIn(request="replace all the characters in the campaign of 007 Agent Under Fire with randomly "
+                                  "selected characters from Sonic Adventure 2", dry_run=True)
+    out = mashup._cast_plan(("007 Agent Under Fire", "Sonic Adventure 2"), inp, SimpleNamespace())
+    assert out["call"]["input"]["assign"] == "random"
+    plain = mashup._cast_plan(("PSO", "wrestlers"), mashup.MashupIn(request="everyone in PSO as wrestlers"),
+                              SimpleNamespace())
+    assert "assign" not in plain["call"]["input"]
