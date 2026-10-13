@@ -14,7 +14,7 @@ A profile is stored per (donor character, target game[, slot]) in the character'
         "adjust": {role: {"length": 1, "girth": 1, "scale": [1, 1, 1], "offset": [0, 0, 0], "rotate": [0, 0, 0]}},
     }
 
-"*" is the game-wide profile; a slot's own profile overrides it key by key. Offsets are fractions of the target
+"*" is the game-wide profile; a slot with its own (complete) profile uses that instead. Offsets are fractions of the target
 figure height (game units differ: Mario's skeleton is ~100 units tall, DOA2's ~1.7), rotations are degrees (XYZ).
 
 Writers apply a profile in two places:
@@ -142,32 +142,14 @@ def slot_key(slot: str | None) -> str:
     return s if s and s not in ("*", "all", "roster", "cast") else "*"
 
 
-def merge(base: dict | None, over: dict | None) -> dict:
-    """over's keys win; roles and adjust merge per role."""
-    a, b = normalize(base), normalize(over) if over else None
-    if b is None:
-        return a
-    out = copy.deepcopy(a)
-    raw = over or {}
-    for k in ("height", "ground", "head", "torso_width", "arm_length", "leg_length"):
-        if k in raw:
-            out[k] = b[k]
-    out["roles"].update(b["roles"])
-    for role, adj in b["adjust"].items():
-        out["adjust"][role] = adj
-    for role in (raw.get("adjust") or {}):
-        if role not in b["adjust"]:
-            out["adjust"].pop(role, None)                   # a slot reset of one role back to default
-    return out
-
-
 def stored(meta: dict, game_id: str) -> dict:
     """{slot key: raw profile} stored for one game."""
     return dict(((meta or {}).get("retarget_profiles") or {}).get(game_id) or {})
 
 
 def resolve(meta: dict, game_ids, slot: str | None = None) -> dict | None:
-    """The profile for this donor in this game (slot over game-wide), or None when the operator never made one.
+    """The profile for this donor in this game, or None when the operator never made one: the slot's own profile when
+    it has one (a complete profile: the editor starts it from the game-wide one), else the game-wide "*" profile.
     game_ids: one id or several (a writer serving a game's regional releases)."""
     ids = [game_ids] if isinstance(game_ids, str) else list(game_ids or [])
     profiles = (meta or {}).get("retarget_profiles") or {}
@@ -181,7 +163,7 @@ def resolve(meta: dict, game_ids, slot: str | None = None) -> dict | None:
             own = entry.get(key.split(":", 1)[-1])
         if game_wide is None and own is None:
             continue
-        return merge(game_wide, own) if own is not None else normalize(game_wide)
+        return normalize(own if own is not None else game_wide)
     return None
 
 
