@@ -4,12 +4,16 @@
 // texture pop-up to zoom - what changed (donor -> slot, the per-slot report of a cast swap), verified / unverified,
 // and Play (this PC or a chosen PC, the mod cards' @launch path), Play from saved moment, Open request and Screenshot
 // after launch (get_frame of the running game -> the mod card's in-game shots).
+// The server answers from its index of the build folders: while it is still indexing (`indexing`) or walking folder
+// sizes (`sizing`: folders left, size null on those cards) the view says so and polls faster through the shared cached
+// read, so sizes appear as they arrive; Refresh asks for an incremental pass (POST /api/mods/built/refresh).
 // Shared by the desktop shell's Mods view and the web client's Mods tab; plain functions + a controller that renders
 // HTML strings into a host element, so node tests drive it without a browser (tests/test_mods_gallery.cjs).
 (function (root) {
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const PAGE = 24;
+  const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
   function filterMods(items, { game = "", writer = "", q = "" } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
@@ -39,6 +43,15 @@
 
   const fmtSize = n => !n ? "0 B" : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + " GB" : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + " MB"
     : n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B";
+  // a folder the server has not walked yet (size null) says so instead of "0 B"
+  const sizeHTML = m => m.size == null ? '<span class="mg-sizing">size: indexing…</span>'
+    : ESC(fmtSize(m.own_size || m.size)) + (m.own_size && m.size > m.own_size ? ` (${ESC(fmtSize(m.size))} with shared files)` : "");
+  // the toolbar summary: shown / all builds, the cache folder, and what the index is still doing
+  function summaryText(n, d) {
+    if (!d) return "";
+    const busy = d.indexing ? "indexing…" : d.sizing ? `indexing… (${d.sizing} folder size${d.sizing === 1 ? "" : "s"} to go)` : "";
+    return `${n} of ${d.items.length} builds${d.cache_dir ? " · " + d.cache_dir : ""}${busy ? " · " + busy : ""}`;
+  }
   function fmtAge(ts, now = Date.now() / 1000) {
     if (!ts) return "unknown time";
     const s = Math.max(0, now - ts);
@@ -72,7 +85,7 @@
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
           <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}</div>
         ${changesHTML(m)}
-        <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${ESC(fmtSize(m.own_size || m.size))}${m.own_size && m.size > m.own_size ? ` (${ESC(fmtSize(m.size))} with shared files)` : ""}
+        <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
         ${tickets.length ? `<div class="mg-tk">${tickets.map(t => `<button class="act mg-req" type="button" data-mg="request" data-n="${t.number}" title="${ESC(t.title || "Open request #" + t.number)}">Open request #${t.number}${t.status ? " · " + ESC(t.status.replace("_", " ")) : ""}</button>`).join("")}</div>` : ""}
         <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
@@ -115,7 +128,7 @@
     .mg-ch{margin:0;padding-left:16px;max-height:110px;overflow:auto;font-size:12px}.mg-st{font-size:10.5px;padding:0 5px;border-radius:7px;background:#444;color:#fff}
     .mg-st.mg-built{background:#1f6f3f}.mg-st.mg-failed{background:#7a2b2b}.mg-st.mg-partial,.mg-st.mg-skipped{background:#6f5a1f}
     .mg-rq{border-top:1px solid var(--line,#333);padding-top:5px;font-size:12px;max-height:220px;overflow:auto}.mg-rqm{margin:4px 0;white-space:pre-wrap}
-    .mg-meta{font-size:11.5px}.mg-bad{color:#e66}.mg-btns,.mg-tk{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.mg-msg{font-size:11.5px}`;
+    .mg-meta{font-size:11.5px}.mg-sizing{font-style:italic}.mg-bad{color:#e66}.mg-btns,.mg-tk{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.mg-msg{font-size:11.5px}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -142,17 +155,17 @@
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
       if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0 })).join("")
-        || `<p class="mut">${st.data ? (st.data.items.length ? "No built mod matches these filters." : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
-      if (sum) sum.textContent = st.data ? `${list.length} of ${st.data.items.length} builds${st.data.cache_dir ? " · " + st.data.cache_dir : ""}` : "";
+        || `<p class="mut">${st.data ? (st.data.items.length ? "No built mod matches these filters." : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
+      if (sum) sum.textContent = summaryText(list.length, st.data);
       if (moreEl) moreEl.innerHTML = more > 0 ? `<button class="act" type="button" data-mg="more" style="width:100%;margin:10px 0">Show ${Math.min(more, PAGE)} more (${more} not shown)</button>` : "";
     }
     async function load(maxAge) {
       const r = await read.get(maxAge);
       if (!r || !r.ok) { if (!st.data) { if (!built) shell(); const g = host.querySelector("[data-mg-grid]"); if (g) g.innerHTML = `<p class="bad">${ESC(r?.error || "Could not read the built mods")}</p>`; } return st; }
-      const sig = JSON.stringify(r.data.items);
+      const sig = JSON.stringify([r.data.items, !!r.data.indexing, r.data.sizing || 0]);
       if (sig === st.sig) return st;                         // unchanged: keep the carousels and scroll where they are
-      const refacet = !st.data || JSON.stringify(facets(st.data.items)) !== JSON.stringify(facets(r.data.items));
-      st.data = { items: r.data.items || [], cache_dir: r.data.cache_dir };
+      const refacet = !st.data || JSON.stringify(facets(st.data.items)) !== JSON.stringify(facets(r.data.items || []));
+      st.data = { items: r.data.items || [], cache_dir: r.data.cache_dir, indexing: !!r.data.indexing, sizing: r.data.sizing || 0 };
       st.sig = sig;
       const typing = host.contains?.(root.document?.activeElement) && root.document.activeElement.matches?.("input, select");
       if (refacet && !typing) built = false;                 // new game / writer options; never under the operator's cursor
@@ -223,7 +236,7 @@
       const t = e.target, card = t.closest?.(".mg-card"), m = card && find(card.dataset.key);
       const act = t.closest?.("[data-mg]")?.dataset.mg;
       if (act === "more") { st.page++; draw(); return; }
-      if (act === "refresh") { read.invalidate(); try { await env.api("/api/mods/built?fresh=true"); } catch {} st.sig = ""; await load(0); return; }
+      if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} read.invalidate(); st.sig = ""; await load(0); return; }
       const chipG = t.closest?.("[data-mg-game]"), chipW = t.closest?.("[data-mg-writer]");
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
@@ -267,16 +280,19 @@
       shell(); draw();
       await nodes(); await load(0);
       if (!built) draw();
-      timer = setInterval(() => { if (!env.visible || env.visible()) load(); }, 30000);
+      timer = setInterval(tick, TICK);
       return api;
     }
+    // one cached read per tick at most: every few seconds while the index is still working, else every 30 s
+    function busy() { return !!(st.data && (st.data.indexing || st.data.sizing)); }
+    function tick() { if (!env.visible || env.visible()) return load(busy() ? TICK - 500 : 30000); }
     function stop() { clearInterval(timer); host.removeEventListener?.("click", onClick); host.removeEventListener?.("input", onInput); host.removeEventListener?.("change", onInput); }
-    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, ready: null };
+    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, tick, busy, ready: null };
     api.ready = start();
     return api;
   }
 
-  const api = { filterMods, facets, imagesOf, cardHTML, toolbarHTML, changesHTML, requestHTML, fmtSize, fmtAge, launchText, mount, PAGE };
+  const api = { filterMods, facets, imagesOf, cardHTML, toolbarHTML, changesHTML, requestHTML, fmtSize, fmtAge, launchText, summaryText, mount, PAGE, TICK };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxModsGallery = api;
 })(typeof window !== "undefined" ? window : globalThis);
