@@ -8,6 +8,7 @@ import pytest
 from gbox import sm64_inventory as I
 
 EU = Path(os.environ.get("GBOX_SM64_EU_ROM", Path.home() / "gbox-cache/66062703301f4969/source.zip"))
+US_LABEL = Path(os.environ.get("GBOX_SM64_US_LABEL_ROM", Path.home() / "gbox-cache/b7aecee966090bfa/source.zip"))
 
 
 def _mio0_literal(payload: bytes) -> bytes:
@@ -71,9 +72,37 @@ def test_models_resolve_to_named_geo():
     assert I.named_models(ms) == {"bobomb_buddy": ["0xc000000"], "mario": ["0xc000004"]}
 
 
+def test_catalog_check_flags_region_label_mismatch():
+    ident = {"game_code": "NSMP", "known": I.KNOWN["4ac5721683d0e0b6bbb561b58a71740845dceea9"]}
+    us = I.CATALOG["b7aecee966090bfa"]
+    c = I.catalog_check("b7aecee966090bfa", us["source_sha256"], ident)
+    assert c["catalog_region"] == "US" and c["rom_region"] == "EU" and c["build"].startswith("Super Mario 64 (Europe)")
+    assert c["source_hash_matches_catalog"] and not c["region_label_matches_rom"]
+    eu = I.catalog_check("66062703301f4969", I.CATALOG["66062703301f4969"]["source_sha256"], ident)
+    assert eu["region_label_matches_rom"] and eu["source_hash_matches_catalog"]
+    assert not I.catalog_check("b7aecee966090bfa", "0" * 64, ident)["source_hash_matches_catalog"]
+    unknown = I.catalog_check("ffffffffffffffff", "0" * 64, ident)
+    assert unknown["catalog_region"] is None and not unknown["region_label_matches_rom"]
+
+
+@pytest.mark.skipif(not US_LABEL.exists(), reason="owned hyperspin SM64 (USA)-labelled source not cached")
+def test_owned_us_labelled_zip_is_the_eu_build():
+    m = I.inventory(US_LABEL, "b7aecee966090bfa")
+    assert m["game_id"] == "b7aecee966090bfa"
+    assert m["source"]["sha256"] == I.CATALOG["b7aecee966090bfa"]["source_sha256"]
+    assert m["rom"]["sha1"] == "4ac5721683d0e0b6bbb561b58a71740845dceea9" and m["rom"]["game_code"] == "NSMP"
+    c = m["catalog_check"]
+    assert c["source_hash_matches_catalog"] and c["catalog_region"] == "US" and c["rom_region"] == "EU"
+    assert not c["region_label_matches_rom"] and m["launch"]["video"] == "PAL 50 Hz"
+    assert m["writer_compatible"] and m["mario_model_loads"] == ["0x28cf20"]
+    mario = m["characters"]["mario"]
+    assert (mario["joints"], mario["triangles"], mario["animations"]) == (20, 752, 209)
+
+
 @pytest.mark.skipif(not EU.exists(), reason="owned SM64 EU source not cached")
 def test_owned_eu_build():
     m = I.inventory(EU)
+    assert m["catalog_check"]["region_label_matches_rom"] and m["catalog_check"]["source_hash_matches_catalog"]
     rom = m["rom"]
     assert rom["sha1"] == "4ac5721683d0e0b6bbb561b58a71740845dceea9" and rom["game_code"] == "NSMP"
     assert rom["sha256"] == "c792e5ebcba34c8d98c0c44cf29747c8ee67e7b907fcc77887f9ff2523f80572"
