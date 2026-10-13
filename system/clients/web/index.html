@@ -273,6 +273,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
 <script src="/viz/builds.js"></script>
+<script src="/viz/launch-mods.js"></script>
 <script src="/viz/retarget-handles.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -766,8 +767,20 @@ const loader = {
     return this.three;
   },
   frame() {},
+  // a modded launch: what it replaces (marquee + slides) and what is on (viz/launch-mods.js); a stock launch shows none
+  modsFor(gid, mod) {
+    if (!window.GBoxLaunchMods || !gid) return;
+    this.mods = this.mods || GBoxLaunchMods.mount($("#loader"), {
+      url: u => /^(https?|data|blob):/.test(u) || /[?&]token=/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
+      fetchJson: (p, signal) => fetch(p, { headers: { authorization: "Bearer " + tok }, signal })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status)))) });
+    const keep = modKeepGet(gid);
+    this.mods.start({ gameId: gid, mod: mod || "", sessionMods: keep.length
+      ? signal => fetch("/api/mods", { headers: { authorization: "Bearer " + tok }, signal })
+          .then(r => r.ok ? r.json() : []).then(cards => GBoxLaunchMods.sessionModsFrom(cards, keep)) : null }).catch(() => {});
+  },
   show(title, sub, shot) {                                    // shot: a picture of the game (a session being moved: its last frame)
-    this.generation++;
+    this.generation++; this.mods?.clear();
     const im = $("#ldshot"); if (im) { im.style.display = shot ? "block" : "none"; if (shot) im.src = shot; }
     const lc = $("#ldcancel"); if (lc?.style) lc.style.display = "";       // a move hides it: the job can't be cancelled midway
     $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
@@ -790,7 +803,7 @@ const loader = {
   fail(msg) { $("#ldcon").innerHTML = `<div class="err">${esc(msg)}</div>`; $("#ldback").style.display = "block"; },
   hide() { const generation = this.generation, el = $("#loader"); el.classList.add("out"); setTimeout(() => {
     if (generation !== this.generation) return;
-    el.classList.remove("on", "out"); this.three?.viz?.stop();
+    el.classList.remove("on", "out"); this.three?.viz?.stop(); this.mods?.clear();
   }, 600); },
 };
 
@@ -1377,6 +1390,7 @@ async function play(id, node, debug, boot) {
   Object.assign(launch, { title: g.title, core: g.core || "", node: node || "auto" });
   const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";
   loader.show(g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
+  loader.modsFor?.(id, boot.disc);
   $("#ldcancel").onclick = cancelLoad;
   const canLocal = node === "linux" && window.GBOX_LOCAL?.worker && g.core;
   $("#ldlocal").style.display = canLocal ? "inline-block" : "none";

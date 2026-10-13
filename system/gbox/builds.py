@@ -6,7 +6,7 @@ GET   /api/builds                               every build: the Spark's central
                                                 the build they mirror), newest first; ?q= &game_id= &kind= filters
 PATCH /api/builds/{game_id}/{name}              {display_name}: the operator's own name for a build ("" clears it)
 GET   /api/builds/{game_id}/{name}/details      modifications, characters inserted (slot <- donor, with the models for the
-                                                360 viewers), codes / cheats / hacks, compile changes, build recipe, jobs
+                                                360 viewers and the fitting's preview picture), codes / cheats / hacks, compile changes, build recipe, jobs
                                                 and receipts, verification + launch history
 GET   /api/builds/scheduled                     queued / claimed / running build jobs (+ the last finished ones)
 GET   /api/builds/scheduled/{job_id}            investigate: log tail, receipt + artifacts, fitting events, result
@@ -377,7 +377,9 @@ def characters(meta: dict, item: dict, gid: str, lib: dict, root: Path | None, f
         if view and not fitted and view.get("model_url"):
             fitted, fitted_from = view["model_url"], "collection model (not fitted to this game)"
         orig = original_for(slot, slot_name, game_chars) if lib.get("all") is not None else None
-        rows.append({"slot": slot, "slot_name": slot_name, "status": c.get("status") or "",
+        # the fitting's preview picture of this slot (the launch screen shows it as the replacement's thumbnail)
+        fit_preview = snap["preview"] if snap.get("preview") and fit_exists(snap["preview"]) else ""
+        rows.append({"slot": slot, "slot_name": slot_name, "status": c.get("status") or "", "fit_preview": fit_preview,
                      **({"reason": str(c["reason"])[:300]} if c.get("reason") else {}),
                      "donors": slugs, "donor": view, "donor_source": n.get("source") or (view or {}).get("source") or "",
                      "fitted_url": fitted, "fitted_from": fitted_from, "original": _char_view(orig, root),

@@ -180,13 +180,14 @@ def test_details_cast_characters_with_fitted_donor_and_the_original(tmp_path):
                                "output": {"result": {"mod": "cast_g1_wrestlers", "game_id": GID}},
                                "fitting": {"order": ["agent:smith"], "models": {"agent:smith": {
                                    "label": "Rock", "snapshot": "/api/jobs/jcast/fitting/files/smith.glb",
-                                   "snapshot_stage": "write"}}}})
+                                   "snapshot_stage": "write", "preview": "/api/jobs/jcast/fitting/files/smith-2.png"}}}})
     store.put("receipt", "rc1", {"id": "rc1", "job_id": "jcast", "tool": "characters", "validation_ok": True,
                                  "validation_problems": [], "finished": 3000,
                                  "artifacts": [{"sha256": "a" * 64, "name": "preview.png", "size": 4, "media_type": "image/png"}]})
     snap = cfg.cache / "fitting-jobs" / "jcast"
     snap.mkdir(parents=True)
     (snap / "smith.glb").write_bytes(b"glTF")
+    (snap / "smith-2.png").write_bytes(b"PNG")
     with TestClient(app) as c:
         assert app.state.built_mods.wait(10)
         d = get(c, h, f"/api/builds/{GID}/cast_g1_wrestlers/details")
@@ -199,6 +200,7 @@ def test_details_cast_characters_with_fitted_donor_and_the_original(tmp_path):
     assert smith["slot_name"] == "Agent Smith" and smith["reason"] == "too many bones"
     assert smith["fitted_url"] == "/api/jobs/jcast/fitting/files/smith.glb" and "fitting snapshot of job jcast" in smith["fitted_from"]
     assert smith["original"]["name"] == "Agent Smith"
+    assert smith["fit_preview"] == "/api/jobs/jcast/fitting/files/smith-2.png" and neo["fit_preview"] == ""
     assert d["cast"] == {"source": "Wrestlers", "mapping": "by_role", "seed": ""}
     assert d["recipe"]["input"]["op"] == "cast_swap" and d["recipe_recorded"] is True
     assert [j["id"] for j in d["jobs"]] == ["jcast"] and d["receipts"][0]["artifacts"][0]["url"] == "/api/artifacts/" + "a" * 64
