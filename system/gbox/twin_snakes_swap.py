@@ -69,7 +69,7 @@ SNAKE_WORDS = re.compile(r"\bsnake\b|player|\bme\b|myself|sneaking suit|bandana"
 
 def is_slot(slot: str) -> bool:
     s = (slot or "player").strip().lower()
-    return s in ("player", "cast", "roster", "everyone") or s in GROUPS or s.startswith("model:") or \
+    return s in ("player", "cast", "roster", "everyone", "full_cast") or s in GROUPS or s.startswith("model:") or \
         any(s == c["key"] for c in TS.CAST)
 
 
@@ -163,16 +163,21 @@ def load_donor(slug: str, glb, roles: dict, name: str = "", scale: dict | None =
 
 def target_of(m: K.Kms) -> dict:
     """The retarget target (sm64_swap frame: left +X, up +Y, front +Z, the game's mm) of a 21-bone model."""
-    if [b["parent"] for b in m.bones] != K.PARENTS:
-        raise ValueError("not on the MGS2 21-bone skeleton")
-    T_ = np.array([b["world"] for b in m.bones], float)
+    if [b["parent"] for b in m.bones][:21] != K.PARENTS:
+        raise ValueError("not on the MGS2 skeleton (21 bones; cut-scene models add fingers and face bones after them)")
+    T_ = np.array([b["world"] for b in m.bones[:21]], float)
     prims = K.decode(m)
     allp = np.concatenate([p["pos"] for p in prims]) if prims else T_
     head = [p["pos"][(p["J"][np.arange(len(p["J"])), p["W"].argmax(1)] == K.ROLE_BONE["head"])] for p in prims]
     head = np.concatenate([h for h in head if len(h)]) if any(len(h) for h in head) else allp[:1]
-    return {"T": T_, "parent": list(K.PARENTS), "ground": float(allp[:, 1].min()),
-            "head_h": float(np.ptp(head[:, 1])) if len(head) > 1 else 200.0, "joints": len(m.bones),
-            "height": float(allp[:, 1].max() - allp[:, 1].min())}
+    # the ground under the sole; a partial model (a close-up head, first-person arms) has no feet: from the bones
+    span = float(T_[:, 1].max() - T_[:, 1].min())
+    ground = min(float(allp[:, 1].min()), float(T_[:, 1].min()) - 0.04 * span)
+    if float(allp[:, 1].min()) > float(T_[:, 1].min()) + 0.2 * span:
+        ground = float(T_[:, 1].min()) - 0.04 * span
+    hh = float(np.ptp(head[:, 1])) if len(head) > 1 else 0.13 * span
+    return {"T": T_, "parent": list(K.PARENTS), "ground": ground, "head_h": hh, "joints": 21,
+            "height": float(T_[:, 1].max()) - ground + hh}
 
 
 JMAP = {r: K.ROLE_BONE[r] for r in ("hip", "chest", "head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore",
@@ -218,7 +223,9 @@ def corners(prims: list[dict], layout: dict) -> dict:
 def fit_to_budget(m: K.Kms, mesh: dict, budget: int, max_tris: int | None = None, progress=None) -> tuple[bytes, dict]:
     """Encode the corner mesh on the model within `budget` bytes, decimating (auf_swap.decimate) until it fits."""
     from .auf_swap import decimate
-    F0 = mesh["F"]
+    F0 = mesh["F"][K.face_meshes(m, mesh["B"], mesh["F"]) < len(m.meshes)]      # only what this model can draw
+    if not len(F0):
+        raise ValueError("none of the donor's faces land on a mesh this model draws")
     target = min(len(F0), max_tris or len(F0))
     last = None
     for attempt in range(12):
@@ -287,7 +294,7 @@ def flatten(ts: T.TextureSet, img: T.Image, value: str = "mid") -> None:
     rgba = np.zeros((img.h, img.w, 4), np.uint8)
     rgba[..., :3] = 0 if value == "dark" else 128
     rgba[..., 3] = 255
-    ts.data[o:o + n] = T.encode(img.fmt, img.w, img.h, rgba)
+    ts.replace_image(img, rgba)                           # encoded once per size and format (ts_tex cache)
 
 
 SHARED_MAX = 8                                            # images this small are the engine's shared stand-ins
@@ -635,6 +642,8 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     if picked and hasattr(inp, "model_copy"):
         inp = inp.model_copy(update={"slot": ""})        # a pick-whip point without a slot: what is there
     s = resolve_slot(ctx, game, inp)
+    if s == "full_cast":
+        return full_cast(ctx, meta, game, inp)
     if s in ("cast", "roster", "everyone"):
         plan = plan_cast(_pairs(meta, inp), seed=getattr(inp, "title", "") or "")
     else:
@@ -805,6 +814,33 @@ def live_use(ctx, meta: dict, game: dict, inp) -> dict:
                       f"{meta['name']} is on the modded disc {name}; the session swap kept your moment, the new body "
                       "appears from the next area load (go through a door, or Continue). Live write: "
                       f"{(res.get('live') or {}).get('error') or 'not applied'}.")
+    return res
+
+
+def full_cast(ctx, meta: dict, game: dict, inp) -> dict:
+    """slot=full_cast: every character model of every stage (cut scenes too) and the codec portraits, by who they
+    are (gbox.twin_snakes_cast). pairs [{target: <character | codec speaker>, donor}]; the character itself is the
+    donor of every character no pair names. Built where the collection is; launched through the session swap."""
+    from . import characters as C, twin_snakes_cast as TC
+    names = list(TS.IDENTITIES) + sorted(set(TS.CODEC.values()) - set(TS.IDENTITIES))
+    mapping = {n: meta["slug"] for n in names}
+    for t, d in _pairs(meta, inp):
+        if t:
+            if t not in mapping:
+                raise ValueError(f"unknown Twin Snakes character {t!r} ({', '.join(names)})")
+            mapping[t] = d
+    digest = hashlib.sha256(json.dumps(sorted(mapping.items())).encode()).hexdigest()[:8]
+    name = f"tts_full_cast_{digest}"
+    root = C.library_root(ctx.config)
+    if not root.is_dir():
+        raise RuntimeError("slot=full_cast builds where the character collection is (the control plane)")
+    b = TC.build_disc(ctx.config, game, C._gc_iso(ctx, game), name, root, mapping, ctx.progress)
+    res = {"mod": name, "slot": "full_cast", "status": "built_unverified", "mapping": mapping,
+           "characters": b["report"]["characters"], "codec": {k: v["portraits"] for k, v in b["codec"].items()},
+           "seconds": b["seconds"], "gameplay_verified": False}
+    if inp.launch:
+        sess = C._session(ctx, inp.session_id) if inp.session_id else None
+        res["launch"] = C._launch(ctx, game["game_id"], name, sess["session_id"].split("-")[0] if sess else "idle")
     return res
 
 

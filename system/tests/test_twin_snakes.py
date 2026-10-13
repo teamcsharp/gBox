@@ -35,31 +35,38 @@ def _box(c, r=40.0):
     return v, np.array(f)
 
 
-def template(name: int = 0xF7A622, tex_set: int = 0x413AA8, nmesh: int = 21) -> K.Kms:
-    """A bare model on the 21-bone skeleton: header, bones, mesh-group header, mesh records and one part record per
-    mesh (texture layer LAYER) - what ts_kms.encode keeps from a stock model."""
+def template(name: int = 0xF7A622, tex_set: int = 0x413AA8, nmesh: int = 21, nb: int = 21, parts_on=None) -> K.Kms:
+    """A bare model on the MGS2 skeleton (21 bones, or 53 like a cut-scene model: fingers on the hands, face bones
+    on the head): header, bones, mesh-group header, mesh records and one part record (texture layer LAYER) on the
+    meshes in `parts_on` (default every bone mesh) - what ts_kms.encode keeps from a stock model."""
+    extra = [(6 if k < 8 else 10 if k < 16 else 12) for k in range(nb - 21)]
+    parents = K.PARENTS + extra
+    world = BONES + [tuple(float(x) for x in np.add(BONES[p], (0, -20, 10))) for p in extra]
+    nmesh = max(nmesh, nb)
+    G = 0x60 + 0x40 * nb
     head = bytearray(0x60)
-    struct.pack_into(">6I", head, 0, 0, 21, nmesh, tex_set, name, 3)
+    struct.pack_into(">6I", head, 0, 0, nb, nmesh, tex_set, name, 3)
     struct.pack_into(">6f", head, 0x18, -1260, -1260, -1260, 1260, 1260, 1260)
-    struct.pack_into(">HH", head, 0x48, 21, 0xFFFE)
-    struct.pack_into(">I", head, 0x5C, 0x60 + 0x40 * 21)
+    struct.pack_into(">HH", head, 0x48, nb, 0xFFFE)
+    struct.pack_into(">I", head, 0x5C, G)
     bones = bytearray()
-    for i, (p, w) in enumerate(zip(K.PARENTS, BONES)):
-        pw = BONES[p] if p >= 0 else (0, 0, 0)
+    for p, w in zip(parents, world):
+        pw = world[p] if p >= 0 else (0, 0, 0)
         loc = tuple(a - b for a, b in zip(w, pw))
         bones += struct.pack(">Ii3f3f4f4f", 0, p, *loc, *w, -50, -50, -50, 0, 50, 50, 50, 0)
     g = struct.pack(">IIHHII", 0xFF54, 0x15039E, nmesh, nmesh, 0, 0x14)
     meshes = []
+    on = set(range(min(nb, 21))) if parts_on is None else set(parts_on)
     for i in range(nmesh):
-        w = BONES[i] if i < 21 else BONES[12]
-        par = K.PARENTS[i] if i < 21 else 12
+        w = world[i] if i < nb else BONES[12]
+        par = parents[i] if i < nb else 12
         rec = struct.pack(">II6f3f3fHhIHHI", 0, 0, -50, -50, -50, 50, 50, 50, 0, 0, 0, *w, 1, par, K.MARK, 0, 0xFFFF, 0)
         part = struct.pack(">4IHH4I", 0x1F8, *LAYER, 0, 0, 0, 0, 3, 0)
-        me = K.Mesh(rec, par, [K.Part(0x1F8, LAYER, [], [], [], part)], tuple(float(x) for x in w))
-        meshes.append(me)
+        parts = [K.Part(0x1F8, LAYER, [], [], [], part)] if i in on else []
+        meshes.append(K.Mesh(rec, par, parts, tuple(float(x) for x in w)))
     data = bytes(head + bones + g)
     return K.Kms(data, 0, tex_set, name, [{"parent": p, "local": (0, 0, 0), "world": w}
-                                           for p, w in zip(K.PARENTS, BONES)], meshes, None, None, None, [], 0x5A0)
+                                           for p, w in zip(parents, world)], meshes, None, None, None, [], G)
 
 
 def body_mesh(scale: float = 1.0):
@@ -690,3 +697,88 @@ def test_rel_link_and_depair_for_ghidra():
     assert (text_a + 8 + off) & 0xFFFFFFFF == 0x80003100
     dp = gcdisc.depair(img[0x80:0x80 + len(text)])
     assert struct.unpack_from(">I", dp, 12)[0] >> 26 == 48 and struct.unpack_from(">I", dp, 16)[0] == 0x60000000
+
+
+# ----------------------------------------------------------------------------------------------- the whole cast
+
+def test_identities_and_humanoid_filter():
+    from gbox import twin_snakes_cast as TC
+    assert TS.identity_of(model_bytes()) == "snake"                           # sna_def
+    assert TS.identity_of(model_bytes(0x26E012, 0x26E012)) == "soldier_arctic"
+    assert TS.identity_of(model_bytes(0x123456, 0x49E8C3)) is None            # a gun on the skeleton
+    assert TC.humanoid(model_bytes()) and not TC.humanoid(accessory(0x26523A, 0x413AA8))
+    P, N, UV, B, F = body_mesh()
+    big = K.encode(template(nb=53, parts_on=set(range(21)) - {6, 10}), P, N, UV, B, F)
+    assert TC.humanoid(big) and struct.unpack_from(">I", big, 4)[0] == 53
+    assert set(TC.SONIC_CAST) >= set(TS.IDENTITIES) and set(TC.SONIC_CAST) >= set(TS.CODEC.values())
+    rest = [k for k in TS.IDENTITIES]
+    assert len({TC.SONIC_CAST[k] for k in rest}) == len(rest)                 # distinct donors on the 3D cast
+
+
+def test_encode_draws_hands_on_the_forearm_and_drops_what_a_partial_model_lacks():
+    P, N, UV, B, F = body_mesh()
+    cut = K.parse(K.encode(template(nb=53, parts_on=set(range(21)) - {6, 10}), P, N, UV, B, F))
+    js = {int(j) for p in K.decode(cut) for j in np.unique(p["J"][:, 0])}
+    assert {6, 10} <= js                                                       # hands kept, drawn by the forearms
+    assert {p["mesh"] for p in K.decode(cut)} == set(range(21)) - {6, 10}
+    head = K.parse(K.encode(template(nb=53, parts_on={12}), P, N, UV, B, F))   # a close-up head model
+    prims = K.decode(head)
+    assert {p["mesh"] for p in prims} == {12}
+    ys = np.concatenate([p["pos"][:, 1] for p in prims])
+    assert ys.min() > 400                                                      # nothing below the neck
+
+
+def test_full_cast_covers_gameplay_cut_scenes_and_partial_models(donor):
+    from gbox import twin_snakes_cast as TC
+    P, N, UV, B, F = body_mesh()
+    cut = K.encode(template(0x413BB1, 0x413AA8, nb=53, parts_on=set(range(21)) - {6, 10}), P, N, UV, B, F)
+    hv = [_box(np.add(BONES[12], (dx, dy, 0)), 12) for dx in (-30, 0, 30) for dy in (-30, 0, 30)]
+    HP = np.concatenate([v for v, _f in hv])                                   # a close-up head: detailed, head only
+    HF = np.concatenate([f + 8 * k for k, (_v, f) in enumerate(hv)])
+    head = K.encode(template(0x29A6BB, 0x413AA8, nb=53, parts_on={12}), HP, HP - BONES[12],
+                    (HP[:, :2] - HP[:, :2].min(0)) / np.ptp(HP[:, :2], 0), np.full(len(HP), 12), HF)
+    gun = accessory(0x0143D9, 0x49E8C3, (0x999999, 0, 0))                    # an item with its own textures
+    play = stage_blob([(S.MODEL, 0xF7A622, model_bytes()), (S.TEXTURES, 0x413AA8, body_set()),
+                       (S.MODEL, 0x26523A, accessory(0x26523A, 0x413AA8))])
+    demo = stage_blob([(S.MODEL, 0x413BB1, cut), (S.MODEL, 0x29A6BB, head), (S.MODEL, 0x0143D9, gun),
+                       (S.TEXTURES, 0x413AA8, body_set())])
+    orphan = stage_blob([(S.MODEL, 0x22D0F9, cut)])                           # its textures live elsewhere
+    sdat = stage_dat([("r_sna", play), ("r_demo", demo), ("r_dmo0", orphan)])
+    new, rep = TC.build_stage_dat(sdat, {"snake": donor})
+    by = {r["stage"]: r for r in rep["stages"]}
+    assert set(by["r_sna"]["replaced"]) == {"f7a622"} and by["r_sna"]["hidden"] == ["26523a"]
+    assert set(by["r_demo"]["replaced"]) == {"413bb1", "29a6bb"}              # cut-scene body and close-up head
+    assert by["r_dmo0"]["replaced"] == {} and "22d0f9" in by["r_dmo0"]["skipped"]
+    assert rep["characters"]["snake"] == ["r_demo", "r_sna"]
+    st = S.StageDat.from_bytes(new).stage("r_demo")
+    assert st.find(0x0143D9, S.MODEL).data.rstrip(b"\0") == gun.rstrip(b"\0")  # the gun stays
+    m = K.parse(st.find(0x29A6BB, S.MODEL).data)
+    assert {p["mesh"] for p in K.decode(m)} == {12}
+
+
+def test_face_dat_raw_pages_round_trip_and_codec_swap(donor):
+    from gbox import twin_snakes_cast as TC
+    rng = np.random.default_rng(3)
+    portrait = np.zeros((178, 104, 4), np.uint8)
+    g = rng.integers(40, 200, (178, 104))
+    portrait[..., 0], portrait[..., 1], portrait[..., 2], portrait[..., 3] = g // 3, g, g // 2, 255
+    patch = portrait[88:116, 10:60]
+    face = texture_set([(0x111, {"fmt": 14, "w": 104, "h": 178, "data": T.encode(14, 104, 178, portrait)}),
+                        (0x222, {"fmt": 14, "w": 104, "h": 178, "data": T.encode(14, 104, 178, portrait)}),
+                        (0x333, {"fmt": 14, "w": 50, "h": 28, "data": T.encode(14, 50, 28, patch)})])
+    st = S.Stage("f04a", 1, 0)
+    st.pages.append(S.Page(0, face + bytes((-len(face)) % 0x20), [((S.TEXTURES << 24) | 0x045793, 0)], b"", True))
+    blob = S.build_stage(st)
+    assert struct.unpack_from(">II", blob, 4) == (0, len(st.pages[0].data))  # {0, size} opens a raw page
+    back = S.parse_stage(blob, "f04a", 1, len(blob))
+    assert back.pages[0].raw and S.build_stage(back) == blob
+    hdr = struct.pack(">IIHHI", 0x40173944, 0x00010001, 1, 0xCCCC, 1) + struct.pack(">8sI", b"f04a", 1)
+    fdat = hdr + bytes(0x800 - len(hdr)) + blob
+    new, rep = TC.build_face_dat(fdat, {"meryl": (donor.glb, donor.roles)})
+    assert len(new) == len(fdat) and rep["meryl"]["portraits"] == 2 and rep["meryl"]["patches"] == 1
+    ts = T.TextureSet(S.StageDat.from_bytes(new).stage(0).files()[0].data)
+    p0 = ts.rgba(ts.images[0]).astype(int)
+    assert np.abs(p0 - portrait.astype(int)).mean() > 10                     # a new portrait
+    assert np.abs(p0[..., 1].astype(int) - p0[..., 0]).mean() > 20             # still the codec green
+    crop = p0[88:116, 10:60]
+    assert np.abs(ts.rgba(ts.images[2]).astype(int) - crop).mean() < 12        # the patch is its crop
