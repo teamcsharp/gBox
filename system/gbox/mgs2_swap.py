@@ -649,19 +649,27 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
                             pk_h = k["tex"]
                             pkey = (fn, stage, pk_h)
                             if pkey not in plans:              # one atlas place per pack: every slot model shares it
-                                own, mine, usage = set(), set(), {}
+                                own, mine, usage, others = set(), set(), {}, set()
                                 for p_ in idx.stage(fn, stage).pages:
                                     for f_ in p_.files:
-                                        if f_[0] != inv.T_KMS or f_[1] not in replaced:
+                                        if f_[0] != inv.T_KMS:
                                             continue
-                                        ko = M.parse_kms(idx.read(fn, stage, inv.T_KMS, f_[1], page_cache))
+                                        try:
+                                            ko = M.parse_kms(idx.read(fn, stage, inv.T_KMS, f_[1], page_cache))
+                                        except M.FormatError:
+                                            continue
                                         tx = _textures(ko)
+                                        if f_[1] not in replaced:      # a model that stays: its textures stay
+                                            others |= tx
+                                            continue
                                         own |= tx
                                         if f_[1] in models or f_[1] in hide:
                                             mine |= tx
                                         if f_[1] in models and ko["tex"] == pk_h:
                                             for t, nv in _usage(ko).items():
                                                 usage[t] = usage.get(t, 0) + nv
+                                own -= others                          # shared with a model that stays: protected
+                                mine -= others
                                 pb = changes.get((fn, stage), {}).get((inv.T_TEX, pk_h)) or \
                                     idx.read(fn, stage, inv.T_TEX, pk_h, page_cache)
                                 if pb is None:
