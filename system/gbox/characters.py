@@ -49,7 +49,37 @@ def slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+_LIST_CACHE: dict = {}            # str(root) -> (built_at, root_mtime, generation, [meta])
+_LIST_GEN = [0]                  # bumped by put_meta: a write through this module refreshes the list at once
+LIST_TTL_S = 90.0                # writes that bypass put_meta show up within this long
+
+
+def _invalidate_list():
+    _LIST_GEN[0] += 1
+
+
 def list_all(root: Path, game_id: str = "") -> list[dict]:
+    """Every character entry. Cached: the library lives on an NTFS HDD where reading 645 meta.json files takes
+    ~13 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13)."""
+    import copy
+    import time as _t
+    key = str(root)
+    try:
+        rmt = Path(root).stat().st_mtime
+    except OSError:
+        rmt = 0
+    hit = _LIST_CACHE.get(key)
+    if not (hit and hit[1] == rmt and hit[2] == _LIST_GEN[0] and _t.time() - hit[0] < LIST_TTL_S):
+        hit = (_t.time(), rmt, _LIST_GEN[0], _list_all_uncached(root))
+        _LIST_CACHE[key] = hit
+    out = copy.deepcopy(hit[3])
+    if game_id:
+        for m in out:
+            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
+    return out
+
+
+def _list_all_uncached(root: Path) -> list[dict]:
     out = []
     for p in sorted(Path(root).glob("*/meta.json")):
         try:
@@ -58,8 +88,6 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
             continue
         if not isinstance(m, dict) or not m.get("name"):
             continue                    # a bookkeeping folder (e.g. "shared": slug + targets only) is not a character
-        if game_id:
-            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
         out.append(m)
     return sorted(out, key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
 
@@ -99,6 +127,7 @@ def put_meta(root: Path, meta: dict) -> dict:
     tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
+    _invalidate_list()
     return meta
 
 
