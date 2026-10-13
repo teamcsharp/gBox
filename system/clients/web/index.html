@@ -653,7 +653,8 @@ async function api(path, body, method, timeoutMs = 0) {
     try {
       const controller = timeoutMs ? new AbortController() : null;
       const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-      try { r = await fetch(path, { method: m, headers: { authorization: "Bearer " + tok, "content-type": "application/json" },
+      try { r = await fetch(path, { method: m, headers: { authorization: "Bearer " + tok, "content-type": "application/json",
+          "x-gbox-client": document.documentElement.dataset.embedded === "true" ? "desktop-webview" : "web" },   // job origin
         body: body && JSON.stringify(body), signal: controller?.signal }); }
       finally { if (timer) clearTimeout(timer); }
     }
@@ -1559,7 +1560,7 @@ async function sessionsView(sid, mode) {
     ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="${s.game_id ? "" : "margin-left:auto;"}padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     <button class="act" id="padbtn" style="padding:5px 7px;line-height:0" title="Controller settings of this emulator, over the game (RetroArch: Quick Menu → Controls → Port 1 Controls; click again to close). Emulators without that menu open gBox's controller mapping" aria-label="Controller settings" aria-pressed="false" onclick='padSettings(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 0 0-3.9 3.1l-1.2 6.5A2.8 2.8 0 0 0 6.4 17l2.1-2h7l2.1 2a2.8 2.8 0 0 0 4.8-2.4l-1.2-6.5A4 4 0 0 0 17.3 5z"/></svg></button>
     <button class="act" id="resetbtn" style="padding:5px 7px;line-height:0" title="Reset: restart the game (console reset; emulators without one relaunch the same game + mod)"
-      aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
+      aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click twice: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
       aria-label="Stop" onclick='hardStop(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg></button>` : ""}</div>`;
   if (s.state !== "running") return head + `<p class="mut">This session has ended. Open a running game to examine it${s.game_id ? ', or reopen this game' : ''}.</p>${s.game_id ? `<button class="act pri" onclick='play(${JSON.stringify(s.game_id)})'>Reopen game</button>` : ''}`;
@@ -2129,7 +2130,25 @@ function resetFailed(s, verb, message) {                     // loud: a banner o
   $("#rf_x").onclick = () => $("#resetfail")?.remove();
   if (gid) $("#rf_play").onclick = () => { $("#resetfail")?.remove(); play(gid, node || undefined, false, { disc: mod.split("~")[0], slot: "" }); };
 }
-async function hardReset(sid, btn) {                         // Ctrl+click reset: original game from boot, this game's mod setup cleared
+// Ctrl+click reset arms a hard reset; it runs only on a second Ctrl+click of the same game's button within
+// HARD_RESET_ARM_MS. One stray Ctrl+click restarted the operator's game from boot without its mods (session_swap
+// mod="" keep_state=false mid-match in DOA2, 2026-10-13); see docs/stream-stability.md.
+const HARD_RESET_ARM_MS = 5000;
+let hardResetArmed = null;                                   // { sid, until, title }
+function hardResetArm(sid, btn, now = Date.now()) {
+  if (hardResetArmed && hardResetArmed.sid === sid && now <= hardResetArmed.until) { hardResetArmed = null; return true; }
+  hardResetArmed = { sid, until: now + HARD_RESET_ARM_MS, title: btn?.title };
+  if (btn) { btn.title = "Hard reset armed: Ctrl+click again within 5 s to restart the ORIGINAL game from boot (mods off, moment lost)";
+    btn.style.color = btn.style.borderColor = "var(--warn,#f5c542)"; }
+  const armed = hardResetArmed;
+  setTimeout(() => { if (hardResetArmed !== armed) return;
+    hardResetArmed = null; if (btn) { btn.title = armed.title || btn.title; btn.style.color = btn.style.borderColor = ""; } },
+    HARD_RESET_ARM_MS + 100);
+  return false;
+}
+async function hardReset(sid, btn) {                         // Ctrl+click twice: original game from boot, this game's mod setup cleared
+  if (!hardResetArm(sid, btn)) return;
+  if (btn) btn.style.color = btn.style.borderColor = "";
   const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
   if (btn) btn.disabled = true;
   try {

@@ -35,7 +35,7 @@ def reset_route(tmp_path, monkeypatch):
     reset_job = enclosed(route.endpoint, 'reset_job').cell_contents
     session_reset = enclosed(reset_job, 'session_reset').cell_contents
     # the endpoint runs the reset synchronously here (no dispatch thread): body validation + the real reset logic
-    enclosed(route.endpoint, 'reset_job').cell_contents = lambda sid, mode, actor: session_reset(sid, actor, mode)
+    enclosed(route.endpoint, 'reset_job').cell_contents = lambda sid, mode, actor, origin=None: session_reset(sid, actor, mode)
     monkeypatch.setattr(server.time, 'sleep', lambda _: None)
     return cfg, app, store, session_reset
 

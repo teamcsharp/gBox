@@ -23,7 +23,7 @@ function page({ jobs, rpcOk = false, sessions }) {
   const el = id => elements[id] ||= { textContent: '', onclick: null, remove() { delete elements[id]; body.html = ''; } };
   const ctx = {
     calls, followed, played, body, elements, playing: 'w-live', tok: 't', console,
-    setTimeout: f => f(), Promise,
+    setTimeout: (f, ms) => (ms > 1000 ? 0 : f()), Promise,                // the hard reset's 5 s disarm timer never fires here
     esc: s => String(s ?? ''), modReapply: () => calls.push(['modReapply']),
     followSession: (a, b) => followed.push([a, b]), play: (...a) => played.push(a),
     $: sel => (sel.startsWith('#') ? (sel === '#resetfail' && !body.html ? null : el(sel.slice(1))) : null),
@@ -41,7 +41,8 @@ function page({ jobs, rpcOk = false, sessions }) {
     bootSet: () => {}, localStorage: { removeItem() {} },
   };
   vm.createContext(ctx);
-  vm.runInContext(['resetJob', 'resetFailed', 'hardReset', 'restartGame', 'resetGame'].map(fn).join('\n'), ctx);
+  const arming = web.match(/^const HARD_RESET_ARM_MS = .*\r?\nlet hardResetArmed = .*$/m)[0];   // #301: Ctrl+click twice
+  vm.runInContext([arming, ...['hardResetArm', 'resetJob', 'resetFailed', 'hardReset', 'restartGame', 'resetGame'].map(fn)].join('\n'), ctx);
   return ctx;
 }
 const LIVE = { session_id: 'w-live', game_id: 'ts', state: 'running', mod: 'tts_sonic_full_cast', detail: { worker_name: 'JAYBUILTFINALE' } };
@@ -78,7 +79,10 @@ test('a failed reset says so loudly and offers Play again with the same game, mo
 
 test('Hard reset and Restart go through the same server operation (hard reset with its intent)', async () => {
   let p = page({ sessions: [LIVE], jobs: [{ id: 'h', state: 'succeeded', output: { session_id: 'w-orig', mode: 'hard' } }] });
-  await p.hardReset('w-live', btn());
+  const hb = btn();
+  await p.hardReset('w-live', hb);                                   // the first Ctrl+click only arms it (#301)
+  assert.equal(p.calls.length, 0); assert.match(hb.title, /armed/);
+  await p.hardReset('w-live', hb);                                   // the second one, within 5 s, runs it
   assert.deepEqual(plain(p.calls.find(c => c[1]?.endsWith?.('/reset'))), ['api', '/api/sessions/w-live/reset', { mode: 'hard', intent: 'hard_reset' }]);
   assert.deepEqual(plain(p.followed), [['w-live', 'w-orig']]);
   p = page({ sessions: [LIVE], jobs: [{ id: 'r', state: 'succeeded', output: { session_id: 'w-r', mode: 'relaunch' } }] });
