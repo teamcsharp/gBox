@@ -202,7 +202,23 @@ The live check is: build OoT cast <- SA2 characters, launch it on the test PC, a
 2. Load a child save and warp: `oot_live goto kokiri forest`.
 3. Capture frames near Mido, the Know-It-All Brothers, the Kokiri girls and the Deku Scrubs in the Kokiri Forest area.
 
-What ran instead, offline on the operator's NTSC 1.0 ROM (nothing launched), was the full cast build from the SA2
-collection entries (see the results below). The rebuilt objects were also rendered with the game's own skeleton and
-animation frame (`characters.render_preview` of `object_mesh` read back from the built ROM). The Kokiri boy as Sonic
-and Saria as Shadow stand in their animation poses, and the Deku Scrub carries Knuckles (rigid).
+What ran instead, offline on the operator's NTSC 1.0 ROM (nothing launched), was the full cast build. It used
+`build_cast` with every catalogued slot and the 10 SA2 collection entries (Sonic, Shadow, Knuckles, Rouge, Tails,
+Amy, Eggman, Metal Sonic, Tikal, Chaos 0), dealt in turn, on the Windows test PC with Blender 4.0. The build took
+24 minutes.
+
+* **All 85 buildable slots were built**: 69 retarget, 15 rigid, and Link (both ages, Link's roles). The 4 refused
+  slots failed with their reasons. A 64 MB ROM was written with the CRC checked, and every rebuilt object passed
+  `check_object`.
+* **No gameplay room is over its object space.** The 16 rooms that cut the growth include child Kokiri Forest (116 KB
+  shared), Market (day) (33 KB) and Lon Lon Ranch adult (48 KB). In 8 cutscene layers the grown objects no longer fit
+  without `strict_cutscenes`: Chamber of the Sages 6, Death Mountain Trail 8, Lon Lon Ranch 6/7/8/10/11 and Sacred
+  Forest Meadow 5. These are the ending and sage scenes.
+* **Kokiri Forest is the tightest gameplay scene for the cast.** Link, the Kokiri boys and girls, Fado, Saria and
+  Mido all share it, so each of them gets ~7-11 KB of growth on top of the old model's bytes. The Kokiri come out at
+  ~220-320 triangles with flat colours, while roomier slots keep ~1000-1400 triangles and textures. Link reused his
+  old body's bytes and grew 0.3 KB as adult and 3.8 KB as child.
+* **Renders** (`characters.render_preview` of `object_mesh`, read back from the built ROM with the slot's own
+  skeleton and animation frame): Link as Sonic, the Kokiri boy as Shadow, Saria as Rouge, Mido as Tails, the Deku
+  Scrub carrying Knuckles, Zelda as Amy, Ganondorf as Chaos 0, a Goron as Amy, a Stalfos as Tikal, a Moblin as Metal
+  Sonic and a Skulltula as Tails. All of them stand in the NPC's own pose on its own limbs.
