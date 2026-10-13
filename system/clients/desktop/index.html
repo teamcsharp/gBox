@@ -1197,6 +1197,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/build-actions.js"></script>
 <script src="../web/viz/game-menu.js"></script>
 <script src="../web/viz/build-shot.js"></script>
+<script src="../web/viz/build-local.js"></script>
 <script src="../web/viz/mods-gallery.js"></script>
 <script src="../web/viz/retarget-handles.js"></script>
 <script src="../web/viz/retarget-editor.js"></script>
@@ -3142,8 +3143,19 @@ async function modsGalleryOpen() {
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: GBoxLivePoll, here: S.workerName || "windows",
     url: u => /^(https?|data|blob):/.test(u) ? u : `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
     visible: () => $("#mods").classList.contains("on"), openImages: (list, i, at) => texPopOpen(list, i, at),
-    toast: t => toast(t, 8000), play: modsGalleryPlay, openRequest: modsGalleryRequest });
+    toast: t => toast(t, 8000), play: modsGalleryPlay, openRequest: modsGalleryRequest, ...deskFolders() });
   return MODSG.ctl;
+}
+// #1639 the download icon's Export… / Open folder: this PC's folder picker and Explorer (main.js dialog:folder / shell:*);
+// an older main process without them leaves the typed folder field and the path shown as text
+function deskFolders() {
+  if (!gbox.pickFolder) return {};
+  return { pickFolder: o => gbox.pickFolder(o), showInFolder: p => gbox.showInFolder(p), openPath: p => gbox.openPath(p) };
+}
+async function deskFolderPick(wv, m) {                         // the embedded gBox view's Export… (GBOX:{ev:"pickfolder"})
+  let p = "";
+  try { p = (await gbox.pickFolder?.(m.opts || {})) || ""; } catch {}
+  wv.executeJavaScript(`window.gboxFolderPicked?.(${JSON.stringify(String(m.id || ""))}, ${JSON.stringify(p)})`).catch(() => {});
 }
 async function modsGalleryPlay(m, { node, moment }) {
   if (node === (S.workerName || "windows") && m.card_id) {
@@ -3714,6 +3726,12 @@ async function pttUp() {
 }
 gbox.onPtt?.(down => down ? pttDown() : pttUp());
 const CARDDRAG = { c: null, t: 0, end: 0 };
+// the game view's Sessions header renamed (or starred) the build it runs (web/viz/session-build.js): the launch bar names
+// it at once, the Mods page reads it again (its cards, the ★ order)
+function buildRenamedMsg(m) {
+  if (m.ev === "buildrenamed") globalThis.GBOX_LAUNCH_BAR?.rename?.(String(m.game_id || ""), String(m.name || ""), String(m.label || m.name || ""));
+  MODSG.ctl?.load?.(0)?.catch?.(() => {});
+}
 function cardDragMsg(m) {                                    // from the webview console: GBOX:{ev, slug, name}
   if (m.ev === "carddrag") Object.assign(CARDDRAG, { c: { slug: m.slug, name: m.name }, t: Date.now(), end: 0 });
   else if (m.ev === "carddragend") CARDDRAG.end = Date.now();
@@ -3755,7 +3773,11 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
     else if (m.ev === "buildnote") buildNoteMsg(m);                                                                // a finished build
+    else if (m.ev === "buildrenamed" || m.ev === "buildfavorite") buildRenamedMsg(m);                              // the Sessions header
     else if (m.ev === "openrequest") modsGalleryRequest({ id: m.id });                                            // tray: Open request
+    else if (m.ev === "pickfolder") deskFolderPick(wv, m);                                                        // Export…: a folder
+    else if (m.ev === "showinfolder") gbox.showInFolder?.(String(m.path || ""));                                  // Show in folder
+    else if (m.ev === "openpath") gbox.openPath?.(String(m.path || ""));                                          // Open folder
     else if (m.ev === "gamecontext" || m.ev === "gamepick") {
       const r = wv.getBoundingClientRect();
       if (m.ev === "gamecontext") pwRightClick(r.left + m.x, r.top + m.y);

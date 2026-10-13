@@ -4,8 +4,16 @@ from pathlib import Path
 
 
 class GCDisc:
+    """path: a plain .iso/.gcm, or a Dolphin .gcz read in place (gbox.gcz; only the touched blocks are inflated)."""
+
     def __init__(self, path):
-        self.f = open(path, "rb")
+        self._gcz = None
+        if str(path).lower().endswith(".gcz"):
+            from .gcz import GCZ
+            self._gcz = GCZ(str(path))
+            self.f = self._gcz._f
+        else:
+            self.f = open(path, "rb")
         h = self._r(0, 0x440)
         self.game_id = h[:6].decode("ascii", "replace")
         self.title = h[0x20:0x60].split(b"\0")[0].decode("latin-1")
@@ -18,6 +26,10 @@ class GCDisc:
             self.entries[path] = entry
 
     def _r(self, off, n):
+        if self._gcz is not None:
+            out = self._gcz.read(off, n)
+            self._gcz._cache.clear()                     # keep memory flat over a whole-disc walk
+            return out
         self.f.seek(off)
         return self.f.read(n)
 

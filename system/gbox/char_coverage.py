@@ -58,6 +58,10 @@ WRITERS = [
      "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "
      "re-encoded .gcm on the slot's skeleton (native animations), donor atlas in the level's texture chunk, rebuilt "
      "maps/*.ngc in a disc-image copy; unverified in game"),
+    ("pso_gc_swap", ["class:<humar..fomar>", "player", "enemy:<key>"],
+     "PSO Episode I & II (GC): any of the 12 player classes (pl<X>bdy00.nj loose + in pl<X>nj.bml, head / hair hidden, "
+     "the atlas in every pl<X>tex.afs texture) or any of 50 enemy bodies on their own trees (the BML pack rebuilt in "
+     "every GSL area archive that carries it); read back by gbox.pso_gc; unverified in Dolphin"),
     ("crazy_taxi_swap", ["player", "driver:<axel|bd_joe|gena|gus>", "drivers", "pedestrian:<group>", "pedestrians",
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
@@ -68,6 +72,10 @@ WRITERS = [
      "multiplayer skin: the donor on the package's own skeleton (native animations), every LOD re-encoded into SPU "
      "segments as an appended SkeletalMesh export, donor atlas over the body diffuse (DXT), PS3TOC.txt sizes "
      "updated, in a folder mod; campaign enemies (level packages) not written; unverified in RPCS3"),
+    ("crazy_taxi2_swap", ["player", "driver:<axel|bd_joe|gena|gus|slash|iceman|cinnamon|hot_d>", "drivers"],
+     "Crazy Taxi 2 DC: any of the eight drivers, both detail levels (polPP??/H + texPP??/H rebuilt: one atlas mesh per "
+     "part in the driver's largest texture slot, gesture hands carry the donor hand, accessories hidden; slot tables "
+     "in 1ST_READ.BIN; IK rig and motions stay) in a copied GD-ROM; PowerVR safety-checked; unverified in game"),
     ("twin_snakes_swap", ["player", "model:<key>", "enemies", "soldiers", "bosses", "npcs", "all", "cast"],
      "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
      "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "

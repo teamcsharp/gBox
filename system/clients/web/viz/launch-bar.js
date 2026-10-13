@@ -104,8 +104,14 @@
   function createModel({ fetchJob = null, now = () => Date.now(), onChange = () => {} } = {}) {
     const live = new Map(), observedAt = new Map(), settling = new Set(), finished = new Set();
     const emitted = new Map(), peak = new Map(), dismissed = new Set();
+    const renamed = new Map();                       // "game/folder" -> the name given while the launch runs (Sessions header)
     let outcome = null;
     const groupKey = j => gameOf(j).id || j.id;
+    const modOf = j => {
+      const g = gameOf(j), folder = String(((j && j.input) || {}).mod || "").split("~")[0];
+      const k = `${g.id}/${folder}`;
+      return folder && renamed.has(k) ? renamed.get(k) : g.mod;
+    };
 
     function track(j) {
       if (!live.has(j.id)) outcome = null;                                   // a new launch replaces the last outcome
@@ -122,7 +128,7 @@
       const jobs = g.jobs, swap = jobs.find(j => j.tool === "session_swap");
       const named = jobs.map(gameOf).find(x => x.title) || gameOf(jobs[0]);
       const name = named.title || named.id || "the game";
-      const mod = (swap ? gameOf(swap).mod : "") || jobs.map(gameOf).map(x => x.mod).find(Boolean) || "";
+      const mod = (swap ? modOf(swap) : "") || jobs.map(modOf).find(Boolean) || "";
       return (swap ? "Swapping " : "Launching ") + name + (mod ? ` · ${mod}` : "");
     }
     // A swap that starts a launch: the launch's progress fills what is left of the swap's.
@@ -221,7 +227,15 @@
       if (!j || !outcome || outcome.kind !== "error" || !outcome.job || outcome.job.id !== j.id) return false;
       outcome = { ...outcome, job: { ...outcome.job, ...j } }; onChange(); return true;
     }
-    return { remote, observe, view, drain, dismiss, clearOutcome, refresh, get outcome() { return outcome; }, live };
+    // a build renamed while it launches: the bar shows the new name ("" or the folder: its folder name again)
+    function rename(gameId, folder, label) {
+      if (!gameId || !folder) return false;
+      renamed.set(`${gameId}/${String(folder).split("~")[0]}`, String(label || folder));
+      if (outcome && outcome.job && gameOf(outcome.job).id === gameId && modOf(outcome.job))
+        outcome = { ...outcome, title: outcome.title.replace(/ · .*$/, "") + ` · ${modOf(outcome.job)}` };
+      onChange(); return true;
+    }
+    return { remote, observe, view, drain, dismiss, clearOutcome, refresh, rename, get outcome() { return outcome; }, live };
   }
 
   // ---- the bar ----------------------------------------------------------------------------------------------------
@@ -412,6 +426,7 @@
       remote: jobs => model.remote(jobs),
       observe: job => model.observe(job),
       dismiss: () => { model.dismiss(); render(); },
+      rename: (gameId, folder, label) => model.rename(gameId, folder, label),
       view: () => model.view(),
       render, tick,
       dispose() { for (const t of timers) cancel(t); timers = []; mq.raf = 0; if (el.parentNode) el.parentNode.removeChild(el); },

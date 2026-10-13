@@ -120,6 +120,17 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
   - Its PRS now lives in `gbox.formats.lz`, its twiddle in `gbox.formats.texture`, and its decode/encode roles are
     indexed in `gbox.formats.ninja_chunk`.
   - `pso_player.check_roles` became `gbox.formats.rig.check_role_map`.
+- **GameCube reader and writer (2026-10-13, #1545, `gbox.pso_gc` / `gbox.pso_gc_swap`, docs/pso_gc.md):**
+  - Big-endian Ninja is not a plain byte swap. Node / model structs and vertex chunks are u32-swapped (the second
+    vertex-chunk word is `count << 16 | base`), polygon chunks are u16-swapped, and chunk sizes stay little-endian.
+    `ninja.NJ` used to read `base, count` as two u16s, which scrambled every GC vertex chunk.
+  - Enemy packs exist only inside the GSL area archives (`gsl_<area>.gsl`). The area that loads a pack names its
+    enemy (`gsl_forest01` carries `re8_b_beast` = the Booma family).
+  - `PsoV3.dol` names every `pl<X>tex.afs` texture and holds each model's NJS_TEXLIST (technique `string-xref-loader`:
+    `PL<X>TEX.AFS` string -> its class record; `pl<X>bdy00.nj` string -> the class descriptor). No visual
+    texture matching was needed.
+  - The disc is full to its last byte. `romexport.gc_put_file` now falls back to an unused stretch between files
+    (`gc_find_gap`).
 
 ### Sonic Adventure 2 and Sonic Adventure (Dreamcast; SA2B on GameCube)
 

@@ -39,8 +39,8 @@ SHOWCASE = ("showcase", "Sonic showcase")
 # keeps its fixed mod name and flag, so a rebuild lands in the same showcase_sonic_<title> folder
 KEEP = {"use": ("character", "game_id", "slot", "active_id", "pairs", "title", "strict_cutscenes"),
         "match": ("game_id", "pairs", "title"),
-        "cast_swap": ("target_game", "source", "mapping", "seed", "slots", "assignments", "strict_cutscenes",
-                      "mod_name", "showcase")}
+        "cast_swap": ("target_game", "source", "mapping", "assign", "prefer", "seed", "slots", "assignments",
+                      "strict_cutscenes", "mod_name", "showcase")}
 FAILED = ("failed", "error", "missing", "not_in_collection", "unsupported", "needs_source", "planned", "empty",
           "native", "overlay")
 REUSED = ("ready", "launched", "exists", "reused", "cached")

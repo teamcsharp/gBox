@@ -171,10 +171,23 @@ def level_keys() -> dict[str, dict[str, str]]:
     return out
 
 
-GROUPS = ("player", "enemies", "bosses", "npcs", "bots", "all")
+GROUPS = ("player", "enemies", "bosses", "npcs", "bots", "all", "campaign", "multiplayer")
 GROUP_KINDS = {"player": ("player",), "enemies": ("enemy",), "bosses": ("boss",), "npcs": ("npc",)}
-SLOT_HELP = ("player | enemies | bosses | npcs | bots | all | model:<body> (" + ", ".join(sorted(NAMES)) +
-             ") | cast (pairs [{target, donor}])")
+# the two places a body is seen: the missions (campaign) and the multiplayer maps (the bots, the escort VIP). A context
+# slot names one body in one of them, so the campaign henchman and the henchman bot can get different donors
+CONTEXTS = {"campaign": "campaign", "mp": "multiplayer", "bot": "multiplayer", "multiplayer": "multiplayer"}
+SLOT_HELP = ("player | enemies | bosses | npcs | bots | campaign | multiplayer | all | model:<body> | campaign:<body> | "
+             "mp:<body> (" + ", ".join(sorted(NAMES)) + ") | cast (pairs [{target, donor}])")
+
+
+def is_mp_level(level: str) -> bool:
+    """A multiplayer map (dm*, the escort maps) rather than a mission level."""
+    lv = Path(str(level)).stem.lower()
+    return lv in MP_MAPS or lv.startswith("dm") or "escort" in lv
+
+
+def context_of(level: str) -> str:
+    return "multiplayer" if is_mp_level(level) else "campaign"
 
 
 def body_key(o3d: str) -> str:
@@ -184,17 +197,29 @@ def body_key(o3d: str) -> str:
     return re.sub(r"_(h|m|l)$", "", base)
 
 
+def _body(name: str) -> str:
+    key = body_key(name)
+    if key not in NAMES:
+        raise ValueError(f"unknown AUF body {name!r}; bodies: {', '.join(sorted(NAMES))}")
+    return key
+
+
 def select(slot: str, levels: dict | None = None) -> set[tuple[str, str]]:
     """A slot -> the (level, body key) pairs it replaces."""
     levels = levels or level_keys()
     s = (slot or "player").strip().lower()
     if s.startswith("model:"):
-        key = body_key(s[6:])
-        if key not in NAMES:
-            raise ValueError(f"unknown AUF body {s[6:]!r}; bodies: {', '.join(sorted(NAMES))}")
+        key = _body(s[6:])
         return {(lv, k) for lv, ks in levels.items() for k in ks if k == key}
+    pre, _, rest = s.partition(":")
+    if rest and pre in CONTEXTS:                          # campaign:<body>, mp:<body> (bot:<body>)
+        key, where = _body(rest), CONTEXTS[pre]
+        return {(lv, k) for lv, ks in levels.items() for k in ks if k == key and context_of(lv) == where}
     if s in ("all", "cast", "everyone", "roster"):
         return {(lv, k) for lv, ks in levels.items() for k in ks}
+    if s in ("campaign", "multiplayer", "mp"):
+        where = CONTEXTS[s]
+        return {(lv, k) for lv, ks in levels.items() for k in ks if context_of(lv) == where}
     if s == "bots":
         return {(lv, k) for lv, ks in levels.items() for k, c in ks.items() if c == "deathmatchplayer"}
     if s == "player":
@@ -210,14 +235,26 @@ def select(slot: str, levels: dict | None = None) -> set[tuple[str, str]]:
 
 def is_slot(slot: str) -> bool:
     s = (slot or "player").strip().lower()
-    return s in GROUPS or s in ("cast", "roster", "everyone") or s.startswith("model:") or s in NAMES
+    pre, _, rest = s.partition(":")
+    return (s in GROUPS or s in ("cast", "roster", "everyone", "mp") or s.startswith("model:") or s in NAMES
+            or bool(rest and pre in CONTEXTS))
+
+
+def _rank(target: str) -> int:
+    """How narrow a cast target is: a group 0, a body everywhere 1, a body in one context 2 (the narrower wins)."""
+    t = target.strip().lower()
+    if t in GROUPS or t in ("cast", "roster", "everyone", "mp"):
+        return 0
+    pre, _, rest = t.partition(":")
+    return 2 if rest and pre in CONTEXTS else 1
 
 
 def plan_cast(pairs, seed: str = "", levels: dict | None = None) -> dict[tuple[str, str], str]:
-    """[(target, donor)] -> {(level, body key): donor}.  A target is a body key, model:<body>, a group (player, enemies,
-    bosses, npcs, bots, all) or '' (dealt).  Fixed targets win over groups (a later, narrower pair overrides an earlier
-    group); donors without a target are dealt over every body nobody named, in a shuffle that depends only on ``seed``
-    and the donors (repeating when there are fewer donors than bodies)."""
+    """[(target, donor)] -> {(level, body key): donor}.  A target is a body key, model:<body>, campaign:<body> /
+    mp:<body>, a group (player, enemies, bosses, npcs, bots, campaign, multiplayer, all) or '' (dealt).  Narrower
+    targets win (a body in one context over a body everywhere over a group); donors without a target are dealt over
+    every body nobody named, in a shuffle that depends only on ``seed`` and the donors (repeating when there are fewer
+    donors than bodies)."""
     levels = levels or level_keys()
     plan: dict = {}
     free: list = []
@@ -232,8 +269,8 @@ def plan_cast(pairs, seed: str = "", levels: dict | None = None) -> dict[tuple[s
         sel = select(t, levels)
         if not sel:
             raise ValueError(f"{target!r} selects no character")
-        ranked.append((0 if t in GROUPS else 1, sel, donor))
-    for _rank, sel, donor in sorted(ranked, key=lambda r: r[0]):
+        ranked.append((_rank(t), sel, donor))
+    for _r, sel, donor in sorted(ranked, key=lambda r: r[0]):
         for lk in sel:
             plan[lk] = donor
     if free:
@@ -264,21 +301,119 @@ def roster() -> list[dict]:
     return out
 
 
-def cast_slots() -> list[dict]:
-    """The cast menu (characters op=collect "slots", gbox.char_coverage.cast_slots): the groups, then every body."""
-    lv = level_keys()
+GROUP_TEXT = (("player", "Bond (every outfit, missions + multiplayer)"), ("enemies", "every mission henchman"),
+              ("bosses", "the bosses"), ("npcs", "allies, hostages, the G8 leaders and the escort VIP"),
+              ("bots", "every multiplayer character (the bots)"), ("all", "everyone"),
+              ("cast", "the whole cast from pairs [{target, donor}], the rest dealt at random"),
+              ("campaign", "everyone in the missions (Bond, henchmen, bosses, allies, hostages)"),
+              ("multiplayer", "everyone in the multiplayer maps (the bots and the escort VIP)"))
+KIND_ORDER = {"player": 0, "enemy": 1, "boss": 2, "npc": 3, "bot": 4}
+
+
+def context_slots(levels: dict | None = None) -> list[dict]:
+    """The whole-cast swap's slots: every body in each context it appears in (campaign:<body> in the missions,
+    mp:<body> in the multiplayer maps), so every (level, body) pair belongs to exactly one slot. Each row lists the
+    groups it belongs to (player, enemies, bosses, npcs, bots, campaign, multiplayer, all, model:<body>) and its levels;
+    a multiplayer row of a DeathmatchPlayer body is kind 'bot'."""
+    levels = levels or level_keys()
+    by: dict[tuple[str, str], set] = {}
+    for lv, ks in levels.items():
+        for k in ks:
+            if k in NAMES:
+                by.setdefault((context_of(lv), k), set()).add(lv)
+    sel = {g: select(g, levels) for g in GROUPS}
     out = []
-    for g, text in (("player", "Bond (every outfit, missions + multiplayer)"),
-                    ("enemies", "every mission henchman"), ("bosses", "the bosses"),
-                    ("npcs", "allies, hostages and the G8 leaders"), ("bots", "every multiplayer character (the bots)"),
-                    ("all", "everyone"), ("cast", "the whole cast from pairs [{target, donor}], the rest dealt at random")):
+    for (where, k), lvs in sorted(by.items(), key=lambda kv: (kv[0][0] != "campaign",
+                                                            KIND_ORDER.get(NAMES[kv[0][1]][1], 5), kv[0][1])):
+        name, kind = NAMES[k]
+        pairs = {(lv, k) for lv in lvs}
+        bot = where == "multiplayer" and all(levels[lv][k] == "deathmatchplayer" for lv in lvs)
+        kind = "bot" if bot else kind
+        label = re.sub(r"\s*\(multiplayer\)$", "", name)
+        tag = "campaign" if where == "campaign" else "multiplayer bot" if bot else "multiplayer"
+        out.append({"slot": f"{'campaign' if where == 'campaign' else 'mp'}:{k}", "name": f"{label} ({tag})",
+                    "kind": kind, "context": where, "body": k,
+                    "groups": [g for g in GROUPS if pairs <= sel[g]] + [f"model:{k}"], "levels": sorted(lvs),
+                    "aliases": [name, k], "writer": "gbox.auf_swap"})
+    return out
+
+
+def cast_slots(levels: dict | None = None) -> list[dict]:
+    """The cast menu (characters op=collect "slots", gbox.char_coverage.cast_slots): the groups, every body everywhere
+    it appears (model:<body>), then every body per context (campaign:<body>, mp:<body>). Groups and model:<body> rows
+    are aggregates (each spans several context rows), so a whole-cast swap (gbox.cast_swap) gives each context row its
+    own donor and filters by the groups (slots=campaign,bots)."""
+    lv = levels or level_keys()
+    out = []
+    for g, text in GROUP_TEXT:
         n = len({k for _l, k in select("all" if g == "cast" else g, lv)})
         out.append({"slot": g, "name": text, "kind": "player" if g == "player" else "group", "bodies": n,
-                    "writer": "gbox.auf_swap"})
+                    "aggregate": True, "writer": "gbox.auf_swap"})
+    ctx_rows = context_slots(lv)
     for r in roster():
-        out.append({"slot": r["slot"], "name": r["name"], "kind": r["slot_kind"], "aliases": r["aliases"],
-                    "levels": len(r["levels"]), "writer": r["writer"]})
+        parts = [c["slot"] for c in ctx_rows if c["body"] == r["slot"][6:]]
+        if parts:
+            out.append({"slot": r["slot"], "name": r["name"], "kind": r["slot_kind"], "aliases": r["aliases"],
+                        "levels": sum(1 for ks in lv.values() if r["slot"][6:] in ks), "aggregate": True,
+                        "parts": parts, "writer": r["writer"]})
+    return out + ctx_rows
+
+
+def disc_level_keys(image: Path, cache: Path | None = None, progress=None) -> dict[str, dict[str, str]]:
+    """{level: {body key: 'actor' | 'deathmatchplayer'}} read off the disc itself: every maps/*.ngc package's entity
+    scripts through level_cast (about 45 s for the 37 levels from a GCZ). Cached as JSON at ``cache`` (keyed by the
+    image's name, size and mtime). On the owned disc it equals level_keys() in all 37 levels."""
+    image = Path(image)
+    st = image.stat()
+    stamp = f"{image.name}:{st.st_size}:{int(st.st_mtime)}"
+    if cache is not None:
+        try:
+            rec = json.loads(Path(cache).read_text(encoding="utf-8"))
+            if rec.get("image") == stamp and rec.get("levels"):
+                return rec["levels"]
+        except (OSError, ValueError):
+            pass
+    progress = progress or (lambda p, m: None)
+    rd = _disc_reader(image)
+    out: dict = {}
+    try:
+        names = sorted(set(MISSION_CAST) | set(MP_MAPS))
+        for i, lv in enumerate(names):
+            progress(100 * i / len(names), f"Reading the cast of {lv}")
+            try:
+                pkg = ngc.NgcPackage(rd(level_path(lv)))
+            except KeyError:
+                continue
+            keys: dict = {}
+            for c in level_cast(pkg):
+                if keys.get(c.key) != "deathmatchplayer":
+                    keys[c.key] = "deathmatchplayer" if c.cls == "deathmatchplayer" else "actor"
+            if keys:
+                out[lv] = keys
+    finally:
+        getattr(rd, "close", lambda: None)()
+    if cache is not None and out:
+        try:
+            Path(cache).parent.mkdir(parents=True, exist_ok=True)
+            Path(cache).write_text(json.dumps({"image": stamp, "levels": out}), encoding="utf-8")
+        except OSError:
+            pass
     return out
+
+
+def level_cache_path(cfg, game_id: str = GAME_ID) -> Path:
+    """Where disc_level_keys keeps the disc's level cast on this node."""
+    return Path(cfg.cache) / game_id / "auf_level_cast.json"
+
+
+def cast_slots_live(ctx, game: dict) -> list[dict] | None:
+    """gbox.cast_swap's live slot list: the disc's own level cast once a build has read it (disc_level_keys' cache),
+    else None (the snapshot in cast_slots(), equal to the owned disc's)."""
+    try:
+        rec = json.loads(level_cache_path(ctx.config, game.get("game_id") or GAME_ID).read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return None
+    return cast_slots(rec.get("levels")) if rec.get("levels") else None
 
 
 # --------------------------------------------------------------------------------------------- a level's cast
@@ -948,8 +1083,13 @@ def level_path(level: str) -> str:
 
 
 def _swap_job(args):
+    """One level in a worker process. A level that can't be rebuilt (too few free textures for its donors, a failed
+    re-read check) stays stock and reports why, so one level never stops a whole-cast build."""
     data, assign, lv, *rest = args                        # (data, assign, level[, snap])
-    return swap_level(data, assign, lv, snap=bool(rest and rest[0]))
+    try:
+        return swap_level(data, assign, lv, snap=bool(rest and rest[0]))
+    except Exception as e:                                # noqa: BLE001 - reported per level, the level stays stock
+        return data, {"level": lv, "replaced": [], "error": f"{type(e).__name__}: {e}"[:500]}
 
 
 def _report_fits(plan: dict, donors: dict[str, Donor], reports: list[dict], mod: str, image: str, files: dict):
@@ -1038,8 +1178,12 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
         results = []
         for i, (data, assign, lv, *sn) in enumerate(jobs):
             base = 5 + 80 * i / len(jobs)
-            results.append(swap_level(data, assign, lv, lambda p, m, base=base: progress(base + 80 / len(jobs) * p / 100, m),
-                                      snap=bool(sn)))
+            try:
+                results.append(swap_level(data, assign, lv,
+                                          lambda p, m, base=base: progress(base + 80 / len(jobs) * p / 100, m),
+                                          snap=bool(sn)))
+            except Exception as e:                        # noqa: BLE001 - as _swap_job: the level stays stock
+                results.append((data, {"level": lv, "replaced": [], "error": f"{type(e).__name__}: {e}"[:500]}))
     for lv, (out, rep) in zip(levels, results):
         if rep.get("replaced"):
             changes[level_path(lv)] = {"bytes": out}
@@ -1048,14 +1192,17 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
         for r in reports:
             for e in r.get("replaced") or []:
                 e.pop("_snap", None)
-        raise ValueError("no level changed: the plan's characters are not on this disc")
+        errs = "; ".join(f"{r['level']}: {r['error']}" for r in reports if r.get("error"))[:600]
+        raise ValueError("no level changed: " + (errs or "the plan's characters are not on this disc"))
     progress(88, "Writing the disc image")
     cfg = cfg if hasattr(cfg, "cache") else types.SimpleNamespace(cache=Path(cfg))
     b = filemods.build_image(cfg, GAME_ID, image, name, changes, lambda p, m: progress(88 + 0.1 * (p or 0), m))
     marker = Path(b["dir"]) / ".gbox-mod.json"
     rec = json.loads(marker.read_text())
-    rec |= {"writer": "gbox.auf_swap", "cast": sorted([lv, k, s] for (lv, k), s in plan.items()),
-            "levels": {r["level"]: {"sha256": r.get("sha256"), "replaced": len(r.get("replaced", []))} for r in reports}}
+    triples = sorted([lv, k, s] for (lv, k), s in plan.items())
+    rec |= {"writer": "gbox.auf_swap", "cast": triples, "auf_plan": triples,
+            "levels": {r["level"]: {"sha256": r.get("sha256"), "replaced": len(r.get("replaced", [])),
+                                    **({"error": r["error"]} if r.get("error") else {})} for r in reports}}
     marker.write_text(json.dumps(rec))
     disc = GCDisc(b["image"])
     try:
@@ -1147,7 +1294,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             donors = {}
             for slug in sorted(set(plan.values())):
                 m = C.get(root, slug) if slug != meta["slug"] else meta
-                donors[slug] = load_donor(slug, C._local_or_fetch(ctx, m, m["model"]), (m.get("rig") or {}).get("roles"),
+                donors[slug] = load_donor(slug, donor_file(ctx, m), (m.get("rig") or {}).get("roles"),
                                           m.get("name", slug))
             iso = C._gc_iso(ctx, game)
             built = build_mod(ctx.config, iso, name, plan, donors, ctx.progress)
@@ -1164,6 +1311,111 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
         node = sess["session_id"].split("-")[0] if sess else "idle"
         res["launch"] = C._launch(ctx, game["game_id"], name, node)
     return res
+
+
+# --------------------------------------------------------------------------------------------- whole-cast swap
+
+def donor_file(ctx, meta: dict) -> Path:
+    """A donor's model file on this node: the library's own file (the control plane), else a copy fetched from the
+    API into cache/characters_mirror with a .gltf's external buffers and images (gbox.re6_tool.fetch_model)."""
+    from . import characters as C
+    p = C.library_root(ctx.config) / meta["slug"] / meta["model"]
+    if p.is_file():
+        return p
+    from .re6_tool import fetch_model
+    return fetch_model(ctx, meta)
+
+
+def cast_summary(plan: dict, owner: dict, per: dict, levels: dict, names: dict) -> dict:
+    """The "What this changes" fields of a cast build's marker (gbox.build_summary reads `what` and `where_to_look`):
+    how many bodies were replaced in the missions and in multiplayer, by how many donors, in how many levels."""
+    done = {lk for lk in plan if (per.get(owner.get(lk)) or {}).get("status") in ("built", "partial")}
+    camp = {k for lv, k in done if context_of(lv) == "campaign"}
+    mp = {k for lv, k in done if context_of(lv) == "multiplayer"}
+    kinds: dict[str, int] = {}
+    for k in camp:
+        kinds[NAMES.get(k, (k, "npc"))[1]] = kinds.get(NAMES.get(k, (k, "npc"))[1], 0) + 1
+    donors = {plan[lk] for lk in done}
+    parts = []
+    if camp:
+        bits = [f"{kinds[x]} {w}" for x, w in (("player", "Bond outfits"), ("enemy", "henchman types"),
+                                                 ("boss", "bosses"), ("npc", "allies/hostages")) if kinds.get(x)]
+        parts.append(f"{len(camp)} mission characters ({', '.join(bits)})")
+    if mp:
+        parts.append(f"{len(mp)} multiplayer characters (bots{' + escort VIP' if 'vip_body' in mp else ''})")
+    what = (f"Replaces {' and '.join(parts) or 'nobody'} with {len(donors)} donor characters "
+            f"({', '.join(sorted(names.get(d, d) for d in donors)[:3])}{' …' if len(donors) > 3 else ''}) "
+            f"in {len({lv for lv, _k in done})} levels")
+    where = []
+    if mp:
+        where.append("Multiplayer: Combat Training with bots on any map (Cooling Station = dm1)")
+    if camp:
+        where.append("Missions: any level (enemies and allies in play, Bond in cut scenes)")
+    return {"what": what, "where_to_look": "; ".join(where)}
+
+
+def build_cast(ctx, game: dict, pairs: list, name: str, progress=None, levels: dict | None = None) -> dict:
+    """gbox.cast_swap's pairs path: [(slot, donor meta)] -> ONE disc-image mod with every level rebuilt once with every
+    donor it needs. A slot is anything select() takes; the planner's rows are the context slots (campaign:<body>,
+    mp:<body>), one per (body, context), so each body in each context gets its own donor. The level map comes off the
+    disc (disc_level_keys, cached). A donor that doesn't load fails its slots alone; a level that can't be rebuilt
+    stays stock and its slots report partial.  -> {mod, slots: {slot: {status, reason?, levels, bodies}}, detail,
+    summary}"""
+    from . import characters as C
+    progress = progress or getattr(ctx, "progress", None) or (lambda p, m: None)
+    iso = C._gc_iso(ctx, game)
+    levels = levels or disc_level_keys(iso, level_cache_path(ctx.config, game.get("game_id") or GAME_ID),
+                                       lambda p, m: progress(1 + 0.03 * p, m))
+    per: dict[str, dict] = {}
+    plan, owner, metas = {}, {}, {}
+    for slot, meta in sorted(pairs, key=lambda sm: _rank(sm[0])):  # narrower slots override wider ones
+        try:
+            sel = select(slot, levels)
+        except ValueError as e:
+            per[slot] = {"status": "failed", "reason": str(e)[:300]}
+            continue
+        if not sel:
+            per[slot] = {"status": "failed", "reason": "this slot's body is in none of the disc's levels"}
+            continue
+        for lk in sel:
+            plan[lk], owner[lk] = meta["slug"], slot
+        metas[meta["slug"]] = meta
+    donors: dict[str, Donor] = {}
+    for i, (slug, meta) in enumerate(sorted(metas.items())):
+        progress(4 + 4 * i / max(1, len(metas)), f"Loading {meta.get('name', slug)} ({i + 1}/{len(metas)})")
+        try:
+            donors[slug] = load_donor(slug, donor_file(ctx, meta), (meta.get("rig") or {}).get("roles"),
+                                      meta.get("name", slug))
+        except Exception as e:                            # noqa: BLE001 - one donor fails its own slots only
+            for lk in [lk for lk, s in plan.items() if s == slug]:
+                per[owner[lk]] = {"status": "failed", "reason": f"donor {slug} did not load: {e}"[:300]}
+                plan.pop(lk)
+    if not plan:
+        return {"mod": None, "slots": per or {s: {"status": "failed", "reason": "nothing to build"} for s, _m in pairs}}
+    try:
+        built = build_mod(ctx.config, iso, name, plan, donors, lambda p, m: progress(8 + 0.9 * p, m))
+    except Exception as e:                                # noqa: BLE001 - the report names why
+        why = f"{type(e).__name__}: {e}"[:500]
+        return {"mod": None, "slots": per | {owner[lk]: {"status": "failed", "reason": why} for lk in plan}}
+    done = {(r["level"], e["key"]) for r in built["levels"] for e in r.get("replaced") or []}
+    errs = {r["level"]: r["error"] for r in built["levels"] if r.get("error")}
+    mine: dict[str, set] = {}
+    for lk, s in owner.items():
+        if lk in plan:
+            mine.setdefault(s, set()).add(lk)
+    for s, lks in mine.items():
+        ok = lks & done
+        row = {"levels": len({lv for lv, _k in lks}), "bodies": sorted({k for _lv, k in lks}),
+               "status": "built" if ok == lks else "partial" if ok else "failed"}
+        if ok != lks:
+            miss = sorted({lv for lv, _k in lks - ok})
+            row["reason"] = "; ".join(f"{lv}: {errs.get(lv, 'not replaced')}" for lv in miss[:3])[:400] + \
+                (f" (+{len(miss) - 3} levels)" if len(miss) > 3 else "")
+        per[s] = row
+    names = {slug: m.get("name", slug) for slug, m in metas.items()}
+    return {"mod": name, "slots": per, "summary": cast_summary(plan, owner, per, levels, names),
+            "detail": {"image": Path(str(built["image"])).name, "levels_rebuilt": len(built["files"]),
+                       "level_errors": errs, "bodies": len(plan), "donors": len(donors)}}
 
 
 # --------------------------------------------------------------------------------------------- CLI

@@ -9,6 +9,9 @@
 // PATCH /api/builds/{game}/{name}, a display name only, the folder never changes) and ☆/★ stars it (PUT .../favorite:
 // favorites list first, a ★ Favorites filter, the game's Special builds show them on top). ⋯ or a right-click on the card
 // opens its options (Rename…, favorite, restore the original name, Play).
+// #1639: the download icon in the picture's top-right corner (viz/build-local.js): on this PC (filled check) / not on this
+// PC (arrow: a click downloads it into this PC's cache, never launching it) / downloading (a ring with the percent);
+// right-click or ▾: Download to this PC, Export… (same format as the original by default), Open folder, Delete from this PC.
 // The server answers from its index of the build folders: while it is still indexing (`indexing`) or walking folder
 // sizes (`sizing`: folders left, size null on those cards) the view says so and polls faster through the shared cached
 // read, so sizes appear as they arrive; Refresh asks for an incremental pass (POST /api/mods/built/refresh).
@@ -21,6 +24,8 @@
   const PAGE = 24;
   // What this changes / Delete / Report (viz/build-actions.js; loaded before this file, or required by node tests)
   const BA = () => root.GBoxBuildActions || (typeof module === "object" && module.exports ? require("./build-actions.js") : null);
+  // On this PC: the download icon, its menu and the Export dialog (viz/build-local.js; loaded before this file, or required by node tests)
+  const BL = () => root.GBoxBuildLocal || (typeof module === "object" && module.exports ? require("./build-local.js") : null);
   const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
   // kind: "" every build | "showcase" the Sonic showcase test builds (gbox/sonic_showcase.py) | "other" everything else;
@@ -135,16 +140,17 @@
     return `<div class="mg-lfr">${a ? a.replace(/^<div class="mg-lfr">/, "").replace(/<\/div>$/, "") : ""}${b}</div>`;
   }
 
-  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "", choice = null } = {}) {
+  // dl / dlMenu: the download icon (top-right of the picture) and its open menu (viz/build-local.js), "" without a PC view
+  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "", choice = null, dl = "", dlMenu = "" } = {}) {
     const imgs = imagesOf(m, url), i = imgs.length ? ((idx % imgs.length) + imgs.length) % imgs.length : 0, cur = imgs[i];
     const lfr = m.launch_report && m.launch_report.number ? m.launch_report : null;
     const tickets = (m.tickets || []).filter(t => (!lfr || String(t.number) !== String(lfr.number))
       && (!m.reported || String(t.number) !== String(m.reported.number)));
-    return `<article class="mg-card${m.favorite ? " mg-fav" : ""}" data-key="${ESC(m.key)}">${menu ? menuHTML(m) : ""}
+    return `<article class="mg-card${m.favorite ? " mg-fav" : ""}" data-key="${ESC(m.key)}">${menu ? menuHTML(m) : ""}${dlMenu ? `<div class="mg-dlm">${dlMenu}</div>` : ""}
       <div class="mg-pic">${cur ? `<img class="mg-img" loading="lazy" decoding="async" alt="${ESC(cur.name)}" data-i="${i}" src="${ESC(cur.src)}">
         ${imgs.length > 1 ? `<button class="mg-nav" data-mg="prev" type="button" title="Previous picture">‹</button><button class="mg-nav" data-mg="next" type="button" title="Next picture">›</button>` : ""}
         <span class="mg-count">${cur.kind === "shot" ? "in-game · " : cur.kind === "donor" ? "donor · " : ""}${i + 1} / ${imgs.length}</span>`
-        : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}</div>
+        : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}${dl ? `<div class="mg-dl">${dl}</div>` : ""}</div>
       <div class="mg-body">
         <div class="mg-h"><span class="mg-tt">${starHTML(m)}${titleHTML(m, renaming)}</span>
           <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
@@ -210,7 +216,8 @@
     .mg-menu .act{text-align:left}.mg-acts{margin-left:auto;display:flex;gap:4px}.mg-del:hover{background:#7a2b2b;color:#fff}
     .mg-lfr{display:flex}.mg-lfr .mg-lf{font-size:12px;font-weight:600;border-radius:9px;padding:2px 9px;color:#fff}.mg-lfr .mg-lf.mg-lf-bad{background:#7a2b2b;border-color:#c0504d}.mg-lfr .mg-lf.mg-lf-ok{background:#1f6f3f;border-color:#2f9a5a}
     .mg-lfr{gap:6px;flex-wrap:wrap}.mg-lfr .mg-lf.mg-br{background:#5a3f8a;border-color:#7d5cc0}
-    ${BS ? BS.CSS : ""}`;
+    .mg-dl{position:absolute;top:6px;right:6px;z-index:2}.mg-dlm{position:absolute;z-index:6;top:38px;right:6px}
+    ${BS ? BS.CSS : ""}${BL() ? BL().CSS : ""}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -227,6 +234,8 @@
     const wait = env.wait || sleep, toast = env.toast || (() => {});
     const url = env.url || (u => u);
     let timer = null, built = false;
+    // the download icon: this PC's copy of each build (GET /api/builds/local), downloads / exports running from here
+    const local = BL() ? BL().create(env, { redraw: () => { if (!st.renaming) draw(); }, note: (b, t) => note(b.key, t), toast: t => toast(t) }) : null;
 
     function shell() {
       const f = facets(st.data?.items || []);
@@ -239,7 +248,8 @@
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
       if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0, renaming: st.renaming === m.key, menu: st.menu === m.key,
-                                                                note: st.notes.get(m.key) || "", choice: st.choice.get(m.key) })).join("")
+                                                                note: st.notes.get(m.key) || "", choice: st.choice.get(m.key),
+                                                                dl: local ? local.iconHTML(m) : "", dlMenu: local ? local.menuHTML(m) : "" })).join("")
         || `<p class="mut">${st.data ? (st.data.items.length ? (st.fav && !st.data.items.some(m => m.favorite) ? "No favorites yet: ☆ on a card stars it." : "No built mod matches these filters.") : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
       if (st.renaming) { const inp = grid?.querySelector?.("[data-mg-rename]"); try { inp?.focus?.(); inp?.select?.(); } catch {} }
       if (sum) sum.textContent = summaryText(list.length, st.data);
@@ -386,6 +396,12 @@
       const t = e.target, card = t.closest?.(".mg-card"), m = card && find(card.dataset.key);
       const act = t.closest?.("[data-mg]")?.dataset.mg;
       if (t.closest?.("[data-mg-rename]")) return;          // clicks inside the rename field stay in it
+      if (local && t.closest?.("[data-bl]")) {               // the download icon and its menu (viz/build-local.js)
+        if (st.menu) st.menu = null;
+        await local.onClick(e, m || find(t.closest?.("[data-bl-menu]")?.dataset?.blMenu));
+        return;
+      }
+      if (local?.menu && !t.closest?.("[data-bl-menu]")) { local.menu = null; draw(); if (!act) return; }
       if (st.menu && act !== "menu" && !t.closest?.("[data-mg-menu]")) { st.menu = null; draw(); if (!act) return; }
       if (act === "more") { st.page++; draw(); return; }
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} read.invalidate(); st.sig = ""; await load(0); return; }
@@ -451,6 +467,7 @@
       const ttl = e.target?.closest?.(".mg-title"), card = e.target?.closest?.(".mg-card");
       if (ttl && card && (e.key === "Enter" || e.key === "F2")) { e.preventDefault?.(); const m = find(card.dataset.key); if (m) startRename(m); return; }
       if (e.key === "Escape" && st.menu) { st.menu = null; draw(); }
+      if (e.key === "Escape" && local?.menu) local.close();
     }
     function onFocusOut(e) {                                 // leaving the field keeps what was typed (as the Builds view does)
       const inp = e.target?.closest?.("[data-mg-rename]");
@@ -459,7 +476,9 @@
     // right-click a card: its options (Rename…, favorite, Play); runs before the app's "file a request" menu
     function onContext(e) {
       const card = e.target?.closest?.(".mg-card"); if (!card || e.target.closest?.("input, textarea")) return;
+      if (local && local.onContext(e, find(card.dataset.key))) { st.menu = null; return; }   // right-click the icon: its menu
       e.preventDefault?.(); e.stopPropagation?.();
+      if (local) local.menu = null;
       st.menu = card.dataset.key; draw();
     }
     host.addEventListener("click", onClick);
@@ -470,14 +489,22 @@
     host.addEventListener("contextmenu", onContext);
     async function start() {
       shell(); draw();
-      await nodes(); await load(0);
+      await nodes(); await local?.refresh(); await load(0);
       if (!built) draw();
       timer = setInterval(tick, TICK);
       return api;
     }
     // one cached read per tick at most: every few seconds while the index is still working, else every 30 s
     function busy() { return !!(st.data && (st.data.indexing || st.data.sizing)); }
-    function tick() { if (!env.visible || env.visible()) return load(busy() ? TICK - 500 : 30000); }
+    async function tick() {
+      if (env.visible && !env.visible()) return;
+      if (local) {                                           // this PC's copies: a fresh list every 20 s at most
+        const before = JSON.stringify(local.local);
+        await local.refresh(20000);
+        if (JSON.stringify(local.local) !== before && !st.renaming) draw();
+      }
+      return load(busy() ? TICK - 500 : 30000);
+    }
     function stop() {
       clearInterval(timer);
       for (const [ev, fn] of [["click", onClick], ["input", onInput], ["change", onInput], ["keydown", onKey], ["focusout", onFocusOut], ["contextmenu", onContext]])
@@ -485,7 +512,7 @@
     }
     // show one build / request: the game menu's "Open in Mods page" (search + game filter set, the toolbar redrawn)
     function focus({ q, game } = {}) { if (q != null) st.q = String(q); if (game != null) st.game = String(game); st.page = 1; built = false; draw(); }
-    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, onKey, onFocusOut, onContext, rename, favorite, report, remove, tick, busy, focus, ready: null };
+    const api = { st, local, load, draw, stop, start, play, screenshot, onClick, onInput, onKey, onFocusOut, onContext, rename, favorite, report, remove, tick, busy, focus, ready: null };
     api.ready = start();
     return api;
   }

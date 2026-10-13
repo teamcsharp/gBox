@@ -526,13 +526,28 @@ def track_layout(path) -> list[dict]:
         ver = struct.unpack_from(">I", b, 12)[0]
         meta = struct.unpack_from(">Q", b, 36 if ver == 4 else 48)[0]
         records = _meta_tracks(f, meta)
-    out, first = [], 0
-    for r in records:
-        frames = int(r.get("FRAMES", 0))
-        pad = int(r["PAD"]) if "PAD" in r else (-frames) % 4
-        out.append({"track": int(r.get("TRACK", len(out) + 1)), "type": r.get("TYPE", "MODE1_RAW"),
-                    "frames": frames, "first_frame": first})
-        first += frames + pad
+        total = None                                       # frames the CHD stores (v5: logical bytes / unit bytes)
+        if ver == 5:
+            logical, unit = struct.unpack_from(">Q", b, 32)[0], struct.unpack_from(">I", b, 60)[0]
+            total = logical // unit if unit else None
+
+    def layout(stored_pad: bool) -> tuple[list[dict], int]:
+        out, first = [], 0
+        for r in records:
+            frames = int(r.get("FRAMES", 0))
+            pad = int(r["PAD"]) if stored_pad and "PAD" in r else (-frames) % 4
+            out.append({"track": int(r.get("TRACK", len(out) + 1)), "type": r.get("TYPE", "MODE1_RAW"),
+                        "frames": frames, "first_frame": first})
+            first += frames + pad
+        return out, first
+
+    out, end = layout(True)
+    if total is not None and end != total:
+        # Some chdman builds write the GD-ROM gap before the high-density area as PAD (Crazy Taxi 2 USA: PAD 150 and
+        # 44024 frames) without storing it; the stored layout is then the 4-frame CD_TRACK_PADDING alone.
+        alt, alt_end = layout(False)
+        if alt_end == total:
+            out = alt
     if not out:
         raise ChdError("CHD has no CD track metadata")
     return out

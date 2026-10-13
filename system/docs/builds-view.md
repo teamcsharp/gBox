@@ -123,6 +123,36 @@ api() only posts:
 * Every delete is written to the audit log (`build.delete`) and to the recently deleted list (`GET
   /api/builds/deleted`: the marker facts, size, scope, jobs). There is no undo.
 
+## ⬇ On this PC: download, export (#1639)
+
+Every Mods card (top-right corner of its picture) and every Builds row (right end) has a download icon for the PC the
+view runs on (the desktop app's worker; a plain browser shows it greyed out):
+
+| Icon | Means | A click |
+| --- | --- | --- |
+| filled check | the build is in this PC's cache (its heartbeat's `local_builds`, a staged copy counts): it plays at once, offline | opens the menu |
+| download arrow | not on this PC | downloads it: `build_local op=download` stages it into this PC's cache (`filemods.stage`, the pinned manifest, resumable); nothing is launched |
+| ring with a percent | downloading | - |
+
+Right-click the icon (or its ▾): **Download to this PC**, **Export…**, **Open folder** (this PC's cache folder of the
+build, in Explorer) and **Delete from this PC** (the Delete dialog limited to this PC's copy: `scope=node`).
+
+**Export…** writes the build into `<chosen folder>/<game title> - <build name>/` on this PC (never over the original),
+as a `build_local op=export` job on this PC's worker (it downloads the build first when needed); the desktop app picks
+the folder (Electron dialog through the preload bridge; inside the embedded view through the `GBOX:` console bridge),
+shows the job's progress, the final path and **Show in folder**. Formats (`gbox/build_export.py`):
+
+| Format | What is written |
+| --- | --- |
+| Same format as the original (default) | the catalog file's own container, keeping its file name: `.iso` / `.gcm` / `.bin` / `.cue` + tracks / `.gdi` + tracks / `.z64` / `.zip` as built; `.gcz` and `.cso` written by gBox; `.n64` / `.v64` byte order; a `.zip` original zips the image under its inner name; `.chd` with `chdman` (`createcd` for cue / gdi / CD images, `createdvd` for DVD images); `.rvz` / `.wia` with dolphin-tool; `.wbfs` with `wit`; folder games keep their disc folder; a Wii tree is rebuilt with dolphin-tool. A missing program never fails it: the plain image is exported and the result says which program would make the original format |
+| Plain image | the uncompressed image the build boots |
+| Patch only | BPS (+ IPS up to 16 MiB, + xdelta when `xdelta3` is installed) against the operator's original on this PC (`romexport`'s writers); a folder build: a patch kit |
+| Zip | the plain files in one `.zip` |
+
+`GET /api/builds/local?node=<PC>` lists that PC's builds, `GET /api/builds/{game}/{name}/formats` the dialog's
+choices, `POST /api/builds/{game}/{name}/local {op: download | locate | export, node, dest, format, label}` queues the
+job on that PC (409 when its worker has no `build_local` yet, 422 for the Spark or an unknown PC).
+
 ## ⚑ Report
 
 **⚑ Report** sits at the bottom right of every Mods card. It is also ⚑ on Builds rows and "Report a problem…" in each
@@ -231,3 +261,6 @@ marker can call `build_record.stamp(meta, kind=…, codes=[…], compile={…})`
   record.
 * `tests/test_builds_view.cjs`: rows, rename, launch, details content, the turntables' lazy load and dispose on a
   three.js stub with a fake IntersectionObserver, the flowchart, Cancel, Edit, Investigate and the web shell tab.
+* `tests/test_build_local.py` / `tests/test_build_local.cjs` (#1639): the export format choice, the GCZ / CSO / byte
+  order / zip writers, chdman present or missing, patch / plain / zip, the `build_local` op, the routes; the icon's
+  states, its menu, the download flow, the Export dialog and where the icon shows.
