@@ -688,20 +688,21 @@ tabs.GameModels.after = (gid, title) => {
     if (GAME_MODELS.viewer) { GAME_MODELS.viewer.dispose(); GAME_MODELS.viewer = null; }
     preview.innerHTML = '<p class="mut" style="padding:15px">Loading 3D model…</p>';
     const modelUrl = `/api/characters/${encodeURIComponent(model.slug)}/model?${tq()}`;
+    const fileUrl = rel => `/api/characters/${encodeURIComponent(model.slug)}/file/${String(rel).split("/").map(encodeURIComponent).join("/")}?${tq()}`;
     const canView = /\.(glb|gltf)$/i.test(model.model || "");
     detail.innerHTML = `<h3>${esc(model.name)}</h3><p class="mut">${esc(model.source?.game_title || title || "")}</p>
       <div class="bar"><a class="act" href="${modelUrl}" download="${esc(model.model || model.slug + '.glb')}">Export model</a>
       <label>Assign to <select id="model-slot"><option value="player">Player</option><option value="enemies">Enemies</option></select></label>
-      <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p>`;
+      <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p><div id="model-clips" hidden></div>`;
     if (canView) {
       try {
         GAME_MODELS.module ||= await import("/viz/character-model.js");
         if (revision !== viewRevision || selection !== GAME_MODELS.selection || !preview.isConnected) return;
         preview.innerHTML = "";
-        const viewer = await GAME_MODELS.module.createCharacterViewer(preview, modelUrl);
-        if (revision !== viewRevision || selection !== GAME_MODELS.selection) viewer.dispose(); else GAME_MODELS.viewer = viewer;
+        const viewer = await GAME_MODELS.module.createCharacterViewer(preview, modelUrl, { model: model.model, fileUrl });
+        if (revision !== viewRevision || selection !== GAME_MODELS.selection) viewer.dispose(); else { GAME_MODELS.viewer = viewer; modelClips(model, viewer, fileUrl); }
       } catch (err) { if (revision === viewRevision && selection === GAME_MODELS.selection) preview.innerHTML = `<p class="bad" style="padding:15px">3D preview unavailable: ${esc(err.message)}</p><img style="height:70%;max-width:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; }
-    } else preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`;
+    } else { preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; modelClips(model, null, fileUrl, preview); }
     $("#model-assign").onclick = async e => {
       const status = $("#model-result"); e.currentTarget.disabled = true; status.textContent = "Building replacement…";
       try {
@@ -717,6 +718,21 @@ tabs.GameModels.after = (gid, title) => {
   page.querySelector("[data-model]")?.click();
 };
 
+
+// ---------------- model clips (#1384): the entry's animations under the model, played in the viewer ----------------
+// 3D: THREE.AnimationMixer on the viewer's model (+ a sibling <slug>.anims.glb loaded on first use), play / pause /
+// loop / speed / scrubber (viz/clip-player.js). 2D sprite entries: the clip's APNG / WebP loop in the preview, MP4 link.
+function modelClips(model, viewer, fileUrl, preview) {
+  const el = $("#model-clips"); if (!el || !window.GBoxClips) return null;
+  const rows = GBoxClips.list(model, viewer ? viewer.embedded : []);
+  if (!viewer) return GBoxClips.mount(el, rows.filter(r => r.kind === "2d"), { url: fileUrl,
+    sprite: row => { if (preview?.isConnected) preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain;image-rendering:pixelated" src="${fileUrl(row.preview)}" alt="${esc(row.name)}">`; } });
+  let ui = null;
+  const player = GBoxClips.player(viewer.THREE, viewer.holder, st => ui?.render(st));
+  viewer.setPlayer(player);
+  ui = GBoxClips.mount(el, rows.filter(r => r.kind === "3d"), { url: fileUrl, load: async row => ({ player, clip: await viewer.clip(row) }) });
+  return ui;
+}
 
 // ---------------- loading screen (three.js particle ribbon, logo-shaped progress bar, console ticker) ----------------
 const loader = {
@@ -3586,6 +3602,7 @@ function re6View(v) {
 window.gboxViewReady = HASH.get("session") ? show("Sessions", HASH.get("session"), HASH.get("mode") || undefined) : show(cur);
 </script>
 <script src="/viz/asset-sidebar.js"></script>
+<script src="/viz/clip-player.js"></script>
 <script>
 if (!new URLSearchParams(location.search).has('embedded')) {
   document.body.classList.add('assets-browser');
