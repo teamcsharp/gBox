@@ -47,3 +47,39 @@ test('changed game refuses the old drop and identification uses screenshot coord
   assert.equal(f.calls.length, 1);
   assert.match(f.toasts.at(-1), /selected game changed/);
 });
+function vrFixture(game) {
+  const jobs = [], toasts = [], input = { value: '' }, live = { innerHTML: 'live' };
+  const menu = { style: {}, classList: { add() {}, remove() {} }, insertAdjacentHTML() {}, contains: () => true,
+    querySelector: sel => sel.includes('live') ? live : input };
+  const ctx = { EMB: { sid: 'pc-vr', game, title: 'Metal Gear Solid - VR Missions', rect: { x: 0, y: 0, w: 640, h: 480 } },
+    innerWidth: 1000, innerHeight: 800, $: () => menu, esc: String, fitMenu() {}, dragAnywhere() {},
+    toast: t => toasts.push(t), refreshInbox() {}, gbox: { api: async () => ({ ok: true, data: {} }) },
+    gameJob: async (tool, inp) => { jobs.push(JSON.parse(JSON.stringify({ tool, inp })));
+      return inp.op === 'resolve_slot' ? { slot: 'enemy:soldier', name: 'Genome soldiers (every VR soldier)', kind: 'enemy' }
+                                       : { status: 'live_swapped', message: 'Sonic replaces the soldiers' }; } };
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('async function autoWhipFailure('),
+                              source.indexOf('async function whipMenuGame(')), ctx);
+  return { ctx, menu, jobs, toasts, input, live };
+}
+test('VR Missions drop names the slot under it and the live swap targets that slot', async () => {
+  const f = vrFixture('afd2fc507bb69843');
+  await f.ctx.whipCardMenu({ name: 'Sonic', slug: 'sonic' }, [320, 240], {});
+  await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual(f.jobs[0], { tool: 'characters', inp: { op: 'resolve_slot', session_id: 'pc-vr', x: .5, y: .5,
+                                                           window_aspect: 1.3333 } });
+  assert.match(f.live.innerHTML, /Put Sonic in place of Genome soldiers/);
+  assert.equal(f.input.value, 'Genome soldiers (every VR soldier)');
+  await f.menu.onclick({ target: { closest: () => ({ dataset: { w: 'live' } }) } });
+  assert.deepEqual(f.jobs[1], { tool: 'characters', inp: { op: 'live_use', character: 'sonic', session_id: 'pc-vr',
+                                                           slot: 'enemy:soldier' } });
+  assert.match(f.toasts.at(-1), /Sonic replaces the soldiers/);
+});
+test('a game without a slot resolver is not asked and the live swap sends the point', async () => {
+  const f = vrFixture('0123456789abcdef');
+  await f.ctx.whipCardMenu({ name: 'Sonic', slug: 'sonic' }, [320, 240], {});
+  assert.equal(f.jobs.length, 0);
+  await f.menu.onclick({ target: { closest: () => ({ dataset: { w: 'live' } }) } });
+  assert.deepEqual(f.jobs[0].inp, { op: 'live_use', character: 'sonic', session_id: 'pc-vr', x: .5, y: .5,
+                                    window_aspect: 1.3333, target: 'the character at this point' });
+});

@@ -90,7 +90,10 @@ def _is_stop_job(job: dict) -> bool:
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
     token = config.token()
+    from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
+    cache_tiers.install(config)
     app = FastAPI(title="gBox", version="0.1.0")
+    app.add_middleware(cache_tiers.TouchMiddleware)   # API traffic naming a game keeps it off the demotion list
     app.state.store = store
     from .character_collection import AutoCollection
     auto_collection = AutoCollection(store, config)
@@ -119,6 +122,13 @@ def create_app(config: Config) -> FastAPI:
     asset_library.routes(app, store, config, auth)
     from . import built_mods                      # built mod folders in the cache, joined with their mod cards
     built_mods.routes(app, store, config, auth)
+    cache_tiers.routes(app, config, auth)         # GET /api/cache/tiers, POST /api/cache/tiers/pin
+    from . import build_notify                    # every finished build / collect / failed build -> the bell tray
+    build_notes = build_notify.Notifier(store, config, index=lambda: getattr(app.state, "built_mods", None),
+                                        workers=lambda: workers(), library=lambda: built_mods.library_of(config))
+    app.state.build_notes = build_notes
+    build_notes.watch(app.state.built_mods)
+    build_notify.routes(app, store, auth, build_notes)
 
     # --- shell ---
     @app.get("/")
@@ -554,6 +564,10 @@ def create_app(config: Config) -> FastAPI:
                               "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
                               "roles": (best.get("rig") or {}).get("roles") or {}}}
 
+    # replacement readiness (gbox/replacement_readiness.py): who can replace a slot, where a donor fits, gaps per game
+    from . import replacement_readiness
+    replacement_readiness.routes(app, auth, _chars, catalog=store.catalog_get)
+
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
@@ -648,19 +662,31 @@ def create_app(config: Config) -> FastAPI:
         title: str
         text: str = ""
         session_id: str = ""                # click opens this session
-        kind: str = "info"                  # info | ready | done | error
+        kind: str = "info"                  # info | ready | done | error | build | collect
+        # a build (optional; the control plane posts its own build notifications, gbox/build_notify.py)
+        game_id: str = ""
+        mod: str = ""                       # the built mod (Play launches it through the mod launch path)
+        thumbnail: str = ""                 # an authenticated /api/... picture URL
+        launch: list[dict] = []             # launch options (gbox.special_builds.launch_options shape)
+        job_id: str = ""
+        summary: str = ""                   # "4/4 slots built · Sonic, Knuckles, Amy, Gamma"
 
     @app.post("/api/notify")
     def notify(n: NotifyIn, actor=Depends(auth)):
         """A notification for the operator's header tray (e.g. "Mario Mercenaries is ready")."""
         import uuid
         nid = uuid.uuid4().hex[:12]
-        store.put("notify", nid, n.model_dump() | {"id": nid, "ts": time.time(), "read": False, "by": actor})
+        body = n.model_dump()
+        if n.kind == "build" and n.mod and n.game_id and not n.launch:
+            body["launch"] = build_notes.launch_for({"kind": "build", "game_id": n.game_id, "mod": n.mod})
+        store.put("notify", nid, body | {"id": nid, "ts": time.time(), "read": False, "by": actor})
         return {"id": nid}
 
     @app.get("/api/notify")
     def notify_list(limit: int = 30, actor=Depends(auth)):
-        return sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit]
+        """Newest first. Build entries (auto: "build") carry items with launch options for the PCs online now and a
+        thumbnail URL (GET /api/notify/{id}/thumb)."""
+        return build_notes.decorate(sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit])
 
     @app.post("/api/notify/{nid}/read")
     def notify_read(nid: str, actor=Depends(auth)):
@@ -685,8 +711,8 @@ def create_app(config: Config) -> FastAPI:
     # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
     def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None, should_stop=None,
-                 on_cancel_deferred=None) -> dict:
-        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker), actor)
+                 on_cancel_deferred=None, agent_use: bool = False) -> dict:
+        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker, agent_use=agent_use), actor)
         t0 = time.time()
         deferred_launch = False
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
@@ -1028,6 +1054,162 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(503, 'capture session task could not start') from exc
         return job
 
+    # --- PR evidence (gbox/evidence_capture.py, docs/pr-evidence.md): frames of a mod working, in agent test sessions ---
+    EVIDENCE_MOMENTS = "evidence_moments"          # setting: {game_id: {variant: {artifact, label, after_moment, ...}}}
+
+    def _evidence_recorded(gid: str, variant: str = "") -> dict | None:
+        return ((store.get("setting", EVIDENCE_MOMENTS) or {}).get(gid) or {}).get(variant or "")
+
+    def _evidence_mod_card(cid: str) -> dict | None:
+        card = store.get("mod", cid)
+        if card and card.get("session_id"):
+            sess = store.get("session", card["session_id"]) or {}
+            name = (sess.get("detail") or {}).get("worker_name")
+            if name:
+                card = card | {"worker": name}
+        return card
+
+    def _evidence_operator_active(w: dict) -> str | None:
+        """Someone started using the capture's node: a game the capture did not start, or fresh input on that PC."""
+        cur = next((x for x in workers() if x["id"] == w["id"]), None) or {}
+        idle = cur.get("idle_seconds")
+        if cur.get("os") == "windows" and idle is not None and idle < 30 and (w.get("idle_seconds") or 0) >= 30:
+            return f"someone is using {cur.get('name')} (input {int(idle)} s ago)"
+        labels = {x["session_id"]: x for x in store.all("slabel")}
+        for sess in store.all("session"):
+            sid = sess.get("session_id") or ""
+            if (sess.get("state") == "running" and _wid(sid.split("-")[0]) == w["id"]
+                    and not str((labels.get(sid) or {}).get("label", "")).startswith("Evidence capture")):
+                return f"a game was started on {cur.get('name') or w['id']} ({sess.get('title') or sid})"
+        return None
+
+    def evidence_job(inp: dict, actor: str) -> Job:
+        """evidence_capture as an in-server job (one at a time); output = EvidenceOut. Its test sessions are agent
+        jobs (agent_use: 2% volume on Windows), labelled owner=agent, and always stopped by the capture itself."""
+        from . import evidence_capture as EC
+        game = store.catalog_get(inp.get("game_id") or "")
+        if not game:
+            raise HTTPException(404, f"game {inp.get('game_id')} is not in the library")
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == EC.TOOL and existing.get('state') in ('queued', 'running')
+                        and existing.get('id') in _server_job_threads):
+                    raise HTTPException(409, f"an evidence capture is already running (job {existing['id']}); "
+                                             "they run one at a time")
+            job = Job(tool=EC.TOOL, input=inp, state=JobState.RUNNING, started=time.time(), agent_use=True)
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def end_session(nsid):
+            with store.lock:
+                s_ = store.get("session", nsid)
+                if s_ and s_.get("state") != "ended":
+                    store.put("session", nsid, s_ | {"state": "ended", "ended": time.time(),
+                                                     "exit": {"by": actor, "via": "evidence_capture"}})
+
+        def put_artifact(data, name, media, prov):
+            return store.put_artifact(data, name, media, prov | {"job": job.id}).sha256
+
+        def go():
+            try:
+                ei = EC.EvidenceIn.model_validate(inp)
+                out = EC.run(
+                    ei, game,
+                    run_job=lambda tool, i, w, wait, progress=None: _run_job(tool, i, actor, worker=w, wait=wait,
+                                                                             progress=progress, agent_use=True),
+                    workers=workers, live_sessions=lambda: store.all("session"),
+                    recorded=_evidence_recorded(ei.game_id, ei.recipe),
+                    label=lambda nsid, l: store.put("slabel", nsid, l | {"session_id": nsid, "ts": time.time()}),
+                    end_session=end_session, put_artifact=put_artifact, read_artifact=store.read_artifact,
+                    operator_active=_evidence_operator_active, mod_card=_evidence_mod_card,
+                    running_jobs=store.running_job_counts, say=prog,
+                    should_stop=lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                    worker_of=lambda s: _wid(s.split("-")[0]))
+                state, err = JobState.SUCCEEDED, None
+                store.put("evidence", job.id, {"id": job.id, "game_id": ei.game_id, "mod": ei.mod, "ts": time.time(),
+                                               "by": actor, "frames": out["frames"], "pairs": out["pairs"],
+                                               "worker": out["worker"], "recipe": out["recipe"]})
+            except EC.EvidenceError as e:
+                out, state, err = None, JobState.FAILED, f"Unsupported: {e}"
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(),
+                                                                     "output": out, "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "evidence.capture", inp.get("game_id", ""), {"job": job.id, "state": state, "error": err,
+                        "mod": inp.get("mod"), "frames": len((out or {}).get("frames") or [])})
+        try:
+            threading.Thread(target=go, daemon=True, name=f"evidence-{job.id}").start()
+        except Exception as exc:
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {
+                    'state': JobState.FAILED, 'finished': time.time(), 'error': 'evidence capture task could not start'})
+            raise HTTPException(503, 'evidence capture task could not start') from exc
+        return job
+
+    @app.get("/api/evidence/recipes")
+    def evidence_recipes(actor=Depends(auth)):
+        """Per-game capture recipes (gbox/evidence_recipes.json) with the moments the operator recorded."""
+        from . import evidence_capture as EC
+        rec = store.get("setting", EVIDENCE_MOMENTS) or {}
+        return {gid: r | {"recorded": rec.get(gid) or {}} for gid, r in EC.load_recipes().items()}
+
+    class EvidenceMomentIn(BaseModel):
+        game_id: str = ""                   # default: the session's game
+        session_id: str                     # the running session to export the moment from (it keeps running)
+        variant: str = ""                   # a recipe variant ("" = the game's default)
+        label: str = ""
+        after_moment: list[dict] | None = None   # None = keep the recipe's
+
+    @app.post("/api/evidence/moments")
+    def evidence_moment_put(m: EvidenceMomentIn, actor=Depends(auth)):
+        """Record the game's gameplay moment for evidence captures: a state export of a running session (the game is
+        not paused or stopped). Only on an explicit request that names the session."""
+        from . import evidence_capture as EC
+        sess = store.get("session", m.session_id) or _404()
+        if sess.get("state") != "running":
+            raise HTTPException(409, "That session has ended; open the game at the moment you want to record.")
+        gid = m.game_id or sess.get("game_id") or ""
+        if m.after_moment is not None:
+            for k, st in enumerate(m.after_moment):
+                try:
+                    s_ = EC.InputStep.model_validate(st)
+                except Exception as e:                         # noqa: BLE001
+                    raise HTTPException(422, f"after_moment[{k}]: {e}")
+                if s_.tool and (s_.tool not in EC.STEP_TOOLS or s_.input.get("op") not in EC.STEP_TOOLS[s_.tool]):
+                    raise HTTPException(422, f"after_moment[{k}]: tool {s_.tool} is not allowed")
+        out = _run_job("state_transfer", {"session_id": m.session_id, "op": "export"}, actor,
+                       worker=m.session_id.split("-")[0], wait=120)
+        art = (out.get("result") or {}).get("artifact")
+        if not art:
+            raise HTTPException(409, "the state export returned no artifact")
+        with store.lock:
+            allm = store.get("setting", EVIDENCE_MOMENTS) or {}
+            rec = {"artifact": art, "label": m.label or "recorded gameplay moment", "session_id": m.session_id,
+                   "adapter": sess.get("adapter"), "mod": sess.get("mod") or "", "by": actor, "ts": time.time()}
+            if m.after_moment is not None:
+                rec["after_moment"] = m.after_moment
+            allm.setdefault(gid, {})[m.variant or ""] = rec
+            store.put("setting", EVIDENCE_MOMENTS, allm)
+        store.audit(actor, "evidence.moment", gid, {"variant": m.variant, "artifact": art})
+        return rec | {"game_id": gid, "variant": m.variant}
+
+    @app.get("/api/evidence")
+    def evidence_list(game_id: str = "", mod: str = "", limit: int = 50, actor=Depends(auth)):
+        """Finished evidence captures (frames + before/after pairs), newest first."""
+        rows = [e for e in store.all("evidence") if (not game_id or e.get("game_id") == game_id)
+                and (not mod or e.get("mod") == mod)]
+        return sorted(rows, key=lambda e: -(e.get("ts") or 0))[:max(1, min(limit, 500))]
+
     # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
     class LessonIn(BaseModel):
         lesson: str
@@ -1367,7 +1549,9 @@ def create_app(config: Config) -> FastAPI:
         # running_jobs is the Spark's own count. A worker reporting busy slots with none running here
         # has leaked them and will never claim the queued launch (#1294); the loader says so.
         running = store.running_job_counts()
-        return [w | {"running_jobs": running.get(w["id"], 0)} for w in workers()]
+        # local_builds (a PC's own build list, for GET /api/builds) stays out of this often-polled answer
+        return [{k: v for k, v in w.items() if k != "local_builds"} | {"running_jobs": running.get(w["id"], 0)}
+                for w in workers()]
 
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
@@ -1508,6 +1692,7 @@ def create_app(config: Config) -> FastAPI:
             if j["state"] == JobState.RUNNING and j["worker_id"] in old_ids:
                 j.update(state=JobState.FAILED, finished=time.time(), error=f"worker {w.name} restarted while running")
                 store.put("job", j["id"], j)
+                build_notes.job_ended(j)
                 store.audit(actor, "job.failed", j["id"], {"reason": "worker restarted"})
         for s_ in store.all("session"):             # ...and its emulator sessions died with it
             if s_.get("state") == "running" and s_["session_id"].split("-")[0] in old_ids:
@@ -1735,6 +1920,7 @@ def create_app(config: Config) -> FastAPI:
         return receipt, out, state, refs, problems
 
     def _result_followups(j, r, t, state, actor):
+        build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         mod_attempt = ((t.name == "characters" and op in ("use", "live_use", "swap"))
@@ -1804,6 +1990,8 @@ def create_app(config: Config) -> FastAPI:
             inp = t.In.model_validate(req.input).model_dump(mode="json")
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
+        if t.name == "evidence_capture":              # PR evidence: an in-server job driving agent test sessions
+            return evidence_job(inp, actor)
         if t.name == "scene_capture":
             session = store.get("session", inp["session_id"])
             if not session or session.get("state") != "running":
@@ -1843,6 +2031,8 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if job.state == JobState.REJECTED:
+            build_notes.job_ended(job.model_dump(mode="json"))
         if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
             stopping[inp["session_id"]] = job.id
         if job.state == JobState.REJECTED and not job.parent_request_id and (
@@ -1870,6 +2060,8 @@ def create_app(config: Config) -> FastAPI:
     special_builds.routes(app, store, config, auth, workers=workers,
                           submit=lambda tool, inp, require_os, actor: submit(
                               JobRequest(tool=tool, input=inp, require_os=require_os), actor))
+    from . import builds                          # top bar "Builds": every custom build, details, scheduled build jobs
+    builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor))
 
     class Progress(BaseModel):
         pct: float
@@ -1977,6 +2169,7 @@ def create_app(config: Config) -> FastAPI:
                     continue
                 job.update(state=JobState.FAILED, finished=now, error=reason)
                 store.put("job", job["id"], job)
+                build_notes.job_ended(job)
                 store.audit("scheduler", "job.failed", job["id"], {"reason": reason})
 
     @app.get("/api/jobs")
@@ -2502,6 +2695,18 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "session.live_model", sid, {"mod": model.mod})
         return {"session_id": sid, "live_mod": model.mod}
 
+    @app.post("/api/sessions/{sid}/live-pick")
+    def live_pick(sid: str, pick: dict, actor=Depends(auth)):
+        """The pick whip's last saved pick for this session (gbox.pick_tool.compact_pick): what pick_identify found /
+        pick_replace put in. The Blender round trip (gbox.live_link) passes it back to pick_replace unchanged."""
+        session = store.get("session", sid) or _404()
+        if len(json.dumps(pick, default=str)) > 256 << 10:
+            raise HTTPException(413, "pick too large (save the compact pick)")
+        session["live_pick"] = pick | {"saved": time.time()}
+        store.put("session", sid, session)
+        store.audit(actor, "session.live_pick", sid, {"slot": pick.get("slot"), "status": pick.get("status")})
+        return {"session_id": sid, "slot": pick.get("slot")}
+
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
         lv, body = _live(sid), await request.body()
@@ -2649,6 +2854,7 @@ def create_app(config: Config) -> FastAPI:
     def modfiles(gid: str, name: str, actor=Depends(auth)):
         """The central mod collection (this Spark): any gBox machine fetches a built mod from here before launching it."""
         from . import filemods
+        cache_tiers.touch(gid, queue=True)        # cold: answered from the HDD now (sidecar), moved up when idle
         d = _mod_root(gid, name)
         if not (d / ".gbox-mod.json").exists():
             raise HTTPException(404, "not in the collection")
@@ -2669,18 +2875,26 @@ def create_app(config: Config) -> FastAPI:
     @app.put("/api/modfiles/{gid}/{name}/file/{path:path}")
     async def modfile_put(gid: str, name: str, path: str, request: Request, actor=Depends(auth)):
         """A machine that built a mod hands it to the collection (streamed to disk; .part until complete)."""
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(cache_tiers.ensure_hot, gid)   # new writes land on the hot tier
         d = _mod_root(gid, name)
+        import uuid
         from . import filemods
         try:
             f = filemods._file_path(d, path)
-            tmp = filemods._file_path(d, path + ".part")
+            # one .part per upload: a worker pushing the same build at startup (push_missing) can race an operator
+            # upload; a shared .part made the second os.replace fail with FileNotFoundError (500) after a full transfer
+            tmp = filemods._file_path(d, f"{path}.{uuid.uuid4().hex[:12]}.part")
         except ValueError as error:
             raise HTTPException(400, "bad path") from error
         f.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "wb") as fh:
-            async for chunk in request.stream():
-                fh.write(chunk)
-        os.replace(tmp, f)
+        try:
+            with open(tmp, "wb") as fh:
+                async for chunk in request.stream():
+                    fh.write(chunk)
+            os.replace(tmp, f)
+        finally:
+            tmp.unlink(missing_ok=True)                  # an aborted upload leaves nothing behind
         return {"stored": path, "size": f.stat().st_size}
 
     # --- Export ROM hack (gbox/romexport.py): bootable modded image of the operator's own game + shareable patch ---
@@ -2787,10 +3001,20 @@ def create_app(config: Config) -> FastAPI:
 
     def hermes_runs(limit: int) -> list[dict]:
         """Recent Hermes runs, each naming the inbox tickets it confirmed work on."""
-        from . import hermes_tasks
+        from . import hermes_providers, hermes_tasks
         runs = hermes_tasks.list_runs(limit)
+        # The provider that served the run's last successful model call, from Hermes's agent log; the
+        # session's billing provider is only where the run started before falling through its routes.
+        try:
+            served = hermes_providers.session_providers()
+        except Exception:  # the Providers view is optional; never break the run list
+            served = {}
         titles: dict[str, dict | None] = {}
         for run in runs:
+            if (who := served.get(run.get("session_id") or "")):
+                run["billing_provider"] = run.get("provider")
+                run.update(provider=who["provider"], model=who["model"] or run.get("model"),
+                           provider_attribution=who["attribution"])
             tickets = []
             for rid in run.get("request_ids") or []:
                 if rid not in titles:
@@ -2866,6 +3090,18 @@ def create_app(config: Config) -> FastAPI:
         return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)),
                 "recent": recent, "hermes": hermes_runs(max(1, min(hermes_limit, 100))),
                 "resolutions": resolutions}
+
+    @app.get("/api/hermes/providers")
+    def hermes_providers_view(window: Literal["today", "7d"] = "today", actor=Depends(auth)):
+        """Which Hermes provider did the work and which can still do it, for the Tasks window.
+
+        One row per route (feedback.json routes plus any other route that served calls in the
+        window) and per provider: status now, last error, runs served to completion, model calls,
+        tokens, wall time, OpenRouter credit (cached 5 min; the key never leaves the server) and a
+        one-line recommendation.
+        """
+        from . import hermes_providers
+        return hermes_providers.summary(window)
 
     @app.get("/api/tasks/resolutions/{rid}")
     def tasks_resolution(rid: str, actor=Depends(auth)):

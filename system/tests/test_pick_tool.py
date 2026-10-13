@@ -343,3 +343,101 @@ def test_learned_pick_data_endpoints(cfg):
     r = client.post("/api/profiles/g1/pick", json={"classes": {"A": {"seen": 2}, "B": {"slot": "enemy:x"}}}).json()
     assert r["classes"] == {"A": {"slot": "player", "seen": 2}, "B": {"slot": "enemy:x"}}
     assert client.get("/api/profiles/g1/pick").json()["classes"]["A"]["seen"] == 2
+
+
+def learned_of(world):
+    return json.loads((world.tmp / "data" / "pick_learned" / f"{GAME['game_id']}.json").read_text())
+
+
+def test_a_successful_identify_is_saved_compact_to_the_profile_and_the_session(monkeypatch, world):
+    import httpx
+    posts = []
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: SimpleNamespace(status_code=404, json=lambda: {}))
+    monkeypatch.setattr(httpx, "post", lambda url, **k: posts.append((url, k.get("json"))))
+    monkeypatch.setattr(PT, "_api", lambda ctx, m, p, **k: posts.append((p, k.get("json"))) or {})
+    world.ctx.server = "http://cp"
+    out = PT.pick_identify(PT.PickIdentifyIn(session_id="s1", x=0.5, y=0.5), world.ctx)
+    saved = learned_of(world)
+    pick = saved["picks"]["enemy:wolf"]
+    assert saved["last_pick"] == pick and pick["status"] == "identified" and pick["session_id"] == "s1"
+    assert pick["ram"]["model"] == out["ram"]["model"] and pick["ram"]["entity_struct"] == "0x8C400000"
+    assert "structures" not in pick["ram"] and "draws" not in pick and "seconds" not in pick
+    assert all("data" not in e for e in pick["evidence"]) and pick["replaceable"]["live"]
+    session = [j for p, j in posts if p == "/api/sessions/s1/live-pick"]
+    assert session and session[-1]["slot"] == "enemy:wolf" and session[-1]["game_id"] == GAME["game_id"]
+    assert any(u.endswith("/api/profiles/daba7a3b195dcf6b/pick") and (j.get("picks") or {}).get("enemy:wolf")
+               for u, j in posts if isinstance(j, dict))
+    hover = PT.pick_identify(PT.PickIdentifyIn(session_id="s1", x=0.5, y=0.5, deep=False), world.ctx)
+    assert hover["slot"] and learned_of(world)["picks"]["enemy:wolf"]["saved"] == pick["saved"]   # hovers aren't kept
+
+
+def test_compact_pick_drops_bytes_images_and_walk_listings():
+    pick = {"game_id": "g", "slot": "player", "backend": "profile", "ram": {"model": "0x1", "structures": [{"at": 1}],
+            "_best": {}, "textures": [{"addr": "0x2", "rgba": b"\0" * 64}]}, "draws": [{"draw": 1}], "seconds": 3,
+            "evidence": [{"step": "x", "ok": True, "detail": "d" * 900, "source": "s", "data": {"big": [1] * 999}}],
+            "entity": {"class": "A", "pos": np.array([1.0, 2.0])}}
+    c = PT.compact_pick(pick, signatures=[{"name": "n", "size": 4, "pieces": [{"offset": 0, "hex": "00ff"}]}])
+    assert c["ram"] == {"model": "0x1", "textures": [{"addr": "0x2"}]} and "draws" not in c and "seconds" not in c
+    assert len(c["evidence"][0]["detail"]) == 200 and "data" not in c["evidence"][0]
+    assert c["entity"]["pos"] == [1.0, 2.0]
+    assert c["signatures"][0]["pieces"][0] == {"offset": 0, "hex": "00ff"}     # a live write needs the signatures
+    json.dumps(c)
+
+
+def test_replace_live_and_swapped_save_the_pick_with_what_was_written(monkeypatch, world):
+    new = bytearray(world.orig)
+    new[0x200:0x240] = b"\x5A" * 0x40
+    blob = LI.pack([LI.asset("WOLF.NJ", world.orig, bytes(new))], {"mod": "pso_x"})
+    sigs = LI.signatures(LI.unpack(blob)[0])
+    monkeypatch.setattr(PT, "_character", lambda ctx, q: {"slug": "hucast", "name": "HUcast"})
+    monkeypatch.setattr(PT, "get_prepared", lambda *a, **k: {"mod": "pso_x", "patch_blob": blob, "signatures": sigs})
+    pick = PT.pick_identify(PT.PickIdentifyIn(session_id="s1", x=0.5, y=0.5), world.ctx)
+    res = PT.pick_replace(PT.PickReplaceIn(session_id="s1", pick=pick, character="hucast"), world.ctx)["result"]
+    assert res["status"] == "live"
+    saved = learned_of(world)["picks"]["enemy:wolf"]
+    assert saved["status"] == "live" and saved["replaced"]["slug"] == "hucast" and saved["replaced"]["mod"] == "pso_x"
+    assert saved["ram"]["model_images"] == [{"name": "WOLF.NJ", "base": hex(world.asset_at), "bytes": 0x800}]
+    assert saved["signatures"][0]["name"] == "WOLF.NJ" and learned_of(world)["last_pick"] == saved
+    assert "class" in saved["entity"] and saved["ram"]["entity_struct"] == "0x8C400000"
+    # the Blender round trip hands the saved pick back unchanged: pick_replace takes it as is
+    blob2 = LI.pack([LI.asset("WOLF.NJ", bytes(new), bytes(world.orig))], {"mod": "pso_y"})
+    monkeypatch.setattr(PT, "get_prepared", lambda *a, **k: {"mod": "pso_y", "patch_blob": blob2})
+    again = PT.pick_replace(PT.PickReplaceIn(session_id="s1", pick=saved, character="hucast"), world.ctx)["result"]
+    assert again["status"] == "live"
+    assert learned_of(world)["picks"]["enemy:wolf"]["replaced"]["mod"] == "pso_y"   # replaced whole, not merged
+    # build: saved for the NEW session
+    tools.SESSIONS["s2"] = (Emu(bytearray(0x1000000)), dict(GAME))
+    calls = []
+
+    def api(ctx, method, path, **kw):
+        calls.append((method, path, kw.get("json")))
+        if path == "/api/sessions/s1/swap":
+            return {"id": "sw1", "state": "running"}
+        if path == "/api/jobs/sw1":
+            return {"id": "sw1", "state": "succeeded", "output": {"session_id": "s2"}}
+        return {}
+    monkeypatch.setattr(PT, "_api", api)
+    monkeypatch.setattr(PT.time, "sleep", lambda s: None)
+    world.ctx.server = "http://cp"
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: SimpleNamespace(status_code=404, json=lambda: {}))
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: None)
+    res = PT.pick_replace(PT.PickReplaceIn(session_id="s1", pick=saved, character="hucast", mode="build"),
+                          world.ctx)["result"]
+    assert res["status"] == "swapped"
+    kept = learned_of(world)["picks"]["enemy:wolf"]
+    assert kept["status"] == "swapped" and kept["session_id"] == "s2" and kept["replaced"]["mode_used"] == "build"
+    assert any(p == "/api/sessions/s2/live-pick" and j["slot"] == "enemy:wolf" for _m, p, j in calls)
+
+
+def test_session_live_pick_endpoint(cfg):
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    app = create_app(cfg)
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    assert client.post("/api/sessions/nope/live-pick", json={"slot": "player"}).status_code == 404
+    app.state.store.put("session", "s1", {"session_id": "s1", "state": "running", "game_id": "g"})
+    assert client.post("/api/sessions/s1/live-pick", json={"slot": "player", "game_id": "g"}).status_code == 200
+    s = next(x for x in client.get("/api/sessions").json() if x["session_id"] == "s1")
+    assert s["live_pick"]["slot"] == "player" and s["live_pick"]["saved"]
+    assert client.post("/api/sessions/s1/live-pick", json={"slot": "p", "blob": "x" * (300 << 10)}).status_code == 413
