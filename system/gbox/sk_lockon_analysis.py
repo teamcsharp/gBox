@@ -268,7 +268,10 @@ def sstage_players(d: bytes) -> dict:
             rec.update({"status": "lock_on_only", "plc": {"offset": g["plc"], "in_cart": False}})
             chars[name] = rec
             continue
-        n = len(_offsets(d, g["plc"]))
+        try:
+            n = len(_offsets(d, g["plc"]))
+        except struct.error as e:
+            raise SkError(f"{name}: PLC head at 0x{g['plc']:x} runs past the image") from e
         best = None
         for at, mp, tile, guard in reversed(inits):
             if (guard["value"] if guard else None) != mode or mp >= len(d):

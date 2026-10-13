@@ -160,3 +160,15 @@ def test_real_build_blue_spheres_player_tables():
         kinds = {(c["site"], c["kind"]) for c in cp["pointer_changes"]}
         assert (0x9178, "sstage.tails.plc") in kinds and (0x9178, "sstage.tails.art") in kinds
         assert any(c["kind"] == "dplc_loader.art" and c["ours"] == 0x200000 for c in cp["pointer_changes"])
+
+
+def test_truncated_image_raises_valueerror():
+    d, _ = _sstage_image()
+    cut = ska.sstage_players(d[:0x1005])     # tables past the cut are reported, not read
+    assert cut["characters"]["sonic"]["status"] == "lock_on_only"
+    with pytest.raises(ValueError):
+        ska.sstage_players(d[:0x400])         # no loader at all
+    with pytest.raises(ValueError):
+        ska.sstage_palette(d[:0x600])
+    with pytest.raises(ValueError):
+        ska.lockon_mode(bytes(0x100))
