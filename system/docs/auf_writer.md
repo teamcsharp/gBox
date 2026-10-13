@@ -177,10 +177,10 @@ python -m gbox.auf_swap build <source.gcz|.iso> <library> <cache dir> --slot pla
 * **Full disc, whole cast** (`slot=cast seed=wwf`, 9 wrestlers):
   * The donors were 3 Def Jam GC (static), 3 SmackDown 2 and 3 No Mercy. Bond (`player=djv_s100a`) was fixed and
     the other donors were dealt.
-  * All 45 bodies were replaced: 372 (level, body) pairs and 416 LOD files. 73 heads became stubs, among them
-    15 in dm1 and 12 in alp2_2.
-  * Every level stayed in its slot, and the maps shrank by 6.09 MB in total.
-  * The build took 388 s with 6 worker processes.
+  * All 45 bodies were replaced: 372 (level, body) pairs and 416 LOD files. Every one of the 377 head files in
+    those levels became a stub.
+  * Every level stayed in its slot, and the maps shrank by 6.08 MB in total.
+  * The build took 330 s with 6 worker processes, after the do-while fix.
   * Reader exports of henchmen_vest_h (m6_1), g8us_body_h (alp2_2), zoe_body_l (dm1, female skeleton),
     superthug_body_m (uwb_2a), thug_orchid_l (dm1) and bond_graysuit_h (m6_1) render as textured wrestlers on
     those skeletons.
