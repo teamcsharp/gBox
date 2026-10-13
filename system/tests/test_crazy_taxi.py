@@ -1,4 +1,5 @@
 import hashlib
+import os
 import struct
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import pytest
 
 from gbox import crazy_taxi as ct
 
-ISO = Path("/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso")
+ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
 
 CUBE = [(x, y, z) for z in (-1, 1) for y in (-1, 1) for x in (-1, 1)]
 FACES = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
@@ -87,9 +88,11 @@ def test_owned_disc_driver_inventory():
     assert set(inv["drivers"]) == {"axel", "bd_joe", "gena", "gus"}
     for d in inv["drivers"].values():
         assert set(d["parts"]) == set(ct.PARTS)
-    assert inv["drivers"]["axel"]["tris"] == 389
+    # 393 with the head's fifth material list (0x9e0, before the fourth record's 0xa20), which the ascending-order
+    # scan skipped (389, and a stale pointer in the written head: the driver-select FIFO hang)
+    assert inv["drivers"]["axel"]["tris"] == 393
     head = inv["drivers"]["axel"]["parts"]["atama"]
-    assert (head["verts"], head["tris"]) == (64, 73)
+    assert (head["verts"], head["tris"]) == (64, 77)
     o, s = ct.driver_parts(entries, "A")["atama"]
     assert ct.read_shape(bank[o:o + s]).frac() == 8
 
