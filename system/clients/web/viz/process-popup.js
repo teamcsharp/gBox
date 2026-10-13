@@ -282,6 +282,11 @@
     opts = opts || {};
     const fetchJobs = opts.fetchJobs || null, pollMs = opts.pollMs || 4000;
     const assetUrl = opts.assetUrl || (p => p);
+    // opts.fit(el): the shell keeps the window inside its viewport and below its header bar (toast-stack.js fit): after
+    // each update (the fitting rows grow it upward from its bottom anchor), after a drag and on window resize
+    const fitIn = () => { if (root && typeof opts.fit === "function") { try { opts.fit(root); } catch (e) { /* layout only */ } } };
+    const view = doc && doc.defaultView;
+    if (view && typeof view.addEventListener === "function" && typeof opts.fit === "function") view.addEventListener("resize", fitIn);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
       barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null, rBtn = null;
@@ -399,7 +404,7 @@
         };
         const up = () => {
           el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up);
-          if (moving) { try { el.releasePointerCapture(id); } catch (err) { /* already released */ } }
+          if (moving) { try { el.releasePointerCapture(id); } catch (err) { /* already released */ } fitIn(); }
         };
         el.addEventListener("pointermove", move); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
       });
@@ -727,6 +732,7 @@
       }
       setContent(job, others);                                              // state and companion counts can change without a new job id
       update(job);
+      fitIn();
     }
 
     if (fetchJobs) {
@@ -751,6 +757,7 @@
       dispose() {
         dead = true;
         if (pollTimer) (env.clearInterval || (t => env.clearTimeout(t)))(pollTimer);
+        if (view && typeof view.removeEventListener === "function") view.removeEventListener("resize", fitIn);
         remove(); style.remove();
       },
     };

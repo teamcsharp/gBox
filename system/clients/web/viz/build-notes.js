@@ -7,7 +7,8 @@
 //             (other PCs, saved moment, the Spark debugger) and Open in Mods.
 //   error   - the reason, Open request, Retry build (when the job left a rebuild recipe).
 //   collect - "N characters collected from <game>", Open models.
-// New entries also show a toast with Play (and, in the desktop app, an OS notification over the GBOX: bridge).
+// New entries also show a toast with Play (and, in the desktop app, an OS notification over the GBOX: bridge). The toast
+// is a card in the shell's toast stack (viz/toast-stack.js): below the measured header, newest first, inside the window.
 // Plain functions returning HTML strings + a click dispatcher over an io object, so node tests drive them without a
 // DOM (tests/test_build_notes.cjs). Older notifications (title / text / session_id) render as before.
 (function (root) {
@@ -105,7 +106,7 @@
   function seenOf(notes) { const s = new Set(); fresh(notes, s); return s; }
   function toastHTML(n, opts = {}) {
     const url = opts.url || (u => u), it = itemsOf(n)[0] || {}, d = it.kind === "build" ? defaultOpt(it) : null;
-    return `<div class="bn-toast" data-id="${ESC(n.id)}" role="status">${thumbHTML(it, url)}<div class="bn-main">
+    return `<div class="bn-toast${n.kind === "error" ? " bn-bad-card" : ""}" data-id="${ESC(n.id)}" role="status">${thumbHTML(it, url)}<div class="bn-main">
       <b>${ESC(n.title)}</b><span class="bn-sum${n.kind === "error" ? " bn-bad" : ""}">${ESC(n.text || "")}</span>
       <div class="bn-btns">${d && itemsOf(n).length === 1 ? `<button class="act pri" type="button" data-bn="play" data-id="${ESC(n.id)}" data-i="0">▶ Play</button>` : ""}
       <button class="act" type="button" data-bn="show" data-id="${ESC(n.id)}">Show</button>
@@ -162,8 +163,9 @@
     .bn-opts{display:flex;flex-direction:column;gap:2px;width:100%;margin-top:2px}.bn-opts .act{text-align:left}
     .bn-item{padding-top:6px;margin-top:4px;border-top:1px dashed var(--line)}.bn-msg{font-size:11px}
     .bn-top{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line);font-size:12px}
-    .bn-toast{position:fixed;top:52px;right:12px;width:340px;z-index:85;display:flex;gap:8px;padding:10px;background:var(--bg);
-      border:1px solid var(--acc);border-radius:10px;box-shadow:0 12px 40px #000a;font-size:12.5px}`;
+    .bn-toast{display:flex;gap:8px;padding:10px;background:var(--bg);border:1px solid var(--acc);border-radius:10px;
+      box-shadow:0 6px 18px #0009;font-size:12.5px;line-height:1.4;min-width:0}
+    .bn-toast.bn-bad-card{border-color:var(--bad,#ff6b6b)}.bn-toast b{overflow-wrap:anywhere;white-space:normal}`;
 
   const api = { isAuto, itemsOf, unread, defaultOpt, optLabel, launchArgs, noteHTML, trayHTML, fresh, seenOf, toastHTML, osNote, click,
                 CSS, TOAST_MS };

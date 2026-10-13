@@ -187,7 +187,7 @@ test('wiring: the web tray renders through build-notes, Play = the game menu lau
   assert.match(desk, /m\.ev === "buildnote"\) buildNoteMsg\(m\)/);
   assert.match(desk, /function buildNoteMsg\(m\) \{\s+gbox\.osNotify\?\.\(/);
   assert.match(desk, /m\.ev === "openrequest"\) modsGalleryRequest/);
-  assert.match(desk, /EMB_GUEST_MENUS = "[^"]*#bntoast/);
+  assert.match(desk, /EMB_GUEST_MENUS = "[^"]*#gbox-toasts/);              // the toast stack (viz/toast-stack.js)
   assert.match(desk, /gbox\.onNotifyClick\?\.\(/);
   const main = fs.readFileSync(path.join(__dirname, '..', 'clients', 'desktop', 'main.js'), 'utf8');
   assert.match(main, /ipcMain\.handle\("notify:os"/);
