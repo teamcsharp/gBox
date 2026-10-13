@@ -584,6 +584,35 @@ These numbers come from documented layouts, not a live scan of the owned discs. 
 listings (see `tests/test_assimilate.py::test_fingerprint_of_a_real_disc_image`); run `assimilate op=fingerprint` on
 the Spark for each owned title to confirm them.
 
+## Cross-title function names (`gbox/re_transfer.py`)
+
+Each title's Ghidra work also leaves named functions behind. `re_transfer` stores every named function as a masked
+body hash per architecture (SH-4, PowerPC, MIPS). Call targets, `lis`/`lui` high halves, the low halves that use them,
+and r2/r13/$gp small-data offsets are masked. Opcodes, registers, struct offsets and stack frames must be identical.
+The next executable gets those names without a fresh investigation:
+
+- `POST /api/re/dossier/{gid}/signatures/learn` (agent: `re_dossier op=teach`) adds the title's functions. The
+  dossier's documented or validated names override Ghidra's. A 32-bit ELF with a `.symtab` names itself
+  (`elf_functions`).
+- `POST /api/re/dossier/{gid}/signatures/transfer` (agent: `re_dossier op=transfer`) scans the executable (or only
+  the Ghidra entries passed in `functions`). Each unique hit is recorded as a `hypothesis` that cites its source
+  titles. A body that two names share is never transferred. A body found at several target addresses is reported but
+  not recorded. A documented or validated finding at the same address is counted as a confirmation and is never
+  overwritten.
+- `GET /api/re/signatures` returns the library size per architecture and the titles that contributed to it.
+
+Measured on owned executables (October 13, 2026, Spark):
+
+| Library source | Target | Unique names transferred | Scan time |
+|---|---|---|---|
+| Bond.elf GameCube debug symbols (8,522 functions, 6,280 usable bodies) | PSO Ep. I&II GC RAM image (6 MB) | 477 Dolphin SDK functions (AI/AR/ARQ/CARD/DVD/DB/DC/DSP...) | 0.5 s |
+| Crazy Taxi DC `1ST_READ.BIN` (rts-carved bodies, 2,694 usable) | DOA2 DC `1ST_READ.BIN` | 323 shared Katana/Shinobi bodies | 0.4 s |
+| same | r1663 DC `1ST_READ.BIN` | 212 | 0.3 s |
+
+Bodies shorter than 32 bytes or with fewer than 4 distinct instructions are skipped, because they cannot give a
+precise match. Run `re_dossier op=teach` when a title is finished. That step makes the library more useful with each
+title.
+
 ## Adding the next title
 
 1. `assimilate op=fingerprint game_id=<id>`. Read `nearest_titles` and `proposal.start_from`.
@@ -596,3 +625,4 @@ the Spark for each owned title to confirm them.
    - Add a section here.
    - Bump `FACTS_VERSION` in `re_seeds.py` if facts changed.
    - Run `assimilate op=evaluate`.
+   - Run `re_dossier op=teach` so the title's named functions enter the cross-title library (`re_transfer`).
