@@ -67,6 +67,9 @@ if (new URLSearchParams(location.search).has("embedded")) {
   .play.fit .screen { flex:1 1 auto; min-height:0; width:100%; object-fit:contain; } .play.fit > div:first-child p { flex:none; margin:6px 0 0; font-size:12px; }
   #wb { flex:none; max-height:38%; overflow:auto; scrollbar-width:none; margin-top:8px; border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
   #wb summary { cursor:pointer; font-weight:600; padding:3px 0; } #wb summary .mut { font-weight:400; font-size:12px; }
+  .obs-goals { display:grid; gap:6px; margin-bottom:8px; } .obs-ask { margin:0; padding:6px 8px; border-left:3px solid var(--acc); }
+  .obs-agent { border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12.5px; } .obs-agent p { margin:2px 0; }
+  .obs-blocked { color:var(--bad); } .obs-actions { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0; }
   .wbcs { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px 14px; padding:4px 0 8px; }
   .wbc { display:grid; grid-template-columns:1fr auto 16px; align-items:center; gap:2px 8px; font-size:12.5px; }
   .wbc input[type=range] { grid-column:1 / 3; width:100%; accent-color:var(--acc); } .wbc button[data-run] { padding:2px 10px; } .wbc i { font-style:normal; grid-row:1 / 3; grid-column:3; }
@@ -188,6 +191,9 @@ if (new URLSearchParams(location.search).has("embedded")) {
   #loader .con div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; animation:tick .25s ease; }
   @keyframes tick { from { transform:translateY(100%); opacity:0 } }
   #loader .err { color:#ff8a80; }
+  #loader .shot { position:absolute; left:50%; top:calc(44% - min(13vh,110px) - 12px); transform:translate(-50%,-100%); width:min(34vw,300px); aspect-ratio:4/3;
+    object-fit:cover; border-radius:8px; border:1px solid #ffffff2a; box-shadow:0 10px 30px #000a; opacity:.92; display:none; animation:ldshot 2.4s ease-in-out infinite alternate; }
+  @keyframes ldshot { to { opacity:.6; filter:saturate(.7) } }
   #loader .back { position:absolute; right:14px; bottom:40px; display:none; }
   #loader .ldbtns { position:absolute; left:0; right:0; top:calc(44% + min(15vh,128px) + 64px); display:flex; gap:10px; justify-content:center; }
   #loader .ldbtns button { background:#0006; color:#f3e3dc; border-color:#ffffff30; }
@@ -242,9 +248,32 @@ if (new URLSearchParams(location.search).has("embedded")) {
   .libtop { position:sticky; top:var(--hdr, 52px); z-index:20; background:var(--bg); margin:0 -16px; padding:10px 16px 2px;
             border-bottom:1px solid var(--line); box-shadow:0 8px 16px -12px #000c; }
   .car-track { scrollbar-width:none; } .car-track::-webkit-scrollbar { display:none; }
+  #ringpop { display:none; position:fixed; z-index:71; top:34px; width:330px; padding:10px 12px; background:var(--bg); border:1px solid var(--line);
+    border-radius:8px; box-shadow:0 10px 30px #0009; font-size:13px; -webkit-app-region:no-drag; } #ringpop.on { display:block; }
+  #ringpop .rg-head { display:flex; align-items:center; gap:6px; margin-bottom:4px; } #ringpop .rg-head .mut { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #ringpop .rg-x { background:none; border:0; color:var(--fg); cursor:pointer; font-size:13px; }
+  #ringpop label { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0; }
+  #ringpop input[type=range] { flex:1; accent-color:var(--acc); } #ringpop output { width:46px; text-align:right; font-variant-numeric:tabular-nums; color:var(--acc); }
+  #ringpop input[type=number] { width:64px; font:inherit; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:5px; padding:2px 5px; }
+  #ringpop select { flex:1; min-width:0; font:inherit; font-size:12px; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:5px; }
+  #ringpop .rg-bar { position:relative; height:22px; margin:8px 0 2px; background:#ffffff0d; border-radius:4px; overflow:hidden; }
+  #ringpop .rg-bar i { position:absolute; top:3px; bottom:3px; background:#7c96ff55; border-right:1px solid var(--bg); }
+  #ringpop .rg-bar .rg-sel { position:absolute; top:0; bottom:0; border:2px solid var(--acc); border-radius:4px; background:#7c96ff22; box-sizing:border-box; }
+  #ringpop .rg-ticks { display:flex; justify-content:space-between; font-size:11px; }
+  #ringpop .rg-presets, #ringpop .rg-row { display:flex; gap:6px; margin:6px 0; align-items:center; } #ringpop .rg-presets .act { flex:1; }
+  #ringpop .rg-row .pri { flex:1; } #ringpop .rg-done { margin-top:6px; font-size:12px; word-break:break-all; }
+  #ringpop .rg-foot { display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:11px; margin-top:6px; }
+  #ringpop .rg-empty { padding:10px 0; }
 </style>
 <script src="/padglyph.js"></script>
 <script src="/viz/session-pause.js"></script>
+<script src="/viz/session-move.js"></script>
+<script src="/viz/cast-swap.js"></script>
+<script src="/viz/game-menu.js"></script>
+<script src="/live-poll.js"></script>
+<script src="/viz/mods-gallery.js"></script>
+<script src="/viz/retarget-handles.js"></script>
+<script src="/viz/retarget-editor.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
 <script id="carbon-icons">/* generated by scripts/carbon_icons.py: IBM Carbon icons, Apache-2.0 */
 (() => {
@@ -303,6 +332,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <div id="scrub" aria-label="Jump to letter" style="display:none"></div><div id="scrubtip"></div>
 <div id="loader" aria-live="polite">
   <canvas id="ldcv"></canvas>
+  <img class="shot" id="ldshot" alt="" onerror="this.style.display='none'">
   <div class="logo"><div class="ghost"></div><div class="fill"><i id="ldbar"></i></div></div>
   <div class="ttl" id="ldtitle"></div><div class="sub" id="ldsub"></div>
   <div class="pbar"><i id="ldpbar"></i><span id="ldpct">0%</span></div>
@@ -318,17 +348,18 @@ if (new URLSearchParams(location.search).has("embedded")) {
   <div class="grip" id="pipgrip" title="Drag to resize"></div>
 </div>
 <script>
-const tabs = { Library: library, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
+const tabs = { Library: library, Mods: modsView, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 // Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
 // when it would run past the bottom, clamp it to the edges, and let it scroll inside when it is taller than the window.
-// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously).
+// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously). A shown
+// menu is "has client rects": offsetParent is always null for position:fixed, which kept this re-fit from ever running (#1562).
 function fitMenu(el, x, y, pad = 8, minTop = pad) {
   if (!el) return;
   el._fitXY = [x, y, pad, minTop];
   if (!el._fitRO && window.ResizeObserver) {
-    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.offsetParent !== null) refitMenu(el); });
+    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.getClientRects().length) refitMenu(el); });
     el._fitRO.observe(el);
   }
   refitMenu(el);
@@ -367,10 +398,9 @@ function dragAnywhere(el) {
 function refitMenu(el) {
   const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
   el.style.maxHeight = ""; el.style.overflowY = "";
-  const w = el.offsetWidth; let h = el.offsetHeight;
-  if (h > vh - pad - minTop) { h = vh - pad - minTop; el.style.maxHeight = h + "px"; el.style.overflowY = "auto"; }
-  const top = y + h > vh - pad ? (y - h >= minTop ? y - h : vh - pad - h) : y;      // flip above the pointer, else clamp
-  el.style.left = Math.max(pad, Math.min(x, vw - w - pad)) + "px"; el.style.top = Math.max(minTop, top) + "px";
+  const f = GBoxGameMenu.fit(x, y, el.offsetWidth, el.offsetHeight, vw, vh, pad, minTop);   // flip above the pointer, else clamp
+  if (f.maxHeight != null) { el.style.maxHeight = f.maxHeight + "px"; el.style.overflowY = "auto"; }
+  el.style.left = f.left + "px"; el.style.top = f.top + "px";
 }
 let tok = ""; try { tok = localStorage.getItem("gbox_tok") || ""; } catch {}
 const HASH = new URLSearchParams(location.hash.slice(1));      // deep links: #token=…&session=<sid>&mode=inspect
@@ -397,7 +427,8 @@ const sessionIsLocal = s => !!window.GBOX_LOCAL?.worker && sessionWorkerName(s) 
 async function trayTick() {
   if (!tok) return;
   try {
-    const [ss, labels, notes, ws] = await Promise.all([api("/api/sessions"), api("/api/session_labels").catch(() => ({})), api("/api/notify").catch(() => []),
+    // running sessions only (#712): the full list is every session ever played (~950 KB) and the tray shows live ones
+    const [ss, labels, notes, ws] = await Promise.all([api("/api/sessions?include_ended=false"), api("/api/session_labels").catch(() => ({})), api("/api/notify").catch(() => []),
                                                        api("/api/workers").catch(() => [])]);
     TRAY.ws = ws; TRAY.os = Object.fromEntries((ws || []).map(w => [w.id, w.os]));
     TRAY.names = Object.fromEntries((ws || []).map(w => [w.id, w.name])); TRAY.labels = labels;
@@ -514,7 +545,8 @@ document.addEventListener("contextmenu", e => {
   const sid = scr?.dataset.sid || "", box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
   const what = ((opt.closest(".chc")?.dataset.name ? opt.closest(".chc").dataset.name + ": " : "") + (opt.innerText || opt.title || opt.getAttribute("aria-label") || "").trim()).replace(/\s+/g, " ").slice(0, 120);
   const detail = (box.innerText || "").trim().replace(/\n{2,}/g, "\n").slice(0, 1500);
-  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m); dragAnywhere(m);
+  // role=menu: the desktop shell cuts every guest [role=menu] out of a docked game window, so this one shows above the game
+  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; m.setAttribute("role", "menu"); document.body.append(m); dragAnywhere(m);
     m.style.cssText = "position:fixed;z-index:99;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:260px;font-size:13px"; }
   m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
   m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">${scr ? `⚑ Report: “${esc(what || "this")}” doesn't work in this game` : `✎ Request about “${esc(what || "this")}”`}</button>
@@ -539,11 +571,13 @@ addEventListener("blur", () => { const m = $("#issuemenu"); if (m) m.style.displ
 // right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();
-  const sid = c.dataset.sid, onSpark = TRAY.os?.[sid.split("-")[0]] === "linux", agent = (TRAY.labels?.[sid] || {}).owner === "agent";
+  const sid = c.dataset.sid, agent = (TRAY.labels?.[sid] || {}).owner === "agent";
+  let moves = [];                                                                                                        // #1501
+  try { moves = window.GBoxSessionMove ? GBoxSessionMove.targets(sid, TRAY.ws, window.GBOX_LOCAL?.worker || "") : []; } catch {}   // never a menu that doesn't open
   const el = $("#traypop");
   el.innerHTML = `<div class="tmenu" data-sid="${esc(sid)}">
       <button data-a="open">Open</button>
-      ${onSpark ? '<button data-a="move">Bring to this PC <span class="mut">(native speed + controls)</span></button>' : ""}
+      ${moves.map(t => `<button data-a="move" data-to="${esc(t.to)}" data-label="${esc(t.label)}">${esc(t.label)} <span class="mut">(${esc(t.hint)})</span></button>`).join("")}
       <button data-a="${agent ? "mine" : "agent"}">${agent ? "Mark as mine" : "Mark as an agent's test"}</button>
       <button data-a="stop" style="color:var(--bad)">Stop</button><div class="mut tmst"></div></div>`;
   el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true;
@@ -553,9 +587,8 @@ document.addEventListener("click", async e => {
   if (mb) {
     const sid = mb.closest(".tmenu").dataset.sid, a = mb.dataset.a, st = $(".tmst");
     if (a === "open") { show("Sessions", sid); }
-    else if (a === "move") { st.textContent = "Moving: saving state, starting it on this PC, loading…"; mb.disabled = true;
-      try { const r = await api(`/api/sessions/${encodeURIComponent(sid)}/move`, { to: "windows" }); show("Sessions", r.session_id); }
-      catch (err) { st.textContent = "Can't move: " + err.message; mb.disabled = false; return; } }
+    else if (a === "move") { TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = "";
+      moveSession(sid, mb.dataset.to, mb.dataset.label); return; }
     else if (a === "stop") { if (!confirm("Stop this game? Unsaved progress is lost.")) return; await sop(sid, "stop_game"); }
     else { await api(`/api/sessions/${encodeURIComponent(sid)}/label`, { owner: a === "mine" ? "you" : "agent", label: "" }).catch(() => {}); }
     TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = ""; trayTick(); return;
@@ -672,20 +705,21 @@ tabs.GameModels.after = (gid, title) => {
     if (GAME_MODELS.viewer) { GAME_MODELS.viewer.dispose(); GAME_MODELS.viewer = null; }
     preview.innerHTML = '<p class="mut" style="padding:15px">Loading 3D model…</p>';
     const modelUrl = `/api/characters/${encodeURIComponent(model.slug)}/model?${tq()}`;
+    const fileUrl = rel => `/api/characters/${encodeURIComponent(model.slug)}/file/${String(rel).split("/").map(encodeURIComponent).join("/")}?${tq()}`;
     const canView = /\.(glb|gltf)$/i.test(model.model || "");
     detail.innerHTML = `<h3>${esc(model.name)}</h3><p class="mut">${esc(model.source?.game_title || title || "")}</p>
       <div class="bar"><a class="act" href="${modelUrl}" download="${esc(model.model || model.slug + '.glb')}">Export model</a>
       <label>Assign to <select id="model-slot"><option value="player">Player</option><option value="enemies">Enemies</option></select></label>
-      <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p>`;
+      <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p><div id="model-clips" hidden></div>`;
     if (canView) {
       try {
         GAME_MODELS.module ||= await import("/viz/character-model.js");
         if (revision !== viewRevision || selection !== GAME_MODELS.selection || !preview.isConnected) return;
         preview.innerHTML = "";
-        const viewer = await GAME_MODELS.module.createCharacterViewer(preview, modelUrl);
-        if (revision !== viewRevision || selection !== GAME_MODELS.selection) viewer.dispose(); else GAME_MODELS.viewer = viewer;
+        const viewer = await GAME_MODELS.module.createCharacterViewer(preview, modelUrl, { model: model.model, fileUrl });
+        if (revision !== viewRevision || selection !== GAME_MODELS.selection) viewer.dispose(); else { GAME_MODELS.viewer = viewer; modelClips(model, viewer, fileUrl); }
       } catch (err) { if (revision === viewRevision && selection === GAME_MODELS.selection) preview.innerHTML = `<p class="bad" style="padding:15px">3D preview unavailable: ${esc(err.message)}</p><img style="height:70%;max-width:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; }
-    } else preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`;
+    } else { preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; modelClips(model, null, fileUrl, preview); }
     $("#model-assign").onclick = async e => {
       const status = $("#model-result"); e.currentTarget.disabled = true; status.textContent = "Building replacement…";
       try {
@@ -702,6 +736,21 @@ tabs.GameModels.after = (gid, title) => {
 };
 
 
+// ---------------- model clips (#1384): the entry's animations under the model, played in the viewer ----------------
+// 3D: THREE.AnimationMixer on the viewer's model (+ a sibling <slug>.anims.glb loaded on first use), play / pause /
+// loop / speed / scrubber (viz/clip-player.js). 2D sprite entries: the clip's APNG / WebP loop in the preview, MP4 link.
+function modelClips(model, viewer, fileUrl, preview) {
+  const el = $("#model-clips"); if (!el || !window.GBoxClips) return null;
+  const rows = GBoxClips.list(model, viewer ? viewer.embedded : []);
+  if (!viewer) return GBoxClips.mount(el, rows.filter(r => r.kind === "2d"), { url: fileUrl,
+    sprite: row => { if (preview?.isConnected) preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain;image-rendering:pixelated" src="${fileUrl(row.preview)}" alt="${esc(row.name)}">`; } });
+  let ui = null;
+  const player = GBoxClips.player(viewer.THREE, viewer.holder, st => ui?.render(st));
+  viewer.setPlayer(player);
+  ui = GBoxClips.mount(el, rows.filter(r => r.kind === "3d"), { url: fileUrl, load: async row => ({ player, clip: await viewer.clip(row) }) });
+  return ui;
+}
+
 // ---------------- loading screen (three.js particle ribbon, logo-shaped progress bar, console ticker) ----------------
 const loader = {
   three: null, raf: 0, generation: 0,
@@ -716,8 +765,10 @@ const loader = {
     return this.three;
   },
   frame() {},
-  show(title, sub) {
+  show(title, sub, shot) {                                    // shot: a picture of the game (a session being moved: its last frame)
     this.generation++;
+    const im = $("#ldshot"); if (im) { im.style.display = shot ? "block" : "none"; if (shot) im.src = shot; }
+    const lc = $("#ldcancel"); if (lc?.style) lc.style.display = "";       // a move hides it: the job can't be cancelled midway
     $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
     $("#ldbar").style.height = "0%"; $("#ldpbar").style.width = "2%"; $("#ldpct").textContent = "0%";
     $("#ldcon").innerHTML = "<div>Preparing…</div>"; $("#ldback").style.display = "none";
@@ -958,6 +1009,16 @@ const PNAMES = { arcade: "Arcade (MAME)", arcade_fbneo: "Arcade (FBNeo)", arcade
 const queryParams = (offset) => new URLSearchParams({ q: L.q, platform: L.plats.size ? [...L.plats].join(",") + "," : L.platform, system: L.system,
   offset, limit: L.limit, sort: L.sort, favorites: L.fav, recent: L.recent, local: L.local ? (window.GBOX_LOCAL?.worker || "") : "", letter: L.letter,
   exclude_platforms: CAR.hidden.join(",") });
+// ---- Mods: every modded build the Spark made (viz/mods-gallery.js over GET /api/mods/built; the desktop shell's Mods view too) ----
+// pictures open in the #lbox pop-up; Play launches through the mod cards' @launch path on this PC or the PC picked in the bar
+const MODSG = { ctl: null };
+function modsView() { MODSG.ctl?.stop(); MODSG.ctl = null; return `<div id="modsgallery"></div>`; }
+modsView.after = () => {
+  const focus = MODSG.focus || {}; MODSG.focus = null;      // "Open in Mods page" / "Open request #n" from the game menu
+  MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto", q: focus.q, game: focus.game,
+    url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
+    visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i) });
+};
 async function library() {
   newLibraryPage(); L.jumping = false;
   L.facets = L.facets || await api("/api/catalog/facets");
@@ -1162,6 +1223,7 @@ async function toggleFav(id, btn) {
   btn.textContent = on ? "★" : "☆"; btn.title = on ? "Remove from favorites" : "Add to favorites";
 }
 library.after = () => {
+  GBoxGameMenu.prefetch(gameMenuIO());                       // #1562: the right-click menu has the character library before it's asked
   const rerender = () => { saveLib(); L.offset = 0; const x = $("#car")?.scrollLeft || 0; show("Library").then(() => { const t = $("#car"); if (t) t.scrollLeft = x; }); };
   $("#car").onclick = e => { const it = e.target.closest(".car-item"); if (!it) return; const p = it.dataset.p;
     if (!p) { L.plats.clear(); L.platform = ""; }       // All keeps saved visibility preferences
@@ -1389,7 +1451,7 @@ async function sessionsView(sid, mode) {
   if (!sid) return `<p class="mut">Open a running game to watch and control it, or reopen any game from your history (relaunches its ROM).</p>` +
     table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => `<tr>
       <td><a href="#" onclick='${s.state === "running" ? `show("Sessions",${JSON.stringify(s.session_id)})` : `play(${JSON.stringify(s.game_id)})`};return false'><b>${esc(s.title)}</b></a></td>
-      <td>${s.state === "running" ? '<span class="ok">running</span>' : '<span class="mut">ended</span>'}</td><td>${esc(s.adapter)}</td><td>${s.last_frame_age ?? "–"}s</td>
+      <td>${s.state === "running" ? (s.stopping ? '<span class="mut">stopping…</span>' : '<span class="ok">running</span>') : '<span class="mut">ended</span>'}</td><td>${esc(s.adapter)}</td><td>${s.last_frame_age ?? "–"}s</td>
       <td>${s.state === "running" ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>Open</button>` : ""}
           ${s.game_id ? `<button class="act" onclick='play(${JSON.stringify(s.game_id)})'>Reopen</button>` : ""}</td>
       <td><code class="mut">${esc(s.session_id)}</code></td></tr>`));
@@ -1436,6 +1498,7 @@ async function sessionsView(sid, mode) {
         <button class="act" title="Toggle fast-forward (hold R2 on supported systems)" onclick='sop(${JSON.stringify(sid)},"fast_forward")'>⏩</button>
         <button class="act" onclick='sop(${JSON.stringify(sid)},"save_state")'>Save state</button><button class="act" onclick='sop(${JSON.stringify(sid)},"load_state")'>Load state</button>
         <button class="act" onclick='snap(${JSON.stringify(sid)})'>Snapshot → artifact</button>
+        <button class="act" title="Export the last 30 s to 2 min of play (recorded in the background while the controller is in use)" onclick='ringPopOpen(event, ${JSON.stringify(sid)})'>🎬 Replay</button>
         <button class="act" style="color:var(--bad)" onclick='sop(${JSON.stringify(sid)},"stop_game").then(()=>show("Sessions"))'>Stop</button>
         ${s.state === "running" && window.GBOX_LOCAL?.worker && s.detail?.worker_name !== window.GBOX_LOCAL.worker ? `<button class="act pri" title="Save state there, start the same game (and mod) on this PC, load it, close the other copy: native speed, your GPU, your controller" onclick='moveHere(${JSON.stringify(sid)}, this)'>Move to this PC</button>` : ""}</div>
       <p id="sopres" class="mut"></p></details></div>
@@ -1557,7 +1620,8 @@ async function smartSearchInit(sid) {
 // when the game has run since.
 function examineView(sid, s) {
   const local = !!(s.detail && s.detail.local_window);
-  return `<div class="exam" id="exam" data-sid="${esc(sid)}" data-local="${local ? 1 : 0}">
+  const support = (s.detail && s.detail.scene_capture) || null;      // capability matrix (gbox/scene_support.py)
+  return `<div class="exam" id="exam" data-sid="${esc(sid)}" data-local="${local ? 1 : 0}" data-support="${esc(JSON.stringify(support))}">
     <div class="exv" id="exv"><div class="exhint">drag: orbit · right-drag: pan · wheel: zoom · click: inspect a draw call · double-click: orbit around it</div>
       <div class="exprog" id="exprog"><span id="exmsg">Pausing…</span><i id="exbar"></i></div></div>
     <div class="side">
@@ -1588,6 +1652,10 @@ async function examineAfter(sid) {
   if (worker && !worker.tools.includes("scene_capture")) {
     examineFallback(sid, worker.unavailable?.scene_capture || "This worker does not support 3D frame capture."); return;
   }
+  const support = examineSupport(sid);
+  // relay rows (#971): the moment is captured in a separate capture session, so they go on to the viewer like a
+  // supported session; everything else that can't be captured here shows the live 2D frame with the matrix's reason
+  if (support && support.status !== "supported" && !examineRelay(support) && !EXAM.cache[sid]) { examineFallback(sid, support.reason, support); return; }
   try {
     EXAM.mod = EXAM.mod || await import("/viz/examine3d.js");
   } catch (e) { if (current()) examineFallback(sid, "3D viewer unavailable: " + e.message); return; }
@@ -1618,14 +1686,29 @@ async function examineAfter(sid) {
   }
   else if (c) examineInfo(c);
   if (!current()) return;
-  if (c && !c.stale) { done(); return; }   // same frame: instant
+  if (c && (!c.stale || c.relay)) { done(); return; }   // same frame: instant; a capture-session scene waits for Capture again
   examineCapture(sid, say, done);
 }
-function examineFallback(sid, message) {
+function examineRelay(support) {                            // Capture again runs a capture session at this moment
+  return !!(support && support.relay && support.status === "relaunch_under_capture");
+}
+function examineSupport(sid) {
+  const el = $("#exam");
+  if (!el || el.dataset.sid !== sid) return null;
+  try { return JSON.parse(el.dataset.support || "null"); } catch { return null; }
+}
+function examineFallback(sid, message, support) {
   if (EXAM.sid !== sid || $("#exam")?.dataset.sid !== sid) return;
+  support = support || examineSupport(sid);
   EXAM.viewer?.dispose(); EXAM.viewer = null;
   $("#exv").innerHTML = `<div style="padding:16px"><p>${esc(message)}</p><p class="mut">Live game view. Inspect remains available for this game; a 3D scene requires a supported graphics capture.</p><img style="max-width:100%;max-height:55vh" alt="Live game frame" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}"><p><button class="act pri" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect this game</button><button class="act" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Retry 3D capture</button></p></div>`;
-  if (/without Examine 3D/.test(message)) {
+  if (support && support.status !== "supported") {
+    const label = support.status === "unsupported" ? "2D-only: no 3D capture path for this emulator yet"
+      : examineRelay(support) ? `3D capture runs in a separate capture session (${support.driver || "auto"}) at this moment; your game keeps running`
+      : "Relaunch with Examine 3D on to examine in 3D";
+    $("#exv").firstElementChild.insertAdjacentHTML("afterbegin", `<p class="mut" id="ex_support" data-status="${esc(support.status)}">${esc(label)}</p>`);
+  }
+  if (/without Examine 3D/.test(message) && !(support && support.driver)) {
     $("#exv").insertAdjacentHTML("beforeend", '<button class="act" id="ex_relaunch">Save state and relaunch for 3D capture</button><p class="mut" id="ex_relaunch_msg"></p>');
     $("#ex_relaunch").onclick = () => examineRelaunch(sid).catch(e => { if (EXAM.sid === sid) $("#ex_relaunch_msg").textContent = e.message; });
   }
@@ -1640,15 +1723,18 @@ async function examineCapture(sid, say, done) {
     return;
   }
   let finish; EXAM.busy.set(sid, new Promise(resolve => { finish = resolve; }));
-  say(2, "Pausing the game and capturing the frame…");
+  const relay = examineRelay(examineSupport(sid));
+  say(2, relay ? "Saving this moment for a capture session (your game keeps running)…" : "Pausing the game and capturing the frame…");
   try {
-    let j = await api("/api/jobs", { tool: "scene_capture", input: { session_id: sid } });
+    let j = await api("/api/jobs", { tool: "scene_capture", input: relay ? { session_id: sid, relay: true } : { session_id: sid } });
     while (/queued|running/.test(j.state)) {
       await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id);
       if (current() && j.progress) say(j.progress.pct, j.progress.msg);
     }
     if (j.state !== "succeeded") throw new Error(j.error || j.state);
-    const c = EXAM.cache[sid] = { glb: j.output.glb, summary: j.output.summary, resume: j.output.resume_on_leave !== false, stale: false, shown: null };
+    const cs = j.output.capture_session || null;            // captured in a capture session: the game never paused
+    const c = EXAM.cache[sid] = { glb: j.output.glb, summary: j.output.summary, resume: !cs && j.output.resume_on_leave !== false,
+                                  stale: false, shown: null, relay: !!cs, capture: cs };
     if (current()) { say(96, `Loading ${c.summary.draws_exported} draw calls…`); await examineShow(sid, c); done(); }
   } catch (e) {
     if (!current()) return;
@@ -1679,7 +1765,8 @@ function examineInfo(c) {
     + row("Triangles", s.triangles?.toLocaleString()) + row("Vertices", s.vertices?.toLocaleString()) + row("Textures", s.textures)
     + row("Graphics API", `${s.api} · ${s.mode}`) + row("Field of view", s.fovy_deg && `${s.fovy_deg.toFixed(1)}° (${s.projection_source})`)
     + row("Depth range", s.near != null && `${(+s.near).toPrecision(3)} – ${(+s.far).toPrecision(3)}`)
-    + row("Took", s.timings && `${s.timings.capture_s}s capture + ${s.timings.extract_s}s rebuild`);
+    + row("Took", s.timings && `${s.timings.capture_s}s capture + ${s.timings.extract_s}s rebuild`)
+    + row("Captured in", c.capture && `capture session on ${c.capture.worker} (${c.capture.where}) · ${c.capture.driver} · your game kept running`);
 }
 function examinePicked(info) {
   EXAM.picked = info ? info.name : null;
@@ -1865,7 +1952,9 @@ function followSession(from, to) {                         // keep showing / con
 }
 setInterval(async () => {                                  // a session replaced elsewhere (chat agent, character swap): follow it
   const sid = playing || active?.sid; if (!sid) return;   // not document.hidden: a docked game window makes Chromium call the page hidden
-  const ss = await api("/api/sessions").catch(() => null); if (!ss) return;
+  // #712: while the game runs, the few-KB running list answers; the whole history only once it has ended or been replaced
+  let ss = await api("/api/sessions?include_ended=false").catch(() => null); if (!ss) return;
+  if (!ss.some(x => x.session_id === sid)) { ss = await api("/api/sessions").catch(() => null); if (!ss) return; }
   const s = ss.find(x => x.session_id === sid);
   if (s?.state === "ended" && s.replaced_by) followSession(sid, s.replaced_by);
   else if (cur === "Sessions" && sessionMode === "examine" && s?.state !== "running") {
@@ -1963,6 +2052,20 @@ function modWatch(gid, sid, mods) {                       // re-apply kept patch
   tick(); MODWATCH.t = setInterval(tick, 20000);
 }
 const observerWatch = { timer: null };
+// What each session agent is after, in plain words, so the operator can set it up (goal / now / looking for /
+// you can help / blocked by). The server derives these (session_observers.agent_goals); this only renders them.
+function observerGoalsHtml(r) {
+  const g = r.goals || {}, agents = g.agents || [];
+  if (!agents.length) return '';
+  const line = (label, text, cls) => text ? `<p${cls ? ` class="${cls}"` : ''}><b>${label}</b> ${esc(text)}</p>` : '';
+  const reqs = a => (a.requests || []).length ? `<p><b>Inbox:</b> ${a.requests.map(q =>
+    `#${esc(q.number ?? q.id)} ${esc(q.title)}${q.goal ? ` (${esc(q.goal)})` : ''}`).join('; ')}</p>` : '';
+  const stage = a => a.stage ? ` <span class="mut">stage: ${esc(a.stage)}${(a.stages_verified || []).length ? ` · verified: ${a.stages_verified.map(esc).join(', ')}` : ''}</span>` : '';
+  const last = r.last_look?.answered ? `<small class="mut">Last look on request: ${new Date(r.last_look.answered * 1000).toLocaleTimeString()}</small>` : '';
+  return `<div class="obs-goals">${g.ask ? `<p class="obs-ask"><b>You can help the ${esc(g.ask.name)}:</b> ${esc(g.ask.text)}</p>` : ''}
+    ${agents.map(a => `<div class="obs-agent" data-agent="${esc(a.agent)}"><p><b>${esc(a.name)}</b> <span class="mut">${esc(a.state || '')}</span>${stage(a)}</p>
+      ${line('Goal:', a.goal)}${line('Now:', a.doing)}${line('Looking for:', a.seeking)}${line('You can help:', a.you_can_help)}${line('Blocked by:', a.blocked_by, 'obs-blocked')}${reqs(a)}</div>`).join('')}${last}</div>`;
+}
 function sessionObserverWatch(sid) {
   clearTimeout(observerWatch.timer);
   const element = document.getElementById('session-observers');
@@ -1976,8 +2079,9 @@ function sessionObserverWatch(sid) {
       const latest = r.latest || {}, models = r.models || {}, result = models.result || {};
       const state = r.service_online ? (r.gameplay_state || r.state) : 'Observer service offline';
       const list = (label, values) => values?.length ? `<p><b>${label}</b> ${values.map(esc).join('; ')}</p>` : '';
-      element.innerHTML = `<p><b>${esc(state || 'Waiting')}</b> <button data-observer-toggle>${r.enabled === false ? 'Resume observers' : 'Pause observers'}</button></p>
-        <p>Models: ${esc(models.state || 'Waiting')}${result.collected != null ? ` · ${+result.collected} / ${+result.total} collected` : ''}</p>
+      element.innerHTML = `${observerGoalsHtml(r)}
+        <p class="obs-actions"><b>${esc(state || 'Waiting')}</b> <button data-observer-look title="Tell the observer you set up what an agent is looking for: it takes a fresh frame now (it never sends input)"${r.goals?.look_requested || r.look_requested ? ' disabled' : ''}>${r.goals?.look_requested || r.look_requested ? 'Looking...' : 'Done, look now'}</button> <button data-observer-toggle>${r.enabled === false ? 'Resume observers' : 'Pause observers'}</button></p>
+        <p>Models:${esc(models.state || 'Waiting')}${result.collected != null ? ` · ${+result.collected} / ${+result.total} collected` : ''}</p>
         ${models.request_id ? `<p>Model repair tracked in inbox <code>${esc(models.request_id)}</code></p>` : ''}
         ${r.observation_request_id ? `<p>Observation repair tracked in inbox <code>${esc(r.observation_request_id)}</code></p>` : ''}
         ${latest.summary ? `<p>${esc(latest.summary)}</p><small>${new Date(latest.captured * 1000).toLocaleTimeString()} · ${+r.samples || 0} observations</small>` : '<p>Waiting for the first gameplay observation.</p>'}
@@ -1989,6 +2093,12 @@ function sessionObserverWatch(sid) {
       element.querySelector('[data-observer-toggle]').onclick = async e => {
         e.currentTarget.disabled = true;
         try { await api(path, { enabled: r.enabled === false }); await tick(); }
+        catch (error) { element.textContent = error.message; }
+      };
+      const look = element.querySelector('[data-observer-look]');
+      if (look) look.onclick = async e => {                 // the operator set up what an agent is seeking: sample now
+        e.currentTarget.disabled = true; e.currentTarget.textContent = 'Looking...';
+        try { await api(path + '/look', {}); await tick(); }
         catch (error) { element.textContent = error.message; }
       };
     } catch (error) { if (element.isConnected) element.textContent = 'Session observers unavailable: ' + error.message; }
@@ -2164,6 +2274,7 @@ async function charsInit() {
       <span class="mut">${esc(c.source?.game_title || "")}</span>
       ${c.variant_of ? `<span class="mut" style="font-size:11px" title="${esc((c.props || []).map(p => p.node + " on " + p.bone).join(", "))}">↳ variant of ${esc(c.variant?.base_name || c.variant_of)}${c.props?.length ? ` · ${c.props.length} prop${c.props.length > 1 ? "s" : ""}` : ""}${stale(c) ? ' · <b class="warn">needs rebuild</b>' : ""}</span>` : ""}
       <button class="act" data-use>Use in this game</button>
+      <button class="act" data-rt title="Retarget editor: adjust how ${esc(c.name)} is scaled and proportioned into this game (saved per slot; the next build uses it)">✎ Retarget…</button>
       <button class="act" data-bl title="Copy to Blender's clipboard: Ctrl+V in a Blender 3D viewport pastes it, textured">⧉ Blender</button>
       <label class="mut" style="font-size:11px;display:flex;align-items:center;gap:3px" title="Head size: builds '${esc(c.name)} – big head' as a variant and uses it in this game (SM64, RE4 GC)">Head
         <input type="range" data-head min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
@@ -2199,6 +2310,8 @@ async function charsInit() {
     if (bl) { const box = bl.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i"); bl.disabled = true; st.textContent = "copying to Blender…";
       try { const r = await blenderCopy({ character: c.slug }, sid); st.textContent = "✓ " + blenderCopyNote(r); }
       catch (err) { st.textContent = "✗ " + err.message; } finally { bl.disabled = false; } return; }
+    const rt = e.target.closest("button[data-rt]");
+    if (rt) { const c = cs[+rt.closest(".chc").dataset.i]; retargetOpen({ slug: c.slug, name: c.name, gid, slot: "player" }); return; }
     const b = e.target.closest("button[data-use]"); if (!b) return;
     try { const u = JSON.parse(localStorage.getItem("gbox_char_used") || "{}"); u[b.closest(".chc").dataset.slug] = Date.now(); localStorage.setItem("gbox_char_used", JSON.stringify(u)); } catch {}
     const box = b.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i");
@@ -2401,97 +2514,36 @@ function bootBadge(gid) {
 }
 document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div>');
 dragAnywhere($("#gmenu"));
-document.addEventListener("contextmenu", async e => {
+// #1562: the menu opens in the frame of the right-click from what the page already has (clients/web/viz/game-menu.js:
+// cached character library + this game's cached mods; sections waiting on the server say "loading…" and fill in)
+const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}?${tq()}`, worker: window.GBOX_LOCAL?.worker || "",
+  boot: { get: bootGet, set: bootSet }, keep: { get: modKeepGet, set: modKeep }, badge: bootBadge,
+  place: (el, x, y) => fitMenu(el, x, y), refit: el => { if (el._fitXY) refitMenu(el); },
+  models: (gid, title) => show("GameModels", gid, title), cover: (gid, card, btn) => attachCover(gid, document.querySelector(`.card[data-gid="${CSS.escape(gid)}"]`) || card, btn),   // the card on screen now
+  cast: (gid, title) => castSwapOpen(gid, title),
+  play: (gid, go) => play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined),
+  // "Special builds ▸" (gbox/special_builds.py): launch a build (this PC / a PC / saved moment / debugger) through the
+  // usual launch + loader, open it or its request in the Mods page, rebuilds followed in the process pop-up
+  launch: (gid, x) => play(gid, x.node === "auto" ? undefined : x.node, !!x.debug, { disc: x.mod, slot: x.slot === "" || x.slot == null ? "" : String(x.slot), character: "" }),
+  openMods: (gid, b) => { MODSG.focus = { q: b?.name || "", game: gid }; show("Mods"); },
+  openRequest: t => { MODSG.focus = { q: "#" + t.number, game: "" }; show("Mods"); },
+  progress: jobs => window.GBOX_PROCESS_POPUP?.sync(jobs) });
+document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".card[data-gid]"); if (!c) return; e.preventDefault();
-  const gid = c.dataset.gid, el = $("#gmenu"), b = bootGet(gid);
-  el.style.left = e.clientX + "px"; el.style.top = e.clientY + "px";
-  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><p class="mut">loading mods…</p>`; el.classList.add("on"); fitMenu(el, e.clientX, e.clientY);
-  const [mods, chars] = await Promise.all([api(`/api/mods?game_id=${encodeURIComponent(gid)}`).catch(() => []),
-    api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => [])]);
-  const kept = modKeepGet(gid), dmod = m => m.calls.find(x => x.tool === "@launch").input.mod;
-  const readyTarget = ch => (ch.ready || []).find(t => (t.slot || "player") === "player") || (ch.ready || [])[0];
-  const readyMod = ch => readyTarget(ch)?.mod;
-  const ready = chars.filter(readyMod), other = chars.filter(ch => !readyMod(ch) && !ch.variant_of);
-  const charMods = new Set(ready.map(readyMod));
-  const disc = mods.filter(m => m.calls.some(x => x.tool === "@launch") && !charMods.has(dmod(m))), patch = mods.filter(m => !m.calls.some(x => x.tool === "@launch"));
-  // Roster mods contain several characters. Choose a character by slug and
-  // keep its boot image separately, so selecting Sonic cannot select Tikal.
-  const selectedChar = ready.find(ch => ch.slug === b.character && readyMod(ch) === b.disc)
-    || (!b.character && b.disc ? ready.find(ch => readyMod(ch) === b.disc) : null);
-  const tile = (slug, name, img, mod = "", targetSlot = "") => `<label title="${esc(name)}"><input type="radio" name="gmc" value="${esc(slug)}" data-disc="${esc(mod)}" data-character-slot="${esc(targetSlot)}" ${selectedChar?.slug === slug || (!slug && !b.disc) ? "checked" : ""}>${img ? `<img loading="lazy" alt="" src="${img}?${tq()}">` : `<span class="nf">🎮</span>`}${esc(name)}</label>`;
-  const characterNote = (name, targetSlot) => targetSlot && targetSlot !== "player"
-    ? `${name} selected: choose ${targetSlot} on the game's character selection screen.` : `${name} selected: every Play of this game uses them.`;
-  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><button class="act" data-models type="button" style="width:100%;margin-bottom:8px">Models · view, assign, export</button>
-    <button class="act" data-cover type="button" style="width:100%;margin-bottom:8px">Attach game cover (online)</button>
-    <div class="gms"><b>Play as (saved: every Play uses it)</b>
-      <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(ch.slug, ch.name, ch.preview_url, readyMod(ch), readyTarget(ch)?.slot)).join("")}</div>
-      ${other.length ? `<label><select id="gmbuild"><option value="">+ another character for this game…</option>${other.map(ch => `<option value="${esc(ch.slug)}">${esc(ch.name)}${ch.source?.game_title ? " · " + esc(ch.source.game_title) : ""}</option>`).join("")}</select></label>` : ""}
-      <div id="gmst" class="mut" style="font-size:11px">${selectedChar ? esc(characterNote(selectedChar.name, readyTarget(selectedChar)?.slot)) : ""}</div></div>
-    <div class="gms"><b>Boot with a mod</b>
-      <label><input type="radio" name="gmd" value="" ${!b.disc ? "checked" : ""}> Original game</label>
-      ${disc.map(m => `<label><input type="radio" name="gmd" value="${esc(dmod(m))}" ${b.disc === dmod(m) ? "checked" : ""}> ${esc(m.title)}</label>`).join("")}
-      ${patch.length ? `<div class="mut" style="margin-top:6px">Switched on once the game is running:</div>` +
-        patch.map(m => `<label><input type="checkbox" data-keep="${esc(m.id)}" ${kept.includes(m.id) ? "checked" : ""}> ${esc(m.title)}</label>`).join("") : ""}
-      ${!mods.length ? '<p class="mut">No mods for this game yet: ask gBox for one while playing.</p>' : ""}</div>
-    <div class="gms"><b>Model collection</b>
-      <button id="gmcollect" type="button">Extract this game's character models in the background</button>
-      <div id="gmcollectstatus" class="mut" style="font-size:11px;margin-top:5px">Runs on Spark; track progress in Tasks. The game does not need to run here.</div></div>
-    <div class="gms"><b>Start from</b><label>Save state <select id="gmslot"><option value="">the beginning (no state)</option>
-      ${[...Array(10).keys()].map(i => `<option value="${i}" ${String(b.slot) === String(i) ? "selected" : ""}>slot ${i}</option>`).join("")}</select></label>
-      <div class="mut" style="font-size:11px">F2 saves to the current slot in game; Shift/Ctrl+F2 change the slot.</div></div>
-    <div class="gmb"><button class="act pri" data-go="">▶ Play</button>${window.GBOX_LOCAL?.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
-      <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`;
-  const save = (disc = bootGet(gid).disc, character = bootGet(gid).character) => {
-    bootSet(gid, { disc, character, slot: $("#gmslot").value }); bootBadge(gid);
-  };
-  el.onchange = async ev => {
-    const t = ev.target;
-    if (t.dataset.keep) { modKeep(gid, t.dataset.keep, t.checked); bootBadge(gid); return; }
-    if (t.name === "gmc") {
-      el.querySelectorAll('input[name="gmd"]').forEach(r => { r.checked = r.value === t.dataset.disc; });
-      $("#gmst").textContent = t.value ? characterNote(ready.find(ch => ch.slug === t.value)?.name || t.closest("label").textContent, t.dataset.characterSlot) : "Original game selected.";
-      return save(t.dataset.disc, t.value);
-    }
-    if (t.name === "gmd") {
-      el.querySelectorAll('input[name="gmc"]').forEach(r => { r.checked = !r.value && !t.value; });
-      $("#gmst").textContent = t.value ? "Boot mod selected." : "Original game selected.";
-      return save(t.value, "");
-    }
-    if (t.id === "gmslot") return save();
-    if (t.id === "gmbuild" && t.value) {                       // build this character for this game (no launch), then select it
-      const ch = other.find(x => x.slug === t.value), st = $("#gmst"); t.disabled = true;
-      st.textContent = `building ${ch.name} for this game…`;
-      try {
-        let j = await api("/api/jobs", { tool: "characters", input: { op: "use", character: ch.slug, game_id: gid, launch: false }, require_os: "linux" });
-        while (/queued|running/.test(j.state)) { await new Promise(z => setTimeout(z, 1200)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) st.textContent = j.progress.msg; }
-        const r = j.output?.result || {};
-        if (j.state !== "succeeded") throw new Error(j.error || j.state);
-        if (!r.mod || /missing|overlay|failed/.test(r.status || "")) { st.textContent = r.message || `No in-game swap for this game yet${r.request?.number ? ` (request #${r.request.number})` : ""}: while playing, "Use in this game" draws ${ch.name} over the player instead.`; return; }
-        el.querySelector(".gmch").insertAdjacentHTML("beforeend", tile(ch.slug, ch.name, ch.preview_url, r.mod, r.slot || "player"));
-        el.querySelectorAll('input[name="gmc"]').forEach(x => { x.checked = x.value === ch.slug; });
-        el.querySelectorAll('input[name="gmd"]').forEach(x => { x.checked = x.value === r.mod; });
-        t.querySelector(`option[value="${CSS.escape(ch.slug)}"]`)?.remove();
-        save(r.mod, ch.slug); st.textContent = `✓ ${characterNote(ch.name, r.slot || "player")}`;
-      } catch (err) { st.textContent = "✗ " + err.message.slice(0, 160); }
-      finally { t.disabled = false; t.value = ""; }
-    }
-  };
-  el.querySelector("#gmcollect").onclick = async ev => {
-    const button = ev.currentTarget, status = el.querySelector("#gmcollectstatus");
-    button.disabled = true; status.textContent = "Submitting extraction task…";
-    try {
-      const job = await api("/api/jobs", { tool: "characters", input: { op: "collect", game_id: gid }, require_os: "linux" });
-      status.textContent = `Task ${job.id} queued on Spark. Open Tasks for progress, logs, and cancellation.`;
-    } catch (err) {
-      button.disabled = false; status.textContent = `Could not queue extraction: ${err.message}`;
-    }
-  };
-  el.onclick = ev => { if (ev.target.closest("[data-models]")) { el.classList.remove("on"); show("GameModels", gid, c.dataset.title); return; }
-    if (ev.target.closest("[data-cover]")) { attachCover(gid, c, ev.target.closest("[data-cover]")); return; }
-    const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");
-    const go = g.dataset.go; play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined); };
+  GBoxGameMenu.open(gameMenuIO(), { gid: c.dataset.gid, title: c.dataset.title, card: c, x: e.clientX, y: e.clientY });
 });
 document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $("#gmenu")?.classList.remove("on"); });
+// "Replace entire cast with…" (gbox/cast_swap.py via clients/web/viz/cast-swap.js): source + mapping -> the planned
+// slot -> donor rows (editable) -> one mod built on the Spark; the built mod then shows under "Boot with a mod"
+function castSwapOpen(gid, title) {
+  return GBoxCastSwap.open(document, { api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, retarget: retargetOpen }, { gid, title });
+}
+// Retarget editor (gbox/retarget_profile.py via clients/web/viz/retarget-editor.js): how a collection character is
+// scaled and proportioned into one game's slot; opened from the cast plan rows (✎) and the character cards (✎ Retarget…)
+function retargetOpen(o) {
+  return GBoxRetargetEditor.open(document, { api, url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, drag: dragAnywhere,
+    confirm: s => confirm(s) }, o);
+}
 async function attachCover(gid, card, btn, url = "") {        // #1067: fetch box art online (or a chosen picture) and keep it for this game
   btn.disabled = true; btn.textContent = url ? "Fetching that picture…" : "Looking for the cover online…";
   try {
@@ -2504,6 +2556,17 @@ async function attachCover(gid, card, btn, url = "") {        // #1067: fetch bo
     if (u && u.trim()) return attachCover(gid, card, btn, u.trim());
     btn.textContent = "Attach game cover (online)";
   }
+}
+// move a running game to another computer behind its loading screen (#1501): the last frame, each step, the progress
+async function moveSession(sid, to, label) {
+  // the session's mod must come along: an unknown session (list not loaded) would relaunch it without its mod
+  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
+  if (!s) { loader.show("Can't move this game", ""); $("#ldcancel").style.display = $("#ldlocal").style.display = "none";
+    loader.fail("The session list did not load, so the move would lose the game's mod. The game keeps running where it was; try again."); return; }
+  return GBoxSessionMove.run({ api, show: (t, sub, shot) => { loader.show(t, sub, shot); $("#ldcancel").style.display = $("#ldlocal").style.display = "none"; }, progress: (p, m) => loader.progress(p, m), fail: m => loader.fail(m),
+      frame: id => `/api/sessions/${encodeURIComponent(id)}/frame.jpg?${tq()}&t=${Date.now()}`,
+      done: async nsid => { if (active?.sid === sid) { active.sid = nsid; pip(); } setTimeout(() => loader.hide(), 500); trayTick(); show("Sessions", nsid); } },
+    { sid, to, label, title: s.title || "", mod: s.mod || "" });
 }
 async function moveHere(sid, btn) {                        // pull the game onto THIS PC (from the Spark or another PC)
   btn.disabled = true; btn.textContent = "Moving… (save, launch here, load)";
@@ -2522,15 +2585,20 @@ async function runJob(body) {
   while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id); }
   return j;
 }
+// Stop (#1504): the game leaves the screen at once and the worker kills the emulator's process tree (about a second,
+// the job's result says how long). The session record turns "ended" only when the worker confirms the kill; if it
+// can't, the session comes back on screen with the reason.
 async function hardStop(sid, btn) {
   if (btn) btn.disabled = true;
+  const wasActive = active?.sid === sid;
+  if (wasActive) { active = null; pip(); }
+  show("Library");
   try {
     const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
     if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error(j.error || 'Emulator stop was not confirmed');
-    if (active?.sid === sid) { active = null; pip(); }
-    show("Library");
   } catch (error) {
     if (btn) btn.title = 'Could not stop game: ' + error.message;
+    await show("Sessions", sid);
     const status = $('#sopres'); if (status) status.textContent = 'Could not stop game: ' + error.message;
   } finally { if (btn) btn.disabled = false; }
 }
@@ -2641,11 +2709,174 @@ async function sop(sid, op) {
     if (state === (op === 'pause')) { const el = $("#sopres"); if (el) el.textContent = `${op}: already ${state ? 'paused' : 'running'}`; return; }
     if (state !== undefined) return sessionPause.control.toggle();   // live session channel, no job queue (#1123)
   }
+  if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }   // at once, not after the kill (#1504)
   const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });
-  if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }
   const el = $("#sopres"); if (el) el.textContent = `${op}: ${j.state} ${j.error || JSON.stringify(j.output?.result || "")}`;
   if ((op === 'pause' || op === 'resume') && sessionPause?.sid === sid) sessionPause.control.refresh().catch(() => {});
 }
+
+// ---------------- replay ring pop-up (#1084) ----------------
+// The session panel's 🎬 Replay button (the desktop app: right-click the record icon): the running game's background gameplay ring (gbox/ring_record.py records while the controller is in use).
+// The bar shows what the ring holds, oldest on the left and the newest moment on the right; In / Out pick the range,
+// the size goal sets the bitrate, Export makes an MP4 through the `recording` worker tool, which the pop-up offers
+// (open / save) or attaches to a request or a mod card. The same code runs in the desktop shell and the web client;
+// RING_IO is the only difference (how a job runs, how the API answers, the artifact URL, toasts).
+const RING_IO = {
+  job: async input => {                                    // the session panel's game, through the job queue
+    if (!RING.sid) throw new Error("no game running");
+    const j = await runJob({ tool: "recording", input: { session_id: RING.sid, ...input }, require_worker: RING.sid.split("-")[0] });
+    if (j.state !== "succeeded") throw new Error(j.error || j.state);
+    return j.output;
+  },
+  api: async (url, body) => { try { return { ok: true, data: await api(url, body) }; } catch (e) { return { ok: false, error: e.message }; } },
+  url: async sha => `/api/artifacts/${sha}?${tq()}`, opts: null,
+  toast: t => { const el = document.querySelector("#sopres"); if (el) el.textContent = t; } };
+const RING = { el: null, st: null, at: 0, inS: 30, outS: 0, mb: 20, clip: null, busy: false, sid: "", touched: false, targets: [] };
+function ringClamp(inS, outS, span) {                      // seconds back from the newest moment; in is the older edge
+  span = Math.max(0, +span || 0);
+  let i = Math.min(span, Math.max(0, +inS || 0)), o = Math.min(span, Math.max(0, +outS || 0));
+  if (o > i) [i, o] = [o, i];
+  const r = v => Math.round(v * 10) / 10;
+  return { inS: r(i), outS: r(o), seconds: r(i - o) };
+}
+function ringKbps(mb, seconds) {                           // ring_record.video_kbps: the file size goal as a bitrate
+  return Math.max(150, Math.floor((+mb || 0) * 8 * 1048576 * 0.97 / Math.max(0.5, +seconds || 0) / 1000));
+}
+function ringFmt(s) { s = Math.max(0, Math.round(+s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+function ringStateText(st) {
+  if (!st) return "";
+  if (st.state === "recording") return `● recording · stops ${st.stops_in_s ?? "?"} s after the controller goes idle`;
+  if (st.state === "waiting") return "waiting for the controller (records while it is in use)";
+  if (st.state === "retrying") return `capture paused: ${st.error || "retrying"}`;
+  if (st.state === "off") return "background recording is off for this game";
+  if (st.state === "ended") return "the game ended: its last minutes can still be exported";
+  return st.reason || st.state || "";
+}
+function ringTimelineHTML(st, inS, outS) {
+  const span = +st?.span_s || 0;
+  if (!span) return `<div class="rg-empty mut">Nothing recorded yet — the ring records while your controller is in use.</div>`;
+  const x = ago => (100 * (1 - ago / span)).toFixed(2);   // left = oldest, right = the newest moment
+  const segs = (st.segments || []).map(([a, b]) => `<i style="left:${x(a)}%;width:${(100 * (a - b) / span).toFixed(2)}%"></i>`).join("");
+  return `<div class="rg-bar">${segs}<b class="rg-sel" style="left:${x(inS)}%;width:${(100 * (inS - outS) / span).toFixed(2)}%"></b></div>
+    <div class="rg-ticks mut"><span>−${ringFmt(span)}</span><span>newest</span></div>`;
+}
+function ringPopEl() {
+  if (RING.el) return RING.el;
+  const m = document.createElement("div"); m.id = "ringpop"; m.setAttribute("role", "dialog"); m.setAttribute("aria-label", "Replay the last minutes");
+  m.innerHTML = `<div class="rg-head"><b>Replay</b><span class="mut" id="rg-game"></span><button class="rg-x" data-rg="close" title="Close">✕</button></div>
+    <div class="mut" id="rg-state"></div><div id="rg-tl"></div>
+    <label>In <input id="rg-in" type="range" min="0" max="120" step="0.5" aria-label="Clip start"><output id="rg-in-v"></output></label>
+    <label>Out <input id="rg-out" type="range" min="0" max="120" step="0.5" aria-label="Clip end"><output id="rg-out-v"></output></label>
+    <div class="rg-presets"><button class="act" data-last="30">Last 30 s</button><button class="act" data-last="60">1 min</button><button class="act" data-last="120">2 min</button></div>
+    <label>Size goal <span><input id="rg-mb" type="number" min="1" max="200" step="1" value="20" aria-label="File size goal in megabytes"> MB</span></label>
+    <div class="mut" id="rg-est"></div>
+    <div class="rg-row"><button class="act pri" data-rg="export">Export clip</button><button class="act" data-rg="refresh" title="Refresh what the ring holds">↻</button></div>
+    <div id="rg-clip"></div>
+    <div class="mut rg-foot"><span id="rg-enc"></span>${RING_IO.opts ? ` <button class="act" data-rg="opts" title="Size limit and compression of the app recording (the ▾ button)">App recording…</button>` : ""}</div>`;
+  document.body.append(m); dragAnywhere(m);
+  m.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.last) { RING.inS = +b.dataset.last; RING.outS = 0; RING.touched = true; ringRender(); return; }
+    const a = b.dataset.rg;
+    if (a === "close") m.classList.remove("on");
+    else if (a === "refresh") ringRefresh();
+    else if (a === "export") ringExport();
+    else if (a === "opts" && RING_IO.opts) { m.classList.remove("on"); RING_IO.opts(e); }
+    else if (a === "open") ringOpenClip();
+    else if (a === "attach") ringAttach();
+  });
+  m.addEventListener("input", e => {
+    const span = +RING.st?.span_s || 0;
+    if (e.target.id === "rg-in") RING.inS = span - +e.target.value;
+    else if (e.target.id === "rg-out") RING.outS = span - +e.target.value;
+    else if (e.target.id === "rg-mb") RING.mb = Math.max(1, Math.min(200, +e.target.value || 1));
+    else return;
+    RING.touched = true; ringRender();
+  });
+  RING.el = m; return m;
+}
+function ringRender() {
+  const m = RING.el; if (!m) return;
+  const st = RING.st, span = +st?.span_s || 0;
+  const c = ringClamp(RING.inS, RING.outS, span); RING.inS = c.inS; RING.outS = c.outS;
+  m.querySelector("#rg-game").textContent = st?.title ? ` · ${st.title}` : "";
+  m.querySelector("#rg-state").textContent = ringStateText(st);
+  m.querySelector("#rg-tl").innerHTML = ringTimelineHTML(st, c.inS, c.outS);
+  for (const [id, ago] of [["rg-in", c.inS], ["rg-out", c.outS]]) {
+    const r = m.querySelector("#" + id); r.max = String(span); r.value = String(span - ago); r.disabled = !span;
+    m.querySelector(`#${id}-v`).value = span ? (ago ? `−${ringFmt(ago)}` : "newest") : "–";
+  }
+  m.querySelector("#rg-mb").value = String(RING.mb);
+  const kbps = Math.min(ringKbps(RING.mb, c.seconds), st?.bitrate_kbps || Infinity);
+  m.querySelector("#rg-est").textContent = c.seconds ? `${ringFmt(c.seconds)} clip · about ${kbps.toLocaleString("en-US")} kb/s` : "Pick a range on the bar";
+  m.querySelector("#rg-enc").textContent = st?.encoder_note ? `Encoder: ${st.encoder_note}` : "";
+  const ex = m.querySelector('[data-rg="export"]'); ex.disabled = RING.busy || c.seconds < 0.5; ex.textContent = RING.busy ? "Exporting…" : "Export clip";
+  const cl = m.querySelector("#rg-clip");
+  if (!RING.clip) { cl.innerHTML = ""; return; }
+  const k = RING.clip;
+  cl.innerHTML = `<div class="rg-done">✓ ${esc(k.name)} · ${(k.bytes / 1048576).toFixed(1)} MB · ${ringFmt(k.seconds)} · ${k.height}p ${esc(k.encoder)}${k.fits ? "" : " (over the goal)"}</div>
+    <div class="rg-row"><button class="act" data-rg="open">Open / save</button>
+    <select id="rg-target" aria-label="Attach the clip to"><option value="">Attach to…</option>${(RING.targets || []).map(t =>
+      `<option value="${esc(t.v)}">${esc(t.label)}</option>`).join("")}</select><button class="act" data-rg="attach">Attach</button></div>`;
+}
+async function ringRefresh() {
+  try {
+    const r = await RING_IO.job({ op: "status" });
+    RING.st = r.status || null; RING.at = Date.now(); RING.sid = r.session_id || RING.sid;
+    if (!RING.touched) { RING.inS = Math.min(30, +RING.st?.span_s || 0); RING.outS = 0; }
+  } catch (e) { RING.st = { state: "unsupported", reason: /no game running/.test(e.message) ? "Start a game first" : e.message, span_s: 0, segments: [] }; }
+  ringRender();
+}
+function ringPopOpen(e, sid) {
+  const m = ringPopEl();
+  RING.touched = false; RING.clip = null; if (sid !== undefined) RING.sid = sid || "";
+  m.classList.add("on"); $("#recmenu")?.classList.remove("on");
+  ringRender(); fitMenu(m, e.clientX - 20, e.clientY + 14, 8, 40);
+  return ringRefresh();
+}
+async function ringTargets() {                              // open requests and this game's mod cards
+  const out = [];
+  try {
+    const rq = await RING_IO.api("/api/requests?status=open,in_progress,blocked");
+    for (const q of (rq.ok ? rq.data : []).slice(0, 25)) out.push({ v: "req:" + q.id, label: `Request #${q.number ?? "?"} · ${(q.title || "").slice(0, 50)}` });
+  } catch {}
+  try {
+    const md = await RING_IO.api("/api/mods");
+    for (const m of (md.ok ? md.data : []).filter(m => m.game_id && m.game_id === RING.st?.game_id).slice(0, 25))
+      out.push({ v: "mod:" + m.id, label: `Mod card · ${(m.title || "").slice(0, 50)}` });
+  } catch {}
+  return out;
+}
+async function ringExport() {
+  const c = ringClamp(RING.inS, RING.outS, +RING.st?.span_s || 0);
+  if (RING.busy || c.seconds < 0.5) return;
+  RING.busy = true; RING.clip = null; ringRender();
+  RING_IO.toast(`🎬 Exporting ${ringFmt(c.seconds)} of gameplay (≤ ${RING.mb} MB)…`, 60000);
+  try {
+    const r = await RING_IO.job({ op: "export", in_s: c.inS, out_s: c.outS, target_mb: RING.mb });
+    RING.clip = r.clip; RING.st = r.status || RING.st; RING.targets = await ringTargets();
+    RING_IO.toast(`🎬 Clip ready: ${(r.clip.bytes / 1048576).toFixed(1)} MB`, 6000);
+  } catch (e) { RING_IO.toast("Export failed: " + e.message, 9000); }
+  finally { RING.busy = false; ringRender(); }
+}
+async function ringOpenClip() {
+  if (RING.clip) window.open(await RING_IO.url(RING.clip.sha256));
+}
+async function ringAttach() {
+  const k = RING.clip, v = RING.el?.querySelector("#rg-target")?.value || "";
+  if (!k || !v) { RING_IO.toast("Pick a request or a mod card to attach the clip to"); return; }
+  const [kind, id] = [v.slice(0, 3), v.slice(4)];
+  let r;
+  if (kind === "req") r = await RING_IO.api(`/api/requests/${encodeURIComponent(id)}/messages`, { author: "operator",
+    text: `Replay clip: ${ringFmt(k.seconds)} of gameplay (${(k.bytes / 1048576).toFixed(1)} MB)`, attachments: [{ sha256: k.sha256, name: k.name, type: "video/mp4" }] });
+  else {
+    const md = await RING_IO.api("/api/mods"), mod = (md.ok ? md.data : []).find(m => m.id === id);
+    if (!mod) { RING_IO.toast("That mod card is gone"); return; }
+    r = await RING_IO.api("/api/mods", { title: mod.title, calls: mod.calls || [], game_id: mod.game_id, video: k.sha256 });
+  }
+  RING_IO.toast(r?.ok ? (kind === "req" ? "📎 Clip attached to the request" : "🎬 Clip set as the mod card's video") : `Attach failed: ${r?.error || "no answer"}`, 6000);
+}
+// ---------------- end replay ring pop-up ----------------
 
 // ---------------- controllers (Gamepad API; Xbox / XInput "standard" layout by default) ----------------
 // RetroPad is positional (SNES layout): Xbox A (bottom) = RetroPad B, Xbox B (right) = A, X (left) = Y, Y (top) = X,
@@ -2723,7 +2954,8 @@ const held = {};             // device -> {buttons, player, sid}; releases belon
 const padQueues = new Map();
 function sendPadEvents(sid, events) {
   if (!sid || !events.length) return;
-  const pending = (padQueues.get(sid) || Promise.resolve()).then(() => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events })).catch(() => {});
+  // 5 s cap: one stalled request must not hold every later press of this session behind it
+  const pending = (padQueues.get(sid) || Promise.resolve()).then(() => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events }, undefined, 5000)).catch(() => {});
   padQueues.set(sid, pending); pending.finally(() => { if (padQueues.get(sid) === pending) padQueues.delete(sid); });
 }
 function releasePad(key) {
@@ -2733,13 +2965,41 @@ function releasePad(key) {
 }
 let remap = null;            // {key, step, base} while a guided remap is running
 let padTopology = "";
-function padLoop() {
-  const list = pads(), seen = new Set(list.map(padKey));
+// The desktop app reads Xbox pads natively (XInput, `gbox.gamepads --watch`) whatever window has focus and pushes every
+// change into this page (gboxNativePad). Chromium's Gamepad API here only samples while this page is visible and its
+// Xbox reading can go quiet while the app window is not focused, so in the desktop app the native reading drives
+// Player 1 of a streamed session (#1532). One reading per pad, one sender: the browser's copy of that pad is skipped.
+const NATIVE_PAD_FRESH = 1000;
+function nativeGamepad() {   // the desktop's XInput state as a "standard" Gamepad, or null (plain browser / stale)
+  const live = window.GBOX_NATIVE_PAD_STATE, list = live?.pads || [];
+  if (!live || !(Date.now() - live.at <= NATIVE_PAD_FRESH)) return null;
+  const p = list.find(x => x.slot === 0) || list[0];
+  if (!p) return null;
+  const bit = mask => ({ pressed: !!(p.buttons & mask), value: p.buttons & mask ? 1 : 0 });
+  const trigger = v => ({ pressed: v > 127, value: (v || 0) / 255 });
+  const axis = v => Math.max(-1, Math.min(1, (v || 0) / 32767));
+  return { id: `Xbox controller (XInput slot ${p.slot ?? 0})`, index: -1 - (p.slot || 0), mapping: "standard", connected: true, native: true,
+    buttons: [bit(0x1000), bit(0x2000), bit(0x4000), bit(0x8000), bit(0x0100), bit(0x0200), trigger(p.lt), trigger(p.rt),
+              bit(0x0020), bit(0x0010), bit(0x0040), bit(0x0080), bit(0x0001), bit(0x0002), bit(0x0004), bit(0x0008), bit(0x0400)],
+    axes: [axis(p.lx), -axis(p.ly), axis(p.rx), -axis(p.ry)] };
+}
+function padSources(list) {  // [gamepad, config] per controller; the native Xbox reading stands in for an Xbox Player 1
+  const native = remap ? null : nativeGamepad(), chosen = selectedPad(list);
+  const useNative = !!native && primaryPad !== "none" && (!primaryPad?.id || xboxPad(primaryPad));
+  const out = list.filter(gp => !(useNative && chosen && padKey(gp) === padKey(chosen))).map(gp => [gp, cfgFor(gp)]);
+  if (useNative) out.push([native, { ...(chosen ? padBase(chosen) : { map: { ...XBOX_DEFAULT }, stick: true }), player: 1 }]);
+  return out;
+}
+let padTarget = null;        // desktop mini window: the streamed session it shows while this view is hidden
+const padSid = () => padTarget || (active && !active.local ? active.sid : null);   // native games read the pad themselves
+function padTick() {
+  const list = pads(), sources = padSources(list), seen = new Set(sources.map(([gp]) => padKey(gp)));
   for (const key of Object.keys(held)) if (!seen.has(key)) releasePad(key);
-  const topology = JSON.stringify([list.map(gp => [padKey(gp), gp.mapping]), primaryPad]);
+  const topology = JSON.stringify([sources.map(([gp]) => [padKey(gp), gp.mapping]), primaryPad]);
   if (topology !== padTopology) { padTopology = topology; padStatus(); }
-  for (const gp of list) {
-    const c = cfgFor(gp), key = padKey(gp), sid = active && !active.local ? active.sid : null;   // native games read the pad themselves
+  const sid = padSid();
+  for (const [gp, c] of sources) {
+    const key = padKey(gp);
     if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
     if (remap && remap.key === key) { remapStep(gp); continue; }
     const now = c.player && sid ? pressed(gp, c) : new Set(), prev = held[key]?.buttons || new Set(), events = [];
@@ -2748,13 +3008,25 @@ function padLoop() {
     held[key] = { buttons:now, player:c.player, sid };
     sendPadEvents(sid, events);
   }
+}
+function padLoop() {         // a failing pass must never end controller input for the rest of the page's life
+  try { padTick(); } catch (e) { console.warn("controller loop:", e); }
   requestAnimationFrame(padLoop);
 }
 requestAnimationFrame(padLoop);
+// Desktop app pushes: each native pad change is applied at once (a hidden page gets no animation frames).
+window.gboxNativePad = state => {
+  window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: Array.isArray(state) ? state : [] };
+  try { padTick(); } catch (e) { console.warn("controller push:", e); }
+};
+window.gboxPadTarget = sid => {
+  padTarget = sid || null;
+  try { padTick(); } catch (e) { console.warn("controller target:", e); }
+};
 addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 function padStatus() {
-  const el = $("#padstat"), gp = selectedPad();
+  const el = $("#padstat"), gp = selectedPad() || (primaryPad == null ? nativeGamepad() : null);
   if (el) { el.textContent = "🎮 " + (gp ? gp.id + " → Player 1" : primaryPad === "none" ? "Controller forwarding off" : primaryPad?.id ? primaryPad.id + " · disconnected" : nativeXboxSlots().length ? `Xbox controller (XInput ${nativeXboxSlots()[0]}) connected` : "Connect Xbox controller") + " · Change…";
     el.title = "Choose the controller for Player 1"; }
   const picker = $("#padpicker"); if (picker && !picker.hidden) picker.innerHTML = padPickerHTML();
@@ -3392,6 +3664,7 @@ function re6View(v) {
 window.gboxViewReady = HASH.get("session") ? show("Sessions", HASH.get("session"), HASH.get("mode") || undefined) : show(cur);
 </script>
 <script src="/viz/asset-sidebar.js"></script>
+<script src="/viz/clip-player.js"></script>
 <script>
 if (!new URLSearchParams(location.search).has('embedded')) {
   document.body.classList.add('assets-browser');
@@ -3412,6 +3685,7 @@ if (!new URLSearchParams(location.search).has('embedded')) {
   window.addEventListener('pagehide', () => window.GBOX_PROCESS_POPUP.dispose(), { once: true });
 }
 </script>
+<script src="/viz/stream-watchdog.js"></script>
 <script src="/viz/emulation-issue.js"></script>
 <script src="/viz/session-hover-preview.js"></script>
 </body>

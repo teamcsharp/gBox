@@ -34,6 +34,9 @@ session ends; rings of a previous worker run are swept at the next launch).
 - RetroArch (`checkpoint_state = "path"`) saves to the operator's current slot. The ring copies the operator's slot
   file aside before its first save and puts it back after every one of its saves and loads, so what is on disk in
   the slot stays the operator's own save; the operator's manual save / load / session swap work as before.
+  When the slot changes (an operator or emulation-issue save to slot 15, #1488), the ring follows it: the old slot
+  file is given back, the new one (`RetroArchAdapter.checkpoint_target()`) is protected before the ring's next save,
+  and a save that lands in an unprotected slot never receives another slot's backup.
 - Dolphin (`checkpoint_state = "dir"`) saves the ring in its slot 8 (`Shift+F8` / `F8`), found as the fresh file
   under `User/StateSaves`; the operator keeps slot 1.
 - Holding the chord freezes the ring; stepping walks from the newest entry to the oldest. Letting go drops the
@@ -48,6 +51,7 @@ session ends; rings of a previous worker run are swept at the next launch).
 [rewind]
 checkpoints = true     # false: emulators without a native rewind get none (RetroArch's own is unaffected)
 interval_s = 2.0       # seconds between checkpoints
+max_duty = 0.05        # frame-rate budget: slow saves stretch the interval
 depth = 60             # checkpoints kept per session
 max_mb = 2048          # disk cap per session's ring
 repeat_s = 0.6         # holding Select+L2: one older checkpoint per repeat
@@ -71,6 +75,14 @@ gBox never intercepts the pad; it watches it.
 - A checkpoint is a full save state: RetroArch's Flycast states are about 27 MB, PCSX2 and Dolphin states tens of
   MB. At the default interval that is one such write every 2 s and up to `max_mb` on the local disk; a brief hitch
   per save is possible on the heaviest cores (raise `interval_s` for those).
+- Frame-rate budget (#1489): the ring times every save and stretches its interval so saving takes at most
+  `max_duty` (default 0.05 = 5 %) of play time, capped at one checkpoint per 120 s; a 1 s save means one checkpoint
+  every 20 s. Flycast (Dreamcast / NAOMI / Atomiswave) has a 20 s floor regardless: a full Flycast state every 2 s
+  dropped PSO to 2 fps. The live status reports `effective_interval_s` and `last_save_s`. `max_duty = 0` disables the pacing.
+  Measured on the Spark (RetroArch Flycast, PSO Ver. 2 title screen, GL on the GB10): each checkpoint stalls the
+  game 0.38-0.57 s for a ~9 MB state, so the old 2 s pacing spent up to 29 % of play time saving; at the 20 s floor
+  it is 2.9 %. `tests/test_rewind_flycast_live.py` repeats that check on a real disc (opt-in:
+  `GBOX_FLYCAST_LIVE_ROM=<disc.chd>`; it writes only to a scratch runtime).
 - Step granularity is the interval (2 s), not frames; the first press goes back up to 2 s.
 - Dolphin's hotkeys are sent as keystrokes into its window (`win_send_keys`), which needs gBox to be the active
   window and moves keyboard focus to the game. Dolphin checkpoints are therefore taken only while the operator's pad

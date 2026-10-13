@@ -91,6 +91,13 @@ PACKS = {
     "df3_dimedian": ("PSO/BM_ENE_DF3_DIMEDIAN_A.BML", "Dimenian family (probable)"),
 }
 
+# Body size against a hunter (1.0), for the whole-cast swap's by_role mapping (gbox.cast_swap): big donors on the big
+# enemies. Rough figures from the families' in-game look; the pack names themselves are still unverified.
+SIZES = {"booma": 1.15, "gobooma": 1.15, "gigobooma": 1.4, "bm2_moja": 1.6, "bm3_fly": 0.6, "bm5_wolf": 0.8,
+         "lappy": 0.7, "grass": 1.5, "cgrass": 1.5, "dubchik": 1.0, "gyaranzo": 1.6, "me1_mb": 0.7, "me3_shinowa": 1.1,
+         "re2_flower": 0.9, "re4_sorcerer": 1.2, "re7_berura": 1.7, "re8_b_beast": 1.3, "df2_bringer": 1.6,
+         "df3_dimedian": 1.1}
+
 
 # ---------------------------------------------------------------- slots and rosters (no disc needed)
 
@@ -153,13 +160,14 @@ def slots(disc=None) -> list[dict]:
     """The enemy slots this writer offers (characters op=collect "slots", the cast menu): the Booma family with
     verified skeleton maps, then the other packs (bodies listed when the disc is given, roles inferred)."""
     out = [{"slot": f"enemy:{k}", "name": e["name"], "kind": "enemy", "file": e["file"], "entry": e["entry"],
-            "roles": "mapped", "family": e["family"], "area": e["area"], "writer": "gbox.pso_player"} for k, e in ENEMIES.items()]
+            "roles": "mapped", "family": e["family"], "area": e["area"], "size": SIZES.get(k, 1.0),
+            "writer": "gbox.pso_player"} for k, e in ENEMIES.items()]
     out.append({"slot": "enemy:boomas", "name": "Booma, Gobooma and Gigobooma", "kind": "enemy", "file": BOOMA_PACK,
                 "entries": [ENEMIES[k]["entry"] for k in FAMILIES["boomas"]], "roles": "mapped", "family": "boomas",
-                "area": "Forest", "writer": "gbox.pso_player"})
+                "area": "Forest", "aggregate": True, "writer": "gbox.pso_player"})
     for key, (path, label) in PACKS.items():
         row = {"slot": f"enemy:{key}", "name": label, "kind": "enemy", "file": path, "roles": "inferred", "family": key,
-               "writer": "gbox.pso_player"}
+               "size": SIZES.get(key, 1.0), "writer": "gbox.pso_player"}
         if disc is not None and path in disc.files:
             row["entries"] = pack_bodies(disc.read(path))
         out.append(row)
@@ -469,11 +477,15 @@ def _noise(size: int = 128):
     return Image.fromarray(rng.integers(0, 256, (size, size, 3), np.uint8), "RGB")
 
 
-def build_swap(disc, model: Path, roles: dict, work: Path, name: str, enemies: list[dict], blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+def build_swap(disc, model: Path | None, roles: dict | None, work: Path, name: str, enemies: list[dict],
+               blender: str | None = None, progress=lambda p, m: None, scale: dict | None = None,
+               on_error=None) -> dict:
     """disc: a gbox.gdrom.GDRom (or anything with .files {path: (lba, size)} and .read(path)); enemies: resolve_slot().
+    Pairs: an enemy with "donor" {model, roles, name, scale} gets that character instead of model / roles (the
+    whole-cast swap: every enemy its own donor, every pack rebuilt once). on_error(key, exc): report a failing enemy
+    (or every enemy of a pack that no longer fits) and keep building the rest; without it the first failure raises.
     -> {files {disc path: new pack bytes}, report {enemy key: fit report}, rigged {key: gltf}, atlas {key: PIL}}."""
-    from . import ninja_swap as NS
+    from . import fit_events as FE, ninja_swap as NS
     work = Path(work)
     files, report, rigged, atlases = {}, {}, {}, {}
     by_file: dict[str, list[dict]] = {}
@@ -481,57 +493,96 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, enemies: l
         by_file.setdefault(en["file"], []).append(en)
     for path, group in by_file.items():
         if path not in disc.files:
-            raise ValueError(f"{path} is not on this disc")
+            err = ValueError(f"{path} is not on this disc")
+            if on_error is None:
+                raise err
+            for en in group:
+                on_error(en["key"], err)
+            continue
         bml = disc.read(path)
         room = room_bytes(disc, path)
         done_nj: dict[str, bytes] = {}
         done_tex: dict[str, bytes] = {}
+        built: list[dict] = []
         for en in group:
             key, entry_name = en["key"], en["entry"].lower()
-            raw, pvm = _unpack(_entry(bml, entry_name))
-            if pvm is None:
-                raise ValueError(f"{path}:{entry_name} has no texture archive")
-            nj = ninja.NJ(raw)
-            _prefix, data = _njcm(raw)
-            nodes = ninja.tree_nodes(data, 0)
-            er, ec, eh = en.get("roles"), en.get("collapse"), en.get("head_nodes")
-            inferred = er is None
-            if inferred:
-                er, ec, eh = infer_roles(nj, nodes)
-                if "hip" not in er or "chest" not in er:
-                    raise ValueError(f"{entry_name}: can't infer body roles from its skeleton ({len(nodes)} nodes)")
-            tgt = enemy_target(nj, er, ec, eh)
-            progress(15, f"Fitting {name} to {en['name']} ({len(nodes)} nodes, {len(nj.vbuf)} vertices)")
-            noise = _noise()
-            tex_try = [(False, body_pvm(pvm, noise, False)), (True, body_pvm(pvm, noise, True))]
-            mode = {"small": None}
+            donor = en.get("donor") or {}
+            d_model = Path(donor["model"]) if donor.get("model") else model
+            d_roles, d_name = donor.get("roles", roles), donor.get("name", name)
+            d_scale = donor.get("scale", scale) if donor else scale
+            if donor.get("slot"):                         # the whole-cast swap: this enemy's fit is its slot's model
+                FE.model(donor["slot"])
+            try:
+                raw, pvm = _unpack(_entry(bml, entry_name))
+                if pvm is None:
+                    raise ValueError(f"{path}:{entry_name} has no texture archive")
+                if d_model is None or not d_roles:
+                    raise ValueError(f"{key}: no donor model / body roles")
+                nj = ninja.NJ(raw)
+                _prefix, data = _njcm(raw)
+                nodes = ninja.tree_nodes(data, 0)
+                er, ec, eh = en.get("roles"), en.get("collapse"), en.get("head_nodes")
+                inferred = er is None
+                if inferred:
+                    er, ec, eh = infer_roles(nj, nodes)
+                    if "hip" not in er or "chest" not in er:
+                        raise ValueError(f"{entry_name}: can't infer body roles from its skeleton ({len(nodes)} nodes)")
+                tgt = enemy_target(nj, er, ec, eh)
+                progress(15, f"Fitting {d_name} to {en['name']} ({len(nodes)} nodes, {len(nj.vbuf)} vertices)")
+                noise = _noise()
+                tex_try = [(False, body_pvm(pvm, noise, False)), (True, body_pvm(pvm, noise, True))]
+                mode = {"small": None}
 
-            def encode(geo, _raw=raw, _entry=entry_name, _tex_try=tex_try, _mode=mode):
-                body = body_nj(_raw, geo)
-                size = 0
-                for small, tex in _tex_try:
-                    b2 = bml_build(bml, done_nj | {_entry: body}, done_tex | {_entry: tex})
-                    size = len(b2)
-                    if size <= room:
-                        _mode["small"] = small
-                        return body
-                raise ValueError(f"{path}: {size} bytes, {room} available")
-            r = NS.fit(model, roles, tgt, work / key, name, PSO_BUDGETS, blender, encode, 128, scale, progress)
+                def encode(geo, _raw=raw, _entry=entry_name, _tex_try=tex_try, _mode=mode):
+                    body = body_nj(_raw, geo)
+                    size = 0
+                    for small, tex in _tex_try:
+                        b2 = bml_build(bml, done_nj | {_entry: body}, done_tex | {_entry: tex})
+                        size = len(b2)
+                        if size <= room:
+                            _mode["small"] = small
+                            return body
+                    raise ValueError(f"{path}: {size} bytes, {room} available")
+                r = NS.fit(d_model, d_roles, tgt, work / key, d_name, PSO_BUDGETS, blender, encode, 128, d_scale, progress)
+            except Exception as e:                         # noqa: BLE001 - re-raised unless the caller collects failures
+                if on_error is None:
+                    raise
+                on_error(key, e)
+                continue
             done_nj[entry_name] = r["data"]
             done_tex[entry_name] = body_pvm(pvm, r["atlas"], bool(mode["small"]))
             rigged[key], atlases[key] = r["rigged"], r["atlas"]
+            built.append(en)
             report[key] = r["report"] | {"enemy": en["name"], "file": path, "entry": entry_name, "nodes_total": len(nodes),
                                          "roles": {k: int(v) for k, v in tgt["roles"].items()},
                                          "collapse": {int(k): int(v) for k, v in tgt["collapse"].items()},
                                          "virtual": {k: int(v) for k, v in tgt["virtual"].items()},
                                          "roles_inferred": inferred, "textures_small": bool(mode["small"]),
-                                         "body_bytes": len(r["data"]), "pvm_bytes": len(done_tex[entry_name])}
+                                         "body_bytes": len(r["data"]), "pvm_bytes": len(done_tex[entry_name]),
+                                         "donor": d_name}
+        if not built:
+            continue
         b2 = bml_build(bml, done_nj, done_tex)
         if len(b2) > room:
-            raise ValueError(f"{path}: {len(b2)} bytes, {room} available (the atlas packed worse than its stand-in)")
+            err = ValueError(f"{path}: {len(b2)} bytes, {room} available (the atlas packed worse than its stand-in)")
+            if on_error is None:
+                raise err
+            for en in built:
+                report.pop(en["key"], None)
+                rigged.pop(en["key"], None)
+                atlases.pop(en["key"], None)
+                on_error(en["key"], err)
+            continue
         files[path] = b2
-        for en in group:
+        for en in built:
             report[en["key"]]["pack_bytes"], report[en["key"]]["pack_room"] = len(b2), room
+            if (en.get("donor") or {}).get("slot"):       # the pack as rebuilt: body + atlas, in its own room
+                FE.model(en["donor"]["slot"])
+                r = report[en["key"]]
+                FE.stage("encode", data={"enemy": en["name"], "bytes": r["body_bytes"] + r["pvm_bytes"],
+                                         "body_bytes": r["body_bytes"], "pvm_bytes": r["pvm_bytes"],
+                                         "pack": path, "pack_bytes": len(b2), "room": room, "relocated": False,
+                                         "triangles": r.get("triangles"), "textures_small": r["textures_small"]})
     return {"files": files, "report": report, "rigged": rigged, "atlas": atlases}
 
 
@@ -573,6 +624,101 @@ def build_mod(cfg, meta: dict, game: dict, gdi: Path, enemies: list[dict], progr
         "report": json.loads(json.dumps(b["report"], default=str))}))
     shutil.rmtree(work, ignore_errors=True)
     return {"mod": name, "image": img.name, "report": b["report"]}
+
+
+def build_cast(cfg, game: dict, gdi: Path, pairs: list[tuple[str, dict]], name: str, progress=lambda p, m: None,
+               root: Path | None = None) -> dict:
+    """The whole-cast swap's PSO pairs path (gbox.cast_swap): [(slot, donor meta)] -> ONE mod with every enemy pack
+    rebuilt with its own donors (build_swap pairs) and one GD-ROM written (patch_gdi; never the original).
+    -> {mod, image, slots {slot: {status built|partial|failed, reason?, enemies}}, detail {enemy key: fit report}}."""
+    import json
+    import shutil
+    import time
+    from . import characters as C, filemods, fit_events as FE
+    from .gdrom import GDRom, patch_gdi
+    root = Path(root or C.library_root(cfg))
+    disc = GDRom(gdi)
+    FE.plan([(slot, meta["slug"], f"{meta.get('name') or meta['slug']} -> {slot.split(':', 1)[-1]}")
+             for slot, meta in pairs])
+    slots: dict[str, dict] = {}
+    todo: list[dict] = []
+    owner: dict[str, str] = {}
+    for slot, meta in pairs:
+        if not pso_player.is_enemy_slot(slot):
+            slots[slot] = {"status": "failed", "reason": "the PSO player-class writer builds files the game doesn't draw "
+                                                         "yet (pso_player.use: not_working)"}
+            continue
+        try:
+            try:
+                enemies = resolve_slot(slot)
+            except ValueError:
+                enemies = resolve_slot(slot, disc)
+        except ValueError as e:
+            slots[slot] = {"status": "failed", "reason": str(e)}
+            continue
+        roles = (meta.get("rig") or {}).get("roles") or {}
+        if "hip" not in roles:
+            slots[slot] = {"status": "failed", "reason": f"{meta.get('name')} has no body roles (rig.roles)"}
+            continue
+        keys = []
+        for en in enemies:
+            if en["key"] in owner:
+                continue                                   # an earlier slot already took this body
+            owner[en["key"]] = slot
+            keys.append(en["key"])
+            todo.append(dict(en, donor={"model": root / meta["slug"] / meta["model"], "roles": roles,
+                                        "name": meta.get("name") or meta["slug"], "scale": (meta.get("rig") or {}).get("scale"),
+                                        "slug": meta["slug"], "slot": slot}))
+        slots[slot] = {"status": "pending", "enemies": keys} if keys else \
+            {"status": "failed", "reason": "every body of this slot is assigned by another slot"}
+    errors: dict[str, str] = {}
+    work = Path(cfg.cache) / "characters_build" / "cast" / name
+    shutil.rmtree(work, ignore_errors=True)
+    b = {"files": {}, "report": {}, "rigged": {}, "atlas": {}}
+    if todo:
+        progress(5, f"Fitting {len(todo)} enemy bodies ({len({e['file'] for e in todo})} packs)")
+        b = build_swap(disc, None, None, work, name, todo, C._blender(cfg), progress,
+                       on_error=lambda key, e: errors.__setitem__(key, str(e)[:400] or type(e).__name__))
+    for slot, row in slots.items():
+        if row["status"] != "pending":
+            continue
+        bad = {k: errors[k] for k in row["enemies"] if k in errors}
+        good = [k for k in row["enemies"] if k in b["report"]]
+        row["status"] = "built" if good and not bad else "partial" if good else "failed"
+        if bad:
+            row["reason"] = "; ".join(f"{k}: {v}" for k, v in bad.items())
+    out = {"mod": None, "slots": slots, "detail": json.loads(json.dumps(b["report"], default=str))}
+    if not b["files"]:
+        return out
+    for key, path in b["rigged"].items():                  # the fitted model next to each donor (Blender / previews)
+        en = next(e for e in todo if e["key"] == key)
+        tdir = root / en["donor"]["slug"] / "targets"
+        try:
+            tdir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, tdir / f"pso_{key}.gltf")
+            b["atlas"][key].save(tdir / f"pso_{key}_atlas.png")
+        except OSError as e:
+            progress(90, f"fitted copy of {key} skipped: {e}")
+    d = filemods.mod_dir(cfg, game["game_id"], name)
+    if d.exists():
+        shutil.rmtree(d)
+    img = patch_gdi(gdi, d, name, b["files"], progress)
+    (d / ".gbox-mod.json").write_text(json.dumps({
+        "name": name, "game_id": game["game_id"], "image": img.name, "built": time.time(), "files": sorted(b["files"]),
+        "writer": "gbox.pso_enemy.build_cast", "verified": False,
+        "enemies": {k: owner[k] for k in b["report"]}, "report": out["detail"]}))
+    shutil.rmtree(work, ignore_errors=True)
+    for slot, row in slots.items():                       # each slot's packs, written into the new GD-ROM
+        FE.model(slot)
+        if row["status"] in ("built", "partial"):
+            keys = [k for k in row["enemies"] if k in b["report"]]
+            FE.stage("write", data={"mod": name, "image": img.name, "enemies": len(keys),
+                                    "packs": sorted({b["report"][k]["file"] for k in keys}),
+                                    "pack_bytes": sum({b["report"][k]["file"]: b["report"][k]["pack_bytes"]
+                                                       for k in keys}.values())})
+        else:
+            FE.stage("write", "failed", {"reason": str(row.get("reason") or "not built")[:150]})
+    return out | {"mod": name, "image": img.name}
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:

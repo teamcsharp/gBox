@@ -781,11 +781,12 @@ def _cluster(pos, nrm, tris, k: int):
     return npos, nnrm, T
 
 
-def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
+def encode_shape(template: bytes, pos, nrm, tris, name: str = "", chunks=None) -> bytes:
     """Rewrite one .shp's arrays + display lists, keeping the header, material records (the DL pointer pairs get
     the new packed offsets/sizes), texture names and tail. pos/nrm are in the template's local frame and are
     quantised with the template's own scale/frac, so the game animates the part exactly as before. Returns a blob
-    of the same size."""
+    of the same size. chunks: the triangles per material record (display-list order; gbox.crazy_taxi_swap deals
+    them by region); default: `tris` split evenly over the records."""
     if len(template) < 0x120 or struct.unpack_from(">f", template, 0)[0] != 1.0:
         raise ValueError(f"{name}: not a Crazy Taxi .shp")
     scale = struct.unpack_from(">3f", template, 0x2C)
@@ -838,7 +839,14 @@ def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
     if not pairs:
         raise ValueError(f"{name}: no per-material display-list pointers found")
     out[dl_base:tex_off] = b"\x00" * (tex_off - dl_base)
-    chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    if chunks is None:
+        chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    else:
+        chunks = [[tuple(map(int, t)) for t in c] for c in chunks]
+        if len(chunks) != len(pairs):
+            raise ValueError(f"{name}: {len(chunks)} triangle chunks for {len(pairs)} material records")
+        if any(i < 0 or i >= V for c in chunks for t in c for i in t):
+            raise ValueError(f"{name}: a chunk triangle indexes past {V} vertices")
     cur = dl_base
     for k in range(len(pairs)):
         block = _encode_dl(chunks[k] if k < len(chunks) else [], attrs, V)
@@ -873,12 +881,14 @@ def donor_segments(glb, part_roles: dict, joint_roles: dict) -> dict:
             p = parent[p]
         jrole[j] = r
     P, N, O, T = [], [], [], []
-    for pr in rig["prims"]:
+    base = 0                                                  # each primitive's indices start at its first vertex
+    for pr in rig["prims"]:                                   # in the concatenated arrays (one prim per material)
         own = np.asarray(pr["owner"], int)
         P.append(np.asarray(pr["pos"], float))
         N.append(np.asarray(pr["nrm"], float))
         O.append(own)
-        T.append(np.asarray(pr["tris"], int) + len(P[-1]) - len(pr["pos"]))
+        T.append(np.asarray(pr["tris"], int).reshape(-1, 3) + base)
+        base += len(P[-1])
     P = np.concatenate(P) if P else np.zeros((0, 3))
     N = np.concatenate(N) if N else np.zeros((0, 3))
     O = np.concatenate(O) if O else np.zeros(0, int)
@@ -1007,55 +1017,7 @@ def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: st
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
-    """characters op=use for Crazy Taxi (GC): slot=player -> Axel the driver (MP_YH_plyrA_*: 15 rigid parts plus
-    his hand-pose, head and sl_ LOD variants) rebuilt from the library character (mod ct_<slug>)."""
-    from . import characters as C
-    from . import filemods
-    gid = game["game_id"]
-    name = f"ct_{meta['slug']}"
-    have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
-    built = None
-    if inp.rebuild or not have:
-        joint_roles = dict(meta.get("rig", {}).get("roles") or {})
-        roles = resolve_roles(joint_roles)
-        if C.library_root(ctx.config).is_dir():
-            from .gcdisc import GCDisc
-            glb = C._local_or_fetch(ctx, meta, meta["model"])
-            iso = C._gc_iso(ctx, game)
-            bank = GCDisc(iso).read(BANK)
-            src_sha = hashlib.sha256(bank).hexdigest()[:16]
-            new_bank, stats = swap_driver(bank, glb, roles, joint_roles, "A", progress=ctx.progress)
-            built = build_mod(ctx.config, game, iso, new_bank, name, f"Crazy Taxi {meta['slug']}.iso",
-                              progress=ctx.progress)
-            built["stats"] = stats
-            C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
-                   json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
-                         "notes": f"replaces Axel the driver (MP_YH_plyrA_*: {len(stats)} .shp parts; source bank "
-                                  f"{src_sha}…); his skeleton/animations stay"})
-        else:
-            cp = next((w["id"] for w in C._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"
-                       and w.get("online")), None)
-            ctx.progress(10, "Building the Crazy Taxi mod on the control-plane node (the collection lives there)")
-            j = C._job(ctx, "characters", {"op": "use", "character": meta["slug"], "game_id": gid,
-                                           "rebuild": inp.rebuild, "launch": False, "slot": inp.slot}, cp, 3600)
-            r = (j.get("output") or {}).get("result") or {}
-            if j.get("state") != "succeeded" or r.get("status") not in ("built", "ready"):
-                return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
-            built = r.get("build")
-    res = {"mod": name, "build": built,
-           "replaces": "Axel the driver (MP_YH_plyrA_* .shp parts, all LODs and hand poses)"}
-    if not inp.launch:
-        return res | {"status": "built" if built else "ready"}
-    ctx.progress(90, f"Launching Crazy Taxi with {meta['name']} (mod {name})")
-    lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": name, "node": "idle"}})
-    t0 = time.time()
-    while lj.get("state") in ("queued", "running") and time.time() - t0 < 1800:
-        time.sleep(2)
-        lj = C._api(ctx, "GET", f"/api/jobs/{lj['id']}")
-    ok = lj.get("state") == "succeeded"
-    launch = {"job": lj.get("id"), "state": lj.get("state"),
-              "session_id": (lj.get("output") or {}).get("session_id"), "error": lj.get("error")}
-    return res | {"status": ("built+launched" if built else "launched") if ok else "launch " + str(lj.get("state")),
-                  "launch": launch,
-                  "message": f"Crazy Taxi is running with {meta['name']} as the driver (mod {name})." if ok else
-                  f"Mod {name} is {'built' if built else 'ready'} but the launch {lj.get('state')}: {lj.get('error')}"}
+    """characters op=use for Crazy Taxi (GC): gbox.crazy_taxi_swap.use (slots player | driver:<name> | drivers |
+    pedestrian(s) | passenger(s)). Kept so older callers of gbox.crazy_taxi.use reach the same writer."""
+    from . import crazy_taxi_swap
+    return crazy_taxi_swap.use(ctx, meta, game, inp)

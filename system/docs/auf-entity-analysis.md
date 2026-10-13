@@ -171,3 +171,40 @@ Dump or read these ranges with `rpc op=read_memory` (or Dolphin's Dump MEM1 to `
 
 Acceptance for this stage (ticket): the entity under the drop point named correctly in three different
 moments, with the frames and boxes attached. Record each confirmed address with `re_dossier op=record`.
+
+## 6. Live verification, run 1 (2026-10-12, agent-owned Dolphin on JAYBUILTFINALE)
+
+Session `a53d30ad98bc465a-529604745fdb42dd` (launch job `529604745fdb42dd`, Dolphin Windows, debugger port
+55189). With no input sent, the boot ran into a multiplayer bot match (attract/demo: Bond in `bondtux` vs three
+bots), which gives a live entity table without driving the menus. Reads went through `read_memory` jobs;
+the full MEM1 dumps are `23e95745d74f47a7` (sha256 `1dfbb3e4...6c21`, unpaused) and, under `session_op pause`,
+moments 1 and 2 (`mom1.raw`, `mom2.raw`; frames taken before and after each dump are byte-identical, so the
+frame and RAM describe the same instant).
+
+Confirmed against the running game (static value -> live value):
+
+| read | live |
+| --- | --- |
+| `0x80000000` | `GW7E69` (rev 1) |
+| `g_entities` `0x804E38B0` / `gGameEntities` `0x804E3520` | both `0x80972B00` (same pointer, as predicted) |
+| `globals.num_entities` `0x803F0210` / `gNumGameEntities` `0x804E3528` | `0x8B` / `0x8A` (139 / 138: the renderer copy lags one spawn) |
+| `gClientArr` / `gClientSize` / `gNumClients` / `currentPlayer` | `0x80A02780` / `0x860` / `4` / `0` |
+| `g_entities[0]` | `DeathmatchPlayer`, model `models/mp_player_bondtux.men`, `is_viewer` |
+| records 1..3 | `Bot` x3: `mp_player_griffen.men`, `mp_player_bloch.men`, `mp_player_rigdiver.men` (the menu's bot list said RIG DIVER) |
+| records 108/111/114/117 | `ClonePlayer`, one per player, same model and origin as its owner |
+| client 0 eye (+0x74) | player origin + 80.0 in z in both moments (view height), so the eye field is right |
+| client 0 fov (+0x2D0) | 60.0 (MP default; not the 90 assumed for single player) |
+
+Angle convention, confirmed: moment 2 has pitch `+28.59` and the frame shows the camera looking down at the
+floor, so **positive pitch = looking down** (Quake), as the probe assumes. Moment 1 was a death camera
+(roll 122 deg, black frame): skip moments whose client roll is not ~0.
+
+Not yet confirmed: no bot was on screen in either paused moment (both projected boxes sit on the top-right
+edge, partly outside the frame, and the frame shows no character there), so the fov axis and the box fit
+still need a moment with a visible bot. `session_op pause` on this Dolphin build also opened the game's own
+PAUSE MENU overlay, and the session ended (`state=ended`) before moment 3; the next run should pause through
+the emulator (Dolphin debugger port) rather than the in-game Start path, or take frame+dump unpaused at
+under one second apart.
+
+Probe note from the live table: every player/bot has a `ClonePlayer` twin at the same origin. `under_point`
+must collapse a ClonePlayer onto its owner (same model + origin) so the pick names the Bot, not the clone.

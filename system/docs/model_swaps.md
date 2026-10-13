@@ -21,6 +21,7 @@ Licensing: every source model here (Nintendo, SEGA, Capcom, Rockstar) is copyrig
 | Any library character as Aya (all 5 outfits, field + battle) | Parasite Eve (PS1) | **Done in gBox** | `characters op=use` builds `pe_<character>` (gbox/pe_swap.py, section 10). Mario checked on the Spark. |
 | Any library character as Cloud (field + battle models) | Final Fantasy VII (PS1) | **Done in gBox** | `characters op=use` builds `ff7_<character>` (gbox/ff7_swap.py, section 11). Mario checked on the Spark. |
 | Which games can rip / reimport, and the fallback | every studied game | **Done in gBox** | `characters op=coverage` (section 12). No writer: overlay + a gap report. |
+| The entire cast of one game as another game's cast ("everyone in PSO as wrestlers") | PSO enemies, DOA2, Def Jam, SmackDown! 2, No Mercy, JGR, Crazy Taxi, Vice City PC | **Done in gBox** | `characters op=cast_swap` / right-click a game -> "Replace entire cast with..." builds one mod (docs/cast_swap.md). |
 | Leon/Mario/Sonic as player | RE4 2005 UHD (PC) | **Medium** | JADERLINK BIN/TPL tools: SMD/OBJ in, `.bin/.tpl` back into `pl*.udas`. Leon-replacement mods exist. |
 | Mario/Sonic as Chris/Jill/Leon/Claire | RE1/2/3 classic PC | **Hard** | RE2MV/RE3MV with OBJ per body part. Very low-poly rigid segments, mostly manual. |
 | OoT characters as PSO Boomas (keeping Booma animations) | PSO BB (PC) | **Hard** | pso-blender (jtuu) `.xj` export into the Booma `.bml` via PSOBMLExtract. The model must match the Booma bone hierarchy. |
@@ -147,6 +148,9 @@ table contents, struct layouts and enums.
   `object_kw1` with Fado's head from `object_fa`. A group gets the same data at the same offset in every object of the
   group, and the constant head list is branched to the new head.
 - Writing the object changes every actor that uses it (all Kokiri boys).
+
+**The whole cast** (`characters op=cast_swap target_game=<OoT>`): 85 catalogued slots (Link, NPCs, sages, enemies,
+bosses) rebuilt in one ROM, with object growth shared out per room. See `docs/oot_cast.md`.
 
 **Extract / swap / play as**
 - `op=extract` takes a picture point or a name (Link, Saria, a Kokiri girl, En_Sa, object_sa). It writes the
@@ -611,6 +615,7 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 |---|---|---|---|---|
 | Final Fantasy VII (Discs 1-3) | psx | ff7 (battle LZS + field BCX) | cloud (+2 variants), ff7_tifa, 9 field models (7 with roles); not ripped: battle models of Barret, Aerith, Red XIII, Cid, Yuffie, Vincent, Cait Sith (no auto roles yet) | **gbox.ff7_swap**: player (Cloud field + battle) |
 | Parasite Eve (Discs 1-2) | psx | parasite_eve | aya + all 4 other outfits | **gbox.pe_swap**: player (Aya, all outfits) |
+| Parasite Eve II (Discs 1-2) | psx | pe2 | pe2_aya + 4 other outfits (19 bones, roles) | **gbox.pe2_swap**: player (Aya, every outfit file); built + read back, in-game check pending (docs/pe2_pipeline.md) |
 | Super Mario 64 (USA / Europe) | n64 | sm64 | mario | **gbox.sm64_swap**: player |
 | Resident Evil 4 (GC, Discs 1-2) / Wii Edition | gamecube / wii | re4gc | leon | **build_re4 (+ re4wii)**: player (+ enemies via re4gc_enemies by hand) |
 | Resident Evil 6 | xbox360 | re6_models | re6_leon, re6_helena | **gbox.re6_tool**: player, enemies, enemy:<family> |
@@ -619,11 +624,13 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 | WWF No Mercy (USA; EU Rev A reader) / WCW Revenge / World Tour | n64 | nomercy | nm_kane, nm_mankind, nm_steve_austin, nm_the_rock, nm_undertaker; not ripped: the rest of the roster | **gbox.aki_wrestling**: any wrestler, player |
 | GTA: Liberty City Stories | ps2 | gta_lcs | lcs_toni, toni_cipriani; not ripped: the other Toni outfits | **gbox.gta_stories_models**: player (every outfit) |
 | Sonic Adventure 2 | dreamcast | sa2 | sonic, sa2_shadow, sa2_tails, sa2_knuckles, sa2_rouge, sa2_dr_eggman, sa2_amy_rose, sa2_metal_sonic, sa2_tikal, sa2_chaos_0 | **gbox.sa2_chars**: player (Sonic; section 13) |
-| Phantasy Star Online Ver. 2 | dreamcast | pso | hucast; not ripped: the other 8 classes | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
+| Clay Fighter: Sculptor's Cut (USA) | n64 | clayfighter (sprite sheets of the 16 fighters) | (op=collect) | **gbox.clayfighter_swap**: fighter:<name>, player (sprites donor re-draws every frame; docs/clayfighter_swap.md) |
+| Dead Or Alive ++ (Japan, arcade) | arcade | doapp (11 fighters x 4 costumes, rigged, roles) | (op=collect) | **gbox.doapp_swap**: <fighter>[:<costume>], player (all 44 costume models; rebuilt doapp set, read back through the game's skeleton build; MAME check pending, docs/doapp_pipeline.md) |
+| Phantasy Star Online Ver. 2 | dreamcast | pso | all 9 classes (hucast, pso_humar ... pso_fonewearl), each with body roles | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
 | Super Smash Bros. Melee | gamecube | melee | 27 fighters | overlay only |
 | Shenmue (Disc 1) | dreamcast | shenmue | ryo | overlay only |
 | Resident Evil 4 (2023, Steam) | pc | re4r | re4r_leon, re4r_ashley (no roles) | overlay only |
-| RE Director's Cut, RE3 Nemesis, Parasite Eve II, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
+| RE Director's Cut, RE3 Nemesis, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
 
 Regenerate it with `characters op=coverage`: `char_coverage.markdown()` prints this table from the live data. A new
 writer counts as soon as its module has `GAME_IDS` + `use()`, is listed in `char_coverage.WRITERS`, and
@@ -680,6 +687,31 @@ Findings from the Spark (offline mode only, never online):
   for the body file / why it needs the weighted chunks (Ghidra on 1ST_READ.BIN: the player model loader), or write the
   character as weighted chunks in the original slots (0x2C vertices with Ninja-flag weights), keeping the original
   vertex counts per chunk.
+
+**Class body role maps** (#1485, read off the owned 2OEF disc). The native collection holds all nine classes
+(`characters op=collect`, extractor `pso`). It used to report 1 of 9 retargetable, because only the hand-mapped HUcast had
+`rig.roles`. All nine bodies `PSO/PL<x>BDY00.NJ` (x = A..I: HUmar, HUnewearl, HUcast, RAmar, RAcast, RAcaseal, FOmarl,
+FOnewm, FOnewearl) are **one 64-node tree**: every node has the same parent in every class, because the game drives
+them all with one motion set. They differ only in bone lengths (hip at y 14.3 for HUcast, 10.5 for HUnewearl) and in
+flag bits of nodes that no role uses. So every class has the same map (`pso_player.CLASS_ROLES`, node index, joint
+`nodeNNN` in the collection model):
+
+| role | node | | role | node | | role | node |
+|---|---|---|---|---|---|---|---|
+| hip | 2 (pelvis) | | l_upper / l_fore / l_hand | 28 / 29 / 34 | | l_thigh / l_shin / l_foot | 4 / 5 / 8 |
+| chest | 25 (torso) | | r_upper / r_fore / r_hand | 41 / 42 / 47 | | r_thigh / r_shin / r_foot | 13 / 14 / 17 |
+| head | 56 | | | | | | |
+
+- `pso_player.check_roles` checks the map against a class's own tree. It must be the player tree (`PLAYER_PARENTS`),
+  every role node must draw vertices, left limbs must be at +X, each limb must chain below the chest or hip, and the
+  heights must go head > chest > hip > feet.
+- `body_roles` runs that check on extraction: `_pso_run` reports the roles, which become `rig.roles`.
+- Entries collected before this get the roles from their `manifest.json` (`ROLE_BACKFILL["pso"]` →
+  `pso_player.model_roles`, checked on the exported bind pose).
+- A stored partial collection result is re-checked against the library (`characters.refresh_collection`, called by
+  `AutoCollection.status`). The session observer then sees it as complete and stops filing the models gap, and the
+  roster job isn't queued again.
+- The enemy roster entries (`kind` enemy, `gbox.pso_enemy`) aren't part of the collection count.
 
 ## 15. RE6 Leon (`re6_leon`) in other games, and fixes found on the way (2026-10-07)
 

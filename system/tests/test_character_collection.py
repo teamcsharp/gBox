@@ -30,6 +30,35 @@ def test_launch_collection_deduplicates_and_keeps_operator_parent(tmp_path):
     assert len(submitted) == 1  # partial extraction never loops each launch
 
 
+def test_partial_roster_is_collected_again_at_a_launch_once_a_day(tmp_path):
+    """#1506: a game with a dedicated reader whose collection is incomplete gets it extracted again when it is played,
+    as a background job on the Spark (never a step of the launch), at most once a day."""
+    import time
+    store = Store(tmp_path)
+    automatic = AutoCollection(store, None)
+    game = {'game_id': 'pso', 'title': 'Phantasy Star Online Ver. 2 (USA)', 'platform': 'dreamcast'}
+    submitted = []
+    def submit(request):
+        job = {'id': f'job-{len(submitted)}', 'state': 'queued', **request}
+        submitted.append(job)
+        store.put('job', job['id'], job)
+        return job
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-1'}, submit)
+    store.put('job', 'job-0', {'id': 'job-0', 'state': 'succeeded', 'finished': time.time() - 2 * 86400,
+              'output': {'result': {'status': 'partial', 'collected': 9, 'total': 12}}})
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-2'}, submit)
+    assert [j['id'] for j in submitted] == ['job-0', 'job-1']
+    assert submitted[1]['require_os'] == 'linux' and submitted[1]['input'] == {'op': 'collect', 'game_id': 'pso'}
+    store.put('job', 'job-1', {'id': 'job-1', 'state': 'succeeded', 'finished': time.time(),
+              'output': {'result': {'status': 'partial', 'collected': 10, 'total': 12}}})
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-3'}, submit)
+    assert len(submitted) == 2                                # collected today: not again
+    store.put('job', 'job-1', {'id': 'job-1', 'state': 'succeeded', 'finished': time.time() - 2 * 86400,
+              'output': {'result': {'status': 'complete', 'collected': 12, 'total': 12}}})
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-4'}, submit)
+    assert len(submitted) == 2                                # complete: never again
+
+
 def test_disabled_and_unsupported_do_not_queue(tmp_path):
     store = Store(tmp_path)
     automatic = AutoCollection(store, None)
@@ -188,12 +217,71 @@ def test_successful_launch_result_schedules_collection_on_control_plane(tmp_path
 def test_parallel_builds_preserve_all_character_targets(plane, cfg):
     import json
     root = C.library_root(cfg)
-    C.put_meta(root, {'slug': 'shared', 'targets': {}})
+    assert str(root).startswith(str(cfg.cache))        # the test's own library, never ~/gbox-cache/characters
+    C.put_meta(root, {'slug': 'donor', 'name': 'Donor', 'targets': {}})
     def save_target(i):
-        response = plane.post('/api/characters/shared/targets', json={
+        response = plane.post('/api/characters/donor/targets', json={
             'game_id': f'game-{i}', 'slot':'player', 'mod':f'mod-{i}', 'nodes':['linux']})
         assert response.status_code == 200, response.text
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(save_target, range(24)))
-    meta = json.loads((root / 'shared' / 'meta.json').read_text())
+    meta = json.loads((root / 'donor' / 'meta.json').read_text())
     assert len(meta['targets']) == 24
+
+
+def test_tests_never_see_the_real_library_env():
+    """conftest drops GBOX_CHARACTERS so library_root(cfg) is each test's temporary cache (the 'shared' leak)."""
+    import os
+    assert 'GBOX_CHARACTERS' not in os.environ
+
+
+def test_bookkeeping_never_lands_in_the_library_as_an_entry(tmp_path):
+    import json
+    import pytest
+    for meta in ({'slug': 'shared', 'targets': {'g': [{'mod': 'm'}]}}, {'slug': 'x', 'name': ' '}, {'name': 'No slug'}):
+        with pytest.raises(ValueError):
+            C.put_meta(tmp_path, meta)
+    assert not list(tmp_path.iterdir())
+    (tmp_path / 'shared').mkdir()
+    (tmp_path / 'shared' / 'meta.json').write_text(json.dumps({'slug': 'shared', 'targets': {}}))
+    with pytest.raises(KeyError):                       # a recorded mod target never revives a nameless folder
+        C.set_target(tmp_path, 'shared', 'game', {'slot': 'player', 'mod': 'm'})
+    assert json.loads((tmp_path / 'shared' / 'meta.json').read_text()) == {'slug': 'shared', 'targets': {}}
+
+
+def test_list_all_skips_entries_without_a_name(tmp_path):
+    """A 'shared' folder holding only slug + targets made every /api/characters call 500 (2026-10-13)."""
+    import json
+    from gbox import characters as C
+    (tmp_path / "shared").mkdir(); (tmp_path / "shared" / "meta.json").write_text(json.dumps({"slug": "shared", "targets": {}}))
+    (tmp_path / "sonic").mkdir(); (tmp_path / "sonic" / "meta.json").write_text(json.dumps({"slug": "sonic", "name": "Sonic"}))
+    assert [m["slug"] for m in C.list_all(tmp_path)] == ["sonic"]
+
+
+def test_list_all_is_cached_and_refreshed_by_writes(tmp_path, monkeypatch):
+    """The library on the Spark's NTFS HDD took ~13 s to read per call; list_all must not re-read every time."""
+    import json
+    from gbox import characters as C
+    (tmp_path / "sonic").mkdir(); (tmp_path / "sonic" / "meta.json").write_text(json.dumps({"slug": "sonic", "name": "Sonic"}))
+    assert [m["slug"] for m in C.list_all(tmp_path)] == ["sonic"]
+    reads = []
+    real = C._list_all_uncached
+    monkeypatch.setattr(C, "_list_all_uncached", lambda root: reads.append(1) or real(root))
+    C.list_all(tmp_path); C.list_all(tmp_path, "g")
+    assert reads == []                                   # served from the cache
+    C.put_meta(tmp_path, {"slug": "amy", "name": "Amy"})
+    assert sorted(m["slug"] for m in C.list_all(tmp_path)) == ["amy", "sonic"] and len(reads) <= 1   # new folder may trigger one re-read
+
+
+def test_list_all_sees_entries_written_by_another_process(tmp_path):
+    """A collect in the worker process adds folders the server's cache never heard of (2026-10-13: SA1 Sonic, Tails
+    and Knuckles were missing from /api/characters, so the cast planner left Sonic out)."""
+    import json, os, time
+    from gbox import characters as C
+    (tmp_path / "amy").mkdir(); (tmp_path / "amy" / "meta.json").write_text(json.dumps({"slug": "amy", "name": "Amy"}))
+    assert [m["slug"] for m in C.list_all(tmp_path)] == ["amy"]
+    (tmp_path / "sonic").mkdir(); (tmp_path / "sonic" / "meta.json").write_text(json.dumps({"slug": "sonic", "name": "Sonic"}))
+    t = time.time() + 5
+    os.utime(tmp_path, (t, t))                            # some filesystems have coarse folder mtimes
+    assert sorted(m["slug"] for m in C.list_all(tmp_path)) == ["amy", "sonic"]
+

@@ -10,46 +10,11 @@ import zlib
 import numpy as np
 
 from . import uap
+from .formats.lz import prs_compress, prs_decompress  # noqa: F401  (shared codec, moved to gbox.formats)
+from .formats.texture import morton as _twiddle       # shared PowerVR twiddle
 
 
 # ---------------------------------------------------------------- PRS (LZ77 variant) + BML archives
-def prs_decompress(data: bytes) -> bytes:
-    out, pos, ctrl, bits = bytearray(), 0, 0, 0
-
-    def bit():
-        nonlocal ctrl, bits, pos
-        if bits == 0:
-            ctrl, bits = data[pos], 8
-            pos += 1
-        b = ctrl & 1
-        ctrl >>= 1
-        bits -= 1
-        return b
-
-    while pos < len(data):
-        if bit():
-            out.append(data[pos])
-            pos += 1
-            continue
-        if bit():                                            # long backreference
-            if pos + 1 >= len(data):
-                break
-            a = data[pos] | (data[pos + 1] << 8)
-            pos += 2
-            offset = (a >> 3) | ~0x1FFF
-            if offset == ~0x1FFF:
-                break
-            count = (a & 7) + 2 if a & 7 else data[pos] + 1
-            if not a & 7:
-                pos += 1
-        else:                                                # short backreference
-            count = ((bit() << 1) | bit()) + 2
-            offset = data[pos] | ~0xFF
-            pos += 1
-        start = len(out) + offset
-        for z in range(count):
-            out.append(out[start + z])
-    return bytes(out)
 
 
 def bml(data: bytes, be: bool = False) -> dict[str, tuple[bytes, bytes | None]]:
@@ -72,11 +37,6 @@ def bml(data: bytes, be: bool = False) -> dict[str, tuple[bytes, bytes | None]]:
 
 
 # ---------------------------------------------------------------- textures (PVR / PVM)
-def _twiddle(x: int, y: int) -> int:
-    r = 0
-    for i in range(12):
-        r |= ((y >> i) & 1) << (2 * i) | ((x >> i) & 1) << (2 * i + 1)
-    return r
 
 
 def _px(fmt: int, v: int) -> tuple:
@@ -404,100 +364,6 @@ def to_manifest(nj: NJ, name: str, source: dict, textures: list[str] | None = No
 
 
 # ---------------------------------------------------------------- writing (gBox character swaps: gbox.sa2_chars, gbox.pso_player)
-def prs_compress(data: bytes, depth: int = 256) -> bytes:
-    """PRS encoder (the exact inverse of prs_decompress): literals (9 bits), short refs (2..5 bytes, 256 back, 12
-    bits), long refs (3..9 bytes inline, 18 bits; 10..256 with a count byte, 26 bits; 8191 back). Hash-chain match
-    finder + an optimal parse (shortest bit cost, dynamic programming from the end): about SEGA's own ratio."""
-    n = len(data)
-    head, prev = {}, [-1] * n
-    longm = [(0, 0)] * n                                     # (length, distance) longest match, distance <= 8191
-    shortm = [(0, 0)] * n                                    # longest match with distance <= 255 (short refs)
-    for i in range(n):
-        if i + 2 < n:
-            key = data[i:i + 3]
-            j, tries = head.get(key, -1), 0
-            lim = min(256, n - i)
-            bl = bo = sl = so = 0
-            while j >= 0 and i - j <= 8191 and tries < depth:
-                if data[j + bl:j + bl + 1] == data[i + bl:i + bl + 1] or (i - j <= 255 and sl < 5):
-                    k = 0
-                    while k < lim and data[j + k] == data[i + k]:
-                        k += 1
-                    if k > bl:
-                        bl, bo = k, i - j
-                    if i - j <= 255 and k > sl:
-                        sl, so = min(k, 5), i - j
-                    if bl == lim:
-                        break
-                j, tries = prev[j], tries + 1
-            longm[i] = (bl, bo)
-            if sl < 2 and i + 1 < n and i >= 1 and data[i - 1:i + 1] == data[i:i + 2]:
-                sl, so = 2, 1
-            shortm[i] = (sl, so)
-            prev[i] = head.get(key, -1)
-            head[key] = i
-        elif i + 1 < n:                                      # the last two bytes: a 2-byte short ref is possible
-            for d in range(1, min(255, i) + 1):
-                if data[i - d:i - d + 2] == data[i:i + 2]:
-                    shortm[i] = (2, d)
-                    break
-    INF = float("inf")
-    cost = [INF] * (n + 1)
-    choice = [None] * (n + 1)
-    cost[n] = 0
-    for i in range(n - 1, -1, -1):
-        best, ch = 9 + cost[i + 1], (1, 0)
-        sl, so = shortm[i]
-        for L in range(2, sl + 1):
-            c = 12 + cost[i + L]
-            if c < best:
-                best, ch = c, (L, -so)
-        ll, lo = longm[i]
-        if ll >= 3:
-            for L in range(3, min(9, ll) + 1):
-                c = 18 + cost[i + L]
-                if c < best:
-                    best, ch = c, (L, lo)
-            if ll >= 10:
-                Ls = range(10, ll + 1) if ll < 48 else list(range(10, 48)) + [ll]
-                for L in Ls:
-                    c = 26 + cost[i + L]
-                    if c < best:
-                        best, ch = c, (L, lo)
-        cost[i], choice[i] = best, ch
-    out = bytearray()
-    st = {"pos": None, "n": 8}
-
-    def bit(b):
-        if st["n"] == 8:                                     # the decoder fetches a control byte when it needs a bit
-            st["pos"], st["n"] = len(out), 0
-            out.append(0)
-        out[st["pos"]] |= (b & 1) << st["n"]
-        st["n"] += 1
-    i = 0
-    while i < n:
-        L, off = choice[i]
-        if L == 1:
-            bit(1)
-            out.append(data[i])
-        elif off < 0:                                        # short reference
-            bit(0), bit(0)
-            c = L - 2
-            bit(c >> 1), bit(c & 1)
-            out.append((off) & 0xFF)
-        else:
-            bit(0), bit(1)
-            o = (-off) & 0x1FFF
-            if L <= 9:
-                a = (o << 3) | (L - 2)
-                out += bytes((a & 0xFF, a >> 8))
-            else:
-                a = o << 3
-                out += bytes((a & 0xFF, a >> 8, L - 1))
-        i += L
-    bit(0), bit(1)
-    out += b"\0\0"
-    return bytes(out)
 
 
 def _px16(c, pix: int) -> int:

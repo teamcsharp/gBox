@@ -28,6 +28,7 @@ function harness(answers) {                                 // answers: path -> 
     toast: (t, ms) => toasts.push(t), S: { workerName: 'JAYBUILTFINALE', apiUrl: 'http://spark:8080' },
     document: { querySelector: () => null }, setTimeout: (fn, ms) => { delays.push(ms); fn(); }, EMB: { sid: '' },
     chatContext: async () => ({}),
+    liveSessions: () => ctx.gbox.api('/api/sessions?include_ended=false'),   // #712: the shared running-sessions read
   };
   ctx.window = ctx;
   vm.createContext(ctx);

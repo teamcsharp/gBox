@@ -35,16 +35,42 @@ PRESENTATION_ERRORS = (
 )
 
 
-def presentation_state(error, frames_seen):
+def presentation_state(error, frames_seen, session_id=None):
     """The gameplay_state for a capture error caused by the game window, or None for a route failure.
 
     Until a session has produced a frame, a missing or covered window may mean the window lookup
-    itself is broken (for example a launcher PID), so it still counts toward a repair request."""
+    itself is broken (for example a launcher PID), so it still counts toward a repair request.
+    A worker that no longer has the session (it ended, or the worker restarted) fails the capture
+    with KeyError('<session id>'): the session is gone, so there is no capture route to repair."""
     text = str(error).lower()
     for fragment, state, needs_frame in PRESENTATION_ERRORS:
         if fragment in text and (frames_seen or not needs_frame):
             return state
+    if 'sessiongone' in text or 'no longer running on this pc' in text:
+        return 'stopped'  # tools.SessionGone: the worker restarted or another game replaced this one.
+    if session_id and 'keyerror' in text and str(session_id).lower() in text:
+        return 'stopped'
     return None
+
+
+# #1455: with the Spark saturated (load 27, GPU 94 percent during a drive transfer) the vision model never
+# answered and every sample failed with a timeout, so the observer filed a repair for a route that was fine.
+# A timeout is load, not a broken route: back off (doubling from TIMEOUT_BACKOFF[0] up to TIMEOUT_BACKOFF[1])
+# without counting toward a repair, and file one only when timeouts continue for a whole window.
+TIMEOUT_BACKOFF = (60, 600)
+TIMEOUT_GAP_WINDOW = 3600     # seconds of unbroken timeouts ...
+TIMEOUT_GAP_COUNT = 5         # ... and at least this many of them before a repair request is filed
+_TIMEOUT_NAMES = ('TimeoutError', 'TimeoutException', 'ReadTimeout', 'ConnectTimeout', 'WriteTimeout',
+                  'PoolTimeout')
+
+
+def is_timeout(error):
+    """A timeout from the vision model or the capture relay: raised here, or reported as a job error string
+    (the worker formats job errors as "TimeoutError: ...")."""
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+        return True
+    text = str(error)
+    return text.startswith(_TIMEOUT_NAMES) or 'timed out' in text.lower()
 
 
 OBSERVATION_LISTS = ('actors', 'changes', 'hud', 'mechanics_hypotheses', 'uncertainties')
@@ -79,8 +105,9 @@ def _item_text(item):
 
 
 def observation_list(value, key):
-    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping."""
-    if value is None:
+    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping. A bare
+    true/false ("actors": false on an empty ring, "hud": true on a fight with health bars) carries no item."""
+    if value is None or isinstance(value, bool):
         items = []
     elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
         items = [value]
@@ -149,6 +176,241 @@ def analyze(config, frame, previous):
     return parse_observation(raw) | {'model': model}
 
 
+# ---------------------------------------------------------------- what each session agent is after (operator view)
+# The operator plays while these agents work. Each one says, in plain words, what it is trying to learn or do
+# (goal), what it is doing right now (doing), the concrete evidence it still needs (seeking), what the operator can
+# do to get it there faster (you_can_help) and what stops it (blocked_by). Derived from the observer state machine,
+# the game's native-collection state, its Hermes work-queue stage (hermes_work_queue.STAGES) and open inbox
+# requests / jobs targeting the game. Nothing here sends input or starts work: it only explains.
+
+LOOK_NOW = 'press "Done, look now"'
+CHARACTER_STAGES = ('reader', 'writer', 'runtime')   # stages whose evidence is characters seen on screen
+
+STAGE_GOALS = {
+    'inventory': {
+        'goal': 'Pin down the exact build of {title} and list its files (hashes, archives), so the right formats get worked on.',
+        'seeking': 'a hashed inventory of the owned game files for this exact build',
+        'you_can_help': 'Nothing in-game: it works from the game files on the gBox, not from your screen.'},
+    'analysis': {
+        'goal': 'Find how {title} stores and loads its character models, textures, skeletons and animations.',
+        'seeking': 'the model, texture and skeleton loader code and their file formats (REA/Ghidra on the game executable)',
+        'you_can_help': 'Nothing in-game is required. If you know where characters first appear (a level, cutscene or '
+                        'character select), say so in its inbox request.'},
+    'reader': {
+        'goal': 'Write and test a reader that pulls the character models of {title} out of the game files into your library.',
+        'seeking': 'extracted models that match characters seen on screen (the gameplay notes are its reference)',
+        'you_can_help': 'Get characters on screen up close (character select, a cutscene, or stand facing an enemy for '
+                        'a few seconds), then ' + LOOK_NOW + ': the observer records who is visible for the reader to match.'},
+    'writer': {
+        'goal': 'Build a writer that puts a library character into {title} in place of one of its own characters.',
+        'seeking': 'a modded game file that boots with a library character in one of its native character slots',
+        'you_can_help': 'Nothing in-game yet: when it builds a mod, the mod appears under Mods for you to try.'},
+    'runtime': {
+        'goal': 'Prove a replacement works in a running game: launch the modded build and check the swapped character on screen.',
+        'seeking': 'a test session where the replaced character is clearly visible (gameplay or a cutscene)',
+        'you_can_help': 'It tests in its own session, not yours. Tell it in its inbox request where the replaced character '
+                        'is easy to see (a level, cutscene or menu), or try the mod under Mods and say what you saw.'},
+}
+
+
+def _plural(n, word):
+    return f'{n} {word}' + ('' if n == 1 else 's')
+
+
+def _gameplay_agent(view, title, wants_characters):
+    state, gs = view.get('state'), view.get('gameplay_state')
+    agent = {
+        'agent': 'gameplay', 'name': 'Gameplay observer', 'state': gs or state or 'waiting',
+        'goal': f'Look at {title} every 30 seconds and note who is on screen, the HUD and what changed, '
+                'so the agents working on this game have gameplay evidence.',
+        'doing': 'Starting up.',
+        'seeking': ('a frame with characters clearly visible: close up, not a menu, loading or death screen'
+                    if wants_characters else 'a frame that differs from the last one it described'),
+        'you_can_help': ('Stand still facing a character for a few seconds (or open a character select or cutscene), '
+                         'then ' + LOOK_NOW + '.' if wants_characters
+                         else 'Keep playing: new areas, menus and characters give it something new to describe.'),
+        'blocked_by': '', 'needs_you': wants_characters}
+    error = str(view.get('error') or '')[:300]
+    if not view.get('service_online', True):
+        agent.update(state='service_offline', doing='Not running.',
+                     blocked_by='the observer service is not running on the gBox server'
+                                + (': ' + str(view['service_error'])[:200] if view.get('service_error') else ''),
+                     you_can_help='Nothing in-game: the gBox server has to restart its session observers.', needs_you=False)
+    elif view.get('enabled') is False or state == 'paused':
+        agent.update(state='paused', doing='Paused.', blocked_by='you paused the observers',
+                     you_can_help='Press "Resume observers" when you want it watching again.', needs_you=True)
+    elif state == 'offline':
+        agent.update(doing='Waiting for the PC running this game.', needs_you=True,
+                     blocked_by='the PC running this game is not connected to gBox',
+                     you_can_help='Check that the gBox worker on that PC is running.')
+    elif state in (None, 'not_attached', 'waiting'):
+        agent.update(doing='Attaching to this session (within a few seconds of launch).')
+    elif gs == 'waiting_for_frame':
+        agent['doing'] = 'Waiting for a fresh frame from your game window (a capture is on its way).'
+        if 'not completed' in error:
+            agent['blocked_by'] = 'the capture of your game window is slow: ' + error
+    elif gs == 'analyzing':
+        agent['doing'] = 'Reading the frame it just captured with the vision model.'
+        agent['you_can_help'] = 'Hold the current view for a few seconds.' if wants_characters else agent['you_can_help']
+    elif gs == 'watching':
+        agent['doing'] = 'Described the latest frame; it looks again in about 30 seconds.'
+    elif gs == 'unchanged':
+        agent.update(doing='The screen has not changed since its last look, so it skipped the frame.',
+                     you_can_help='Move or turn the camera, or set up the scene you want it to see and ' + LOOK_NOW + '.')
+    elif gs == 'no_window':
+        agent.update(doing='Waiting for the game window.', blocked_by='the game window is closed or minimised',
+                     you_can_help='Reopen or restore the game window.', needs_you=True)
+    elif gs == 'covered':
+        agent.update(doing='Waiting for the game window.', blocked_by='the game window is covered by another window',
+                     you_can_help='Bring the game window to the front.', needs_you=True)
+    elif gs == 'stopped':
+        agent.update(doing='Stopped.', blocked_by='this session has ended', you_can_help='', needs_you=False)
+    elif gs == 'backing_off':
+        agent.update(doing='Waiting before it tries the vision model again.', needs_you=False,
+                     blocked_by=f'vision model busy or not answering ({_plural(int(view.get("timeouts") or 0), "timeout")} '
+                                'in a row); retrying with a growing delay',
+                     you_can_help='Nothing in-game; ' + LOOK_NOW + ' to retry right away once the gBox is less busy.')
+    elif gs == 'blocked':
+        rid = view.get('observation_request_id')
+        agent.update(doing='Retrying with a growing delay.', needs_you=False,
+                     blocked_by=f'capture or vision failed {_plural(int(view.get("failures") or 0), "time")}: {error}'
+                                + (f' (repair tracked in inbox {rid})' if rid else ''),
+                     you_can_help='Nothing in-game; an agent repairs the capture route.')
+    return agent
+
+
+def _models_agent(models, title, queued):
+    state = models.get('state') or 'not_started'
+    result = models.get('result') or {}
+    rid = models.get('request_id')
+    agent = {'agent': 'models', 'name': 'Model collector', 'state': state,
+             'goal': f'Read every character model of {title} straight from the game files into your character library, '
+                     'so its characters can be swapped in.',
+             'doing': '', 'seeking': '', 'you_can_help': 'Nothing in-game: it reads the game files on the gBox, not your screen.',
+             'blocked_by': '', 'needs_you': False}
+    favorite = 'Favorite this game so Hermes queues the reader work.' if not queued else ''
+    if state == 'not_started':
+        agent.update(doing='Not run yet; it starts within a minute of launch.',
+                     seeking='its first collection run' + (' (a reader was registered since the last verdict)'
+                                                           if models.get('stale_unsupported_since') else ''))
+    elif state == 'queued':
+        agent.update(doing='Its collection job is queued' + (f' ({models["job_id"]}).' if models.get('job_id') else '.'),
+                     seeking='a free Linux worker to run the collection', blocked_by='waiting for a Linux worker')
+    elif state in ('running', 'cancelling'):
+        agent.update(doing='Reading the game files now.', seeking='the collection job to finish')
+    elif state == 'unsupported':
+        agent.update(doing='Waiting for a model reader.', seeking='a native model reader for this exact game build',
+                     blocked_by=f'no native model reader for {title} yet; Hermes has to write one first (reader stage)',
+                     you_can_help=favorite or 'Nothing in-game; Hermes is working on it (see Hermes below).',
+                     needs_you=bool(favorite))
+    elif state in ('failed', 'rejected', 'cancelled', 'blocked'):
+        agent.update(doing='Stopped.', seeking='a collection run that succeeds',
+                     blocked_by=f'collection {state}: ' + str(models.get('error') or models.get('message') or 'no detail')[:300],
+                     you_can_help='Favorite the game again to retry the collection.', needs_you=True)
+    elif state == 'succeeded':
+        collected, total = int(result.get('collected') or 0), int(result.get('total') or 0)
+        if result.get('status') == 'partial':
+            missing = [str(e.get('name') or e.get('slug')) for e in result.get('entries') or []
+                       if isinstance(e, dict) and not e.get('verified')][:5]
+            agent.update(doing=f'Collected {collected} of {total}.', state='partial',
+                         seeking=f'the {total - collected} roster characters it could not read yet'
+                                 + (': ' + ', '.join(missing) if missing else ''),
+                         blocked_by='the reader cannot read them yet' + (f' (repair tracked in inbox {rid})' if rid else ''))
+        else:
+            agent.update(doing=f'Done: {collected} of {total} collected.', state='done', seeking='nothing more',
+                         you_can_help='Pick one under Characters to put it into a game.')
+    if rid and 'inbox' not in agent['blocked_by'] and state != 'succeeded':
+        agent['blocked_by'] = (agent['blocked_by'] + '; ' if agent['blocked_by'] else '') + f'repair tracked in inbox {rid}'
+    return agent
+
+
+def _request_goal(request, title):
+    context = request.get('context') or {}
+    character, target = context.get('character'), context.get('target')
+    if character:
+        return f'put {character} into {title}' + (f' in place of {target}' if target else '')
+    if context.get('session_observer'):
+        return {'models': f'make native model collection work for {title}',
+                'observation': 'repair the read-only capture or vision route'}.get(context.get('role'), '')
+    return ''
+
+
+def _hermes_agent(item, title, models, requests, jobs, now):
+    open_requests = [{'id': r.get('id'), 'number': r.get('number'), 'title': str(r.get('title') or '')[:160],
+                      'status': r.get('status'), 'goal': _request_goal(r, title)} for r in requests][:8]
+    running = [{'id': j.get('id'), 'tool': j.get('tool'), 'op': (j.get('input') or {}).get('op'), 'state': j.get('state')}
+               for j in jobs][:8]
+    agent = {'agent': 'hermes', 'name': 'Hermes (engineering agent)', 'requests': open_requests, 'jobs': running,
+             'blocked_by': '', 'needs_you': False}
+    replacing = next((r for r in open_requests if r['goal'].startswith('put ')), None)
+    if not item:
+        agent.update(state='not_queued', stage=None,
+                     goal=f'Nothing queued: {title} is not in the Hermes favorites queue for native character work.',
+                     doing=f'Working on {_plural(len(open_requests), "inbox request")} for this game.' if open_requests
+                           else 'Not working on this game.',
+                     seeking='' if not open_requests else 'whatever its inbox requests below need',
+                     you_can_help='Favorite this game to queue the native model work (inventory, analysis, reader, '
+                                  'writer, runtime).', needs_you=not open_requests)
+    else:
+        stage = item.get('next_stage')
+        record = (item.get('stages') or {}).get(stage) or {}
+        number = f' #{item["number"]}' if item.get('number') else ''
+        if stage is None:
+            agent.update(state='done', stage=None, goal=f'Native character replacement for {title} is verified for this build.',
+                         doing='Done.', seeking='nothing more', you_can_help='Try the replacements under Mods and Characters.')
+        else:
+            text = {k: v.format(title=title) for k, v in STAGE_GOALS[stage].items()}
+            done = [s for s in STAGE_GOALS if ((item.get('stages') or {}).get(s) or {}).get('status') == 'verified']
+            dispatch = item.get('dispatch_state')
+            doing = {'queued': 'Its run for this stage is queued.', 'uncertain': 'Its run for this stage is being dispatched.',
+                     'paused': 'Paused: Hermes task mode is off.', 'finished': 'Its last run finished; it continues on the next one.'
+                     }.get(dispatch, 'Waiting its turn in the Hermes queue.')
+            agent.update(state=dispatch or 'waiting', stage=stage, stages_verified=done, goal=text['goal'], doing=doing,
+                         seeking=text['seeking'] + (f'; next step: {record["next_step"]}' if record.get('next_step') else ''),
+                         you_can_help=text['you_can_help'].replace('its inbox request', f'inbox request{number}' if number else 'its inbox request'),
+                         needs_you=stage in ('reader', 'runtime'))
+            if record.get('status') == 'blocked':
+                agent['blocked_by'] = 'stage blocked: ' + str(record.get('note') or '')[:300]
+            elif (item.get('retry_at') or 0) > now:
+                agent['blocked_by'] = f'waiting about {max(1, int((item["retry_at"] - now) // 60))} min before its next attempt'
+            elif dispatch == 'paused':
+                agent['blocked_by'] = 'Hermes task mode is off'
+            if stage in ('writer', 'runtime'):
+                own = (((models.get('capabilities') or {}).get('operations') or {}).get('characters') or {}).get('in_collection')
+                if not own and not int((models.get('result') or {}).get('collected') or 0):
+                    agent['blocked_by'] = ((agent['blocked_by'] + '; ') if agent['blocked_by'] else '') + \
+                        f'no collection characters of {title} in the library yet, so its writer has no slot to fill'
+    if replacing:
+        agent['seeking'] = (agent.get('seeking') + '; ' if agent.get('seeking') else '') + \
+            f'for inbox #{replacing["number"]}: {replacing["goal"]} and see it on screen'
+        if not (models.get('result') or {}).get('collected') and models.get('state') in ('unsupported', 'not_started', None):
+            agent['blocked_by'] = ((agent['blocked_by'] + '; ') if agent['blocked_by'] else '') + \
+                f'no collection characters available for the {title} writer yet'
+    if running:
+        agent['doing'] = 'Running now: ' + ', '.join(f'{j["tool"]}' + (f' {j["op"]}' if j['op'] else '') for j in running) + '.'
+    return agent
+
+
+def agent_goals(view, *, queue=None, requests=(), jobs=(), now=None):
+    """What every session agent is trying to do, in plain words, for the panel and get_session_observers.
+
+    view: the session_observer row as the API returns it (with service_online). queue: this game's Hermes
+    work-queue item (hermes_work_queue.snapshot(game_id)['games'][0]) or None. requests: open inbox requests
+    targeting the game. jobs: queued/running jobs targeting the game."""
+    now = time.time() if now is None else now
+    title = view.get('title') or 'this game'
+    models = view.get('models') or {}
+    stage = (queue or {}).get('next_stage')
+    partial = (models.get('result') or {}).get('status') == 'partial'
+    replacing = any((r.get('context') or {}).get('character') for r in requests)
+    wants_characters = stage in CHARACTER_STAGES or partial or replacing
+    agents = [_gameplay_agent(view, title, wants_characters), _models_agent(models, title, bool(queue)),
+              _hermes_agent(queue, title, models, list(requests), list(jobs), now)]
+    ask = next((a for a in agents if a.get('needs_you') and a.get('you_can_help')), None)
+    return {'agents': agents, 'ask': ({'agent': ask['agent'], 'name': ask['name'], 'text': ask['you_can_help']} if ask else None),
+            'look_requested': view.get('look_requested')}
+
+
 class SessionObservers:
     def __init__(self, store, config, api, *, observe=analyze, clock=time.time):
         self.store, self.config, self.api = store, config, api
@@ -169,12 +431,11 @@ class SessionObservers:
             return row
 
     def _user_session(self, session):
+        from .background_testing import agent_owned
         sid = session['session_id']
         label = self.store.get('slabel', sid) or {}
-        if label.get('owner') == 'you':
-            return True
         job = self.store.get('job', sid.split('-', 1)[-1]) or {}
-        return label.get('owner') != 'agent' and not job.get('agent_use')
+        return not agent_owned(label, job)
 
     def _gap(self, session, role, reason, frame=None):
         """One durable request per game/role; reconcile before POST after a restart."""
@@ -239,7 +500,8 @@ class SessionObservers:
             self._put(sid, frame_job_id=None)
             if job.get('state') != 'succeeded':
                 raise RuntimeError(job.get('error') or 'Session capture failed')
-            if self.clock() - (job.get('finished') or 0) <= 15:
+            # A capture from before "Done, look now" does not show what the operator just set up.
+            if self.clock() - (job.get('finished') or 0) <= 15 and (job.get('finished') or 0) >= (record.get('look_requested') or 0):
                 image = self.store.read_artifact((job.get('output') or {}).get('sha256') or '')
                 if image:
                     return image
@@ -252,6 +514,10 @@ class SessionObservers:
         sid = session['session_id']
         record = self.store.get('session_observer', sid) or {}
         captured = self.clock()
+        # "Done, look now": the operator set up what an agent is seeking; the answer to that look is recorded.
+        look = {}
+        if record.get('look_requested'):
+            look = {'look_requested': None, 'last_look': {'requested': record['look_requested'], 'answered': captured}}
         try:
             raw = self._frame(session, record)
             from .session_images import as_png
@@ -263,7 +529,7 @@ class SessionObservers:
                 stream = io.BytesIO(); image.save(stream, 'PNG'); frame = stream.getvalue()
             if digest == record.get('frame_digest'):
                 self._put(sid, gameplay_state='unchanged', next_sample=captured + 30, last_checked=captured,
-                          window_failures=0, window_missing_since=None)
+                          window_failures=0, window_missing_since=None, **look)
                 return
             self._put(sid, gameplay_state='analyzing')
             result = self.observe(self.config, frame, record.get('latest'))
@@ -280,17 +546,24 @@ class SessionObservers:
             self._put(sid, gameplay_state='watching', latest=observation, history=history,
                       samples=record.get('samples', 0) + 1, frame_digest=digest, failures=0,
                       error=None, next_sample=self.clock() + 30, last_checked=captured,
-                      window_failures=0, window_missing_since=None)
+                      window_failures=0, window_missing_since=None, timeouts=0, timeout_since=None, **look)
         except WaitingForFrame as exc:
             self._put(sid, gameplay_state='waiting_for_frame', error=str(exc), next_sample=self.clock() + 5)
         except Exception as exc:
-            state = presentation_state(exc, record.get('samples', 0) or record.get('frame_digest'))
+            state = presentation_state(exc, record.get('samples', 0) or record.get('frame_digest'), sid)
+            if not state and (self.store.get('session', sid) or {}).get('state') not in (None, 'running'):
+                state = 'stopped'  # The session ended while its capture ran: nothing to repair.
             if state:
                 # The game window is closed, covered or gone: watch for it again without a repair request.
                 misses = record.get('window_failures', 0) + 1
                 self._put(sid, gameplay_state=state, window_failures=misses, error=str(exc)[:600],
                           window_missing_since=record.get('window_missing_since') or captured,
-                          next_sample=self.clock() + min(300, 30 * misses))
+                          next_sample=self.clock() + min(300, 30 * misses), **look)
+                return
+            if look:
+                self._put(sid, **look)
+            if is_timeout(exc):
+                self._timed_out(session, record, exc, captured)
                 return
             failures = record.get('failures', 0) + 1
             self._put(sid, gameplay_state='blocked', failures=failures, error=str(exc)[:600],
@@ -301,6 +574,24 @@ class SessionObservers:
                     self._put(sid, observation_request_id=rid)
                 except Exception as gap_error:
                     self._put(sid, repair_error=str(gap_error)[:600])
+
+    def _timed_out(self, session, record, exc, captured):
+        """Retry later with a doubling delay; a repair is filed only after TIMEOUT_GAP_WINDOW seconds of
+        unbroken timeouts (at least TIMEOUT_GAP_COUNT of them). A successful observation ends the streak."""
+        sid = session['session_id']
+        timeouts = record.get('timeouts', 0) + 1
+        since = record.get('timeout_since') or captured
+        first, cap = TIMEOUT_BACKOFF
+        error = (str(exc) or type(exc).__name__)[:600]
+        self._put(sid, gameplay_state='backing_off', timeouts=timeouts, timeout_since=since, error=error,
+                  next_sample=self.clock() + min(cap, first * 2 ** min(timeouts - 1, 10)))
+        if timeouts >= TIMEOUT_GAP_COUNT and captured - since >= TIMEOUT_GAP_WINDOW:
+            try:
+                rid = self._gap(session, 'observation', f'{timeouts} timeouts over {int(captured - since)} s '
+                                '(vision model or capture relay not answering): ' + error)
+                self._put(sid, observation_request_id=rid)
+            except Exception as gap_error:
+                self._put(sid, repair_error=str(gap_error)[:600])
 
     def tick(self):
         now = self.clock()

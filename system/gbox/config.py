@@ -4,6 +4,7 @@ import platform
 import secrets
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -50,6 +51,61 @@ class RewindConfig(BaseModel):
     depth: int = 60                   # checkpoints kept per session (about two minutes at the default interval)
     max_mb: int = 2048                # disk cap per session's ring; the oldest checkpoints go first
     repeat_s: float = 0.6             # holding Select+L2: one older checkpoint per repeat
+    max_duty: float = 0.05            # frame-rate budget: checkpoints slow down so saving takes at most 5% of play time
+
+
+class AudioCppConfig(BaseModel):
+    """[audio_cpp] audio.cpp (audiocpp_server) as a gBox-managed local speech service (docs/audio_cpp.md, #816)."""
+    enabled: bool = True
+    binary: str | None = None         # audiocpp_server executable; unset = discovered (PATH, runtime/audio_cpp, C:/_tools, the user profile)
+    search: list[str] = []            # extra folders searched for the binary (a build tree's bin folder)
+    args: list[str] = []              # extra arguments placed before --config (e.g. ["--ui"])
+    url: str | None = None            # an audio.cpp server gBox does not manage (another machine); start/stop then do nothing
+    host: str = "127.0.0.1"
+    port: int = 8790
+    gpu: bool = True                  # true = cuda, false = cpu (backend= wins)
+    backend: str = ""                 # explicit backend: cpu | cuda | vulkan | metal
+    device: int = 0
+    threads: int = 0                  # 0 = the server's default
+    models_dir: str | None = None     # default <runtime>/audio_cpp/models (audiocpp_model_manager install <id> --models-dir ...)
+    tts_family: str = "kokoro_tts"
+    tts_model: str | None = None      # path; unset = the Kokoro GGUF found under models_dir
+    tts_voice: str = "af_heart"       # the voice used when a request names none
+    tts_language: str = ""            # "" = from the voice prefix (Kokoro: af_/am_ en-us, bf_/bm_ en-gb ...)
+    stt_family: str = "qwen3_asr"
+    stt_model: str | None = None      # path; unset = the Qwen3-ASR package found under models_dir
+    stt_language: str = "en"
+    models: list[dict] = []           # extra server.json model entries verbatim (any family audio.cpp supports)
+    lazy_load: bool = True
+    max_loaded_models: int = 0
+    idle_unload_ms: int = 0
+    busy_timeout_ms: int = 20000      # audio.cpp answers 503 instead of queueing longer; gBox then takes the other assistant
+    autostart: bool = True            # start with the worker / control plane when the binary is on this machine
+    start_timeout_s: int = 90
+
+
+class VoiceConfig(BaseModel):
+    """[voice] which speech assistant answers first and what happens when it is busy (docs/audio_cpp.md)."""
+    default_assistant: Literal["director", "audio_cpp"] = "director"   # director = Pine Box Voice Director + Wyoming whisper
+    fallback: bool = True                 # the other assistant takes a request when the default is busy or down
+    director_slots: int = 1               # requests the Director serves at once; further ones go to audio.cpp in parallel
+    down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
+
+
+class RecordingConfig(BaseModel):
+    """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
+    operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
+    enabled: bool = True              # false: no background capture (the recording tool's op=enable switches it per session)
+    seconds: int = 120                # how far back a clip can reach (the ring keeps this much on disk)
+    encoder: str = "auto"             # auto (NVENC when ffmpeg has it, else libx264) | h264_nvenc | hevc_nvenc | libx264
+    max_mb: int = 512                 # disk cap per session's ring; the oldest segments go first
+    fps: int = 30                     # capture rate
+    bitrate_kbps: int = 8000          # capture bitrate (the export re-encodes to the requested file size)
+    idle_s: float = 20.0              # capture runs while pad activity was seen within this long; stops after it
+    segment_s: int = 5                # length of one ring segment (export granularity is finer: the range is trimmed)
+    capture: str = "auto"             # auto (Windows: gdigrab of the game window's screen area; Linux: x11grab of the session display) | gdigrab | ddagrab (Windows, GPU zero-copy, NVENC only) | x11grab
+    priority: str = "low"             # low: ffmpeg below the emulator (Windows below-normal, Linux nice 10) | normal
+    keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
 
 
 class Config(BaseModel):
@@ -61,24 +117,47 @@ class Config(BaseModel):
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)
     cache_limit_gb: float = 20.0
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
+    # Two-tier cache (gbox/cache_tiers.py, docs/cache-tiers.md): cache_dirs is the fast hot tier, cold_cache_dirs a big
+    # slow disk behind it. Least recently used per-game units move to the cold tier only while the node is idle and
+    # leave a symlink, so <cache>/... paths keep working; access moves them back. Unset for an OS = one tier.
+    cold_cache_dirs: dict[str, str] = {}      # os -> cold tier root (must exist: a missing mount is never created)
+    hot_cache_limit_gb: dict[str, float] = {} # os -> size the idle demoter keeps the hot tier under (default: cache_limit)
+    cache_tier_idle_minutes: float = 30.0     # no session / job / launch on this node for this long before demoting
+    cache_tier_warm_fraction: float = 0.5     # after the migration, recently used cold units are promoted up to this share
+    cache_tier_promote_wait_s: float = 60.0   # a launch waits for its unit's promotion only if it fits in this; else later
     runtime_dirs: dict[str, str] = {}        # os -> local disk for emulators/cores (never run binaries off a network share)
     stage_min_mb: int = 32            # stage library files larger than this (disc images) onto the local cache before launch
+    stage_wait_s: float = 45.0        # a launch waits for a cache copy only if it will finish within this; else the game
+                                      # plays from the share and the copy finishes in the background (#1506; 0 = always wait)
+    stage_background_mb_s: float = 6.0   # background copy speed cap while a game plays on this PC (0 = no cap)
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     public_url: str | None = None     # how other machines (Blender add-on, clients) reach the control plane
     blender_path: str | None = None
     blender_search: list[str] = []    # dirs searched for the newest blender executable when blender_path is unset
     ghidra_home: str | None = None
+    ida_home: str | None = None           # IDA Pro install folder (idat64.exe / idat.exe) for the `ida` tool
+    n64recomp_path: str | None = None     # N64Recomp executable or its folder for the `n64recomp` tool
+    decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
+    decomp_me_url: str = "https://decomp.me/api"
+    ninja_ripper: dict = {}               # path, dll, launcher_args, hotkey, output_dir (docs/rip_and_decomp_tools.md)
     rea_env: dict[str, str] = {}      # explicit REA provider environment (GHIDRA_INSTALL_DIR, REA_IDA_MCP_CONFIG, etc.)
     retroarch_bios: dict[str, str] = {}   # os -> BIOS source dir (copied per core on demand)
     display: str = ":90"              # linux: Xvfb display used for headless emulator sessions
     llm_endpoints: list[LLMEndpoint] = []
+    # [token_prices] USD per million tokens for the Detailed report's cost estimates, over request_story.DEFAULT_PRICES:
+    # "provider/model" or "provider" = { in = 0.6, out = 2.2, cache_read = 0.11 }. Unknown providers get no cost.
+    token_prices: dict[str, dict[str, float]] = {}
     agent: dict = {"llm_url": "http://127.0.0.1:11434/v1", "model": "qwen3.6:35b", "searx_url": "http://127.0.0.1:8081",
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    examine_capture_worker: str = "JAYBUILTFINALE"   # Examine 3D capture sessions run here first (gbox/scene_relay.py)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
+    audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
+    voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
+    recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -90,6 +169,16 @@ class Config(BaseModel):
     @property
     def cache_limit(self) -> float:
         return self.cache_limits_gb.get(HOST_OS, self.cache_limit_gb)
+
+    @property
+    def cold_cache(self) -> Path | None:
+        """The cold tier behind self.cache on this OS, or None (single-tier cache)."""
+        d = self.cold_cache_dirs.get(HOST_OS)
+        return Path(os.path.expandvars(d)) if d else None
+
+    @property
+    def hot_cache_limit(self) -> float:
+        return self.hot_cache_limit_gb.get(HOST_OS, self.cache_limit)
 
     @property
     def runtime(self) -> Path:
@@ -149,6 +238,26 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # interval_s = 2.0                # seconds between checkpoints
 # depth = 60                      # checkpoints kept per session
 # max_mb = 2048                   # disk cap per session
+# max_duty = 0.05                 # frame-rate budget: a slow save state stretches the interval (1 s save -> every 20 s)
+
+# [voice]                         # speech assistants (docs/audio_cpp.md)
+# default_assistant = "audio_cpp" # "director" (Pine Box Voice Director + Wyoming whisper, the default) or "audio_cpp"
+# fallback = true                 # the other assistant answers when the default is busy or down
+# director_slots = 1              # Director requests served at once; more go to audio.cpp in parallel
+
+# [audio_cpp]                     # audio.cpp (audiocpp_server) started and supervised by gBox on this machine
+# binary = "C:/_tools/audio.cpp/build/windows-cuda-release/bin/audiocpp_server.exe"   # unset = discovered
+# port = 8790
+# gpu = true                      # cuda; backend = "vulkan" for a non-NVIDIA GPU, gpu = false for cpu
+# models_dir = "D:/gBox/runtime/audio_cpp/models"
+# tts_family = "kokoro_tts"       # tts_model / stt_model = explicit GGUF paths when discovery finds none
+# tts_voice = "af_heart"
+# stt_family = "qwen3_asr"
+# [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
+# enabled = true                  # records only while the pad was used in the last idle_s seconds
+# seconds = 120                   # how far back a clip can reach
+# encoder = "auto"                # auto = h264_nvenc when it works on this node, else libx264 (reported in the status)
+# max_mb = 512                    # disk cap per session ring
 
 # [[libraries]]
 # id = "roms"
