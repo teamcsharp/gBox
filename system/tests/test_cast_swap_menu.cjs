@@ -113,10 +113,11 @@ test('controller: a failed job re-enables the build and says why; an empty plan 
 const read = f => fs.readFileSync(path.join(__dirname, '..', 'clients', f), 'utf8');
 
 test('the web game menu and the desktop game chip menu open the dialog', () => {
-  const web = read('web/index.html'), desk = read('desktop/index.html');
+  const web = read('web/index.html'), desk = read('desktop/index.html'), menu = read('web/viz/game-menu.js');   // #1562: the game menu's own module
   assert.match(web, /<script src="\/viz\/cast-swap.js"><\/script>/);
-  assert.match(web, /<button class="act" data-cast type="button"[^>]*>Replace entire cast with…<\/button>/);
-  assert.match(web, /closest\("\[data-cast\]"\)\) \{ el\.classList\.remove\("on"\); castSwapOpen\(gid, c\.dataset\.title\)/);
+  assert.match(menu, /<button class="act" data-cast type="button"[^>]*>Replace entire cast with…<\/button>/);
+  assert.match(menu, /if \(at\("\[data-cast\]"\)\) \{ close\(\); io\.cast\(gid, title\); return; \}/);
+  assert.match(web, /cast: \(gid, title\) => castSwapOpen\(gid, title\)/);
   assert.match(web, /function castSwapOpen\(gid, title\) \{\s*return GBoxCastSwap\.open\(document, \{ api,/);
   assert.match(desk, /<script src="\.\.\/web\/viz\/cast-swap.js"><\/script>/);
   assert.match(desk, /data-cast style="[^"]*">Replace entire cast with…<\/button>/);
