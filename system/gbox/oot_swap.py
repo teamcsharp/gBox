@@ -230,6 +230,100 @@ def guess_roles(P: np.ndarray, parent: list[int], front: float | None = None) ->
     return roles, {"front": "+Z" if front >= 0 else "-Z", "height": round(H, 1)}
 
 
+def topo_roles(skel: dict, P: np.ndarray | None = None) -> dict:
+    """Body roles from the limb TREE when the pose-based guess fails (sitting / cranking / hunched NPCs, Moblins): the
+    chest is the deepest limb with two limb chains (arms) and another child (the head); the hip is the nearest limb
+    above it with two more limb chains (legs) - none for NPCs drawn without legs (robes, counters). Sides from where
+    each chain leaves its parent (the limb's own translation, else the pose): +X is the character's left (OoT models
+    face +Z). Raises ValueError when no chest with two arms exists."""
+    limbs = skel["limbs"]
+    n = len(limbs)
+    par = OW.parents(skel)
+    kids = [[] for _ in range(n)]
+    for i, p in enumerate(par):
+        if p >= 0:
+            kids[p].append(i)
+
+    def sub(i):
+        out, st = [], [i]
+        while st:
+            x = st.pop()
+            out.append(x)
+            st += kids[x]
+        return out
+
+    def depth(i):
+        return 1 + max((depth(k) for k in kids[i]), default=0)
+
+    def chain(i):                                       # down the longest child path
+        out = [i]
+        while kids[out[-1]]:
+            out.append(max(kids[out[-1]], key=lambda k: (depth(k), -k)))
+        return out
+
+    def limb_like(c):
+        return depth(c) >= 2 and len(sub(c)) <= 9
+    pos = np.asarray(P, float) if P is not None else None
+
+    def side(c, root):                                  # + = left: the posed chain's mean x (limb offsets can lie
+        if pos is not None:                             # along any axis of the parent)
+            return float(np.mean([pos[k][0] for k in chain(c)]) - pos[root][0])
+        return limbs[c]["pos"][0]
+
+    def pair(node, exclude=()):
+        cs = [c for c in kids[node] if limb_like(c) and c not in exclude]
+        if len(cs) < 2:
+            return None
+        cs.sort(key=lambda c: -len(sub(c)))
+        a, b = cs[0], cs[1]
+        sa, sb = side(a, node), side(b, node)
+        if sa * sb >= 0 and abs(sa - sb) < 1:           # both on one side: not a pair
+            return None
+        return (a, b) if sa > sb else (b, a)
+    def legs_above(i):                                  # the nearest ancestor with a pair besides the way up
+        a = i
+        while par[a] >= 0:
+            lg = pair(par[a], exclude=(a,))
+            if lg:
+                return par[a], lg
+            a = par[a]
+        return None, None
+    chest, best, arms, others, hip, legs = None, None, None, [], None, None
+    for i in range(n):                                  # arms with legs below them, then the biggest pair, deepest
+        pr = pair(i)
+        rest = [c for c in kids[i] if pr and c not in pr]
+        if pr and rest:
+            h, lg = legs_above(i)
+            key = (lg is not None, len(sub(pr[0])) + len(sub(pr[1])), len(chain_to_root(par, i)))
+            if best is None or key > best:
+                best, chest, arms, others, hip, legs = key, i, pr, rest, h, lg
+    if chest is None:
+        raise ValueError("no limb with two arm chains and a head: not a humanoid limb tree")
+    head = max(others, key=lambda c: (limbs[c]["pos"][1] if pos is None else pos[c][1] - pos[chest][1], -c))
+    roles = {"chest": chest, "head": head}
+    for sd, c in zip("lr", arms):
+        ch = chain(c)
+        roles[f"{sd}_upper"], roles[f"{sd}_fore"] = ch[0], ch[1]
+        if len(ch) > 2:
+            roles[f"{sd}_hand"] = ch[2]
+    for sd, c in zip("lr", legs or ()):
+        ch = chain(c)
+        roles[f"{sd}_thigh"], roles[f"{sd}_shin"] = ch[0], ch[1]
+        if len(ch) > 2:
+            roles[f"{sd}_foot"] = ch[2]
+    roles["hip"] = hip if hip is not None else (par[chest] if par[chest] >= 0 else chest)
+    if roles["hip"] == chest:
+        del roles["chest"]
+    return roles
+
+
+def chain_to_root(par: list[int], i: int) -> list[int]:
+    out = [i]
+    while par[out[-1]] >= 0:
+        out.append(par[out[-1]])
+    return out
+
+
 def guess_model_roles(model: Path) -> dict:
     """Body roles {role: joint name} for a collection model that has none (FF7 battle models, SA2...)."""
     rig = S.load_rig(Path(model), {})
@@ -348,8 +442,11 @@ def fit(model: Path, roles: dict, tgt: dict, work: Path, name: str, blender: str
     from .re4gc_enemies import decimate
     work.mkdir(parents=True, exist_ok=True)
     rig = S.load_rig(Path(model), roles, props)
-    prims, rep = S.retarget(rig, tgt, scale, jmap=tgt["roles"])
-    tag = tgt.get("age") or "npc"
+    if tgt.get("mode") == "rigid":
+        prims, rep = rigid_place(rig, tgt)
+    else:
+        prims, rep = S.retarget(rig, tgt, scale, jmap=tgt["roles"])
+    tag = tgt.get("age") or tgt.get("tag") or "npc"
     rigged = S.write_rigged(prims, tgt, work / f"oot_{tag}.gltf", name)
     tris = sum(len(p["tris"]) for p in prims)
     rep["source_triangles"] = tris
@@ -486,11 +583,30 @@ def write_group(rom: OW.Rom, group: dict, parts: dict, mats: list, regions=None)
         new, dls, empty = OW.patch_skeleton(obj0, OW.skeleton(obj0, off),
                                             lambda b, r: OW.encode(parts, mats, b, regions=r), regions)
         obj = bytearray(new)
-        for _hoid, hoff in group.get("head_dls", []):
-            obj[hoff:hoff + 8] = OW._w(0xDE010000, dls.get(group["head_limb"], empty))
+        for hoid, hoff in group.get("head_dls", []):
+            if hoid == oid:
+                obj[hoff:hoff + 8] = OW._w(0xDE010000, dls.get(group["head_limb"], empty))
+        for boid, boff, limb in group.get("branch_dls", []):      # lists the actor draws in place of a limb's own
+            if boid == oid:
+                obj[boff:boff + 8] = OW._w(0xDE010000, dls.get(limb, empty))
         rom.put_object(oid, bytes(obj))
-        return {"objects": [f"{oid:#x}"], "object_bytes": {f"{oid:#x}": len(obj)}, "grew": len(obj) - len(obj0),
-                "reused_bytes": sum(b - a for a, b in regions or [])}
+        out = {"objects": [f"{oid:#x}"], "object_bytes": {f"{oid:#x}": len(obj)}, "grew": len(obj) - len(obj0),
+               "reused_bytes": sum(b - a for a, b in regions or [])}
+        for eoid, eoff in group.get("extra_heads", []):            # a head drawn from another object (Fado's): the
+            hl = group["head_limb"]                               # new head alone, encoded into that object
+            eobj = bytearray(rom.object(eoid))
+            eobj.extend(bytes((-len(eobj)) % 16))
+            used = sorted({mi for mi, _t in parts.get(hl, [])})
+            remap = {mi: k for k, mi in enumerate(used)}
+            hparts = {hl: [(remap[mi], t) for mi, t in parts.get(hl, [])]}
+            blob, hdls = OW.encode(hparts, [mats[mi] for mi in used], 0x06000000 + len(eobj))
+            eobj.extend(blob)
+            hempty = 0x06000000 + len(eobj)
+            eobj.extend(OW.ENDDL + bytes(8))
+            eobj[eoff:eoff + 8] = OW._w(0xDE010000, hdls.get(hl, hempty))
+            rom.put_object(eoid, bytes(eobj))
+            out["object_bytes"][f"{eoid:#x}"] = len(eobj)
+        return out
     objs = {oid: bytearray(rom.object(oid)) for oid in group["objects"]}
     end = (max(len(o) for o in objs.values()) + 15) & ~15
     blob, dls = OW.encode(parts, mats, 0x06000000 + end)
@@ -587,6 +703,13 @@ def npc_target(rom: OW.Rom, obj_id: int, skel_off: int, frame: list | None, grou
         score = legs + (P[roles["head"], 1] - P[roles["hip"], 1]) / H + (10 if fr is frame else 0)
         if best is None or score > best[0]:
             best = (score, W, roles, fr is frame)
+    if best is None:                                    # no pose shows two arms + two legs: read the limb tree instead
+        fr = frame or (frames[0] if frames else None)
+        W = OW.pose(skel, fr)
+        try:
+            best = (0, W, topo_roles(skel, np.array([w[:3, 3] for w in W])), frame is not None)
+        except ValueError:
+            pass
     if best is None:
         raise ValueError(f"{NAMES['objects'].get(hex(obj_id), hex(obj_id))}'s skeleton ({skel['count']} limbs) isn't "
                          "humanoid (no two arms + two legs): it can't take a character; use characters op=overlay instead")
@@ -679,6 +802,75 @@ def npc_reclaim(rom: OW.Rom, group: dict, actor_id: int | None) -> list[tuple[in
     return OW.reclaimable(obj, body, kept, words & starts, keep)
 
 
+# ---------------------------------------------------------------- any SkelAnime limb tree (the whole cast)
+
+def rigid_target(rom: OW.Rom, obj_id: int, skel_off: int, group: dict | None = None) -> dict:
+    """A skeleton that has no humanoid layout (Skulltula, Octorok, Kaepora Gaebora): posed with the first frame of an
+    animation in its object (else its bind layout); the donor rides the limb that draws the most of the body."""
+    obj = rom.object(obj_id)
+    skel = OW.skeleton(obj, skel_off)
+    frames = []
+    for oid in [obj_id] + list((group or {}).get("anim_objects", [])):
+        frames += anim_frames(rom.object(oid), skel["count"])
+    W = OW.pose(skel, frames[0] if frames else None)
+    keep = {4: rom.object(OW.OBJECT_GAMEPLAY_KEEP)}
+    mesh = OW.object_mesh(obj, skel, W, keep)
+    if not mesh["prims"]:
+        raise ValueError(f"{NAMES['objects'].get(hex(obj_id), hex(obj_id))}: the skeleton draws nothing")
+    jj = np.concatenate([p["J"] for p in mesh["prims"]])
+    body = int(np.bincount(jj).argmax())
+    tgt = target(obj, skel, W, {"hip": body}, keep)
+    return tgt | {"kind": "npc", "object": obj_id, "mode": "rigid", "rigid_limb": body,
+                  "pose": "animation" if frames else "bind"}
+
+
+def rigid_place(rig: dict, tgt: dict) -> tuple[list[dict], dict]:
+    """The donor whole and upright (its own facing: left +X, up +Y, front +Z), scaled to the target's height, standing
+    on its ground under the body limb, every vertex on that limb (moves with the body, no limb animation)."""
+    B = S.facing(rig)
+    allp = np.concatenate([p["pos"] for p in rig["prims"]]) @ B.T
+    lo, hi = allp.min(0), allp.max(0)
+    s = float(tgt["height"]) / max(float(hi[1] - lo[1]), 1e-9)
+    body = int(tgt["rigid_limb"])
+    at = np.asarray(tgt["W"][body])[:3, 3]
+    src = np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2])
+    dst = np.array([at[0], tgt["ground"], at[2]])
+    out = []
+    for p in rig["prims"]:
+        n = len(p["pos"])
+        J = np.zeros((n, 4), np.int64)
+        J[:, 0] = body
+        Wv = np.zeros((n, 4))
+        Wv[:, 0] = 1
+        out.append({"pos": (p["pos"] @ B.T - src) * s + dst, "nrm": p["nrm"] @ B.T, "uv": p["uv"], "tris": p["tris"],
+                    "J": J, "W": Wv, "tex": p["tex"], "color": p["color"], "wrap": p.get("wrap", (10497, 10497)),
+                    "name": f"m{len(out)}", "prop": bool(p.get("prop"))})
+    flipped = S._orient(out)
+    return out, {"mode": "rigid", "scale": round(s, 4), "limb": body, "normals_flipped": flipped}
+
+
+def slot_target(rom: OW.Rom, spec: dict) -> dict:
+    """A cast slot (gbox.oot_cast.slot_spec) -> the fit target: Link's roles on Link-shaped skeletons (Dark Link),
+    the guessed humanoid roles on any other SkelAnime limb tree (retarget: every limb keeps its animation), else the
+    rigid ride on the body limb. Raises ValueError only when the skeleton draws nothing."""
+    oid, off = spec["group"]["skel"]
+    keep = {4: rom.object(OW.OBJECT_GAMEPLAY_KEEP)}
+    if spec.get("shape") == "creature":                 # wings / legs / leaves are no arms: never a humanoid fit
+        return rigid_target(rom, oid, off, spec["group"]) | {"why_rigid": "a creature"}
+    if spec.get("roles_hint") == "link":
+        obj = rom.object(oid)
+        skel = OW.skeleton(obj, off)
+        if skel["count"] == 21:
+            W = OW.pose(skel, OW.link_frame(rom, IDLE_ANIM))
+            return target(obj, skel, W, dict(LINK_ROLES), keep) | {"kind": "npc", "object": oid, "mode": "retarget",
+                                                                     "pose": "Link idle"}
+    try:
+        return npc_target(rom, oid, off, spec.get("frame"), spec["group"]) | {"mode": "retarget"}
+    except ValueError as e:
+        why = str(e)
+    return rigid_target(rom, oid, off, spec["group"]) | {"why_rigid": why.split(":")[0]}
+
+
 def build(cfg, game: dict, jobs: list[dict], progress=lambda p, m: None, placements: list | None = None) -> dict:
     """jobs: [{"target": {"kind": "link", "ages": (...)} | {"kind": "npc", "actor", "actor_id", "object", "skel",
     "frame", "name"}, "meta": library entry, "model": path}] -> {rom bytes, report}. Every model goes first into the
@@ -751,6 +943,153 @@ def write_mod(cfg, game: dict, name: str, built: dict, extra: dict) -> Path:
           **extra}
     (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
     return d
+
+
+# ---------------------------------------------------------------- the whole cast in one ROM (characters op=cast_swap)
+
+def cast_slots(game: dict | None = None) -> list[dict]:
+    """The cast menu / whole-cast swap slots (gbox.oot_cast.CAST measured on the owned ROM)."""
+    from . import oot_cast
+    return oot_cast.cast_slots(game)
+
+
+def _fit_into(rom: OW.Rom, objects: list[int], allow: int, reclaim: int, attempt, slack: int = 0x200) -> tuple:
+    """Run attempt(budget) -> (fit, write report) until the written objects grew by at most `allow` (+ slack for the
+    empty list and alignment): the first budget assumes the free regions pack at 85 %, every retry takes off what it
+    overshot. Staged writes of a failed try are rolled back. -> (fit, write report, {object: grew})."""
+    before = {o: len(rom.object(o)) for o in objects}
+    budget = int(reclaim * 0.85) + allow
+    last = None
+    for _ in range(4):
+        saved = dict(rom.changed)
+        f, w = attempt(budget)
+        grew = {o: len(rom.object(o)) - before[o] for o in objects}
+        over = max(grew.values()) - allow - slack
+        if over <= 0:
+            return f, w, grew
+        rom.changed = saved
+        last = over
+        budget -= over + 0x400
+        if budget <= 0x800:
+            break
+    raise ValueError(f"the model doesn't fit: {last} bytes over what the object may grow here ({allow // 1024} KB "
+                     "left in its rooms' object space)")
+
+
+def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progress=lambda p, m: None,
+               root: Path | None = None, rom_data: bytes | None = None, strict_cutscenes: bool = False) -> dict:
+    """The whole-cast build: [(cast slot, collection entry)] -> ONE patched ROM (one gBox file mod `name`).
+    Each slot's object is rebuilt in turn on the previous slots' output: retargeted onto the slot's own skeleton
+    (humanoid roles; Link's roles on Dark Link; the rigid ride for the rest), the old model's lists / vertices /
+    textures reused first, then the object grows within what every room that loads it leaves free (gbox.oot_cast
+    growth_plan: Kokiri Forest's NPCs share ~130 KB). Grown objects get a fresh VROM range, the DMA table and
+    gObjectTable follow, the CRC is fixed (oot_writer.Rom.build). A slot that can't be rebuilt is reported with the
+    reason and the rest still build. -> {"mod", "slots": {slot: {status, reason?, mode, ...}}, "detail"}."""
+    from . import characters as C, oot_cast as OC
+    if rom_data is None:
+        rom, rom_file = rom_of(cfg, game)
+    else:
+        rom, rom_file = OW.Rom(rom_data), Path(f"{game.get('title') or 'oot'}.z64")
+    root = Path(root) if root is not None else C.library_root(cfg)
+    blender = C._blender(cfg)
+    per: dict[str, dict] = {}
+    specs = {}
+    for slot, meta in pairs:
+        try:
+            specs[slot] = OC.slot_spec(rom, slot)
+        except (ValueError, LookupError) as e:
+            per[slot] = {"status": "failed", "reason": str(e)}
+    caps: dict[int, int] = {}
+    share: dict[int, int] = {}
+    for slot, sp in specs.items():
+        objs = list(OC.LINK_OBJECTS.values()) if sp["kind"] == "link" else sp["objects"]
+        for o in objs:
+            caps[o] = OC.GROWTH_CAP["link" if sp["kind"] == "link" else "npc"]
+            share[o] = share.get(o, 0) + 1
+    plan = OC.growth_plan(rom, caps, cutscenes=strict_cutscenes)
+    allow = plan["allow"]
+    grown: dict[int, int] = {}
+    built = []
+    for k, (slot, meta) in enumerate(pairs):
+        if slot not in specs:
+            continue
+        progress(5 + 70 * k // max(1, len(pairs)), f"{meta['name']} -> {specs[slot]['name']} ({k + 1}/{len(pairs)})")
+        model = root / meta["slug"] / meta["model"]
+        work = Path(cfg.cache) / "characters_build" / "cast" / name / slot
+        saved = dict(rom.changed)
+        try:
+            roles = roles_of(meta, model, root)
+            props = [p["node"] for p in meta.get("props") or []]
+            scale = (meta.get("rig") or {}).get("scale")
+            sp = OC.slot_spec(rom, slot) if specs[slot]["kind"] == "npc" else specs[slot]   # on the previous slots' output
+            row = {"status": "built", "character": meta["slug"]}
+            if sp["kind"] == "link":
+                for age in sp["ages"]:
+                    o = LINK[age]["obj"]
+                    tgt = link_target(rom, age)
+                    regions = link_reclaim(rom, age)
+                    rec = sum(b - a for a, b in regions)
+
+                    def attempt(budget, age=age, tgt=tgt, regions=regions):
+                        f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props)
+                        return f, write_link(rom, age, f["parts"], f["mats"], regions)
+                    f, w, g = _fit_into(rom, [o], allow.get(o, 0) // share.get(o, 1), rec, attempt)
+                    grown[o] = grown.get(o, 0) + g[o]
+                    row[age] = {"triangles": f["report"]["triangles"], "grew": g[o], "code_entries": w["code_entries"]}
+                row["mode"] = "retarget (Link's roles)"
+            else:
+                tgt = slot_target(rom, sp) | {"tag": slot}
+                objs = sp["objects"]
+                room = min(allow.get(o, 0) // share.get(o, 1) for o in objs)
+                rec = sum(b - a for a, b in sp["regions"])
+
+                def attempt(budget, sp=sp, tgt=tgt):
+                    f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props)
+                    return f, write_group(rom, sp["group"], f["parts"], f["mats"], sp["regions"])
+                f, w, g = _fit_into(rom, objs, room, rec, attempt)
+                for o in objs:
+                    grown[o] = grown.get(o, 0) + g[o]
+                row |= {"mode": tgt["mode"], "triangles": f["report"]["triangles"], "grew": max(g.values()),
+                        "reused": rec, "pose": tgt.get("pose"), "textures": f["report"].get("textures"),
+                        "branched_lists": len(sp["group"].get("branch_dls", []))}
+                if tgt["mode"] == "rigid":
+                    row["note"] = (f"{sp['name']} isn't humanoid ({tgt.get('why_rigid', 'no two arms and two legs')}): "
+                                   "the character rides its body limb whole (moves with it, no limb animation)")
+            per[slot] = row
+            built.append(slot)
+        except Exception as e:                            # noqa: BLE001 - one slot never stops the cast
+            rom.changed = saved
+            per[slot] = {"status": "failed", "reason": str(e)[:500] or type(e).__name__}
+    if not built:
+        return {"mod": None, "slots": per, "detail": {"growth": plan}}
+    over = OC.space_report(rom, grown)
+    progress(80, "Rebuilding the ROM (DMA table, object table, CRC)")
+    out = rom.build()
+    check, orig = OW.Rom(out), OW.Rom(rom.data)
+    assert struct.unpack_from(">II", out, 0x10) == OW.crc6105(out), "CRC"
+    for slot in built:
+        sp = specs[slot]
+        for o, off in ([(LINK[a]["obj"], LINK[a]["skel"]) for a in sp["ages"]] if sp["kind"] == "link"
+                       else [sp["group"]["skel"]]):
+            sk = OW.skeleton(check.object(o), off)
+            assert sk["count"] == OW.skeleton(orig.object(o), off)["count"], f"{slot}: skeleton changed"
+    hard = [r for r in over if not r["cutscene"]]
+    soft = sorted({(r["scene"], r["layer"]) for r in over if r["cutscene"]})
+    detail = {"version": rom.version, "rom_bytes": len(out), "growth": plan,
+              "grew": {NAMES["objects"].get(hex(o), hex(o)): n for o, n in grown.items()}, "over_budget_rooms": hard,
+              "cutscenes_over_budget": [f"{s} (cutscene layer {lay})" for s, lay in soft]}
+    if hard:
+        detail["warning"] = (f"{len(hard)} rooms end up over the object space; the first: {hard[0]['scene']} room "
+                             f"{hard[0]['room']} (layer {hard[0]['layer']}) by {hard[0]['over'] // 1024 + 1} KB")
+    elif soft:
+        detail["warning"] = (f"{len(soft)} cutscene layers load more grown characters than their object space holds "
+                             f"(the game may crash there; e.g. {soft[0][0]} layer {soft[0][1]}); rebuild with "
+                             "strict_cutscenes to fit those too (smaller models)")
+    rec = [{"slot": s, "character": per[s]["character"], **{k: v for k, v in per[s].items() if k != "character"}}
+           for s in built]
+    write_mod(cfg, game, name, {"rom": out, "rom_file": rom_file},
+              {"writer": "gbox.oot_swap (cast)", "cast_build": rec, "detail": detail})
+    return {"mod": name, "slots": per, "detail": detail}
 
 
 def mod_name(jobs_desc: list[str]) -> str:
