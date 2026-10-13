@@ -1,0 +1,46 @@
+from gbox import auf_mp_harness as h
+
+
+def frame_with_dot(player, dx, dy, colour=(0, 100, 100)):
+    cx, cy = h.RADAR_CENTRES[player]
+    tx, ty = round(cx + dx), round(cy + dy)
+
+    def pixel(x, y):
+        if abs(x - tx) <= 1 and abs(y - ty) <= 1:
+            return colour
+        if (x, y) == (round(cx), round(cy)):
+            return (0x99, 0, 0)  # own red dot must be ignored
+        return (10, 20, 60)
+    return pixel
+
+
+def test_dot_colour_thresholds():
+    assert h.is_other_player_dot((0, 0x64, 0x64))
+    assert not h.is_other_player_dot((0x99, 0, 0))
+    assert not h.is_other_player_dot((10, 20, 60))
+
+
+def test_bearing_ahead_right_behind():
+    b, d, n = h.radar_bearing(frame_with_dot(1, 0.5, -15.5), 1)
+    assert abs(b) < 3 and 14 < d < 17 and n == 9
+    b, _, _ = h.radar_bearing(frame_with_dot(1, 15.5, 0.5), 1)
+    assert 85 < b < 95
+    b, _, _ = h.radar_bearing(frame_with_dot(2, 0.5, 15), 2)
+    assert abs(abs(b) - 180) < 5
+
+
+def test_no_dot_and_outside_radius():
+    assert h.radar_bearing(frame_with_dot(1, 0, 0, colour=(10, 20, 60)), 1) is None
+    assert h.radar_bearing(frame_with_dot(1, 40, 0), 1) is None
+
+
+def test_pause_sequences():
+    assert list(h.pause_select(1, "Restart Mission")) == ["Return", "g", "g", "g", "x", "f", "x"]
+    assert list(h.pause_select(2, "Continue Mission")) == ["6", "1"]
+    assert list(h.pause_select(1, "Quit Mission", confirm=False)) == ["Return"] + ["g"] * 4 + ["x"]
+
+
+def test_turn_key():
+    assert h.turn_key(5) is None
+    assert h.turn_key(40) == "Right"
+    assert h.turn_key(-40, player=2) == "b"
