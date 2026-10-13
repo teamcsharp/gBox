@@ -133,10 +133,14 @@ def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=Fals
             'next_paid_at': next_paid}
 
 
+LIFTABLE = ('scheduler_backoff', 'provider_exhausted_backoff')    # hermes_quota.EXHAUSTED_SOURCE
+
+
 def credit_recovered(cooldowns: dict, details: dict, balance: dict | None, now: float) -> list[str]:
     """Cooled OpenRouter routes whose account shows credit again, observed after the route was cooled: their
-    cooldown can end now instead of at the scheduler's backoff. Only a scheduler backoff is lifted (a measured reset
-    time from the provider stays), and only on a fresh, positive balance."""
+    cooldown can end now instead of at the scheduler's backoff. Only a scheduler backoff is lifted (the run backoff or
+    the long out-of-credit backoff; a measured reset time from the provider stays), and only on a fresh, positive
+    balance."""
     if not balance or not balance.get('available') or balance.get('stale'):
         return []
     remaining = balance.get('remaining_usd')
@@ -148,7 +152,7 @@ def credit_recovered(cooldowns: dict, details: dict, balance: dict | None, now: 
         if until <= now or not key.startswith('openrouter/'):
             continue
         detail = (details or {}).get(key) or {}
-        if detail.get('category') != 'quota' or detail.get('source') != 'scheduler_backoff':
+        if detail.get('category') != 'quota' or detail.get('source') not in LIFTABLE:
             continue
         if checked > (detail.get('last_failure_at') or detail.get('observed_at') or 0):
             out.append(key)
