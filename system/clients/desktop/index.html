@@ -1033,6 +1033,7 @@ window.taskVizCreate = canvas => {
     <button id="navtog" title="Hide the sidebar (more room for the game)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M16 10l-2 2 2 2"/></svg></button>
     <h1 id="brand" title="Update & relaunch: pull the latest code, restart the Spark service and this PC's worker, reload the app"><img src="../../assets/brand/gbox-logo.svg" alt=""><span>gBox<small>click to update &amp; relaunch</small></span></h1>
     <button data-s="play" class="on">Play &amp; Library</button>
+    <button data-s="mods" title="Every modded build the Spark made: pictures, what changed, Play / saved moment / screenshot">Mods</button>
     <button data-s="control">Control</button>
     <button data-s="requests">Requests</button>
     <button data-s="settings">Settings</button>
@@ -1048,6 +1049,7 @@ window.taskVizCreate = canvas => {
   <main>
     <section id="play" class="on"><div id="playhost" role="status"><span id="playmessage">Connecting to the Spark…</span>
       <button id="playretry" class="act" hidden>Retry connection</button></div></section>
+    <section id="mods"><div class="pane" style="max-width:1600px"><div id="modsgallery"></div></div></section>
     <section id="control"><div class="pane">
       <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
@@ -1141,6 +1143,10 @@ window.taskVizCreate = canvas => {
 <script src="task-activity.js"></script>
 <script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
+<script src="../web/viz/game-menu.js"></script>
+<script src="../web/viz/mods-gallery.js"></script>
+<script src="../web/viz/retarget-handles.js"></script>
+<script src="../web/viz/retarget-editor.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
@@ -1149,12 +1155,13 @@ const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&
 
 // Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
 // when it would run past the bottom, clamp it to the edges, and let it scroll inside when it is taller than the window.
-// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously).
+// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously). A shown
+// menu is "has client rects": offsetParent is always null for position:fixed, which kept this re-fit from ever running (#1562).
 function fitMenu(el, x, y, pad = 8, minTop = pad) {
   if (!el) return;
   el._fitXY = [x, y, pad, minTop];
   if (!el._fitRO && window.ResizeObserver) {
-    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.offsetParent !== null) refitMenu(el); });
+    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.getClientRects().length) refitMenu(el); });
     el._fitRO.observe(el);
   }
   refitMenu(el);
@@ -1193,10 +1200,9 @@ function dragAnywhere(el) {
 function refitMenu(el) {
   const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
   el.style.maxHeight = ""; el.style.overflowY = "";
-  const w = el.offsetWidth; let h = el.offsetHeight;
-  if (h > vh - pad - minTop) { h = vh - pad - minTop; el.style.maxHeight = h + "px"; el.style.overflowY = "auto"; }
-  const top = y + h > vh - pad ? (y - h >= minTop ? y - h : vh - pad - h) : y;      // flip above the pointer, else clamp
-  el.style.left = Math.max(pad, Math.min(x, vw - w - pad)) + "px"; el.style.top = Math.max(minTop, top) + "px";
+  const f = GBoxGameMenu.fit(x, y, el.offsetWidth, el.offsetHeight, vw, vh, pad, minTop);   // flip above the pointer, else clamp
+  if (f.maxHeight != null) { el.style.maxHeight = f.maxHeight + "px"; el.style.overflowY = "auto"; }
+  el.style.left = f.left + "px"; el.style.top = f.top + "px";
 }
 const volumeSlider = $("#top-volume input"), volumeLabel = $("#top-volume output");
 let volumeTimer;
@@ -1232,6 +1238,7 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
   if (b.dataset.s === "control") refresh();
   if (b.dataset.s === "requests") refreshInbox();
+  if (b.dataset.s === "mods") modsGalleryOpen();
 });
 $("#chat-home").onclick = () => viewAction("library");
 // Keep the input's size independent of the microphone wrapper added after the Spark connects.
@@ -2934,6 +2941,48 @@ document.addEventListener("click", e => {
 }, true);
 document.addEventListener("contextmenu", e => { const f = e.target.closest(".reqmod"); if (!f) return;
   const m = MODS.list.find(x => x.id === f.dataset.mod); if (m?.video) { e.preventDefault(); modPlay(m, "video"); } });
+// ---- Mods view: every modded build the Spark made (../web/viz/mods-gallery.js over GET /api/mods/built) ----
+// Pictures open in the texture pop-up (#186); Play on this PC goes through the mod card (modPlay: same PC, same moment,
+// auto report on failure), another PC through the @launch job; Open request shows the thread in Requests.
+const MODSG = { ctl: null };
+async function modsGalleryOpen() {
+  if (MODSG.ctl) { MODSG.ctl.load(0); return MODSG.ctl; }
+  const tok = encodeURIComponent(S.tok || await gbox.token());
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: GBoxLivePoll, here: S.workerName || "windows",
+    url: u => /^(https?|data|blob):/.test(u) ? u : `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    visible: () => $("#mods").classList.contains("on"), openImages: (list, i, at) => texPopOpen(list, i, at),
+    toast: t => toast(t, 8000), play: modsGalleryPlay, openRequest: modsGalleryRequest });
+  return MODSG.ctl;
+}
+async function modsGalleryPlay(m, { node, moment }) {
+  if (node === (S.workerName || "windows") && m.card_id) {
+    const r = await gbox.api(`/api/mods?game_id=${encodeURIComponent(m.game_id)}`);
+    const card = r.ok && r.data.find(c => c.id === m.card_id);
+    if (card) {
+      MODS.list = [...MODS.list.filter(x => x.id !== card.id), card];
+      return modPlay(card, moment && card.state_slot != null ? "moment" : "play");
+    }
+  }
+  const what = `Launch of ${m.mod_title || m.name}`;
+  const j = await jobWait(jobOf(await gbox.api("/api/jobs", { tool: "@launch", input: { game_id: m.game_id, mod: m.name, node } }), what), what, 1000);
+  if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
+  const sid = j.output?.session_id;
+  if (moment && m.state_slot != null && sid) {
+    await new Promise(r => setTimeout(r, 8000));                     // let the core boot before loading a state
+    await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid);
+  }
+  toast(`${m.mod_title || m.name}: launched on ${node}`);
+  return sid;
+}
+async function modsGalleryRequest(t) {
+  if (!t.id) { toast(`Request #${t.number} is not in the inbox`); return; }
+  openThreads.add(t.id);
+  document.querySelector('aside button[data-s="requests"]').click();
+  await Promise.resolve(refreshInbox()).catch(() => {});
+  const card = document.querySelector(`#reqlist .req[data-id="${CSS.escape(t.id)}"]`);
+  if (card) card.scrollIntoView({ block: "start", behavior: "smooth" }); else reportGraphOpen(t.id);   // older than the page
+}
 // A click on the docked native game window never reaches this page: close transient menus on focus loss (#1423).
 addEventListener("blur", () => { for (const id of ["#reqmenu", "#chipmenu", "#testpcmenu"]) { const m = $(id); if (m) m.style.display = "none"; } });
 // Right-click anything in the app and file a specific request about it (#1386). Element-level menus (capture,
@@ -5037,7 +5086,15 @@ async function castSwapOpen(gid, title) {
   const tok = encodeURIComponent(await gbox.token());
   const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   return GBoxCastSwap.open(document, { api, img: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
-    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000) }, { gid, title });
+    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000), retarget: retargetOpen }, { gid, title });
+}
+// Retarget editor (../web/viz/retarget-editor.js; gbox/retarget_profile.py): how a collection character is scaled and
+// proportioned into one game's slot. Opened from the cast plan rows (✎) and the pick-whip card menu.
+async function retargetOpen(o) {
+  const tok = encodeURIComponent(await gbox.token());
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  return GBoxRetargetEditor.open(document, { api, url: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    drag: dragAnywhere, confirm: s => confirm(s), onSaved: st => toast(`Retarget profile saved for ${st.name || st.slug}: the next build uses it`, 6000) }, o);
 }
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();
@@ -5130,6 +5187,7 @@ async function whipCardMenu(card, gp, ev) {
     <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
+    <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
     <button data-w="x"><span>…</span>Something else (type it)</button>`;
   m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
   if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
@@ -5148,6 +5206,11 @@ async function whipCardMenu(card, gp, ev) {
     }
     m.classList.remove("on");
     T.name = m.querySelector("#whip-target-name")?.value.trim() || T.name;
+    if (bt.dataset.w === "retarget") {                        // the Retarget editor for this donor in this game
+      if (!/^[0-9a-f]{16}$/.test(EMB.game || "")) { toast("Open the game first: the Retarget editor needs its game id."); return; }
+      retargetOpen({ slug: card.slug, name: card.name, gid: EMB.game, title: EMB.title || "", slot: "player" });  // the editor's slot picker lists the game's other slots
+      return;
+    }
     if (!targetSid || EMB.sid !== targetSid) { toast("The selected game changed; pick the target again."); return; }
     const reportContext = { sid: targetSid, game, model: card.name, character: card.slug,
       target: T.name, targetKind: T.kind, x: +f[0].toFixed(4), y: +f[1].toFixed(4), moment: at, shot };

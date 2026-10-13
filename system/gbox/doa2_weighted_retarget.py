@@ -156,7 +156,7 @@ def load_rig(path: Path, roles: dict, props=()):
     if not primitives:
         raise ValueError('DOA donor has no triangle primitives')
     return {'joints': np.array([wn[node][:3, 3] for node in jn]), 'parent': parents,
-            'roles': ri, 'prims': primitives, 'names': names,
+            'roles': ri, 'prims': primitives, 'names': names, 'source': str(path),
             'influence_policy': 'all glTF influence sets preserved; no strongest-owner reduction'}
 
 
@@ -266,13 +266,15 @@ def retarget(rig: dict, target: dict, scale=None, jmap=None):
                     'owner': native_j[:, 0], 'logical_vertex_id': logical, 'name': f'm{primitive_id}'})
     flipped = S._orient(out)
     influence_counts = np.concatenate([np.count_nonzero(p['W'] > 1e-8, axis=1) for p in out])
-    return out, {'influence_policy': 'all mapped weights preserved; weighted role fit; no native seam reduction',
+    report = {'influence_policy': 'all mapped weights preserved; weighted role fit; no native seam reduction',
                  'logical_vertices': logical_keys.count, 'vertices': len(influence_counts),
                  'blended_vertices': int(np.count_nonzero(influence_counts > 1)),
                  'max_influences': int(influence_counts.max()),
                  'scale': s, 'torso_up': upper / s, 'torso_down': lower / s, 'shoulder_widen': widen,
                  'head_scale': head_scale, 'limb_stretch': stretch, 'normals_flipped': flipped,
                  'roles_used': sorted(ri), 'facing': basis.tolist(), 'runtime_verified': False}
+    # Fitting pop-up stages and the operator's retarget profile (weights blend the role adjustments per vertex).
+    return S._profiled(rig, target, out, report, scale, destination, jmap)
 
 
 def read_rigged(path: Path, target_roles: dict):
