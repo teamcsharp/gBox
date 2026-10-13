@@ -125,6 +125,32 @@ def _parse_request(request: str) -> tuple[str, str]:
     return r.strip(), ""
 
 
+_EVERYONE = r"(?:everyone|everybody|every character|all (?:the )?characters|the (?:entire |whole )?cast|(?:the )?entire cast|(?:the )?whole cast|all of them)"
+_CAST_RX = [
+    # "replace everyone in PSO with wrestlers", "replace the entire cast of PSO with the entire cast of JGR"
+    re.compile(rf"(?:replace|swap|change|turn|make)\s+{_EVERYONE}\s+(?:in|of)\s+(?P<target>.+?)\s+(?:with|into|to|as)\s+"
+               rf"(?:the\s+)?(?:(?:entire|whole)\s+cast\s+of\s+|characters\s+(?:from|of)\s+|cast\s+of\s+)?(?P<source>.+)"),
+    # "make PSO's cast the wrestlers", "PSO cast as wrestlers"
+    re.compile(r"(?P<target>.+?)(?:'s)?\s+(?:entire\s+|whole\s+)?cast\s+(?:as|with|replaced by)\s+(?:the\s+)?(?P<source>.+)"),
+    # "everyone in PSO as Jet Grind Radio characters"
+    re.compile(rf"{_EVERYONE}\s+in\s+(?P<target>.+?)\s+(?:as|with)\s+(?:the\s+)?(?P<source>.+)"),
+]
+
+
+def parse_cast_request(request: str) -> tuple[str, str] | None:
+    """A whole-cast request -> (target game, source game / group), else None. 'replace everyone in PSO with
+    wrestlers' -> ('pso', 'wrestlers'): routed to characters op=cast_swap, not a one-character swap."""
+    r = re.sub(r"[.!?]+$", "", (request or "").strip().lower())
+    for rx in _CAST_RX:
+        m = rx.search(r)
+        if m:
+            src = re.sub(r"\s+(?:characters|character models|models|cast|roster|guys|ones)$", "", m.group("source").strip())
+            src = re.sub(r"^(?:characters|the characters)\s+(?:from|of)\s+", "", src)
+            tgt = re.sub(r"^(?:the\s+)?(?:game\s+)?", "", m.group("target").strip())
+            return tgt, src
+    return None
+
+
 def _slot_default(game: dict) -> str:
     """Pick a sensible default slot for a game that has a native writer."""
     title = (game.get("title") or "").lower()
@@ -282,6 +308,13 @@ def mashup(inp: MashupIn, ctx):
     if not inp.request.strip() and not (inp.source and inp.target):
         raise ValueError("Provide a request string, or both source and target")
 
+    cast = parse_cast_request(inp.request) if inp.request.strip() else None
+    if cast:                                              # "replace everyone in PSO with wrestlers": one whole-cast mod
+        result = _cast_plan(cast, inp, ctx)
+        ctx.artifact("mashup-plan.json", json.dumps(result, indent=2).encode(), "application/json",
+                     request=inp.request, target=result["understood"].get("target_game_id"), source=cast[1])
+        return {"result": result}
+
     parsed_source, parsed_target = _parse_request(inp.request) if inp.request.strip() else ("", "")
     source_name = (inp.source or parsed_source).strip()
     target_name = (inp.target or parsed_target).strip()
@@ -321,6 +354,34 @@ def mashup(inp: MashupIn, ctx):
                  request=inp.request, target=game.get("game_id") if game else None,
                  source=character.get("slug") if character else None)
     return {"result": result}
+
+
+def _cast_plan(cast: tuple[str, str], inp: MashupIn, ctx) -> dict:
+    """A whole-cast request: characters op=cast_swap target_game=<game> source=<game | group> (gbox.cast_swap)."""
+    from .cast_swap import expand
+    target_name, source_name = (inp.target or cast[0]), (inp.source or cast[1])
+    game = _resolve_game(expand(target_name), ctx)
+    call = {"op": "cast_swap", "target_game": (game or {}).get("game_id") or target_name, "source": source_name,
+            "mapping": "auto", "launch": False}
+    steps = [{"step": 1, "action": "identify_target", "status": "ok" if game else "needed",
+              "detail": f"Target game: {game.get('title')} ({game.get('game_id')})" if game else
+              f"Could not resolve the game {target_name!r}"},
+             {"step": 2, "action": "cast_swap", "status": "needed",
+              "detail": f"characters op=cast_swap target_game={call['target_game']} source={source_name!r}: every "
+                        "replaceable slot gets a donor of the source cast, built as one mod (plan_only=true first to "
+                        "review the assignments)"}]
+    jobs, status = [], "unresolvable" if not game else "ready_to_dispatch"
+    if game and inp.auto_dispatch and not inp.dry_run:
+        j = _dispatch_job(ctx, "characters", call, limit=14400)
+        jobs.append({"tool": "characters", "op": "cast_swap", "game_id": game["game_id"], "job": j})
+        steps[1]["status"] = "dispatched"
+        status = "dispatched_succeeded" if j.get("state") == "succeeded" else "dispatched_failed"
+    return {"request": inp.request, "kind": "cast_swap",
+            "understood": {"target_name": target_name, "target_game_id": (game or {}).get("game_id"),
+                           "target_title": (game or {}).get("title"), "source_name": source_name},
+            "call": {"tool": "characters", "input": call}, "plan": steps,
+            "jobs": [{k: v for k, v in j.items() if k != "job"} for j in jobs], "job_details": [j["job"] for j in jobs],
+            "status": status, "next_action": _next_action(status), "dry_run": inp.dry_run or not inp.auto_dispatch}
 
 
 def _next_action(status: str) -> str:
