@@ -282,3 +282,44 @@ def test_capture_for_an_ended_session_is_stopped_not_a_repair(observer):
         failed_frame(o, 'game session ended before the job could run')
     row = o.store.get('session_observer', 'worker-launch')
     assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')
+
+
+def test_worker_without_the_session_is_stopped_not_a_repair(observer):
+    # #1371 live check: after stop_game, get_frame jobs c4e81d36dcd849d5, b4e56aadc55246f8 and bf333fafb5c64d78
+    # reached the worker, which no longer had the session and failed with KeyError('<session id>').
+    o = observer
+    o.sample(o.session)
+    for _ in range(4):
+        failed_frame(o, "KeyError: 'worker-launch'")
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0
+    assert not o.store.all('request') and all(c[0] != '/api/requests' for c in o.calls)
+
+
+def test_other_key_errors_still_count_toward_one_capture_repair(observer):
+    o = observer
+    for _ in range(3):
+        failed_frame(o, "KeyError: 'sha256'")
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'blocked' and row['failures'] == 3 and len(o.store.all('request')) == 1
+
+
+def test_any_capture_failure_after_the_session_ended_is_stopped(observer):
+    o = observer
+    o.sample(o.session)
+    o.store.put('session', 'worker-launch', o.session | {'state': 'ended'})
+    for _ in range(3):
+        failed_frame(o, 'RuntimeError: ffmpeg exited with status 1')
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')
+
+
+def test_worker_session_gone_is_stopped_not_a_repair(observer):
+    # Workers since #840 raise tools.SessionGone instead of a bare KeyError for a session they no longer hold.
+    o = observer
+    o.sample(o.session)
+    for _ in range(4):
+        failed_frame(o, 'SessionGone: This game session (worker-launch) is no longer running on this PC: the worker '
+                        'restarted or another game replaced it. Relaunch the game to continue.')
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')
