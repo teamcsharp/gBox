@@ -895,6 +895,47 @@ def create_app(config: Config) -> FastAPI:
                         "collection": auto_collection.status(gid)}
         return {"extractor": None, "roster": [], "collection": auto_collection.status(gid)}
 
+    # whole-cast swap (gbox/cast_swap.py): the "Replace entire cast with..." menu's sources and plan; the build is a
+    # characters op=cast_swap job on the Spark
+    def _cast_chars():
+        from . import characters as C
+        root = C.library_root(config)
+        return [m | {"preview_url": f"/api/characters/{m['slug']}/preview"} for m in C.list_all(root)], root
+
+    @app.get("/api/cast_swap/sources")
+    def cast_swap_sources(game_id: str = "", actor=Depends(auth)):
+        """Source games / groups of the collection (usable donors after the costume dedupe) and, for game_id, the
+        target's replaceable slots."""
+        from . import cast_swap
+        chars, _root = _cast_chars()
+        out = {"sources": cast_swap.source_groups(chars)}
+        if game_id:
+            g = store.catalog_get(game_id) or _404()
+            out["slots"] = cast_swap.slot_rows(g)
+        return out
+
+    class CastPlanIn(BaseModel):
+        game_id: str
+        source: str = ""
+        mapping: str = "auto"
+        seed: str = ""
+        slots: str = "all"
+        assignments: list[dict] = []
+
+    @app.post("/api/cast_swap/plan")
+    def cast_swap_plan(inp: CastPlanIn, actor=Depends(auth)):
+        """The planned assignments (target slot -> donor) without building; stale donors are flagged, not re-read."""
+        from . import cast_swap
+        g = store.catalog_get(inp.game_id) or _404()
+        chars, root = _cast_chars()
+        if not inp.source:
+            return {"status": "needs_source", "sources": cast_swap.source_groups(chars), "slots": cast_swap.slot_rows(g)}
+        try:
+            return cast_swap.plan(g, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments,
+                                  root if root.is_dir() else None)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
     @app.get("/api/character-collection/policy")
     def collection_policy(actor=Depends(auth)):
         return auto_collection.policy()

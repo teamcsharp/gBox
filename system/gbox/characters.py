@@ -557,7 +557,7 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
+    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap
     character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
@@ -589,6 +589,14 @@ class CharIn(BaseModel):
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
     pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+    # cast_swap (gbox.cast_swap): the entire cast of target_game replaced by the cast of source, one mod
+    target_game: str = ""                  # cast_swap: the game whose cast is replaced (catalog id or title; default game/game_id)
+    source: str = ""                       # cast_swap: the donor cast: a game id / title / abbreviation (JGR, SA2) or a group (wrestlers, fighters), comma-joined
+    mapping: str = "auto"                  # cast_swap: auto | random | by_role (lead on the player, body size on the rest)
+    seed: str = ""                         # cast_swap: the same seed builds the same plan
+    slots: str = "all"                     # cast_swap: all | main | enemies | pedestrians | ... | a comma list of slot names
+    assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
+    plan_only: bool = False                # cast_swap: return the plan without building
 
     @model_validator(mode="after")
     def require_named_character(self):
@@ -1460,6 +1468,28 @@ def dedicated_entries(config, game, name, roster):
     return entries
 
 
+# extractor -> (module with READER_VERSION [and needs_refresh(meta)], the meta field its entries record the version in;
+# entries without the field were made by version 1). A newer reader re-extracts older entries (extract_dedicated,
+# the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader")}
+
+
+def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
+    """{extractor, entry, current, stale} for an entry whose DEDICATED reader is versioned, else None."""
+    if extractor is None:
+        s = meta.get("source") or {}
+        t, plat = (s.get("game_title") or "").lower(), s.get("platform") or ""
+        extractor = next((n for n, test, _r, _run in DEDICATED if test(t, plat)), None)
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    mod = importlib.import_module(spec[0])
+    current, have = int(getattr(mod, "READER_VERSION", 1)), int(meta.get(spec[1]) or 1)
+    stale = mod.needs_refresh(meta) if callable(getattr(mod, "needs_refresh", None)) else have < current
+    return {"extractor": extractor, "entry": have, "current": current, "stale": bool(stale)}
+
+
 # extractor -> body roles read from an entry's stored model, for entries collected before the reader reported roles
 ROLE_BACKFILL = {"sm64": sm64_mario_roles,
                  "pso": lambda path: __import__("gbox.pso_player", fromlist=["x"]).model_roles(path)}
@@ -1584,8 +1614,8 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            refresh = _doa2_needs_refresh(ctx, game, existing) or (
-                name == "jgr" and __import__("gbox.jgr", fromlist=["x"]).needs_refresh(existing))   # #1396
+            refresh = _doa2_needs_refresh(ctx, game, existing) or bool(
+                (reader_status(existing, name) or {}).get("stale"))           # an older reader made it (JGR v1, #1396)
             if verify_entry(root, existing)['ok'] and not refresh:
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
@@ -2117,7 +2147,10 @@ def characters_tool(inp: CharIn, ctx):
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
-    add character=<new name> from_clipboard=true|artifact|path: store an edited model."""
+    add character=<new name> from_clipboard=true|artifact|path: store an edited model. |
+    cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role] [seed]
+    [slots=all|main|enemies] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
+    another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
     if inp.op == "mgs_vr_decode":                    # internal Windows handoff for the native reader
         from . import mgs_vr_swap
         game = _game(ctx, inp)
@@ -2131,6 +2164,9 @@ def characters_tool(inp: CharIn, ctx):
         return {"result": {"status": "decoded", "model": "Solid Snake (VR Missions)", "bytes": len(data)}}
     if inp.op == "collect":
         return {"result": collect(ctx, inp)}
+    if inp.op == "cast_swap":                                 # the whole cast of one game as another's (gbox.cast_swap)
+        from . import cast_swap
+        return {"result": cast_swap.run(ctx, inp)}
     if inp.op in ("extract", "add", "blender"):
         res = {"extract": extract, "add": add_model, "blender": to_blender}[inp.op](ctx, inp)
         return {"result": _finish(ctx, res) if inp.op != "blender" else res}

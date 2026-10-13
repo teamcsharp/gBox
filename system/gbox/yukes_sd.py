@@ -1091,6 +1091,11 @@ ROSTER_NAMES = [(0, "The Rock"), (1, "Stone Cold"), (2, "The Undertaker"), (3, "
                 (65, "Cactus Jack"), (66, "Steven Richards"), (67, "Debra")]
 
 
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per wrestler (every costume), the names op=match resolves."""
+    return [{"slot": n, "name": n, "kind": "wrestler", "group": i, "writer": "gbox.yukes_sd"} for i, n in ROSTER_NAMES]
+
+
 def extract_run(ctx, game, e, work):
     """characters.DEDICATED run: the wrestler's costume 0 (head + body + legs, standing pose, one rigid joint per
     vertex) with its own TIM textures."""

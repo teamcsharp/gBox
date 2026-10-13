@@ -1139,6 +1139,7 @@ window.taskVizCreate = canvas => {
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/process-popup.js"></script>
+<script src="../web/viz/cast-swap.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
@@ -5006,12 +5007,22 @@ function chipMenu(chip, e) {                                   // a conversation
   let m = $("#chipmenu"); if (!m) { m = document.createElement("div"); m.id = "chipmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:220px;font-size:13px;display:block";
   m.innerHTML = `<button class="act" data-load style="width:100%;text-align:left">▶ Load ${esc(chip.dataset.t)}</button>
+    <button class="act" data-cast style="width:100%;text-align:left;margin-top:4px">Replace entire cast with…</button>
     <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>`;
   fitMenu(m, e.clientX, e.clientY, 8, 40);
   m.onclick = ev => { const b = ev.target.closest("button"); if (!b) return; m.style.display = "none";
-    if (b.dataset.load !== undefined) playInView(chip.dataset.g); else chip.closest(".ci")?.click(); };
+    if (b.dataset.load !== undefined) playInView(chip.dataset.g);
+    else if (b.dataset.cast !== undefined) castSwapOpen(chip.dataset.g, chip.dataset.t);
+    else chip.closest(".ci")?.click(); };
   const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
   setTimeout(() => document.addEventListener("mousedown", close), 0);
+}
+// "Replace entire cast with…" (gbox/cast_swap.py; the dialog is ../web/viz/cast-swap.js, the library's game menu has it too)
+async function castSwapOpen(gid, title) {
+  const tok = encodeURIComponent(await gbox.token());
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  return GBoxCastSwap.open(document, { api, img: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000) }, { gid, title });
 }
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();

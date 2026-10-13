@@ -329,6 +329,71 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
             "source_sha256": orig, "new_sha256": want, "img_bytes": new_img.stat().st_size, "launch": meta["launch"]}
 
 
+def cast_slots_live(ctx, game: dict) -> list[dict]:
+    """The whole-cast swap's slots off the install: Tommy, then every ped on his skeleton (ped:<dff>); none on a
+    Definitive Edition install (no gta3.img)."""
+    from . import characters as C
+    inst = locate_install(C._rom(ctx, game))
+    if inst["kind"] != "classic":
+        return []
+    img = ImgArchive(inst["img"], inst["dir"])
+    ide = Path(inst["ide"]).read_text("utf-8", "replace") if inst.get("ide") else None
+    return [{"slot": "player", "name": "Tommy Vercetti", "kind": "player", "writer": "gbox.gta_vc_swap"}] + \
+        [{"slot": f"ped:{m}", "name": m, "kind": "pedestrian", "writer": "gbox.gta_vc_swap"} for m in ped_family(img, ide)]
+
+
+def build_cast(cfg, game: dict, rom: Path, pairs: list[tuple[str, dict]], name: str, progress=None,
+               root: Path | None = None) -> dict:
+    """The whole-cast swap's Vice City pairs path: [(player | ped:<dff>, donor meta)] -> every .dff/.txd fitted to its
+    own donor, gta3.img + gta3.dir rebuilt once into one filemods copy of the install (never the install itself).
+    -> {mod, slots {slot: {status, reason?}}}."""
+    from . import characters as C, filemods
+    progress = progress or (lambda p, m: None)
+    root = Path(root or C.library_root(cfg))
+    inst = locate_install(rom)
+    if inst["kind"] != "classic":
+        why = (f"{inst['kind']} install at {inst['root']}: no models/gta3.img (the writer covers the classic RenderWare "
+               "PC port only)")
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": why} for s, _m in pairs}}
+    work = Path(cfg.cache) / "characters_build" / name
+    work.mkdir(parents=True, exist_ok=True)
+    img = ImgArchive(inst["img"], inst["dir"])
+    txds = ped_txds(inst)
+    bl = C._blender(cfg)
+    rep, slots, orig = {}, {}, {}
+    for k, (slot, meta) in enumerate(pairs):
+        progress(5 + 60 * k / max(1, len(pairs)), f"{slot} <- {meta.get('name')} ({k + 1}/{len(pairs)})")
+        try:
+            kind, target = parse_slot(slot)
+            if kind not in ("player", "ped"):
+                raise ValueError(f"{slot} covers several peds: give each ped:<dff> its own donor")
+            model = "player" if kind == "player" else target
+            roles = (meta.get("rig") or {}).get("roles") or {}
+            if not roles:
+                raise ValueError(f"{meta.get('name')} has no body roles (rig.roles)")
+            f = swap_files(img, root / meta["slug"] / meta["model"], roles, work, bl, None, model,
+                           txds.get(model.lower(), model))
+        except Exception as e:                             # noqa: BLE001 - one ped never stops the cast
+            slots[slot] = {"status": "failed", "reason": str(e)[:400]}
+            continue
+        rep[f"{f['model']}.dff"], rep[f"{f['txd']}.txd"] = f["dff"], f["txd_bytes"]
+        orig |= f["orig_sha256"]
+        slots[slot] = {"status": "built", "triangles": f["triangles"]}
+    if not rep:
+        return {"mod": None, "slots": slots}
+    progress(70, f"Rebuilding gta3.img ({len(rep)} entries replaced)")
+    new_img = work / "gta3.img"
+    new_dir = img.rebuild(new_img, rep)
+    r = filemods.build(cfg, game["game_id"], Path(inst["exe"]), name, {"models/gta3.img": {"from": new_img},
+                                                                        "models/gta3.dir": {"bytes": new_dir}}, progress)
+    out = Path(r["dir"])
+    rec = json.loads((out / ".gbox-mod.json").read_text())
+    rec |= {"entries": sorted(rep), "source_sha256": orig, "new_sha256": {n: _sha(b) for n, b in rep.items()},
+            "install_kind": "classic", "exe": Path(inst["exe"]).name, "built": time.time()}
+    (out / ".gbox-mod.json").write_text(json.dumps(rec))
+    return {"mod": name, "slots": slots}
+
+
 # ---------------------------------------------------------------------------------------------- characters op=use
 def use(ctx, meta: dict, game: dict, inp) -> dict:
     """characters op=use for Vice City PC: build gtavc_<slug>[_<slot>] unless it exists, record the target, launch it

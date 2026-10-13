@@ -104,7 +104,9 @@ def cast_slots(game: dict) -> list[dict]:
     m = _mod(w["writer"].split(".")[-1])
     if m is not None and callable(getattr(m, "cast_slots", None)):
         try:
-            out += [dict(s, writer=s.get("writer", w["writer"])) for s in m.cast_slots()]
+            fn = m.cast_slots
+            rows = fn(game=game) if "game" in inspect.signature(fn).parameters else fn()   # per-title rosters (WCW)
+            out += [dict(s, writer=s.get("writer", w["writer"])) for s in rows]
         except Exception:                                  # noqa: BLE001 - a writer that can't list keeps its fixed slots
             pass
     for s in w["slots"]:
