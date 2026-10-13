@@ -512,11 +512,12 @@ class SessionObservers:
         created = self.api('/api/requests', request)
         return created['id']
 
-    def _models(self, session):
+    def _models(self, session, schedule=True):
         gid, sid = session['game_id'], session['session_id']
         game = self.store.catalog_get(gid) or {'game_id': gid, 'title': session.get('title', '')}
-        self.collection.after_launch({'input': {'game': game}}, {'session_id': sid},
-                                     lambda request: self.api('/api/jobs', request))
+        if schedule:
+            self.collection.after_launch({'input': {'game': game}}, {'session_id': sid},
+                                         lambda request: self.api('/api/jobs', request))
         status = self.collection.status(gid)
         result = status.get('result') or {}
         if status['state'] in ('unsupported', 'failed', 'rejected', 'cancelled') or result.get('status') == 'partial':
@@ -530,6 +531,10 @@ class SessionObservers:
         age = session.get('last_frame_age')
         if age is not None and age <= 5:
             return self.api('/api/sessions/' + sid + '/frame.jpg', binary=True)
+        if age is not None:
+            # A streamed session whose source is stale: the stream (and probably the machine) is struggling. A
+            # get_frame job would start one more ffmpeg grab on that machine; wait for the stream instead.
+            raise WaitingForFrame(f'The game stream is stalled ({age:.0f} s since its last frame); waiting for it')
         job = self.store.get('job', record.get('frame_job_id') or '') or {}
         if job and job.get('state') in ('queued', 'running', 'cancelling'):
             if job.get('created') and self.clock() - job['created'] > 90:
@@ -658,7 +663,10 @@ class SessionObservers:
                 continue
             if now - row.get('models_checked', 0) >= 60:
                 try:
-                    self._models(session)
+                    # Native collection (characters op=collect) runs on the Linux node. While the operator plays on
+                    # that same machine it would compete with their game for CPU and disk, so it waits until they
+                    # stop (docs/stream-stability.md); its status is still reported.
+                    self._models(session, schedule=worker.get('os') != 'linux')
                 except Exception as exc:
                     self._put(sid, models={'state': 'blocked', 'error': str(exc)[:600]}, models_checked=now)
         # Fair, bounded admission: waiting sessions cannot be starved by insertion order.

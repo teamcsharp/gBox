@@ -1,0 +1,109 @@
+[INFO] RetroArch 1.22.2 (Git 1e9dec8)
+[INFO] === Build =================================================
+[INFO] CPU Model Name: Intel(R) Core(TM) i9-10900X CPU @ 3.70GHz
+[INFO] Capabilities: MMX MMXEXT SSE SSE2 SSE3 SSSE3 SSE4 SSE42 AES PCLMUL AVX AVX2 AVX512 FMA3 LZCNT 
+[INFO] Version: 1.22.2
+[INFO] Git: 1e9dec8
+[INFO] Built: Oct  5 2026
+[INFO] ===========================================================
+[INFO] [Input] Found input driver: "dinput".
+[INFO] [Core] Loading dynamic libretro core from: "D:\gBox\runtime\cores\flycast_libretro.dll".
+[INFO] [Override] Redirecting save file to "D:\gBox\runtime\saves\Flycast\Dead or Alive 2 - Limited Edition (Japan).srm".
+[INFO] [Override] Redirecting save state to "D:\gBox\runtime\states\Flycast\Dead or Alive 2 - Limited Edition (Japan).state".
+[INFO] [Environ] GET_VFS_INTERFACE. Core requested version >= V3, providing V5.
+[INFO] [Environ] GET_CORE_OPTIONS_VERSION.
+[INFO] [Environ] GET_LANGUAGE: "0".
+[INFO] [Environ] SET_CORE_OPTIONS_V2_INTL.
+[INFO] [Environ] SET_CONTROLLER_INFO.
+[INFO] [Environ] SET_SUPPORT_NO_GAME: yes.
+[INFO] [Environ] GET_LED_INTERFACE.
+[INFO] [Environ] GET_LOG_INTERFACE.
+[INFO] [Environ] GET_PERF_INTERFACE.
+[INFO] [Environ] SET_PIXEL_FORMAT: XRGB8888.
+[INFO] [Environ] SET_KEYBOARD_CALLBACK.
+[INFO] [Environ] GET_DISK_CONTROL_INTERFACE_VERSION.
+[INFO] [Environ] SET_DISK_CONTROL_EXT_INTERFACE.
+[libretro INFO] [VMEM] Info: nvmem is enabled
+[libretro INFO] [VMEM] BASE 00007ff4896a0000 RAM(16 MB) 00007ff4956a0000 VRAM64(8 MB) 00007ff48d6a0000 ARAM(2 MB) 00007ff4a96a0000
+[INFO] [Content] Content loading skipped. Implementation will load it on its own.
+[libretro INFO] [BOOT] retro_load_game: D:\gBox\cache\1de2e7634f3161ff\Dead or Alive 2 - Limited Edition (Japan).chd
+[INFO] [Environ] GET_RUMBLE_INTERFACE.
+[INFO] [Environ] GET_SYSTEM_DIRECTORY: "D:\gBox\runtime\system".
+[INFO] [Environ] GET_SAVE_DIRECTORY: "D:\gBox\runtime\saves\Flycast".
+[ERROR] [Environ] GET_VARIABLE: reicast_dump_unique_textures - Invalid value.
+[libretro INFO] File extension is: .chd
+[INFO] [Environ] GET_PREFERRED_HW_RENDER, video driver: "gl"...
+[INFO] [Environ] GET_PREFERRED_HW_RENDER: RETRO_HW_CONTEXT_OPENGL.
+[INFO] [Environ] SET_HW_RENDER, context type: gl.
+[INFO] [HW] Requesting OpenGL context.
+[libretro INFO] [VMEM] Info: nvmem is enabled
+[libretro INFO] [VMEM] BASE 00007ff4896a0000 RAM(16 MB) 00007ff4956a0000 VRAM64(8 MB) 00007ff48d6a0000 ARAM(2 MB) 00007ff4a96a0000
+[ERROR] [Environ] GET_VARIABLE: reicast_dump_unique_textures - Invalid value.
+[libretro INFO] [BOOT] Game ID is [T3601M]
+[libretro INFO] [BOOT] USA region not supported. Using Japan instead
+[INFO] [Environ] GET_SYSTEM_DIRECTORY: "D:\gBox\runtime\system".
+[libretro INFO] [BOOT] Game ID is [T3601M]
+[INFO] [Environ] SET_ROTATION: "0" (0 deg).
+[INFO] [SRAM] Skipping SRAM load.
+[INFO] [Core] Version of libretro API: 1, Compiled against API: 1
+[INFO] [Core] Geometry: 640x480, Aspect: 1.3333, FPS: 59.9453, Sample rate: 44100 Hz.
+[INFO] [Video] Set video size to: 1920x1440.
+[INFO] [Video] Using HW render, OpenGL driver forced.
+[INFO] [Video] Using configured "gl" driver for GL HW render.
+[INFO] [GL] Found GL context: "wgl".
+[INFO] [GL] Detecting screen resolution: 3440x1440.
+[INFO] [WGL] Extensions: WGL_ARB_buffer_region WGL_ARB_create_context WGL_ARB_create_context_no_error WGL_ARB_create_context_profile WGL_ARB_create_context_robustness WGL_ARB_context_flush_control WGL_ARB_extensions_string WGL_ARB_make_current_read WGL_ARB_multisample WGL_ARB_pbuffer WGL_ARB_pixel_format WGL_ARB_pixel_format_float WGL_ARB_render_texture WGL_ATI_pixel_format_float WGL_EXT_colorspace WGL_EXT_create_context_es_profile WGL_EXT_create_context_es2_profile WGL_EXT_extensions_string WGL_EXT_framebuffer_sRGB WGL_EXT_pixel_format_packed_float WGL_EXT_swap_control WGL_EXT_swap_control_tear WGL_NVX_DX_interop WGL_NV_DX_interop WGL_NV_DX_interop2 WGL_NV_copy_image WGL_NV_delay_before_swap WGL_NV_float_buffer WGL_NV_multisample_coverage WGL_NV_multigpu_context WGL_NV_render_depth_texture WGL_NV_render_texture_rectangle 
+[INFO] [WGL] Adaptive VSync supported.
+[INFO] [GL] Vendor: NVIDIA Corporation, Renderer: NVIDIA GeForce RTX 3070/PCIe/SSE2.
+[INFO] [GL] Version: 4.6.0 NVIDIA 617.14.
+[INFO] [GL] Source is SDR (32-bit), output SDR.
+[INFO] [GL] Using resolution 1920x1440.
+[INFO] [GL] Default shader backend found: glsl.
+[INFO] [GL] Using GLSL shader backend.
+[INFO] [GLSL] Checking GLSL shader support...
+[WARN] [GLSL] Stock GLSL shaders will be used.
+[INFO] [GLSL] Found GLSL vertex shader.
+[INFO] [GLSL] Found GLSL fragment shader.
+[INFO] [GLSL] Linking GLSL program.
+[INFO] [GLSL] Found GLSL vertex shader.
+[INFO] [GLSL] Found GLSL fragment shader.
+[INFO] [GLSL] Linking GLSL program.
+[INFO] [GLSL] Found GLSL vertex shader.
+[INFO] [GLSL] Found GLSL fragment shader.
+[INFO] [GLSL] Linking GLSL program.
+[INFO] [GL] Using 1 textures.
+[INFO] [GL] Loaded 1 program(s).
+[INFO] [GL] Initializing HW render (1024x1024).
+[INFO] [GL] Max texture size: 32768 px, renderbuffer size: 32768 px.
+[INFO] [GL] Supports FBO (render-to-texture).
+[INFO] [SDL3] Loaded 578 gamepad mappings from "D:\gBox\runtime\retroarch-win\RetroArch-Win64\autoconfig\sdl3/gamecontrollerdb.cfg".
+[INFO] [Input] Found joypad driver: "sdl3".
+[INFO] [Video] Found display server: "win32".
+[INFO] [Autoconf] Xbox controller (SDL3) configured in port 1.
+[libretro INFO] [RENDERER] OpenGL version 4.6
+[libretro INFO] [RENDERER] Vendor 'NVIDIA Corporation' Renderer 'NVIDIA GeForce RTX 3070/PCIe/SSE2' Version '4.6.0 NVIDIA 617.14'
+[libretro INFO] [RENDERER] glBlitFramebuffer test successful
+[INFO] [Audio] Set audio input rate to: 44140.24 Hz.
+[INFO] [Audio] Threaded pipeline: ring holds 4096 frames of int16 core audio.
+[INFO] [Audio] Starting threaded audio driver...
+[INFO] [Audio] Audio thread priority raised.
+[WARN] [Audio] Driver "xaudio" has not returned from init after 2 seconds; the device is not opening.
+[INFO] [XAudio2] Requesting 64 ms latency, using 64 ms latency.
+[INFO] [Audio] sinc resampler: integer s16 path available.
+[INFO] [Audio] Driver "xaudio" reports a 24576-byte buffer: 64.0 ms of 2-channel float at 48000 Hz against a 64 ms latency setting; rate control holds it near 32.0 ms.
+[INFO] [Microphone] Initialized microphone driver.
+[INFO] [Display] Found display driver: "gl".
+[INFO] [NetCMD] bringing_up_command_interface_at_port 52571 (all interfaces).
+[INFO] [Network] Bringing up remote interface on port 51622.
+[INFO] [Environ] SET_INPUT_DESCRIPTORS.
+[ERROR] [Environ] GET_VARIABLE: reicast_dump_unique_textures - Invalid value.
+[INFO] [Playlist] Loading favorites file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_favorites.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_image_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_music_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_video_history.lpl".
+[INFO] [Playlist] Written to file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_history.lpl".
+[INFO] [Input] Controllers of the "sdl3" driver are read through a snapshot taken once a poll.
+[INFO] [Input] Device 1, "XInput Controller" (045e:02ff, sdl3): new, in slot 0.
+[INFO] [Audio] sinc resampler active path: float
+[INFO] [Environ] SET_GEOMETRY: 640x480, Aspect: 1.333.

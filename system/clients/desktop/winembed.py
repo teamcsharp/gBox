@@ -4,7 +4,13 @@ Long-running helper driven by the Electron main process over stdin/stdout (one J
   {"op": "attach", "pid": 1234, "parent": <HWND>}   find the game window of that process (or its children) and re-parent it
   {"op": "move", "x":.., "y":.., "w":.., "h":..}     physical pixels, relative to the parent's client area
   {"op": "hide"} / {"op": "detach"}
+  {"op": "watch", "app": <HWND>}                    the gBox window: reply {"ok": true, "front": bool}, then report changes
 Replies: {"ok": true, ...} or {"ok": false, "error": "..."}.
+Events: {"event": "foreground", "front": bool} whenever gBox (or the game docked in it) gains or loses the foreground.
+
+Input scope: nothing here swallows or reacts to keyboard/mouse input aimed at another application. The low-level hooks below
+only act when the window under the cursor (WindowFromPoint -> GA_ROOTOWNER) is gBox or its docked game, and the modifier
+gestures (Ctrl+click, Alt+drag, ~ push-to-talk) also need gBox in front; everything else goes on untouched.
 """
 import ctypes
 import json
@@ -36,6 +42,10 @@ g32.CreateRectRgn.restype = wintypes.HRGN
 g32.CombineRgn.argtypes = [wintypes.HRGN, wintypes.HRGN, wintypes.HRGN, ctypes.c_int]
 g32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
 u32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+u32.GetForegroundWindow.restype = wintypes.HWND
+u32.GetAncestor.argtypes, u32.GetAncestor.restype = [wintypes.HWND, wintypes.UINT], wintypes.HWND
+u32.WindowFromPoint.argtypes, u32.WindowFromPoint.restype = [wintypes.POINT], wintypes.HWND
+GA_ROOTOWNER = 3                  # parent/owner chain: a docked child or a window gBox owns -> the gBox window
 
 out_lock = __import__("threading").Lock()
 
@@ -46,7 +56,8 @@ def emit(obj):
         sys.stdout.flush()
 
 
-state = {"hwnd": None, "style": None, "exstyle": None, "pid": None, "parent": None, "rect": None, "shown": True, "mode": "native"}
+state = {"hwnd": None, "style": None, "exstyle": None, "pid": None, "parent": None, "rect": None, "shown": True, "mode": "native",
+         "app": None, "front": None}
 lock = __import__("threading").Lock()
 
 
@@ -340,10 +351,79 @@ def watchdog():
 __import__("threading").Thread(target=watchdog, daemon=True).start()
 
 
+def gbox_in_front(fg, fg_root, app, game) -> bool:
+    """The foreground window is gBox's own window or the game docked in it (a docked child that has the keyboard reports
+    its gBox root as the foreground window; a GPU-captured source is a top-level window of its own). Never another app."""
+    if not fg or not app:
+        return False
+    return fg == app or fg_root == app or bool(game and (fg == game or fg_root == game))
+
+
+def gesture_target(pt_root, in_game: bool, app, game, front: bool, needs_front: bool):
+    """Who a mouse gesture at a screen point belongs to: "game" (the docked game is what's under the cursor), "app" (the gBox
+    window), or None: another application's window is the one under the point (it covers gBox there), or the gesture uses a
+    keyboard modifier (Ctrl+click, Alt+drag) while another application has the foreground. None = pass it on untouched."""
+    if not app or not pt_root or pt_root not in (app, game):
+        return None
+    if needs_front and not front:
+        return None
+    return "game" if in_game else "app"
+
+
+def front_now() -> bool:
+    fg = u32.GetForegroundWindow()
+    return gbox_in_front(fg, u32.GetAncestor(fg, GA_ROOTOWNER) if fg else None, state.get("app") or state.get("parent"), state.get("hwnd"))
+
+
+def report_front(force=False):
+    """Emit {"event": "foreground"} when gBox's foreground state changed (main.js holds its game hotkeys only while true)."""
+    if not state.get("app"):
+        return None
+    now = front_now()
+    if force or now != state.get("front"):
+        state["front"] = now
+        if not force:
+            emit({"event": "foreground", "front": now})
+    return now
+
+
+def watch(app: int):
+    state["app"] = app if app and u32.IsWindow(app) else None
+    return {"ok": bool(state["app"]), "front": bool(report_front(force=True))}
+
+
+def foreground_watch():
+    """EVENT_SYSTEM_FOREGROUND (out of context, every process) + a 100 ms recheck: report gBox gaining/losing the front."""
+    WINEVENT = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, ctypes.c_long, ctypes.c_long,
+                                  wintypes.DWORD, wintypes.DWORD)
+    u32.SetWinEventHook.argtypes = [wintypes.UINT, wintypes.UINT, wintypes.HMODULE, WINEVENT, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.UINT]
+    u32.SetWinEventHook.restype = wintypes.HANDLE
+
+    @WINEVENT
+    def on_foreground(*_):
+        report_front()
+    foreground_watch.proc = on_foreground                       # keep the callback alive
+    u32.SetWinEventHook(0x0003, 0x0003, None, on_foreground, 0, 0, 0x0000)   # EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT
+    msg = wintypes.MSG()
+    while True:
+        u32.MsgWaitForMultipleObjects(0, None, False, 100, 0x04FF)          # QS_ALLINPUT: win events arrive as messages
+        while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):           # PM_REMOVE
+            u32.TranslateMessage(ctypes.byref(msg))
+            u32.DispatchMessageW(ctypes.byref(msg))
+        report_front()                                                      # fallback poll (missed event, re-docked game)
+
+
+__import__("threading").Thread(target=foreground_watch, daemon=True).start()
+
+
 def rclick_hook():
     """Right button over the docked game window -> {"event": "rclick", x, y} (physical px, parent client area); the
     click is swallowed so the emulator doesn't also act on it. ponytail: emulators here don't use the right button;
-    add a per-game opt-out if a mouse-driven PC game gets docked."""
+    add a per-game opt-out if a mouse-driven PC game gets docked.
+    Scoped to gBox: a gesture counts only when the window actually under the cursor is gBox / its docked game
+    (gesture_target), never by screen rectangle alone, so a click in Blender over the same screen area is never touched;
+    Ctrl+click and Alt+drag also need gBox in front."""
     WH_MOUSE_LL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_LBUTTONDOWN, WM_LBUTTONUP = 14, 0x204, 0x205, 0x201, 0x202
 
     class MS(ctypes.Structure):
@@ -355,7 +435,7 @@ def rclick_hook():
     u32.SetWindowsHookExW.argtypes = [ctypes.c_int, PROC, wintypes.HINSTANCE, wintypes.DWORD]
     u32.SetWindowsHookExW.restype = ctypes.c_void_p
 
-    def over(pt):
+    def in_game_rect(pt):
         h = state["hwnd"]
         if not (h and state["shown"] and u32.IsWindow(h) and u32.IsWindowVisible(h)):
             return False
@@ -365,13 +445,18 @@ def rclick_hook():
 
     whip = {"on": False, "t": 0.0}
 
-    def over_app(pt):                                # the gBox window (sidebar cards): only while a game is docked in it
-        p = state.get("parent")
-        if not (p and state["hwnd"] and u32.IsWindow(state["hwnd"])):
-            return False
-        r = wintypes.RECT()
-        u32.GetWindowRect(p, ctypes.byref(r))
-        return r.left <= pt.x < r.right and r.top <= pt.y < r.bottom
+    def target(pt, needs_front=False):
+        """"game" / "app" (the gBox window, only while a game is docked in it) / None = not gBox's input."""
+        p, h = state.get("parent"), state.get("hwnd")
+        if not (p and h and u32.IsWindow(h)):
+            return None
+        hit = u32.WindowFromPoint(wintypes.POINT(pt.x, pt.y))
+        root = u32.GetAncestor(hit, GA_ROOTOWNER) if hit else None
+        front = front_now() if needs_front else False
+        return gesture_target(root, in_game_rect(pt), p, h, front, needs_front)
+
+    def over(pt, needs_front=False):
+        return target(pt, needs_front) == "game"
 
     def rel(pt):
         o = wintypes.POINT(0, 0)
@@ -394,7 +479,7 @@ def rclick_hook():
                     x, y = rel(m.pt)
                     emit({"event": "whip", "phase": "end", "x": x, "y": y})
                     return 1
-            elif u32.GetAsyncKeyState(0x12) & 0x8000 and (over(m.pt) or over_app(m.pt)):
+            elif u32.GetAsyncKeyState(0x12) & 0x8000 and target(m.pt, needs_front=True):
                 whip["on"] = True
                 x, y = rel(m.pt)
                 emit({"event": "whip", "phase": "start", "x": x, "y": y})
@@ -411,7 +496,7 @@ def rclick_hook():
         ctrl = wp in (WM_LBUTTONDOWN, WM_LBUTTONUP) and u32.GetAsyncKeyState(0x11) & 0x8000   # Ctrl+click = eyedrop this spot
         if code == 0 and (wp in (WM_RBUTTONDOWN, WM_RBUTTONUP) or ctrl):
             m = ctypes.cast(lp, ctypes.POINTER(MS)).contents
-            if over(m.pt):
+            if over(m.pt, needs_front=bool(ctrl)):
                 if wp in (WM_RBUTTONUP, WM_LBUTTONUP):
                     o = wintypes.POINT(0, 0)
                     u32.ClientToScreen(state["parent"], ctypes.byref(o))
@@ -430,7 +515,8 @@ __import__("threading").Thread(target=rclick_hook, daemon=True).start()
 
 def ptt_hook():
     """Hold ~ (the key under Esc) = push-to-talk to gBox, even while the docked game has the keyboard. Swallowed so the
-    emulator doesn't see it."""
+    emulator doesn't see it. Only while a game is docked and gBox (or that game) is the foreground window: in any other
+    application ~ is passed on untouched (a ~ released there still ends a talk that began in gBox, without swallowing it)."""
     WH_KEYBOARD_LL, VK_OEM_3 = 13, 0xC0
 
     class KB(ctypes.Structure):
@@ -444,12 +530,17 @@ def ptt_hook():
     def proc(code, wp, lp):
         if code == 0:
             k = ctypes.cast(lp, ctypes.POINTER(KB)).contents
-            if k.vk == VK_OEM_3 and state["parent"] and u32.GetForegroundWindow() == state["parent"]:
+            if k.vk == VK_OEM_3 and state["parent"]:
                 down = wp in (0x100, 0x104)                     # WM_KEYDOWN / WM_SYSKEYDOWN
-                if down != held[0]:
-                    held[0] = down
-                    emit({"event": "ptt", "down": down})
-                return 1
+                fg = u32.GetForegroundWindow()
+                if gbox_in_front(fg, u32.GetAncestor(fg, GA_ROOTOWNER) if fg else None, state["parent"], state["hwnd"]):
+                    if down != held[0]:
+                        held[0] = down
+                        emit({"event": "ptt", "down": down})
+                    return 1
+                if held[0] and not down:                        # released in another app: stop talking, key goes on
+                    held[0] = False
+                    emit({"event": "ptt", "down": False})
         return u32.CallNextHookEx(None, code, wp, lp)
     ptt_hook.proc = proc
     u32.SetWindowsHookExW(WH_KEYBOARD_LL, proc, None, 0)
@@ -469,6 +560,7 @@ for line in sys.stdin:
             r = (capture(int(m["pid"]), int(m["parent"]), m.get("w", 1280), m.get("h", 960), m.get("warm", False)) if op == "capture"
                  else captured(int(m["pid"])) if op == "captured"
                  else attach(int(m["pid"]), int(m["parent"])) if op == "attach" else move(m["x"], m["y"], m["w"], m["h"], m.get("holes")) if op == "move"
+                 else watch(int(m.get("app") or 0)) if op == "watch"
                  else hide() if op == "hide" else focus() if op == "focus" else kill() if op == "kill" else unfocus() if op == "unfocus" else detach() if op == "detach" else {"ok": False, "error": f"unknown op {op}"})
     except Exception as e:
         r = {"ok": False, "error": f"{type(e).__name__}: {e}"}

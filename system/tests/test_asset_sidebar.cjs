@@ -96,3 +96,55 @@ test('asset change poll is singleflight, retries failure and ignores late close/
   y.requests[0].resolve({ signature: 'changed' }); await last;
   assert.equal(y.loads(), 0);
 });
+function loadSetup(responses) {
+  const text = () => ({ textContent: '', innerHTML: '', hidden: true, scrollTop: 0, value: '' });
+  const controls = new Map(['.as-count', '.as-message', '.as-rows', '.as-list', '.as-changed'].map(s => [s, text()]));
+  const state = { textures: new Map(), groups: new Map(), revision: 0, disposed: false, busy: false, polling: false, signature: '', items: [], retryTimer: 0, retryDelay: 0 };
+  const timers = [], requests = [];
+  const context = vm.createContext({ state, Map, Set, Promise, String, Math, JSON,
+    esc: value => String(value ?? ''), url: path => path, $: selector => controls.get(selector), expanded: new Set(), prefs: {},
+    facets() {}, save() {}, loadGroup: async () => {}, signature: page => JSON.stringify(page.groups),
+    query: (game, offset, fresh) => '/api/asset-groups?' + (fresh ? 'fresh=1' : ''),
+    options: { api: async url => { requests.push(url); const next = responses.shift(); if (next instanceof Error) throw next; return next; } },
+    root: { classList: { contains: () => false } },
+    setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {},
+  });
+  const start = source.indexOf('const slow = e =>'), end = source.indexOf('const refresh = () =>', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext(source.slice(start, end), context);
+  return { context, state, controls, timers, requests, run: code => vm.runInContext(code, context) };
+}
+
+const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
+const timeout = () => Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+const ready = { indexing: false, total: 1, total_all: 1, nested: 0, hidden_assets: 0, kinds: ['character'], games: ['DOA2'],
+  groups: [{ title: 'DOA2', count: 1, preview_url: '/p', added: 1, copied: 0 }] };
+
+test('a first load while the server is still indexing says so and retries with backoff', async () => {
+  const x = loadSetup([{ indexing: true, groups: [] }, timeout(), ready]);
+  await x.run('load()');
+  assert.equal(x.controls.get('.as-count').textContent, 'Indexing assets…');
+  assert.equal(x.controls.get('.as-message').textContent, '');
+  assert.equal(x.timers.length, 1); assert.equal(x.timers[0].ms, 2000);
+  x.timers[0].fn(); await settle();                // the slow control plane times the next request out: no error, longer wait
+  assert.equal(x.controls.get('.as-count').textContent, 'Indexing assets…');
+  assert.equal(x.controls.get('.as-message').textContent, '');
+  assert.equal(x.timers.length, 2); assert.equal(x.timers[1].ms, 4000);
+  x.timers[1].fn(); await settle();
+  assert.match(x.controls.get('.as-count').textContent, /^1 assets · 1 titles/);
+  assert.match(x.controls.get('.as-rows').innerHTML, /DOA2/);
+  assert.equal(x.requests.length, 3); assert.equal(x.state.retryDelay, 0); assert.equal(x.timers.length, 2);
+});
+
+test('other load failures are reported, and a superseded retry does nothing', async () => {
+  const x = loadSetup([new Error('500 boom')]);
+  await x.run('load()');
+  assert.equal(x.controls.get('.as-message').textContent, 'Could not load assets: 500 boom');
+  assert.equal(x.timers.length, 0);
+  const y = loadSetup([{ indexing: true, groups: [] }, ready]);
+  await y.run('load()'); y.state.revision++;       // the operator changed a filter meanwhile
+  y.timers[0].fn(); await settle();
+  assert.equal(y.requests.length, 1);
+  await y.run('load(true)');
+  assert.equal(y.requests[1], '/api/asset-groups?fresh=1');
+});

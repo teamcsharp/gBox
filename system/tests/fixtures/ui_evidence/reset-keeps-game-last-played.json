@@ -1,0 +1,23 @@
+{
+  "title": "Last played pop-up: reload the game that ended, or reload it with your last moment",
+  "branch": "reset-keeps-game",
+  "about": "Synthetic answers: Twin Snakes (build tts_sonic_full_cast) was stopped on JAYBUILTFINALE two minutes ago with a saved moment. The moment's picture is a generated placeholder, not a game frame.",
+  "include": ["_web_shell.json"],
+  "routes": {
+    "/api/last_played": {"entry": {"session_id": "w1-23a2a79498c0452d", "game_id": "ts", "title": "Metal Gear Solid: The Twin Snakes",
+      "mod": "tts_sonic_full_cast", "node": "JAYBUILTFINALE", "worker_id": "w1", "node_online": true, "started": "$now-3000", "ended": "$now-120",
+      "reason": {"kind": "stopped", "crash": false, "text": "You stopped it."},
+      "moment": {"artifact": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bytes": 26214400, "name": "GGSEA4.s01",
+                 "ts": "$now-125", "frame": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                 "frame_url": "/api/artifacts/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}, "report": null}},
+    "/api/artifacts/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": {"$placeholder": "last moment (synthetic picture)", "style": "scene", "hue": 200}
+  },
+  "shots": [
+    {"name": "04-last-played-popup", "url": "/#token=fixture", "viewport": [1280, 760],
+     "actions": [{"wait_for": ".lp-box"}, {"wait": 600}], "clip": ".lp-box", "pad": 24},
+    {"name": "05-last-played-crash", "url": "/#token=fixture", "viewport": [1280, 760],
+     "actions": [{"wait_for": ".lp-box"},
+                 {"eval": "LASTPLAYED.st.entry = {...LASTPLAYED.st.entry, session_id: 'w1-crash', moment: null, reason: {kind: 'relaunch_failed', crash: true, text: 'Its relaunch failed: launch_game failed: RuntimeError: Dolphin exited 1.'}, report: {id: 'r1642', number: 1642, status: 'in_progress'}}; LASTPLAYED.draw()"},
+                 {"wait": 400}], "clip": ".lp-box", "pad": 24}
+  ]
+}

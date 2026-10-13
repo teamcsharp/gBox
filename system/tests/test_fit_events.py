@@ -96,8 +96,47 @@ def test_plan_and_auto_model_assign_fits_to_planned_slots(tmp_path):
         assert FE.auto_model(tmp_path / "other" / "x.glb") == "player"           # an explicit model keeps its fits
     assert not FE.active()
     evs = events(lines)
-    assert evs[0]["plan"][1] == {"model": "enemy:gobooma", "label": "Amy → Gobooma"}
+    assert evs[0]["plan"][1] == {"model": "enemy:gobooma", "label": "Amy → Gobooma", "donor": "amy",
+                                 "slot": "enemy:gobooma"}
     assert [e["model"] for e in evs if e.get("stage") == "retarget"] == ["enemy:rappy", "enemy:booma", "enemy:gobooma"]
+
+
+def test_rows_name_their_donor_game_and_slot_for_the_retarget_editor(tmp_path):
+    lines, sink = collect()
+    with FE.job(sink, tmp_path):
+        FE.target("0123456789abcdef")
+        FE.plan([("fighter:KAS", "amy", "Amy → Kasumi"), ("p1", "sonic", "Sonic → Ryu", "fighter:RYU")])
+        FE.model("p1")                                     # a planned row keeps its plan's slot
+    with FE.job(sink, tmp_path):
+        FE.auto_model(tmp_path / "knuckles" / "k.glb")     # an unplanned donor: a row named after it, slot unknown
+    evs = events(lines)
+    assert evs[0]["plan"] == [
+        {"model": "fighter:KAS", "label": "Amy → Kasumi", "donor": "amy", "slot": "fighter:KAS", "game": "0123456789abcdef"},
+        {"model": "p1", "label": "Sonic → Ryu", "donor": "sonic", "slot": "fighter:RYU", "game": "0123456789abcdef"}]
+    assert evs[1] == {"model": "p1", "label": "Sonic → Ryu", "game": "0123456789abcdef", "slot": "fighter:RYU"}
+    assert evs[2]["donor"] == "knuckles" and "slot" not in evs[2]
+    st = None
+    for e in evs:
+        st = FE.fold(st, e, now=1.0)
+    kas, p1, kn = (st["models"][k] for k in ("fighter:KAS", "p1", "knuckles"))
+    assert (kas["donor"], kas["game"], kas["slot"]) == ("amy", "0123456789abcdef", "fighter:KAS")
+    assert (p1["donor"], p1["slot"]) == ("sonic", "fighter:RYU")
+    assert kn["donor"] == "knuckles" and "slot" not in kn
+
+
+def test_goals_travel_cleaned_on_the_retarget_stage(tmp_path):
+    lines, sink = collect()
+    with FE.job(sink, tmp_path):
+        FE.model("fighter:KAS", "Amy → Kasumi", "amy")
+        FE.stage("retarget", goals={"donor": {"hip": [0, 1, 0], "bad": [1, 2]}, "target": {"hip": [0.0, 0.9, 0.0],
+                                    "head": [0, float("nan"), 0], "l_fore": np.array([0.4, 1.4, 0.0])},
+                                    "target_ground": 0.0})
+    ev = [e for e in events(lines) if e.get("stage") == "retarget"][0]
+    assert ev["goals"] == {"donor": {"hip": [0.0, 1.0, 0.0]}, "target": {"hip": [0.0, 0.9, 0.0],
+                           "l_fore": [0.4, 1.4, 0.0]}, "target_ground": 0.0}
+    st = FE.fold(None, ev, now=1.0)
+    assert st["models"]["fighter:KAS"]["goals"]["target"]["l_fore"] == [0.4, 1.4, 0.0]
+    assert FE.clean_goals({"donor": {"hip": [0, 1, 0]}}) is None              # no target side: nothing to show
 
 
 def test_the_jobs_default_model_starts_only_when_no_writer_names_one(tmp_path):
