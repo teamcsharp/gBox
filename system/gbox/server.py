@@ -2379,6 +2379,26 @@ def create_app(config: Config) -> FastAPI:
                     "knowledge": [e for e in store.all("edge") if e["game_id"] == gid],
                     "runs": [r for r in store.all("run") if r["game_id"] == gid]}
 
+    @app.get("/api/profiles/{gid}/pick")
+    def profile_pick(gid: str, actor=Depends(auth)):
+        """What the pick whip learned about this game (gbox.pick_learn): struct offsets, model pointers, model
+        signatures, live-replace outcomes, Ghidra findings. {} until the first pick."""
+        return (store.get("profile", gid) or {}).get("pick") or {}
+
+    @app.post("/api/profiles/{gid}/pick")
+    def profile_pick_learn(gid: str, body: dict, actor=Depends(auth)):
+        """Merge a pick's findings into the game's learned data (dicts merge, values replace, null deletes)."""
+        from . import pick_learn
+        with store.lock:
+            p = store.get("profile", gid)
+            if not p:
+                e = store.catalog_get(gid) or _404()
+                p = {"game_id": gid, "title": e["title"], "platform": e["platform"], "created": time.time(), "notes": []}
+            p["pick"] = pick_learn.merge(p.get("pick") or {}, body) | {"updated": time.time()}
+            store.put("profile", gid, p)
+        store.audit(actor, "profile.pick", gid, {"keys": sorted(body)[:20]})
+        return p["pick"]
+
     # --- live sessions (frames up from the worker, input down from the UI) ---
     live: dict[str, dict] = {}
     live_lock = threading.Lock()
