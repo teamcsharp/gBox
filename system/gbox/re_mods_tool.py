@@ -14,6 +14,11 @@ Resident Evil 4 (GameCube NTSC-U, G4BE08) ops:
   equip item=<weapon>            give it if missing, then the game's weapon-change path (model + code reload)
   weapon_mod item=<weapon> fire_rate=<frames|auto> damage=<x> reset=..   per-class fire interval / firepower tables
   merc_loadout character=<name|any> items=[...] on=<replace default guns>  applied at the start of each Merc run
+                                 (items "name:amount", e.g. "handgun ammo:200"); merc_loadout_list shows the records
+  combo_time multiplier=N        Mercenaries combo window x N (300 frames = 10 s; 'triple the combo time' = 3)
+  grenade_safe on=..             the hand grenade's blast is owned by the player: hurts enemies, never you
+  punch                          why RE4 has no punch (context melee only) and what to use instead
+  item_ids / addresses           the item id table / this release's address table (source, live_checked)
   spawn_multiplier count=2..8 on=..   every spawned enemy gets count-1 clones (Mercenaries and story rooms)
   flashbang / grenade target=player|aim   the game's own flash/hand-grenade detonation at the player or the last hit point
   flashbang_loop seconds=3 on=.. item=flash|grenade   one goes off at the player's feet every N seconds
@@ -187,6 +192,10 @@ class RE4:
             pl = self.m.u32(V.P_PLAYER)
             if 0x80000000 <= pl < 0x81800000:
                 st["player_pos"] = [round(v) for v in struct.unpack(">3f", self.m.rd(pl + 0x94, 12))]
+        if V.has("COMBO_WINDOW"):
+            st["merc_combo_window_x"] = round(self.m.u32(V.COMBO_WINDOW[0]) / V.COMBO_WINDOW[1], 2)
+        if V.has("GRENADE_SAFE"):
+            st["grenade_safe"] = grenade_safe_state(self)
         if room >> 8 == 4:
             st["merc_seconds_left"] = round(self.m.u32(V.MERC_TIMER) / V.FPS, 2)
             if V.has("MERC"):
@@ -408,6 +417,7 @@ def unlock_all(g, on: bool = True, everything: bool = True) -> dict:
                          + (["Professional difficulty"] if everything else []),
                          "costumes": "n/a: Mercenaries characters have one outfit each",
                          "weapons": "n/a: Mercenaries loadouts are fixed per character (merc_loadout changes them)"},
+            "flags_this_release": R.UNLOCK_SCOPE.get(_gid(g)),
             "note": "The menus are built from these flags when the title menu opens (title screen; in game: Options > "
                     "Retry or Load > Game Reset). Saved with the next system save; on=false clears them."}
 
@@ -426,6 +436,75 @@ def merc_time_bonus(g, mult: float, melee_only: bool = True) -> dict:
             "note": ("RE4 gives Mercenaries time only through hourglass pickups - melee kills add score/combo, never "
                      "time - so there is no melee-only bonus to scale; every time pickup is multiplied.") if melee_only
             else "every time pickup multiplied"}
+
+
+def _gid(g) -> str:
+    return g.V.GAME_ID.decode() if isinstance(g.V.GAME_ID, bytes) else str(g.V.GAME_ID)
+
+
+def _live_note(g, keys) -> dict:
+    t = R.MERC_ADDRESS_TABLE.get(_gid(g), {})
+    return {k: {"address": f"0x{t[k]['address']:08X}", "source": t[k]["source"], "live_checked": t[k]["live_checked"]}
+            for k in keys if k in t}
+
+
+def combo_time(g, factor: float) -> dict:
+    """#512 'triple / quadruple the combo time': scale the Mercenaries combo window (the frames a combo stays alive
+    after each kill; 300 = 10 s). The game reloads the combo timer from this one .sdata word on every kill."""
+    a, orig = g.V.COMBO_WINDOW
+    f = float(factor or 1)
+    if not 0.25 <= f <= 20:
+        raise ValueError("combo_time factor: 0.25 .. 20 (1 = the game's 10 seconds; 3 = triple, 4 = quadruple)")
+    cur = g.m.u32(a)
+    if not 1 <= cur <= orig * 20:                        # ours write 0.25x..20x; anything else is not the window
+        raise RuntimeError(f"unexpected value at 0x{a:08X} ({cur}): not the combo window; not writing")
+    want = max(1, int(round(orig * f)))
+    g.m.wr(a, struct.pack(">I", want))
+    back = g.m.u32(a)
+    return {"combo_window_x": round(back / orig, 2), "combo_window_seconds": round(back / g.V.FPS, 1),
+            "before_seconds": round(cur / g.V.FPS, 1), "verified": back == want, **_live_note(g, ["COMBO_WINDOW"]),
+            "note": "how long a Mercenaries combo stays alive after each kill (melee kills included). RE4 gives no time "
+                    "on the clock for melee or combos - only hourglass pickups add time (merc_time_bonus multiplier=N "
+                    "scales those). factor=1 restores the game's 10 s."}
+
+
+def grenade_safe_state(g) -> str:
+    st = set()
+    for a, orig, new, _ in g.V.GRENADE_SAFE:
+        cur = g.m.rd(a, 4).hex()
+        st.add("on" if cur == new else "off" if cur == orig else "unknown")
+    return st.pop() if len(st) == 1 else "mixed"
+
+
+def grenade_safe(g, on: bool) -> dict:
+    """#512 'grenades don't hurt me': the hand grenade's own blast is made player-owned (owner = the player em), the
+    rule the game uses for 'my attack never hurts me'. Enemies take the normal damage."""
+    sites = g.V.GRENADE_SAFE
+    cur = [g.m.rd(a, 4).hex() for a, *_ in sites]
+    bad = [f"0x{a:08X}={c}" for (a, o, n, _), c in zip(sites, cur) if c not in (o, n)]
+    if bad:
+        raise RuntimeError(f"grenade_safe: unexpected code at {', '.join(bad)}; not patching")
+    for a, o, n, _ in sites:
+        g.m.wr(a, bytes.fromhex(n if on else o))
+    after = [g.m.rd(a, 4).hex() for a, *_ in sites]
+    return {"grenade_safe": on, "sites": {f"0x{a:08X}": {"before": c, "after": x, "what": w}
+                                          for (a, o, n, w), c, x in zip(sites, cur, after)},
+            "verified": all(x == (n if on else o) for (a, o, n, _), x in zip(sites, after)),
+            **_live_note(g, ["GRENADE_OWNER_A", "GRENADE_OWNER_B"]),
+            "note": "your hand grenades still blow enemies up but no longer hurt you (the blast is owned by the player, "
+                    "like explosive_melee's). Enemy dynamite and the incendiary grenade's fire are unchanged; "
+                    "unlimited_health covers everything."}
+
+
+PUNCH_STATEMENT = (
+    "Resident Evil 4 has no free punch: Leon's only melee you can use at any time is the knife (GameCube: hold L, "
+    "then A). "
+    "Kicks, roundhouses and suplexes (and Krauser's / Wesker's / HUNK's moves) are context actions: the game shows the "
+    "prompt only after an enemy staggers (a shot to the head or knee, or a flash grenade), and those moves do not go "
+    "through the hit routine gBox hooks (0x80143364; checked live: a flash-stunned Ganado + KICK logged no call). So "
+    "gBox cannot add a punch button. What works now: knife hits that explode (explosive_melee, player-owned, never "
+    "hurts you) or launch enemies (super_melee); for more kick prompts, stagger enemies with flashbangs "
+    "(flashbang_loop) or headshots.")
 
 
 # ---- melee / aiming mods (GameCube) -------------------------------------------------------------------------------
@@ -622,6 +701,27 @@ def _item_id(q) -> int:
     raise ValueError(f"unknown RE4 item {q!r}; names: {', '.join(sorted(n for n in names))}")
 
 
+def _loadout_entry(q) -> tuple[int, int | None]:
+    """'handgun ammo:200', 'handgun ammo x200', 'shotgun shells*50' or a plain name -> (item id, amount or None).
+    The amount is what the game's take-item routine gives (rounds for ammo, count for grenades / herbs)."""
+    import re
+    s = str(q).strip()
+    m = re.match(r"^(.*?)\s*(?::|\*|\bx)\s*(\d+)$", s, re.I)
+    if m and m.group(1).strip():
+        return _item_id(m.group(1)), int(m.group(2))
+    return _item_id(s), None
+
+
+def merc_loadout_list(g) -> dict:
+    names = {v: k for k, v in g.V.CHARACTERS.items() if k != "all"}
+    flags = {0: "give", 1: "give + equip", 2: "remove one", 4: "raw give"}
+    recs = [{"character": names.get(c, c), "action": flags.get(f, f), "item": R.item_name(i), "id": f"0x{i:02X}",
+             "amount": n or "game default"} for c, f, i, n in read_recs(g)]
+    return {"records": recs, "game_defaults": {names[c]: [R.item_name(i) for i in v]
+                                               for c, v in g.V.MERC_DEFAULT_WEAPONS.items()},
+            "note": "records run right after the game's own Merc loadout routine (0x80018CC4) when a run starts"}
+
+
 def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool = True, seconds: float = 0,
         character: str = "", items: list | None = None, fire_rate=None, damage=None, reset: bool = False,
         multiplier: float = 2.0, melee_only: bool = True, kind: str = "", force: float = 0, direction: str = "",
@@ -633,10 +733,29 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
           "infinite_combo": "combo_freeze", "combo": "combo_freeze", "freeze_timer": "merc_timer_freeze",
           "timer_freeze": "merc_timer_freeze", "inventory": "list", "swap": "replace", "spawn": "spawn_multiplier",
           "enemy_multiplier": "spawn_multiplier", "more_enemies": "spawn_multiplier", "unlock_everything": "unlock_all",
-          "time_bonus": "merc_time_bonus"}.get(op, op)
+          "time_bonus": "merc_time_bonus", "combo_bonus_time": "combo_time", "combo_window": "combo_time",
+          "combo_bonus": "combo_time", "combo_timer": "combo_time", "safe_grenades": "grenade_safe",
+          "grenades_safe": "grenade_safe", "grenade_immunity": "grenade_safe", "punch_enemies": "punch",
+          "punches": "punch", "loadout": "merc_loadout", "loadouts": "merc_loadout_list",
+          "merc_loadouts": "merc_loadout_list", "item_table": "item_ids", "items": "item_ids",
+          "address_table": "addresses"}.get(op, op)
     res: dict = {"op": op}
     if op == "status":
         pass
+    elif op == "punch":
+        res.update(possible=False, statement=PUNCH_STATEMENT,
+                   instead=["explosive_melee on=true kind=grenade", "super_melee on=true force=100 direction=both",
+                            "flashbang_loop on=true seconds=3 (staggers enemies so the kick prompt shows)"])
+    elif op == "combo_time":
+        res.update(combo_time(g, (extra.get("factor") or multiplier) if on else 1.0))
+    elif op == "grenade_safe":
+        res.update(grenade_safe(g, on))
+    elif op == "merc_loadout_list":
+        res.update(merc_loadout_list(g))
+    elif op == "item_ids":
+        res.update(R.items_catalog("wii" if _gid(g) == "RB4P08" else "gamecube"))
+    elif op == "addresses":
+        res.update(game_id=_gid(g), addresses=R.address_table(_gid(g)), unlock_scope=R.UNLOCK_SCOPE.get(_gid(g)))
     elif op == "list":
         res["items"] = [{k: v for k, v in x.items() if k != "raw"} for x in g.items()]
     elif op in g.V.PATCHES:
@@ -722,7 +841,9 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
             want = recs
             res.update(character=character or "any", loadout="game default")
         else:
-            ids = [_item_id(x) for x in items]
+            parsed = [_loadout_entry(x) for x in items]
+            ids = [i for i, _ in parsed]
+            amounts = {i: n for i, n in parsed if n is not None}
             bad = [i for i in ids if i in R.NOT_GIVABLE]
             if bad:
                 raise ValueError(R.NOT_GIVABLE[bad[0]])
@@ -733,9 +854,11 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
                     new += [(c, 2, w, 0) for w in g.V.MERC_DEFAULT_WEAPONS.get(c, [])]
             first_gun = next((i for i in ids if i in wc), None)
             for iid in ids:
-                new.append((ch, 1 if iid == first_gun else 0, iid, max(0, int(count)) if iid == first_gun else 0))
+                n = amounts.get(iid, max(0, int(count)) if iid == first_gun else 0)
+                new.append((ch, 1 if iid == first_gun else 0, iid, min(0xFFFF, max(0, int(n)))))
             want = recs + new
             res.update(character=character or "any", items=[R.item_name(i) for i in ids],
+                       amounts={R.item_name(i): (amounts[i] if i in amounts else "game default") for i in ids},
                        equipped=R.item_name(first_gun) if first_gun is not None else None, replaced_defaults=on,
                        note="applied when a Mercenaries run starts (character select -> stage); the first weapon is "
                             "equipped about 5 seconds into the run")
@@ -746,7 +869,8 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
         raise ValueError("op: status | list | give | replace | equip | weapon_mod | merc_loadout | spawn_multiplier | warp | "
                          "teleport | flashbang | grenade | flashbang_loop | explosive_rounds | unlock_all | mercenaries_unlock | "
                          "infinite_ammo | combo_freeze | merc_timer_freeze | unlimited_health | merc_time | merc_time_bonus | "
-                         "explosive_melee | super_melee | auto_spin | aim_turn_speed")
+                         "explosive_melee | super_melee | auto_spin | aim_turn_speed | combo_time | grenade_safe | punch | "
+                         "merc_loadout_list | item_ids | addresses")
     res["status"] = g.status()
     return res
 
@@ -755,18 +879,20 @@ class REModsIn(BaseModel):
     session_id: str
     op: str = "status"      # status|list|give|replace|equip|weapon_mod|merc_loadout|spawn_multiplier|flashbang|grenade|
                             # flashbang_loop|explosive_rounds|warp|teleport|mercenaries_unlock|infinite_ammo|combo_freeze|
-                            # merc_timer_freeze|unlimited_health|merc_time
+                            # merc_timer_freeze|unlimited_health|merc_time|combo_time|grenade_safe|punch|
+                            # merc_loadout_list|item_ids|addresses
     item: str = ""          # give/replace: item name or id ("rocket launcher", "flash grenade", "0x37")
     count: int = 0          # give: amount (0 = the game's default); spawn_multiplier: factor 2..8
     target: str = ""        # replace: case item (name, id or slot); warp: room "r102"; flashbang/grenade: player|aim
     on: bool = True         # patches / unlock: on or off
     seconds: float = 0      # merc_time; flashbang_loop period
     character: str = ""     # merc_loadout: leon | ada | hunk | krauser | wesker | any
-    items: list[str] = []   # merc_loadout / explosive_rounds: item names; warp / teleport: [x, y, z]
+    items: list[str] = []   # merc_loadout: item names, "name:amount" for ammo/counts ("handgun ammo:200");
+                            # explosive_rounds: item names; warp / teleport: [x, y, z]
     fire_rate: str | None = None   # weapon_mod: frames between shots (30 = 1 s) or "auto" (TMP speed, 3 frames)
     damage: float | None = None    # weapon_mod: firepower multiplier vs. the original table
     reset: bool = False     # weapon_mod / merc_loadout: back to the game's values first
-    multiplier: float = 2.0 # merc_time_bonus / aim_turn_speed: x N (1 = the game's own)
+    multiplier: float = 2.0 # merc_time_bonus / aim_turn_speed / combo_time: x N (1 = the game's own)
     melee_only: bool = True # merc_time_bonus: RE4 has no melee time bonus -> every time pickup is scaled
     kind: str = ""          # explosive_melee: grenade | flash | rocket
     force: float = 0        # super_melee: feet (height for up/both, distance for away); default 100
@@ -788,12 +914,16 @@ def re_mods(inp: REModsIn, ctx):
     fire|aim|always; aim_turn_speed multiplier=N. give items by name (auto-placed in the attache
     case by the game's own take-item routine), replace a case item, unlock The Mercenaries + all characters,
     infinite ammo, Mercenaries combo never ends, freeze/set the Mercenaries timer, unlimited health, equip any weapon
-    now, per-character Mercenaries loadouts, weapon fire rate / damage (e.g. a full-auto Handcannon)."""
+    now, per-character Mercenaries loadouts (items "name:amount" for ammo), weapon fire rate / damage (e.g. a full-auto
+    Handcannon). GameCube also: combo_time multiplier=N (the Mercenaries combo window x N: 'triple the combo time' = 3),
+    grenade_safe on= (your hand grenades never hurt you), punch (why RE4 has no punch + what to use), addresses (this
+    release's address table with sources and live_checked)."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
     if g.get("platform") not in ("gamecube", "wii"):
+        hint = " Resident Evil 5: tool re5; Resident Evil 6: tool re6." if g.get("platform") in ("ps3", "xbox360") else ""
         raise Unsupported(f"re_mods: Resident Evil 4 on GameCube / Wii (Dolphin) so far; {g.get('title')} "
-                          f"({g.get('platform')}): see docs/mercenaries.md for what each Mercenaries release has")
+                          f"({g.get('platform')}): see docs/mercenaries.md for what each Mercenaries release has.{hint}")
     return {"result": run(ad, inp.op, inp.item, inp.count, inp.target, inp.on, inp.seconds, inp.character, inp.items,
                           inp.fire_rate, inp.damage, inp.reset, inp.multiplier, inp.melee_only, inp.kind, inp.force,
                           inp.direction, inp.speed)}
