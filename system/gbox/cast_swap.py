@@ -431,6 +431,8 @@ STRATEGIES = {
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
+    "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
+                                       "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
 }
 
 
@@ -885,7 +887,13 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
     return {"mod": name, "slots": per}
 
 
+def _twin_snakes(ctx, game, pairs, name, inp):
+    from . import twin_snakes_swap
+    return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
+    "gbox.twin_snakes_swap": _twin_snakes,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
