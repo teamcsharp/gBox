@@ -49,11 +49,18 @@
       ${fresh ? `<details open><summary>Re-extracted before the build (${(plan.refreshed || []).length})</summary><ul>${fresh}</ul></details>` : ""}`;
   }
 
-  // [{slot, character}] for every row the operator changed (the build re-plans with the same seed + these edits)
+  // [{slot, character}] for every row the operator changed
   function edits(plan, picks) {
     const was = Object.fromEntries((plan.assignments || []).map(r => [r.slot, r.character]));
     return Object.entries(picks || {}).filter(([slot, slug]) => slot in was && was[slot] !== slug)
       .map(([slot, character]) => ({ slot, character }));
+  }
+
+  // every planned row as reviewed (picks override): the build re-plans with the same seed and pins each row, so it
+  // builds exactly what was shown even when a donor is re-extracted first
+  function reviewed(plan, picks) {
+    return (plan.assignments || []).map(r => ({ slot: r.slot,
+      character: picks && Object.prototype.hasOwnProperty.call(picks, r.slot) ? picks[r.slot] : r.character }));
   }
 
   function reportHTML(res) {
@@ -89,11 +96,11 @@
     }
     async function build(picks) {
       if (!st.plan) throw new Error("plan first");
-      const f = st.form, changes = edits(st.plan, picks);
-      io.enable("build", false); io.status("Queued on the Spark…");
+      const f = st.form, changed = edits(st.plan, picks).length;
+      io.enable("build", false); io.status(`Queued on the Spark${changed ? ` (${changed} rows changed by you)` : ""}…`);
       let j = await io.api("/api/jobs", { tool: "characters", require_os: "linux", input: { op: "cast_swap",
         target_game: game.gid, source: f.source, mapping: f.mapping, seed: f.seed || "", slots: f.slots || "all",
-        assignments: changes, launch: false } });
+        assignments: reviewed(st.plan, picks), launch: false } });
       while (/queued|running/.test(j.state)) {
         await wait(1500);
         j = await io.api("/api/jobs/" + j.id);
@@ -145,7 +152,7 @@
     return { el, controller: c };
   }
 
-  const api = { sourceOptions, formHTML, planHTML, edits, reportHTML, controller, open, MAPPINGS, SLOT_SETS };
+  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, reportHTML, controller, open, MAPPINGS, SLOT_SETS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxCastSwap = api;
 })(typeof window !== "undefined" ? window : globalThis);

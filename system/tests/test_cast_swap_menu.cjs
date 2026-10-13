@@ -49,6 +49,9 @@ test('only the rows the operator changed are sent as edits', () => {
                    [{ slot: 'enemy:gigobooma', character: 'jgr_char06' }]);
   assert.deepEqual(CS.edits(PLAN, { 'enemy:booma': '' }), [{ slot: 'enemy:booma', character: '' }]);
   assert.deepEqual(CS.edits(PLAN, {}), []);
+  assert.deepEqual(CS.reviewed(PLAN, { 'enemy:gigobooma': 'jgr_char06', 'enemy:other': 'x' }),
+                   [{ slot: 'enemy:booma', character: 'djv_ps2_dmx' }, { slot: 'enemy:gigobooma', character: 'jgr_char06' }]);
+  assert.deepEqual(CS.reviewed(PLAN, { 'enemy:booma': '' })[0], { slot: 'enemy:booma', character: '' });
 });
 
 function fakeIo(answers) {
@@ -86,7 +89,9 @@ test('controller: sources -> plan -> build one mod -> per-slot report', async ()
   assert.equal(jp, '/api/jobs');
   assert.deepEqual(job, { tool: 'characters', require_os: 'linux', input: { op: 'cast_swap', target_game: 'daba7a3b195dcf6b',
     source: 'wrestlers', mapping: 'by_role', seed: '7', slots: 'enemies',
-    assignments: [{ slot: 'enemy:gigobooma', character: 'jgr_char06' }], launch: false } });
+    assignments: [{ slot: 'enemy:booma', character: 'djv_ps2_dmx' }, { slot: 'enemy:gigobooma', character: 'jgr_char06' }],
+    launch: false } });
+  assert.ok(x.statuses.includes('Queued on the Spark (1 rows changed by you)…'));
   assert.equal(res.mod, 'cast_pso_x'); assert.deepEqual(built, ['cast_pso_x']);
   assert.ok(x.statuses.includes('Fitting DMX to Booma'));
   assert.match(x.parts.plan, /<b>partial<\/b> · mod <code>cast_pso_x<\/code>/);

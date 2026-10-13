@@ -216,6 +216,22 @@ def test_plan_pso_cast_as_wrestlers_without_the_library():
     assert stale["stale"] and "will be re-extracted" in enemies["refreshed"][0]["status"]
 
 
+def test_the_reviewed_plan_is_what_builds_even_after_re_extraction():
+    shown = CS.plan(JGR, CHARS, "JGR", "random", "s")                       # plan_only: Gum flagged as stale
+    built = CS.plan(JGR, CHARS, "JGR", "random", "s", refresh=lambda m: m | {"jgr_reader": 2})
+    assert [r["slug"] for r in shown["donors"]] == [r["slug"] for r in built["donors"]]
+    assert shown["assignments"] == built["assignments"]
+    rows = [{"slot": r["slot"], "character": r["character"]} for r in shown["assignments"]]
+    pinned = CS.plan(JGR, CHARS, "JGR", "random", "other seed", assignments=rows,
+                     refresh=lambda m: m | {"jgr_reader": 2})
+    assert [(r["slot"], r["character"]) for r in pinned["assignments"]] == [(r["slot"], r["character"]) for r in rows]
+    gum = next(r for r in rows if r["character"] == "jgr_char06")
+    failed = CS.plan(JGR, CHARS, "JGR", "random", "s", assignments=rows,
+                     refresh=lambda m: (_ for _ in ()).throw(RuntimeError("disc unreadable")))
+    assert gum["slot"] not in {r["slot"] for r in failed["assignments"]}
+    assert any(s["slot"] == gum["slot"] and "disc unreadable" in s["reason"] for s in failed["skipped"])
+
+
 def test_plan_for_a_game_without_a_writer_is_unsupported():
     p = CS.plan({"game_id": "f" * 16, "title": "Shenmue", "platform": "dreamcast"}, CHARS, "wrestlers")
     assert p["status"] == "unsupported" and "no routed character writer" in p["message"]

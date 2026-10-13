@@ -379,7 +379,8 @@ def _row(s: dict, d: dict, why: str) -> dict:
 
 
 def apply_edits(plan: list[dict], edits: list[dict], donors: list[dict], slots: list[dict]) -> list[dict]:
-    """The operator's edited plan: [{slot, character}] overrides (character '' drops the slot)."""
+    """The operator's reviewed plan: [{slot, character}] overrides (character '' drops the slot). The menu sends every
+    row it showed, so the build is exactly what was reviewed even if a donor's re-extraction changed its size."""
     by_slug = {d["slug"]: d for d in donors}
     by_slot = {s["slot"]: s for s in slots}
     rows = {r["slot"]: r for r in plan}
@@ -392,7 +393,8 @@ def apply_edits(plan: list[dict], edits: list[dict], donors: list[dict], slots: 
             continue
         if c not in by_slug:
             raise ValueError(f"{c!r} is not an eligible donor of this source (refused or not in the collection)")
-        rows[s] = _row(by_slot[s], by_slug[c], "edited")
+        if rows.get(s, {}).get("character") != c:
+            rows[s] = _row(by_slot[s], by_slug[c], "edited")
     pos = {s["slot"]: i for i, s in enumerate(slots)}
     return sorted(rows.values(), key=lambda r: pos.get(r["slot"], 1 << 30))
 
@@ -484,21 +486,30 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     src = resolve_source(source, chars, kind)
     entries, costumes = dedupe(src["entries"])
     donors, refused, refreshed = gate(entries, root, kind, refresh)
-    rows = donor_rows(donors, root)
+    stale = set()
     if refresh is None:                                    # planning only: stale donors are re-extracted at build time
-        stale = [r for r in refused if r.get("stale")]
-        if stale:
-            rs = {r["slug"] for r in stale}
-            extra = donor_rows([m for m in entries if m["slug"] in rs and not retarget_check(m, None, kind)], root)
-            for r in extra:
-                r["stale"] = True
-            rows += extra
-            refused = [r for r in refused if not r.get("stale")]
-            refreshed = [{"slug": r["slug"], "name": r["name"], "reader": r["reader"], "status": "will be re-extracted "
-                          f"(reader v{r['reader']['entry']} -> v{r['reader']['current']})"} for r in stale]
+        flagged = [r for r in refused if r.get("stale")]
+        old = {m["slug"]: m for m in entries}
+        stale = {r["slug"] for r in flagged if not retarget_check(old[r["slug"]], None, kind)}
+        donors += [old[s] for s in stale]
+        refused = [r for r in refused if r["slug"] not in stale]
+        refreshed = [{"slug": r["slug"], "name": r["name"], "reader": r["reader"], "status": "will be re-extracted "
+                      f"(reader v{r['reader']['entry']} -> v{r['reader']['current']})"} for r in flagged if r["slug"] in stale]
+    pos = {m["slug"]: i for i, m in enumerate(entries)}    # the source's own order, re-extracted or not: same plan
+    rows = donor_rows(sorted(donors, key=lambda m: pos.get(m["slug"], 1 << 30)), root)
+    for r in rows:
+        if r["slug"] in stale:
+            r["stale"] = True
+    why = {r["slug"]: r["reason"] for r in refused}
+    for e in assignments or []:                            # a reviewed row whose donor the gate refused is left out
+        if e.get("character") in why:
+            for s in chosen:
+                if s["slot"] == e.get("slot") and not s.get("skip"):
+                    s["skip"] = f"donor {e['character']} refused: {why[e['character']]}"
     out = assign(chosen, rows, mapping, seed)
     if assignments:
-        out = apply_edits(out, assignments, rows, [s for s in chosen if not s.get("skip")])
+        out = apply_edits(out, [e for e in assignments if e.get("character") not in why], rows,
+                          [s for s in chosen if not s.get("skip")])
     strat, how = strategy(w["writer"])
     return {"status": "planned" if out else "empty", "game_id": game["game_id"], "title": game.get("title"),
             "writer": w["writer"], "strategy": strat, "how": how, "source": src["label"], "mapping": mapping,
