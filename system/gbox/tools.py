@@ -496,6 +496,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         now = time.monotonic()
         timings[name] = round(timings.get(name, 0) + now - mark, 3)
         mark = now
+    ctx.nowait = True                                     # progress lines never wait on the control plane (registry.Ctx)
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
     diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
@@ -509,6 +510,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if inp.capture_backend:
         ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
         ad.examine = True
+    try:                                                  # Windows: pick + wake the output device while we stage
+        prepare = getattr(ad, "prepare_audio", None)
+        if prepare:
+            prepare()
+    except Exception as e:                                 # noqa: BLE001 - never block the launch
+        print(f"gBox: audio device prefetch failed: {e}", flush=True)
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     lap("runtime_s")
     if g.launch.get("kind") == "steam":
