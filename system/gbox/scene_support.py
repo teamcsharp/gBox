@@ -1,14 +1,20 @@
 """Examine 3D capability matrix (#971): can THIS session's frame be rebuilt as a 3D scene, and if not, why.
 
 support(adapter, core, driver) -> {"status": "supported" | "relaunch_under_capture" | "unsupported", "reason", "driver",
-"fallback", "adapter", "core"}
+"attach", "relay", "verified", "fallback", "adapter", "core"}
 
-* supported: RenderDoc can capture this renderer as it runs (a Direct3D/Vulkan RetroArch core, Dolphin on D3D12).
-* relaunch_under_capture: capturable after a relaunch. `driver` names the backend the capture session must use
-  ("vulkan" first, "glcore" for GL-only cores); `driver` is None when the same renderer just needs RenderDoc inside
-  (the session started without Examine 3D). A backend override belongs to an agent-owned capture session only,
-  never the operator's own config.
-* unsupported: no 3D capture path today; `fallback` = "frame_2d" (the still frame / frame dump, labelled 2D-only).
+* supported: RenderDoc captures this renderer as it runs (a Direct3D/Vulkan RetroArch core with RenderDoc inside,
+  Dolphin on D3D12, Yuzu / RPCS3 on Vulkan with RenderDoc's Vulkan layer).
+* relaunch_under_capture: capturable in a capture session. `driver` names the backend it runs ("vulkan" first,
+  "glcore" for GL-only cores), `attach` how RenderDoc gets in ("layer" = RenderDoc's Vulkan layer, no injection;
+  "inject" = renderdoc.dll loaded at process start). `relay` = True: *Capture again* keeps the operator's game
+  running and captures the same moment in an agent-owned capture session (save state -> capture session on the test
+  PC or this PC -> load state -> capture -> GLB back to the panel; gbox/scene_relay.py). `relay` = False: the
+  emulator's state can't be carried, so the game itself has to be relaunched with Examine 3D on.
+  Backend overrides belong to the capture session only (gbox/capture_backend.py), never the operator's own config.
+* unsupported: no 3D capture path; `fallback` = "frame_2d" (the live frame, labelled 2D-only).
+
+`verified` = the capture path was run end to end on the test PC (docs/examine_emulators.md, live checks).
 
 Pure data + string logic: no RenderDoc, no Windows APIs, safe to import anywhere (server, UI payloads, tests).
 """
@@ -22,10 +28,12 @@ SUPPORTED, RELAUNCH, UNSUPPORTED = "supported", "relaunch_under_capture", "unsup
 CAPTURE_DRIVERS = ("d3d11", "d3d12", "vulkan")          # RenderDoc injection keeps the RetroArch window working
 
 # libretro cores with a hardware Vulkan renderer: run the capture session with video_driver=vulkan (no GL window).
-VULKAN_CORES = {"flycast", "parallel_n64", "mupen64plus_next", "mednafen_psx_hw", "beetle_psx_hw", "pcsx2", "lrps2",
+VULKAN_CORES = {"flycast", "mednafen_psx_hw", "beetle_psx_hw", "pcsx2", "lrps2",
                 "dolphin", "citra", "swanstation", "ppsspp", "duckstation", "panda3ds"}
 # hardware 3D cores with only an OpenGL renderer: core-profile GL (glcore) is the second choice, not live-checked yet.
 GL_ONLY_CORES = {"kronos", "yabasanshiro", "melonds", "play", "mame2016_gl", "reicast_gl", "citra_canary_gl"}
+# N64: the Vulkan RDP (ParaLLEl-RDP) has no vertex draw calls; captures use an HLE GL renderer on glcore.
+N64_HLE_CORES = {"parallel_n64", "mupen64plus_next"}
 # software renderers: the frame is one 2D blit, a draw-call capture has no scene in it.
 SOFTWARE_CORES = {"snes9x", "snes9x2010", "bsnes", "bsnes_hd_beta", "mesen", "mesen-s", "fceumm", "nestopia",
                   "genesis_plus_gx", "picodrive", "mgba", "gambatte", "sameboy", "gearboy", "vba_next", "vbam",
@@ -35,24 +43,22 @@ SOFTWARE_CORES = {"snes9x", "snes9x2010", "bsnes", "bsnes_hd_beta", "mesen", "me
                   "pcsx_rearmed", "neocd", "opera", "4do", "virtualjaguar", "desmume", "desmume2015", "bluemsx",
                   "fmsx", "puae", "vice_x64", "dosbox_pure", "quasi88", "np2kai", "pokemini", "o2em", "freechaf",
                   "gearsystem", "smsplus", "potator", "atari800", "cap32", "tgbdual", "gpsp", "meteor"}
+LIVE_CHECKED: set[tuple[str, str]] = set()   # (adapter, core) captured end to end on the test PC
 
 _WIN_ONLY = "3D draw-call capture runs on a Windows node (RenderDoc)."
-_STANDALONE = {
-    # adapter name -> (status, driver, reason) on a Windows node
-    "dolphin": (SUPPORTED, None, "Dolphin renders with Direct3D 12; RenderDoc captures it."),
-    "yuzu": (UNSUPPORTED, "vulkan", "3D draw-call capture is not integrated with the Yuzu window yet "
-             "(planned: Yuzu's Vulkan backend under RenderDoc's Vulkan layer in an agent-owned capture session)."),
-    "rpcs3": (UNSUPPORTED, "vulkan", "3D draw-call capture is not integrated with RPCS3 yet "
-              "(planned: RPCS3's Vulkan renderer under RenderDoc's Vulkan layer in an agent-owned capture session)."),
-    "xenia": (UNSUPPORTED, None, "Xenia has no RenderDoc capture path in gBox; only the 2D frame is available."),
-    "steam": (UNSUPPORTED, None, "PC games are not launched under RenderDoc by gBox; only the 2D frame is available."),
-    "rocketlauncher": (UNSUPPORTED, None, "RocketLauncher starts its own emulators outside gBox, so RenderDoc "
-                       "can't be placed inside them; only the 2D frame is available."),
-    "mgba": (UNSUPPORTED, None, "mGBA renders in software (2D frame only)."),
-    "duckstation": (UNSUPPORTED, None, "The DuckStation debug session runs on Linux without RenderDoc capture."),
-    "mame": (UNSUPPORTED, None, "MAME renders in software (2D frame only)."),
-    "command": (UNSUPPORTED, None, "Custom command emulators have no RenderDoc integration; only the 2D frame is available."),
+_RELAY = (" Capture again saves your moment, captures it in a separate agent-owned capture session (test PC first, "
+          "else a hidden copy on this PC) and brings the 3D scene back here; your game keeps running.")
+_UNSUPPORTED = {
+    "xenia": "Xenia has no RenderDoc capture path in gBox; only the 2D frame is available.",
+    "steam": "PC games are not launched under RenderDoc by gBox; only the 2D frame is available.",
+    "rocketlauncher": "RocketLauncher starts its own emulators outside gBox, so RenderDoc can't be placed inside "
+                      "them; only the 2D frame is available.",
+    "mgba": "mGBA renders in software (2D frame only).",
+    "duckstation": "The DuckStation debug session runs on Linux without RenderDoc capture.",
+    "mame": "MAME renders in software (2D frame only).",
+    "command": "Custom command emulators have no RenderDoc integration; only the 2D frame is available.",
 }
+_VULKAN_STANDALONE = {"yuzu": "Yuzu", "rpcs3": "RPCS3"}
 
 
 def core_name(core: str | None) -> str:
@@ -64,15 +70,17 @@ def core_name(core: str | None) -> str:
     return re.sub(r"_libretro(_android)?$", "", n)
 
 
-def _out(status, reason, driver=None, adapter="", core=""):
-    return {"status": status, "reason": reason, "driver": driver,
+def _out(status, reason, driver=None, adapter="", core="", *, attach=None, relay=False):
+    return {"status": status, "reason": reason, "driver": driver, "attach": attach, "relay": relay,
+            "verified": (adapter, core) in LIVE_CHECKED or (adapter, "") in LIVE_CHECKED,
             "fallback": "frame_2d" if status != SUPPORTED else None, "adapter": adapter, "core": core}
 
 
 def support(adapter: str, core: str | None = None, driver: str | None = None, *, hooked: bool | None = None,
             host_os: str | None = None) -> dict:
-    """The matrix row for one session. `driver` = the renderer the session runs now (RetroArch video_driver);
-    `hooked` = RenderDoc is inside the process (None: unknown, e.g. before launch)."""
+    """The matrix row for one session. `driver` = the renderer the session runs now (RetroArch video_driver, or the
+    standalone emulator's backend: "opengl" disables the Vulkan layer route); `hooked` = RenderDoc is inside the
+    process (None: unknown, e.g. before launch)."""
     host_os = host_os or ("windows" if sys.platform == "win32" else "linux")
     adapter = (adapter or "").lower()
     c = core_name(core)
@@ -85,27 +93,44 @@ def support(adapter: str, core: str | None = None, driver: str | None = None, *,
                         "to capture (2D frame only).", None, adapter, c)
         if drv in CAPTURE_DRIVERS:
             if hooked is False:
-                return _out(RELAUNCH, "this session was started without Examine 3D (RenderDoc isn't inside the "
-                            "emulator): relaunch the game with Examine 3D on (save state first)", None, adapter, c)
+                cap = "vulkan" if c in VULKAN_CORES else "glcore" if c in N64_HLE_CORES else drv
+                return _out(RELAUNCH, f"This session was started without RenderDoc inside (Examine 3D was off at "
+                            f"launch).{_RELAY} The capture session renders with {cap}.", cap, adapter, c,
+                            attach="layer" if cap == "vulkan" else "inject", relay=True)
             return _out(SUPPORTED, f"RetroArch {drv} renderer: RenderDoc captures it.", None, adapter, c)
-        if c in GL_ONLY_CORES:
-            return _out(RELAUNCH, f"The {c} core only renders with OpenGL and RenderDoc injection prevents RetroArch's "
-                        "GL window from opening; capture needs a separate capture session on the core-profile "
-                        "driver (glcore, not live-checked yet). The game remains playable.", "glcore", adapter, c)
-        if c in VULKAN_CORES or not c:
-            return _out(RELAUNCH, f"This RetroArch session renders with {drv or 'OpenGL'}, which RenderDoc injection "
-                        f"can't open a window for; the {c or 'core'} core has a Vulkan renderer, so the frame can be "
-                        "captured in a separate capture session under video_driver=vulkan (your game keeps its own "
-                        "settings).", "vulkan", adapter, c)
-        return _out(RELAUNCH, f"This RetroArch session renders with {drv or 'OpenGL'}, which RenderDoc injection can't "
-                    f"open a window for; the {c} core is not in the capture matrix yet, so a Vulkan capture session "
-                    "is the first thing to try.", "vulkan", adapter, c)
-    status, d, reason = _STANDALONE.get(adapter, (UNSUPPORTED, None, f"{adapter or 'This emulator'} has no 3D "
-                                                  "capture path in gBox yet; only the 2D frame is available."))
-    if status == SUPPORTED and hooked is False:
-        return _out(RELAUNCH, "this session was started without Examine 3D (RenderDoc isn't inside the emulator): "
-                    "relaunch the game with Examine 3D on (save state first)", None, adapter, c)
-    return _out(status, reason, d, adapter, c)
+        if c in GL_ONLY_CORES or c in N64_HLE_CORES:
+            why = (f"The {c} core only renders with OpenGL" if c in GL_ONLY_CORES else
+                   f"The {c} core's Vulkan renderer (ParaLLEl-RDP) rasterizes in compute shaders with no draw calls")
+            return _out(RELAUNCH, f"{why}, and RenderDoc can't open RetroArch's compatibility GL window.{_RELAY} "
+                        "The capture session runs core-profile GL (glcore) with RenderDoc injected (not live-checked "
+                        "yet).", "glcore", adapter, c, attach="inject", relay=True)
+        known = c in VULKAN_CORES or not c
+        return _out(RELAUNCH, f"This RetroArch session renders with {drv or 'OpenGL'}, which RenderDoc can't open a "
+                    f"window for; the {c or 'core'} core " + ("has a Vulkan renderer" if known else
+                    "is not in the capture matrix yet, so Vulkan is tried first") + f".{_RELAY} The capture session "
+                    "runs video_driver=vulkan with RenderDoc's Vulkan layer (no injection; your settings are not "
+                    "changed).", "vulkan", adapter, c, attach="layer", relay=True)
+    if adapter == "dolphin":
+        if hooked is False:
+            return _out(RELAUNCH, "This Dolphin session was started without RenderDoc inside." + _RELAY +
+                        " The capture session renders with Dolphin's Vulkan backend (a -C override for that session "
+                        "only) under RenderDoc's Vulkan layer.", "vulkan", adapter, c, attach="layer", relay=True)
+        return _out(SUPPORTED, "Dolphin renders with Direct3D 12; RenderDoc captures it.", None, adapter, c)
+    if adapter in _VULKAN_STANDALONE:
+        name = _VULKAN_STANDALONE[adapter]
+        if drv and drv != "vulkan":
+            return _out(UNSUPPORTED, f"{name} is set to render with {drv}; 3D capture needs its Vulkan renderer "
+                        f"(set the graphics API to Vulkan in {name}, then relaunch with Examine 3D on). The 2D frame "
+                        "is still available.", "vulkan", adapter, c, attach="layer")
+        if hooked is False:
+            return _out(RELAUNCH, f"This {name} session was started without RenderDoc's Vulkan layer (Examine 3D was "
+                        f"off at launch). {name} save states can't be carried into a capture session, so relaunch "
+                        "the game with Examine 3D on (save in-game first).", "vulkan", adapter, c, attach="layer")
+        return _out(SUPPORTED, f"{name} renders with Vulkan and starts with RenderDoc's Vulkan layer (no injection); "
+                    "RenderDoc captures it.", None, adapter, c, attach="layer")
+    reason = _UNSUPPORTED.get(adapter, f"{adapter or 'This emulator'} has no 3D capture path in gBox yet; only the 2D "
+                              "frame is available.")
+    return _out(UNSUPPORTED, reason, None, adapter, c)
 
 
 def session_support(ad, host_os: str | None = None) -> dict:
@@ -113,6 +138,8 @@ def session_support(ad, host_os: str | None = None) -> dict:
     proc = getattr(ad, "proc", None)
     info = getattr(proc, "renderdoc", None) if proc is not None else None
     hooked = (bool(info) and "error" not in info) if proc is not None else None
+    if hooked and isinstance(info, dict) and info.get("attach") == "layer" and "loaded" in info:
+        hooked = bool(info["loaded"])                     # the Vulkan loader only loads the layer for a Vulkan device
     cfg = getattr(ad, "cfg", None)
     core = getattr(cfg, "core", None) if cfg is not None else None
     return support(getattr(ad, "name", "") or "", getattr(ad, "core_path", None) or core,
@@ -132,14 +159,18 @@ def video_driver(argv) -> str | None:
 
 
 MATRIX_DOC = """\
-| Emulator / core | Status | Capture driver | Notes |
-|---|---|---|---|
-| RetroArch, D3D11/D3D12/Vulkan core | supported | (current) | needs Examine 3D on at launch |
-| RetroArch, GL session of a Vulkan-capable core (Flycast, ParaLLEl N64, Beetle PSX HW, PCSX2, Dolphin, Citra, SwanStation, PPSSPP) | relaunch_under_capture | vulkan | agent-owned capture session only |
-| RetroArch, GL-only 3D core (Kronos, YabaSanshiro, melonDS, Play!) | relaunch_under_capture | glcore | not live-checked |
-| RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | 2D frame only |
-| Dolphin (Windows, D3D12) | supported | (current) | |
-| Yuzu | unsupported | vulkan (planned) | still frame only today |
-| RPCS3 | unsupported | vulkan (planned) | still frame only today |
-| Xenia, Steam, RocketLauncher, Linux sessions | unsupported | - | 2D frame only |
+| Emulator / core | Status | Capture session | RenderDoc | Notes |
+|---|---|---|---|---|
+| RetroArch, D3D11/D3D12/Vulkan session with Examine 3D on | supported | (current) | injected at launch | |
+| RetroArch, D3D/Vulkan session started without Examine 3D | relaunch_under_capture (relay) | vulkan for Vulkan-capable cores, else the same driver | layer / injected | game keeps running |
+| RetroArch, GL session of a Vulkan-capable core (Flycast, Beetle PSX HW, PCSX2/LRPS2, Dolphin, Citra, SwanStation, DuckStation, PPSSPP) | relaunch_under_capture (relay) | vulkan | Vulkan layer | Flycast live-checked |
+| RetroArch, GL-only 3D core (Kronos, YabaSanshiro, melonDS, Play!) | relaunch_under_capture (relay) | glcore | injected | not live-checked |
+| RetroArch N64 (ParaLLEl N64, Mupen64Plus-Next) | relaunch_under_capture (relay) | glcore + HLE renderer (Glide64 / GLideN64) | injected | ParaLLEl-RDP has no draw calls; not live-checked |
+| RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | - | 2D frame only |
+| Dolphin (Windows, D3D12) with Examine 3D on | supported | (current) | injected at launch | |
+| Dolphin started without Examine 3D | relaunch_under_capture (relay) | vulkan (-C Dolphin.Core.GFXBackend=Vulkan) | Vulkan layer | test PC only |
+| Yuzu / RPCS3 on Vulkan with Examine 3D on | supported | (current) | Vulkan layer at launch | |
+| Yuzu / RPCS3 started without Examine 3D | relaunch_under_capture | relaunch the game | Vulkan layer | states can't be carried |
+| Yuzu / RPCS3 set to OpenGL | unsupported | - | - | switch the emulator to Vulkan |
+| Xenia, Steam, RocketLauncher, Linux sessions | unsupported | - | - | 2D frame only |
 """

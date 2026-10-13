@@ -5,6 +5,9 @@ How it works (Windows node, portable RenderDoc in <runtime>/tools/RenderDoc_*):
                already inside: the process is created suspended, renderdoc.dll is loaded through a remote LoadLibraryW,
                a few in-app API calls switch RenderDoc's on-screen overlay and capture hotkeys off, then the process runs.
                (`popen_hooked`, used by the RetroArch / Dolphin adapters when examine is enabled.)
+               Vulkan backends need no injection: `popen_layer` sets RenderDoc's Vulkan layer for that process only
+               (gbox/capture_backend.py), used by Yuzu / RPCS3 and by agent-owned capture sessions (#971: a GL
+               RetroArch session is captured at the same moment in a Vulkan capture session, gbox/scene_relay.py).
   2. capture   pause the session, ask RenderDoc (target control, from qrenderdoc --python) for the next frame, step the
                emulator one frame (RetroArch FRAMEADVANCE) or let one frame through and suspend (Dolphin), so the game
                stays paused on exactly the captured frame.
@@ -45,9 +48,15 @@ def _cfg():
     return config.load(os.environ.get("GBOX_CONFIG") or Path(__file__).resolve().parents[1] / "gbox.toml")
 
 
-def renderdoc_dir() -> Path:
+RENDERDOC_VERSION = "1.46"                                             # portable build fetched when a PC has none
+RENDERDOC_SHA256 = "9ca4d09ecaba2cc791168660d6fc2a7e3d70fe67146e87ec05c5f8dea70772f7"
+
+
+def renderdoc_dir(provision: bool = False) -> Path:
     """The portable RenderDoc under <runtime>/tools (newest RenderDoc_* folder). (frame_rip has the same lookup but
-    imports numpy, which the worker venv doesn't have: everything here is stdlib + qrenderdoc's own Python.)"""
+    imports numpy, which the worker venv doesn't have: everything here is stdlib + qrenderdoc's own Python.)
+    provision=True downloads the pinned portable build into <runtime>/tools when the PC has none (capture sessions on
+    the test PC)."""
     roots = []
     try:
         roots.append(_cfg().runtime)
@@ -58,7 +67,47 @@ def renderdoc_dir() -> Path:
         found = sorted((r / "tools").glob("RenderDoc_*/qrenderdoc.exe"))
         if found:
             return found[-1].parent
+    if provision and roots:
+        return ensure_renderdoc(roots[0])
     raise FileNotFoundError("RenderDoc not found under <runtime>/tools/RenderDoc_*")
+
+
+def ensure_renderdoc(runtime: Path, version: str = RENDERDOC_VERSION, sha256_hex: str = RENDERDOC_SHA256,
+                     fetch=None) -> Path:
+    """Install the official portable RenderDoc (renderdoc.org zip, sha256-pinned) into <runtime>/tools/RenderDoc_<v>_64.
+    `fetch(url) -> bytes` is injectable for tests."""
+    import hashlib
+    import io
+    import zipfile
+    dst = Path(runtime) / "tools" / f"RenderDoc_{version}_64"
+    if (dst / "qrenderdoc.exe").is_file() and (dst / "renderdoc.json").is_file():
+        return dst
+    url = f"https://renderdoc.org/stable/{version}/RenderDoc_{version}_64.zip"
+    if fetch is None:
+        import urllib.request
+
+        def fetch(u):
+            with urllib.request.urlopen(u, timeout=1800) as r:
+                return r.read()
+    data = fetch(url)
+    if hashlib.sha256(data).hexdigest() != sha256_hex:
+        raise RuntimeError(f"RenderDoc {version} download failed its sha256 check")
+    tmp = dst.with_name(dst.name + ".partial")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for m in z.infolist():
+            name = m.filename.split("/", 1)[1] if "/" in m.filename else ""
+            if not name or m.is_dir():
+                continue
+            out = (tmp / name).resolve()
+            if not out.is_relative_to(tmp.resolve()):
+                raise RuntimeError(f"unsafe path in the RenderDoc zip: {m.filename}")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(z.read(m))
+    shutil.rmtree(dst, ignore_errors=True)
+    tmp.rename(dst)
+    return dst
 
 
 def _qrd(script: str, env: dict, timeout: float = 600) -> None:
@@ -306,17 +355,61 @@ def popen_hooked(argv, cap_dir: Path | None = None, **kw) -> subprocess.Popen:
     return p
 
 
+def popen_layer(argv, cap_dir: Path | None = None, **kw) -> subprocess.Popen:
+    """subprocess.Popen with RenderDoc's Vulkan layer enabled for this process only (gbox/capture_backend.layer_env):
+    the Vulkan loader loads renderdoc.dll when the program creates its Vulkan instance. No injection, nothing
+    registered system-wide. p.renderdoc["attach"] = "layer"; whether it loaded is checked later (renderdoc_loaded)."""
+    from .capture_backend import layer_env
+    try:
+        rd = renderdoc_dir()
+        kw["env"] = layer_env(rd, Path(cap_dir) / "frame" if cap_dir else None, base=kw.get("env"))
+        info = {"attach": "layer", "renderdoc": str(rd / "renderdoc.dll"), "manifest": str(rd / "renderdoc.json"),
+                "capfile": kw["env"].get("RENDERDOC_CAPFILE")}
+    except Exception as e:                                              # never block a game launch on the examine hook
+        info = {"attach": "layer", "error": f"{type(e).__name__}: {e}"}
+    p = subprocess.Popen(argv, **kw)
+    p.renderdoc = info
+    return p
+
+
+def renderdoc_loaded(pid: int) -> bool:
+    """renderdoc.dll is mapped into the process (injected, or loaded by the Vulkan loader as a layer)."""
+    try:
+        return "renderdoc.dll" in _modules(pid)
+    except Exception:
+        return False
+
+
+def layer_check(proc, wait_s: float = 0.0) -> bool | None:
+    """For a layer-attached process: record whether the Vulkan loader loaded RenderDoc (p.renderdoc["loaded"]).
+    Returns None for processes that weren't started with the layer."""
+    info = getattr(proc, "renderdoc", None)
+    if not isinstance(info, dict) or info.get("attach") != "layer" or "error" in info:
+        return None
+    t0 = time.time()
+    while True:
+        ok = proc.poll() is None and renderdoc_loaded(proc.pid)
+        if ok or time.time() - t0 >= wait_s:
+            info["loaded"] = ok
+            if ok:
+                try:
+                    info["crash_handlers_closed"] = _kill_children(proc.pid)
+                except Exception:
+                    pass
+            return ok
+        time.sleep(0.25)
+
+
 def hooked(proc) -> bool:
-    """Whether a running emulator process has RenderDoc inside (launched by popen_hooked)."""
+    """Whether a running emulator process has RenderDoc inside (popen_hooked, or popen_layer once Vulkan is up)."""
     if proc is None or proc.poll() is not None:
         return False
     info = getattr(proc, "renderdoc", None)
+    if isinstance(info, dict) and info.get("attach") == "layer" and "error" not in info:
+        return bool(layer_check(proc))
     if info and "error" not in info:
         return True
-    try:
-        return "renderdoc.dll" in _modules(proc.pid)
-    except Exception:
-        return False
+    return renderdoc_loaded(proc.pid)
 
 
 # ------------------------------------------------------------------------------------------------ 2. capture
@@ -1009,6 +1102,7 @@ class SceneIn(BaseModel):
     frames: int = 2                        # consecutive frames captured; the busiest is used (30 fps games)
     fovy: float = 0                        # vertical FOV (deg) when the emulator has no projection constants (PS2: 55)
     aspect: float = 0                      # display aspect override (0 = PS2 4:3 / viewport)
+    relay: bool = False                    # server: capture this moment in a separate capture session (scene_relay)
 
 
 class SceneOut(BaseModel):
