@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -120,19 +121,160 @@ def observation_list(value, key):
     return [text[:500] for text in map(_item_text, items) if text][:20]
 
 
-def parse_observation(raw):
-    """The observation in a vision reply: code fences, leading prose and trailing notes are allowed."""
-    text = raw.strip()
+# #1602: on the operator's Dead or Alive 2 LE session (2882962538984a44-18835ca8a18e4a03, qwen2.5vl:7b) 40
+# observations were followed by three replies in a row that were not JSON ("Expecting ',' delimiter: line 8
+# column 18"), and the observer filed a repair request for a route that worked. Small vision models copy on-screen
+# text with its quotes unescaped ("hud": ["banner "ROUND 1""]), drop a comma between items, leave a trailing
+# comma or stop mid-object. analyze asks the endpoint for schema-constrained JSON (OBSERVATION_FORMAT), and
+# parse_observation repairs those slips (repair_json) before it gives up on a reply.
+OBSERVATION_SCHEMA = {
+    'type': 'object',
+    'properties': {'summary': {'type': 'string'},
+                   **{key: {'type': 'array', 'items': {'type': 'string'}} for key in OBSERVATION_LISTS}},
+    'required': ['summary', *OBSERVATION_LISTS],
+}
+OBSERVATION_FORMAT = {'type': 'json_schema',
+                      'json_schema': {'name': 'observation', 'strict': True, 'schema': OBSERVATION_SCHEMA}}
+# Status codes of an endpoint that rejects response_format; the request is then repeated without it.
+_FORMAT_REJECTED = (400, 404, 415, 422, 501)
+_UNSTRUCTURED_URLS = set()   # endpoints whose plain retry succeeded after they rejected response_format
+_CLOSER = {'{': '}', '[': ']'}
+_ESCAPES = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+
+
+def _skip_ws(text, i):
+    while i < len(text) and text[i] in ' \t\r\n':
+        i += 1
+    return i
+
+
+def _value_follows(text, k, in_object):
+    """Whether text[k:] can continue a container after a comma (a key in an object, any value in an array)."""
+    if k >= len(text) or text[k] in '"}]':
+        return True
+    if in_object:
+        return False
+    return text[k] in '{[-0123456789' or text.startswith(('true', 'false', 'null'), k)
+
+
+def _closes_string(text, i, stack, is_key):
+    """Whether the quote at text[i] ends the string it is in, judged by the JSON structure after it."""
+    j = _skip_ws(text, i + 1)
+    if j >= len(text):
+        return True
+    c = text[j]
+    if is_key:
+        return c == ':'
+    if c in '}]':
+        return True
+    if c == '"':
+        # '""' is an inner quote right before the real closing one; '" "' is a missing comma between items.
+        return not _closes_string(text, j, stack, is_key) if j == i + 1 else True
+    if c == ',':
+        return _value_follows(text, _skip_ws(text, j + 1), bool(stack) and stack[-1] == '{')
+    return False
+
+
+def _last_token(out):
+    for piece in reversed(out):
+        stripped = piece.rstrip()
+        if stripped:
+            return stripped[-1]
+    return ''
+
+
+def _drop_trailing_comma(out):
+    while out and not out[-1].strip():
+        out.pop()
+    if out and out[-1].rstrip().endswith(','):
+        out[-1] = out[-1].rstrip()[:-1]
+
+
+def repair_json(text):
+    """The first JSON object in a vision reply with small-model slips repaired: unescaped quotes inside strings,
+    missing commas between items, trailing commas, raw control characters in strings, mismatched closers and a
+    reply cut off before its closing brackets. Returns the text unchanged when it holds no object."""
+    start = text.find('{')
+    if start < 0:
+        return text
+    out, stack = [], []
+    in_string = is_key = pending_key = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == '\\' and i + 1 < len(text):
+                out.append(text[i:i + 2])
+                i += 2
+                continue
+            if ch == '"':
+                if _closes_string(text, i, stack, is_key):
+                    in_string, pending_key = False, is_key
+                    out.append('"')
+                else:
+                    out.append('\\"')
+            else:
+                out.append(_ESCAPES.get(ch, ch))
+            i += 1
+            continue
+        if ch in '"{[':
+            if stack and _last_token(out) in ('"', '}', ']') or (_last_token(out).isalnum() and stack):
+                out.append(',')  # a value or key directly after another one: the model dropped the comma
+            if ch == '"':
+                in_string, is_key = True, bool(stack) and stack[-1] == '{' and _last_token(out) in ('{', ',')
+            else:
+                stack.append(ch)
+            out.append(ch)
+        elif ch in '}]':
+            if not stack:
+                break
+            _drop_trailing_comma(out)
+            out.append(_CLOSER[stack.pop()])  # the closer that matches what is open, whatever the model wrote
+            if not stack:
+                break  # the observation is complete: trailing notes are ignored
+        elif ch == ':':
+            pending_key = False
+            out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
+    if in_string:
+        out.append('"')
+        pending_key = is_key
+    if pending_key:
+        out.append(': null')
+    elif _last_token(out) == ':':
+        out.append(' null')
+    _drop_trailing_comma(out)
+    while stack:
+        out.append(_CLOSER[stack.pop()])
+    return ''.join(out)
+
+
+def _decode(text):
+    """The first JSON object of a reply: plain JSON, or one after code fences and leading prose."""
     try:
-        value = json.loads(text)
+        return json.loads(text, strict=False)
     except json.JSONDecodeError:
         start = text.find('{')
         if start < 0:
             raise ValueError('Vision model returned no JSON observation') from None
+        return json.JSONDecoder(strict=False).raw_decode(text, start)[0]
+
+
+def parse_observation(raw):
+    """The observation in a vision reply: code fences, leading prose and trailing notes are allowed, and the
+    JSON slips repair_json knows are fixed (the result then carries repaired_json: true)."""
+    text = raw.strip()
+    repaired = False
+    try:
+        value = _decode(text)
+    except json.JSONDecodeError as exc:
         try:
-            value = json.JSONDecoder().raw_decode(text, start)[0]
-        except json.JSONDecodeError as exc:
+            value = json.loads(repair_json(text), strict=False)
+        except json.JSONDecodeError:
             raise ValueError('Vision model returned malformed JSON: ' + str(exc)) from None
+        repaired = True
     summary = value.get('summary') if isinstance(value, dict) else None
     summary = _item_text(summary) if isinstance(summary, (str, list, dict)) else ''
     if not summary:
@@ -146,6 +288,8 @@ def parse_observation(raw):
             normalized.append(key)
     if normalized:
         result['normalized_fields'] = normalized
+    if repaired:
+        result['repaired_json'] = True
     return result
 
 
@@ -164,13 +308,22 @@ def analyze(config, frame, previous):
         '"mechanics_hypotheses":["tentative gameplay rules"], "uncertainties":["unknowns"]}. '
         'Every list item is one plain string, never an object. '
         'Previous observation: ' + json.dumps(previous or {}, ensure_ascii=False)[:5000])
-    with httpx.Client(timeout=75) as client:
-        r = client.post(cfg['llm_url'].rstrip('/') + '/chat/completions', json={
-            'model': model, 'temperature': 0, 'max_tokens': 1000,
+    url = cfg['llm_url'].rstrip('/') + '/chat/completions'
+    body = {'model': model, 'temperature': 0, 'max_tokens': 1000,
             'messages': [{'role': 'user', 'content': [
                 {'type': 'text', 'text': prompt},
                 {'type': 'image_url', 'image_url': {
-                    'url': 'data:image/png;base64,' + base64.b64encode(frame).decode()}}]}]})
+                    'url': 'data:image/png;base64,' + base64.b64encode(frame).decode()}}]}]}
+    with httpx.Client(timeout=75) as client:
+        # Schema-constrained decoding keeps the reply valid JSON. An endpoint that rejects response_format
+        # gets the same request without it, and is remembered once that plain request succeeds.
+        r = None if url in _UNSTRUCTURED_URLS else client.post(url, json=body | {'response_format': OBSERVATION_FORMAT})
+        rejected = r is not None and getattr(r, 'status_code', 200) in _FORMAT_REJECTED
+        if r is None or rejected:
+            plain = client.post(url, json=body)
+            if rejected and getattr(plain, 'is_success', False):
+                _UNSTRUCTURED_URLS.add(url)
+            r = plain
         r.raise_for_status()
         raw = r.json()['choices'][0]['message']['content'] or ''
     return parse_observation(raw) | {'model': model}
@@ -642,6 +795,72 @@ class SessionObservers:
                        'analyzing': len(self.pending), 'interval_seconds': 30})
 
 
+# ---------------------------------------------------------------- running code vs. the code on disk (#1602)
+# A long-running observer keeps the modules it imported at start. In #1602 the service had run for 12 h behind the
+# share: fixes merged and synced since (#1455 timeout backoff, #1371 SessionGone, #1374 bare list fields) had never
+# loaded, so a timeout #1455 already handles filed this repair request. The loop now reports which code it runs and
+# exits for a systemd restart (Restart=on-failure) once the code on disk has changed, settled and compiles.
+CODE_MODULES = ('session_observers', 'background_testing', 'character_collection', 'store')
+CODE_SETTLE_SECONDS = 30      # a share sync may still be writing files; wait until they stop changing
+RESTART_EXIT_CODE = 75        # EX_TEMPFAIL: non-zero, so Restart=on-failure starts the new code
+
+
+def code_paths():
+    return [Path(__file__).with_name(name + '.py') for name in CODE_MODULES]
+
+
+class CodeWatch:
+    """Fingerprint of the observer's own source files at import time versus now."""
+
+    def __init__(self, paths, clock=time.time, settle=CODE_SETTLE_SECONDS):
+        self.paths, self.clock, self.settle = [Path(p) for p in paths], clock, settle
+        self.loaded = self.fingerprint()
+        self.started = clock()
+
+    def fingerprint(self):
+        digest = hashlib.sha256()
+        for path in self.paths:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                data = b''
+            digest.update(path.name.encode() + b'\0' + hashlib.sha256(data).digest())
+        return digest.hexdigest()
+
+    def _compile_error(self):
+        for path in self.paths:
+            try:
+                compile(path.read_bytes(), str(path), 'exec')
+            except (OSError, SyntaxError, ValueError) as exc:
+                return f'{path.name}: {exc}'[:300]
+        return None
+
+    def _newest_mtime(self):
+        times = []
+        for path in self.paths:
+            try:
+                times.append(path.stat().st_mtime)
+            except OSError:
+                pass
+        return max(times, default=0.0)
+
+    def status(self):
+        on_disk = self.fingerprint()
+        row = {'code': self.loaded[:16], 'code_on_disk': on_disk[:16], 'code_stale': on_disk != self.loaded,
+               'code_started': self.started}
+        if row['code_stale']:
+            row['code_error'] = self._compile_error()
+        return row
+
+    def should_restart(self, pending=0):
+        """True when changed code has settled, compiles and no frame is being analysed."""
+        if pending or self.fingerprint() == self.loaded:
+            return False
+        if self.clock() - self._newest_mtime() < self.settle:
+            return False
+        return self._compile_error() is None
+
+
 def main():
     import argparse
     from .config import load
@@ -662,15 +881,26 @@ def main():
         import signal
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: stop.set())
+        watch = CodeWatch(code_paths())
+        restart = False
         try:
             while not stop.is_set():
                 try:
                     observers.tick()
                 except Exception as exc:
                     store.put('setting', 'session_observers_runtime', {'heartbeat': time.time(), 'error': str(exc)[:600]})
+                runtime = {**(store.get('setting', 'session_observers_runtime') or {}), **watch.status()}
+                if watch.should_restart(len(observers.pending)):
+                    restart = True
+                    runtime['restarting'] = 'code on disk changed; exiting for a systemd restart'
+                store.put('setting', 'session_observers_runtime', runtime)
+                if restart:
+                    break
                 stop.wait(5)
         finally:
             observers.close()
+    if restart:
+        raise SystemExit(RESTART_EXIT_CODE)
 
 
 if __name__ == '__main__':

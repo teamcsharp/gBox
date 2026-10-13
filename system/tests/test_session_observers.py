@@ -399,3 +399,222 @@ def test_timeout_detection():
     assert is_timeout(TimeoutError()) and is_timeout(httpx.ConnectTimeout('x'))
     assert is_timeout(RuntimeError('TimeoutError: ')) and is_timeout(RuntimeError('ReadTimeout: timed out'))
     assert not is_timeout(RuntimeError('vision unavailable')) and not is_timeout(KeyError('sha256'))
+
+
+
+# ---------------------------------------------------------------- #1602: malformed vision JSON, schema-constrained replies
+import json as _json
+from types import SimpleNamespace as _NS
+
+import httpx as _httpx
+import pytest as _pytest
+
+from gbox import session_observers as _so
+
+# The shape of the DOA2 LE failure on session 2882962538984a44-18835ca8a18e4a03: on-screen text quoted without
+# escaping, which json rejects with "Expecting ',' delimiter".
+DOA2_REPLY = """{
+  "summary": "Two fighters face off in a dojo; the banner "ROUND 2" is shown.",
+  "actors": ["Character in purple outfit (player 1)", "Character in red and white outfit with pink hair (player 2)"],
+  "changes": ["The banner "ROUND 2" appeared"],
+  "hud": ["Damage/Revision: 40/100%", "Total/Max DMG: 40/45", "Combo/Max Combo: 0/2"],
+  "mechanics_hypotheses": ["Rounds are announced between bouts"],
+  "uncertainties": ["Which fighter the operator controls"]
+}"""
+
+
+def test_1602_doa2_unescaped_quotes_are_repaired_not_a_failure():
+    with _pytest.raises(_json.JSONDecodeError, match="Expecting ',' delimiter"):
+        _json.loads(DOA2_REPLY)
+    result = _so.parse_observation(DOA2_REPLY)
+    assert result['repaired_json'] is True
+    assert result['summary'] == 'Two fighters face off in a dojo; the banner "ROUND 2" is shown.'
+    assert result['changes'] == ['The banner "ROUND 2" appeared']
+    assert result['hud'] == ['Damage/Revision: 40/100%', 'Total/Max DMG: 40/45', 'Combo/Max Combo: 0/2']
+    assert len(result['actors']) == 2 and result['uncertainties'] == ['Which fighter the operator controls']
+
+
+def test_1602_missing_and_trailing_commas_inside_fences():
+    raw = '```json\n{"summary": "Character select screen"\n "actors": ["Kasumi" "Ayane",],\n "hud": ["TIME 99",],}\n```'
+    result = _so.parse_observation(raw)
+    assert result['summary'] == 'Character select screen'
+    assert result['actors'] == ['Kasumi', 'Ayane'] and result['hud'] == ['TIME 99']
+    assert result['repaired_json'] is True
+
+
+def test_1602_inner_quote_pair_and_raw_newline():
+    raw = '{"summary": "HUD label "P1""\n, "hud": ["line one\nline two", "say "hi", then go"]}'
+    result = _so.parse_observation(raw)
+    assert result['summary'] == 'HUD label "P1"'
+    assert result['hud'] == ['line one line two', 'say "hi", then go']
+
+
+def test_1602_truncated_reply_keeps_what_arrived():
+    raw = '{"summary": "Kasumi and Ayane fight in the snow", "actors": ["Kasumi (player 1)", "Ayane (play'
+    result = _so.parse_observation(raw)
+    assert result['summary'] == 'Kasumi and Ayane fight in the snow'
+    assert result['actors'] == ['Kasumi (player 1)', 'Ayane (play']
+    assert result['hud'] == [] and result['repaired_json'] is True
+    assert _so.parse_observation('{"summary": "Title screen", "hud"')['hud'] == []
+    assert _so.parse_observation('{"summary": "Title screen", "hud":')['hud'] == []
+    assert _so.parse_observation('{"summary": "Title screen",')['summary'] == 'Title screen'
+
+
+def test_1602_valid_replies_are_untouched_and_garbage_still_fails():
+    clean = _json.dumps({'summary': 'Versus screen', 'actors': ['Kasumi'], 'changes': [], 'hud': [],
+                         'mechanics_hypotheses': [], 'uncertainties': []})
+    assert 'repaired_json' not in _so.parse_observation(clean)
+    assert 'repaired_json' not in _so.parse_observation('Here you go:\n' + clean + '\nHope this helps')
+    assert _so.repair_json(clean) == clean
+    with _pytest.raises(ValueError, match='malformed JSON'):
+        _so.parse_observation('{"summary": }')
+    with _pytest.raises(ValueError, match='no JSON observation'):
+        _so.parse_observation('I cannot see the game.')
+
+
+class _VisionEndpoint:
+    """httpx.Client stand-in: records each request body and answers from a script of (status, content)."""
+
+    def __init__(self, script):
+        self.script, self.sent = list(script), []
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def post(self, url, json):
+        self.sent.append(json)
+        status, content = self.script.pop(0)
+        body = {'choices': [{'message': {'content': content}}]} if status == 200 else {'error': content}
+        return _httpx.Response(status, json=body, request=_httpx.Request('POST', url))
+
+
+_CFG = _NS(agent={'llm_url': 'http://vision.test/v1/', 'vision_model': 'qwen2.5vl:7b'})
+_GOOD = _json.dumps({'summary': 'Kasumi blocks', 'actors': ['Kasumi'], 'changes': [], 'hud': ['TIME 42'],
+                     'mechanics_hypotheses': [], 'uncertainties': []})
+
+
+def test_1602_analyze_requests_schema_constrained_json(monkeypatch):
+    endpoint = _VisionEndpoint([(200, _GOOD)])
+    monkeypatch.setattr(_so, '_UNSTRUCTURED_URLS', set())
+    monkeypatch.setattr(_so.httpx, 'Client', endpoint)
+    result = _so.analyze(_CFG, b'png', None)
+    assert result['summary'] == 'Kasumi blocks' and result['model'] == 'qwen2.5vl:7b'
+    (sent,) = endpoint.sent
+    assert sent['response_format']['type'] == 'json_schema'
+    schema = sent['response_format']['json_schema']['schema']
+    assert set(schema['required']) == {'summary', *_so.OBSERVATION_LISTS}
+    assert all(schema['properties'][k]['items'] == {'type': 'string'} for k in _so.OBSERVATION_LISTS)
+
+
+def test_1602_endpoint_without_response_format_falls_back_once(monkeypatch):
+    endpoint = _VisionEndpoint([(400, 'unknown field response_format'), (200, _GOOD), (200, _GOOD)])
+    monkeypatch.setattr(_so, '_UNSTRUCTURED_URLS', set())
+    monkeypatch.setattr(_so.httpx, 'Client', endpoint)
+    assert _so.analyze(_CFG, b'png', None)['summary'] == 'Kasumi blocks'
+    assert _so.analyze(_CFG, b'png', None)['summary'] == 'Kasumi blocks'
+    assert ['response_format' in body for body in endpoint.sent] == [True, False, False]
+
+
+def test_1602_a_failing_plain_retry_keeps_the_schema(monkeypatch):
+    endpoint = _VisionEndpoint([(400, 'image too large'), (400, 'image too large')])
+    monkeypatch.setattr(_so, '_UNSTRUCTURED_URLS', set())
+    monkeypatch.setattr(_so.httpx, 'Client', endpoint)
+    with _pytest.raises(_httpx.HTTPStatusError):
+        _so.analyze(_CFG, b'png', None)
+    assert _so._UNSTRUCTURED_URLS == set()
+
+
+
+# ---------------------------------------------------------------- #1602: stale running code is detected
+def _watch_files(tmp_path, clock):
+    a, b = tmp_path / 'session_observers.py', tmp_path / 'store.py'
+    a.write_text('X = 1\n'); b.write_text('Y = 2\n')
+    import os
+    for path in (a, b):
+        os.utime(path, (clock[0] - 100, clock[0] - 100))
+    return a, b
+
+
+def test_1602_unchanged_code_is_not_stale(tmp_path):
+    clock = [1_000_000.0]
+    a, b = _watch_files(tmp_path, clock)
+    watch = _so.CodeWatch([a, b], clock=lambda: clock[0])
+    row = watch.status()
+    assert row['code_stale'] is False and row['code'] == row['code_on_disk'] and len(row['code']) == 16
+    assert watch.should_restart() is False
+
+
+def test_1602_changed_code_restarts_only_after_it_settles_and_nothing_is_pending(tmp_path):
+    import os
+    clock = [1_000_000.0]
+    a, b = _watch_files(tmp_path, clock)
+    watch = _so.CodeWatch([a, b], clock=lambda: clock[0])
+    a.write_text('X = 3\n'); os.utime(a, (clock[0] - 5, clock[0] - 5))   # a sync just wrote it
+    assert watch.status()['code_stale'] is True and watch.status()['code_error'] is None
+    assert watch.should_restart() is False            # still settling
+    clock[0] += 60
+    assert watch.should_restart(pending=1) is False   # a frame is being analysed
+    assert watch.should_restart(pending=0) is True
+
+
+def test_1602_changed_code_that_does_not_compile_keeps_the_running_observer(tmp_path):
+    clock = [1_000_000.0]
+    a, b = _watch_files(tmp_path, clock)
+    watch = _so.CodeWatch([a, b], clock=lambda: clock[0])
+    b.write_text('def broken(:\n')
+    clock[0] += 600
+    row = watch.status()
+    assert row['code_stale'] is True and row['code_error'].startswith('store.py')
+    assert watch.should_restart() is False
+
+
+def test_1602_watch_covers_the_observer_modules_and_restart_code_is_nonzero():
+    names = {p.name for p in _so.code_paths()}
+    assert {'session_observers.py', 'background_testing.py', 'store.py'} <= names
+    assert all(p.exists() for p in _so.code_paths())
+    assert _so.RESTART_EXIT_CODE != 0
+
+
+
+def test_1602_main_reports_running_code_and_exits_nonzero_for_restart(tmp_path, monkeypatch):
+    import contextlib, sys
+    import gbox.config, gbox.hermes_delivery
+    store = Store(tmp_path)
+    monkeypatch.setattr(sys, 'argv', ['session_observers', '--config', 'x.toml'])
+    monkeypatch.setattr(gbox.config, 'load', lambda path: _NS(data_dir=tmp_path, api_port=1, token=lambda: 't'))
+    monkeypatch.setattr(gbox.hermes_delivery, 'locked', lambda name: contextlib.nullcontext())
+    monkeypatch.setattr(_so, 'Store', lambda path: store)
+    monkeypatch.setattr(_so.httpx, 'Client', lambda **kw: contextlib.nullcontext(object()))
+    ticks = []
+
+    class FakeObservers:
+        def __init__(self, store_, config, api):
+            self.pending, self.closed = {}, False
+        def tick(self):
+            ticks.append(1)
+            store.put('setting', 'session_observers_runtime', {'heartbeat': 1.0, 'active': 0})
+        def close(self):
+            self.closed = True
+
+    class FakeWatch:
+        def __init__(self, paths):
+            pass
+        def status(self):
+            return {'code': 'a' * 16, 'code_on_disk': 'b' * 16, 'code_stale': True, 'code_error': None}
+        def should_restart(self, pending=0):
+            return len(ticks) >= 2
+
+    monkeypatch.setattr(_so, 'SessionObservers', FakeObservers)
+    monkeypatch.setattr(_so, 'CodeWatch', FakeWatch)
+    monkeypatch.setattr(_so.threading.Event, 'wait', lambda self, timeout=None: False)
+    with _pytest.raises(SystemExit) as exit_info:
+        _so.main()
+    assert exit_info.value.code == _so.RESTART_EXIT_CODE and len(ticks) == 2
+    runtime = store.get('setting', 'session_observers_runtime')
+    assert runtime['active'] == 0 and runtime['code_stale'] is True and 'restarting' in runtime
