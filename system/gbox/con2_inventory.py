@@ -60,54 +60,8 @@ def prs_decompress(data: bytes, size: int) -> bytes:
     """Decode an Eighting PRS stream to exactly `size` bytes (MSB-first flag bits: 1 = literal;
     00 = short copy, 2 length bits + 8-bit back-offset; 01 = long copy, 13-bit back-offset with the
     length in the low 3 bits or a following byte).  Same codec as the Wii CNR2 packs (GNTool spec)."""
-    out = bytearray(size)
-    i = bits = o = flag = 0
-    n = len(data)
-
-    def bit() -> int:
-        nonlocal i, bits, flag
-        if bits == 0:
-            if i >= n:
-                raise ValueError("truncated PRS stream")
-            flag = data[i]
-            i += 1
-            bits = 8
-        b = (flag >> 7) & 1
-        flag = (flag << 1) & 0xFF
-        bits -= 1
-        return b
-
-    def byte() -> int:
-        nonlocal i
-        if i >= n:
-            raise ValueError("truncated PRS stream")
-        i += 1
-        return data[i - 1]
-
-    while i < n:
-        if bit():
-            v = byte()
-            if o < size:
-                out[o] = v
-                o += 1
-            continue
-        if bit() == 0:
-            length = ((bit() << 1) | bit()) + 2
-            pos = byte() - 0x100
-        else:
-            w = (byte() << 8) | byte()
-            length = w & 7
-            pos = (w >> 3) - 0x2000
-            length = byte() + 1 if length == 0 else length + 2
-        pos += o
-        for _ in range(length):              # the encoder's window starts zero-filled: refs before 0 read 0
-            if o < size:
-                out[o] = out[pos] if pos >= 0 else 0
-                o += 1
-                pos += 1
-    if o != size:
-        raise ValueError(f"PRS stream produced {o} of {size} bytes")
-    return bytes(out)
+    from .formats.lz import prs_msb_decompress       # shared Eighting PRS codec (also cnr2)
+    return prs_msb_decompress(data, size, strict=True)
 
 
 def fpk_files(data: bytes) -> list[tuple[dict, bytes]]:

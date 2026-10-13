@@ -373,19 +373,35 @@ def create_app(config: Config) -> FastAPI:
         from . import characters
         return characters, characters.library_root(config)
 
+    _CHAR_STATS: dict = {}
+    try:                                                  # warm the HDD character library in the background at startup
+        from . import characters as _ck
+        _ck.warm_list(_ck.library_root(config))
+    except Exception:
+        pass
+
     @app.get("/api/characters")
-    def chars_list(game_id: str = "", actor=Depends(auth)):
-        """Library characters (+ ready swap mods for game_id) with preview URLs."""
+    def chars_list(game_id: str = "", fresh: bool = False, actor=Depends(auth)):
+        """Library characters (+ ready swap mods for game_id) with preview URLs. fresh=1 re-reads the library."""
         K, root = _chars()
+        if fresh:
+            K.refresh_list(root)
         def model_bytes(m):
             try:
                 return (Path(root) / m["slug"] / m["model"]).stat().st_size
             except OSError:
                 return 0
         tf = lambda slug: sorted("targets/" + f.name for f in (Path(root) / slug / "targets").glob("*") if f.is_file())             if (Path(root) / slug / "targets").is_dir() else []          # game-fitted models (Blender copy of a swap mod)
+        entries = K.list_all(root, game_id)
+        stats = _CHAR_STATS.setdefault(str(root), {})     # file stats cached per (slug, model) (thousands of HDD stats per call)
+        for m in entries:
+            k = (m["slug"], m.get("model"), len(m.get("targets") or {}))
+            if k not in stats:
+                stats[k] = (tf(m["slug"]), model_bytes(m))
+        stats_for = {m["slug"]: stats[(m["slug"], m.get("model"), len(m.get("targets") or {}))] for m in entries}
         return [m | {"preview_url": f"/api/characters/{m['slug']}/preview", "model_url": f"/api/characters/{m['slug']}/file/{m['model']}",
-                     "target_files": tf(m["slug"]), "model_bytes": model_bytes(m)}
-                for m in K.list_all(root, game_id)]
+                     "target_files": stats_for[m["slug"]][0], "model_bytes": stats_for[m["slug"]][1]}
+                for m in entries]
 
     @app.get("/api/characters/{slug}")
     def chars_get(slug: str, actor=Depends(auth)):
@@ -1796,9 +1812,10 @@ def create_app(config: Config) -> FastAPI:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
-        elif t.name == "re_executable":
+        elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
+            # assimilate fingerprints the owned files where the library and the analysis cache live.
             job.require_worker, job.require_os = None, "linux"
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
@@ -1843,6 +1860,11 @@ def create_app(config: Config) -> FastAPI:
                            'updated': time.time(), 'session_id': inp.get('session_id')})
         store.audit(actor, "job.rejected" if missing else "job.submit", job.id, {"tool": t.name, "input": inp, "missing": missing})
         return job
+
+    from . import special_builds                  # the game menu's "Special builds": grouped builds, launch + rebuild
+    special_builds.routes(app, store, config, auth, workers=workers,
+                          submit=lambda tool, inp, require_os, actor: submit(
+                              JobRequest(tool=tool, input=inp, require_os=require_os), actor))
 
     class Progress(BaseModel):
         pct: float

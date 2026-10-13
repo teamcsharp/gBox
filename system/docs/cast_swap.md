@@ -15,7 +15,7 @@ crew, each donor looking like its own game's character (no outline shell, correc
   Launching happens only when `launch` is passed explicitly.
 * **Desktop / web**: right-click a game in the library (the web client's game menu, also inside the desktop shell) or
   a conversation's game chip in the desktop shell -> **Replace entire cast with...** -> pick a source (groups first:
-  Wrestlers, Fighters, Sega; then every source game of the collection with its usable count), a mapping, the slots
+  Wrestlers, Fighters, Sega, Sonic; then every source game of the collection with its usable count), a mapping, the slots
   (everyone / main cast / enemies) and an optional seed -> **Plan the cast** shows every target slot with the donor's
   thumbnail and a picker of all eligible donors ("leave as it is" drops a slot) -> **Build one mod** queues the job on
   the Spark and shows the per-slot report. The dialog is `clients/web/viz/cast-swap.js`; the API behind the plan is
@@ -29,7 +29,9 @@ crew, each donor looking like its own game's character (no outline shell, correc
    and aliases (JGR's and Crazy Taxi's `player` = Beat / Axel) are dropped so each model gets exactly one donor.
    Slots a writer marks `not_working` (the PSO player class: the game doesn't draw it yet) are listed as skipped.
 2. **Donors**: every collection entry of the source (`resolve_source`: a group, a game id, a DEDICATED extractor name,
-   or title words with abbreviations like PSO / JGR / SA2 / SD2 / DOA2; comma lists combine sources). Head-size
+   or title words with abbreviations like PSO / JGR / SA1 / SA2 / SD2 / DOA2; comma lists combine sources; a title
+   match leaves out sequels the request doesn't number: "Sonic Adventure" is SA1 only, the `sonic` group is SA1 + SA2,
+   see docs/sa1_reader.md). Head-size
    variants are left out and costumes of one character collapse onto one donor (`dedupe`: Briggs costumes 1-3 -> one).
 3. **Quality gate** (`gate`):
    * an entry made by an older DEDICATED reader than the current one is **re-extracted before the build**
@@ -40,8 +42,10 @@ crew, each donor looking like its own game's character (no outline shell, correc
      (on the control plane) the model / preview check (`characters.verify_entry`) fails.
 4. **Mapping** (`assign`, deterministic for the same slots, donors, mapping and seed; no donor repeats before every
    donor has been used): `by_role` (and `auto`) puts lead characters (`native_player`, a player/hero alias) on player
-   slots, then deals donors by body size: the slot's `size` hint (PSO enemies: Gigobooma 1.4, Dark Belra 1.7, Rappy
-   0.7 ...; DOA2: Bass 1.3, Tengu 1.25, Kasumi 0.9 ...) against the donor's height relative to its own game's cast
+   slots (or, when the target has no player slot of its own, on the slot its `player` alias names: Crazy Taxi's Axel),
+   then deals donors by body size: the slot's `size` hint (PSO enemies: Gigobooma 1.4, Dark Belra 1.7, Rappy
+   0.7 ...; DOA2: Bass 1.3, Tengu 1.25, Kasumi 0.9 ...; Crazy Taxi drivers: Gus 1.15, Axel / Gena 1.0, B.D. Joe 0.97,
+   measured from their parts in polDC0.all) against the donor's height relative to its own game's cast
    (glTF accessor bounds, read on the control plane). `random` deals a seeded shuffle. Operator edits
    (`assignments`) override single rows.
 5. **One build** (`build` -> `BUILDERS[writer]`), per slot `built` / `partial` / `failed` with the reason, plus the
@@ -56,6 +60,7 @@ crew, each donor looking like its own game's character (no outline shell, correc
 | SmackDown! 2 (`gbox.yukes_sd`) | **pairs**: `match` | full cast (66 wrestlers) |
 | No Mercy (`gbox.aki_wrestling`) | **pairs**: `match` (one ROM) | full cast (64 default wrestlers); WCW World Tour / Revenge rosters come off their ROMs, not listed yet |
 | Vice City PC (`gbox.gta_vc_swap`) | **pairs**: `build_cast` (every ped its own donor, one gta3.img rebuild) | full cast on a classic RenderWare install; the owned install is the UE4 Definitive Edition, so every slot fails with that reason |
+| Enter the Matrix PS2 (`gbox.etm_swap`) | **pairs**: `build_cast` (every slot's costume / variant .dcn files rewritten in one WAD1.DFU, in place) | 37 slots (Niobe, Ghost, Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police ...); the catalog's windows_native entry is the PS2 disc; unverified in PCSX2 (docs/matrix_pipeline.md) |
 | Ocarina of Time N64 (`gbox.oot_swap`) | **pairs**: `oot_swap.build_cast` (every slot's object rebuilt on the previous slots' output, one ROM: DMA + gObjectTable + CRC; object growth shared out per room) | 85 slots (Link, NPCs, sages, enemies, bosses: `docs/oot_cast.md`); Epona, Navi, Like Like, En_Hy townsfolk skipped with the reason |
 | JGR (`gbox.jgr_swap`) | **chain**: each cast member's `jgr.build_swap(..., data=)` on the previous step's PLAYER.AFS, one `patch_gdi` | full cast (16) |
 | Crazy Taxi GC (`gbox.crazy_taxi_swap`) | **chain**: each slot's `swap_bank` on the previous step's polDC0.all, one disc image | full cast (4 drivers, 19 pedestrian and 31 passenger groups) |

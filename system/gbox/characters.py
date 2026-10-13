@@ -15,6 +15,7 @@ Every model here was extracted from the operator's own copy of the game, for loc
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
 import re
@@ -49,7 +50,86 @@ def slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+_LIST_CACHE: dict = {}            # str(root) -> {"at": built_at, "entries": {slug: meta}, "refreshing": bool}
+LIST_TTL_S = 600.0               # full re-read at most this often, in the background (writes elsewhere show up then)
+import threading as _threading
+_LIST_LOCK = _threading.Lock()
+
+
+def _invalidate_list(root=None, meta=None):
+    """A write through put_meta updates the cached entry in place: no full re-read of the HDD library."""
+    with _LIST_LOCK:
+        for key, c in _LIST_CACHE.items():
+            if root is not None and key != str(root):
+                continue
+            if meta and meta.get("slug"):
+                c["entries"][meta["slug"]] = json.loads(json.dumps(meta))
+            else:
+                c["at"] = 0
+
+
+def _refresh_list(root):
+    key = str(root)
+    try:
+        entries = {m["slug"]: m for m in _list_all_uncached(root) if m.get("slug")}
+        try:
+            rmt = Path(root).stat().st_mtime
+        except OSError:
+            rmt = None
+        with _LIST_LOCK:
+            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False, "root_mtime": rmt}
+    except Exception:
+        with _LIST_LOCK:
+            if key in _LIST_CACHE:
+                _LIST_CACHE[key]["refreshing"] = False
+
+
 def list_all(root: Path, game_id: str = "") -> list[dict]:
+    """Every character entry. Cached: the library lives on an NTFS HDD where reading 645 meta.json files takes
+    13-80 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13). Only the very first
+    call reads synchronously; afterwards a stale cache is served while a background thread refreshes it."""
+    import copy
+    import time as _t
+    key = str(root)
+    try:
+        rmt = Path(root).stat().st_mtime                  # a new entry folder (another process collected) changes this
+    except OSError:
+        rmt = 0
+    with _LIST_LOCK:
+        c = _LIST_CACHE.get(key)
+        if c is not None and c.get("root_mtime") not in (None, rmt) and c.get("entries"):
+            c["root_mtime"] = rmt                         # re-read now: callers right after a collect must see it
+            c = None
+        stale = c is not None and _t.time() - c["at"] > LIST_TTL_S and not c.get("refreshing")
+        if stale:
+            c["refreshing"] = True
+    if c is None:
+        _refresh_list(root)
+        c = _LIST_CACHE[key]
+    elif stale:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+    with _LIST_LOCK:
+        out = copy.deepcopy(list(c["entries"].values()))
+    out = [m for m in out if isinstance(m, dict) and m.get("name")]
+    out.sort(key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
+    if game_id:
+        for m in out:
+            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
+    return out
+
+
+def refresh_list(root: Path) -> None:
+    """Force a synchronous re-read (after a collect in another process, or ?fresh=1)."""
+    _refresh_list(root)
+
+
+def warm_list(root: Path) -> None:
+    """Fill the cache in the background at startup so the first menu doesn't pay the HDD read."""
+    if str(root) not in _LIST_CACHE:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+
+
+def _list_all_uncached(root: Path) -> list[dict]:
     out = []
     for p in sorted(Path(root).glob("*/meta.json")):
         try:
@@ -58,8 +138,6 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
             continue
         if not isinstance(m, dict) or not m.get("name"):
             continue                    # a bookkeeping folder (e.g. "shared": slug + targets only) is not a character
-        if game_id:
-            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
         out.append(m)
     return sorted(out, key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
 
@@ -99,6 +177,7 @@ def put_meta(root: Path, meta: dict) -> dict:
     tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
+    _invalidate_list(root, meta)
     return meta
 
 
@@ -1372,6 +1451,14 @@ def _auf_run(ctx, game, e, work):
     return auf_chars.extract_run(ctx, game, e, work)
 
 
+def _sonic2d(key):
+    """A DEDICATED row for one Sonic Mega Drive title (gbox.sonic2d_sprites), imported only when used."""
+    def mod():
+        return __import__("gbox.sonic2d_sprites", fromlist=["x"])
+    return (f"sonic2d_{key}", lambda t, p: mod().title_test(key)(t, p), lambda: mod().roster(key),
+            lambda ctx, game, e, work: mod().extract_run(ctx, game, e, work))
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
@@ -1387,6 +1474,10 @@ DEDICATED = [
     ("sa2", lambda t, p: "sonic adventure 2" in t and p == "dreamcast",
      lambda: [{"key": k, "slug": "sonic" if k == "SONIC" else f"sa2_{slugify(n)}", "name": n, "aliases": a, "kind": kd}
               for k, n, a, kd in SA2_CHARS], _sa2_run),
+    # Sonic Adventure (DC): basic-model trees in 1ST_READ.BIN (+ Super Sonic / Tikal overlays), gbox.sa1_chars
+    ("sa1", lambda t, p: re.match(r"sonic adventure(?!\s*2)\b", t) is not None and p == "dreamcast",
+     lambda: __import__("gbox.sa1_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sa1_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("ff7", lambda t, p: re.search(r"final fantasy vii\b", t) is not None and p == "psx",
      lambda: [{"key": k, "slug": "cloud" if k == "HICLOUD" else f"ff7_{k.lower()}", "name": n, "aliases": a, "kind": "character"}
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
@@ -1461,6 +1552,16 @@ DEDICATED = [
     ("doapp", lambda t, p: t.startswith("dead or alive ++") and p == "arcade",
      lambda: __import__("gbox.doapp_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.doapp_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Enter the Matrix (USA): the windows_native entry 3f43b79a68a60b41 is the PS2 disc SLUS-20454 (HyperSpin CHD,
+    # read in place by gbox.chd): actors\*.dcn Bezier-patch models on the shared 89-joint skeleton, tessellated to
+    # rigged GLBs with body roles (docs/matrix_pipeline.md). The GameCube discs are not read yet.
+    ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
+    # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
+    # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
+    *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
 ]
 
 
@@ -2201,11 +2302,6 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
-@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
-      artifacts=["preview.png"],
-      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
-                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
-                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard"])
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
@@ -2264,12 +2360,13 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
         from . import retarget_profile as _RP                # game-wide Retarget editor profiles
         chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
@@ -2384,6 +2481,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import defjam_writer
     if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
         return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
+    from . import etm_swap
+    if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
+        return {"result": out | etm_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)
@@ -2434,3 +2534,19 @@ def characters_tool(inp: CharIn, ctx):
         need = needs_for(game)
     from . import char_coverage                               # no writer: overlay now (if the game runs) + a gap report
     return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
+
+
+@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
+      artifacts=["preview.png"],
+      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
+                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
+                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard",
+                    "use/match/cast_swap: records the rebuild recipe in the built mod's .gbox-mod.json"])
+@functools.wraps(characters_tool)
+def characters_recorded(inp: CharIn, ctx):
+    """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
+    out = characters_tool(inp, ctx)
+    from . import special_builds
+    special_builds.record_call(ctx, inp, out)
+    return out

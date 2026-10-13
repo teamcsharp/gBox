@@ -111,29 +111,9 @@ def profile(rom: bytes) -> dict:
 
 def lzss(d: bytes) -> bytes:
     """Asmik LZSS (4 KB ring, start 0xFEE): header 00 + 24-bit length, flag byte LSB first, 1 = literal."""
+    from .formats.lz import lzss_decompress          # shared Okumura LZSS (4 KiB ring at 0xFEE)
     n = int.from_bytes(d[1:4], "big")
-    out = bytearray()
-    i, cmd = 4, 0
-    while len(out) < n:
-        cmd >>= 1
-        if cmd < 2:
-            cmd = d[i] | 0x100
-            i += 1
-        if cmd & 1:
-            out.append(d[i])
-            i += 1
-        else:
-            p, ln = d[i], d[i + 1]
-            i += 2
-            p = ((p | ((ln << 4) & 0xF00)) + 0x12) & 0xFFF
-            p -= len(out) & 0xFFF
-            if p >= 0:
-                p -= 0x1000
-            p += len(out)
-            for _ in range((ln & 0xF) + 3):
-                out.append(out[p] if p >= 0 else 0)
-                p += 1
-    return bytes(out[:n])
+    return lzss_decompress(d, 4, n)[0]
 
 
 def lzss_store(d: bytes, depth: int = 96) -> bytes:

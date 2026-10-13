@@ -77,6 +77,11 @@ DRIVERS = {
     "gena": ("C", "Gena", ("gena", "c", "plyrc")),
     "gus": ("D", "Gus", ("gus", "d", "plyrd")),
 }
+# Body size per driver for the cast planner's by_role mapping (tallest donors on the biggest drivers): the summed
+# longest axes of each driver's koshi, mune, atama and left-leg parts in the owned disc's ct/polDC0.all, relative to
+# the four drivers' median (Axel 25.6, B.D. Joe 24.8, Gena 25.4, Gus 29.3 units). The swap fits every donor part to
+# the target part's own extent, so this only orders the plan.
+DRIVER_SIZE = {"axel": 1.0, "bd_joe": 0.97, "gena": 1.0, "gus": 1.15}
 # The people groups of the owned disc's ct/polDC0.all (sha256 a5171e43...): group -> (kind, blob count, PARTS missing).
 # Measured with people(); the writer reads the live bank and uses this only to list slots without the disc.
 PEOPLE = {
@@ -306,8 +311,10 @@ def cast_slots() -> list[dict]:
     out = [{"slot": "player", "name": "the driver (the one this character was last built for, else Axel)",
             "kind": "player", "writer": "gbox.crazy_taxi_swap", "alias_of": "driver:axel"}]
     for r in roster():
+        size = DRIVER_SIZE.get(r["slot"].split(":", 1)[1]) if r["slot"].startswith("driver:") else None
         out.append({"slot": r["slot"], "name": r["name"], "kind": r["slot_kind"], "writer": r["writer"],
                     **({"aggregate": True} if r["slot"] in ("drivers", "pedestrians", "passengers") else {}),
+                    **({"size": size} if size else {}),
                     "aliases": r["aliases"], **({"blobs": r["blobs"]} if "blobs" in r else {})})
     return out
 

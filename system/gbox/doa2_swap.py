@@ -592,7 +592,7 @@ def build_roster(gdi, donors: dict[str, Path], out_dir, plan: list[tuple[str, st
             raise ValueError(f"Unknown donor {slug!r}")
 
         def update(p, m, index=index):
-            progress(0.6 * (index + p / 100) / len(plan), f"{family}: {m}")
+            progress(60 * (index + p / 100) / len(plan), f"{family}: {m}")     # percent, like write_mod's
         edits, fighter_reports, fighter_patches = fighter_edits(disc, audit, gdi, donors[slug], out_dir, family, 'all',
                                                                 allow_downscale=allow_downscale, progress=update)
         overlap = set(edits) & set(changes)

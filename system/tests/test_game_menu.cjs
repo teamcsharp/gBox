@@ -43,7 +43,8 @@ const CHARS = [
   { slug: 'stale', name: 'Stale', targets: { [GID]: [{ mod: 'old', needs_rebuild: true }] } },
 ];
 const MODS = [{ id: 'm1', title: 'Moon Jump', calls: [{ tool: 'poke' }] }, { id: 'm2', title: 'Hard Mode disc', calls: [{ tool: '@launch', input: { mod: 'hard_disc' } }] }];
-const answer = p => p.startsWith('/api/characters') ? CHARS : p.startsWith('/api/mods') ? MODS : {};
+const SPECIAL = { game_id: GID, total: 0, groups: [{ key: 'confirmation', label: 'Confirmation builds', count: 0, builds: [] }] };
+const answer = p => p.startsWith('/api/characters') ? CHARS : p.startsWith('/api/mods') ? MODS : p.endsWith('/special_builds') ? SPECIAL : {};
 
 beforeEach(() => GM._reset());
 
@@ -76,7 +77,7 @@ test('fetches that reject (Spark restarting) or throw synchronously: the menu is
 });
 
 test('a read that never answers turns into "did not answer" instead of "loading…" forever', async () => {
-  const { io } = fakeIo(hang, { charsTimeout: 15, modsTimeout: 15 });
+  const { io } = fakeIo(hang, { charsTimeout: 15, modsTimeout: 15, specialTimeout: 15 });
   const m = GM.open(io, { gid: GID, title: 'Zelda' });
   await m.settled;
   assert.match(io.el.html, /The character library did not answer in 0 s/);
@@ -97,7 +98,7 @@ test('answers fill the sections in place: ready characters, the build list (no v
   assert.match(io.el.html, /data-keep="m1" > Moon Jump/);
   assert.ok(!/loading (characters|mods)/.test(io.el.html));
   assert.ok(calls.refit > 0, 'refit after the content grew');
-  assert.deepEqual(calls.api.sort(), ['/api/characters', `/api/mods?game_id=${GID}`]);
+  assert.deepEqual(calls.api.sort(), ['/api/characters', `/api/games/${GID}/special_builds`, `/api/mods?game_id=${GID}`]);
 });
 
 test('the next right-click renders the cached library and mods at once (no "loading"), revalidating only when stale', async () => {
