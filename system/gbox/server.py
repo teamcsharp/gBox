@@ -2809,10 +2809,13 @@ def create_app(config: Config) -> FastAPI:
         verification: str = Field(min_length=1, max_length=2000)
         run_id: str | None = Field(default=None, max_length=80)
 
+    from .request_features import Delivery
+
     class StatusIn(BaseModel):
         status: str                        # open | in_progress | done | blocked
         note: str = ""
         solved_by: SolverIn | None = None  # implementation credit, separate from its reviewer
+        delivery: Delivery | None = None  # operator-facing release notes and reproducible test steps
 
     class MetricsIn(BaseModel):
         model: str | None = None
@@ -3376,6 +3379,25 @@ def create_app(config: Config) -> FastAPI:
             return {k: _clean(v) for k, v in o.items()}
         return o
 
+    @app.get("/api/requests/features")
+    def req_features(q: str = "", offset: int = 0, limit: int = 50, actor=Depends(auth)):
+        from .request_features import features
+        rows = features(store.all("request"), store.all("mod"))
+        total = len(rows)
+        if q.strip():
+            rows = [r for r in rows if q.strip().casefold() in json.dumps(r, ensure_ascii=False).casefold()]
+        start = max(0, offset)
+        return _clean({"total": total, "matched": len(rows), "offset": start,
+                       "items": rows[start:start + max(1, min(limit, 100))]})
+
+    @app.put("/api/requests/{rid}/delivery")
+    def req_delivery(rid: str, delivery: Delivery, actor=Depends(auth)):
+        r = _req(rid)
+        r["delivery"] = delivery.model_dump()
+        store.put("request", rid, r)
+        store.audit(actor, "request.delivery", rid, {})
+        return _clean(r)
+
     @app.get("/api/requests/{rid}")
     def req_get(rid: str, actor=Depends(auth)):
         return _clean(_req(rid))
@@ -3520,6 +3542,8 @@ def create_app(config: Config) -> FastAPI:
             r["completed"] = now
             r["metrics"]["duration_s"] = round(now - (r["started"] or r["created"]), 1)
             r["solved_by"] = s.solved_by.model_dump() if s.solved_by else None
+            if s.delivery is not None:
+                r["delivery"] = s.delivery.model_dump()
         r["status"] = s.status
         if s.note:
             r["messages"].append({"author": "agent", "text": s.note, "ts": now})

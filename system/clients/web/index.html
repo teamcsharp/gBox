@@ -1440,7 +1440,7 @@ async function sessionsView(sid, mode) {
         ${s.state === "running" && window.GBOX_LOCAL?.worker && s.detail?.worker_name !== window.GBOX_LOCAL.worker ? `<button class="act pri" title="Save state there, start the same game (and mod) on this PC, load it, close the other copy: native speed, your GPU, your controller" onclick='moveHere(${JSON.stringify(sid)}, this)'>Move to this PC</button>` : ""}</div>
       <p id="sopres" class="mut"></p></details></div>
       ${s.game_id ? `<details data-dock="gfx" class="panel gfxbox sect" ${localStorage.getItem("gbox_gfx_open") === "1" ? "open" : ""} ontoggle='try{localStorage.setItem("gbox_gfx_open", this.open ? "1" : "0")}catch{}'>
-        <summary draggable="true">Graphics settings</summary><div id="gfx" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>` : ""}
+        <summary draggable="true">Graphics &amp; performance settings</summary><div id="gfx" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>` : ""}
       <div id="dock-side" class="dock" data-zone="side"></div></div></div>`;
 }
 // ---- smart search (top of the game's sidebar): this game's characters, mods, sliders, panels + gBox tools and games.
@@ -1720,7 +1720,7 @@ async function examineRelaunch(sid) {                       // save state -> res
 
 // ---------------- per-game graphics (resolution, MSAA, AF, FSR/sharpen, post-AA, vsync), applied at launch ----------------
 const GFX_LABEL = { res_scale: "Internal resolution", msaa: "MSAA", aniso: "Anisotropic filtering", upscaler: "Upscaler",
-                    sharpen: "Sharpening", post_aa: "Post anti-aliasing", vsync: "VSync" };
+                    sharpen: "Sharpening", post_aa: "Post anti-aliasing", vsync: "VSync", video_threaded: "Threaded video (may add latency)", show_fps: "Show emulator FPS", rewind_mode: "Rewind snapshots", cpu_priority: "CPU priority (Windows)" };
 async function gfxJob(el, op, prefs) {
   const j = await runJob({ tool: "graphics", input: { game_id: el.dataset.gid, session_id: el.dataset.sid, op, prefs: prefs || {} }, require_worker: el.dataset.sid.split("-")[0] });
   if (j.state !== "succeeded") throw new Error(j.error || j.state);
@@ -1729,7 +1729,7 @@ async function gfxJob(el, op, prefs) {
 async function gfxInit() {
   const el = $("#gfx"); if (!el) return;
   const label = (k, o) => k === "res_scale" ? (o > 100 ? `${o}% (${o / 100}× native)` : "100% (native)") : k === "aniso" ? (o ? o + "×" : "off")
-    : k === "msaa" ? (o === "auto" ? "on (4×)" : "off") : k === "vsync" ? (o ? "on" : "off") : String(o);
+    : k === "msaa" ? (o === "auto" ? "on (4×)" : "off") : typeof o === "boolean" ? (o ? "on" : "off") : o === "above_normal" ? "Above normal" : o === "auto" && k === "rewind_mode" ? "Automatic (platform default)" : String(o);
   const draw = r => {
     if (!Object.keys(r.choices || {}).length) {
       el.innerHTML = `<h4>Graphics <span class="mut">· ${esc(r.emulator || "emulator")}</span></h4><p class="mut">${esc(r.notes)}</p>`;
@@ -1740,12 +1740,15 @@ async function gfxInit() {
       ${Object.entries(r.choices).map(([k, opts]) => `<label for="gx_${k}">${GFX_LABEL[k] || k}</label>
         <select id="gx_${k}" data-k="${k}">${opts.map(o => `<option value='${JSON.stringify(o)}' ${JSON.stringify(o) === JSON.stringify(r.prefs[k]) ? "selected" : ""}>${esc(label(k, o))}</option>`).join("")}</select>`).join("")}
       </div>
-      <div class="bar" style="margin-top:8px"><button class="act" id="gx_best">Best for my GPU</button>
+      <div class="bar" style="margin-top:8px"><button class="act" id="gx_perf">Performance</button><button class="act" id="gx_best">Quality for my GPU</button><button class="act" id="gx_reset">Defaults</button><button class="act" id="gx_diagnose">Check performance</button>
         <button class="act" id="gx_save">Save</button><button class="act pri" id="gx_apply">Save &amp; restart game</button></div>
-      <p class="mut" id="gx_msg">${esc(r.notes)}</p>`;
+      <p class="mut" id="gx_msg">${esc(r.notes)}</p><pre id="gx_diagnostics" style="white-space:pre-wrap"></pre>`;
     const prefs = () => Object.fromEntries([...el.querySelectorAll("select")].map(s => [s.dataset.k, JSON.parse(s.value)]));
     const done = m => { $("#gx_msg").textContent = m; };
-    $("#gx_best").onclick = async () => { try { draw(await gfxJob(el, "best")); done("Best preset for this GPU saved. Restart the game to apply."); } catch (e) { done(e.message); } };
+    $("#gx_perf").onclick = async () => { try { draw(await gfxJob(el, "performance")); done("Performance preset saved on this worker. Save your game, then restart to apply; rewind snapshots will be off."); } catch (e) { done(e.message); } };
+    $("#gx_reset").onclick = async () => { try { draw(await gfxJob(el, "reset")); done("Defaults saved. Restart the game to apply."); } catch (e) { done(e.message); } };
+    $("#gx_diagnose").onclick = async () => { const button = $("#gx_diagnose"); button.disabled = true; done("Measuring this worker?"); try { const r = await gfxJob(el, "diagnose"), d = r.diagnostics || {}; $("#gx_diagnostics").textContent = [d.cpu_pct != null ? 'CPU: ' + d.cpu_pct + '%' : '', d.memory_pct != null ? 'Memory: ' + d.memory_pct + '%' : '', d.renderer || '', ...(d.warnings || []), d.unavailable || '', d.fps_note || ''].filter(Boolean).join('\n'); done("Measured current resource pressure. Compare the same game scene using Show emulator FPS."); } catch(e) { done(e.message); } finally { button.disabled = false; } };
+    $("#gx_best").onclick = async () => { try { draw(await gfxJob(el, "best")); done("Quality preset for this GPU saved. Restart the game to apply."); } catch (e) { done(e.message); } };
     $("#gx_save").onclick = async () => { try { await gfxJob(el, "set", prefs()); done("Saved. Applies the next time the game starts."); } catch (e) { done(e.message); } };
     $("#gx_apply").onclick = async () => {
       try { await gfxJob(el, "set", prefs()); done("Saved. Restarting the game…");

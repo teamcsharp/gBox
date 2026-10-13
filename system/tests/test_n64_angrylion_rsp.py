@@ -13,7 +13,7 @@ def _write(tmp_path, monkeypatch, platform, host="windows"):
     adapter = RetroArchAdapter(EmulatorConfig(adapter="retroarch", executable="retroarch", core="core"),
                                config=Config(data_dir=tmp_path), platform=platform)
     adapter._write_cfg()
-    return adapter.config.runtime / "retroarch" / "core-options.cfg"
+    return adapter.config.runtime / "retroarch" / f"session-{adapter.addr[1]}-core-options.cfg"
 
 
 def _co(tmp_path):

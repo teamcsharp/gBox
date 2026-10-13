@@ -91,9 +91,11 @@ CONVENIENCE = {
     "capture_request_screenshot": ("Capture a real frame from a live game session and attach it to an inbox report, with action, attempt, result, and status. Do this after meaningful visual milestones and verification.",
                                    obj({"request_id": S, "session_id": S, "text": S, "task_step": {"type": "object"}},
                                        ["request_id", "session_id", "text"])),
-    "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress.",
+    "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress. On completion supply delivery: what was added/accomplished, where to find it, reproducible test_steps, new mods, and actual verification. This powers Requests > Features.",
                           obj({"request_id": S, "status": {"type": "string", "enum": ["open", "in_progress", "done", "blocked"]},
-                               "note": S, "solved_by": obj({"service": S, "model": S, "system": S,
+                               "note": S, "delivery": obj({**{k: {"type": "array", "items": S} for k in
+                                   ("added", "test_steps", "mods", "accomplished", "where")}, "verification": S}),
+                               "solved_by": obj({"service": S, "model": S, "system": S,
                                    "verified_by": S, "verification": S, "run_id": S}, ["service", "verification"])}, ["request_id", "status"])),
     "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use one tool call at a time. Fields may be flat or under metrics. tools values must be exact nonnegative integer call counts; omit unavailable counts. Use zero token counts with tokens_detail.token_count_unavailable when exact tokens are unavailable. Returns a compact receipt with stored metrics; use get_request for full history.",
                                obj({"request_id": S, **METRIC_FIELDS,
@@ -317,7 +319,8 @@ def build(base_url: str, token: str) -> Server:
         if name == "set_request_status":
             return await post(f"/api/requests/{a['request_id']}/status",
                               {"status": a["status"], "note": a.get("note", "")} |
-                              ({"solved_by": a["solved_by"]} if a.get("solved_by") else {}))
+                              ({"solved_by": a["solved_by"]} if a.get("solved_by") else {}) |
+                              ({"delivery": a["delivery"]} if a.get("delivery") is not None else {}))
         if name == "record_request_metrics":
             metrics = _request_metrics(a)
             report = await post(f"/api/requests/{a['request_id']}/metrics", metrics)

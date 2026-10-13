@@ -1049,11 +1049,11 @@ window.taskVizCreate = canvas => {
       <pre id="con"></pre>
     </div></section>
     <section id="requests"><div class="pane" style="max-width:1100px">
-      <div class="bar"><h2 style="margin:0">Requests</h2><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button><span class="mut" id="reqsum"></span>
+      <div class="bar"><h2 style="margin:0">Requests</h2><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button><button class="act" data-request-filter="features" aria-pressed="false">Features</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button><span class="mut" id="reqsum"></span>
         <button class="act" id="reqbenchmarks" title="Compare verified results by service and model">Solver results</button><button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
       <p class="mut">Every request you make (here, by screenshot, by eyedropper, or in chat) is logged with its thread,
         status, time to complete, files changed, tokens in/out and tools used.</p>
-      <div id="reqlist"></div></div></section>
+      <div id="featurelist" hidden></div><div id="reqlist"></div></div></section>
     <section id="tools"><div class="pane" style="max-width:1400px">
       <div class="bar"><h2 style="margin:0">Tools</h2><span class="mut" id="tl-sum">loading…</span></div>
       <p class="mut">Everything an LLM orchestrator can dispatch. Click a row for its full definition (schemas, permissions, availability).</p>
@@ -1074,6 +1074,7 @@ window.taskVizCreate = canvas => {
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
 <script src="request-solvers.js"></script>
+<script src="request-features.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
@@ -2657,12 +2658,18 @@ $("#reqexport").onclick = async () => {                  // the whole request hi
 };
 let requestFilter = localStorage.getItem("gbox_request_filter") || "all";
 let inboxSolverRequests = [];
+const requestFeatures = GBoxRequestFeatures.create($("#featurelist"), (...args) => gbox.api(...args),
+  id => reportGraphOpen(id), async id => {
+    const result = await gbox.api("/api/mods");
+    const mod = result.ok && result.data.find(m => m.id === id);
+    if (mod) modPlay(mod, "play"); else toast("This mod is no longer available.");
+  });
 $("#reqbenchmarks").onclick = () => GBoxRequestSolvers.show(inboxSolverRequests);
 document.addEventListener('click', e => {
   const button = e.target.closest('[data-solver-benchmark]'); if (!button) return;
   e.stopImmediatePropagation(); GBoxRequestSolvers.show(inboxSolverRequests, button.dataset.solverBenchmark);
 });
-if (!["all", "pending", "completed"].includes(requestFilter)) requestFilter = "all";
+if (!["all", "pending", "completed", "features"].includes(requestFilter)) requestFilter = "all";
 $("#reqfilters").addEventListener("click", e => {
   const button = e.target.closest("[data-request-filter]"); if (!button) return;
   requestFilter = button.dataset.requestFilter;
@@ -2680,10 +2687,10 @@ const inboxPoll = singleFlightPoll(async () => {
   const hasPending = x => x.status !== "done" || (children.get(x.id) || []).some(hasPending);
   const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
-  const counts = { all: roots.length, pending, completed: roots.length - pending };
+  const counts = { all: roots.length, pending, completed: roots.length - pending, features: all.filter(x => x.status === "done").length };
   for (const button of document.querySelectorAll("[data-request-filter]")) {
     const mode = button.dataset.requestFilter;
-    button.textContent = `${mode === "all" ? "All" : mode === "pending" ? "Pending" : "Completed"} (${counts[mode]})`;
+    button.textContent = `${mode === "all" ? "All" : mode === "pending" ? "Pending" : mode === "features" ? "Features" : "Completed"} (${counts[mode]})`;
     button.setAttribute("aria-pressed", String(mode === requestFilter));
     button.style.background = mode === requestFilter ? "var(--accent, #8190ff)" : "";
     button.style.color = mode === requestFilter ? "#fff" : "";
@@ -2693,6 +2700,9 @@ const inboxPoll = singleFlightPoll(async () => {
   if (!$("#requests").classList.contains("on")) return;
   if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const tok = await gbox.token();
+  $("#featurelist").hidden = requestFilter !== "features";
+  host.hidden = requestFilter === "features";
+  if (requestFilter === "features") { await requestFeatures.refresh(); return; }
   const [mr, rg] = await pollTogether([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
   if (rg?.ok) REG.tools = Object.fromEntries(rg.data.tools.map(z => [z.name, z.description || ""]));
   MODS.list = mr.ok ? mr.data : [];
@@ -4241,10 +4251,11 @@ const TROUBLE = {
     { q: "Stutters / low frame rate", kids: [
       { q: "Lower the resolution scale", act: () => gfxSet({ res_scale: 100 }) },
       { q: "Turn off MSAA / post AA", act: () => gfxSet({ msaa: "off", post_aa: "none" }) },
-      { q: "Use the best preset for this GPU", act: () => gameJob("graphics", { game_id: EMB.game, op: "best" }) },
+      { q: "Save performance preset (restart to apply)", act: () => gameJob("graphics", { game_id: EMB.game, op: "performance" }) },
+      { q: "Use the quality preset for this GPU", act: () => gameJob("graphics", { game_id: EMB.game, op: "best" }) },
       { q: "Ask gBox to diagnose it", act: () => askAbout("The game stutters / runs slowly. Diagnose and fix it.") }] },
     { q: "Graphics look wrong", kids: [
-      { q: "Reset graphics to defaults", act: () => gfxSet({ res_scale: 100, msaa: "auto", aniso: 0, upscaler: "bilinear", sharpen: 50, post_aa: "none", vsync: true }) },
+      { q: "Reset graphics to defaults", act: () => gameJob("graphics", { game_id: EMB.game, op: "reset" }) },
       { q: "Open display settings", act: () => gameSettings("gfx") },
       { q: "Ask gBox", act: () => askAbout("The graphics look wrong (glitches / missing textures). Fix it.") }] },
     { q: "Controller doesn't respond", kids: [

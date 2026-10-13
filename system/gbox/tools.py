@@ -2238,7 +2238,7 @@ def rom_export(inp: RomExportIn, ctx: Ctx):
 class GraphicsIn(BaseModel):
     game_id: str
     session_id: str = ""                  # prefer the emulator that is actually running
-    op: str = "get"                        # get | set | best (strongest preset for this node's GPU)
+    op: str = "get"                        # get | set | best (quality) | performance | reset | diagnose
     prefs: dict = {}
 
 class GraphicsOut(BaseModel):
@@ -2260,6 +2260,8 @@ def graphics_tool(inp: GraphicsIn, ctx: Ctx):
         ad = adapters.for_game(r.json(), ctx.config)
     emulator = ad.name
     choices = graphics.choices_for(emulator)
+    if HOST_OS != "windows":
+        choices.pop("cpu_priority", None)
     gp = graphics.gpu()
     if inp.op == "set":
         if not choices:
@@ -2268,17 +2270,20 @@ def graphics_tool(inp: GraphicsIn, ctx: Ctx):
         if unsupported:
             raise ValueError(f"{emulator} does not use graphics controls: {', '.join(sorted(unsupported))}")
         p = graphics.save(ctx.config, inp.game_id, inp.prefs)
-    elif inp.op == "best":
+    elif inp.op in ("best", "performance", "reset"):
         if not choices:
             raise Unsupported(graphics.note_for(emulator))
-        p = graphics.save(ctx.config, inp.game_id,
-                          {k: v for k, v in graphics.best_for_gpu(gp["vram_mb"]).items() if k in choices})
-    elif inp.op == "get":
+        preset = (graphics.best_for_gpu(gp["vram_mb"]) if inp.op == "best" else
+                  graphics.performance_preset() if inp.op == "performance" else graphics.DEFAULT)
+        p = graphics.save(ctx.config, inp.game_id, {k: v for k, v in preset.items() if k in choices})
+    elif inp.op in ("get", "diagnose"):
         p = graphics.get(ctx.config, inp.game_id)
     else:
         raise ValueError(f"unknown graphics operation {inp.op}")
     return {"result": {"emulator": emulator, "prefs": {k: p[k] for k in choices}, "gpu": gp,
-                       "choices": choices, "restart_needed": inp.op != "get", "notes": graphics.note_for(emulator)}}
+                       "choices": choices, "restart_needed": inp.op not in ("get", "diagnose"),
+                       "diagnostics": graphics.diagnose(ad) if inp.op == "diagnose" else None,
+                       "notes": graphics.note_for(emulator)}}
 
 
 class ModIn(BaseModel):

@@ -469,6 +469,8 @@ def _popen(ad, argv, **kw) -> subprocess.Popen:
     if HOST_OS == "windows":
         from .graphics import prefer_gpu
         prefer_gpu(argv[0])                                # the discrete GPU, never a virtual display / iGPU
+        if getattr(ad, "cpu_priority", "normal") == "above_normal":
+            kw["creationflags"] = kw.get("creationflags", 0) | subprocess.ABOVE_NORMAL_PRIORITY_CLASS
         kw.setdefault("startupinfo", hidden_start())
     if HOST_OS == "windows" and getattr(ad, "examine", False) and _examine_driver_ok(argv):
         from . import scene_capture
@@ -748,6 +750,11 @@ class RetroArchAdapter(CommandAdapter):
         for p in d.values():
             p.mkdir(parents=True, exist_ok=True)
         cfg = d["retroarch"] / f"session-{self.addr[1]}.cfg"
+        from . import graphics
+        prefs = graphics.get(self.config, getattr(self, "game_id", None))
+        self.cpu_priority = prefs.get("cpu_priority", "normal")
+        self.rewind_disabled = prefs.get("rewind_mode") == "off"
+        self.rewind_on = (self.platform or "") not in NO_REWIND and not self.rewind_disabled
         opts = {"system_directory": d["system"], "savefile_directory": d["saves"], "savestate_directory": d["states"],
                 # cores that need a real file (Citra, PPSSPP...) get .zip/.7z content extracted here first
                 "cache_directory": d["extract"],
@@ -766,7 +773,11 @@ class RetroArchAdapter(CommandAdapter):
                 "core_options_path": d["retroarch"] / "core-options.cfg", "global_core_options": "true",
                 "gamemode_enable": "false",          # GameMode needs a D-Bus session bus; services have none (abort -6)
                 "suspend_screensaver_enable": "false", "video_font_enable": "false"}
-        co = d["retroarch"] / "core-options.cfg"              # Flycast: threaded rendering lets the state grow between the size
+        # Inherit existing custom options, but never let one session rewrite another's options.
+        shared_co = d["retroarch"] / "core-options.cfg"
+        co = d["retroarch"] / f"session-{self.addr[1]}-core-options.cfg"
+        co.write_text(shared_co.read_text() if shared_co.exists() else "")
+        opts["core_options_path"] = co
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") in FLYCAST_PLATFORMS:
@@ -805,10 +816,11 @@ class RetroArchAdapter(CommandAdapter):
             if (self.platform or "") == "ps2":       # pcsx2_libretro's GL path presents black frames on this PC; D3D11 works
                 opts["video_driver"] = "d3d11"
         opts |= _pad_binds()                 # keyboard binds; native gamepads use SDL autoconfig
-        if HOST_OS == "windows" and self.config is not None:   # per-game graphics settings (Sessions -> Graphics)
-            from . import graphics
-            opts |= graphics.retroarch_opts(graphics.get(self.config, getattr(self, "game_id", None)),
-                                            Path(provision.retroarch_exe(self.config)).parent)
+        if self.config is not None:   # per-game graphics settings (Sessions -> Graphics)
+            opts |= graphics.retroarch_opts(prefs,
+                                            Path(self.cfg.executable or provision.retroarch_exe(self.config)).parent)
+            if HOST_OS == "linux":
+                opts["video_vsync"] = "false"  # virtual display has no physical refresh clock
         if HOST_OS == "windows" and (self.platform or "") == "ps2":
             opts["video_shader_enable"] = "false"            # the .glslp post-AA presets don't load under d3d11
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))

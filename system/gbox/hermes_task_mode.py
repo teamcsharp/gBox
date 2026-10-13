@@ -271,7 +271,7 @@ def dispatch_request(request_id: str, number: int) -> str:
                   "Use the available cloud reasoning capacity and gBox MCP tools. Preserve the operator's current "
                   "game; use only an idle worker for reproduction and enforce 2% audio. Record each attempt, "
                   "attach real screenshots and actual token metrics with the actual provider/model/system, "
-                  "record solved_by implementation credit separately from its reviewer, and mark done only after independent "
+                  "record solved_by implementation credit separately from its reviewer. Include delivery notes with added, accomplished, where, test_steps, mods and verification for Requests > Features. Mark done only after independent "
                   "verification. Before editing, inspect list_tasks and the report's latest replies to avoid "
                   "duplicating an active investigation. Work on this report only, checkpoint each material "
                   "attempt in its replies, and reserve the last turns for validation and an honest final result. "

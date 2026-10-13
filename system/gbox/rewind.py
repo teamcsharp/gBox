@@ -543,6 +543,8 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
     """Attach the chord handling to a session that just launched; returns its status (rewind kind, ring settings)."""
     rc = getattr(config, "rewind", None)
     checkpoints = bool(getattr(rc, "checkpoints", True)) if enabled is None else bool(enabled)
+    if getattr(adapter, "rewind_disabled", False):
+        checkpoints = False
     interval, depth = getattr(rc, "interval_s", 2.0), getattr(rc, "depth", 60)
     max_mb, repeat = getattr(rc, "max_mb", 2048), getattr(rc, "repeat_s", 0.6)
     native = bool(getattr(adapter, "rewind_on", False))
