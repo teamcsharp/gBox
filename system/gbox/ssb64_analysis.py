@@ -189,6 +189,8 @@ def extern_file_ids(rom: bytes, entry: dict[str, Any]) -> list[int]:
     if entry["reloc_extern"] == 0xFFFF:
         return []
     count = len(walk_chain(load_file(rom, entry), entry["reloc_extern"]))
+    if after + 2 * count > len(rom):
+        raise ValueError(f"extern file-ID list of EUR file {entry['id']} runs past the ROM")
     return [int.from_bytes(rom[after + 2 * i:after + 2 * i + 2], "big")
             for i in range(count)]
 
@@ -231,6 +233,8 @@ def decode_motion_script(
         out.append(entry)
         off += 4
         if opcode in (34, 36):  # Subroutine / Goto: pointer slot follows
+            if off + 4 > len(buf):
+                raise ValueError(f"{entry['name']} at {off - 4:#x} is missing its pointer slot")
             slot_next, slot_words = struct.unpack_from(">HH", buf, off)
             out.append({"offset": off, "slot_next": slot_next,
                         "slot_words": slot_words,
@@ -285,6 +289,8 @@ def parse_ft_attributes(buf: bytes) -> dict[str, Any]:
 
 def parse_ft_attributes_pre_data(buf: bytes) -> dict[str, Any]:
     """Decode the pre-data blob anchors (src/relocData/203_MarioMain.c)."""
+    if len(buf) < 0x2C:
+        raise ValueError("file too small for the FTAttributes pre-data anchors")
     animlock = buf[0x0C:0x0C + 8]
     return {
         "file_handles_slots": [

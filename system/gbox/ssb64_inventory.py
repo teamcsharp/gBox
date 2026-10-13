@@ -54,8 +54,8 @@ _NAMES_FILE = Path(__file__).with_name("ssb64_names_us.txt")
 
 # EUR<->US file ID mapping.  The EUR table inserts 13 files at EUR IDs
 # 0..12 and 4 more at EUR IDs 268..271:
-#     EUR = US + 13   for US IDs 0..250
-#     EUR = US + 17   for US IDs 251..2131
+#     EUR = US + 13   for US IDs 0..254 (EUR 13..267)
+#     EUR = US + 17   for US IDs 255..2131 (EUR 272..)
 # Verified against decompressed sizes of 84 known-size US masters with 0
 # mismatches, and byte-level against the MarioMain / MarioMainMotion
 # masters (tests/test_ssb64_analysis.py).
@@ -78,7 +78,7 @@ def us_to_eur(us_id: int) -> int:
     """EUR file ID for a US file ID (inverse of eur_to_us)."""
     if not 0 <= us_id:
         raise ValueError(f"us_id {us_id} out of range")
-    if us_id <= 250:
+    if us_id <= EUR_ONLY_SPANS[1][0] - 14:
         return us_id + 13
     return us_id + 17
 
@@ -102,8 +102,8 @@ US_FIGHTERS = {
 }
 
 # EUR file IDs.  The EUR table inserts 13 files at IDs 0..12 and 4 more at
-# IDs 268..271, so EUR = US + 13 for US IDs 0..250 and EUR = US + 17 for
-# US IDs 251..2131.  Verified against decompressed sizes of 84 known-size
+# IDs 268..271, so EUR = US + 13 for US IDs 0..254 and EUR = US + 17 for
+# US IDs 255..2131.  Verified against decompressed sizes of 84 known-size
 # US masters (0 mismatches) and byte-level against the MarioMain /
 # MarioMainMotion masters (see tests/test_ssb64_analysis.py).
 FIGHTERS = {name: (us_to_eur(lo), us_to_eur(hi)) for name, (lo, hi) in US_FIGHTERS.items()}

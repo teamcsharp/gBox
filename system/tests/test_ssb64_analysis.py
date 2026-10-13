@@ -225,3 +225,22 @@ def test_fighter_roster_files_decode():
         for fid in range(lo, hi + 1):
             data = a.load_file(rom, a.read_table_entry(rom, fid))
             assert len(data) > 0
+
+
+def test_eur_us_map_round_trips():
+    for us in range(0, 400):
+        assert inv.eur_to_us(inv.us_to_eur(us)) == us
+    for eur in range(0, 400):
+        us = inv.eur_to_us(eur)
+        assert us is None or inv.us_to_eur(us) == eur
+
+
+def test_truncated_inputs_raise_valueerror():
+    with pytest.raises(ValueError):
+        a.decode_motion_script(bytes.fromhex("90000000"))   # Goto without its slot
+    with pytest.raises(ValueError):
+        a.parse_ft_attributes_pre_data(bytes(0x20))
+    with pytest.raises(ValueError):
+        a.parse_ft_attributes(bytes(0x500))
+    with pytest.raises(ValueError):
+        a.walk_chain(bytes(3), 0)
