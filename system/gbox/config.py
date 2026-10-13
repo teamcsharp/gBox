@@ -139,6 +139,7 @@ class Config(BaseModel):
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    examine_capture_worker: str = "JAYBUILTFINALE"   # Examine 3D capture sessions run here first (gbox/scene_relay.py)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
