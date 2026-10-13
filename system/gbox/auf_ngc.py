@@ -227,6 +227,13 @@ class NgcPackage:
             self._table = read_chunk(self.data, self.chunk("restable"))
         return self._table
 
+    def payload(self, cid: str) -> bytes:
+        """Decompressed payload of a chunk (cached)."""
+        cache = self.__dict__.setdefault("_payloads", {})
+        if cid not in cache:
+            cache[cid] = read_chunk(self.data, self.chunk(cid))
+        return cache[cid]
+
     def resources(self) -> list[Resource]:
         return parse_restable(self.table)
 
@@ -598,6 +605,277 @@ def to_glb(m: dict, path, name: str = "model"):
     return write_skinned_glb(Path(path), P, N, UV, J, tris, names, parents, world, name=name, weights=W)
 
 
+
+# ---------------------------------------------------------------------------
+# Textures and shaders (reader stage, textures).
+#
+# restxtrs chunk (RSRC_InitStaticTextures 0x80016A7C -> TexMgr_LoadStaticTextures
+# 0x80185EA8): f32 version (must equal the build constant, 1.2), u32 count,
+# u32 offset of a u32 texture-ID array, u32 offset of 0x44-byte records; all
+# offsets are relative to the chunk payload (TexMgr_InitTexture 0x80185CFC
+# relocates +0x10 and +0x1C).  TexMgr_InitGXTex 0x80186094 builds two GXTexObjs
+# per record: GXInitTexObj(image, w=u16 +4, h=u16 +6, fmt, wrapS +8, wrapT +0xC,
+# mipmap u8 +0x3A) for (fmt +0, data +0x10) and, when +0x1C != 0, (fmt +0x18,
+# data +0x1C); GXInitTexObjLOD(min +0x28, mag +0x2C, maxLOD f32 +0x30, bias +0x34).
+# +0x14 / +0x20 are the byte sizes of the two images (full mip chains).
+#
+# shaders chunk (SHDR_Init 0x80188AA8 / SHDR_FixupShaderTable 0x801886C4):
+# +4 shader array offset, +8 count; shader = 16 bytes {u32 id, u8 group count,
+# .., +0xC group array offset}; group = 0x14 bytes {u32 pass array offset,
+# u16 pass count, ..}; pass = 0x14 bytes {u32 flags, u32 texture id, ..}.
+# SHDR_FixupIndices 0x801885C0 turns pass +4 into a TexMgr index via
+# TexMgr_GetIndexForTextureID (0xCCDDCCDD = no texture; flags & 0x4000 = an
+# animated list at pass +0x10).  SHDR_GetTextureForPassNum 0x801870CC returns
+# pass +4, so pass 0 of group 0 is a geom section's base texture.
+# ---------------------------------------------------------------------------
+
+GX_I4, GX_I8, GX_IA4, GX_IA8, GX_RGB565, GX_RGB5A3, GX_RGBA8 = 0, 1, 2, 3, 4, 5, 6
+GX_CI4, GX_CI8, GX_CI14, GX_CMPR = 8, 9, 10, 14
+GX_BLOCK = {GX_I4: (8, 8, 4), GX_I8: (8, 4, 8), GX_IA4: (8, 4, 8), GX_IA8: (4, 4, 16),
+            GX_RGB565: (4, 4, 16), GX_RGB5A3: (4, 4, 16), GX_RGBA8: (4, 4, 32),
+            GX_CI4: (8, 8, 4), GX_CI8: (8, 4, 8), GX_CI14: (4, 4, 16), GX_CMPR: (8, 8, 4)}
+NO_TEXTURE = 0xCCDDCCDD
+
+
+def gx_image_size(fmt: int, w: int, h: int) -> int:
+    bw, bh, bpp = GX_BLOCK[fmt]
+    return ((w + bw - 1) // bw) * ((h + bh - 1) // bh) * bw * bh * bpp // 8
+
+
+def gx_chain_size(fmt: int, w: int, h: int, levels: int) -> int:
+    return sum(gx_image_size(fmt, max(1, w >> i), max(1, h >> i)) for i in range(levels))
+
+
+def _rgb565(c):
+    return ((c >> 11) & 31) * 255 // 31, ((c >> 5) & 63) * 255 // 63, (c & 31) * 255 // 31
+
+
+def decode_gx(fmt: int, w: int, h: int, data: bytes) -> bytes:
+    """Decode mip level 0 of a GX texture to RGBA8 rows (top row first).
+
+    Implements the formats this disc uses (CMPR, RGBA8, I8 - every record on all
+    38 maps) plus I4/IA8/RGB565/RGB5A3."""
+    bw, bh, _bpp = GX_BLOCK[fmt]
+    out = bytearray(w * h * 4)
+    need = gx_image_size(fmt, w, h)
+    if len(data) < need:
+        raise ValueError("GX fmt %d %dx%d needs %d bytes, have %d" % (fmt, w, h, need, len(data)))
+
+    def put(x, y, px):
+        if x < w and y < h:
+            o = (y * w + x) * 4
+            out[o:o + 4] = bytes(px)
+
+    pos = 0
+    for by in range(0, h, bh):
+        for bx in range(0, w, bw):
+            if fmt == GX_CMPR:
+                for sb in range(4):
+                    c0, c1, bits = struct.unpack_from(">HHI", data, pos)
+                    pos += 8
+                    p0, p1 = _rgb565(c0), _rgb565(c1)
+                    if c0 > c1:
+                        pal = [p0 + (255,), p1 + (255,),
+                               tuple((2 * a + b) // 3 for a, b in zip(p0, p1)) + (255,),
+                               tuple((a + 2 * b) // 3 for a, b in zip(p0, p1)) + (255,)]
+                    else:
+                        pal = [p0 + (255,), p1 + (255,),
+                               tuple((a + b) // 2 for a, b in zip(p0, p1)) + (255,), (0, 0, 0, 0)]
+                    ox, oy = bx + (sb & 1) * 4, by + (sb >> 1) * 4
+                    for i in range(16):
+                        put(ox + (i & 3), oy + (i >> 2), pal[(bits >> (30 - 2 * i)) & 3])
+            elif fmt == GX_RGBA8:
+                for i in range(16):
+                    a, r = data[pos + 2 * i], data[pos + 2 * i + 1]
+                    g, b = data[pos + 32 + 2 * i], data[pos + 33 + 2 * i]
+                    put(bx + (i & 3), by + (i >> 2), (r, g, b, a))
+                pos += 64
+            elif fmt == GX_I8:
+                for i in range(32):
+                    v = data[pos + i]
+                    put(bx + (i & 7), by + (i >> 3), (v, v, v, 255))
+                pos += 32
+            elif fmt == GX_I4:
+                for i in range(64):
+                    v = (data[pos + i // 2] >> (4 if not i & 1 else 0)) & 15
+                    put(bx + (i & 7), by + (i >> 3), (v * 17,) * 3 + (255,))
+                pos += 32
+            elif fmt == GX_IA8:
+                for i in range(16):
+                    a, v = data[pos + 2 * i], data[pos + 2 * i + 1]
+                    put(bx + (i & 3), by + (i >> 2), (v, v, v, a))
+                pos += 32
+            elif fmt in (GX_RGB565, GX_RGB5A3):
+                for i in range(16):
+                    c = struct.unpack_from(">H", data, pos + 2 * i)[0]
+                    if fmt == GX_RGB565:
+                        px = _rgb565(c) + (255,)
+                    elif c & 0x8000:
+                        px = (((c >> 10) & 31) * 255 // 31, ((c >> 5) & 31) * 255 // 31, (c & 31) * 255 // 31, 255)
+                    else:
+                        px = (((c >> 8) & 15) * 17, ((c >> 4) & 15) * 17, (c & 15) * 17, ((c >> 12) & 7) * 255 // 7)
+                    put(bx + (i & 3), by + (i >> 2), px)
+                pos += 32
+            else:
+                raise ValueError("GX texture format %d not supported" % fmt)
+    return bytes(out)
+
+
+@dataclass
+class Texture:
+    id: int
+    index: int
+    fmt: int
+    width: int
+    height: int
+    wrap_s: int
+    wrap_t: int
+    offset: int
+    size: int
+    fmt2: int
+    offset2: int
+    size2: int
+    mipmap: int
+    max_lod: float
+
+    @property
+    def levels(self) -> int:
+        return int(self.max_lod) + 1 if self.mipmap else 1
+
+
+def textures(pkg: "NgcPackage") -> dict:
+    """{texture id: Texture} from the level's restxtrs chunk (payload kept on pkg)."""
+    p = pkg.payload("restxtrs")
+    _ver, n, ido, reco = struct.unpack_from(">fIII", p, 0)
+    out = {}
+    for i in range(n):
+        r = reco + i * 0x44
+        f, w, h, ws, wt, off, sz, f2, off2, sz2 = struct.unpack_from(">IHHIIIIIII", p, r)
+        maxlod = struct.unpack_from(">f", p, r + 0x30)[0]
+        tid = struct.unpack_from(">I", p, ido + 4 * i)[0]
+        out[tid] = Texture(tid, i, f, w, h, ws, wt, off, sz, f2, off2, sz2, p[r + 0x3A], maxlod)
+    return out
+
+
+def texture_check(pkg: "NgcPackage") -> list[str]:
+    """Every image must be exactly its GX mip chain and lie inside the chunk."""
+    p = pkg.payload("restxtrs")
+    bad = []
+    for t in textures(pkg).values():
+        planes = [(t.fmt, t.offset, t.size)]
+        if t.offset2:
+            planes.append((t.fmt2, t.offset2, t.size2))
+        for f, o, s in planes:
+            if f not in GX_BLOCK:
+                bad.append("%08x: format %d" % (t.id, f))
+            elif gx_chain_size(f, t.width, t.height, t.levels) != s:
+                bad.append("%08x: size %d != chain %d" % (t.id, s, gx_chain_size(f, t.width, t.height, t.levels)))
+            elif o + s > len(p):
+                bad.append("%08x: overruns restxtrs" % t.id)
+    return bad
+
+
+def texture_rgba(pkg: "NgcPackage", t: Texture, plane: int = 0) -> bytes:
+    p = pkg.payload("restxtrs")
+    f, o = (t.fmt, t.offset) if plane == 0 else (t.fmt2, t.offset2)
+    return decode_gx(f, t.width, t.height, p[o:o + gx_image_size(f, t.width, t.height)])
+
+
+def shaders(pkg: "NgcPackage") -> dict:
+    """{shader id: [[(flags, texture id), ...] per group]} from the shaders chunk."""
+    s = pkg.payload("shaders")
+    so, sc = struct.unpack_from(">II", s, 4)
+    out = {}
+    for i in range(sc):
+        sid, ng = struct.unpack_from(">IB", s, so + 16 * i)
+        gptr = struct.unpack_from(">I", s, so + 16 * i + 12)[0]
+        groups = []
+        for j in range(ng):
+            pp, npass = struct.unpack_from(">IH", s, gptr + 0x14 * j)
+            groups.append([struct.unpack_from(">II", s, pp + 0x14 * k) for k in range(npass)])
+        out[sid] = groups
+    return out
+
+
+def section_textures(pkg: "NgcPackage", m: dict, shd: dict | None = None, tex: dict | None = None) -> list:
+    """Base Texture (pass 0 of group 0) of each geom section, or None."""
+    shd = shaders(pkg) if shd is None else shd
+    tex = textures(pkg) if tex is None else tex
+    out = []
+    for h in m["shaders"]:
+        groups = shd.get(h) or []
+        tid = groups[0][0][1] if groups and groups[0] else NO_TEXTURE
+        out.append(tex.get(tid))
+    return out
+
+
+def png_bytes(rgba: bytes, w: int, h: int) -> bytes:
+    import zlib
+    raw = b"".join(b"\0" + rgba[y * w * 4:(y + 1) * w * 4] for y in range(h))
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def glb_add_materials(path, m: dict, images: list) -> None:
+    """Split a single-primitive GLB from ``to_glb`` into one primitive per geom
+    section, each with its own material and embedded PNG (``images[s]`` is
+    (png bytes, wrap_s, wrap_t) or None)."""
+    import numpy as np
+    from pathlib import Path
+    data = Path(path).read_bytes()
+    jl = struct.unpack_from("<I", data, 12)[0]
+    gl = json.loads(data[20:20 + jl])
+    blob = bytearray(data[20 + jl + 8:])
+    wrap = {0: 33071, 1: 10497, 2: 33648}
+
+    def view(b):
+        while len(blob) % 4:
+            blob.append(0)
+        gl["bufferViews"].append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(b)})
+        blob.extend(b)
+        return len(gl["bufferViews"]) - 1
+
+    prim0 = gl["meshes"][0]["primitives"][0]
+    prims, mats = [], []
+    gl.setdefault("images", []); gl.setdefault("textures", []); gl.setdefault("samplers", [])
+    for s in range(len(m["shaders"])):
+        tri = np.asarray([f[:3] for f in m["faces"] if f[3] == s], np.uint32).reshape(-1)
+        if not len(tri):
+            continue
+        gl["accessors"].append({"bufferView": view(tri.tobytes()), "componentType": 5125,
+                                "count": len(tri), "type": "SCALAR"})
+        mat = {"name": "shader_%08x" % m["shaders"][s], "doubleSided": False,
+               "pbrMetallicRoughness": {"metallicFactor": 0, "roughnessFactor": 1}}
+        if images[s] is not None:
+            png, ws, wt = images[s][:3]
+            gl["images"].append({"bufferView": view(png), "mimeType": "image/png"})
+            gl["samplers"].append({"magFilter": 9729, "minFilter": 9987,
+                                   "wrapS": wrap.get(ws, 10497), "wrapT": wrap.get(wt, 10497)})
+            gl["textures"].append({"source": len(gl["images"]) - 1, "sampler": len(gl["samplers"]) - 1})
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": len(gl["textures"]) - 1}
+            if len(images[s]) > 3 and images[s][3]:
+                mat["alphaMode"] = "MASK"
+        mats.append(mat)
+        prims.append({"attributes": prim0["attributes"], "indices": len(gl["accessors"]) - 1,
+                      "material": len(mats) - 1})
+    gl["meshes"][0]["primitives"] = prims
+    gl["materials"] = mats
+    for k in ("images", "textures", "samplers"):
+        if not gl[k]:
+            del gl[k]
+    while len(blob) % 4:
+        blob.append(0)
+    gl["buffers"] = [{"byteLength": len(blob)}]
+    js = json.dumps(gl, separators=(",", ":")).encode()
+    js += b" " * (-len(js) % 4)
+    Path(path).write_bytes(struct.pack("<III", 0x46546C67, 2, 28 + len(js) + len(blob))
+                           + struct.pack("<II", len(js), 0x4E4F534A) + js
+                           + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob))
+
+
 def characters(pkg: NgcPackage) -> list[dict]:
     out = []
     for r in pkg.resources():
@@ -638,12 +916,37 @@ def main(argv=None) -> int:
         base = os.path.join(a.export[1], stem)
         obj = to_obj(m, base + ".obj", stem)
         glb = str(to_glb(m, base + ".glb", stem))
+        tex_meta, images = [], []
+        for s, t in enumerate(section_textures(pkg, m)):
+            if t is None:
+                images.append(None)
+                tex_meta.append(None)
+                continue
+            rgba = texture_rgba(pkg, t)
+            png = png_bytes(rgba, t.width, t.height)
+            fn = "%s_tex%08x.png" % (stem, t.id)
+            with open(os.path.join(a.export[1], fn), "wb") as fh:
+                fh.write(png)
+            cut = any(rgba[i] < 128 for i in range(3, len(rgba), 4))
+            images.append((png, t.wrap_s, t.wrap_t, cut))
+            row = {"section": s, "texture": "%08x" % t.id, "format": t.fmt, "size": [t.width, t.height],
+                   "wrap": [t.wrap_s, t.wrap_t], "levels": t.levels, "png": fn,
+                   "png_sha256": hashlib.sha256(png).hexdigest()}
+            if t.offset2:
+                # second GXTexObj of the record (TexMgr_InitGXTex); kept as-is
+                png2 = png_bytes(texture_rgba(pkg, t, 1), t.width, t.height)
+                fn2 = "%s_tex%08x_plane1.png" % (stem, t.id)
+                with open(os.path.join(a.export[1], fn2), "wb") as fh:
+                    fh.write(png2)
+                row.update(plane1_format=t.fmt2, plane1_png=fn2)
+            tex_meta.append(row)
+        glb_add_materials(glb, m, images)
         err, frame = bbox_error(g, m)
         meta = {"source": a.export[0], "gcm_sha256": hashlib.sha256(g).hexdigest(), "obj_sha256": obj,
                 "glb_sha256": hashlib.sha256(open(glb, "rb").read()).hexdigest(),
                 "vertices": len(m["positions"]), "triangles": len(m["faces"]),
                 "bbox_error": err, "bbox_frame": frame, "winding": winding_agreement(m),
-                "shaders": ["%08x" % x for x in m["shaders"]],
+                "shaders": ["%08x" % x for x in m["shaders"]], "textures": tex_meta,
                 "bones": [{"parent": b["parent"], "hash": "%08x" % b["hash"], "pos": b["pos"],
                            "quat": b["quat"]} for b in m["bones"]]}
         with open(base + ".json", "w") as fh:

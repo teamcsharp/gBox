@@ -250,3 +250,118 @@ def test_owned_disc_dm1_meshes_match_header_bounds(tmp_path):
     assert (len(bond["positions"]), len(bond["faces"]), len(bond["bones"])) == (387, 510, 35)
     zs = [p[2] for p in bond["positions"]]
     assert min(zs) == pytest.approx(0.0, abs=0.01) and max(zs) == pytest.approx(86.6, abs=0.05)  # feet on the floor, Z up
+
+
+# --- textures / shaders (restxtrs, shaders chunks) ---------------------------
+
+def test_gx_chain_size_matches_owned_record():
+    # dm1 restxtrs record 0: CMPR 128x128, maxLOD 5 (6 levels), +0x14 = 0x2ac0
+    assert auf_ngc.gx_chain_size(auf_ngc.GX_CMPR, 128, 128, 6) == 0x2AC0
+    # record 3: CMPR 64x64 one level (+0x14 = 0x800), second plane I8 64x64 (+0x20 = 0x1000)
+    assert auf_ngc.gx_chain_size(auf_ngc.GX_CMPR, 64, 64, 1) == 0x800
+    assert auf_ngc.gx_chain_size(auf_ngc.GX_I8, 64, 64, 1) == 0x1000
+
+
+def test_decode_cmpr_block_order_and_palette():
+    red, blue = 0xF800, 0x001F
+    # 8x8 block = four 4x4 DXT1 sub-blocks (TL, TR, BL, BR); c0 > c1 -> opaque 4-colour
+    sub_tl = struct.pack(">HHI", red, blue, 0)            # all index 0 -> red
+    sub_tr = struct.pack(">HHI", red, blue, 0x55555555)   # all index 1 -> blue
+    sub_bl = struct.pack(">HHI", blue, red, 0xFFFFFFFF)   # c0 <= c1, index 3 -> transparent
+    sub_br = struct.pack(">HHI", red, blue, 0x40000000)   # pixel 0 index 1, rest 0
+    rgba = auf_ngc.decode_gx(auf_ngc.GX_CMPR, 8, 8, sub_tl + sub_tr + sub_bl + sub_br)
+
+    def px(x, y):
+        return tuple(rgba[(y * 8 + x) * 4:(y * 8 + x) * 4 + 4])
+    assert px(0, 0) == (255, 0, 0, 255)
+    assert px(5, 2) == (0, 0, 255, 255)
+    assert px(1, 6)[3] == 0
+    assert px(4, 4) == (0, 0, 255, 255) and px(5, 4) == (255, 0, 0, 255)
+
+
+def test_decode_rgba8_two_plane_tile_and_i8():
+    ar = bytes(v for i in range(16) for v in (0x80, i))          # A=0x80, R=i
+    gb = bytes(v for i in range(16) for v in (2 * i, 3 * i))     # G=2i, B=3i
+    rgba = auf_ngc.decode_gx(auf_ngc.GX_RGBA8, 4, 4, ar + gb)
+    assert tuple(rgba[5 * 4:5 * 4 + 4]) == (5, 10, 15, 0x80)
+    i8 = auf_ngc.decode_gx(auf_ngc.GX_I8, 8, 4, bytes(range(32)))
+    assert tuple(i8[(1 * 8 + 2) * 4:(1 * 8 + 2) * 4 + 4]) == (10, 10, 10, 255)
+    with pytest.raises(ValueError):
+        auf_ngc.decode_gx(auf_ngc.GX_CMPR, 8, 8, b"\0" * 8)
+
+
+class _Pkg:
+    def __init__(self, **payloads):
+        self.p = payloads
+
+    def payload(self, cid):
+        return self.p[cid]
+
+
+def _restxtrs():
+    img = struct.pack(">HHI", 0xF800, 0x001F, 0) * 4
+    rec = struct.pack(">IHHIIIIIII", 14, 8, 8, 1, 0, 0x60, len(img), 0, 0, 0)
+    rec += b"\0" * 4 + struct.pack(">IIff", 0, 1, 0.0, 0.0) + bytes([0, 0, 0, 0]) + b"\0" * 8
+    assert len(rec) == 0x44
+    head = struct.pack(">fIII", 1.2, 1, 0x10, 0x14) + struct.pack(">I", 0xABCD0001)
+    body = head + rec
+    return body + b"\0" * (0x60 - len(body)) + img
+
+
+def _shaders():
+    # header, 2 shaders at 0x5c: one textured, one with the 0xCCDDCCDD no-texture id
+    s = bytearray(0x100)
+    struct.pack_into(">fII", s, 0, 0.945, 0x5C, 2)
+    struct.pack_into(">IB", s, 0x5C, 0x11111111, 1); struct.pack_into(">I", s, 0x5C + 12, 0x80)
+    struct.pack_into(">IB", s, 0x6C, 0x22222222, 1); struct.pack_into(">I", s, 0x6C + 12, 0x94)
+    struct.pack_into(">IH", s, 0x80, 0xA8, 1)
+    struct.pack_into(">IH", s, 0x94, 0xBC, 1)
+    struct.pack_into(">II", s, 0xA8, 0, 0xABCD0001)
+    struct.pack_into(">II", s, 0xBC, 0, auf_ngc.NO_TEXTURE)
+    return bytes(s)
+
+
+def test_restxtrs_shaders_resolve_section_textures():
+    pkg = _Pkg(restxtrs=_restxtrs(), shaders=_shaders())
+    tex = auf_ngc.textures(pkg)
+    t = tex[0xABCD0001]
+    assert (t.fmt, t.width, t.height, t.wrap_s, t.levels) == (14, 8, 8, 1, 1)
+    assert auf_ngc.texture_check(pkg) == []
+    shd = auf_ngc.shaders(pkg)
+    assert shd[0x11111111] == [[(0, 0xABCD0001)]]
+    got = auf_ngc.section_textures(pkg, {"shaders": [0x11111111, 0x22222222, 0x33333333]})
+    assert got[0] == t and got[1] is None and got[2] is None
+    assert auf_ngc.texture_rgba(pkg, t)[:4] == bytes((255, 0, 0, 255))
+
+
+def test_glb_add_materials_one_primitive_per_section(tmp_path):
+    import json as _json
+    pytest.importorskip("numpy")
+    m = auf_ngc.mesh(_skinned_gcm())
+    path = tmp_path / "m.glb"
+    auf_ngc.to_glb(m, path, "m")
+    png = auf_ngc.png_bytes(bytes((255, 0, 0, 255)) * 4, 2, 2)
+    assert png.startswith(b"\x89PNG")
+    auf_ngc.glb_add_materials(path, m, [(png, 1, 0, False)] + [None] * (len(m["shaders"]) - 1))
+    data = path.read_bytes()
+    gl = _json.loads(data[20:20 + struct.unpack_from("<I", data, 12)[0]])
+    used = {f[3] for f in m["faces"]}
+    assert len(gl["meshes"][0]["primitives"]) == len(used)
+    assert gl["images"][0]["mimeType"] == "image/png"
+    assert gl["samplers"][0]["wrapS"] == 10497 and gl["samplers"][0]["wrapT"] == 33071
+
+
+@pytest.mark.skipif(not os.path.exists(GCZ), reason="owned AUF GCZ not cached")
+def test_owned_disc_dm1_textures_and_bond_materials(tmp_path):
+    from gbox import au_inventory
+    au_inventory.extract(GCZ, ["dm1.ngc"], str(tmp_path))
+    pkg = auf_ngc.NgcPackage((tmp_path / "dm1.ngc").read_bytes())
+    tex = auf_ngc.textures(pkg)
+    assert len(tex) == 358 and auf_ngc.texture_check(pkg) == []
+    m = auf_ngc.mesh(pkg.read("models/actors/bond/bond_combat_l.gcm"))
+    st = auf_ngc.section_textures(pkg, m)
+    assert ["%08x" % t.id for t in st] == ["90055abf", "76df3706", "af2b5dea"]
+    assert [(t.fmt, t.width) for t in st] == [(14, 128), (14, 128), (14, 64)]
+    import hashlib
+    png = auf_ngc.png_bytes(auf_ngc.texture_rgba(pkg, st[0]), 128, 128)
+    assert hashlib.sha256(png).hexdigest() == "e8e98b385732d3b42055788b5e66fc3654a9b706f8bff221e8597d26b9424a31"
