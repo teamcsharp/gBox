@@ -208,3 +208,30 @@ under one second apart.
 
 Probe note from the live table: every player/bot has a `ClonePlayer` twin at the same origin. `under_point`
 must collapse a ClonePlayer onto its owner (same model + origin) so the pick names the Bot, not the clone.
+
+## 7. Live drop-point acceptance on the Spark (2026-10-13)
+
+JAYBUILTFINALE was in active human use (idle 1.1 s); `get_frame` there failed with "the game window isn't
+open" (jobs e9a7bd2dd56349de, a720a4df0eb945a6) although `read_memory` worked, so the run moved to the Spark.
+Agent session `2882962538984a44-89cc61f572aa4350` (launch job 89cc61f572aa4350, private display :91), no input
+sent. About 3 min after boot the title screen gives way to the single-player attract cutscene; `g_entities`
+then holds 0x813AC800 and client 0 carries the **scripted** camera (pm_flags & 0x100, fov 60 / 45 from +0x2F4).
+
+Each moment is one `get_frame` and one full MEM1 `read_memory` started together (dump 3-4 s, frame 1.2-1.6 s),
+probed offline with the deployed `entity_probe` and `profiles/auf-gcn-us.json`; the drop point is the centre of
+each on-screen creature box and `Probe.under_point` names it.
+
+| moment | jobs (mem / frame) | under the drop point | frame check |
+|---|---|---|---|
+| m2 | a8c0e21681464994 / 43089007d3f94827 | #296 Actor `actor_Thug_Orchid1_exp.men` | guard in doorway, tight box |
+| m4 | 827489becc964e16 / 3a1a4deda25b4bdd | #296 Actor `actor_Thug_Orchid1_exp.men` | guard, box runs below the boots |
+| m4 | same | #297 Actor `actor_g8russia.men` | suited man with briefcase, tight box |
+| m6 | 597abaf496ba449d / efc4e62be6d7476b | #295 Actor `actor_Bond_Combat.men` | Bond inside the box but behind a ledge; the centre falls on the ledge |
+| m3 | 7db67a33a2ad432a / d2e06c5f61db4623 | #296 (box top-right, off the person) | wrong: camera cut between dump and frame |
+
+Confirmed live: the scripted-camera override, `fov_axis` vertical with aspect 4:3, and the world box from the
+record absmin/absmax, on three moments (m2, m4, m6) with four correct names. Open: m3 shows that a dump taken
+while a cutscene cuts can disagree with the frame, so a pick should read the camera words again after the frame
+(or pause first); the box is a world AABB, so occluded or crouched actors get a centre that can land on scenery;
+bots in a deathmatch frame are still unchecked on screen (the Spark attract shows the SP cutscene).
+Box frames: artifacts 6fc915ad... (m2), bbdc3ac6... (m4), 586568403... (m6), e23d40d2... (m3), sheet 92fc5c4c....
