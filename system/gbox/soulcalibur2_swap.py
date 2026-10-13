@@ -478,7 +478,8 @@ def verify_image(image: Path, expected: dict[int, str] | None = None, random_sel
                 prims, _W, _n = V.decode(v)
                 row |= {"triangles": int(sum(len(p["tris"]) for p in prims)), "bones": len(v.bones),
                         "roles": len(S.roles_of(v)), "textures": V.stats(v)["textures"]}
-                row["ok"] = row["sha_ok"] and row["triangles"] > 0 and row["roles"] == 18
+                row["engine"] = V.engine_check(v)
+                row["ok"] = row["sha_ok"] and row["triangles"] > 0 and row["roles"] == 18 and not row["engine"]
             except Exception as err:                     # noqa: BLE001
                 row |= {"ok": False, "error": f"{type(err).__name__}: {err}"}
             out["entries"][e] = row

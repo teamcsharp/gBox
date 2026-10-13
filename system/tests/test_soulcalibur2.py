@@ -125,6 +125,20 @@ def test_bind_world_euler_turns_and_skeleton_frame():
     assert np.allclose(W_[idx["MUNE2"]][:3, 0], [0, 1, 0], atol=1e-6)          # bones point along their +X
 
 
+def test_engine_check_accepts_the_encoder_and_catches_breakage(stock):
+    assert V.engine_check(V.parse(stock)) == []
+    v = V.parse(stock)
+    g = v.skin[0]
+    broken = bytearray(stock)
+    end = g["records"] + 16 * g["counts"][0]
+    broken[end:end + 16] = bytes(16)                         # terminator gone
+    assert any("terminator" in p for p in V.engine_check(V.parse(bytes(broken))))
+    m = v.meshes[0]
+    broken = bytearray(stock)
+    struct.pack_into(">H", broken, m.offset + 14, m.dl_size // 32 + 0x8000)   # display list past the file
+    assert V.engine_check(V.parse(bytes(broken)))
+
+
 def test_encode_parse_decode_round_trip(stock):
     v = V.parse(stock)
     assert v.counts["list0"] == 1 and v.counts["skin"] == 1 and len(v.bones) == len(BODY)

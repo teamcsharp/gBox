@@ -638,6 +638,64 @@ def encode(v: Vmg, P: np.ndarray, N: np.ndarray, UV: np.ndarray, B: np.ndarray, 
     return bytes(out)
 
 
+def engine_check(v: Vmg) -> list[str]:
+    """What the game's loader (0x801237f0) and draw / skin code (0x80125c30, 0x801269d4) rely on, checked without the
+    game: pointers inside the file, 32-byte alignment of display lists, arrays and texels, display-list sizes in
+    32-byte units, every index inside its array, the skin's vertex count and its -1 terminator, texture data inside
+    the file. -> problems (empty = fine)."""
+    from .melee_models import tex_size
+    d, bad = v.data, []
+    for k, p in v.ptrs.items():
+        if p and not 0 < p < len(d):
+            bad.append(f"pointer {k} {p:#x} outside the file")
+    nverts = None
+    for g in v.skin:
+        n = sum(g["counts"][:3]) + g["counts"][3]
+        nverts = n
+        o = g["records"] + 16 * (g["counts"][0] + 2 * g["counts"][1] + 3 * g["counts"][2])
+        k, guard = 4, 0
+        while o + 16 * k <= len(d) and struct.unpack_from(">h", d, o + 6)[0] != -1 and guard < 200000:
+            last = d[o + 16 * (k - 1) + 14]
+            o += 16 * k
+            k += last
+            guard += 1
+        if guard != g["counts"][3]:
+            bad.append(f"skin group: {guard} 4+-influence vertices, the header says {g['counts'][3]}")
+        if o + 16 > len(d) or struct.unpack_from(">h", d, o + 6)[0] != -1:
+            bad.append("skin group: no -1 terminator")
+        for key in ("pos", "pos2", "nrm", "nrm2"):
+            if g[key] % 32 or g[key] + 16 * n > len(d):
+                bad.append(f"skin {key} buffer misplaced")
+    for m in v.meshes:
+        if m.dl % 32 or m.dl_size % 32 or m.dl + m.dl_size > len(d):
+            bad.append(f"mesh {m.table}/{m.index}: display list {m.dl:#x}+{m.dl_size:#x} misaligned or outside")
+            continue
+        prims = display_list(d, m.dl, m.dl_size, m.idx)
+        used = sum(3 + len(vs) * sum(1 if t == 2 else 2 if t == 3 else 0 for t in m.idx) for _op, vs in prims)
+        if m.table == 0 and any(d[m.dl + used:m.dl + m.dl_size]):   # (sorted lists keep sort data there)
+            bad.append(f"mesh {m.table}/{m.index}: bytes after the last primitive are not NOPs")
+        if m.skinned and nverts is not None:
+            mx = max((c[0] for _op, vs in prims for c in vs), default=-1)
+            mn = max((c[1] for _op, vs in prims for c in vs), default=-1)
+            if mx >= nverts or mn >= nverts:
+                bad.append(f"mesh {m.table}/{m.index}: index {max(mx, mn)} past the {nverts} skinned vertices")
+        for key in ("pos", "nrm", "uv", "clr", "dl"):
+            p = getattr(m, key)
+            if p and not 0 < p < len(d):
+                bad.append(f"mesh {m.table}/{m.index}: {key} pointer outside")
+    vgt = v.ptrs.get("vgt", 0)
+    if vgt % 32:
+        bad.append("VGT set not 32-byte aligned")
+    for t in vgt_textures(d, vgt):
+        for key in ("data", "data2"):
+            o = t.get(key)
+            if o is None:
+                continue
+            if (o - vgt) % 32 or o + tex_size(t["fmt"], t["w"], t["h"]) > len(d):
+                bad.append(f"texture {t['index']}: {key} misaligned or outside")
+    return bad
+
+
 def stats(v: Vmg) -> dict:
     tris = 0
     for m in v.meshes:
