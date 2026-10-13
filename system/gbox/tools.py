@@ -234,6 +234,9 @@ class LaunchIn(BaseModel):
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
+    capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
+                                           # its own config files, RenderDoc inside, no rewind/recording, window off-screen
+    capture_for: str = ""                  # the operator session this capture session captures (scene_relay)
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -349,6 +352,24 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
         return _launch_game(inp, ctx)
 
 
+def _capture_plan(ad, g, want: str, ctx) -> dict:
+    """Backend of an agent-owned Examine 3D capture session (gbox/capture_backend.py): "auto" = the matrix's choice,
+    "vulkan" / "glcore" = that driver. RenderDoc is installed on this PC first if it has none (pinned portable build)."""
+    from . import capture_backend, scene_capture
+    if HOST_OS != "windows":
+        raise Unsupported("Examine 3D capture sessions run on a Windows worker (RenderDoc)")
+    core = getattr(getattr(ad, "cfg", None), "core", None) or g.core
+    plan = capture_backend.plan(ad.name, core)
+    if plan is None:
+        raise Unsupported(f"{ad.name}{' / ' + str(core) if core else ''} has no 3D capture path (2D frame only)")
+    if want in ("vulkan", "glcore") and want != plan["driver"] and ad.name == "retroarch":
+        plan = plan | {"driver": want, "attach": "layer" if want == "vulkan" else "inject",
+                       "ra_cfg": {"video_driver": want}, "core_options": {} if want == "glcore" else plan["core_options"]}
+    ctx.progress(4, f"Capture session: {plan['driver']} with RenderDoc ({'Vulkan layer' if plan['attach'] == 'layer' else 'injected'})")
+    rd = scene_capture.renderdoc_dir(provision=True)
+    return plan | {"renderdoc": str(rd)}
+
+
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
@@ -357,6 +378,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ad.progress = ctx.progress
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
+    if inp.capture_backend:
+        ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
+        ad.examine = True
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     if g.launch.get("kind") == "steam":
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
@@ -438,15 +462,21 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     detail['previous_checkpoints'] = checkpoints
     # Select+L2 rewind / Select+R2 fast-forward on the operator's own pad, in every game (#454, #1382): RetroArch's own
     # rewind where it is on, gBox's checkpoint ring elsewhere, the 2x/4x/16x ramp for R2 in both cases (gbox/rewind.py)
-    try:
-        detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
-    except Exception as e:                                     # noqa: BLE001 - never block the launch
-        detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
-    # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
-    try:
-        detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
-    except Exception as e:                                     # noqa: BLE001 - never block the launch
-        detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
+    if inp.capture_backend:                                    # Examine 3D capture session: no checkpoint ring, no recording
+        detail["capture_session"] = {k: v for k, v in ad.capture_backend.items() if k != "core_options"} | {
+            "capture_for": inp.capture_for, "core_options": ad.capture_backend.get("core_options") or {}}
+        detail["rewind"] = {"rewind": "unsupported", "reason": "Examine 3D capture session"}
+        detail["recording"] = {"state": "unsupported", "reason": "Examine 3D capture session"}
+    else:
+        try:
+            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
+        # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
+        try:
+            detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -3517,8 +3547,10 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         raise Unsupported('This session ended. Open the running game before transferring its state.')
     ad, g = session
     kind = getattr(ad, "name", "")
-    if kind == "retroarch":
-        states, pattern = ctx.config.runtime / "states", "*.state*"
+    if kind == "retroarch":                                    # a capture session keeps its states in its own folder
+        sd = getattr(ad, "state_dir", None)
+        states = Path(sd()) if callable(sd) and getattr(ad, "states_override", None) else ctx.config.runtime / "states"
+        pattern = "*.state*"
     elif kind == "dolphin":                                    # same Dolphin release on both machines (2609): states are compatible
         exe = getattr(ad, "_exe", None)
         states = (exe().parent / "User" / "StateSaves") if exe else (ctx.config.runtime / "dolphin-user" / "StateSaves")

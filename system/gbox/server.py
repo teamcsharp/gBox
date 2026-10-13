@@ -820,6 +820,74 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(503, reason) from exc
         return job
 
+    def relay_job(inp: dict, actor: str) -> Job:
+        """Examine 3D Capture again through a capture session (gbox/scene_relay.py), as an in-server job polled like
+        scene_capture (output: glb, summary, paused=False). One relay per session at a time."""
+        from . import scene_relay
+        sid = inp["session_id"]
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == scene_relay.TOOL and existing.get('state') in ('queued', 'running')
+                        and (existing.get('input') or {}).get('session_id') == sid):
+                    return Job.model_validate(existing)
+            job = Job(tool=scene_relay.TOOL, input=inp | {"relay": True}, state=JobState.RUNNING, started=time.time(),
+                      agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def end_session(nsid):
+            with store.lock:
+                s_ = store.get("session", nsid)
+                if s_ and s_.get("state") != "ended":
+                    store.put("session", nsid, s_ | {"state": "ended", "ended": time.time(),
+                                                     "exit": {"by": actor, "via": "examine_capture_session"}})
+
+        def go():
+            sess = store.get("session", sid) or {}
+            try:
+                game = store.catalog_get(sess.get("game_id") or "") or {}
+                if not game:
+                    raise scene_relay.RelayError("This game is no longer in the library, so no capture session can "
+                                                 "start it. Your game keeps running.")
+                out = scene_relay.relay(
+                    sid, sess, game,
+                    run_job=lambda tool, i, w, wait, progress=None: _run_job(tool, i, actor, worker=w, wait=wait,
+                                                                             progress=progress),
+                    workers=workers, live_sessions=lambda: store.all("session"),
+                    label=lambda nsid, l: store.put("slabel", nsid, l | {"session_id": nsid, "ts": time.time()}),
+                    end_session=end_session, preferred=config.examine_capture_worker,
+                    frames=max(1, min(int(inp.get("frames") or 2), 4)), fovy=inp.get("fovy") or 0,
+                    aspect=inp.get("aspect") or 0, say=prog,
+                    should_stop=lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                    worker_of=lambda s: _wid(s.split("-")[0]))
+                state, err = JobState.SUCCEEDED, None
+            except scene_relay.RelayError as e:
+                out, state, err = None, JobState.FAILED, f"Unsupported: {e}"
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(),
+                                                                     "output": out, "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "examine.capture_session", sid, {"job": job.id, "state": state, "error": err,
+                        "capture_session": (out or {}).get("capture_session")})
+        try:
+            threading.Thread(target=go, daemon=True, name=f"scene-relay-{job.id}").start()
+        except Exception as exc:
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {
+                    'state': JobState.FAILED, 'finished': time.time(), 'error': 'capture session task could not start'})
+            raise HTTPException(503, 'capture session task could not start') from exc
+        return job
+
     # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
     class LessonIn(BaseModel):
         lesson: str
@@ -1552,6 +1620,9 @@ def create_app(config: Config) -> FastAPI:
             session = store.get("session", inp["session_id"])
             if not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
+            from . import scene_relay
+            if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
+                return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes"))
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
