@@ -23,26 +23,29 @@ Disc layout (FST, 1295 files):
   after the display list: NUL-terminated texture file name and "<part>-<mesh name>"
 Vertices are stored in model space (bind pose). Texture image 0 of the named .tpl is used when that file exists.
 
-WIP (djv-gc-roles, decoded on the owned disc, not wired into extract_run yet; v1 exports a static, unrigged mesh):
 .act skeleton (big-endian, absolute offsets): 0x00 u32 magic 0x007B7960, 0x04 u32 node count (BODY 42, face 11,
-  hands 13, m4 10), 0x0C u32 -> node records, 0x1C u32 -> "ACTU" name table, 0x20 u32 -> first transform.
+  hands 13, al part m4 10), 0x0C u32 -> node records, 0x1C u32 -> "ACTU" name table, 0x20 u32 -> first transform.
   Node record 0x1C bytes: u32 -> transform, u32 -> prev sibling, u32 -> next sibling, u32 -> parent, u32 -> first
   child (0 = none), u16 0xFFFF, u16 index, u32 0x01000000. Transform 0x34 bytes: u32 0x0D000000, f32 scale xyz,
   f32 quaternion xyzw, f32 translation xyz, 8 pad. local = T R S (column vectors), world = parent world @ local.
   ACTU: "ACTU", u32, u32, u32 count, u32 ?, then count u32 name offsets relative to ACTU. BODY names: body root
   tophip hip waist chest neck head backbone_eff L_arm_root L_shoulder L_arm1 L_arm2 L_hand L_arm_eff R_... ,
   L_hipbone_root L_hipbone L_hipbone_eff L_leg_root L_leg1 L_leg2 L_leg_eff L_foot_root L_foot L_foot_eff, R_...,
-  Direction. Same 42-node tree and T-pose as PS2 (pelvis y 10.56, head end 20.71, hands x +-9.87), so the PS2
-  ROLE_NODES (hip 2 chest 5 neck 6 head 7 l_clav 10..l_hand 13 r 16..19 l_thigh 25 l_shin 26 l_foot 29 r 35 36 39)
-  and joint_name() body_NN apply unchanged. Face/accessory node 1 (head_bone) = BODY head 7 world; hand node 1 =
-  BODY 13 / 19; m4 names root..head map to BODY 1..7.
+  Direction. Same 42-node tree and T-pose as PS2 on all 58 costumes (pelvis y 10.56, head end 20.71), so the PS2
+  ROLE_NODES and body_NN joint names apply unchanged. Face / accessory node 1 (head_bone) is BODY head 7 (s402a's
+  sits 0.29 units forward), hand node 1 is BODY 13 / 19, m4's root..backbone_eff + Direction are BODY 0..8 + 41,
+  and the accessory (m5) has the face's skeleton exactly.
 .skn weights: u16 n_single, u16 n_pair, u16 n_list, u8 fraction bits (10; s308a_m4 11), u8 0, u32 -> single
   table, u32 -> pair table, u32 -> list table. Single (0x40): +0x30 u32 src, u32 dst byte offset in the .gpl vertex
-  block, u16 bone, u16 n, u8 skip. Pair (0x74): +0x60 u32 src, u32 -> u8 weight pairs (sum 256), u32 dst, u16 bone a,
-  u16 bone b, u16 n, u8 skip. First vertex = (dst + skip) / 12; src + skip holds the same s16 pos+nrm as the .gpl
-  (verified byte-equal on all 255 parts). List (0x44): +0x30 u32 src, u32 -> u16 vertex indices, u32 0,
-  u32 -> u8 weights, u16 bone, u16 n (scattered extra influences). Game units = raw / 2^skn fraction bits (the
-  .gpl's own 6 gives 16x). TODO: confirm pair weight order (a, b), assemble one skin, READER_VERSION 2.
+  block, u16 bone, u16 n, u8 skip. Pair (0x74): +0x60 u32 src, u32 -> u8 weight pairs, u32 dst, u16 bone a,
+  u16 bone b, u16 n, u8 skip; the first weight byte belongs to bone a. First vertex = (dst + skip) / 12; src + skip
+  holds the same s16 pos+nrm as the .gpl (byte-equal on all 255 parts). List (0x44): +0x30 u32 src, u32 -> u16
+  vertex indices, u32 0, u32 -> u8 weights, u16 bone, u16 n: vertices outside the groups, whose list entries add up
+  to 256. Every used vertex's weights sum to 256, with at most 2 bones, on the whole disc. Game units = raw / 2^skn
+  fraction bits (the .gpl's own 6 gives 16x).
+Reader v2 (READER_VERSION) writes one skinned GLB per costume: BODY's 42 joints + the face's and hands' own nodes
+under their attach joints (73 joints), weights normalised into 4 columns, metres at the PS2 scale (1 / 11.7), and
+the 18 body roles. v1 entries (static, no roles) are re-extracted by characters' reader refresh.
 """
 import json
 import re
