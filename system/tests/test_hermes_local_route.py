@@ -1,6 +1,7 @@
 """The Spark's GPU model is Hermes's last-resort route: chosen only when every paid route is out, left at once when
 one recovers, never a paid route's fallback, and the CPU llama.cpp route stays excluded (docs/hermes-local-fallback.md)."""
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +100,8 @@ def supervisor(monkeypatch, tmp_path):
     home = tmp_path / 'hermes'
     home.mkdir()
     config_path = home / 'config.yaml'
+    (home / 'config-backups').mkdir()
+    (home / 'config-backups' / 'config.yaml.earlier').write_text('older backup')
     # The Spark's shape (2026-10-13): name, base_url, model, models, models_discovered, api_key.
     config_path.write_text(yaml.safe_dump({
         'model': {'default': 'x'}, 'cron': {'model_provider': 'nous', 'model': OPUS}, 'fallback_providers': [ROUTER],
@@ -150,7 +153,13 @@ def supervisor(monkeypatch, tmp_path):
 def test_supervisor_switches_to_local_and_back(supervisor):
     sv = supervisor
     sv.data['cooldowns'] = {'nous/' + OPUS: 9e12, 'openrouter/' + OPUS: 9e12}
+    original = sv.config_path.read_bytes()
     out = hermes_feedback.adjust_routes()
+    backups = sorted((sv.config_path.parent / 'config-backups').glob('config.yaml.before-spark-local-*'))
+    assert len(backups) == 1 and backups[0].read_bytes() == original           # the original, byte for byte
+    assert re.fullmatch(r'config\.yaml\.before-spark-local-\d{8}T\d{6}Z', backups[0].name)
+    assert backups[0].stat().st_mode & 0o777 == sv.config_path.stat().st_mode & 0o777
+    assert (sv.config_path.parent / 'config-backups' / 'config.yaml.earlier').read_text() == 'older backup'
     assert out['mode'] == 'local' and out['route'] == LOCAL
     assert sv.config['cron'] == {'model_provider': 'spark-local', 'model': 'gpt-oss:20b'}
     assert sv.config['fallback_providers'] == []
@@ -172,6 +181,7 @@ def test_supervisor_switches_to_local_and_back(supervisor):
     assert hermes_feedback.adjust_routes()['local_provider_registered'] is False   # steady: nothing re-set
     assert sv.sets == [] and json.loads(sv.path.read_text())['local_mode']['since'] == since
     assert sv.config_path.stat().st_mtime_ns == mtime
+    assert len(list((sv.config_path.parent / 'config-backups').glob('*before-spark-local*'))) == 1   # no write, no copy
     sv.data['cooldowns'] = {'nous/' + OPUS: 9e12}               # OpenRouter recovered
     out = hermes_feedback.adjust_routes()
     assert out['mode'] == 'paid' and out['route'] == ROUTER

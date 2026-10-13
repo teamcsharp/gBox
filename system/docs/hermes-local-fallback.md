@@ -69,8 +69,10 @@ The supervisor changes the route keys with `hermes config set`, the existing rou
 differ. `custom_providers` is the exception: it is never passed to `hermes config set`, because the whole list,
 including every other provider's `api_key`, would then appear on a command line. Instead the supervisor edits
 `~/.hermes/config.yaml` in-process (`hermes_local.register_provider`): it re-reads the file, changes only
-`custom_providers`, checks the YAML round trip, and atomically replaces the file with the same mode. This happens
-once, before the first switch to the local route.
+`custom_providers`, checks the YAML round trip, and atomically replaces the file with the same mode. Just before
+that write, and only when it happens, the original is copied byte for byte, with the same mode, to
+`~/.hermes/config-backups/config.yaml.before-spark-local-<UTC timestamp>`. This happens once, before the first
+switch to the local route.
 
 | Mode | Key | Value |
 |---|---|---|

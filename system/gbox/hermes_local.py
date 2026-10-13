@@ -205,6 +205,19 @@ def register_provider(config_path: Path, s=None) -> bool:
     if (yaml.safe_load(out) or {}).get('custom_providers') != merged:
         raise RuntimeError('Hermes config.yaml round trip failed; the local provider was not registered')
     mode = config_path.stat().st_mode & 0o777
+    # The original goes to config-backups/ first (with its mode: it holds provider keys), only when it is rewritten.
+    backups = config_path.parent / 'config-backups'
+    backups.mkdir(mode=0o700, exist_ok=True)
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    backup = backups / f'{config_path.name}.before-spark-local-{stamp}'
+    n = 1
+    while backup.exists():
+        n += 1
+        backup = backups / f'{config_path.name}.before-spark-local-{stamp}-{n}'
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode or 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(config_path.read_bytes())          # byte-for-byte copy of the original
+    os.chmod(backup, mode or 0o600)
     tmp = config_path.with_name(config_path.name + '.gbox-tmp')
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode or 0o600)
     try:
