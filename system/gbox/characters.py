@@ -1449,6 +1449,10 @@ DEDICATED = [
     ("sa2", lambda t, p: "sonic adventure 2" in t and p == "dreamcast",
      lambda: [{"key": k, "slug": "sonic" if k == "SONIC" else f"sa2_{slugify(n)}", "name": n, "aliases": a, "kind": kd}
               for k, n, a, kd in SA2_CHARS], _sa2_run),
+    # Sonic Adventure (DC): basic-model trees in 1ST_READ.BIN (+ Super Sonic / Tikal overlays), gbox.sa1_chars
+    ("sa1", lambda t, p: re.match(r"sonic adventure(?!\s*2)\b", t) is not None and p == "dreamcast",
+     lambda: __import__("gbox.sa1_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sa1_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("ff7", lambda t, p: re.search(r"final fantasy vii\b", t) is not None and p == "psx",
      lambda: [{"key": k, "slug": "cloud" if k == "HICLOUD" else f"ff7_{k.lower()}", "name": n, "aliases": a, "kind": "character"}
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
