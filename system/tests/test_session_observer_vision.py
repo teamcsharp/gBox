@@ -99,7 +99,7 @@ def test_plain_string_lists_are_unchanged_and_bounded():
 
 @pytest.mark.parametrize('raw, message', [
     ('no json here', 'no JSON observation'),
-    ('{"summary": "s", "actors": [', 'malformed JSON'),
+    ('{"summary": }', 'malformed JSON'),     # a cut-off reply is repaired now (#1602); a missing value is not
     ('{"actors": ["a"]}', 'no usable observation'),
     ('{"summary": "   "}', 'no usable observation'),
     ('[1, 2]', 'no usable observation'),
@@ -107,6 +107,12 @@ def test_plain_string_lists_are_unchanged_and_bounded():
 def test_unusable_replies_still_fail(raw, message):
     with pytest.raises(ValueError, match=message):
         parse_observation(raw)
+
+
+def test_reply_cut_off_mid_list_is_repaired_not_failed():
+    """#1602: a reply that stops inside the actors list keeps its summary (it used to fail as malformed JSON)."""
+    result = parse_observation('{"summary": "s", "actors": [')
+    assert result['summary'] == 's' and result['actors'] == [] and result['repaired_json'] is True
 
 
 def test_def_jam_ring_crowd_and_hud_shapes_are_kept():
