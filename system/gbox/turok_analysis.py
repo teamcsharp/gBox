@@ -82,6 +82,8 @@ def _unindexed(blob: bytes, rec_size: int | None = None):
         raise ValueError(f"unindexed set payload too short ({len(blob)}B)")
     bsize, count = struct.unpack_from(">II", blob, 0)
     data = blob[8:]
+    if count and not bsize:
+        raise ValueError(f"unindexed set of {count} zero-size records")
     if bsize * count > len(data):
         raise ValueError(
             f"unindexed set {bsize}x{count} overruns payload ({len(data)}B)")
