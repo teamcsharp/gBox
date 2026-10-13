@@ -93,10 +93,14 @@ class Cat702:
 
 
 class ZNMemory:
-    """2 MiB RAM (mirrored), 1 KiB scratchpad, BIOS, the bankedroms window, SIO0 + two CAT702s. Other I/O reads 0."""
+    """2 MiB RAM (mirrored; ram_size=0x400000 for the ZN-1's 4 MiB, which game code past the boot needs), 1 KiB
+    scratchpad, BIOS, the bankedroms window, SIO0 + two CAT702s. Other I/O reads 0."""
 
-    def __init__(self, bios: bytes, banked: bytes, cat_cpu: bytes, cat_rom: bytes):
-        self.ram = bytearray(0x200000)
+    def __init__(self, bios: bytes, banked: bytes, cat_cpu: bytes, cat_rom: bytes, ram_size: int = 0x200000):
+        if ram_size not in (0x200000, 0x400000, 0x800000):
+            raise ValueError("RAM is 2, 4 or 8 MiB")
+        self.ram = bytearray(ram_size)
+        self.ram_mask = ram_size - 1
         self.scratch = bytearray(0x400)
         self.bios = bytes(bios)
         self.banked = banked
@@ -108,7 +112,7 @@ class ZNMemory:
     def _where(self, a: int):
         p = a & 0x1FFFFFFF
         if p < 0x800000:
-            return self.ram, p & 0x1FFFFF
+            return self.ram, p & self.ram_mask
         if 0x1F800000 <= p < 0x1F800400:
             return self.scratch, p - 0x1F800000
         if 0x1FC00000 <= p < 0x1FC80000:
