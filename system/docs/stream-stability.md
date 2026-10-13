@@ -126,10 +126,12 @@ it. A swap's child launch has no parent link before this change; look for a `ses
   `intent: "hard_reset" | "reset_model"`. Without it the request gets a 422, so the exact request seen on 2026-10-13 is
   refused.
 - In the web UI, Hard reset needs two Ctrl+clicks on the same game's Reset button within 5 s. The first click only arms
-  it, and the button turns amber with a warning tooltip. The UI sends `intent: "hard_reset"`. A model reset sends
-  `intent: "reset_model"`.
-- Background agents (actors `mcp`, `hermes`, `agent`) can no longer swap the operator's live session. This blocks every
-  route into `swap_job`: `/swap`, `launch?mod=` and `@launch`. Agent-owned test sessions (tray label `owner=agent`, or
+  it, and the button turns amber with a warning tooltip. Reset, Restart and Hard reset are one server operation,
+  `POST /api/sessions/{sid}/reset` (`mode: reset | restart | hard`); a hard reset needs `intent: "hard_reset"` there
+  too, and a reset of a hot-swapped model is relaunched by the server (no client `keep_state: false` swap). A client
+  that still swaps with `keep_state: false` sends `intent: "hard_reset"` or `intent: "reset_model"`.
+- Background agents (actors `mcp`, `hermes`, `agent`) can no longer swap, reset or restart the operator's live session.
+  This blocks every route into `swap_job` and `reset_job`: `/swap`, `/reset`, `launch?mod=` and `@launch`. Agent-owned test sessions (tray label `owner=agent`, or
   launched by an `agent_use` job) are still allowed. The in-app chat agent (`gbox-agent`) acts on the operator's own
   words and is exempt.
 - An automated `launch_game` (`agent_use`, actor other than `gbox-agent`) is pinned to a worker with no operator game.

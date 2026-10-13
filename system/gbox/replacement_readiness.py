@@ -886,6 +886,12 @@ SPECS: dict[str, dict] = {
     "gbox.doa2_swap": {"skeleton": "DOA2 fighter: native model parts per body joint", "roles": "REQUIRED_ROLES",
                        "required": "REQUIRED_ROLES", "influences": 2, "tex": 256, "decimate": True,
                        "budget": "CHR/SUP bytes of the fighter's costume (decimated 0.8^k until it fits)"},
+    "gbox.soulcalibur_swap": {"skeleton": "SoulCalibur fighter: the shared 18-bone motion skeleton (+ cloth / face "
+                                            "bones)", "roles": "REQUIRED_ROLES", "required": "REQUIRED_ROLES",
+                              "influences": 4, "tex": 256, "decimate": True,
+                              "budget": "the costume's stock model bytes before its tail and its vertex / normal "
+                                        "counts; the LZ model's room in the costume entry; 2-3 256x256 YUV422 pages "
+                                        "(decimated 0.8^k until it fits)"},
     "gbox.sm64_swap": {"skeleton": "Mario, 20 joints", "joints": 20, "roles": "ORDER", "tris": "MAX_TRIS", "tex": 64,
                        "influences": 1, "decimate": True, "budget": "Mario's 0x1CD20 bytes; textures RGBA16 <= 64x32"},
     "gbox.gta_stories_models": {"skeleton": "Toni, 24 bones", "joints": 24, "roles": "LCS_ROLES", "influences": 4,

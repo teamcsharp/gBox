@@ -231,7 +231,8 @@ class LaunchIn(BaseModel):
     game: CatalogEntry
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
-    examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    mod_title: str = ""                    # the operator's name for that build (labels only: launch bar, loader)
+    examine:bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
     capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
@@ -348,6 +349,7 @@ def _close_previous_games(ctx, keep: str = ""):
 
 
 STOP_SAVE_CAP_S = 2.0          # Save & stop (only when the operator asks for it) waits at most this long for the save
+STOP_MOMENT_CAP_S = 4.0        # Stop with moment (last played): the save + upload of the moment, then the game closes anyway
 STOP_TEARDOWN_WAIT_S = 1.0     # rewind / gameplay-ring teardown awaited at most this long; the rest ends in the background
 
 
@@ -388,7 +390,25 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
     ad, _ = SESSIONS[sid]
     t0 = time.monotonic()
-    timings, saved = {}, None
+    timings, saved, moment = {}, None, None
+    if args.get('moment'):
+        # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
+        # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
+
+        def keep_moment():
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            try:
+                png = ad.get_frame()
+                ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')
+                out['frame'] = sha256(png)
+            except Exception:                        # noqa: BLE001 - a moment without a picture still reloads
+                pass
+            return out
+        done, res, err = _within(keep_moment, cap, f'stop-moment-{sid}')
+        moment = res if done and err is None else {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else
+                                                   f'saving took longer than {cap:g} s'}
+        timings['moment_s'] = round(time.monotonic() - t0, 3)
     if args.get('save'):
         cap = float(args.get('save_cap_s') or STOP_SAVE_CAP_S)
 
@@ -419,6 +439,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     out['timings'] = timings
     if saved is not None:
         out['save'] = saved
+    if moment is not None:
+        out['moment'] = moment
     return {'result': out, 'session_id': sid, 'ended': True}
 
 
@@ -1113,7 +1135,10 @@ class SessionOut(BaseModel):
 
 def _session_accept(store, out: SessionOut, actor: str):
     if out.ended and (s := store.get("session", out.session_id)) and s.get("state") != "ended":
-        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result})
+        m = out.result.get("moment") if isinstance(out.result.get("moment"), dict) else {}
+        kept = {"checkpoint": m["artifact"], "moment_ts": time.time(), **({"moment_frame": m["frame"]} if m.get("frame") else {})} \
+            if m.get("artifact") else {}                     # last played: the moment saved as the game stopped
+        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result, **kept})
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
       on_accept=_session_accept)
@@ -1138,7 +1163,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
     if inp.op == "reset":                                            # restart the emulated console (the session stays)
         ad, _ = SESSIONS[inp.session_id]
         if not callable(getattr(type(ad), "reset", None)):
-            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset: relaunch the game instead")
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset of its own (POST /api/sessions/{{sid}}/reset "
+                              "relaunches the same game and mod on this PC instead, the old copy closing only once it runs)")
         return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
@@ -2878,7 +2904,7 @@ def video_tool(inp: VideoIn, ctx: Ctx):
 
 class FileModIn(BaseModel):
     game_id: str
-    op: str = "list"                       # list | build | remove
+    op: str = "list"                       # list | build | remove | delete_build (this PC's copies + staged copies)
     name: str = ""
     # build: {"PS3_GAME/USRDIR/...": {"patch": [{"offset": "0x10", "hex": "ff"}]} | {"from": "<local file>"} | {"artifact": "<sha256>"}}
     changes: dict = {}
@@ -2891,8 +2917,22 @@ class FileModOut(BaseModel):
       side_effects=["copies the game once into the node cache", "writes mod folders (hard links + changed files)"])
 def file_mod(inp: FileModIn, ctx: Ctx):
     """File-replacement mods for folder games: build a modded copy (original untouched, unchanged files hard-linked to
-    one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>."""
+    one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>.
+    delete_build (Builds ▸ Delete): this PC's copies of a build, its staged copies included; refused while a running
+    game on this PC uses one."""
     from . import filemods
+    if inp.op == "delete_build":                       # no catalog / rom needed: the game may not be on this PC at all
+        if not inp.name:
+            raise ValueError("delete_build needs the build's name")
+        r = httpx.get(f"{ctx.server}/api/sessions?include_ended=false", headers=ctx.headers, timeout=30)
+        r.raise_for_status()
+        # (any running session of the build blocks it, wherever it runs: over-cautious beats a half-deleted copy)
+        in_use = [str(s.get(k) or "") for s in r.json() if s.get("state") == "running" and s.get("game_id") == inp.game_id
+                  for k in ("mod", "collection_mod")]
+        res = filemods.delete_build(ctx.config, inp.game_id, inp.name, [m for m in in_use if m])
+        if res["errors"]:
+            raise RuntimeError("some copies could not be deleted (open in another program?): " + "; ".join(res["errors"]))
+        return {"result": res}
     r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
     r.raise_for_status()
     g = CatalogEntry.model_validate(r.json())
@@ -3781,6 +3821,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
+                              "pickwhip",      # pickwhip: pick_name (local-LLM naming of a pick whip target)
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
                               "ninja_ripper",  # ninja_ripper: NinjaRipper launch/attach/rip on agent test PCs, .rip -> GLB
@@ -3978,7 +4019,8 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
         _validate_state_container(data, kind)
-        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"),
+                     session=inp.session_id, **details)          # last played finds the moment by session
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
         return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
     if inp.op == "import":

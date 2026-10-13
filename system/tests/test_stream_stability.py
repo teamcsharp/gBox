@@ -268,6 +268,16 @@ def test_background_agents_never_swap_the_operators_live_game(swap_app, actor):
     assert not calls and not [j for j in store.all("job") if j["tool"] == "session_swap"]
 
 
+@pytest.mark.parametrize("actor", ["mcp", "hermes", "agent"])
+def test_background_agents_never_reset_the_operators_live_game(swap_app, actor):
+    """POST /api/sessions/{sid}/reset relaunches the game like a swap: the same rule for background agents."""
+    app, store, calls, _ = swap_app
+    with client(app, actor) as c:
+        r = c.post("/api/sessions/spark-op/reset", json={"mode": "restart"})
+    assert r.status_code == 409 and "operator's live session" in r.json()["detail"]
+    assert not calls and not [j for j in store.all("job") if j["tool"] == "session_reset"]
+
+
 def test_play_with_a_mod_swaps_only_on_the_requested_pc_and_keeps_the_moment(swap_app):
     """Coordinator lead: launch?mod= with node=auto silently swapped a game running on another machine."""
     app, store, calls, _ = swap_app
