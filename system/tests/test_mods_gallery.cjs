@@ -51,6 +51,15 @@ test('pictures: in-game shots, then the build previews, then the donors (URLs ma
   assert.match(imgs[2].name, /Donor hucast/);
 });
 
+test('pictures: frames captured from sessions of the build follow the card shots (#1553)', () => {
+  const m = { ...PSO, frames: [{ sha256: 'b'.repeat(64), url: '/api/artifacts/' + 'b'.repeat(64), session_id: 'w-12345678abc', source: 'save state 2' }] };
+  const imgs = MG.imagesOf(m, u => u + '?token=t');
+  assert.deepEqual(imgs.map(i => i.kind), ['shot', 'shot', 'build', 'donor']);
+  assert.equal(imgs[1].src, '/api/artifacts/' + 'b'.repeat(64) + '?token=t');
+  assert.match(imgs[1].name, /save state 2 \(session w-123456\)/);
+  assert.deepEqual(MG.imagesOf({ ...PSO, frames: undefined }).map(i => i.kind), ['shot', 'build', 'donor']);
+});
+
 test('card: carousel, escaped title, badges, donor -> slot rows with the per-slot status, sizes and buttons', () => {
   const html = MG.cardHTML(PSO, { url: u => u + '?token=t', now: 2060 });
   assert.match(html, /data-key="pso\/cast_pso_ult"/);
@@ -242,7 +251,97 @@ test('Screenshot after launch: a frame of the running mod is attached to the car
     await h.fire('click', target({ key: VR.key, mg: 'shot' }));
     const order = env.calls.map(c => c[0]);
     assert.ok(order.indexOf('/api/jobs') >= 0 && order.indexOf('/api/jobs') < order.findIndex(p => p.includes('/thumb')));
-    assert.deepEqual(env.calls.find(c => c[0] === '/api/jobs')[1].input, { game_id: 'mgsvr', mod: 'mgsvr_hucast', node: 'MYPC' });
+    // nothing of the game runs: launched with swap off, so a game started meanwhile is never swapped silently
+    assert.deepEqual(env.calls.find(c => c[0] === '/api/jobs')[1].input, { game_id: 'mgsvr', mod: 'mgsvr_hucast', node: 'MYPC', swap: false });
+  } finally { ctl.stop(); }
+});
+
+// 2026-10-13: Screenshot on "Sonic as Snake" while "Sonic full cast" (same Twin Snakes disc) ran queued a session_swap
+// of the operator's game. Another build running = the card asks; nothing changes until a second, explicit click.
+const TS_SNAKE = { ...VR, key: 'ts/tts_sonic_as_snake', name: 'tts_sonic_as_snake', game_id: 'ts', title: 'MGS: The Twin Snakes',
+  mod_title: 'Sonic as Snake', card_id: 'c-snake', shots: [], state_slot: null, tickets: [], last_launch: null };
+const TS_CAST = { ...TS_SNAKE, key: 'ts/tts_sonic_full_cast', name: 'tts_sonic_full_cast', mod_title: 'Sonic full cast', card_id: 'c-cast' };
+function tsEnv(sessions, extra = {}) {
+  const env = fakeEnv([TS_SNAKE, TS_CAST], { sessions, ...extra });
+  const base = env.api;
+  env.api = async (p, b) => {
+    if (/^\/api\/sessions\/[^/?]+\/swap$/.test(p)) { env.calls.push([p, b]); return { id: 'swapjob', state: 'running' }; }
+    if (p === '/api/jobs/swapjob') { env.calls.push([p, b]); env.setSessions([{ session_id: 'w1-new', state: 'running', game_id: 'ts', mod: 'tts_sonic_as_snake', started: 20 }]);
+      return { id: 'swapjob', state: 'succeeded', output: { session_id: 'w1-new' } }; }
+    return base(p, b);
+  };
+  return env;
+}
+const tsRunning = [{ session_id: 'w1-op', state: 'running', game_id: 'ts', mod: 'tts_sonic_full_cast', title: 'MGS: The Twin Snakes', started: 10 }];
+const shotCalls = env => env.calls.filter(c => /\/thumb|\/swap$|^\/api\/jobs$/.test(c[0]));
+
+test('Screenshot with another build of the game running: no launch, no swap; the card offers the two choices', async () => {
+  const h = fakeHost(), env = tsEnv(tsRunning);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    const t = target({ key: TS_SNAKE.key, mg: 'shot' });
+    await h.fire('click', t);
+    assert.deepEqual(shotCalls(env), [], 'nothing launched, swapped or captured on the first click');
+    assert.match(t.msg.textContent, /Another build of this game is running: choose below/);
+    const card = h.grid().slice(h.grid().indexOf('data-key="ts/tts_sonic_as_snake"'));
+    assert.match(card, /is running <b>Sonic full cast<\/b>, not this build\. Nothing was changed\./);
+    assert.match(card, /data-mg="shot-running"[^>]*>Capture from the running build instead \(adds to that build's card\)</);
+    assert.match(card, /data-mg="shot-switch"[^>]*>Switch to this build</);
+    assert.equal(ctl.st.choice.get(TS_SNAKE.key).session_id, 'w1-op');
+    // second click: the frame goes to the running build's card, the running game is untouched
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot-running' }));
+    assert.deepEqual(shotCalls(env).map(c => c[0]), ['/api/mods/c-cast/thumb?append=true&session_id=w1-op']);
+    assert.ok(!ctl.st.choice.has(TS_SNAKE.key), 'the choice closes once done');
+    assert.match(env.toasts.join(), /Sonic full cast: in-game picture added/);
+  } finally { ctl.stop(); }
+});
+
+test('Screenshot choice "Switch to this build": a state-keeping swap of that session, then a frame of this build', async () => {
+  const h = fakeHost(), env = tsEnv(tsRunning);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot-switch' }));
+    const calls = shotCalls(env);
+    assert.deepEqual(calls.map(c => c[0]), ['/api/sessions/w1-op/swap', '/api/mods/c-snake/thumb?append=true&session_id=w1-new']);
+    assert.deepEqual(calls[0][1], { mod: 'tts_sonic_as_snake', keep_state: true });
+  } finally { ctl.stop(); }
+});
+
+test('Screenshot choice: Cancel changes nothing; a choice made after the game changed is offered again', async () => {
+  const h = fakeHost(), env = tsEnv(tsRunning);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot-cancel' }));
+    assert.ok(!ctl.st.choice.has(TS_SNAKE.key) && !h.grid().includes('shot-switch'));
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    env.setSessions([{ ...tsRunning[0], session_id: 'w1-other', started: 30 }]);       // the operator relaunched meanwhile
+    const t = target({ key: TS_SNAKE.key, mg: 'shot-switch' });
+    await h.fire('click', t);
+    assert.deepEqual(shotCalls(env), [], 'a stale choice never swaps');
+    assert.match(t.msg.textContent, /running game changed: choose again/);
+    assert.equal(ctl.st.choice.get(TS_SNAKE.key).session_id, 'w1-other');
+  } finally { ctl.stop(); }
+});
+
+test('Screenshot of the build that runs (staged copy, collection_mod or hot-swapped live model) = a frame now', async () => {
+  for (const s of [{ mod: 'tts_sonic_as_snake~3f9a01' }, { mod: 'tts_sonic_as_snake~3f9a01', collection_mod: 'tts_sonic_as_snake' },
+                   { mod: 'tts_sonic_full_cast', live_mod: 'tts_sonic_as_snake' }]) {
+    const h = fakeHost(), env = tsEnv([{ session_id: 'w1-op', state: 'running', game_id: 'ts', started: 10, ...s }]);
+    const ctl = MG.mount(h.host, env); await ctl.ready;
+    try {
+      await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+      assert.deepEqual(shotCalls(env).map(c => c[0]), ['/api/mods/c-snake/thumb?append=true&session_id=w1-op'], JSON.stringify(s));
+    } finally { ctl.stop(); }
+  }
+  // the original game running: no card to capture into, so that choice is shown disabled; Switch stays offered
+  const h = fakeHost(), env = tsEnv([{ session_id: 'w1-op', state: 'running', game_id: 'ts', mod: '', started: 10 }]);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    assert.match(h.grid(), /data-mg="shot-running" disabled[^>]*>Capture from the running build instead \(no card for the original game\)/);
+    assert.match(h.grid(), /data-mg="shot-switch"/);
   } finally { ctl.stop(); }
 });
 
@@ -318,6 +417,148 @@ test('while the server indexes: "indexing…" in the summary and on unsized card
   } finally { ctl.stop(); }
 });
 
+// ------------------------------------------------------------------ #1656: rename on the card, favorites
+
+test('favorites (★) list first, the ★ Favorites filter and its count', () => {
+  const all = [VR, { ...PSO, favorite: true }, CF];
+  assert.deepEqual(MG.filterMods(all).map(m => m.name), ['cast_pso_ult', 'cf_hucast_taffy', 'mgsvr_hucast'], 'favorite first, then newest');
+  assert.deepEqual(MG.filterMods(all, { fav: true }).map(m => m.name), ['cast_pso_ult']);
+  assert.equal(MG.facets(all).favorites, 1);
+  const bar = MG.toolbarHTML({ q: '', game: '', writer: '', node: '', fav: true }, MG.facets(all));
+  assert.match(bar, /<input type="checkbox" data-mg-f="fav" checked> ★ Favorites \(1\)/);
+  assert.equal(MG.buildPath({ game_id: 'g 1', name: 'a/b' }), '/api/builds/g%201/a%2Fb');
+});
+
+test('card: the title renames (click or ✎), ☆/★, "was" line, ⋯ options with Rename…', () => {
+  const html = MG.cardHTML(PSO, { now: 2060 });
+  assert.match(html, /<b class="mg-title" data-mg="rename" role="button" tabindex="0" title="Click to rename · folder cast_pso_ult">PSO: cast as &#60;Wrestlers&#62;<\/b>/);
+  assert.match(html, /<button class="mg-ico" type="button" data-mg="rename" title="Rename this build \(the folder keeps its name\)" aria-label="Rename">✎<\/button>/);
+  assert.match(html, /data-mg="fav" aria-pressed="false"[^>]*>☆</);
+  assert.match(html, /data-mg="menu" aria-haspopup="menu" aria-expanded="false"/);
+  assert.ok(!html.includes('mg-menu"') && !html.includes('mg-was'));
+  const named = MG.cardHTML({ ...PSO, favorite: true, display_name: 'Booma Brawl', mod_title: 'Booma Brawl', original_title: 'PSO: cast as <Wrestlers>' },
+                            { menu: true, note: 'Renamed' });
+  assert.match(named, /class="mg-card mg-fav"/);
+  assert.match(named, /data-mg="fav" aria-pressed="true"[^>]*>★</);
+  assert.match(named, /<div class="mg-was mut">was “PSO: cast as &#60;Wrestlers&#62;”<\/div>/);
+  assert.match(named, /<div class="mg-menu" role="menu" data-mg-menu="pso\/cast_pso_ult"><button[^>]*data-mg="rename"[^>]*>✎ Rename…<\/button>/);
+  assert.match(named, /data-mg="fav">☆ Remove from favorites</);
+  assert.match(named, /data-mg="unname">↺ Restore “PSO: cast as &#60;Wrestlers&#62;”</);
+  assert.match(named, /data-mg="play">▶ Play</);
+  assert.match(named, /<span class="mg-msg mut">Renamed<\/span>/);
+  const field = MG.cardHTML(PSO, { renaming: true });
+  assert.match(field, /<input class="mg-rename" data-mg-rename="pso\/cast_pso_ult" value="PSO: cast as &#60;Wrestlers&#62;" maxlength="120" aria-label="Build name"/);
+  assert.match(field, /placeholder="cast_pso_ult"/, 'empty restores the writer title (here: no original_title, the folder)');
+  assert.match(field, / data-nomic>/, 'the web shell\'s dictation wrapper would move (blur, so close) the field');
+  assert.ok(!field.includes('class="mg-title"'));
+});
+
+function buildsApi(env, state = {}) {
+  const base = env.api;
+  env.sent = [];
+  env.api = async (p, body, method) => {
+    if (p.startsWith('/api/builds/')) {
+      env.sent.push([method, p, body]);
+      if (state.fail) throw new Error('409 busy');
+      if (p.endsWith('/favorite')) return { key: 'x', favorite: body.favorite };
+      return { key: 'x', display_name: body.display_name, label: body.display_name || state.original || 'Original' };
+    }
+    return base(p, body);
+  };
+  return env;
+}
+const renameField = (key, value) => ({ closest: s => s === '[data-mg-rename]' ? { dataset: { mgRename: key }, value } : null });
+const key = (k, t) => ({ key: k, target: t, preventDefault() {}, stopPropagation() {} });
+
+test('rename on the card: a click on the title opens the field, Enter saves (PATCH), Esc cancels, empty restores', async () => {
+  const h = fakeHost(), env = buildsApi(fakeEnv([PSO, VR]), { original: 'PSO: cast as <Wrestlers>' });
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: PSO.key, mg: 'rename' }));
+    assert.equal(ctl.st.renaming, PSO.key);
+    assert.match(h.grid(), /<input class="mg-rename" data-mg-rename="pso\/cast_pso_ult"/);
+    // a poll while typing never redraws under the field
+    const before = h.grid(); ctl.st.sig = ''; await ctl.load(0); assert.equal(h.grid(), before);
+    // Esc: nothing sent, the title is back
+    ctl.onKey(key('Escape', renameField(PSO.key, 'nope')));
+    assert.equal(ctl.st.renaming, null); assert.match(h.grid(), /class="mg-title"/); assert.equal(env.sent.length, 0);
+    // Enter: PATCH {display_name}, the card shows the new name and says the folder stays
+    await h.fire('click', target({ key: PSO.key, mg: 'rename' }));
+    ctl.onKey(key('Enter', renameField(PSO.key, '  Booma Brawl ')));
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(env.sent[0], ['PATCH', '/api/builds/pso/cast_pso_ult', { display_name: 'Booma Brawl' }]);
+    assert.match(h.grid(), /data-mg="rename" role="button"[^>]*>Booma Brawl<\/b>/);
+    assert.match(h.grid(), /Renamed \(the folder stays cast_pso_ult\)/);
+    assert.deepEqual(env.toasts.slice(-1), ['Renamed: Booma Brawl']);
+    // the same name again: nothing sent
+    await h.fire('click', target({ key: PSO.key, mg: 'rename' }));
+    ctl.onKey(key('Enter', renameField(PSO.key, 'Booma Brawl')));
+    assert.equal(env.sent.length, 1);
+    // empty: "" restores the writer's title
+    await h.fire('click', target({ key: PSO.key, mg: 'rename' }));
+    await ctl.rename(PSO.key, '   ');
+    assert.deepEqual(env.sent[1], ['PATCH', '/api/builds/pso/cast_pso_ult', { display_name: '' }]);
+    assert.match(h.grid(), /Original name restored: PSO: cast as &#60;Wrestlers&#62;/);
+    // leaving the field keeps what was typed (focusout), the title (a button) renames on Enter too
+    ctl.onKey(key('Enter', { closest: s => s === '.mg-title' ? {} : s === '.mg-card' ? { dataset: { key: VR.key } } : null }));
+    assert.equal(ctl.st.renaming, VR.key);
+    ctl.onFocusOut({ target: renameField(VR.key, 'Snake in a suit') });
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(env.sent[2], ['PATCH', '/api/builds/mgsvr/mgsvr_hucast', { display_name: 'Snake in a suit' }]);
+  } finally { ctl.stop(); }
+});
+
+test('a failed rename says so on the card and keeps the old name', async () => {
+  const h = fakeHost(), env = buildsApi(fakeEnv([PSO]), { fail: true });
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await ctl.rename(PSO.key, 'X');
+    assert.match(h.grid(), /⚠ rename failed: 409 busy/);
+    assert.match(h.grid(), />PSO: cast as &#60;Wrestlers&#62;<\/b>/);
+  } finally { ctl.stop(); }
+});
+
+test('☆/★ toggles a favorite (PUT), the card moves first, the filter shows only favorites; right-click opens the options', async () => {
+  const h = fakeHost(), env = buildsApi(fakeEnv([PSO, VR, CF]));
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    assert.ok(h.grid().indexOf('cf3/') < h.grid().indexOf('mgsvr/'), 'newest first while nothing is starred');
+    await h.fire('click', target({ key: VR.key, mg: 'fav' }));
+    assert.deepEqual(env.sent[0], ['PUT', '/api/builds/mgsvr/mgsvr_hucast/favorite', { favorite: true }]);
+    assert.ok(h.grid().indexOf('mgsvr/') < h.grid().indexOf('cf3/'), 'the favorite moves first');
+    assert.match(h.grid(), /class="mg-card mg-fav" data-key="mgsvr\/mgsvr_hucast"/);
+    assert.match(h.host.innerHTML, /★ Favorites \(1\)/);
+    ctl.onInput({ target: { dataset: { mgF: 'fav' }, type: 'checkbox', checked: true } });
+    assert.ok(h.grid().includes('mgsvr/') && !h.grid().includes('pso/') && !h.grid().includes('cf3/'));
+    ctl.onInput({ target: { dataset: { mgF: 'fav' }, type: 'checkbox', checked: false } });
+    // right-click a card: its options menu; Rename… from there opens the field; a click elsewhere closes the menu
+    ctl.onContext({ target: { closest: s => s === '.mg-card' ? { dataset: { key: PSO.key } } : null }, preventDefault() {}, stopPropagation() {} });
+    assert.equal(ctl.st.menu, PSO.key); assert.match(h.grid(), /data-mg-menu="pso\/cast_pso_ult"/);
+    await h.fire('click', target({ key: CF.key }));
+    assert.equal(ctl.st.menu, null);
+    await h.fire('click', target({ key: PSO.key, mg: 'menu' }));
+    assert.equal(ctl.st.menu, PSO.key);
+    await h.fire('click', target({ key: PSO.key, mg: 'rename' }));
+    assert.equal(ctl.st.menu, null); assert.equal(ctl.st.renaming, PSO.key);
+    ctl.onKey(key('Escape', renameField(PSO.key, '')));
+    // ★ un-star from the menu
+    await h.fire('click', target({ key: VR.key, mg: 'fav' }));
+    assert.deepEqual(env.sent.slice(-1)[0], ['PUT', '/api/builds/mgsvr/mgsvr_hucast/favorite', { favorite: false }]);
+    assert.ok(h.grid().indexOf('cf3/') < h.grid().indexOf('mgsvr/'));
+  } finally { ctl.stop(); }
+});
+
+test('desktop: the Mods view passes the method (PATCH / PUT) through its IPC api; the main process honours it', () => {
+  const desktop = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
+  const preload = fs.readFileSync(path.join(__dirname, '../clients/desktop/preload.js'), 'utf8');
+  assert.match(desktop, /const api = async \(path, body, method\) => \{ const r = await gbox\.api\(path, body, method\);[^\n]*\r?\n\s*MODSG\.ctl = GBoxModsGallery\.mount/);
+  assert.match(preload, /api: \(path, body, method\) => ipcRenderer\.invoke\("api", path, body, method\)/);
+  assert.match(main, /ipcMain\.handle\("api", async \(_e, p, body, method\) =>/);
+  assert.match(main, /async function api\(p, body, method\)/);
+  for (const f of [main, preload]) assert.ok(!/[^\r]\n/.test(f), 'CRLF line endings kept');
+});
+
 test('both clients have a Mods view wired to the shared gallery', () => {
   const desktop = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   const web = fs.readFileSync(path.join(__dirname, '../clients/web/index.html'), 'utf8');
@@ -328,7 +569,7 @@ test('both clients have a Mods view wired to the shared gallery', () => {
   assert.match(desktop, /if \(b\.dataset\.s === "mods"\) modsGalleryOpen\(\);/);
   assert.match(desktop, /GBoxModsGallery\.mount\(\$\("#modsgallery"\), \{ api, poll: GBoxLivePoll/);
   assert.match(desktop, /openImages: \(list, i, at\) => texPopOpen\(list, i, at\)/);
-  assert.match(desktop, /return modPlay\(card, moment && card\.state_slot != null \? "moment" : "play"\)/);
+  assert.match(desktop, /return modPlay\(m\.mod_title \? \{ \.\.\.card, title: m\.mod_title \} : card, moment && card\.state_slot != null \? "moment" : "play"\)/);
   assert.match(web, /const tabs = \{ Library: library, Mods: modsView,/);
   assert.match(web, /<script src="\/live-poll\.js"><\/script>\r?\n<script src="\/viz\/mods-gallery\.js"><\/script>/);
   assert.match(web, /openImages: \(list, i\) => lbOpen\(null, list, i\)/);

@@ -60,6 +60,17 @@ def _unrle(data: bytes, need: int, pos: int = 0x80) -> bytes:
     return bytes(out[:need])
 
 
+def header(data: bytes) -> dict:
+    """The MGS fields of any PCC header without decoding pixels (8-bit stage textures included): VRAM / CLUT places
+    and colour count (a 256-colour palette covers 256 CLUT entries of its row)."""
+    if len(data) < 0x80 or data[0] != 0x0A:
+        raise ValueError("not an MGS PCC/PCX texture")
+    magic, flags, vx, vy, cx, cy, ncol = struct.unpack_from("<7H", data, 0x4A)
+    if magic != MAGIC:
+        return {"vram": (0, 0), "clut": (0, 0), "colors": 16, "bpp": data[3], "planes": data[0x41]}
+    return {"vram": (vx, vy), "clut": (cx, cy), "colors": ncol or 16, "bpp": data[3], "planes": data[0x41]}
+
+
 def loads(data: bytes) -> Pcc:
     if len(data) < 0x80 or data[0] != 0x0A or data[2] != 1:
         raise ValueError("not an MGS PCC/PCX texture")
