@@ -1,429 +1,469 @@
-"""decomp.me / IDA Pro / N64Recomp integrations: three op-based native gBox tools.
+"""decomp.me / IDA Pro / N64Recomp as gBox tools (#90). Builds on the Hermes draft (PR #154), corrected:
 
-- `decompme`: REST client for the decomp.me API. Read ops (scratch fetch, search,
-  compiler list) work with or without a token; the API serves empty bodies for
-  token-gated routes, and mutations (create/claim/update/fork/compile) require a
-  GitHub OAuth token via config `decompme_token` or the DECOMPME_TOKEN env var.
-  Every mutation publishes source publicly, so the tool declares it as a side effect.
-- `ida_pro`: locate the operator's IDA Pro, run headless auto-analysis exports
-  (functions/strings, same shape as analyze_binary), and start/stop the
-  ida-pro-mcp plugin (mrexodia/ida-pro-mcp) so REA's IDA provider can drive the
-  same database through `rea_env.REA_IDA_MCP_CONFIG`.
-- `n64recomp`: toolchain detection, a pinned shallow source build of
-  Mr-Wiseguy/N64Recomp into this node's runtime, and ROM -> Rust mod project
-  generation through the upstream recompiler. The RT64 frontend stays a manual
-  step on Windows (VS + Vulkan SDK); the backend crate builds anywhere cargo works.
+- `decomp_me`: decomp.me's REST API (https://decomp.me/api; api.decomp.dev is decomp.dev's progress site and answers
+  every path with an empty 200). Opt-in: nothing touches the network until `decomp_me_enabled = true` in gbox.toml, and
+  every op defaults to dry_run=true, returning the exact request it would send. Submitting creates a PUBLIC scratch; the
+  result keeps the claim_token so the operator can claim it on the site. decomp.me sits behind a Cloudflare challenge
+  that can refuse scripted clients (HTTP 403 HTML); the tool says so instead of returning the challenge page.
+- `ida`: IDA Pro headless (idat64 / idat) with an IDAPython export script that writes the same analysis.json shape as
+  analyze_binary's Ghidra ExportAnalysis.java ({program, functions[{name, entry, size, source}], strings[{addr, value}]}),
+  so re_lab.summarize_analysis, re_study and n64recomp take either. The binary is copied into a work folder and the
+  database is written there (-o), so IDA never writes next to the game file.
+- `n64recomp`: drives an installed N64Recomp (github.com/N64Recomp/N64Recomp, a C++ CMake build; gBox never builds or
+  downloads it) on an owned ROM plus gBox's N64 analysis (the analysis.json of re_study's N64 boot ELF): a work folder
+  with a normalized .z64 COPY of the ROM, a symbol TOML generated from the analysis, an N64Recomp config, and the
+  recompiler's C output. The ROM is only read (its hash is checked before and after).
 
-None of these tools touch the live game library or an operator PC unless a job is
-explicitly dispatched there. All state lives under cfg.runtime and the job artifacts.
+None of these tools change a game file, the operator's IDA settings or a running session.
 """
+from __future__ import annotations
+
+import hashlib
 import json
 import os
+import re
 import shutil
-import socket
+import struct
 import subprocess
-import tempfile
+import sys
 import time
 from pathlib import Path
 
-import httpx
 from pydantic import BaseModel
 
-from .config import HOST_OS
 from .models import Permission as P
-from .registry import ToolUnavailable, tool
+from .registry import ToolUnavailable, Unsupported, tool
 
-ROOT = Path(__file__).resolve().parent.parent
-
-N64RECOMP_REPO = "https://github.com/Mr-Wiseguy/N64Recomp"
-IDA_MCP_PORT = 13337
-
-# Headless function/string census for `ida_pro analyze`, run by IDA as
-#   idat64 -A -B -S"gbox_export.idc <out.json>" <binary>
-# Same JSON shape as adapters/ghidra/ExportAnalysis.java so downstream gBox
-# consumers treat both headless analyzers interchangeably.
-IDA_EXPORT_IDC = r'''#include <idc.idc>
-
-static esc(s) {
-    auto out, i, c;
-    out = "";
-    for (i = 0; i < strlen(s); i = i + 1) {
-        c = substr(s, i, i + 1);
-        if (c == "\"") out = out + "\\\"";
-        else if (c == "\\") out = out + "\\\\";
-        else if (c == "\n") out = out + "\\n";
-        else if (c == "\r") out = out + "\\r";
-        else if (c == "\t") out = out + "\\t";
-        else out = out + c;
-    }
-    return out;
-}
-
-static main() {
-    auto out, f, ea, end, name, seg, seg_end, istr;
-    out = fopen(ARGV[1], "wb");
-    if (out == 0) {
-        warning("gbox_export: cannot open output file");
-        return;
-    }
-    fputs("{\"functions\":[", out);
-    f = 0;
-    ea = get_next_func(0);
-    while (ea != BADADDR) {
-        name = get_func_name(ea);
-        end = get_func_attr(ea, FUNCATTR_END);
-        if (f == 1) fputs(",", out);
-        fputs("{\"name\":\"", out);
-        fputs(esc(name), out);
-        fputs("\",\"start\":", out);
-        fputs(ltoa(ea, 10), out);
-        fputs(",\"end\":", out);
-        fputs(ltoa(end, 10), out);
-        fputs("}", out);
-        f = 1;
-        ea = get_next_func(ea);
-    }
-    fputs("],\"strings\":[", out);
-    f = 0;
-    seg = get_first_seg();
-    while (seg != BADADDR) {
-        ea = get_seg_start(seg);
-        seg_end = get_seg_end(seg);
-        while (ea != BADADDR && ea < seg_end) {
-            if (GetStringType(ea) >= 0) {
-                istr = GetString(ea, -1, ASCSTR_C);
-                if (strlen(istr) > 0) {
-                    if (f == 1) fputs(",", out);
-                    fputs("{\"addr\":", out);
-                    fputs(ltoa(ea, 10), out);
-                    fputs(",\"value\":\"", out);
-                    fputs(esc(istr), out);
-                    fputs("\"}", out);
-                    f = 1;
-                }
-            }
-            ea = next_head(ea, seg_end);
-        }
-        seg = get_next_seg(seg);
-    }
-    fputs("],\"program\":{\"name\":\"", out);
-    fputs(esc(get_root_filename()), out);
-    fputs("\",\"processor\":\"", out);
-    fputs(esc(inf_get_procname()), out);
-    fputs("\",\"min_ea\":", out);
-    fputs(ltoa(get_min_ea(), 10), out);
-    fputs(",\"max_ea\":", out);
-    fputs(ltoa(get_max_ea(), 10), out);
-    fputs("}}", out);
-    fclose(out);
-}
-'''
+NOWINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-# --- decomp.me ------------------------------------------------------------------------------
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-def _decompme_token(cfg) -> str | None:
-    return os.environ.get("DECOMPME_TOKEN") or getattr(cfg, "decompme_token", None)
+
+def _safe_name(s: str, default: str = "job") -> str:
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "_", s or "").strip("._")
+    return s[:64] or default
 
 
-def _dm_request(ctx, method: str, path: str, params: dict | None = None,
-                body: dict | None = None, token: str | None = None):
-    """One decomp.me API round-trip with honest token-gating errors."""
-    base = getattr(ctx.config, "decompme_base_url", "https://api.decomp.dev").rstrip("/")
-    url = f"{base}/{path.lstrip('/')}"
-    headers = {"accept": "application/json"}
-    if token:
-        headers["authorization"] = f"Bearer {token}"
-    try:
-        response = httpx.request(method, url, params=params, json=body, headers=headers, timeout=120)
-    except httpx.HTTPError as exc:
-        raise ToolUnavailable(f"decomp.me unreachable: {exc}") from exc
-    if response.status_code >= 400:
-        raise RuntimeError(f"decomp.me {method} {path} -> HTTP {response.status_code}: {(response.text or '')[:400]}")
-    if not (response.content or b"").strip():
-        if not token:
-            raise RuntimeError(
-                "decomp.me returned an empty response; this endpoint requires a token. "
-                "Set decompme_token in gbox.toml (local overlay) or the DECOMPME_TOKEN env var.")
-        raise RuntimeError(f"decomp.me returned an empty response for {method} {path}")
-    try:
-        return json.loads(response.content)
-    except ValueError:
-        return {"_raw": response.text[:4000], "status": response.status_code}
-
+# ============================================================================================ decomp.me
 
 class DecompMeIn(BaseModel):
-    op: str  # scratch | search | compilers | create | claim | update | fork | compile
-    slug: str = ""
-    params: dict = {}
-    payload: dict = {}
+    op: str = "status"          # status | compilers | platforms | presets | fetch | list | submit | compile
+    dry_run: bool = True        # true: return the request without sending it (always allowed, no network)
+    slug: str = ""              # fetch / compile: the scratch slug (decomp.me/scratch/<slug>)
+    params: dict = {}           # list: query filters, e.g. {"platform": "n64", "search": "func_80001234", "page_size": 20}
+    platform: str = ""          # submit: n64 | ps1 | ps2 | gc_wii | ...
+    compiler: str = ""          # submit / compile: e.g. ido7.1, gcc2.8.1pm, mwcc_247_92
+    compiler_flags: str = ""
+    preset: int | None = None   # submit: a decomp.me preset id (sets compiler + flags for a known project)
+    diff_label: str = ""        # submit: the function symbol to diff (usually the function name)
+    target_asm: str = ""        # submit: the function's assembly (GNU as syntax, with a glabel)
+    context: str = ""           # submit / compile: C context (structs, prototypes)
+    source_code: str = ""       # submit / compile: the candidate C
+    name: str = ""              # submit: scratch name
 
 
 class DecompMeOut(BaseModel):
     op: str
-    status: str
-    data: dict
-    token_used: bool
+    dry_run: bool
+    request: dict = {}
+    status: int | None = None
+    data: dict | list | None = None
+    public: bool = False        # true when the op published something on decomp.me
 
 
-@tool("decompme", "1.0", DecompMeIn, DecompMeOut, capabilities=["reverse-engineering", "decompilation", "network"],
-      platforms=["windows", "linux", "darwin"], permissions=[P.READ, P.EXECUTE, P.NETWORK],
-      side_effects=["create/claim/update/fork/compile publish decompiled source publicly on decomp.me"],
-      timeout_s=600)
-def decompme(inp: DecompMeIn, ctx):
-    """decomp.me API: fetch/search scratches, list compilers; create/claim/update/fork/compile a scratch with a token.
+def _dm_base(cfg) -> str:
+    return (getattr(cfg, "decomp_me_url", None) or "https://decomp.me/api").rstrip("/")
 
-    Read ops: op=scratch (GET /scratch/{slug}), op=search (GET /scratch with params
-    like platform=n64, preset=zelda64, compiler=ido-7.1), op=compilers.
-    Write ops (token required, source becomes public): create (payload: platform,
-    compiler, name, target_func, source_code, context), claim, update (PATCH payload),
-    fork, compile (payload: compiler, compiler_flags, source_code, context).
-    """
-    token = _decompme_token(ctx.config)
+
+def decomp_me_request(cfg, inp: DecompMeIn) -> dict:
+    """The HTTP request an op maps to (method, url, params, json). Validates required fields; never sends anything."""
+    base, op = _dm_base(cfg), inp.op.lower()
+    if op == "compilers":
+        return {"method": "GET", "url": f"{base}/compiler"}
+    if op == "platforms":
+        return {"method": "GET", "url": f"{base}/platform"}
+    if op == "presets":
+        return {"method": "GET", "url": f"{base}/preset", "params": inp.params or {}}
+    if op == "fetch":
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", inp.slug or ""):
+            raise ValueError("fetch needs slug = the scratch id from decomp.me/scratch/<slug>")
+        return {"method": "GET", "url": f"{base}/scratch/{inp.slug}"}
+    if op == "list":
+        return {"method": "GET", "url": f"{base}/scratch", "params": {"page_size": 20, **(inp.params or {})}}
+    if op == "submit":
+        missing = [k for k in ("target_asm",) if not getattr(inp, k).strip()]
+        if not inp.preset and not (inp.platform and inp.compiler):
+            missing.append("platform+compiler (or preset)")
+        if missing:
+            raise ValueError(f"submit needs {', '.join(missing)}")
+        body = {"target_asm": inp.target_asm, "context": inp.context, "source_code": inp.source_code,
+                "compiler_flags": inp.compiler_flags, "diff_label": inp.diff_label, "name": inp.name or inp.diff_label}
+        if inp.preset:
+            body["preset"] = inp.preset
+        if inp.platform:
+            body["platform"] = inp.platform
+        if inp.compiler:
+            body["compiler"] = inp.compiler
+        return {"method": "POST", "url": f"{base}/scratch", "json": body}
+    if op == "compile":
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", inp.slug or ""):
+            raise ValueError("compile needs slug")
+        body = {k: v for k, v in (("compiler", inp.compiler), ("compiler_flags", inp.compiler_flags),
+                                  ("source_code", inp.source_code), ("context", inp.context)) if v}
+        return {"method": "POST", "url": f"{base}/scratch/{inp.slug}/compile", "json": body}
+    raise ValueError("op: status | compilers | platforms | presets | fetch | list | submit | compile")
+
+
+def _dm_send(req: dict):
+    import httpx
+    try:
+        r = httpx.request(req["method"], req["url"], params=req.get("params"), json=req.get("json"), timeout=60,
+                          headers={"accept": "application/json", "user-agent": "gBox decomp_me tool"})
+    except httpx.HTTPError as e:
+        raise ToolUnavailable(f"decomp.me unreachable: {e}") from e
+    ctype = r.headers.get("content-type", "")
+    if r.status_code in (403, 503) and "text/html" in ctype:
+        raise ToolUnavailable(f"decomp.me's Cloudflare challenge refused this client (HTTP {r.status_code}); open the "
+                              "request in a browser instead (dry_run=true shows it)")
+    if r.status_code >= 400:
+        raise RuntimeError(f"decomp.me {req['method']} {req['url']} -> HTTP {r.status_code}: {r.text[:400]}")
+    if "json" not in ctype:
+        raise RuntimeError(f"decomp.me answered {ctype or 'no content type'} instead of JSON ({len(r.content)} bytes)")
+    return r.status_code, r.json()
+
+
+@tool("decomp_me", "1.0", DecompMeIn, DecompMeOut, capabilities=["reverse-engineering", "decompilation", "network"],
+      platforms=["windows", "linux", "darwin"], permissions=[P.READ, P.NETWORK], timeout_s=180,
+      side_effects=["op=submit (dry_run=false) publishes the assembly, context and source as a public decomp.me scratch"])
+def decomp_me(inp: DecompMeIn, ctx):
+    """decomp.me (matching decompilation): op=status | compilers | platforms | presets | fetch (slug) | list (params) |
+    submit (platform+compiler or preset, target_asm, diff_label, context, source_code: creates a PUBLIC scratch) |
+    compile (slug, source_code). dry_run=true (default) returns the request without sending it; real calls need
+    decomp_me_enabled = true in gbox.toml (opt-in)."""
     op = inp.op.lower()
-    mutating = op in ("create", "claim", "update", "fork", "compile")
-    if mutating and not token:
-        raise RuntimeError(
-            f"decomp.me op {op} publishes code publicly and needs a token: set decompme_token or DECOMPME_TOKEN.")
-    ctx.progress(5, f"decomp.me {op} {'with token' if token else 'anonymous'}")
-    if op == "scratch":
-        data = _dm_request(ctx, "GET", f"scratch/{inp.slug}", token=token)
-    elif op == "search":
-        data = _dm_request(ctx, "GET", "scratch", params=inp.params or None, token=token)
-    elif op == "compilers":
-        data = _dm_request(ctx, "GET", "compilers", token=token)
-    elif op == "create":
-        data = _dm_request(ctx, "POST", "scratch", body=inp.payload, token=token)
-    elif op in ("claim", "fork", "compile"):
-        data = _dm_request(ctx, "POST", f"scratch/{inp.slug}/{op}", body=inp.payload, token=token)
-    elif op == "update":
-        data = _dm_request(ctx, "PATCH", f"scratch/{inp.slug}", body=inp.payload, token=token)
-    else:
-        raise ValueError(f"unknown op {inp.op!r}; use scratch, search, compilers, create, claim, update, fork, compile")
-    ctx.progress(100, "decomp.me answered")
-    return {"op": op, "status": "ok", "data": data, "token_used": bool(token)}
+    enabled = bool(getattr(ctx.config, "decomp_me_enabled", False))
+    if op == "status":
+        return {"op": op, "dry_run": True, "data": {"enabled": enabled, "url": _dm_base(ctx.config),
+                "note": "set decomp_me_enabled = true in gbox.toml to allow network calls" if not enabled else "network allowed"}}
+    req = decomp_me_request(ctx.config, inp)
+    public = op == "submit"
+    if inp.dry_run:
+        return {"op": op, "dry_run": True, "request": req, "public": False}
+    if not enabled:
+        raise PermissionError("decomp_me is opt-in: set decomp_me_enabled = true in gbox.toml (or use dry_run=true)")
+    ctx.progress(10, f"decomp.me {req['method']} {req['url']}")
+    status, data = _dm_send(req)
+    if public and isinstance(data, dict) and data.get("slug"):
+        data = data | {"url": f"https://decomp.me/scratch/{data['slug']}"}
+    return {"op": op, "dry_run": False, "request": req, "status": status, "data": data, "public": public}
 
 
-# --- IDA Pro --------------------------------------------------------------------------------
+# ============================================================================================ IDA Pro
 
-def _ida_search_roots(cfg) -> list[Path]:
-    roots = []
-    if getattr(cfg, "ida_home", None):
-        roots.append(Path(cfg.ida_home))
-    if HOST_OS == "windows":
-        for base in ("C:/Program Files", "C:/Program Files (x86)"):
-            if Path(base).exists():
-                roots.append(Path(base))
-    else:
-        roots.append(Path.home())
-        roots.append(Path("/opt"))
-    roots.append(cfg.runtime)
-    return roots
+IDA_EXPORT_PY = r'''# gBox: IDA headless export -> analysis.json (same shape as adapters/ghidra/ExportAnalysis.java)
+import json, os
+import idaapi, idautils, idc, ida_auto, ida_bytes, ida_funcs, ida_nalt, ida_pro
+try:
+    import ida_ida
+except ImportError:
+    ida_ida = None
+out = os.environ["GBOX_IDA_OUT"]
+ok = False
+try:
+    ida_auto.auto_wait()
+    def hx(ea):
+        return "%08x" % ea
+    def call(name, default=None):
+        try:
+            return getattr(ida_ida, name)() if ida_ida else default
+        except Exception:
+            return default
+    proc = call("inf_get_procname", "") or ""
+    bits = 64 if call("inf_is_64bit", False) else 32
+    endian = "BE" if call("inf_is_be", False) else "LE"
+    try:
+        sha = ida_nalt.retrieve_input_file_sha256()
+        sha = sha.hex() if isinstance(sha, (bytes, bytearray)) else str(sha or "")
+    except Exception:
+        sha = ""
+    program = {"name": ida_nalt.get_root_filename(), "language": "%s:%s:%d:ida" % (proc, endian, bits),
+               "image_base": hx(idaapi.get_imagebase()), "sha256": sha}
+    functions = []
+    for ea in idautils.Functions():
+        f = ida_funcs.get_func(ea)
+        size = sum(e - s for s, e in idautils.Chunks(ea))
+        if ida_bytes.has_dummy_name(ida_bytes.get_flags(ea)):
+            source = "DEFAULT"
+        elif f is not None and f.flags & ida_funcs.FUNC_LIB:
+            source = "ANALYSIS"
+        else:
+            source = "IMPORTED"
+        functions.append({"name": ida_funcs.get_func_name(ea), "entry": hx(ea), "size": size, "source": source})
+    strings = [{"addr": hx(s.ea), "value": str(s)} for s in idautils.Strings()]
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump({"program": program, "functions": functions, "strings": strings}, fh)
+    ok = True
+except Exception as e:
+    with open(out + ".err", "w", encoding="utf-8") as fh:
+        fh.write(repr(e))
+ida_pro.qexit(0 if ok else 1)
+'''
+
+IDA_NAMES = ("idat64.exe", "idat.exe") if sys.platform == "win32" else ("idat64", "idat")
 
 
-def _ida_home(cfg) -> Path | None:
-    if getattr(cfg, "ida_home", None) and Path(cfg.ida_home).is_dir():
-        return Path(cfg.ida_home)
-    names = ("ida64.exe", "idat64.exe", "ida.exe", "idat.exe") if HOST_OS == "windows" else ("ida64", "idat64", "ida", "idat")
-    for root in _ida_search_roots(cfg):
-        # two levels deep covers C:/Program Files/IDA Professional 9.1/ida64.exe and /opt/ida-9.1/ida64
-        for depth in (0, 1, 2):
-            pattern = "/".join(["*"] * depth + ["IDA*"]) if depth else "IDA*"
-            for d in root.glob(pattern) if depth else root.glob("IDA*"):
-                if d.is_dir():
-                    for n in names:
-                        if (d / n).is_file():
-                            return d
-    # runtime copy: runtime/ida/ida64
-    for n in names:
-        p = cfg.runtime / "ida" / n
-        if p.is_file():
-            return p.parent
+def ida_search_roots(cfg) -> list[Path]:
+    roots = [Path("C:/_tools"), Path("C:/Program Files"), Path("C:/Program Files (x86)"), Path.home() / "tools",
+             Path("/opt"), Path.home()]
+    try:
+        roots.append(Path(cfg.runtime) / "tools")
+    except Exception:                                       # noqa: BLE001
+        pass
+    return [r for r in roots if r.is_dir()]
+
+
+def find_idat(cfg) -> Path | None:
+    """The headless IDA executable: ida_home (folder or exe), env IDA_HOME / IDADIR, then IDA* folders in the roots."""
+    cands = []
+    for p in (getattr(cfg, "ida_home", None), os.environ.get("IDA_HOME"), os.environ.get("IDADIR")):
+        if p:
+            p = Path(os.path.expandvars(str(p)))
+            cands.append(p.parent if p.is_file() else p)
+    if not cands:
+        for root in ida_search_roots(cfg):
+            cands += sorted((d for d in root.glob("*") if d.is_dir() and re.match(r"(?i)ida", d.name)), reverse=True)
+    for d in cands:
+        for n in IDA_NAMES:
+            if (d / n).is_file():
+                return d / n
     return None
 
 
-def _ida_binary(cfg, prefer_headless: bool = False) -> Path:
-    home = _ida_home(cfg)
-    if not home:
-        raise ToolUnavailable(
-            "IDA Pro not found on this node; set ida_home in gbox.toml or install IDA into the runtime dir")
-    order = (("idat64.exe", "idat.exe", "ida64.exe", "ida.exe") if HOST_OS == "windows"
-             else ("idat64", "idat", "ida64", "ida"))
-    if not prefer_headless:
-        order = (("ida64.exe", "ida.exe", "idat64.exe", "idat.exe") if HOST_OS == "windows"
-                 else ("ida64", "ida", "idat64", "idat"))
-    for name in order:
-        p = home / name
-        if p.is_file():
-            return p
-    raise ToolUnavailable(f"no IDA executable in {home}")
+def ida_check(cfg) -> str | None:
+    if find_idat(cfg):
+        return None
+    return ("IDA Pro is not installed on this node (no idat64/idat found). gBox never installs it: install IDA Pro and set "
+            "ida_home = \"<IDA folder>\" in gbox.toml (or env IDA_HOME), then restart the worker. analyze_binary "
+            "(Ghidra) gives the same analysis.json without IDA.")
 
 
-def _ida_user_dir() -> Path:
-    """IDA user directory holding ida_mcp/config.toml (mrexodia/ida-pro-mcp convention)."""
-    if HOST_OS == "windows" and os.environ.get("APPDATA"):
-        d = Path(os.environ["APPDATA"]) / "Hex-Rays" / "IDA Pro"
-    else:
-        d = Path.home() / ".idapro"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def ida_command(idat: Path, work_bin: Path, script: Path, db: Path, log: Path, processor: str = "",
+                extra: list[str] | None = None) -> list[str]:
+    cmd = [str(idat), "-A", f"-L{log}", f"-o{db}", f"-S{script}"]
+    if processor:
+        cmd.append(f"-p{processor}")
+    return cmd + list(extra or []) + [str(work_bin)]
 
 
-def _write_mcp_config(user_dir: Path, port: int) -> Path:
-    d = user_dir / "ida_mcp"
-    d.mkdir(parents=True, exist_ok=True)
-    cfg = d / "config.toml"
-    cfg.write_text(
-        f"[ida_mcp]\nhost = \"127.0.0.1\"\nport = {port}\ncheck_port = false\napi_key = \"\"\n", encoding="utf-8")
-    return cfg
-
-
-def _port_open(port: int, timeout_s: float) -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
-            return True
-    except OSError:
-        return False
-
-
-def _analyze_command(binary: Path, binary_path: str, out: Path, idc: Path) -> list[str]:
-    return [str(binary), "-A", "-B", f'-S"{idc} {out}"', binary_path]
+def _no_space(p: Path) -> Path:
+    """-S<script> is split on spaces by IDA: use the 8.3 short path on Windows when the path has a space."""
+    if " " not in str(p) or sys.platform != "win32":
+        return p
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.windll.kernel32.GetShortPathNameW(str(p), buf, 1024)
+    return Path(buf.value) if n and " " not in buf.value else p
 
 
 class IdaIn(BaseModel):
-    op: str  # locate | analyze | mcp_start | mcp_status | mcp_stop
-    binary_path: str = ""
-    port: int = IDA_MCP_PORT
-    wait_s: float = 60.0
+    op: str = "analyze"          # status | analyze
+    binary_path: str = ""        # analyze: an executable this worker can read (re_study's ELF, an extracted SLUS/DOL/.exe)
+    processor: str = ""          # analyze: IDA processor (-p), e.g. mipsb (N64), mipsl (PS1), r5900l (PS2), ppc (GameCube)
+    extra_args: list[str] = []   # analyze: more idat switches (e.g. loader options); never output paths
 
 
 class IdaOut(BaseModel):
     op: str
-    result: dict
+    functions: int = 0
+    strings: int = 0
+    program: dict = {}
+    detail: dict = {}
 
 
-@tool("ida_pro", "1.0", IdaIn, IdaOut, capabilities=["reverse-engineering", "analysis", "ida"],
-      platforms=["windows", "linux"], permissions=[P.READ, P.EXECUTE, P.FILE_MUTATION],
-      side_effects=["launches/stops IDA Pro on this node", "writes ida_mcp/config.toml in the IDA user dir"],
-      artifacts=["analysis.json"], timeout_s=3600)
-def ida_pro(inp: IdaIn, ctx):
-    """IDA Pro on this node: locate the install, run headless auto-analysis, and manage the ida-pro-mcp server for REA.
-
-    op=locate: report ida_home, executable and user dir. op=analyze: headless
-    auto-analysis of binary_path exporting functions/strings as analysis.json
-    (same shape as analyze_binary). op=mcp_start: ensure ida_mcp/config.toml is
-    configured, launch IDA on binary_path and wait for the MCP port; the returned
-    rea_env_hint plugs into config.rea_env so the REA bridge can drive this
-    database. op=mcp_status: probe the port and report the PID file.
-    op=mcp_stop: terminate the IDA process gBox started (PID file in runtime).
-    """
-    op = inp.op.lower()
-    if op == "locate":
-        home = _ida_home(ctx.config)
-        return {"op": op, "result": {"ida_home": str(home) if home else None,
-                                     "binary": str(_ida_binary(ctx.config)) if home else None,
-                                     "user_dir": str(_ida_user_dir())}}
-    if op == "analyze":
-        binary = _ida_binary(ctx.config, prefer_headless=True)
-        work = Path(tempfile.mkdtemp())
-        idc = work / "gbox_export.idc"
-        idc.write_text(IDA_EXPORT_IDC, encoding="utf-8")
-        out = work / "analysis.json"
-        cmd = _analyze_command(binary, inp.binary_path, out, idc)
-        ctx.progress(5, f"IDA analyzing {inp.binary_path}")
-        r = subprocess.run(cmd, timeout=3500, capture_output=True, text=True,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        if r.returncode or not out.is_file():
-            raise RuntimeError(f"IDA analysis failed ({r.returncode}): {(r.stdout + r.stderr)[-1500:]}")
-        data = out.read_bytes()
-        analysis = json.loads(data)
-        ctx.artifact("analysis.json", data, "application/json", binary=inp.binary_path, tool="ida")
-        return {"op": op, "result": {"functions": len(analysis["functions"]),
-                                     "strings": len(analysis["strings"]), "program": analysis["program"]}}
-    if op == "mcp_start":
-        binary = _ida_binary(ctx.config)  # GUI-capable executable hosts the plugin server
-        port = inp.port or IDA_MCP_PORT
-        pidfile = ctx.config.runtime / "ida_mcp.pid"
-        if _port_open(port, 0.5):
-            return {"op": op, "result": {"pid": None, "port": port,
-                                         "note": "ida-pro-mcp already listening; reuse it",
-                                         "rea_env_hint": _rea_hint(port)}}
-        config_file = _write_mcp_config(_ida_user_dir(), port)
-        args = [str(binary), "-c"]
-        if inp.binary_path:
-            args.append(inp.binary_path)
-        env = os.environ.copy()
-        env["IDA_MCP_PORT"] = str(port)
-        proc = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=getattr(subprocess, "DETACHED_PROCESS",
-                                                      getattr(subprocess, "CREATE_NO_WINDOW", 0)) or 0)
-        deadline = time.monotonic() + max(5.0, inp.wait_s)
-        while time.monotonic() < deadline:
-            if _port_open(port, 0.5):
-                ctx.config.runtime.mkdir(parents=True, exist_ok=True)
-                pidfile.write_text(str(proc.pid), encoding="utf-8")
-                ctx.progress(100, f"ida-pro-mcp listening on {port}")
-                return {"op": op, "result": {"pid": proc.pid, "port": port,
-                                             "config": str(config_file), "rea_env_hint": _rea_hint(port)}}
-            if proc.poll() is not None:
-                raise RuntimeError(f"IDA exited early with code {proc.returncode}; is ida-pro-mcp installed?")
-            time.sleep(1.0)
-        raise TimeoutError(f"ida-pro-mcp did not open port {port} within {inp.wait_s}s; install the plugin and retry")
-    if op == "mcp_status":
-        pidfile = ctx.config.runtime / "ida_mcp.pid"
-        return {"op": op, "result": {"listening": _port_open(inp.port, 0.5), "port": inp.port,
-                                     "pid": pidfile.read_text().strip() if pidfile.is_file() else None,
-                                     "config": str(_ida_user_dir() / "ida_mcp" / "config.toml")}}
-    if op == "mcp_stop":
-        pidfile = ctx.config.runtime / "ida_mcp.pid"
-        pid = pidfile.read_text().strip() if pidfile.is_file() else None
-        if pid and pid.isdigit():
-            subprocess.run(["taskkill", "/PID", pid, "/F"] if HOST_OS == "windows" else ["kill", pid],
-                           capture_output=True, timeout=30,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            pidfile.unlink(missing_ok=True)
-        return {"op": op, "result": {"stopped": pid}}
-    raise ValueError("unknown op; use locate, analyze, mcp_start, mcp_status, mcp_stop")
+def _ida_validate(out: IdaOut, arts):
+    if out.op != "analyze":
+        return []
+    from .tools import _ghidra_validate
+    return _ghidra_validate(out, arts)
 
 
-def _rea_hint(port: int) -> dict:
-    """Best-effort REA provider config for this IDA MCP server (streamable HTTP)."""
-    return {"REA_IDA_MCP_CONFIG": json.dumps({"type": "http", "url": f"http://127.0.0.1:{port}/mcp"})}
+@tool("ida", "1.0", IdaIn, IdaOut, capabilities=["analysis", "ida", "reverse-engineering"], platforms=["windows", "linux"],
+      permissions=[P.READ, P.EXECUTE], timeout_s=3600, artifacts=["analysis.json"], check=ida_check,
+      validate=_ida_validate, validation="artifact counts (same as analyze_binary)")
+def ida(inp: IdaIn, ctx):
+    """IDA Pro headless (idat64/idat -A + an IDAPython export): op=analyze (binary_path, processor) writes analysis.json
+    with the same shape as analyze_binary (functions + strings), so re_study / re_dossier / n64recomp take it; op=status
+    shows which IDA it uses. The binary is copied to a work folder; nothing is written next to the original."""
+    idat = find_idat(ctx.config)
+    if idat is None:
+        raise ToolUnavailable(ida_check(ctx.config))
+    if inp.op.lower() == "status":
+        return {"op": "status", "detail": {"idat": str(idat), "home": str(idat.parent)}}
+    if inp.op.lower() != "analyze":
+        raise ValueError("op: status | analyze")
+    src = Path(inp.binary_path)
+    if not src.is_file():
+        raise FileNotFoundError(f"binary_path {inp.binary_path!r} is not a file on this worker")
+    if any(re.match(r"(?i)-(o|s|l)", a) for a in inp.extra_args):
+        raise ValueError("extra_args may not set -o / -S / -L (gBox owns the output paths)")
+    work = Path(ctx.config.runtime) / "ida" / f"{_safe_name(src.stem)}-{ctx.job_id}"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    wbin = work / _safe_name(src.name, "input.bin")
+    shutil.copyfile(src, wbin)
+    script = work / "gbox_ida_export.py"
+    script.write_text(IDA_EXPORT_PY, encoding="utf-8")
+    out, log = work / "analysis.json", work / "ida.log"
+    cmd = ida_command(idat, wbin, _no_space(script), work / "db", log, inp.processor, inp.extra_args)
+    env = dict(os.environ, GBOX_IDA_OUT=str(out), TVHEADLESS="1")
+    ctx.progress(5, f"IDA analyzing {src.name}")
+    r = subprocess.run(cmd, cwd=str(work), env=env, capture_output=True, text=True, timeout=3500, creationflags=NOWINDOW)
+    if r.returncode or not out.is_file():
+        tail = log.read_text(errors="replace")[-1500:] if log.is_file() else (r.stdout + r.stderr)[-1500:]
+        err = Path(str(out) + ".err")
+        raise RuntimeError(f"IDA failed ({r.returncode}){': ' + err.read_text() if err.is_file() else ''}: {tail}")
+    d = out.read_bytes()
+    a = json.loads(d)
+    ctx.artifact("analysis.json", d, "application/json", binary=inp.binary_path, tool="ida")
+    shutil.rmtree(work, ignore_errors=True)
+    return {"op": "analyze", "functions": len(a["functions"]), "strings": len(a["strings"]), "program": a["program"],
+            "detail": {"idat": str(idat)}}
 
 
-# --- N64Recomp ------------------------------------------------------------------------------
+# ============================================================================================ N64Recomp
 
-def _toolchain() -> dict:
-    out = {}
-    for name in ("git", "cargo", "cmake"):
-        out[name] = shutil.which(name)
-    out["vulkan_sdk"] = os.environ.get("VULKAN_SDK") or None
-    if HOST_OS == "windows":
-        out["msvc"] = bool(shutil.which("cl") or os.environ.get("VSINSTALLDIR") or shutil.which("cmake")
-                           and os.environ.get("VCToolsInstallDir"))
-    return out
+N64_BOOT_ROM = 0x1000
+N64_BOOT_SIZE = 0x100000           # re_lab_tool.n64_boot_to_elf: 1 MiB from ROM 0x1000 at the header entry point
 
 
-def _repo(cfg) -> Path:
-    return cfg.runtime / "n64recomp" / "N64Recomp"
+def find_n64recomp(cfg) -> Path | None:
+    names = ("N64Recomp.exe", "N64Recomp") if sys.platform == "win32" else ("N64Recomp",)
+    cands = []
+    for p in (getattr(cfg, "n64recomp_path", None), os.environ.get("N64RECOMP")):
+        if p:
+            p = Path(os.path.expandvars(str(p)))
+            if p.is_file():
+                return p
+            cands += [p, p / "build", p / "build" / "Release", p / "Release"]
+    if w := shutil.which("N64Recomp"):
+        return Path(w)
+    if not cands:
+        roots = [Path("C:/_tools"), Path.home() / "tools", Path("/opt")]
+        try:
+            roots.append(Path(cfg.runtime) / "tools")
+        except Exception:                                   # noqa: BLE001
+            pass
+        for root in (r for r in roots if r.is_dir()):
+            for d in sorted(root.glob("*")):
+                if d.is_dir() and "recomp" in d.name.lower():
+                    cands += [d, d / "build", d / "build" / "Release", d / "build" / "Debug", d / "Release"]
+    for d in cands:
+        for n in names:
+            if (d / n).is_file():
+                return d / n
+    return None
 
 
-def _repo_ready(cfg) -> bool:
-    return (_repo(cfg) / "Cargo.toml").is_file()
+def n64recomp_check(cfg) -> str | None:
+    if find_n64recomp(cfg):
+        return None
+    return ("N64Recomp is not installed on this node. gBox never downloads or builds it: build github.com/N64Recomp/"
+            "N64Recomp (CMake) and set n64recomp_path = \"<N64Recomp executable or build folder>\" in gbox.toml (or env "
+            "N64RECOMP), then restart the worker.")
 
 
-def _generate_command(repo: Path, rom: str, config_toml: Path) -> list[str]:
-    cargo = shutil.which("cargo") or "cargo"
-    return [cargo, "run", "--release", "--manifest-path", str(repo / "Cargo.toml"),
-            "--", "--rom", rom, "--config", str(config_toml)]
+def _addr(v) -> int:
+    if isinstance(v, int):
+        return v
+    s = str(v).split(":")[-1].strip().lower()
+    return int(s[2:] if s.startswith("0x") else s, 16)
+
+
+def _c_ident(name: str, ea: int, used: set) -> str:
+    n = re.sub(r"\W", "_", name or "")
+    if not n or n[0].isdigit():
+        n = f"func_{ea:08X}"
+    base, k = n, 1
+    while n in used:
+        k += 1
+        n = f"{base}_{k}"
+    used.add(n)
+    return n
+
+
+def boot_functions(analysis: dict, entry: int, size: int = N64_BOOT_SIZE) -> tuple[list[dict], list[str]]:
+    """analysis.json functions inside the boot segment [entry, entry+size) as N64Recomp symbols: word aligned, sorted,
+    non-overlapping, unique C names. Returns (functions, notes)."""
+    notes, fns, used = [], [], set()
+    rows = []
+    for f in analysis.get("functions") or []:
+        try:
+            ea, sz = _addr(f.get("entry")), int(f.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+        if entry <= ea < entry + size and sz > 0:
+            rows.append((ea, sz, f.get("name") or ""))
+    rows.sort()
+    end_prev, skipped = 0, 0
+    for ea, sz, name in rows:
+        sz -= sz % 4
+        if ea % 4 or sz <= 0 or ea < end_prev or ea + sz > entry + size:
+            skipped += 1
+            continue
+        fns.append({"name": _c_ident(name, ea, used), "vram": ea, "size": sz})
+        end_prev = ea + sz
+    if skipped:
+        notes.append(f"{skipped} functions skipped (unaligned, overlapping or past the boot segment)")
+    return fns, notes
+
+
+def syms_toml(functions: list[dict], entry: int, size: int) -> str:
+    """N64Recomp symbol-file input: one section (the boot segment, ROM 0x1000 -> entry)."""
+    lines = ["# generated by gBox n64recomp from analysis.json (boot segment only)", "[[section]]", 'name = ".boot"',
+             f"rom = 0x{N64_BOOT_ROM:08X}", f"vram = 0x{entry:08X}", f"size = 0x{size:X}", "", "functions = ["]
+    lines += [f'    {{ name = "{f["name"]}", vram = 0x{f["vram"]:08X}, size = 0x{f["size"]:X} }},' for f in functions]
+    return "\n".join(lines + ["]", ""])
+
+
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return f"0x{v:X}" if v > 0xFFFF else str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    return json.dumps(str(v))
+
+
+def config_toml(entry: int, overrides: dict | None = None, patches: dict | None = None) -> str:
+    """N64Recomp config: [input] paths are relative to this file (the work folder)."""
+    inp = {"entrypoint": entry, "output_func_path": "RecompiledFuncs", "symbols_file_path": "syms.toml",
+           "rom_file_path": "rom.z64"} | dict(overrides or {})
+    for k in list(inp):
+        if k.endswith("_path") and isinstance(inp[k], str) and (Path(inp[k]).is_absolute() or ".." in Path(inp[k]).parts):
+            raise ValueError(f"config override {k} must stay inside the work folder")
+    lines = ["# generated by gBox n64recomp", "[input]"] + [f"{k} = {_toml_value(v)}" for k, v in inp.items()]
+    if patches:
+        lines += ["", "[patches]"] + [f"{k} = {_toml_value(v)}" for k, v in patches.items()]
+    return "\n".join(lines + [""])
 
 
 class N64RecompIn(BaseModel):
-    op: str  # toolchain | provision | generate | status
-    rom: str = ""                # generate: owned ROM path (.z64/.v64/.n64)
-    name: str = "gbox-recomp"    # generate: mod project name
-    project_dir: str = ""        # generate: output dir (default: runtime/n64recomp/mods/<name>)
+    op: str = "status"            # status | list | run
+    rom_path: str = ""            # run: an owned N64 ROM (.z64/.v64/.n64, or one in a .zip/.7z) this worker can read
+    analysis_sha256: str = ""     # run: analysis.json artifact (analyze_binary / ida on re_study's N64 ELF)
+    analysis_path: str = ""       # run: or an analysis.json file on this worker
+    name: str = ""                # run: work folder name (default: the ROM's name)
+    entrypoint: str = ""          # run: hex override (default: the ROM header's boot address)
+    config_overrides: dict = {}   # run: extra [input] keys (e.g. relocatable_sections_path inside the work folder)
+    patches: dict = {}            # run: [patches] keys (stubs, ignored, ...)
+    dry_run: bool = False         # run: write the work folder (ROM copy, syms.toml, config) but don't run N64Recomp
 
 
 class N64RecompOut(BaseModel):
@@ -431,84 +471,93 @@ class N64RecompOut(BaseModel):
     result: dict
 
 
-@tool("n64recomp", "1.0", N64RecompIn, N64RecompOut, capabilities=["reverse-engineering", "recompilation", "n64", "build"],
-      platforms=["windows", "linux"], permissions=[P.READ, P.EXECUTE, P.INSTALL, P.NETWORK, P.FILE_MUTATION],
-      side_effects=["clones and builds the N64Recomp source tree into this node's runtime",
-                    "generates a Rust mod project from a ROM on this node"],
-      artifacts=["n64recomp.json"], timeout_s=3600)
-def n64recomp(inp: N64RecompIn, ctx):
-    """N64Recomp (Mr-Wiseguy) source build and ROM -> Rust mod project generation on this node.
+def _work_root(cfg) -> Path:
+    return Path(cfg.runtime) / "n64recomp"
 
-    op=toolchain: report git/cargo/cmake/Vulkan/MSVC availability.
-    op=provision: shallow-clone N64Recomp into runtime/n64recomp and cargo build --release
-    the backend; the RT64 frontend stays a manual step (VS + Vulkan SDK on Windows).
-    op=generate: run the upstream recompiler on an owned ROM to emit a Rust mod project.
-    op=status: read this node's build/generate receipts.
-    """
-    op = inp.op.lower()
-    if op == "toolchain":
-        return {"op": op, "result": _toolchain()}
-    if op == "provision":
-        tc = _toolchain()
-        missing = [k for k in ("git", "cargo") if not tc.get(k)]
-        if missing:
-            raise ToolUnavailable(f"n64recomp provision needs: {', '.join(missing)}")
-        repo = _repo(ctx.config)
-        if not (repo / ".git").is_dir():
-            ctx.progress(5, "cloning N64Recomp (shallow)")
-            r = subprocess.run(["git", "clone", "--depth", "1", N64RECOMP_REPO, str(repo)],
-                               capture_output=True, text=True, timeout=600,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            if r.returncode:
-                raise RuntimeError(f"git clone failed: {(r.stderr or r.stdout)[-1000:]}")
-        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
-                             text=True, timeout=30).stdout.strip()
-        ctx.progress(40, "cargo build --release (backend)")
-        r = subprocess.run([tc["cargo"], "build", "--release", "--manifest-path", str(repo / "Cargo.toml")],
-                           capture_output=True, text=True, timeout=3000,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        receipt = {"op": "provision", "repo": N64RECOMP_REPO, "sha": sha, "path": str(repo),
-                   "backend": "built" if r.returncode == 0 else f"failed: {(r.stderr or '')[-600:]}",
-                   "frontend": "manual (Windows: cmake + MSVC + Vulkan SDK for RT64)",
-                   "toolchain": tc, "at": time.time()}
-        (ctx.config.runtime / "n64recomp").mkdir(parents=True, exist_ok=True)
-        receipt_path = ctx.config.runtime / "n64recomp" / "receipt.json"
-        receipt_path.write_text(json.dumps(receipt, indent=1), encoding="utf-8")
-        ctx.artifact("n64recomp.json", json.dumps(receipt, indent=1).encode(), "application/json")
-        if r.returncode:
-            raise RuntimeError(f"cargo build failed: {(r.stderr or r.stdout)[-1500:]}")
-        ctx.progress(100, "N64Recomp backend built")
-        return {"op": op, "result": receipt}
-    if op == "generate":
-        if not _repo_ready(ctx.config):
-            raise ToolUnavailable("N64Recomp source not provisioned on this node; run op=provision first")
-        repo = _repo(ctx.config)
-        project = Path(inp.project_dir or str(ctx.config.runtime / "n64recomp" / "mods" / inp.name))
-        project.mkdir(parents=True, exist_ok=True)
-        template = repo / "config" / "RecompModInfo.toml"
-        if not template.is_file():
-            raise RuntimeError(f"upstream template missing at {template}; re-provision or check the repo layout")
-        config_toml = project / "RecompModInfo.toml"
-        # The upstream template is copied verbatim; edit its fields (mod name, asset dirs)
-        # before or after generation — the recompiler only consumes the paths it declares.
-        config_toml.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-        cmd = _generate_command(repo, inp.rom, config_toml)
-        ctx.progress(10, "recompiling ROM (first run compiles the recompiler)")
-        r = subprocess.run(cmd, cwd=str(project), capture_output=True, text=True, timeout=3500,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        receipt = {"op": "generate", "rom": inp.rom, "name": inp.name, "project_dir": str(project),
-                   "generated": sorted(p.name for p in project.iterdir()) if project.is_dir() else [],
-                   "returncode": r.returncode,
-                   "log_tail": (r.stdout + r.stderr)[-1500:], "at": time.time()}
-        (ctx.config.runtime / "n64recomp").mkdir(parents=True, exist_ok=True)
-        (ctx.config.runtime / "n64recomp" / "generate.json").write_text(json.dumps(receipt, indent=1), encoding="utf-8")
-        ctx.artifact("n64recomp.json", json.dumps(receipt, indent=1).encode(), "application/json")
-        if r.returncode:
-            raise RuntimeError(f"n64recomp generate failed ({r.returncode}): {(r.stdout + r.stderr)[-1500:]}")
-        return {"op": op, "result": receipt}
-    if op == "status":
-        d = ctx.config.runtime / "n64recomp"
-        receipts = {p.name: json.loads(p.read_text(encoding="utf-8")) for p in d.glob("*.json")} if d.is_dir() else {}
-        return {"op": op, "result": {"repo": str(_repo(ctx.config)), "ready": _repo_ready(ctx.config),
-                                     "toolchain": _toolchain(), "receipts": receipts}}
-    raise ValueError("unknown op; use toolchain, provision, generate, status")
+
+def _fetch_artifact(ctx, sha: str) -> bytes:
+    import httpx
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise ValueError("analysis_sha256 must be a sha256 hex digest")
+    if not getattr(ctx, "server", None):
+        raise Unsupported("analysis_sha256 needs the control plane; pass analysis_path instead")
+    r = httpx.get(f"{ctx.server}/api/artifacts/{sha}", headers=ctx.headers, timeout=300)
+    r.raise_for_status()
+    return r.content
+
+
+@tool("n64recomp", "1.0", N64RecompIn, N64RecompOut, capabilities=["reverse-engineering", "recompilation", "n64"],
+      platforms=["windows", "linux"], permissions=[P.READ, P.EXECUTE], timeout_s=3600, artifacts=["n64recomp.json"],
+      side_effects=["writes a work folder under <runtime>/n64recomp (a ROM copy, symbols, config, generated C)"],
+      check=n64recomp_check)
+def n64recomp(inp: N64RecompIn, ctx):
+    """N64Recomp (static recompilation of N64 code to C) on an owned ROM: op=status (which N64Recomp, work folders) |
+    list (work folders + receipts) | run (rom_path + analysis_sha256 or analysis_path from analyze_binary/ida on
+    re_study's N64 ELF): work folder with a .z64 copy of the ROM, syms.toml from the analysis (boot segment), config,
+    then N64Recomp -> RecompiledFuncs/*.c. The ROM itself is only read; dry_run=true stops before running N64Recomp."""
+    exe = find_n64recomp(ctx.config)
+    if exe is None:
+        raise ToolUnavailable(n64recomp_check(ctx.config))
+    root, op = _work_root(ctx.config), inp.op.lower()
+    if op in ("status", "list"):
+        rows = []
+        for d in sorted(root.glob("*")) if root.is_dir() else []:
+            rc = d / "receipt.json"
+            try:
+                rows.append(json.loads(rc.read_text()) if rc.is_file() else {"name": d.name, "state": "no receipt"})
+            except ValueError:
+                rows.append({"name": d.name, "state": "unreadable receipt"})
+        res = {"work": rows}
+        if op == "status":
+            res = {"n64recomp": str(exe), "work_root": str(root), "work_count": len(rows)}
+        return {"op": op, "result": res}
+    if op != "run":
+        raise ValueError("op: status | list | run")
+    from . import n64_rom
+    rom = Path(inp.rom_path)
+    if not rom.is_file():
+        raise FileNotFoundError(f"rom_path {inp.rom_path!r} is not a file on this worker")
+    before = (_sha256_file(rom), rom.stat().st_size, rom.stat().st_mtime_ns)
+    z64 = n64_rom.read(rom)
+    if z64[:4] != b"\x80\x37\x12\x40":
+        raise ValueError("not an N64 ROM after normalization")
+    if inp.analysis_path:
+        analysis = json.loads(Path(inp.analysis_path).read_text(encoding="utf-8"))
+    elif inp.analysis_sha256:
+        analysis = json.loads(_fetch_artifact(ctx, inp.analysis_sha256))
+    else:
+        raise ValueError("run needs analysis_sha256 or analysis_path: re_study the game (or analyze_binary / ida on its "
+                         "N64 ELF) first")
+    entry = int(inp.entrypoint, 16) if inp.entrypoint else struct.unpack_from(">I", z64, 8)[0]
+    size = min(N64_BOOT_SIZE, len(z64) - N64_BOOT_ROM)
+    fns, notes = boot_functions(analysis, entry, size)
+    if not fns:
+        raise ValueError(f"the analysis has no functions in the boot segment 0x{entry:08X}..0x{entry + size:08X}; analyze "
+                         "re_study's N64 ELF (it is loaded at the header entry point)")
+    name = _safe_name(inp.name or rom.stem, "rom")
+    work = root / name
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "rom.z64").write_bytes(z64)
+    (work / "syms.toml").write_text(syms_toml(fns, entry, size), encoding="utf-8")
+    (work / "config.toml").write_text(config_toml(entry, inp.config_overrides, inp.patches), encoding="utf-8")
+    (work / "RecompiledFuncs").mkdir(exist_ok=True)
+    receipt = {"name": name, "work": str(work), "rom": str(rom), "rom_sha256": before[0], "z64_sha256": hashlib.sha256(z64).hexdigest(),
+               "entrypoint": f"0x{entry:08X}", "functions": len(fns), "notes": notes, "n64recomp": str(exe),
+               "analysis": inp.analysis_sha256 or inp.analysis_path, "at": time.time(), "state": "prepared"}
+    if not inp.dry_run:
+        ctx.progress(20, f"N64Recomp: {len(fns)} functions")
+        r = subprocess.run([str(exe), "config.toml"], cwd=str(work), capture_output=True, text=True, timeout=3400,
+                           creationflags=NOWINDOW)
+        outs = sorted(p.name for p in (work / "RecompiledFuncs").glob("*"))
+        receipt |= {"state": "recompiled" if r.returncode == 0 else "failed", "returncode": r.returncode,
+                    "outputs": outs[:200], "output_count": len(outs), "log_tail": (r.stdout + r.stderr)[-2000:]}
+    after = (_sha256_file(rom), rom.stat().st_size, rom.stat().st_mtime_ns)
+    receipt["rom_unchanged"] = after == before
+    if after != before:
+        receipt["state"] = "failed"
+        receipt["notes"].append("the ROM file changed during the run (not by gBox): treat the output as suspect")
+    (work / "receipt.json").write_text(json.dumps(receipt, indent=1), encoding="utf-8")
+    ctx.artifact("n64recomp.json", json.dumps(receipt, indent=1).encode(), "application/json", rom=str(rom))
+    if receipt["state"] == "failed":
+        raise RuntimeError(f"N64Recomp failed ({receipt.get('returncode')}): {receipt.get('log_tail', '')[-1200:]}")
+    return {"op": op, "result": receipt}

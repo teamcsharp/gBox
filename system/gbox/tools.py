@@ -3002,12 +3002,12 @@ AGENTS = [
     {"name": "orchestrator", "role": "Owns the task plan; splits requests into typed tool jobs and delegates to the roles below",
      "tools": ["*"], "status": "defined", "notes": "Today the coding agent (Claude Code) plays this role through the inbox + API."},
     {"name": "reverse_engineering", "role": "Static/runtime hypotheses: functions, structures, loaders",
-     "tools": ["analyze_binary", "ghidra_script", "read_memory", "session_op"], "status": "defined"},
+     "tools": ["analyze_binary", "ghidra_script", "ida", "n64recomp", "decomp_me", "read_memory", "session_op"], "status": "defined"},
     {"name": "game_state", "role": "Semantic state discovery (player/enemy/room) from memory diffs + RE",
      "tools": ["read_memory", "session_op", "get_frame", "ghidra_script"], "status": "defined"},
     {"name": "autoplay_strategy", "role": "Route/strategy improvement from evaluated runs", "tools": ["launch_game", "session_op", "read_memory", "get_frame"],
      "status": "planned", "notes": "Needs the semantic-state extractor (Phase 2) first."},
-    {"name": "asset", "role": "Dependency extraction and normalization into UAP packages", "tools": ["export_asset", "read_memory", "get_frame"], "status": "defined"},
+    {"name": "asset", "role": "Dependency extraction and normalization into UAP packages", "tools": ["export_asset", "read_memory", "get_frame", "scene_capture", "ninja_ripper"], "status": "defined"},
     {"name": "conversion", "role": "Rig/material/format conversion", "tools": ["export_asset", "open_in_blender"], "status": "defined"},
     {"name": "mod", "role": "Transformation planning/building with reversible changesets", "tools": ["write_memory", "export_asset"],
      "status": "planned", "notes": "Mod builder (Phase 8) not built yet."},
@@ -3038,7 +3038,8 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
-                              "decomp_tools",  # decomp_tools: decomp.me REST, IDA Pro headless/MCP, N64Recomp source build
+                              "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
+                              "ninja_ripper",  # ninja_ripper: NinjaRipper launch/attach/rip on agent test PCs, .rip -> GLB
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
                               "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
                               "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
