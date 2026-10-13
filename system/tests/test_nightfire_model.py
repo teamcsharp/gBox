@@ -77,3 +77,42 @@ def test_owned_bond_model_vertices(level):
     assert off == 0x4ACC0
     st = nm.normal_stats(nm.vertices(static, off, n["n_verts"]))
     assert 0.98 < st["mean"] < 1.02
+
+
+def test_owned_bond_mesh_faces(level):
+    data, by, _ = level
+    mesh = nm.object_mesh(data, "01000075")
+    assert mesh["vertex_block_offset"] == 0x4ACC0
+    assert mesh["runtime_base"] == 4093296
+    assert len(mesh["faces"]) > 2000
+    # All face indices are inside the vertex array and every triangle edge is short (scale 1/8192)
+    import math
+    scale = mesh["scale"]
+    bad = 0
+    for a, b, c in mesh["faces"]:
+        assert a < 1278 and b < 1278 and c < 1278
+        for p, q in ((a, b), (b, c), (a, c)):
+            pa = mesh["positions"][p]
+            qa = mesh["positions"][q]
+            d = math.sqrt(sum(((pa[i] - qa[i]) * scale) ** 2 for i in range(3)))
+            if d > 2.0:
+                bad += 1
+    assert bad == 0
+
+
+def test_owned_bond_glb(level, tmp_path):
+    data, by, _ = level
+    out = tmp_path / "bond.glb"
+    nm.export_glb(data, str(out), "01000075", "05000007")
+    assert out.stat().st_size > 0
+    # Minimal GLB parse: verify the JSON chunk mentions the right accessors and the skin has 73 joints.
+    import json, struct
+    d = out.read_bytes()
+    jl = struct.unpack_from("<I", d, 12)[0]
+    gltf = json.loads(d[20:20 + jl])
+    pos_acc = gltf["accessors"][gltf["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
+    idx_acc = gltf["accessors"][gltf["meshes"][0]["primitives"][0]["indices"]]
+    skin = gltf["skins"][0]
+    assert pos_acc["count"] == 1278 and idx_acc["count"] == 2694 * 3
+    assert len(skin["joints"]) == 73
+    assert gltf["skins"][0]["inverseBindMatrices"] is not None

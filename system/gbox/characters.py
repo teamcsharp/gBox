@@ -1343,6 +1343,9 @@ DEDICATED = [
     ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("nightfire", lambda t, p: "007" in t and "nightfire" in t and p == "gamecube",
+     lambda: __import__("gbox.nightfire_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.nightfire_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 

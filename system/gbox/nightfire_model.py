@@ -26,9 +26,13 @@ proven (s16/8192 gives a 1.92 m figure). Face/strip streams (u16, value < n_vert
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import struct
+from pathlib import Path
+
+from .nightfire_inventory import pack_index
 
 NODE_TAG = b"\xb0\x00\x00\x0c"
 FA_RUN = re.compile(rb"\xfa{8,}")
@@ -109,6 +113,152 @@ def vertices(static: bytes, offset: int, n_verts: int) -> list[tuple]:
 def normal_stats(verts: list[tuple]) -> dict:
     lens = [math.sqrt(v[3] ** 2 + v[4] ** 2 + v[5] ** 2) / 16384.0 for v in verts]
     return {"min": min(lens), "max": max(lens), "mean": sum(lens) / len(lens)}
+
+
+def _map_pointers(node: dict, static_entry: dict, level_data: bytes) -> tuple[int, list[int]]:
+    """Turn the 13 runtime pointers in a mesh node into file offsets in the level data.
+
+    The vertex-array pointer (local index 3 = fields[25]) points into the GC EXTRA STATIC
+    region.  Using the unique 0xFA-delimited vertex block for n_verts we recover the runtime
+    base, then every pointer p maps to file offset p + K where K = static.offset - base.
+    """
+    static = level_data[static_entry["offset"]:static_entry["offset"] + static_entry["size"]]
+    voff = vertex_block(static, node["n_verts"])
+    ptrs = node["pointers"]
+    base = ptrs[3] - voff
+    K = static_entry["offset"] - base
+    return K, [(p + K if p else 0) for p in ptrs]
+
+
+def object_mesh(level_data: bytes, object_name: str = "01000075") -> dict:
+    """Decode one 0x01 object mesh: positions, normals and a first triangle list.
+
+    The index stream is currently treated as one long triangle strip with degenerate vertices
+    skipped.  This yields a solid editable mesh for Bond's head/torso (object 0x01000075); the
+    true strip-length/material-group table is still being matched.
+    """
+    idx = pack_index(level_data)
+    entries = idx["entries"]
+    by = {e["name"].lower(): e for e in entries}
+    obj = by[object_name.lower()]
+    nodes = object_nodes(level_data[obj["offset"]:obj["offset"] + obj["size"]])
+    if not nodes:
+        raise ValueError(f"{object_name}: no mesh node found")
+    node = nodes[0]
+    static_e = next(e for e in entries if e["type"] == 13)
+    discard_e = next(e for e in entries if e["type"] == 14)
+    static = level_data[static_e["offset"]:static_e["offset"] + static_e["size"]]
+    discard = level_data[discard_e["offset"]:discard_e["offset"] + discard_e["size"]]
+    voff = vertex_block(static, node["n_verts"])
+    verts = vertices(static, voff, node["n_verts"])
+    K, mapped = _map_pointers(node, static_e, level_data)
+    if mapped[2] and mapped[4]:
+        i0, i1 = mapped[2] - discard_e["offset"], mapped[4] - discard_e["offset"]
+        indices = struct.unpack(f">{(i1 - i0) // 2}H", discard[i0:i1])
+    else:
+        raise ValueError(f"{object_name}: index-stream pointers are null")
+    faces = []
+    for a, b, c in zip(indices, indices[1:], indices[2:]):
+        if a != b and b != c and a != c:
+            faces.append((a, b, c))
+    return {
+        "object": obj, "node": node,
+        "positions": verts, "scale": 1 / 8192.0,
+        "faces": faces,
+        "vertex_block_offset": voff,
+        "runtime_base": node["pointers"][3] - voff,
+        "mapped_pointers": mapped,
+    }
+
+
+def export_glb(level_data: bytes, out_path: str, object_name: str = "01000075",
+               skin_name: str = "05000007") -> Path:
+    """Export a Nightfire object + its HT_Skin skeleton as a glTF 2.0 .glb.
+
+    The mesh is currently unweighted (inverse bind matrices are identity) so the skeleton is
+    present for editing but does not yet deform the mesh.  The position scale is fixed at
+    s16/8192, validated against the Bondcombat bind-pose extents.  glTF is built directly as
+    JSON+binary to avoid a heavy dependency.
+    """
+    import numpy as np
+    from .nightfire_inventory import pack_index
+
+    mesh = object_mesh(level_data, object_name)
+    idx = pack_index(level_data)
+    by = {e["name"].lower(): e for e in idx["entries"]}
+    skin_e = by[skin_name.lower()]
+    skin = skin_skeleton(level_data[skin_e["offset"]:skin_e["offset"] + skin_e["size"]])
+
+    pos = np.array([[v[0] * mesh["scale"], v[1] * mesh["scale"], v[2] * mesh["scale"]]
+                    for v in mesh["positions"]], dtype=np.float32)
+    nrm = np.array([[v[3] / 16384.0, v[4] / 16384.0, v[5] / 16384.0]
+                    for v in mesh["positions"]], dtype=np.float32)
+    faces = np.array(mesh["faces"], dtype=np.uint16)
+
+    pos_b, nrm_b, idx_b = pos.tobytes(), nrm.tobytes(), faces.tobytes()
+    blob = bytearray(pos_b + nrm_b + idx_b)
+    n_bones = skin["bones"]
+    ibm = np.tile(np.eye(4, dtype=np.float32), (n_bones, 1, 1)).tobytes()
+    ibm_off = len(blob)
+    blob += bytearray(ibm)
+    while len(blob) % 4:
+        blob.append(0)
+
+    bvs = [
+        {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_b), "target": 34962},
+        {"buffer": 0, "byteOffset": len(pos_b), "byteLength": len(nrm_b), "target": 34962},
+        {"buffer": 0, "byteOffset": len(pos_b) + len(nrm_b), "byteLength": len(idx_b), "target": 34963},
+        {"buffer": 0, "byteOffset": ibm_off, "byteLength": len(ibm), "target": 34962},
+    ]
+    accs = [
+        {"bufferView": 0, "componentType": 5126, "count": len(pos), "type": "VEC3",
+         "max": pos.max(axis=0).tolist(), "min": pos.min(axis=0).tolist()},
+        {"bufferView": 1, "componentType": 5126, "count": len(nrm), "type": "VEC3"},
+        {"bufferView": 2, "componentType": 5123, "count": len(faces) * 3, "type": "SCALAR"},
+        {"bufferView": 3, "componentType": 5126, "count": n_bones, "type": "MAT4"},
+    ]
+    material = {"pbrMetallicRoughness": {
+        "baseColorFactor": [0.8, 0.6, 0.5, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.8}}
+    mesh_obj = {"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1},
+                                 "indices": 2, "mode": 4, "material": 0}]}
+
+    joint_nodes = []
+    for i, b in enumerate(skin["bind"]):
+        p, q = b["pos"], b["quat"]
+        joint_nodes.append({"name": f"bone_{i:02d}", "translation": [float(x) for x in p],
+                          "rotation": [float(q[0]), float(q[1]), float(q[2]), float(q[3])]})
+    for i, par in enumerate(skin["parents"]):
+        if par >= 0:
+            joint_nodes[par].setdefault("children", []).append(i)
+
+    root_idx = len(joint_nodes)
+    skel_root = {"name": f"{skin_name}_root", "children": list(range(n_bones))}
+    mesh_node = {"name": mesh["node"]["name"], "mesh": 0, "skin": 0}
+    model_root = {"name": f"Nightfire_{object_name}", "children": [root_idx, root_idx + 1]}
+
+    gltf = {
+        "asset": {"version": "2.0", "generator": "gbox.nightfire_model"},
+        "scene": 0,
+        "scenes": [{"nodes": [len(joint_nodes) + 2]}],
+        "nodes": joint_nodes + [skel_root, mesh_node, model_root],
+        "meshes": [mesh_obj],
+        "skins": [{"joints": list(range(n_bones)), "inverseBindMatrices": 3, "skeleton": root_idx}],
+        "buffers": [{"byteLength": len(blob)}],
+        "bufferViews": bvs,
+        "accessors": accs,
+        "materials": [material],
+    }
+
+    js = json.dumps(gltf, separators=(",", ":")).encode()
+    js += b" " * (-len(js) % 4)
+    blob += b"\0" * (-len(blob) % 4)
+    out = struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(blob)) \
+        + struct.pack("<II", len(js), 0x4E4F534A) + js \
+        + struct.pack("<II", len(blob), 0x004E4942) + blob
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_bytes(out)
+    return Path(out_path)
 
 
 def write_obj(path, verts: list[tuple], scale: float = 1 / 8192.0) -> None:
