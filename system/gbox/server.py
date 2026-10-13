@@ -457,6 +457,53 @@ def create_app(config: Config) -> FastAPI:
         f = _env_file(slug, rel)
         return FileResponse(f, filename=f.name)
 
+    # --- bevy: the gBox Bevy viewer's scenes, renders and live sessions (the desktop app's Bevy tab) ---
+    def _bevy_render(name: str) -> Path:
+        import re as _re
+        if not _re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name):
+            _404()
+        f = (config.data_dir / "bevy" / f"{name}.png").resolve()
+        if not f.is_file():
+            _404()
+        return f
+
+    @app.get("/api/bevy")
+    def bevy_status(actor=Depends(auth)):
+        """Bevy support & offerings: viewer build state, saved scenes and renders, live windows on this node."""
+        from .tools import BEVY
+        sdir = config.data_dir / "bevy"
+
+        def _items(f: Path) -> int:
+            try:
+                return len(json.loads(f.read_text()).get("items", []))
+            except Exception:
+                return 0
+
+        def _src(f: Path) -> list:
+            try:
+                return json.loads(f.read_text()).get("_src", [])
+            except Exception:
+                return []
+
+        scenes = [{"name": f.stem, "mtime": f.stat().st_mtime, "items": _items(f), "src": _src(f)}
+                  for f in sorted(sdir.glob("*.json"), key=lambda p: p.name)]
+        renders = [{"name": f.stem, "mtime": f.stat().st_mtime} for f in sorted(sdir.glob("*.png"), key=lambda p: p.name)]
+        live = [{"name": n, "pid": s["proc"].pid, "items": len(s["spec"]["items"])}
+                for n, s in BEVY.items() if s["proc"].poll() is None]
+        exe = config.runtime / "bevy-target" / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
+        try:
+            from . import characters
+            n_char = len(characters.list_all(characters.library_root(config)))
+            n_env = len(characters.list_all(characters.env_root(config)))
+        except Exception:
+            n_char, n_env = None, None
+        return {"viewer_built": exe.exists(), "scenes": scenes, "renders": renders, "live": live,
+                "characters": n_char, "environments": n_env}
+
+    @app.get("/api/bevy/render/{name}.png")
+    def bevy_render_png(name: str, actor=Depends(auth)):
+        return FileResponse(_bevy_render(name), media_type="image/png")
+
     class NotifyIn(BaseModel):
         title: str
         text: str = ""
@@ -1648,7 +1695,10 @@ def create_app(config: Config) -> FastAPI:
         meta, data = store.get("artifact", digest), store.read_artifact(digest)
         if not meta or data is None:
             _404()
-        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"])})
+        # content-addressed (the URL is the SHA-256), so a client may keep it: the desktop inbox re-renders screenshots
+        # and attachments every few seconds and re-downloaded each one without this (#712)
+        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"]),
+                                                                      "cache-control": "private, max-age=31536000, immutable"})
 
     @app.post("/api/artifacts")
     async def upload_artifact(request: Request, name: str, media_type: str = "application/octet-stream",
@@ -2105,18 +2155,15 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
+        from .live_stream import mjpeg_parts
         lv = _live(sid)
 
-        def gen():                                   # wakes on every new frame: stream fps = source fps
-            seq, idle = -1, time.time()
-            while time.time() - idle < 30:
-                with lv["cond"]:
-                    lv["cond"].wait_for(lambda: lv["seq"] != seq and lv["frame"] is not None, 1.0)
-                    if lv["seq"] == seq or lv["frame"] is None:
-                        continue
-                    seq, frame, idle = lv["seq"], lv["frame"], time.time()
-                yield b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=f",
+        def alive() -> bool:                         # stop streaming once the session has ended or was replaced
+            s = store.get("session", sid)
+            return s is None or s.get("state") != "ended"
+        # Wakes on every new frame (stream fps = source fps) and repeats the newest frame while the source pauses,
+        # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
+        return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
     class InputEvents(BaseModel):
@@ -3419,10 +3466,17 @@ def create_app(config: Config) -> FastAPI:
                                  headers={"content-disposition": 'attachment; filename="gbox-request-history.md"'})
 
     @app.get("/api/requests")
-    def req_list(status: str = "", source: str = "", actor=Depends(auth)):
+    def req_list(request: Request, status: str = "", source: str = "", actor=Depends(auth)):
+        # The desktop inbox polls this every few seconds and it is the whole history (~8 MB, ~1 s to build). An unchanged
+        # inbox answers 304 from a hash of the stored rows, without decoding, organizing or sending them (#712).
+        import hashlib
+        from fastapi.responses import JSONResponse
+        tag = f'"{store.digest("request")}:{hashlib.sha1(f"{status}|{source}".encode()).hexdigest()[:8]}"'
+        if request.headers.get("if-none-match") == tag:
+            return Response(status_code=304, headers={"etag": tag})
         from . import inbox
         rs = [r for r in inbox.organize(store.all("request")) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
-        return _clean(sorted(rs, key=lambda r: r["created"], reverse=True))
+        return JSONResponse(_clean(sorted(rs, key=lambda r: r["created"], reverse=True)), headers={"etag": tag})
 
     def _clean(o):
         """Lone surrogates (bad clipboard/dictation text) can't be sent as UTF-8 JSON: replace them, don't fail the list."""

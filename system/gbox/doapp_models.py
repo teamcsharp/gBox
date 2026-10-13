@@ -13,10 +13,11 @@ everything that is established from the game's own code (docs/doapp_pipeline.md)
   from the 13-byte tables at 0x80103ed0) and draws group p's chunks (`u16 count, u16 kind` + prebuilt GPU packets).
 * the TIM run: standard PS1 TIMs back to back.
 
-Not established, so not produced here: the skeleton (bone hierarchy + rest transforms). The per-bone vertex batches
-are in bone-local frames whose axes differ per bone (thighs extend along -z, shins along +z), so the rest pose comes
-from the motion evaluator, which has not been located. Without it there is no honest rigged GLB; this module is
-therefore not registered as a characters.DEDICATED reader (see docs/doapp_pipeline.md "Status").
+* chunk records -> primitives (primitives(); layouts from the draw routines, see CHUNK_LAYOUTS) and the TIMs as
+  VRAM texture pages (vram(), texture_page()).
+
+The skeleton is not in the model: the per-bone batches are in bone-local frames that the game's skeleton build
+places. gbox.doapp_motion runs that build; gbox.doapp_chars assembles the rigged GLB (docs/doapp_pipeline.md).
 """
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ MESH_SLOTS = 8                     # slot k = section 3 + k (body, then limbs / 
 SLOT_ENTRIES = 13                  # 13 count/start entries and 13 bone bytes per slot
 MESH_MARKER = 0x42                 # first word the expander writes
 UNPACK_FN = 0x8006C718             # fight loader's section expander (a0 player, a1 src, a2 dest) -> new src
-WORK_BASE = 0x801E8000             # player 0 work buffer (0x8008775c[0]); 14 section pointers sit at its start
+WORK_BASE = 0x801E8000             # where unpack_model() expands (scratch; the game's player 0 buffer is 0x801fe800 in
+                                   # its 4 MiB RAM, 0x8008775c[0]; doapp_motion.Rig uses that one)
 LOAD_AT = 0x80140000               # where unpack_model() places the file (free RAM during the fight loader)
 BONE_TABLE_RAM = 0x80103ED0        # overlay: 13 bone bytes per slot; 0x80103f2c is the 10-part body variant
 SCRATCH_VERTEX = 0x1F800000        # transformed vertex i lives at SCRATCH_VERTEX + 8 * i ...
@@ -162,6 +164,157 @@ def chunk_header(section: bytes, off: int) -> dict:
         raise FormatError(f"chunk at {off:#x} outside the section")
     count, kind = struct.unpack_from("<HH", section, off)
     return {"offset": off, "count": count, "kind": kind}
+
+
+# ---- chunk records -> primitives (layouts from the overlay's draw routines, dispatched by 0x800ab828) -------------
+# Every record holds the same prebuilt GPU packet twice (double buffer), then the corner pointers into the
+# transformed-vertex buffer, then per-kind data. kind -> record size, packet type, size of one packet copy, offset of
+# the corner pointers, normal offsets (SVECTOR 4.12), culled (single-sided), the GPU code the drawer forces (None =
+# the packet's own). 0x805a are the seam triangles joining two bones' batches (last group of slots 0, 1, 3); they
+# reuse the vertices the slot's other batches already transformed and borrow neighbouring faces' lit colours through
+# 3 x 2 colour pointers (+0x5c). Kind 1 (section 12 only) carries four inline SVECTOR corners and no vertex block.
+SCRATCH_VERTEX_LIMIT = SCRATCH_VERTEX + 8 * SCRATCH_VERTICES
+CHUNK_LAYOUTS = {
+    0x8018: dict(size=0x54, packet="FT3", copy=0x20, ptrs=0x40, normals=(0x4C,), cull=True, code=None),
+    0x8019: dict(size=0x68, packet="FT4", copy=0x28, ptrs=0x50, normals=(0x60,), cull=True, code=None),
+    0x801A: dict(size=0x74, packet="GT3", copy=0x28, ptrs=0x50, normals=(0x5C, 0x64, 0x6C), cull=True, code=None),
+    0x801B: dict(size=0x98, packet="GT4", copy=0x34, ptrs=0x68, normals=(0x78, 0x80, 0x88, 0x90), cull=True, code=None),
+    0x803A: dict(size=0x74, packet="GT3", copy=0x28, ptrs=0x50, normals=(0x5C, 0x64, 0x6C), cull=False, code=0x34),
+    0x803B: dict(size=0x98, packet="GT4", copy=0x34, ptrs=0x68, normals=(0x78, 0x80, 0x88, 0x90), cull=False,
+                 code=0x3C),
+    0x0029: dict(size=0x60, packet="FT4", copy=0x28, ptrs=0x50, normals=(), cull=False, code=0x2C),
+    0x805A: dict(size=0x74, packet="GT3", copy=0x28, ptrs=0x50, normals=(), cull=True, code=0x34),
+    0x0001: dict(size=0x70, packet="FT4", copy=0x28, ptrs=None, inline=0x50, normals=(), cull=False, code=None),
+}
+SEAM_KIND = 0x805A
+_UV = {"FT3": (0x0C, 0x14, 0x1C), "FT4": (0x0C, 0x14, 0x1C, 0x24),
+       "GT3": (0x0C, 0x18, 0x24), "GT4": (0x0C, 0x18, 0x24, 0x30)}
+_TPAGE = {"FT3": 0x14, "FT4": 0x14, "GT3": 0x18, "GT4": 0x18}
+
+
+def vertex_index(ptr: int) -> int:
+    """Transformed-vertex buffer address -> vertex index in the section's vertex block."""
+    if SCRATCH_VERTEX <= ptr < SCRATCH_VERTEX_LIMIT and not ptr & 7:
+        return (ptr - SCRATCH_VERTEX) >> 3
+    if SPILL_VERTEX <= ptr < SPILL_VERTEX + 0x10000 and not ptr & 7:
+        return SCRATCH_VERTICES + ((ptr - SPILL_VERTEX) >> 3)
+    raise FormatError(f"{ptr:#010x} is not a transformed-vertex buffer address")
+
+
+def tpage_fields(tp: int) -> dict:
+    return {"x": (tp & 0xF) * 64, "y": ((tp >> 4) & 1) * 256, "semi": (tp >> 5) & 3,
+            "bpp": (4, 8, 16, 16)[(tp >> 7) & 3], "raw": tp & 0xFFFF}
+
+
+def clut_xy(cl: int) -> tuple[int, int]:
+    return (cl & 0x3F) * 16, (cl >> 6) & 0x1FF
+
+
+def primitives(section: bytes, chunk_offset: int) -> list[dict]:
+    """The chunk at chunk_offset of an expanded mesh section -> primitives: kind, packet ('FT3'/'FT4'/'GT3'/'GT4'),
+    code (GPU command as drawn), verts (vertex indices in drawing order; None for kind 1, which has `positions`),
+    uv, clut (VRAM x, y), tpage (x, y, bpp, semi, raw), normals (4.12, one per corner or one per face),
+    double_sided."""
+    if chunk_offset < 0 or chunk_offset + 4 > len(section):
+        raise FormatError(f"chunk at {chunk_offset:#x} outside the section")
+    count, kind = struct.unpack_from("<HH", section, chunk_offset)
+    lay = CHUNK_LAYOUTS.get(kind)
+    if lay is None:
+        raise FormatError(f"chunk at {chunk_offset:#x}: unknown kind {kind:#x}")
+    if chunk_offset + 4 + count * lay["size"] > len(section):
+        raise FormatError(f"chunk at {chunk_offset:#x}: {count} records run past the section")
+    pk = lay["packet"]
+    corners = 4 if pk.endswith("4") else 3
+    out = []
+    for r in range(count):
+        o = chunk_offset + 4 + r * lay["size"]
+
+        def w(off, o=o):
+            return struct.unpack_from("<I", section, o + off)[0]
+        prim = {"kind": kind, "packet": pk, "offset": o,
+                "code": lay["code"] if lay["code"] is not None else section[o + 7],
+                "uv": [(section[o + u], section[o + u + 1]) for u in _UV[pk]],
+                "clut": clut_xy(w(0x0C) >> 16), "tpage": tpage_fields(w(_TPAGE[pk]) >> 16),
+                "normals": [struct.unpack_from("<3h", section, o + n) for n in lay["normals"]],
+                "double_sided": not lay["cull"], "verts": None, "positions": None}
+        if lay["ptrs"] is not None:
+            prim["verts"] = [vertex_index(w(lay["ptrs"] + 4 * k)) for k in range(corners)]
+        else:
+            prim["positions"] = [struct.unpack_from("<3h", section, o + lay["inline"] + 8 * k) for k in range(corners)]
+        out.append(prim)
+    return out
+
+
+def chunk_end(section: bytes, chunk_offset: int) -> int:
+    count, kind = struct.unpack_from("<HH", section, chunk_offset)
+    if kind not in CHUNK_LAYOUTS:
+        raise FormatError(f"chunk at {chunk_offset:#x}: unknown kind {kind:#x}")
+    return chunk_offset + 4 + count * CHUNK_LAYOUTS[kind]["size"]
+
+
+def corner_triangles(n: int) -> list[tuple[int, int, int]]:
+    """Corner triangles with outward (counter-clockwise, glTF) winding. The GPU draws (0, 1, 2) and (1, 3, 2); in the
+    game's right-handed y-down model frame that order's right-hand normal points into the mesh (it agrees with the
+    stored lighting normals reversed for 36503 of 36531 lit triangles of the 44 costume models), so it is reversed."""
+    return [(0, 2, 1)] if n == 3 else [(0, 2, 1), (1, 2, 3)]
+
+
+def texture_rect(prim: dict) -> tuple[int, int, int, int]:
+    """Inclusive VRAM rectangle (16-bit units) the primitive's UVs sample."""
+    tp = prim["tpage"]
+    div = {4: 4, 8: 2, 16: 1}[tp["bpp"]]
+    us = [u for u, _ in prim["uv"]]
+    vs = [v for _, v in prim["uv"]]
+    return tp["x"] + min(us) // div, tp["y"] + min(vs), tp["x"] + max(us) // div, tp["y"] + max(vs)
+
+
+def vram(model: bytes):
+    """A 1024 x 512 16-bit VRAM image (numpy uint16) with every TIM of the model file uploaded at its rectangle, and
+    a same-sized bool mask of what was uploaded."""
+    import numpy as np
+    v = np.zeros((512, 1024), np.uint16)
+    mask = np.zeros((512, 1024), bool)
+    for t in tims(model):
+        q = t["offset"] + 8
+        for blk in ([t["clut"]] if t["clut"] else []) + [t["image"]]:
+            size = struct.unpack_from("<I", model, q)[0]
+            x, y, w, h = blk["x"], blk["y"], blk["w"], blk["h"]
+            if x + w > 1024 or y + h > 512:
+                raise FormatError(f"TIM at {t['offset']:#x}: block {x},{y} {w}x{h} outside VRAM")
+            v[y:y + h, x:x + w] = np.frombuffer(model, "<u2", w * h, q + 12).reshape(h, w)
+            mask[y:y + h, x:x + w] = True
+            q += size
+    return v, mask
+
+
+def texture_page(v, tpage: dict, clut: tuple[int, int]):
+    """The 256 x 256 texel page a primitive samples, as RGBA uint8 (PS1 rules: texel 0x0000 is transparent, colour
+    bits are 5:5:5 BGR). UV (u, v) of the primitive addresses pixel (u, v) of this page directly."""
+    import numpy as np
+    x0, y0, bpp = tpage["x"], tpage["y"], tpage["bpp"]
+    if bpp == 16:
+        cols = v[y0:y0 + 256, x0:x0 + 256]
+        page = np.zeros((256, 256), np.uint16)
+        page[:cols.shape[0], :cols.shape[1]] = cols
+    else:
+        per = 16 // bpp
+        words = np.zeros((256, 256 // per), np.uint16)
+        src = v[y0:y0 + 256, x0:x0 + 256 // per]
+        words[:src.shape[0], :src.shape[1]] = src
+        idx = np.zeros((256, 256), np.uint16)
+        for k in range(per):
+            idx[:, k::per] = (words >> (bpp * k)) & ((1 << bpp) - 1)
+        cx, cy = clut
+        pal = v[cy, cx:cx + (1 << bpp)]
+        if len(pal) < (1 << bpp):
+            pal = np.concatenate([pal, np.zeros((1 << bpp) - len(pal), np.uint16)])
+        page = pal[idx]
+    rgba = np.zeros((256, 256, 4), np.uint8)
+    rgba[..., 0] = ((page & 0x1F) * 255 + 15) // 31
+    rgba[..., 1] = (((page >> 5) & 0x1F) * 255 + 15) // 31
+    rgba[..., 2] = (((page >> 10) & 0x1F) * 255 + 15) // 31
+    rgba[..., 3] = np.where(page == 0, 0, 255)
+    return rgba
 
 
 def batches(counts: bytes, starts: bytes, slot: int, vertex_total: int, groups: int | None = None) -> list[dict]:

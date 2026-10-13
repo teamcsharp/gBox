@@ -138,12 +138,22 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
     meta = {"slug": slug, "name": name, "kind": kind, "aliases": list(aliases), "source": source, "extraction_tool": tool,
             "model": model.name, "preview": "preview.png", "rig": rig_out, "stats": st,
             "licence": LICENCE, "notes": notes, "targets": targets or {}, "added": time.time(), **(extra or {})}
+    if kind != "sprites":                                  # clips the reader embedded in the model + ones it wrote beside it
+        from . import anim_clips
+        meta["animations"] = anim_clips.embedded_entries(model) + list((extra or {}).get("animations") or [])
     old = d / "meta.json"
     if old.exists():                                       # keep targets recorded by earlier builds
         prev = json.loads(old.read_text())
         for gid, lst in prev.get("targets", {}).items():
             meta["targets"].setdefault(gid, [])
             meta["targets"][gid] += [t for t in lst if t not in meta["targets"][gid]]
+        if kind != "sprites":                              # and clips attached later (doa2_assets op=motion_clips)
+            files = {a.get("file") for a in meta["animations"]} | {model.name}
+            kept = [a for a in prev.get("animations") or [] if a.get("file") and a["file"] not in files
+                    and not ("clip" in a or "sheet" in a) and (d / a["file"]).is_file()]
+            meta["animations"] += kept
+            if kept and not meta.get("anims_file") and prev.get("anims_file"):
+                meta["anims_file"] = prev["anims_file"]
     return put_meta(root, meta)
 
 
@@ -1194,13 +1204,39 @@ def _doa2_run(ctx, game, e, work):
     r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0],
                          native_cache=cache if (cache / 'verification.json').is_file() else None)
     m = r["manifest"]
-    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars native NaomiLib decoder",
+    files, extra = [work / f for f in r["files"]], {"native_source_assembly": r["assembly"]}
+    extra.update(doa2_motion_extra(work, e["slug"], [Path(f).name for f in r["files"]]))
+    if extra.get("anims_file"):
+        files.append(work / extra["anims_file"])
+    return {"files": files, "tool": "gbox.doa2_chars native NaomiLib decoder",
             "source_files": m["source"]["resource_ids"], "roles": r.get("roles", {}),
-            "extra": {"native_source_assembly": r["assembly"]},
+            "extra": extra,
             "notes": f"{m['container_facts']['n_models']} native mesh parts and "
                      f"{m['container_facts']['n_textures']} textures decoded. Assembly: {r['assembly']}. "
                      "Complete source includes native accessory, chain and cloth draws when its verified cache is available. "
                      "SUP source skin approximates curved deformation; motion and procedural limits are in core-report.json."}
+
+
+def doa2_motion_extra(work: Path, slug: str, names: list[str]) -> dict:
+    """The fighter's MOT bank (doa2_chars.export copies it into work) as <slug>.anims.glb control clips (#1384):
+    meta extras {anims_file, animations, anims_report}; an unsupported bank leaves a reason instead of clips, a fighter
+    without a mapped bank (doa2_chars.MOT_FILES) adds nothing."""
+    from . import anim_clips
+    mot = next((n for n in names if n.upper().endswith(".MOT")), None)
+    if mot is None:
+        return {}
+    try:
+        nodes, clips, report = anim_clips.doa2_clips((Path(work) / mot).read_bytes(), f"DOA2/{mot}")
+        if not clips:
+            return {"anims_report": {"status": "unsupported", "reason": "no decodable clip"}}
+        file = f"{slug}.anims.glb"
+        (Path(work) / file).write_bytes(anim_clips.build_glb(
+            nodes, clips, name=f"{slug} clips",
+            extras={"source": f"DOA2/{mot}", "drives": "controls", "fps_assumed": report["fps_assumed"], "note": report["note"]}))
+    except (OSError, ValueError) as err:                   # MotionFormatError is a ValueError
+        return {"anims_report": {"status": "unsupported", "reason": str(err)[:300]}}
+    return {"anims_file": file, "animations": anim_clips.entries_for(clips, file, f"DOA2/{mot}", "controls"),
+            "anims_report": {k: v for k, v in report.items() if k != "skipped"} | {"skipped": len(report["skipped"])}}
 
 
 def _doa2_needs_refresh(ctx, game, meta):
@@ -1389,6 +1425,12 @@ DEDICATED = [
     ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
      lambda: __import__("gbox.defjam_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Dead Or Alive ++ (arcade, Tecmo TPS; MAME doapp / doappk): 11 fighters x 4 costumes, rigged with the game's own
+    # stance-frame bone matrices (motion player + skeleton build run on the decoded program; #1340,
+    # docs/doapp_pipeline.md). Needs doapp.zip + coh1002m.zip beside the catalog's zip.
+    ("doapp", lambda t, p: t.startswith("dead or alive ++") and p == "arcade",
+     lambda: __import__("gbox.doapp_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.doapp_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 

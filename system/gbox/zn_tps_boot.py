@@ -93,10 +93,14 @@ class Cat702:
 
 
 class ZNMemory:
-    """2 MiB RAM (mirrored), 1 KiB scratchpad, BIOS, the bankedroms window, SIO0 + two CAT702s. Other I/O reads 0."""
+    """2 MiB RAM (mirrored; ram_size=0x400000 for the ZN-1's 4 MiB, which game code past the boot needs), 1 KiB
+    scratchpad, BIOS, the bankedroms window, SIO0 + two CAT702s. Other I/O reads 0."""
 
-    def __init__(self, bios: bytes, banked: bytes, cat_cpu: bytes, cat_rom: bytes):
-        self.ram = bytearray(0x200000)
+    def __init__(self, bios: bytes, banked: bytes, cat_cpu: bytes, cat_rom: bytes, ram_size: int = 0x200000):
+        if ram_size not in (0x200000, 0x400000, 0x800000):
+            raise ValueError("RAM is 2, 4 or 8 MiB")
+        self.ram = bytearray(ram_size)
+        self.ram_mask = ram_size - 1
         self.scratch = bytearray(0x400)
         self.bios = bytes(bios)
         self.banked = banked
@@ -108,7 +112,7 @@ class ZNMemory:
     def _where(self, a: int):
         p = a & 0x1FFFFFFF
         if p < 0x800000:
-            return self.ram, p & 0x1FFFFF
+            return self.ram, p & self.ram_mask
         if 0x1F800000 <= p < 0x1F800400:
             return self.scratch, p - 0x1F800000
         if 0x1FC00000 <= p < 0x1FC80000:
@@ -176,16 +180,19 @@ class ZNMemory:
 
 
 class R3000:
-    """Integer R3000A with branch delay slots; COP0/GTE moves are no-ops (decode code does not need them)."""
+    """Integer R3000A with branch delay slots. COP0 moves are no-ops; COP2 (GTE) moves read 0 unless a GTE model is
+    attached (gte=gbox.psx_gte.GTE()), which then also executes GTE commands and lwc2/swc2 (game code that builds
+    matrices, e.g. gbox.doapp_motion)."""
 
-    def __init__(self, mem: ZNMemory):
+    def __init__(self, mem: ZNMemory, gte=None):
         self.m = mem
         self.r = [0] * 32
         self.hi = self.lo = 0
         self.steps = 0
+        self.gte = gte
 
     def call(self, pc: int, args=(), *, sp: int = 0x801FFF00, limit: int = 60_000_000) -> int:
-        r, m = self.r, self.m
+        r, m, gte = self.r, self.m, self.gte
         for i, a in enumerate(args):
             r[4 + i] = a & M32
         r[29], r[31] = sp, STOP
@@ -349,6 +356,13 @@ class R3000:
                 else:
                     w = (w & (0x00FFFFFF >> ((3 - sh) * 8))) | ((r[rt] << (sh * 8)) & M32)
                 m.w32(ea & ~3, w)
+            elif op == 0x12 and gte is not None:
+                gte.cop2(ins, r)
+                r[0] = 0
+            elif op == 0x32 and gte is not None:  # lwc2
+                gte.write_data(rt, m.r32(ea))
+            elif op == 0x3A and gte is not None:  # swc2
+                m.w32(ea, gte.read_data(rt))
             elif op in (0x10, 0x12):            # COP0 / GTE: moves from read 0
                 if rs == 0 and rt:
                     r[rt] = 0

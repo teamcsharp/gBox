@@ -113,6 +113,9 @@ Legend: [x] done and verified on the real systems · [~] partly done (what is mi
       built, launched in Dolphin from the modded disc, drawing. Limit: a replacement larger than the original file (needs a disc
       rebuild).
 - [x] Phase 9 — cross-title into a target project: PSO Forest + Savage Wolf in a Bevy scene (`bevy_scene` tool)
+- [x] Bevy support & offerings: reactive live-scene ops for the LLM (`bevy_scene` op=open/snapshot/set_camera/add/remove/
+      close/list driving a live viewer window) + a Bevy tab in the desktop app (scenes, renders, live windows, quick-scene
+      runner, `/api/bevy` status endpoint)
 - [~] Phase 10 — broader coverage: compatibility fixes (PS2, 3DS, Neo Geo CD, GameCube, PC-FX, Doom routing); NAOMI/Atomiswave boot
       (.lst GD sets, 7z ROM sets: Capcom vs SNK 2, Demolish Fist); missing: CD-i and PocketStation BIOS files (operator)
 
@@ -126,9 +129,11 @@ Legend: [x] done and verified on the real systems · [~] partly done (what is mi
       Flow view, draggable/resizable pop-ups, push-to-talk, per-game window mode, screenshot-report overlays
 - [x] Deployment: `gBox.sh` wizard (Linux + Windows), docker-compose stack, per-machine settings overlay
 - [ ] Background agents for mashups: blocked by the permission system (operator approval)
-- [~] PUBG locomotion analysis: new `ue_steam` tool handles Steam auto-discovery, anti-cheat refusal,
-  and static Ghidra locomotion/animation symbol inference; PUBG is not installed and its anti-cheat
-  prevents live runtime work (operator)
+- [~] Unreal Steam games (#96): `ue_steam` handles Steam auto-discovery, anti-cheat refusal (PUBG is installed and
+  refused for its BattlEye folder), static Ghidra locomotion/animation symbol inference, and now reads unencrypted
+  paks (v1-v11): actor + animation inventory manifest, raw asset extraction, UE 4.24-4.27 SkeletalMesh -> rigged GLB
+  (docs/ue_steam.md; live-checked read-only on Deadlink and Redemption Reapers). Missing: IoStore packages, AnimSequence
+  track decoding, meshes before 4.24 / UE5 / unversioned-property cooks; encrypted paks need the game's AES key
 - [~] decomp.me / IDA Pro / N64Recomp / NinjaRipper integration (#90, #443): `decomp_me` (opt-in, dry-run default), `ida`,
   `n64recomp` and `ninja_ripper` registry tools with fakes-only tests (docs/rip_and_decomp_tools.md); live runs wait for
   IDA / N64Recomp / NinjaRipper installs on the agent test PC (operator)

@@ -589,9 +589,12 @@
   #xt-view .xhint { position:absolute; left:8px; bottom:6px; font-size:10.5px; color:#ffffff70; pointer-events:none; }
   #xt-ins h4 { margin:4px 0 8px; } #xt-ins img { max-width:100%; border-radius:4px; margin-top:6px; } #xt-ins pre { font:10.5px/1.35 ui-monospace,Consolas,monospace; color:#9fd; white-space:pre; overflow:auto; }
   #xt-ins .kv td { padding:1px 6px 1px 0; vertical-align:top; } #xt-ins .kv td:first-child { color:var(--mut); }
-  #brand.upd img { animation:holo 2.6s ease-in-out infinite; }
+  /* #712: three pulses when an update arrives, then a still highlight (pulsing again while hovered). Endless, the filter and
+     gradient animations repainted the logo at the display's refresh rate for the rest of the session on the CPU and GPU. */
+  #brand.upd img { animation:holo 2.6s ease-in-out 3; filter:drop-shadow(0 0 5px #b48cff); }
   #brand.upd span { background:linear-gradient(100deg, #8fe9ff, #b48cff, #ff9de2, #9dffcf, #8fe9ff); background-size:300% 100%;
-                    -webkit-background-clip:text; background-clip:text; color:transparent; animation:holotext 3.2s linear infinite; }
+                    -webkit-background-clip:text; background-clip:text; color:transparent; animation:holotext 3.2s linear 3; }
+  #brand.upd:hover img, #brand.upd:hover span { animation-iteration-count:infinite; }
   #brand.upd span small { -webkit-text-fill-color:transparent; }
   @keyframes holo { 0%, 100% { filter:drop-shadow(0 0 2px #8fe9ff) hue-rotate(0deg) brightness(1); transform:scale(1); }
                     50% { filter:drop-shadow(0 0 12px #b48cff) drop-shadow(0 0 4px #ff9de2) hue-rotate(160deg) brightness(1.45); transform:scale(1.07); } }
@@ -766,9 +769,10 @@ window.assetView = async (box, glbUrl) => {
   g.scene.position.sub(c); cam.position.set(sz * 0.55, sz * 0.35, sz * 0.75); cam.near = sz / 500; cam.far = sz * 20; cam.updateProjectionMatrix();
   ctl.target.set(0, 0, 0); ctl.update();
   let vis = true; new IntersectionObserver(e => vis = e[0].isIntersecting).observe(box);
-  const v = { box, stop: false }; live.add(v);
+  const v = { box, stop: false, player: null }, clock = new T.Clock(); live.add(v);
   const frame = () => {
-    if (v.stop || !box.isConnected) { r.dispose(); live.delete(v); return; }
+    if (v.stop || !box.isConnected) { v.player?.dispose(); v.clips?.remove(); r.dispose(); live.delete(v); return; }
+    const dt = clock.getDelta(); v.player?.update(dt);
     if (vis) { const w = cv.clientWidth, h = cv.clientHeight;
       if (cv.width !== Math.round(w * r.getPixelRatio())) { r.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
       ctl.update(); r.render(scene, cam); }
@@ -776,7 +780,14 @@ window.assetView = async (box, glbUrl) => {
   };
   frame();
   const tris = g.scene.children.reduce((n, o) => { o.traverse(m => { if (m.geometry?.index) n += m.geometry.index.count / 3; }); return n; }, 0);
-  return { triangles: tris };
+  // #1384: a GLB that carries clips gets the clip list + play / pause / loop / speed / scrubber under its view
+  if (g.animations.length && window.GBoxClips) {
+    let ui = null; v.clips = document.createElement("div"); box.after(v.clips);
+    v.player = GBoxClips.player(T, g.scene, st => ui?.render(st));
+    ui = GBoxClips.mount(v.clips, GBoxClips.list(null, g.animations.map(a => ({ name: a.name, duration: a.duration }))),
+      { url: x => x, load: async row => ({ player: v.player, clip: g.animations.find(a => a.name === row.name) }) });
+  }
+  return { triangles: tris, clips: g.animations.length };
 };
 // Live task map. Stable positions make new work join the mainline while finished work peels away.
 window.taskVisualGraphCreate = (canvas, labels, onPick) => {
@@ -1027,6 +1038,7 @@ window.taskVizCreate = canvas => {
     <button data-s="settings">Settings</button>
     <button data-s="tools">Tools</button>
     <button data-s="extract" title="The scene you're playing, frozen as 3D: navigate, select, inspect, export">Extract</button>
+    <button data-s="bevy" title="Bevy: the gBox Bevy viewer — real-time 3D scenes, one-shot renders, and live windows the LLM drives reactively">Bevy</button>
     <div class="st">
       <div><span id="d-api" class="dot"></span>Spark API</div>
       <div><span id="d-svc" class="dot"></span>Spark service</div>
@@ -1079,6 +1091,40 @@ window.taskVizCreate = canvas => {
       <table class="reg"><thead><tr><th></th><th>Name</th><th>Kind</th><th>Category</th><th>Status</th><th>Description</th></tr></thead><tbody id="tl-body"></tbody></table>
     </div></section>
     <section id="extract"></section>
+    <section id="bevy"><div class="pane" style="max-width:1400px">
+      <div class="bar"><h2 style="margin:0">Bevy</h2><span class="mut" id="bv-sum">loading…</span><button class="act" onclick="BV.data=null;loadBevy()">Refresh</button></div>
+      <p class="mut">The gBox Bevy viewer renders collection characters, captured environments and UAP asset packages as
+        real-time 3D — one-shot PNGs shown in chat, or a live window on this PC that the LLM drives reactively through the
+        <b>bevy_scene</b> tool (op=open / snapshot / set_camera / add / remove / close / list).</p>
+      <div class="cards">
+        <div class="card"><h2>Offerings</h2>
+          <div class="kv" id="bv-offer"><span>viewer</span><span>…</span></div>
+          <div class="btns">
+            <button class="act pri" id="bv-live" title="Open a live Bevy window on this PC (PSO Forest + Savage Wolf)">Open live viewer</button>
+            <button class="act" id="bv-render" title="One-shot render of the same scene (PNG lands in the chat)">Render that scene</button>
+          </div>
+          <p class="mut" id="bv-msg" style="margin:8px 0 0"></p>
+        </div>
+        <div class="card"><h2>Quick scene</h2>
+          <p class="mut" style="margin-top:0">items — collection entries (<code>{"character": "slug"}</code>, <code>{"environment": "slug"}</code>) and UAP packages (<code>{"package": "pso_dc_forest01"}</code>):</p>
+          <textarea id="bv-items" rows="4" style="width:100%;font:13px ui-monospace,Consolas,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:6px">[
+  { "package": "pso_dc_forest01" },
+  { "package": "pso_v2_savage_wolf", "translation": [120, 0, 40], "scale": 1.0 }
+]</textarea>
+          <div class="bar" style="margin-top:8px">
+            <label style="color:var(--mut);font-size:13px"><input type="checkbox" id="bv-shot" checked> screenshot (PNG in chat)</label>
+            <button class="act pri" id="bv-run">Run bevy_scene</button>
+          </div>
+          <p class="mut" id="bv-run-msg" style="margin:8px 0 0"></p>
+        </div>
+      </div>
+      <div class="bar" style="margin-top:12px"><h3 style="margin:0">Scenes</h3><span class="mut" id="bv-scenes-sum"></span></div>
+      <table class="reg"><thead><tr><th>Name</th><th>Items</th><th>Updated</th><th></th></tr></thead><tbody id="bv-scenes"></tbody></table>
+      <div class="bar" style="margin-top:12px"><h3 style="margin:0">Renders</h3><span class="mut" id="bv-renders-sum"></span></div>
+      <div id="bv-renders" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start"></div>
+      <div class="bar" style="margin-top:12px"><h3 style="margin:0">Live windows on this node</h3></div>
+      <table class="reg"><thead><tr><th>Name</th><th>PID</th><th>Items</th></tr></thead><tbody id="bv-live-t"></tbody></table>
+    </div></section>
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
@@ -1087,6 +1133,7 @@ window.taskVizCreate = canvas => {
 </div>
 <script src="floating.js"></script>
 <script src="inbox-view.js"></script>
+<script src="live-poll.js"></script>
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
 <script src="request-solvers.js"></script>
@@ -1164,6 +1211,20 @@ volumeSlider.oninput = () => {
 volumeSlider.onchange = () => { clearTimeout(volumeTimer); gbox.audioVolume(+volumeSlider.value); };
 let S, current = null, playLoaded = false;
 var SBX = { api: "", tok: "" };                              // API base + token for <img> links (filled after settings load)
+// Shared control-plane reads (#712). /api/sessions lists every session ever played (~950 KB, 0.25-1.3 s); the running
+// ones are a few KB. Timers share one request and a short-lived answer instead of each downloading the whole history.
+const LIVE_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions?include_ended=false"), { ttl: 1000 });
+const ALL_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions"), { ttl: 30000 });
+const WORKERS = GBoxLivePoll.cachedRead(() => gbox.api("/api/workers"), { ttl: 4000 });
+const liveSessions = maxAge => LIVE_SESSIONS.get(maxAge);
+async function sessionById(sid) {                            // a running session from the live list; an ended one from the cached history
+  if (!sid) return null;
+  const live = await liveSessions();
+  const s = live.ok && live.data.find(x => x.session_id === sid);
+  if (s) return s;
+  const all = await ALL_SESSIONS.get();
+  return (all.ok && all.data.find(x => x.session_id === sid)) || null;
+}
 document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () => {
   document.querySelectorAll("aside button[data-s]").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
@@ -1428,7 +1489,7 @@ async function remoteStatus() {
   if (!REMOTE.worker || !$("#remote-pip").classList.contains("on")) return;
   const [status, sessions, jobs] = await Promise.all([
     gbox.api(`/api/workers/${encodeURIComponent(REMOTE.worker)}/desktop/status`),
-    gbox.api("/api/sessions"), gbox.api("/api/jobs?limit=100")]);
+    liveSessions(), gbox.api("/api/jobs?limit=100")]);
   const game = (sessions.data || []).find(s => s.state === "running" && s.session_id?.startsWith(REMOTE.worker + "-"));
   const active = (jobs.data || []).filter(j => j.state === "running" && j.worker_id === REMOTE.worker).map(j => j.tool);
   const age = status.data?.last_frame_age;
@@ -2154,7 +2215,7 @@ async function refresh() {
   const w = await gbox.winWorker("status");
   dot("#d-win", w.running ? "ok" : "warn");
   kv($("#win-kv"), [["worker", w.running ? "running" : "stopped"], ["name", esc(S.workerName)], ["code", esc(S.repoShare)]]);
-  const ws = await gbox.api("/api/workers"), fc = await gbox.api("/api/catalog/facets");
+  const ws = await WORKERS.get(), fc = await gbox.api("/api/catalog/facets");
   const games = fc.ok ? Object.values(fc.data.platforms).reduce((a, b) => a + b, 0) : 0;
   kv($("#cl-kv"), [["workers", ws.ok ? ws.data.map(x => `${x.online ? "●" : "○"} ${esc(x.name)} (${x.os}, ${x.tools.length} tools)`).join("<br>") || "none" : esc(ws.error)],
     ["games", games.toLocaleString()], ["platforms", fc.ok ? Object.keys(fc.data.platforms).length : "–"]]);
@@ -2553,8 +2614,8 @@ async function reportIssue() {
 async function issueDiagnostics(shot) {
     const wv = document.querySelector("#wv");
     const pg = wv ? await wv.executeJavaScript(REPORT_PROBE).catch(() => ({})) : {};
-    const ss = await gbox.api("/api/sessions"), run = (ss.ok ? ss.data : []).filter(s => s.state === "running");
-    const sid = pg.launch ? "" : (pg.sid || EMB.sid || run[0]?.session_id || ""), sess = run.find(s => s.session_id === sid) || (ss.ok ? ss.data : []).find(s => s.session_id === sid) || {};
+    const ss = await liveSessions(0), run = (ss.ok ? ss.data : []).filter(s => s.state === "running");
+    const sid = pg.launch ? "" : (pg.sid || EMB.sid || run[0]?.session_id || ""), sess = run.find(s => s.session_id === sid) || await sessionById(sid) || {};
     const [con, st, jr, wr] = await Promise.all([
       gbox.consoleTail(200000).catch(() => ""), gbox.settings().catch(() => ({})),
       pg.launch ? gbox.api("/api/jobs?limit=100").catch(() => ({})) : Promise.resolve({}),
@@ -2686,8 +2747,23 @@ $("#reqfilters").addEventListener("click", e => {
   refreshInbox();
 });
 function refreshInbox(explicit = true) { return inboxPoll(explicit); }
+// #712: the list renders the newest INBOX_PAGE.limit requests and older ones on demand: all 1,500+ requests with their
+// threads were ~59,000 DOM nodes, a 9 s first render and hundreds of eagerly loaded screenshots.
+const INBOX_PAGE = { limit: 40, step: 40, reuse: false };
+// An unchanged history (same ETag from the control plane) arrives as {unchanged} and the previous answer object is
+// reused: no ~8 MB copy into the page and no re-render key over it. Older main processes have no apiTagged.
+const REQUESTS_TAG = { etag: null, last: null };
+const REQUESTS = GBoxLivePoll.cachedRead(async () => {
+  if (!gbox.apiTagged) return gbox.api("/api/requests");
+  const r = await gbox.apiTagged("/api/requests", REQUESTS_TAG.etag);
+  if (r.ok && r.unchanged && REQUESTS_TAG.last) return REQUESTS_TAG.last;
+  if (!r.ok) return r;
+  REQUESTS_TAG.etag = r.etag; REQUESTS_TAG.last = { ok: true, data: r.data, etag: r.etag };
+  return REQUESTS_TAG.last;
+}, { ttl: 0 });
 const inboxPoll = singleFlightPoll(async () => {
-  const r = await gbox.api("/api/requests"); if (!r.ok) return;
+  inboxAt = Date.now();
+  const r = await REQUESTS.get(INBOX_PAGE.reuse ? 120000 : 0); INBOX_PAGE.reuse = false; if (!r.ok) return;
   const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
   inboxSolverRequests = all;
   const ids = new Set(all.map(x => x.id));
@@ -2733,8 +2809,8 @@ const inboxPoll = singleFlightPoll(async () => {
         · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
-        ${x.image ? `<img class="shot" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
-        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
+        ${x.image ? `<img class="shot" loading="lazy" decoding="async" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" loading="lazy" decoding="async" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
           : `<br><a class="att-file" href="#" data-url="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">📎 ${esc(a.name)}${a.size ? ` (${Math.ceil(a.size / 1024)} KB)` : ""}</a>`).join("")}</div>`).join("")}
         ${ms.map(mm => `<details class="howto" open><summary>How gBox does it: ${esc(mm.title)} <span class="mut">(${esc(mm.game_title || "")}, ${mm.verified ? "verified" : "not verified yet"})</span></summary>
           ${mm.calls.map(c => `<div class="howcall"><b>${esc(c.tool)}</b> <span class="mut">${esc((REG.tools?.[c.tool] || "").split("\n")[0].slice(0, 260))}</span><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}
@@ -2748,14 +2824,20 @@ const inboxPoll = singleFlightPoll(async () => {
   };
   const matches = x => requestFilter === "all" || (requestFilter === "pending" ? hasPending(x) : !hasPending(x));
   const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
-  updateInboxView(host, JSON.stringify([requestFilter, all, MODS.list]), () => (visibleRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
-    + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.map(renderRequest).join("")}</details>` : ""), replyAtt);
+  const shownRoots = visibleRoots.slice(0, INBOX_PAGE.limit), olderRoots = visibleRoots.length - shownRoots.length;
+  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (shownRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
+    + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older requests (${olderRoots} not shown)</button>` : "")
+    + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.slice(0, INBOX_PAGE.limit).map(renderRequest).join("")}</details>` : ""), replyAtt);
 });
 $("#reqlist").addEventListener("change", async e => {
   if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
   const id = e.target.dataset.linkRequest; if (!id || !e.target.value) return;
   const r = await gbox.api(`/api/requests/${id}/parent`, { parent_request_id: e.target.value });
   if (r.ok) refreshInbox(); else toast(r.error || "Could not link this sub-request");
+});
+$("#reqlist").addEventListener("click", e => {                // older requests: re-render from the answer just received
+  if (!e.target.closest("#reqmore")) return;
+  INBOX_PAGE.limit += INBOX_PAGE.step; INBOX_PAGE.reuse = true; refreshInbox();
 });
 // ---- mods: a change that worked, replayable on its game (thumbnail -> that moment; buttons -> launch/apply/video) ----
 const REG = {}, MODS = { list: [] };
@@ -2790,7 +2872,7 @@ async function jobWait(j, what, ms = 500, max = Infinity) {   // poll until the 
   return j;
 }
 async function modSession(m, launch) {
-  const ss = (await gbox.api("/api/sessions")).data || [];
+  const ss = (await liveSessions(0)).data || [];
   const run = ss.find(x => x.state === "running" && x.game_id === m.game_id);
   const bootMod = m.calls.find(c => c.tool === "@launch")?.input?.mod || "";
   if (run || !launch) return { sid: run?.session_id || "", bootApplied: !!run && !!bootMod && run.mod === bootMod };
@@ -2909,7 +2991,13 @@ document.addEventListener("click", async e => {
   }
   if (e.target.classList.contains("markdone")) { await gbox.api(`/api/requests/${id}/status`, { status: "done", note: "Closed by operator." }); refreshInbox(); }
 });
-setInterval(() => refreshInbox(false).catch(() => {}), 5000);
+// #712: /api/requests is the whole request history (~8 MB, ~1 s to serve, a ~150 ms main-thread task to receive).
+// Poll it every 5 s only while Requests is on screen; the toolbar's pending count refreshes once a minute otherwise
+// (and immediately after every send, reply or status change, which call refreshInbox()).
+var inboxAt = 0;
+setInterval(() => {
+  if (GBoxLivePoll.due(inboxAt, $("#requests").classList.contains("on"), 5000, 60000)) refreshInbox(false).catch(() => {});
+}, 5000);
 
 // ---------------- native game window inside gBox ----------------
 function popups() {                                          // floating things right under <body>: they must show above the game window
@@ -2922,11 +3010,22 @@ function popups() {                                          // floating things 
   });
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
+// shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
+const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on";
+const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
+// installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
+const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
+  window.__gboxMenuWatch = new MutationObserver(records => {
+    if (frame || !popupMutation(records, { body: document.body, holes: ${JSON.stringify(EMB_GUEST_MENUS)}, bodyChildren: false })) return;
+    frame = requestAnimationFrame(() => { frame = 0; console.log('GBOX:{"ev":"layout"}'); }); });
+  window.__gboxMenuWatch.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open"] }); }`;
 async function embedTick() {
-  if (EMB.busy) return;
+  if (EMB.busy) { EMB.again = true; return; }
   EMB.busy = true;
   try {
-    const r = await gbox.api("/api/sessions");
+    // Never wait on the network here (#1081): this loop cuts pop-ups out of the docked game window, so a 0.25-1.3 s
+    // session download per tick left menus hidden behind the game. The live list refreshes in the background.
+    const r = LIVE_SESSIONS.peek() || await liveSessions();
     if (r.ok) $("#tb-mini").hidden = $("#tb-pad").hidden = !r.data.some(s => s.state === "running");
     const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
@@ -2969,15 +3068,13 @@ async function embedTick() {
     if (await gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay)) return;
     if (GPU_GAME.pid) await gpuGameDispose(wv);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => [...document.querySelectorAll(
-      "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]")]
+    const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => { ${EMB_GUEST_WATCH} return [...document.querySelectorAll(${JSON.stringify(EMB_GUEST_MENUS)})]
       .filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" &&
         +s.opacity !== 0 && s.pointerEvents !== "none"; })
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
-      .filter(r => r.w > 0 && r.h > 0))()`).catch(() => []) : [];
+      .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on"),
-      ...popups()]                                              // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(EMB_HOLES), ...popups()]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -2989,9 +3086,19 @@ async function embedTick() {
     const key = JSON.stringify(st);
     if (key !== EMB.last || Date.now() - (EMB.t || 0) > 2000) { EMB.last = key; EMB.t = Date.now(); await gbox.embedSync(st); }   // resend: heals a missed show
   } catch { EMB.last = ""; }
-  finally { EMB.busy = false; }
+  finally {
+    EMB.busy = false;
+    if (EMB.again) { EMB.again = false; embedSoon(); }      // a pop-up changed while this sync ran: follow it now
+  }
 }
 setInterval(embedTick, 250);
+// Pop-ups over a docked native game (#1081): cut them out of the game window in the frame they open or close, not on the
+// next 250 ms tick. Shell changes are observed here; the embedded gBox view reports its own menus ("layout" message).
+const embedSoon = GBoxLivePoll.coalesce(() => EMB.pid && EMB.surface !== "gpu" ? embedTick() : null,
+  { minMs: 32, schedule: (cb, ms) => ms ? setTimeout(cb, ms) : requestAnimationFrame(cb) });
+new MutationObserver(records => {                            // the game bar and corner grips are placed by embedTick itself
+  if (EMB.pid && EMB.surface !== "gpu" && GBoxEmbedGeometry.popupMutation(records, { body: document.body, holes: EMB_HOLES, ignore: "#piph, .piprz" })) embedSoon();
+}).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open"] });
 // ---------------- voice overlay (#250): the randomized transition visual over the game while you talk with gBox or it talks back ----------------
 // The picture is /viz/overlay.html (the loading-screen visualizer; a fresh random mode each time the overlay starts), floated over the
 // docked or picture-in-picture game by main.js (viz:overlay) or layered into the GPU game surface. It shows while you speak (push-to-talk
@@ -3021,7 +3128,7 @@ function vovSignals() {
 function vovApply(d) {                                            // the GPU surface layers it itself; a native game gets the floating window
   if (EMB.surface === "gpu") { gbox.vizOverlay?.({ on: false }); gpuGameVoice({ on: d.on, level: d.level, beat: d.beat, mode: d.mode }); return; }
   gpuGameVoice({ on: false });
-  gbox.vizOverlay?.(d.on ? { on: true, rect: EMB.rect, level: d.level, beat: d.beat, mode: d.mode, restart: d.restart } : { on: false });
+  gbox.vizOverlay?.(d.on ? { on: true, rect: EMB.rect, holes: EMB.holes || [], level: d.level, beat: d.beat, mode: d.mode, restart: d.restart } : { on: false });
 }
 setInterval(() => {
   const d = vovDecide(vovSignals(), VOV, Date.now());
@@ -3356,10 +3463,15 @@ async function syncNativePads() {
     if (typeof padStatus === "function") padStatus();
     if (typeof cur !== "undefined" && cur === "Controllers") show("Controllers");`).catch(() => {});
 }
+// This PC's XInput reading (any window focus): the view forwards it as Player 1 of a streamed game (#1532) and lights
+// the controller glyph. gboxNativePad applies each change at once, also while the view is hidden behind the mini window.
 gbox.onPadState?.(pads => {
-  const wv = document.querySelector("#wv");
-  if (wv) wv.executeJavaScript(`window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: ${JSON.stringify(pads)} };`).catch(() => {});
+  const wv = document.querySelector("#wv"), state = JSON.stringify(pads);
+  if (wv) wv.executeJavaScript(`window.gboxNativePad ? window.gboxNativePad(${state}) : (window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: ${state} });`).catch(() => {});
 });
+// Mini mode hides this window and its view; the view keeps forwarding the pad to the session the mini window shows.
+const miniPadTarget = sid => document.querySelector("#wv")?.executeJavaScript(`window.gboxPadTarget?.(${JSON.stringify(sid || null)})`).catch(() => {});
+gbox.onMiniClosed?.(() => miniPadTarget(null));
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));
@@ -3367,6 +3479,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);
+    else if (m.ev === "layout") { if (EMB.pid && EMB.surface !== "gpu") embedSoon(); }   // a menu over the docked game opened/closed
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
@@ -4088,7 +4201,7 @@ async function riFind() {                                   // the RE session th
   const ctx = EMB.sid ? { session_id: EMB.sid } : await chatContext().catch(() => ({}));
   if (!ctx.session_id) return null;
   let gid = ctx.game_id;
-  if (!gid) { const r = await gbox.api("/api/sessions"); gid = r.ok && r.data.find(x => x.session_id === ctx.session_id)?.game_id; }
+  if (!gid) gid = (await sessionById(ctx.session_id))?.game_id;
   if (!gid) return null;
   if (!(gid in RI.cats)) { const r = await gbox.api("/api/re/catalog?game_id=" + encodeURIComponent(gid)); RI.cats[gid] = r.ok ? r.data : null; }
   return RI.cats[gid] ? { sid: ctx.session_id, gid, cat: RI.cats[gid] } : null;
@@ -4789,14 +4902,14 @@ $("#chatmodel").onchange = e => { try { localStorage.setItem("gbox_model", e.tar
 async function chatContext() {
   const st = await gboxState(), ctx = { local_worker: S.workerName, tab: st.tab };
   if (!st.session) {                       // native-window games (RPCS3, RetroArch): newest running session on this PC
-    const [ss, ws] = await Promise.all([gbox.api("/api/sessions"), gbox.api("/api/workers")]);
+    const [ss, ws] = await Promise.all([liveSessions(), WORKERS.get()]);
     const me = ws.ok && ws.data.find(w => w.name === S.workerName);
     const mine = me && ss.ok && ss.data.filter(x => x.state === "running" && x.session_id.startsWith(me.id + "-"))
       .sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (mine) st.session = mine.session_id;
   }
   if (st.session) {
-    const r = await gbox.api("/api/sessions"), s = r.ok && r.data.find(x => x.session_id === st.session);
+    const s = await sessionById(st.session);
     Object.assign(ctx, { session_id: st.session, game_id: s?.game_id, game_title: s?.title, native_window: !!s?.detail?.local_window });
   }
   return ctx;
@@ -5393,15 +5506,16 @@ $("#tb-mini").onclick = async () => {
   const st = await gboxState();
   let sid = st.session, title = "";
   if (!sid) {                                                     // no game open: use the most recent running streamed session
-    const r = await gbox.api("/api/sessions");
+    const r = await liveSessions(0);
     const s = r.ok && r.data.find(x => x.state === "running" && !(x.detail && x.detail.local_window));
     if (!s) return alert("Mini mode shows a streamed game. Start one (or use the Spark button), then click Mini.");
     sid = s.session_id; title = s.title;
   } else {
-    const r = await gbox.api("/api/sessions"); const s = r.ok && r.data.find(x => x.session_id === sid);
+    const s = await sessionById(sid);
     if (s && s.detail && s.detail.local_window) return alert("This game runs natively in its own RetroArch window — resize that window directly.");
     title = s ? s.title : "";
   }
+  miniPadTarget(sid);
   gbox.miniOpen(sid, title);
 };
 // ---------------- Tools: everything dispatchable by an LLM (typed tools, agent roles, Ghidra scripts) ----------------
@@ -5433,6 +5547,80 @@ $("#tl-body").onclick = e => { const tr = e.target.closest("tr.row"); if (!tr) r
 $("#tl-q").oninput = e => { TL.q = e.target.value; renderTools(); };
 $("#tl-kind").onchange = e => { TL.kind = e.target.value; renderTools(); };
 document.querySelector('aside button[data-s="tools"]').addEventListener("click", () => TL.data || loadTools());
+
+
+// ---------------- Bevy: the gBox Bevy viewer (scenes, renders, live windows the LLM drives reactively) ----------------
+const BV = { data: null };
+const BV_DEMO = () => [{ package: "pso_dc_forest01" }, { package: "pso_v2_savage_wolf", translation: [120, 0, 40], scale: 1.0 }];
+async function bvJob(input, os) {
+  const req = { tool: "bevy_scene", input };
+  // "on this PC": a live window opens on this PC's worker (and its later ops must reach the same process)
+  if (S.workerName) req.require_worker = S.workerName; else if (os) req.require_os = os;
+  const r = await gbox.api("/api/jobs", req);
+  return r.ok ? r.data : { error: r.error };
+}
+async function loadBevy() {
+  const r = await gbox.api("/api/bevy");
+  if (!r.ok) { $BV_SUM(); return; }
+  const d = r.data; BV.data = d;
+  $BV_SUM();
+  const t = s => new Date(s * 1000).toLocaleString();
+  $("#bv-offer").innerHTML = [
+    ["viewer", d.viewer_built ? "built ✓" : "not built yet (first bevy_scene job compiles it)"],
+    ["collection characters", d.characters == null ? "?" : String(d.characters)],
+    ["captured environments", d.environments == null ? "?" : String(d.environments)],
+    ["saved scenes", String(d.scenes.length)],
+    ["renders", String(d.renders.length)],
+    ["live windows", d.live.length ? d.live.map(l => `${l.name} (pid ${l.pid})`).join(", ") : "none — bevy_scene op=open starts one"],
+  ].map(([k, v]) => `<span>${k}</span><span>${esc(String(v))}</span>`).join("");
+  $("#bv-scenes-sum").textContent = `${d.scenes.length} scene${d.scenes.length === 1 ? "" : "s"}`;
+  $("#bv-renders-sum").textContent = `${d.renders.length} render${d.renders.length === 1 ? "" : "s"}`;
+  $("#bv-scenes").innerHTML = d.scenes.length ? d.scenes.map(s => `<tr>
+      <td><b>${esc(s.name)}</b></td><td>${s.items}</td><td class="mut">${t(s.mtime)}</td>
+      <td><button class="act" data-bv-render="${esc(s.name)}">Render</button>
+          <button class="act" data-bv-open="${esc(s.name)}">Open live</button></td></tr>`).join("")
+    : `<tr><td colspan="4" class="mut">No scenes yet — run a scene above or ask the LLM for one.</td></tr>`;
+  $("#bv-renders").innerHTML = d.renders.length ? d.renders.map(n => {
+    const src = SBX.api ? `${SBX.api}/api/bevy/render/${encodeURIComponent(n.name)}.png?token=${encodeURIComponent(SBX.tok)}` : "";
+    return `<figure style="margin:0"><img src="${src}" alt="${esc(n.name)}" loading="lazy"
+        style="max-width:300px;max-height:220px;border:1px solid var(--line);border-radius:6px;background:#090a0e">
+        <figcaption class="mut" style="font-size:11px;margin-top:3px">${esc(n.name)}</figcaption></figure>`;
+  }).join("") : `<p class="mut" style="margin:0">No renders yet.</p>`;
+  $("#bv-live-t").innerHTML = d.live.length ? d.live.map(l =>
+      `<tr><td><b>${esc(l.name)}</b></td><td>${l.pid}</td><td>${l.items}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="mut">Nothing live on this node.</td></tr>`;
+}
+const $BV_SUM = () => {
+  const d = BV.data;
+  $("#bv-sum").textContent = d ? `viewer ${d.viewer_built ? "built" : "unbuilt"} · ${d.scenes.length} scenes · ${d.renders.length} renders · ${d.live.length} live` : "…";
+};
+const $BV_MSG = (id, text, ok = true) => { const el = $(id); el.textContent = text; el.className = "mut" + (ok ? "" : " bad"); };
+$("#bv-run").onclick = async () => {
+  let items;
+  try { items = JSON.parse($("#bv-items").value); } catch (e) { $BV_MSG("#bv-run-msg", "items is not valid JSON: " + e.message, false); return; }
+  $BV_MSG("#bv-run-msg", "dispatching bevy_scene…");
+  const j = await bvJob({ name: "scene", items, screenshot: $("#bv-shot").checked, camera: {} }, "windows");
+  $BV_MSG("#bv-run-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); the PNG appears in the chat when it finishes.`);
+};
+$("#bv-render").onclick = async () => { $BV_MSG("#bv-msg", "dispatching render…");
+  const j = await bvJob({ name: "scene", items: BV_DEMO(), screenshot: true }, "windows");
+  $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); the PNG appears in the chat when it finishes.`);
+};
+$("#bv-live").onclick = async () => { $BV_MSG("#bv-msg", "dispatching live viewer (first build takes several minutes)…");
+  const j = await bvJob({ name: "scene", op: "open", items: BV_DEMO() }, "windows");
+  $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); a gBox · Bevy window opens on this PC. The LLM can then drive it (op=snapshot/set_camera/add/remove/close).`);
+};
+$("#bv-scenes").onclick = async e => {
+  const b = e.target.closest("button[data-bv-render], button[data-bv-open]");
+  if (!b) return;
+  const row = BV.data.scenes.find(s => s.name === b.dataset.bvRender || s.name === b.dataset.bvOpen);
+  const open = b.hasAttribute("data-bv-open");
+  const input = open ? { name: row.name, op: "open", items: row.src || [] }
+                     : { name: row.name, op: "render", items: [], screenshot: true };
+  const j = await bvJob(input, "windows");   // renders + live windows run on a Windows node (real display); its data dir is the shared gbox-data the Spark serves
+  $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}).`);
+};
+document.querySelector('aside button[data-s="bevy"]').addEventListener("click", () => BV.data || loadBevy());
 
 
 // ---------------- screen recording (MP4 streamed to disk) ----------------
@@ -5733,7 +5921,12 @@ async function ringAttach() {
 // ---------------- end replay ring pop-up ----------------
 
 loadSettings().then(() => { refresh(); refreshInbox(); });
-setInterval(refresh, 15000);
+// Spark status runs ssh + 3 requests: every 15 s while Control is open or the play view still has to connect, else every minute
+let refreshAt = Date.now();
+setInterval(() => {
+  if (!GBoxLivePoll.due(refreshAt, !playLoaded || $("#control").classList.contains("on"), 15000, 60000)) return;
+  refreshAt = Date.now(); refresh();
+}, 15000);
 
 // ================= status bar: audit console · chat · connections + emulator =================
 document.body.insertAdjacentHTML("beforeend", `<div id="statusbar">
@@ -5794,7 +5987,7 @@ const EMU_ICON = { rpcs3: "🎮 PS3 · RPCS3", retroarch: "🕹️ RetroArch", d
                    mame: "🕹️ MAME", rocketlauncher: "🚀 RocketLauncher", steam: "♨️ Steam" };
 function statusRight(explicit = true) { return pollStatusRight(explicit); }
 const pollStatusRight = singleFlightPoll(async () => {
-  const [ws, ss] = await pollTogether([gbox.api("/api/workers"), gbox.api("/api/sessions")]);
+  const [ws, ss] = await pollTogether([WORKERS.get(), liveSessions()]);
   const svc = ["ok", "warn", "bad"].find(k => $("#d-svc").classList.contains(k)) || "bad";   // refreshed by refresh() (SSH), not here
   const c = (key, cls, ic, label, tip) => `<span class="c ${cls}" data-k="${esc(key)}" title="${esc(tip)} · click for details"><i></i>${ic} ${esc(label)}</span>`;
   let h = c("api", ws.ok ? "ok" : "bad", "🌐", "Spark API", ws.ok ? "control plane reachable" : "control plane unreachable");
@@ -5842,7 +6035,7 @@ async function svcShow(key) {
       title = "🛠️ Spark service (gbox.service)"; sub = st.service || "";
       body = svcKV(st) + `<p class="mut">The control plane and the Linux worker run as systemd's gbox.service on the DGX Spark. "Click to update &amp; relaunch" under the gBox logo restarts it.</p>`;
     } else if (key.startsWith("worker:")) {
-      const id = key.slice(7), [ws, ss, js] = await Promise.all([gbox.api("/api/workers"), gbox.api("/api/sessions"), gbox.api("/api/jobs?limit=200")]);
+      const id = key.slice(7), [ws, ss, js] = await Promise.all([WORKERS.get(0), liveSessions(0), gbox.api("/api/jobs?limit=200")]);
       const w = (ws.data || []).find(x => x.id === id) || {};
       title = `${w.os === "windows" ? "🪟" : "🐧"} ${w.name || id}`; sub = w.online ? "online" : "offline";
       const sess = (ss.data || []).filter(x => x.state === "running" && x.session_id.startsWith(id + "-"));
@@ -5860,7 +6053,7 @@ async function svcShow(key) {
         + `<details><summary>Recent jobs (${jobs.length})</summary><table class="kv">${jobs.map(j =>
             `<tr><td>${esc(j.tool)}</td><td>${esc(j.state)} · ${ago(j.created)}${j.error ? " · " + esc(j.error.slice(0, 160)) : ""}</td></tr>`).join("")}</table></details>`;
     } else if (key.startsWith("emu:")) {
-      const sid = key.slice(4), ss = await gbox.api("/api/sessions"), x = (ss.data || []).find(s => s.session_id === sid) || {};
+      const sid = key.slice(4), x = await sessionById(sid) || {};
       title = `${EMU_ICON[x.adapter] || "🎮 " + (x.adapter || "")} · ${x.title || ""}`; sub = x.state || "";
       body = svcKV({ game: x.title, emulator: x.adapter, session: sid, state: x.state, started: ago(x.started), "frame age": x.last_frame_age,
                   game_id: x.game_id, detail: x.detail });
@@ -6004,6 +6197,7 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
 </script>
 <script src="issue-report.js"></script>
 <script src="../web/viz/asset-sidebar.js"></script>
+<script src="../web/viz/clip-player.js"></script>
 <script>
 (async () => {
   const settings = await gbox.settings(), token = await gbox.token(), host = document.querySelector('.app');
