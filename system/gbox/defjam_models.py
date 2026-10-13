@@ -44,7 +44,7 @@ NODE_SIZE = 0x190
 NODE_BASE = 0x10
 MAX_NODES = 256
 MATRIX_BASE, MATRIX_STRIDE = 64, 8
-PARTS = {1: "body", 2: "body2", 3: "face", 4: "left_hand", 5: "right_hand"}
+PARTS = {1: "body", 2: "body2", 3: "face", 4: "left_hand", 5: "right_hand", 6: "alpha1", 7: "alpha2"}
 # where FACE / hands attach on BODY (node index in the BODY tree) and the BODY node of each collection role
 ATTACH = {3: 7, 4: 13, 5: 19}
 ROLE_NODES = {"hip": 2, "chest": 5, "neck": 6, "head": 7,
@@ -215,6 +215,54 @@ def parse_model(blk: bytes) -> dict:
             "joints": np.array(acc["J"], np.int64).reshape(-1, 2), "weights": np.array(acc["W"], np.float64).reshape(-1, 2),
             "tris": np.array(acc["tris"], np.int64).reshape(-1, 3), "batches": batches,
             "weighted": acc["weighted"], "single": acc["single"], "loose": acc["loose"]}
+
+
+ALPHA_VERTEX = 0x48
+
+
+def parse_alpha(blk: bytes) -> dict:
+    """ALPHA1/ALPHA2 slot (blended layers: hair cards, see-through cloth): {u32 node count, u32 vertices,
+    u32 triangles, u32 0}, 0x10 bytes, node records (0x190 each from +0x20: {child, sibling, 0, 0, A, local}),
+    vertices of 0x48 bytes {f32 position[3], f32 normal[3], f32 s, t, i32 node a, i32 node b, f32 weight a,
+    f32 weight b, 0...}, then u32 triangle indices. Node indices are this slot's own tree: ALPHA2 carries the FACE
+    tree (11 nodes, positions in FACE space), ALPHA1 the BODY spine (10 nodes: BODY 0..8 and 41, model space)."""
+    if len(blk) < 0x20:
+        raise FormatError("alpha slot shorter than its header")
+    nn, nv, nt, _ = struct.unpack_from("<4I", blk, 0)
+    if not 1 <= nn <= 64:
+        raise FormatError(f"alpha layer node count {nn}")
+    vo = 0x20 + nn * NODE_SIZE
+    if not (nv and nt) or nv > 4096 or nt > 8192 or vo + nv * ALPHA_VERTEX + 12 * nt > len(blk):
+        raise FormatError(f"alpha layer {nv} vertices / {nt} triangles do not fit 0x{len(blk):x} bytes")
+    local = [np.array(struct.unpack_from("<16f", blk, 0x20 + k * NODE_SIZE + 0x50), np.float64).reshape(4, 4)
+             for k in range(nn)]
+    raw = np.frombuffer(blk, np.uint8, nv * ALPHA_VERTEX, vo).reshape(nv, ALPHA_VERTEX)
+    f = raw[:, :0x20].copy().view("<f4").reshape(nv, 8).astype(np.float64)
+    ji = raw[:, 0x20:0x28].copy().view("<i4").reshape(nv, 2).astype(np.int64)
+    wt = raw[:, 0x28:0x30].copy().view("<f4").reshape(nv, 2).astype(np.float64)
+    if (ji[:, 0] < 0).any() or (ji >= nn).any() or not np.isfinite(f).all():
+        raise FormatError("alpha vertex joints outside the layer's tree")
+    one = ji[:, 1] < 0
+    ji[one, 1], wt[one, 1] = 0, 0.0
+    if (np.abs(wt.sum(1) - 1) > 0.02).any():
+        raise FormatError("alpha vertex weights do not sum to 1")
+    tris = np.frombuffer(blk, "<u4", 3 * nt, vo + nv * ALPHA_VERTEX).reshape(nt, 3).astype(np.int64)
+    if tris.max() >= nv:
+        raise FormatError("alpha triangle index past the vertex list")
+    return {"count": nn, "local": local, "positions": f[:, :3], "normals": f[:, 3:6], "uvs": f[:, 6:8], "joints": ji,
+            "weights": wt, "tris": tris, "vertex_offset": vo}
+
+
+def alpha_tree(al: dict, face: dict | None, body: dict):
+    """Which tree an alpha layer rides: ("face", node map) when its locals are FACE's, ("body", {k: k, 9: 41}) when
+    they are BODY's spine; None when neither matches."""
+    def same(k, ref):
+        return np.allclose(al["local"][k][3, :3], ref[3, :3], atol=1e-3)
+    if face is not None and al["count"] == face["count"] and all(same(k, face["local"][k]) for k in range(min(9, al["count"]))):
+        return "face", {k: k for k in range(al["count"])}
+    if al["count"] == 10 and all(same(k, body["local"][k]) for k in range(9)):
+        return "body", {**{k: k for k in range(9)}, 9: 41}
+    return None
 
 
 def winding(P: np.ndarray, N: np.ndarray, t: np.ndarray) -> float:
@@ -408,7 +456,37 @@ def assemble(b: bytes, body_slot: int = 1) -> dict:
     # seams: an attached part placed right shares its neck / wrist ring with BODY (8+ hand and 15+ face vertices
     # within SEAM of a BODY vertex on all 58 containers); a part on the wrong node shares none
     bodyP = prims[0]["pos"]
-    for rec, pr in zip([r for r in report if r["slot"] in models], prims):
+    model_prims = list(prims)
+    for part in (6, 7):                                      # ALPHA1/ALPHA2: blended layers on the BODY / FACE tree
+        if part not in w["slots"]:
+            continue
+        s = w["slots"][part]
+        rec = {"slot": part, "part": PARTS[part], "bytes": s["end"] - s["start"]}
+        try:
+            al = parse_alpha(b[s["start"]:s["end"]])
+            tree = alpha_tree(al, models.get(3), body)
+            if tree is None:
+                raise FormatError(f"alpha layer's {al['count']}-node tree is neither FACE's nor BODY's spine")
+        except FormatError as e:
+            report.append({**rec, "verified": False, "error": str(e)})
+            continue
+        on, nmap = tree
+        A = body["world"][ATTACH[3]] if on == "face" else np.eye(4)
+        P = np.c_[al["positions"], np.ones(len(al["positions"]))] @ A
+        N = al["normals"] @ A[:3, :3]
+        N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
+        wv = winding(P[:, :3], N, al["tris"])
+        lift = base[3] if on == "face" else base[body_slot]
+        J = np.vectorize(nmap.get)(al["joints"]) + lift
+        rec.update(tree=on, vertices=len(P), triangles=len(al["tris"]), winding=round(max(wv, 1 - wv), 4),
+                   attach=joint_name(body_slot, ATTACH[3]) if on == "face" else None,
+                   bbox=[P[:, :3].min(0).round(3).tolist(), P[:, :3].max(0).round(3).tolist()])
+        rec["verified"] = rec["winding"] >= MIN_WINDING and bool(P[:, 1].min() > 0)
+        report.append(rec)
+        prims.append({"name": rec["part"], "pos": P[:, :3], "nrm": N, "alpha": True, "joints": J,
+                      "uv": np.c_[al["uvs"][:, 0], 1.0 + al["uvs"][:, 1]], "weights": al["weights"],
+                      "tris": al["tris"][:, ::-1] if wv < 0.5 else al["tris"]})
+    for rec, pr in zip([r for r in report if r["slot"] in models], model_prims):
         if rec["slot"] == body_slot:
             continue
         d = np.sqrt(((pr["pos"][:, None, :] - bodyP[None, :, :]) ** 2).sum(-1)).min(1)
@@ -493,6 +571,10 @@ def write_glb(path: Path, a: dict, name: str, image: np.ndarray | None = None, s
         mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
         if int(image[..., 3].min()) < 250:
             mat.update(alphaMode="MASK", alphaCutoff=0.5)
+    mats = [mat]
+    if any(p.get("alpha") for p in a["prims"]):              # the ALPHA layers: blended, both sides (hair cards)
+        mats.append({**json.loads(json.dumps(mat)), "name": f"{name}_alpha", "alphaMode": "BLEND", "doubleSided": True})
+        mats[1].pop("alphaCutoff", None)
     prims = []
     for p in a["prims"]:
         jj = np.zeros((len(p["pos"]), 4), np.uint16)
@@ -505,13 +587,13 @@ def write_glb(path: Path, a: dict, name: str, image: np.ndarray | None = None, s
                  "TEXCOORD_0": acc(p["uv"].astype(np.float32), "VEC2"),
                  "JOINTS_0": acc(jj, "VEC4", 5123), "WEIGHTS_0": acc(ww, "VEC4")}
         prims.append({"attributes": attrs, "indices": acc(p["tris"].reshape(-1).astype(np.uint32), "SCALAR", 5125, 34963),
-                      "material": 0})
+                      "material": 1 if p.get("alpha") else 0})
     skin = {"name": f"{name}_rig", "joints": list(range(len(J))), "skeleton": roots[0],
             "inverseBindMatrices": acc(np.array(ibm, np.float32), "MAT4", target=None)}
     nodes.append({"name": name, "mesh": 0, "skin": 0})
     gl = {"asset": {"version": "2.0", "generator": "gbox.defjam_models", **({"extras": extras} if extras else {})},
           "scene": 0, "scenes": [{"name": name, "nodes": roots + [len(nodes) - 1]}], "nodes": nodes,
-          "meshes": [{"name": name, "primitives": prims}], "skins": [skin], "materials": [mat],
+          "meshes": [{"name": name, "primitives": prims}], "skins": [skin], "materials": mats,
           "accessors": accs, "bufferViews": views, "buffers": [{"byteLength": len(bin_)}]}
     if images:
         gl.update(images=images, textures=textures, samplers=samplers)

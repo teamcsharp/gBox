@@ -203,3 +203,32 @@ def test_loose_triangles_follow_the_strips_and_the_codec_round_trips():
     big = {**d["batches"][0], "verts": d["batches"][0]["verts"] * 30}
     with pytest.raises(M.FormatError):
         M.encode_batch(big)
+
+
+def _alpha(nodes, verts, tris):
+    """ALPHA slot: header, node records from +0x20, 0x48-byte vertices {pos, nrm, st, node a, node b, wa, wb}, tris."""
+    out = struct.pack("<4I", len(nodes), len(verts), len(tris), 0).ljust(0x20, b"\0")
+    out += b"".join(_node(*nd) for nd in nodes)
+    for p, ja in verts:
+        out += struct.pack("<8fiiff", *p, 0, 0, 1, 0.25, -0.5, ja, -1, 1.0, 0.0).ljust(M.ALPHA_VERTEX, b"\0")
+    out += struct.pack(f"<{3 * len(tris)}I", *[i for t in tris for i in t])
+    return out + bytes(-len(out) % 0x80)
+
+
+def test_alpha_layer_rides_the_face_tree_with_a_blended_material(tmp_path):
+    face_nodes = [(1, -1, -1, _local()), (2, -1, 0, _local((0, 1, 0))), (-1, -1, 1, _local((1, 0, 0)))]
+    al = _alpha(face_nodes, [((0, 0, 0), 1), ((1, 0, 0), 1), ((0, 1, 0), 2)], [(0, 1, 2)])
+    b = _wrs({**_fighter(), 7: al})
+    a = M.assemble(b)
+    rec = next(r for r in a["report"] if r["slot"] == 7)
+    assert rec["tree"] == "face" and rec["verified"] and rec["triangles"] == 1
+    pr = next(p for p in a["prims"] if p.get("alpha"))
+    face0 = next(i for i, j in enumerate(a["joints"]) if j["name"] == "face_00")
+    assert pr["joints"][:, 0].tolist() == [face0 + 1, face0 + 1, face0 + 2]
+    assert np.allclose(pr["pos"][0], a["joints"][face0]["world"][3, :3])          # FACE space -> head attach
+    r = M.extract_wrs(b, tmp_path / "x.glb", "x")
+    raw = Path(r["glb"]).read_bytes()
+    gl = json.loads(raw[20:20 + struct.unpack_from("<I", raw, 12)[0]])
+    assert gl["materials"][1]["alphaMode"] == "BLEND" and gl["meshes"][0]["primitives"][-1]["material"] == 1
+    with pytest.raises(M.FormatError):
+        M.parse_alpha(_alpha(face_nodes, [((0, 0, 0), 5)], [(0, 0, 0)]))      # node outside the tree
