@@ -202,43 +202,67 @@ def model_roles(path: Path) -> dict[str, str]:
     return joint_roles(CLASS_ROLES[cls])
 
 
-def bml_files(data: bytes) -> list[dict]:
-    """BML entries with their header fields: [{name, raw (compressed), fields (5 x u32), tex_raw}]."""
-    n = struct.unpack_from("<I", data, 4)[0]
-    out, off = [], 0x800
+def bml_start(n: int) -> int:
+    """Where a BML's entries begin: after its header (0x40 + 0x40 per entry), rounded up to 0x800."""
+    return (0x40 + 0x40 * n + 0x7FF) & ~0x7FF
+
+
+def bml_align(data: bytes, e: str = "<") -> int:
+    """The entry alignment of a BML: 0x20 (Dreamcast packs, GC enemy packs) or 0x800 (GC player packs pl<X>nj.bml);
+    the one whose laid-out entries end where the file ends."""
+    n = struct.unpack_from(e + "I", data, 4)[0]
+    sizes = [struct.unpack_from(e + "5I", data, 0x40 + 0x40 * i + 0x20) for i in range(n)]
+    for a in (0x20, 0x800):
+        off = bml_start(n)
+        for csize, _f1, _d, cgvm, _dg in sizes:
+            off = (off + csize + a - 1) & ~(a - 1)
+            if cgvm:
+                off = (off + cgvm + a - 1) & ~(a - 1)
+        if off >= len(data) - 0x20:
+            return a
+    return 0x20
+
+
+def bml_files(data: bytes, e: str = "<") -> list[dict]:
+    """BML entries with their header fields: [{name, raw (compressed), fields (5 x u32), tex_raw}]. e: ">" for the
+    GameCube's big-endian header fields (gbox.pso_gc)."""
+    n = struct.unpack_from(e + "I", data, 4)[0]
+    a = bml_align(data, e)
+    out, off = [], bml_start(n)
     for i in range(n):
         h = 0x40 + 0x40 * i
-        csize, f1, dsize, cgvm, dgvm = struct.unpack_from("<5I", data, h + 0x20)
+        csize, f1, dsize, cgvm, dgvm = struct.unpack_from(e + "5I", data, h + 0x20)
         raw = data[off:off + csize]
-        off = (off + csize + 0x1F) & ~0x1F
+        off = (off + csize + a - 1) & ~(a - 1)
         tex = None
         if cgvm:
             tex = data[off:off + cgvm]
-            off = (off + cgvm + 0x1F) & ~0x1F
+            off = (off + cgvm + a - 1) & ~(a - 1)
         out.append({"name": data[h:h + 0x20], "raw": raw, "fields": [csize, f1, dsize, cgvm, dgvm], "tex": tex})
     return out
 
 
-def bml_build(data: bytes, replace: dict[str, bytes], textures: dict[str, bytes] | None = None) -> bytes:
+def bml_build(data: bytes, replace: dict[str, bytes], textures: dict[str, bytes] | None = None, e: str = "<") -> bytes:
     """The BML with entries {lower-case name: new decompressed file} recompressed (PRS); the rest kept as is.
     textures: {lower-case entry name: new decompressed texture archive} for entries that carry one (enemy packs)."""
-    ents = bml_files(data)
-    head = bytearray(data[:0x800])
+    ents = bml_files(data, e)
+    a = bml_align(data, e)
+    head = bytearray(data[:bml_start(len(ents))])
     body = bytearray()
     textures = textures or {}
-    for i, e in enumerate(ents):
-        nm = e["name"].split(b"\0")[0].decode("latin-1").lower()
-        raw, f, tex = e["raw"], list(e["fields"]), e["tex"]
+    for i, ent in enumerate(ents):
+        nm = ent["name"].split(b"\0")[0].decode("latin-1").lower()
+        raw, f, tex = ent["raw"], list(ent["fields"]), ent["tex"]
         if nm in replace:
             raw = ninja.prs_compress(replace[nm])
             f[0], f[2] = len(raw), len(replace[nm])
         if nm in textures and tex is not None:
             tex = ninja.prs_compress(textures[nm])
             f[3], f[4] = len(tex), len(textures[nm])
-        struct.pack_into("<5I", head, 0x40 + 0x40 * i + 0x20, *f)
-        body += raw + bytes((-len(raw)) % 0x20)
+        struct.pack_into(e + "5I", head, 0x40 + 0x40 * i + 0x20, *f)
+        body += raw + bytes((-len(raw)) % a)
         if tex is not None:
-            body += tex + bytes((-len(tex)) % 0x20)
+            body += tex + bytes((-len(tex)) % a)
     return bytes(head + body)
 
 

@@ -1585,6 +1585,13 @@ DEDICATED = [
      lambda: __import__("gbox.pe2_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.pe2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
+    # Phantasy Star Online Episode I & II (Plus) (GC, GPOE8P): the 12 player classes (body + head / hair at the head
+    # mount, default textures named by PsoV3.dol's texture lists) and the enemies of the GSL area packs, as rigged,
+    # textured GLBs with body roles (gbox.pso_gc, docs/pso_gc.md); writer gbox.pso_gc_swap
+    ("pso_gc", lambda t, p: p == "gamecube" and (re.search(r"phantasy star online episode i ?& ?ii\b", t) is not None
+                                                 or t.startswith("return to ragol")),
+     lambda: __import__("gbox.pso_gc", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.pso_gc", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
      lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.jgr", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1733,6 +1740,7 @@ READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", 
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
+                   "pso_gc": ("gbox.pso_gc", "pso_gc_reader")}
                    "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader")}
 
 
@@ -2675,6 +2683,11 @@ def characters_tool(inp: CharIn, ctx):
         # Soul Calibur II GC: fighter:<key>[:<costume>] | all | cast (+pairs) | random (two sources alternate per
         # costume + the random costume select) -> sc2_<slot>_<plan hash> (human.olk costumes rewritten in place)
         return {"result": out | soulcalibur2_swap.use(ctx, meta, game, inp)}
+    from . import pso_gc_swap
+    if gid in pso_gc_swap.GAME_IDS and pso_gc_swap.is_slot(inp.slot):
+        # PSO Ep I&II GC: class:<name> (player = HUmar) | enemy:<key> -> psogc_<slug>_as_<slot> (body + BML + texture
+        # bank, or the enemy pack in every GSL area archive, in a disc-image copy); unverified in Dolphin
+        return {"result": out | pso_gc_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]

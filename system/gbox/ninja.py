@@ -239,7 +239,8 @@ class NJ:
             if typ < 0x20 or typ > 0x32:
                 o += 4 + size * 4
                 continue
-            base, count = self.u("HH", o + 4)
+            bc = self.u("I", o + 4)[0]                        # u32 count << 16 | base: GameCube swaps the whole
+            base, count = bc & 0xFFFF, bc >> 16                 # word (vertex chunks are u32-swapped, strips u16)
             p = o + 8
             stride = (size * 4 - 4) // max(count, 1)
             for i in range(count):
@@ -602,7 +603,7 @@ def cnk_model_lists(pos, nrm, tris, texid: int, mat: bytes, tiny_flags: int = 0x
     pos, nrm = np.asarray(pos, np.float32), np.asarray(nrm, np.float32)
     n = len(pos)
     vb = np.concatenate([pos, nrm], 1).astype(e + "f4").tobytes()
-    vl = keep_vlist + struct.pack(e + "IHH", 0x29 | ((1 + 6 * n) << 16), base, n) + vb + struct.pack(e + "I", 0xFF)
+    vl = keep_vlist + struct.pack(e + "II", 0x29 | ((1 + 6 * n) << 16), base | (n << 16)) + vb + struct.pack(e + "I", 0xFF)
     pl = bytearray()
     if mat:
         pl += mat

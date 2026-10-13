@@ -457,7 +457,7 @@ function buildsApi(env, state = {}) {
   const base = env.api;
   env.sent = [];
   env.api = async (p, body, method) => {
-    if (p.startsWith('/api/builds/')) {
+    if (p.startsWith('/api/builds/') && !p.startsWith('/api/builds/local?')) {   // (this PC's copies: the download icon)
       env.sent.push([method, p, body]);
       if (state.fail) throw new Error('409 busy');
       if (p.endsWith('/favorite')) return { key: 'x', favorite: body.favorite };
