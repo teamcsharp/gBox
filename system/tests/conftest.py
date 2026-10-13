@@ -29,18 +29,26 @@ def plane(cfg):
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=cfg.api_port, log_level="error"))
     threading.Thread(target=srv.run, daemon=True).start()
     url = f"http://127.0.0.1:{cfg.api_port}"
-    for _ in range(100):
+    # Wait for each condition with a deadline and fail loudly: a fixed 5 s of polls ran out on a loaded
+    # machine (the worker's first describe() imports every tool module), and the test then ran against
+    # a plane with no registered worker (test_unavailable_tool_never_claimed: KeyError 'test-worker').
+    end = time.time() + 60
+    while True:
         try:
             httpx.get(url + "/api/health")
             break
         except httpx.TransportError:
+            if time.time() > end:
+                raise RuntimeError("test control plane did not start") from None
             time.sleep(0.05)
     stop = threading.Event()
     threading.Thread(target=worker.run, args=(url, cfg.token(), cfg, "test-worker", stop, 0.05), daemon=True).start()
     client = httpx.Client(base_url=url, headers={"authorization": f"Bearer {cfg.token()}"}, timeout=30)
-    for _ in range(100):
-        if client.get("/api/workers").json():
-            break
+    while not any(w.get("name") == "test-worker" and w.get("online") for w in client.get("/api/workers").json()):
+        if time.time() > end:
+            stop.set()
+            srv.should_exit = True
+            raise RuntimeError("test worker did not register with the control plane")
         time.sleep(0.05)
     client.app = app
     yield client
