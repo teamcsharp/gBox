@@ -84,8 +84,8 @@ def extractor_of(meta: dict) -> str | None:
 def base_name(meta: dict) -> str:
     """The name without its costume tag: costumes of one character dedupe to one donor."""
     n = str(meta.get("name") or meta.get("slug") or "").lower()
-    n = re.sub(r"\s*\((?:costume|outfit|variant|alt)\.?\s*\d+\)", "", n)
-    n = re.sub(r"\s+(?:costume|outfit|alt)\s*\d+\b", "", n)
+    n = re.sub(r"\s*\((?:costume|outfit|variant|alt)\.?\s*(?:\d+|[a-z])\)", "", n)
+    n = re.sub(r"\s+(?:costume|outfit|alt)\s*(?:\d+|[a-z])\b", "", n)          # "fighter 000 costume a" (Def Jam GC)
     return re.sub(r"\s+", " ", n).strip()
 
 

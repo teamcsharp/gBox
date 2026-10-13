@@ -103,6 +103,9 @@ def test_costumes_dedupe_onto_one_donor():
     assert "djv_ps2_briggs_1" in {m["slug"] for m in keep} and "djv_ps2_briggs_2" not in {m["slug"] for m in keep}
     assert dropped == [{"slug": "djv_ps2_briggs_2", "name": "Briggs (costume 2) (Def Jam Vendetta PS2)",
                         "costume_of": "djv_ps2_briggs_1"}]
+    gc = [entry(f"djv_s000{c}", f"Def Jam Vendetta fighter 000 costume {c}", "Def Jam - Vendetta (USA)", "gamecube")
+          for c in "abc"] + [entry("djv_s001a", "Def Jam Vendetta fighter 001 costume a", "Def Jam - Vendetta (USA)", "gamecube")]
+    assert [m["slug"] for m in CS.dedupe(gc)[0]] == ["djv_s000a", "djv_s001a"]                # live GC naming
 
 
 def test_gate_refuses_unmapped_donors_with_the_reason():

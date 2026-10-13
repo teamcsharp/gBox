@@ -381,7 +381,10 @@ def _cast_plan(cast: tuple[str, str], inp: MashupIn, ctx) -> dict:
                            "target_title": (game or {}).get("title"), "source_name": source_name},
             "call": {"tool": "characters", "input": call}, "plan": steps,
             "jobs": [{k: v for k, v in j.items() if k != "job"} for j in jobs], "job_details": [j["job"] for j in jobs],
-            "status": status, "next_action": _next_action(status), "dry_run": inp.dry_run or not inp.auto_dispatch}
+            "status": status, "dry_run": inp.dry_run or not inp.auto_dispatch,
+            "next_action": ("Set auto_dispatch=true to submit characters op=cast_swap (one mod for the whole cast), or "
+                            "run it with plan_only=true to review the slot -> donor plan first.")
+            if status == "ready_to_dispatch" else _next_action(status)}
 
 
 def _next_action(status: str) -> str:

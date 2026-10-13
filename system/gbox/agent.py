@@ -1565,7 +1565,8 @@ class Agent:
             if launch is not None:
                 inp["launch"] = bool(launch)
         # extract / add / blender write the collection: they run where it lives (the Spark)
-        j = self._job("characters", inp, limit=14400 if op == "collect" else 3600, node=None if op == "use" and session_id else "linux")
+        j = self._job("characters", inp, limit=14400 if op in ("collect", "cast_swap") else 3600,
+                      node=None if op == "use" and session_id else "linux")
         result = (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
         if op in ("use", "live_use"):
             outcome = native_swap_result({"state": j.get("state"), "error": j.get("error"), "result": result})

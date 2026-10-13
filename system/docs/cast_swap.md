@@ -75,3 +75,27 @@ the writer writes the image once at the end. A writer joins by getting an entry 
   `build_cast` writes one image, never the original), the API endpoints, the tool / mashup / agent routing.
 * `tests/test_cast_swap_menu.cjs`: the source picker, the editable plan rows, the edits sent, the controller's plan
   -> build -> report flow, failures, and the menu entries in both clients.
+
+## Live check (2026-10-13, test PC, read-only)
+
+Run from the Windows test PC against the live control plane with GET requests only (no job, no build, no launch: the
+branch is not deployed, and builds run on the Spark). The live `/api/characters` answered 500, so the collection was
+read per source game (`/api/games/<gid>/roster` + `/api/characters/<slug>`: 248 entries) and `cast_swap.plan` ran
+locally on it for PSO Ver.2 (USA, `daba7a3b195dcf6b`), `mapping=by_role seed=live-1`:
+
+* **PSO <- Def Jam wrestlers: nothing to build yet.** The only Def Jam entries in the live collection are the 57
+  GameCube ones (`gbox.defjam_vendetta`: static meshes, rig not decoded): the gate refuses every one with "no body
+  roles (rig.roles): the model is not mapped onto a skeleton". The PS2 reader (`defjam_vendetta_ps2`, rigged, with
+  roles) has not run on the live server (its roster endpoint reports no extractor for `deabd11481aa5a0c`, collection
+  state "unsupported"), so `characters op=collect game_id=deabd11481aa5a0c` on a deployed build is the next step; with
+  those 58 entries the same call plans Def Jam donors (44 names after the costume merge).
+* **PSO <- wrestlers: planned.** 19 enemy slots (Booma, Gobooma, Gigobooma + 16 packs) get 19 different donors from
+  175 usable No Mercy / World Tour / SmackDown! 2 entries (57 Def Jam GC entries refused, reason above); the PSO
+  player class is listed as skipped (not drawn by the game yet). Mod `cast_phantasy_star_onli_wrestlers_no_mercy_55851431`.
+* **PSO <- JGR: planned, all 16 donors stale.** Every live JGR entry is still reader v1 (no `jgr_reader`), so the plan
+  lists all 16 as "will be re-extracted (reader v1 -> v2)": the build re-extracts them (outline shell gone, per-group
+  textures) before fitting; 19 slots over 16 donors, so three repeat after the first full round.
+
+Heights were unknown in this run (the library isn't on this PC), so by_role fell back to the seeded order; on the
+Spark the menu's plan reads them. The building half was checked on synthetic data only (tests above); the in-game
+check of a built cast mod (Forest 1 Boomas, docs/pso_enemy_swap.md) is still to do.
