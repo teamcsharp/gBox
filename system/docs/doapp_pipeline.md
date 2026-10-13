@@ -12,7 +12,7 @@ ISO9660; everything lives in the 0x2800000-byte `bankedroms` region the CPU sees
 | Inventory (identity, files, fighter index) | done, verified against the owned ROMs | `gbox/doapp_inventory.py`, `gbox/zn_tps_boot.py` |
 | Format analysis | file table, model container, mesh sections + primitives, motion banks, skeleton build | this document |
 | Reader (rigged GLB) | done: 44/44 costumes verified, registered in `characters.DEDICATED` (`doapp`) | `gbox/doapp_chars.py`, `gbox/doapp_motion.py`, `gbox/doapp_models.py` |
-| Writer | not started (constraints in Status) | — |
+| Writer | done: any collection character on a fighter's 15 bones, rebuilt doapp set; read back through the game's skeleton build; MAME check pending | `gbox/doapp_swap.py` |
 
 ## Owned source
 
@@ -205,6 +205,82 @@ primitive's texels come from the model's TIMs, seam-triangle edges <= 400 units,
 Not exported: section 12 (effect quads with inline vertices, drawn only when player byte 0x8009638f is set), the two
 unused hand shapes of slots 2 / 4, per-vertex lighting colours.
 
+## Writer (`gbox/doapp_swap.py`)
+
+`characters op=use character=<any> game_id=a19b4e641b155364 slot=<fighter>[:<costume 1-4>]` (or `slot=player`: all 11
+fighters x 4 costumes, so whoever is picked is the character) builds mod `doapp_<slug>_<slot>`: a folder with a
+rebuilt `doapp.zip` (+ a copy of `coh1002m.zip`). The owned zips are only read.
+
+### The section expander and its inverse
+
+0x8006c718 (a0 player, a1 source, a2 destination; an identical copy at overlay 0x800fd674 serves the streaming loader
+0x8007eedc) reads a stream of even values (odd halfword = `h & 0xfffe`, even halfword = low half of a 32-bit value
+whose high half follows): header size, chunk-area bytes, vertex-block offset, vertex bytes, group count x 4, then per
+group its chunk count x 4 and chunk offsets. Chunks follow as `u16 count, u16 kind` + per-kind source records, which
+one routine per kind expands into the double-buffered records the drawers use, through one packet template in the
+scratchpad (0x1f800000) that keeps its state across chunks and sections:
+
+| source kind | routine | source record | expands to |
+| --- | --- | --- | --- |
+| 0x801b / 0x803b | 0x8006cc40 | 7 halfwords (code << 8 \| depth mode, CLUT, tpage, 4 UVs), 4 vertex values, 4 normals (normal 1 + u16 flag) | GT4 0x98 |
+| 0x801a / 0x803a | 0x8006cf3c | 6 halfwords, 3 vertex values, 3 normals (normal 1 + flag) | GT3 0x74 |
+| 0x8019 (0x8039 -> 0x29) | 0x8006d214 | 7 halfwords (low byte of the first unused), 4 vertex values, 1 normal | FT4 0x68 |
+| 0x8018 / 0x8038 | 0x8006d490 | 6 halfwords, 3 vertex values, 1 normal | FT3 0x54 |
+| 0x29 | 0x8006d6e8 | 7 halfwords, 4 vertex values | FT4 0x60 |
+| 0x805a | 0x8006d92c | 6 halfwords, 3 vertex values, 6 colour values (+ destination + header size) | GT3 0x74 |
+| 1 | 0x8006dbfc | 7 halfwords, 4 inline SVECTORs | FT4 0x70 |
+| 0 | 0x8006ddbc | 6 halfwords, 3 inline SVECTORs | FT3 0x58 |
+
+Vertex value v = 8 x index: `v < 0x3f0` -> 0x1f800000 + v, `v <= 0x803ef` -> 0x802a6410 + v, else a raw address.
+Player 2: CLUT |= 0x200 (8 rows down; not for kind 1), tpage |= 0x10 (y + 256). The GT depth byte (packet +0x13) picks
+the depth used for sorting (0 average, 1 nearest, 2 farthest); normal 1's flag = 1 makes the drawer light the
+primitive even when it is culled, because a seam borrows its colours. The vertex block is 6 bytes per vertex.
+
+`expand_mesh` is a byte-exact port (template included); `pack_mesh` / `mesh_from_expanded` are the inverse pair. On
+all 44 costume models the port equals the game's routine byte for byte, and packing the game's expansion reproduces
+Tecmo's packed bytes exactly (327 / 327 sections; `tests/test_doapp_swap.py` owned test).
+
+### What the writer builds
+
+* Target: `doapp_motion.Rig` (fight loader walk, fight init, skeleton build) gives the stance frame-0 matrices of the
+  15 body bones (the reader's bind pose). Joint positions go to the generic rigid retarget (`sm64_swap.load_rig` +
+  `retarget`, roles -> bones 2 / 0 / 1 / 8 4 5 / 14 10 11 / 6 7 3 / 12 13 9), feet are scaled about the ankle onto
+  the original model's ground, and every vertex is put in its bone's frame with the inverse bind matrix (game units,
+  y down), normals likewise (4.12, outward, against the drawn order's right-hand normal like the game's own data).
+* Layout = the game's 14-group body (Zack / Jann Lee costume 3): slot 0 holds the 13 body bones as batches in
+  0x80103ed0 order plus the seam group (slots 1, 3, 5, 6 absent), so shoulders, elbows, knees and ankles get seams;
+  hands are slots 2 / 4 with the three hand shapes sharing one mesh; slot 7 keeps the costume's accessory part count
+  with no geometry (the chain physics keep running); sections 0, 11, 12, 13 are kept; sections 1 / 2 rebuilt.
+  Triangles inside one bone become GT4 (paired) / GT3 lit primitives (0x801b / 0x801a, code 0x3c / 0x34); triangles
+  joining two body bones become 0x805a seams whose colour pointers aim at the lit corner of the same vertex (or the
+  nearest lit corner of its bone), and those primitives get the light-when-culled flag. Hand / forearm triangles go
+  rigidly to their majority bone (different slots).
+* Texture: one 8-bit 256 x H TIM at VRAM (704, 0) (tpage 0x8b) with its 256-colour CLUT at (0, 496): the costume's own
+  area (all 44 models upload into x 704..959, y 0..255, CLUT rows 480..503); index 0 = see-through for cut-out alpha.
+* Budgets: file bytes <= min(`file_room`, table size) (the loader 0x80050420 copies exactly the table's size, which
+  lives in the encoded program); expanded extent <= 0x18000 (player 1's work buffer 0x801fe800 ends where player 2's
+  character data 0x80216800 starts; player 2's ends at the vertex spill buffer 0x802a6800); vertices per slot <= the
+  most the game's own models use (body 395, hand 82). `fit()` decimates with a quadric half-edge collapse (inside one
+  bone, no flips, borders kept) to 100 / 85 / 70 ... % of those caps and tries pages 256 x 256 / 192 / 128, then 96 /
+  64; with Blender on the node the donor is first edge-collapsed near the target.
+* Container: `u32 TIM offset`, 14 records from dest 0x3c (4-byte aligned), `u32 expanded extent, u32 TIM bytes`, TIMs.
+  Files are padded with zeros to the table size; the TIM uploader 0x8002d920 stops at the first word that is not 0x10.
+* Checks per built file: the port expands it to exactly the laid-out meshes, the game's 0x8006c718 (4 MiB RAM, real
+  work buffer) expands it to the same bytes, and the rebuilt bankedroms go through `doapp_motion.Rig` + the reader's
+  `assemble` (every vertex on a bone, every primitive textured from the model's own TIM, seams <= 600 units at the bind
+  pose, soles within 60 of the ground, height within 25 % of the fighter's). Traced: the fight init reads only the mesh
+  headers / group lists and sections 0 / 11 (and 12's header); the renderer reads the rest.
+* ROM set: the files are written over their spans in `doapp-1.217` / `doapp-2.218` (no file of the game straddles two
+  chips) and the set is re-zipped with every other member unchanged. Nothing verifies the data ROMs: the TPS BIOS checks
+  the SCEI licence of the program ROMs (untouched) and decodes the program, the game has no ROM test (no checksum code
+  or strings in the program or BIOS); MAME flags the two chips as incorrect checksums and runs the set.
+
+Examples (owned ROMs, collection donors, read back through the game's skeleton build): Cloud (FF7, 3324 triangles) as
+Tina costume 1: 807 triangles, 14 seams, 100104 of 113332 bytes; Leon (RE4, 7980) as Kasumi 2: 855 triangles, 175
+seams; DOA2 Kasumi as Ayane 4: 999 triangles, 150 seams; Aya (PE) as Bass 1: 866 triangles, 173 seams; ~20 s per
+costume. `slot=player` with Leon: all 44 costume models fit (850-862 triangles, full 256 x 256 page, at most 98 % of a
+file's bytes: Tina costume 4) and all 44 read back ok; 18 min including the read-backs.
+
 ## Status
 
 * **Inventory: done.** `python -m gbox.doapp_inventory <roms dir> [--decode] [--extract DIR]`. Tests:
@@ -221,17 +297,16 @@ unused hand shapes of slots 2 / 4, per-vertex lighting colours.
   starting "Dead Or Alive ++"; needs doapp.zip + coh1002m.zip beside the catalog's zip; the program decode is cached
   under `<cache>/doapp/`). Tests: `tests/test_doapp_chars.py` (synthetic primitives / texture page / skeleton / GLB with
   roles and a clip; owned: Tina and Kasumi extract verified).
-* **Writer: not started.** Constraints found so far: files are packed back to back and the table that sizes them is
-  inside the encoded program, so a replacement model must fit the original file size (`file_room()`), keep the
-  14-section container, and expand within the player work buffer; the mod would be a rebuilt `doapp-1.217` /
-  `doapp-2.218` in a mod ROM set (MAME validates ROM CRCs per set, so it needs its own set name or `-skip_gameinfo`
-  with a renamed zip). Re-encoding the program is not needed for in-place replacement.
+* **Writer: done, MAME check pending** (`gbox/doapp_swap.py`, section "Writer" above; `char_coverage.WRITERS` +
+  `characters op=use` routing; `python -m gbox.doapp_swap build <roms dir> <character dir> <out dir> <slot>`). Tests:
+  `tests/test_doapp_swap.py` (synthetic: stream codec, every chunk kind through the port and back, player 2, the
+  packet template, container, page, quad pairing, decimation, a full fit of a rigged humanoid onto a 15-bone fighter
+  with local frames / seams / batch tables / budgets, the ROM set rebuild; owned: the packer against the game's
+  expander on all 44 models, two costumes built and read back through the game's skeleton build and re-zipped,
+  player 2's expansion). The program is not re-encoded: in-place replacement needs no change to it.
 
-Next step for whoever continues: the writer. The bind matrices of the reader are the frames a replacement mesh has to
-be expressed in (per bone: inverse of the stance-frame matrix, in game units, y down); a new model must re-emit the
-14-section container with packed sections the expander 0x8006c718 accepts (source kinds 0 and 1; see its 0x58-byte
-kind-0 records), the batch tables (sections 1 / 2), chunk records with both packet copies and vertex pointers, the
-0x805a seam chunk, and TIMs at the VRAM rectangles the costume uses, all within `file_room()`.
+Next steps: the in-game check in MAME (below), then (optional) the game's renderer 0x800ab828 on the interpreter
+(needs the GTE lighting commands in `gbox/psx_gte.py`) as an offline draw check.
 
 ## Live check for the maintainer
 
@@ -242,5 +317,28 @@ copy "\\10.89.1.125\HyperSpin Attraction\Arcade\collections\Mame\roms\doapp.zip"
 python -m gbox.doapp_inventory %TEMP%\doapp --decode          # derived.file_table_matches_snapshot: true
 python -m gbox.doapp_models %TEMP%\doapp tina --expand        # every mesh: covered == vertices
 python -m gbox.doapp_chars %TEMP%\doapp %TEMP%\doapp\glb tina   # 4 GLBs, each line "verified": true
-set GBOX_DOAPP_ROMS=%TEMP%\doapp && python -m pytest tests/test_doapp_inventory.py tests/test_doapp_models.py tests/test_doapp_motion.py tests/test_doapp_chars.py -q
+set GBOX_DOAPP_ROMS=%TEMP%\doapp && python -m pytest tests/test_doapp_inventory.py tests/test_doapp_models.py tests/test_doapp_motion.py tests/test_doapp_chars.py tests/test_doapp_swap.py -q
 ```
+
+Writer, in MAME (not done by an agent: it launches the game):
+
+```
+python -m gbox.doapp_swap build %TEMP%\doapp <collection>\cloud %TEMP%\doapp_mod kasumi
+    -> %TEMP%\doapp_mod\doapp.zip + coh1002m.zip; the JSON lists the 4 costumes with "read_back": {"ok": true, ...}
+       and doapp-1.217 as the changed chip (Kasumi's models are files 79-82; Bass costumes 2-4 and Ayane's live in
+       doapp-2.218)
+       (checked: Cloud as Kasumi 1-4, 781-784 triangles, 22 seams each, ~99 KB of ~120 KB, ~2 min)
+mame doapp -rompath %TEMP%\doapp_mod -skip_gameinfo
+    (MAME names the two rebuilt chips "INCORRECT CHECKSUM": expected, the set still runs; without -skip_gameinfo
+     press a key on the warning screen)
+```
+
+Or through gBox: `characters op=use character=cloud game_id=a19b4e641b155364 slot=kasumi` (mod
+`doapp_cloud_kasumi`, built on the node with the collection, then `launch_game mod=doapp_cloud_kasumi`).
+
+In the game: coin, start, pick Kasumi in each of the four costumes (one per selection button), and also as player 2
+(both sides Kasumi: player 2 uses the second VRAM copy). Check in the VS screen, the round and the win pose: the
+character is drawn instead of Kasumi with its textures, follows Kasumi's motions (guard, strikes, throws, falls),
+shoulders / elbows / knees / ankles stay closed (seams), the hands show in every hand shape, nothing of Kasumi's
+ponytail is drawn (the chains still run, empty), and the round plays to the end without a hang. Report per costume
+what was seen; the hit / effect quads of section 12 are Kasumi's own and may look odd over the new page.

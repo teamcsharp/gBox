@@ -62,14 +62,19 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
     src_tris = sum(len(p["tris"]) for p in prims)
     rep["source_triangles"] = src_tris
     last = None
+    from . import fit_events as FE
     for budget in budgets:
         src = rigged
         if src_tris > budget:
             if not blender:
                 raise ValueError(f"{src_tris} triangles (budget {budget}) and no Blender on this node to decimate")
             progress(40, f"Decimating {name} to {budget} triangles (Blender)")
+            FE.stage("decimate", "running", {"from": src_tris, "to": budget})
             src = decimate(rigged, work / f"dec_{budget}.glb", float(budget), blender)
         rp = S.read_rigged(src)
+        if src is not rigged:
+            FE.stage("decimate", data={"from": src_tris, "to": budget,
+                                       "triangles": int(sum(len(p["tris"]) for p in rp))}, prims=rp)
         _dedupe_textures(rp)
         for p in rp:
             p["J"] = np.asarray(p["jid"])[:, None] if np.ndim(p["jid"]) == 1 else np.asarray(p["jid"])
@@ -81,8 +86,11 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
             data = encode(geo)
         except ValueError as e:
             last = e
+            FE.stage("encode", "running", {"budget": budget, "result": str(e)[:120]})
             continue
         tris = sum(len(g[2]) for g in geo.values())
+        FE.stage("encode", data={"budget": budget, "triangles": tris, "nodes": len(geo),
+                                 "bytes": len(data) if isinstance(data, (bytes, bytearray)) else None})
         return {"data": data, "atlas": img, "rigged": rigged, "geometry": geo,
                 "report": rep | {"triangles": tris, "budget": budget, "nodes": sorted(int(k) for k in geo)}}
     raise last or ValueError("no triangle budget fits")

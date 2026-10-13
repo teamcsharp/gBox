@@ -75,27 +75,11 @@ class Iso:
             self._walk(f, _u32(root, 2), _u32(root, 10), "", 0)
 
     def _walk(self, f, lba: int, size: int, prefix: str, depth: int):
-        if depth > 8 or size > 1 << 20:
-            return
-        f.seek(lba * 2048)
-        data = f.read(size)
-        o = 0
-        while o < len(data):
-            n = data[o]
-            if n == 0:
-                o = (o // 2048 + 1) * 2048
-                continue
-            rec, o = data[o:o + n], o + n
-            if len(rec) < 34:
-                break
-            name = rec[33:33 + rec[32]]
-            if name in (b"\0", b"\1"):
-                continue
-            path = prefix + name.decode("latin-1").split(";")[0]
-            if rec[25] & 2:
-                self._walk(f, _u32(rec, 2), _u32(rec, 10), path + "/", depth + 1)
-            else:
-                self.files[path.upper()] = (_u32(rec, 2), _u32(rec, 10))
+        from .formats import iso9660                      # the shared ISO9660 walk (gbox.formats)
+        for parts, rec, _d in iso9660.walk(iso9660.file_reader(f), lba, size, max_depth=8 - depth,
+                                           max_dir_size=1 << 20):
+            if not rec.is_dir:
+                self.files[(prefix + "".join(p + "/" for p in parts) + rec.name).upper()] = (rec.lba, rec.size)
 
     def size(self, name: str) -> int:
         return self.files[name.upper()][1]

@@ -28,29 +28,9 @@ ANIM_TABLE = 0x4CE710
 
 
 def mio0(d: bytes, o: int = 0) -> bytes:
+    from .formats.lz import mio0_decompress          # shared MIO0 codec (also sf64_inventory)
     assert d[o:o + 4] == b"MIO0"
-    size, comp, raw = struct.unpack_from(">III", d, o + 4)
-    out = bytearray()
-    bits_p, comp_p, raw_p = o + 16, o + comp, o + raw
-    word, nbits = 0, 0
-    while len(out) < size:
-        if nbits == 0:
-            word = struct.unpack_from(">I", d, bits_p)[0]
-            bits_p += 4
-            nbits = 32
-        bit = word & 0x80000000
-        word = (word << 1) & 0xFFFFFFFF
-        nbits -= 1
-        if bit:
-            out.append(d[raw_p])
-            raw_p += 1
-        else:
-            v = struct.unpack_from(">H", d, comp_p)[0]
-            comp_p += 2
-            ln, back = (v >> 12) + 3, (v & 0xFFF) + 1
-            for _ in range(ln):
-                out.append(out[-back])
-    return bytes(out)
+    return mio0_decompress(d, o, strict=False)
 
 
 LOAD_SEG04 = 0x28CEE0                                       # main level script: LOAD_MIO0(0x04, group0) (12 bytes)

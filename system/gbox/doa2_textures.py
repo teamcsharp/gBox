@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .formats.texture import morton as _twiddle       # shared PowerVR twiddle
+
 
 @dataclass(frozen=True)
 class Texture:
@@ -103,13 +105,6 @@ def decode(tex: Texture, bin_data: bytes):
     from PIL import Image
     w, h, rgba, _ = pvr_decode(pvr_chunk(tex, bin_data))
     return Image.frombytes("RGBA", (w, h), rgba)
-
-
-def _twiddle(x: int, y: int) -> int:
-    r = 0
-    for i in range(12):
-        r |= ((y >> i) & 1) << (2 * i) | ((x >> i) & 1) << (2 * i + 1)
-    return r
 
 
 def _pixels16(img: np.ndarray, pix: int) -> np.ndarray:

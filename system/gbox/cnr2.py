@@ -68,60 +68,8 @@ def prs_decompress(data: bytes, size: int) -> bytes:
     following byte).  Port of GNTool PRSUncompressor (tpu / Luigi Auriemma QuickBMS spec).
     Verified byte-equal against the loose disc copies of all 3,599 shipped RNYEDA entries that
     have one (chr/*/0000.brres 307200 B included)."""
-    out = bytearray(size)
-    i = bits_left = o = 0
-    flag = 0
-
-    def byte() -> int:
-        nonlocal i
-        if i >= len(data):
-            raise ValueError("truncated PRS stream")
-        b = data[i]
-        i += 1
-        return b
-
-    def getbits(n: int) -> int:
-        nonlocal i, bits_left, flag
-        v = 0
-        for _ in range(n):
-            v <<= 1
-            if bits_left == 0:
-                flag = byte()
-                bits_left = 8
-            if flag & 0x80:
-                v |= 1
-            flag = (flag << 1) & 0xFF
-            bits_left -= 1
-        return v
-
-    while i < len(data):
-        if getbits(1) == 1:
-            if o < size:
-                out[o] = byte()
-                o += 1
-            else:
-                byte()
-        else:
-            if getbits(1) == 0:  # short copy
-                length = getbits(2) + 2
-                pos = (byte() | 0xFFFFFF00) - 0x100000000  # signed back-offset
-            else:  # long copy
-                pos = (byte() << 8) | 0xFFFF0000
-                pos |= byte()
-                pos -= 0x100000000
-                length = pos & 0x07
-                pos >>= 3
-                if length == 0:
-                    length = byte() + 1
-                else:
-                    length += 2
-            pos += o
-            for _ in range(length):
-                if o < size:
-                    out[o] = out[pos]
-                    o += 1
-                    pos += 1
-    return bytes(out)
+    from .formats.lz import prs_msb_decompress       # shared Eighting PRS codec (also con2_inventory)
+    return prs_msb_decompress(data, size, strict=False, zero_window=False)
 
 
 def fpk_checksum(data: bytes) -> int:

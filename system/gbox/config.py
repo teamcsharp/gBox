@@ -119,6 +119,9 @@ class Config(BaseModel):
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
     runtime_dirs: dict[str, str] = {}        # os -> local disk for emulators/cores (never run binaries off a network share)
     stage_min_mb: int = 32            # stage library files larger than this (disc images) onto the local cache before launch
+    stage_wait_s: float = 45.0        # a launch waits for a cache copy only if it will finish within this; else the game
+                                      # plays from the share and the copy finishes in the background (#1506; 0 = always wait)
+    stage_background_mb_s: float = 6.0   # background copy speed cap while a game plays on this PC (0 = no cap)
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     public_url: str | None = None     # how other machines (Blender add-on, clients) reach the control plane
@@ -134,11 +137,15 @@ class Config(BaseModel):
     retroarch_bios: dict[str, str] = {}   # os -> BIOS source dir (copied per core on demand)
     display: str = ":90"              # linux: Xvfb display used for headless emulator sessions
     llm_endpoints: list[LLMEndpoint] = []
+    # [token_prices] USD per million tokens for the Detailed report's cost estimates, over request_story.DEFAULT_PRICES:
+    # "provider/model" or "provider" = { in = 0.6, out = 2.2, cache_read = 0.11 }. Unknown providers get no cost.
+    token_prices: dict[str, dict[str, float]] = {}
     agent: dict = {"llm_url": "http://127.0.0.1:11434/v1", "model": "qwen3.6:35b", "searx_url": "http://127.0.0.1:8081",
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    examine_capture_worker: str = "JAYBUILTFINALE"   # Examine 3D capture sessions run here first (gbox/scene_relay.py)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
