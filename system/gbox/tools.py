@@ -266,6 +266,17 @@ def _launch_fail(store, job: dict, actor: str):
 _LAUNCH_LOCK = threading.RLock()
 
 
+def _session_ended_on_server(ctx, sid) -> bool:
+    """True only when the control plane positively reports this session as ended; any doubt keeps the save path."""
+    if not getattr(ctx, 'server', None):
+        return False
+    try:
+        r = httpx.get(f'{ctx.server}/api/sessions/{sid}', headers=ctx.headers, timeout=5)
+        return r.status_code == 200 and (r.json() or {}).get('state') == 'ended'
+    except Exception:
+        return False
+
+
 def _close_previous_games(ctx):
     """One emulator per worker. Preserve every current game before stopping any of them."""
     previous = list(SESSIONS.items())
@@ -279,11 +290,19 @@ def _close_previous_games(ctx):
             rewind.stop(sid)
             SESSIONS.pop(sid, None)
             continue
+        if _session_ended_on_server(ctx, sid):
+            # The control plane already ended this session (app relaunch, lost stop): nobody is playing it, so it is
+            # closed without a save instead of blocking every new launch on this PC.
+            ctx.progress(71, 'Closing a leftover emulator the server had already ended')
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None, 'orphan': True})
+            continue
         ctx.progress(71, 'Saving the previous game before switching')
         try:
             saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
         except Exception as exc:
-            raise Unsupported(f"The previous game could not be saved: {exc}. It was kept running. Stop it in Sessions before starting another game.") from exc
+            title = game.get('title') or game.get('game_id') or sid
+            raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
+                              "(or close its emulator window) before starting another game.") from exc
         checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), **saved})
     for sid, (ad, _) in previous:
         if sid not in SESSIONS:
@@ -292,8 +311,8 @@ def _close_previous_games(ctx):
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is None:
             raise RuntimeError('The previous emulator is still running; another game was not started')
-        if getattr(ctx, 'server', None):
-            snapshot = next(s for s in checkpoints if s['session_id'] == sid)
+        snapshot = next(s for s in checkpoints if s['session_id'] == sid)
+        if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
         rewind.stop(sid)
