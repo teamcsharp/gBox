@@ -2951,7 +2951,8 @@ const held = {};             // device -> {buttons, player, sid}; releases belon
 const padQueues = new Map();
 function sendPadEvents(sid, events) {
   if (!sid || !events.length) return;
-  const pending = (padQueues.get(sid) || Promise.resolve()).then(() => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events })).catch(() => {});
+  // 5 s cap: one stalled request must not hold every later press of this session behind it
+  const pending = (padQueues.get(sid) || Promise.resolve()).then(() => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events }, undefined, 5000)).catch(() => {});
   padQueues.set(sid, pending); pending.finally(() => { if (padQueues.get(sid) === pending) padQueues.delete(sid); });
 }
 function releasePad(key) {
@@ -2961,13 +2962,41 @@ function releasePad(key) {
 }
 let remap = null;            // {key, step, base} while a guided remap is running
 let padTopology = "";
-function padLoop() {
-  const list = pads(), seen = new Set(list.map(padKey));
+// The desktop app reads Xbox pads natively (XInput, `gbox.gamepads --watch`) whatever window has focus and pushes every
+// change into this page (gboxNativePad). Chromium's Gamepad API here only samples while this page is visible and its
+// Xbox reading can go quiet while the app window is not focused, so in the desktop app the native reading drives
+// Player 1 of a streamed session (#1532). One reading per pad, one sender: the browser's copy of that pad is skipped.
+const NATIVE_PAD_FRESH = 1000;
+function nativeGamepad() {   // the desktop's XInput state as a "standard" Gamepad, or null (plain browser / stale)
+  const live = window.GBOX_NATIVE_PAD_STATE, list = live?.pads || [];
+  if (!live || !(Date.now() - live.at <= NATIVE_PAD_FRESH)) return null;
+  const p = list.find(x => x.slot === 0) || list[0];
+  if (!p) return null;
+  const bit = mask => ({ pressed: !!(p.buttons & mask), value: p.buttons & mask ? 1 : 0 });
+  const trigger = v => ({ pressed: v > 127, value: (v || 0) / 255 });
+  const axis = v => Math.max(-1, Math.min(1, (v || 0) / 32767));
+  return { id: `Xbox controller (XInput slot ${p.slot ?? 0})`, index: -1 - (p.slot || 0), mapping: "standard", connected: true, native: true,
+    buttons: [bit(0x1000), bit(0x2000), bit(0x4000), bit(0x8000), bit(0x0100), bit(0x0200), trigger(p.lt), trigger(p.rt),
+              bit(0x0020), bit(0x0010), bit(0x0040), bit(0x0080), bit(0x0001), bit(0x0002), bit(0x0004), bit(0x0008), bit(0x0400)],
+    axes: [axis(p.lx), -axis(p.ly), axis(p.rx), -axis(p.ry)] };
+}
+function padSources(list) {  // [gamepad, config] per controller; the native Xbox reading stands in for an Xbox Player 1
+  const native = remap ? null : nativeGamepad(), chosen = selectedPad(list);
+  const useNative = !!native && primaryPad !== "none" && (!primaryPad?.id || xboxPad(primaryPad));
+  const out = list.filter(gp => !(useNative && chosen && padKey(gp) === padKey(chosen))).map(gp => [gp, cfgFor(gp)]);
+  if (useNative) out.push([native, { ...(chosen ? padBase(chosen) : { map: { ...XBOX_DEFAULT }, stick: true }), player: 1 }]);
+  return out;
+}
+let padTarget = null;        // desktop mini window: the streamed session it shows while this view is hidden
+const padSid = () => padTarget || (active && !active.local ? active.sid : null);   // native games read the pad themselves
+function padTick() {
+  const list = pads(), sources = padSources(list), seen = new Set(sources.map(([gp]) => padKey(gp)));
   for (const key of Object.keys(held)) if (!seen.has(key)) releasePad(key);
-  const topology = JSON.stringify([list.map(gp => [padKey(gp), gp.mapping]), primaryPad]);
+  const topology = JSON.stringify([sources.map(([gp]) => [padKey(gp), gp.mapping]), primaryPad]);
   if (topology !== padTopology) { padTopology = topology; padStatus(); }
-  for (const gp of list) {
-    const c = cfgFor(gp), key = padKey(gp), sid = active && !active.local ? active.sid : null;   // native games read the pad themselves
+  const sid = padSid();
+  for (const [gp, c] of sources) {
+    const key = padKey(gp);
     if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
     if (remap && remap.key === key) { remapStep(gp); continue; }
     const now = c.player && sid ? pressed(gp, c) : new Set(), prev = held[key]?.buttons || new Set(), events = [];
@@ -2976,13 +3005,25 @@ function padLoop() {
     held[key] = { buttons:now, player:c.player, sid };
     sendPadEvents(sid, events);
   }
+}
+function padLoop() {         // a failing pass must never end controller input for the rest of the page's life
+  try { padTick(); } catch (e) { console.warn("controller loop:", e); }
   requestAnimationFrame(padLoop);
 }
 requestAnimationFrame(padLoop);
+// Desktop app pushes: each native pad change is applied at once (a hidden page gets no animation frames).
+window.gboxNativePad = state => {
+  window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: Array.isArray(state) ? state : [] };
+  try { padTick(); } catch (e) { console.warn("controller push:", e); }
+};
+window.gboxPadTarget = sid => {
+  padTarget = sid || null;
+  try { padTick(); } catch (e) { console.warn("controller target:", e); }
+};
 addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 function padStatus() {
-  const el = $("#padstat"), gp = selectedPad();
+  const el = $("#padstat"), gp = selectedPad() || (primaryPad == null ? nativeGamepad() : null);
   if (el) { el.textContent = "🎮 " + (gp ? gp.id + " → Player 1" : primaryPad === "none" ? "Controller forwarding off" : primaryPad?.id ? primaryPad.id + " · disconnected" : nativeXboxSlots().length ? `Xbox controller (XInput ${nativeXboxSlots()[0]}) connected` : "Connect Xbox controller") + " · Change…";
     el.title = "Choose the controller for Player 1"; }
   const picker = $("#padpicker"); if (picker && !picker.hidden) picker.innerHTML = padPickerHTML();
