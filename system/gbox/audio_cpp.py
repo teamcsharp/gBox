@@ -248,6 +248,8 @@ class Service:
     def _wait(self) -> dict:
         end = time.monotonic() + self.cfg.audio_cpp.start_timeout_s
         while time.monotonic() < end:
+            if self.stopping.is_set() and self.proc is None:
+                raise Down("audio.cpp was stopped while starting")
             if self.health(1.0) is not None:
                 self.last_error = ""
                 return self.status()
