@@ -33,7 +33,7 @@ def retire_stalled_snapshots(store, *, now: float | None = None, timeout: int = 
 # Jobs that run as a thread inside the gBox server process itself (no worker
 # claims them). A server restart ends the thread but leaves the job document
 # "running" forever, and a cancel request has nothing left to stop it (#1297).
-SERVER_TOOLS = ('session_swap', 'scene_relay', 'evidence_capture')
+SERVER_TOOLS = ('session_swap', 'session_reset', 'session_reload', 'scene_relay', 'evidence_capture')
 ORPHAN_REASON = ('Interrupted: the gBox server restarted while this was running, so nothing is still working on it. '
                  'Your games were not changed by this cleanup; start it again if you still want it.')
 CANCELLED_REASON = ('cancelled by the operator (the gBox server had already restarted, so nothing was still '

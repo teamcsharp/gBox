@@ -56,6 +56,7 @@ crew, each donor looking like its own game's character (no outline shell, correc
 |---|---|---|
 | PSO Ver.2 (`gbox.pso_player` / `pso_enemy`) | **pairs**: `pso_enemy.build_cast` -> `build_swap` with a donor per enemy body; each pack rebuilt once, one `patch_gdi` | every enemy slot (Booma family + the 16 other packs); a failing body (pack room, unmappable skeleton) fails alone; the player class is skipped (not drawn yet) |
 | DOA2 (`gbox.doa2_swap`) | **pairs**: `use_roster` (every selectable fighter in one disc) | full cast (14 fighters); the roster needs every fighter, so `slots=` subsets fail with plan_roster's reason |
+| SoulCalibur DC (`gbox.soulcalibur_swap`) | **pairs**: `build_cast` (every slot's costumes rebuilt in their own HUMAN.DAT slots, one GD-ROM) | full cast (19 fighters, 45 costumes); `characters op=use slot=roster` adds the random costume hook (docs/soulcalibur_dc.md); unverified in game |
 | Def Jam Vendetta PS2 (`gbox.defjam_writer`) | **pairs**: `match` (one data.bin) | full cast (44 names, every costume) |
 | SmackDown! 2 (`gbox.yukes_sd`) | **pairs**: `match` | full cast (66 wrestlers) |
 | No Mercy (`gbox.aki_wrestling`) | **pairs**: `match` (one ROM) | full cast (64 default wrestlers); WCW World Tour / Revenge rosters come off their ROMs, not listed yet |
