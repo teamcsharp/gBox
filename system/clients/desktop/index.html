@@ -1147,6 +1147,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/mods-gallery.js"></script>
 <script src="../web/viz/retarget-handles.js"></script>
 <script src="../web/viz/retarget-editor.js"></script>
+<script src="../web/viz/pick-whip.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
@@ -3073,7 +3074,7 @@ function popups() {                                          // floating things 
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on";
+const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon";
 const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
@@ -3272,6 +3273,8 @@ function pipMenu(x, y) {
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
+                 ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
+                 ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["save", "💾 Save state"], ["load", "📂 Load state"], ["slot+", `Save slot: ${GM.slot}  ▸ next`], ["slot-", "Save slot ◂ previous"],
                  ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
@@ -3331,6 +3334,8 @@ async function gameAction(a) {
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
     else if (a === "orb") ORB.on ? orbClose() : orbOpen();
     else if (a === "vov") { vovEnable(!VOV.enabled); toast(VOV.enabled ? "✨ The transition visual shows over the game while you and gBox talk" : "✨ Voice overlay off"); }
+    else if (a === "pwrclick") { const s = GBoxPickWhip.saveSettings({ rclick: !GBoxPickWhip.settings().rclick }); toast(s.rclick ? "⌖ Right-click a character in the game for its menu (Replace, Copy, Blender…)" : "⌖ Right-click on the game opens the game menu"); }
+    else if (a === "pwpause") { const s = GBoxPickWhip.saveSettings({ pause: !GBoxPickWhip.settings().pause }); toast(s.pause ? "⏸ The game pauses while the pick whip is open" : "⏸ The game keeps running while you pick"); }
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
     else if (a === "load") { toast("📂 Loading…"); await gameJob("session_op", { op: "load_state", args: { slot: GM.slot } }); toast(`📂 Loaded slot ${GM.slot}`); }
     else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
@@ -3550,7 +3555,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
     else if (m.ev === "gamecontext" || m.ev === "gamepick") {
       const r = wv.getBoundingClientRect();
-      if (m.ev === "gamecontext") pipMenu(r.left + m.x, r.top + m.y);
+      if (m.ev === "gamecontext") pwRightClick(r.left + m.x, r.top + m.y);
       else eyePoint(r.left + m.x, r.top + m.y);
     }
     else cardDragMsg(m);
@@ -3565,7 +3570,7 @@ gbox.onEmbedEvent?.(async ev => {
   }
   if (ev.event === "gameup") return;
   if (ev.event === "gameclick") return closePops(null);
-  if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pipMenu(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
+  if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === "reset") return document.querySelector("#wv")?.executeJavaScript(          // F5: reset the game being played
     `(s => s && resetGame(s, document.getElementById("resetbtn")))(${JSON.stringify(EMB.sid || "")} || playing || (active && active.sid))`).catch(() => {}); if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
@@ -3575,20 +3580,95 @@ addEventListener("keydown", e => {                            // A / F3 = autopl
   if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); eyeStart(); }
 });
 
+// ---------------- pick whip (../web/viz/pick-whip.js, docs/live-picker.md): pause hold, outline + label, character menu ----------------
+// The game pauses while the pick whip is open (eyedropper, character menu): POST /api/pickwhip/{sid}/hold, renewed while
+// open; main.js resumes it if this window crashes or closes and the server's lease watchdog if everything dies.
+// Right-click a character in the game: Replace with… (pick_replace live -> build), Copy to clipboard / to Blender,
+// Retarget editor, Identify (pick_identify), Export to Blender (round trip), Show in Assets. Each task streams into the
+// mini console next to the character. Naming uses the model chosen in the header on the local Ollama (pick_name).
+const PW = GBoxPickWhip;
+const pwApi = async (p, b) => { const r = await gbox.api(p, b); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+const PWD = { holder: "desktop-" + Math.random().toString(36).slice(2, 8), con: null };
+PWD.hold = PW.createHold({ api: pwApi, holder: PWD.holder, enabled: () => PW.settings().pause,
+  sessionOp: (sid, op) => gameJob("session_op", { session_id: sid, op, args: {} }) });
+const pwCon = () => PWD.con || (PWD.con = PW.createConsole(document, { drag: dragAnywhere }));
+function pwModel() {                                           // the header's model: local Ollama, tools (+ vision for the crop)
+  const v = $("#chatmodel")?.value || "", m = (CH.models?.models || []).find(x => x.name === v);
+  return { name: v === "auto" ? "" : v, vision: !!m?.capabilities?.includes("vision") };
+}
+function pwCrop() {                                            // the frozen frame around the pick (eyedropper), for vision models
+  if (!EYE.on || !EYE.full || !EYE.at) return "";
+  const F = EYE.full, s = Math.round(Math.min(F.width, F.height) * 0.34), c = Object.assign(document.createElement("canvas"), { width: s, height: s });
+  c.getContext("2d").drawImage(F, Math.max(0, EYE.at[0] * F.width - s / 2), Math.max(0, EYE.at[1] * F.height - s / 2), s, s, 0, 0, s, s);
+  return c.toDataURL("image/png").split(",")[1];
+}
+async function pwBlenderCopy(input) {                          // blender_copy on this PC's worker: Blender's own clipboard (Ctrl+V)
+  const ws = await pwApi("/api/workers");
+  const me = ws.find(w => w.online && w.name === S.workerName) || ws.find(w => w.online && w.os === "windows");
+  if (!me) throw new Error("no gBox worker on this PC (Blender's clipboard is local to this machine)");
+  const r = await PW.runTool({ api: pwApi }, "blender_copy", input, { extra: { require_worker: me.id } });
+  if (!r.ok) throw new Error(r.job.error || r.job.state);
+  blenderCopiedMsg({ result: r.result, input, worker: me.name });
+  return r.result;
+}
+function pwAssets(q) {
+  if (window.assetSidebar?.reveal) { window.assetSidebar.reveal(q); toast(`▤ Assets: ${q}`); }
+  else toast("The asset sidebar is still loading");
+}
+async function pwIO() {
+  const tok = encodeURIComponent(await gbox.token()), sid = EMB.sid;
+  return { api: pwApi, toast, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y, 8, 40),
+    img: c => `${S.apiUrl}${c.preview_url || `/api/characters/${encodeURIComponent(c.slug)}/preview`}?token=${tok}`,
+    clipboard: t => navigator.clipboard.writeText(t), assets: pwAssets, chatModel: pwModel, crop: pwCrop, blenderCopy: pwBlenderCopy,
+    retarget: o => /^[0-9a-f]{16}$/.test(o.gid || "") ? retargetOpen({ ...o, title: EMB.title || "" }) : toast("Open the game first: the Retarget editor needs its game id."),
+    fallbackLive: o => gameJob("characters", { op: "live_use", character: o.character, session_id: sid, x: o.x, y: o.y }),
+    fallbackBuild: o => autoWhipFailure({ sid, game: EMB.title || "the game", model: o.name, character: o.character, target: o.target,
+      targetKind: o.kind, x: o.x, y: o.y, moment: `${Math.round(o.x * 100)}% across, ${Math.round(o.y * 100)}% down`, requested: true, rebuild: true,
+      detail: `Pick whip replace (slot ${o.slot || "unknown"}): ${(o.steps || []).map(s => `${s.via} ${s.mode}: ${s.error || s.status}`).join("; ") || "no live path"}. ` +
+              "Build the replacement and verify it in gameplay with animations and controls." }) };
+}
+async function pwMenuAt(cx, cy) {                              // the character menu at this app point
+  const R = EMB.rect; if (!EMB.sid || !R) return pipMenu(cx, cy);
+  const sid = EMB.sid, frozen = EYE.on, at = [(cx - R.x) / R.w, (cy - R.y) / R.h];
+  if (!frozen) PWD.hold.acquire(sid).then(r => { if (r.error) toast("⚠ could not pause the game: " + r.error.slice(0, 120)); });
+  PW.characterMenu(document, await pwIO(), { sid, at, aspect: R.w / R.h, x: cx, y: cy, preview: frozen ? EYE.preview : null, con: pwCon(), gid: EMB.game,
+    anchor: [cx + 24, cy - 20], extra: [{ id: "gamemenu", icon: "⋮", text: "Game menu…" }],
+    onExtra: id => { if (id === "gamemenu") pipMenu(cx, cy); },
+    onClose: why => { if (why === "dismiss") PWD.dismissed = Date.now();   // that click closes the menu; it doesn't grab
+                      if (!frozen) PWD.hold.release(sid); EMB.last = ""; embedSoon(); } });
+  EMB.last = ""; embedSoon();
+}
+function pwRightClick(x, y) {                                  // right-click on the game: a character there gets its menu
+  const R = EMB.rect;
+  if (PW.settings().rclick && EMB.sid && R && x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h) return pwMenuAt(x, y);
+  pipMenu(x, y);
+}
 // ---------------- game eyedropper (Ctrl+I / status-bar dropper): freeze the frame, pre-select what's under the cursor,
 // inspect it live, click to grab it into a conversation (vision identifies it, the agent extracts it as an asset) ----------------
 const EYE = { on: false };
 async function eyeStart() {
   if (EYE.on) return eyeStop();
+  if (EYE.starting) return;                                    // a second Ctrl+I while the first is still capturing
   if (!EMB.sid || !EMB.rect) return toast("⚠ Start a game first: the eyedropper picks from the running game");
-  const shot = await gbox.captureOS?.(); if (!shot) return toast("⚠ Could not capture the game window");
+  EYE.starting = true;
+  const sid = EMB.sid;
+  try { await eyeOpen(); }
+  catch (e) { if (!EYE.on) PWD.hold.release(sid); toast("⚠ eyedropper: " + (e?.message || "the frame could not be read")); }   // never leave it paused
+  finally { EYE.starting = false; }
+}
+async function eyeOpen() {
+  const sid = EMB.sid, held = PWD.hold.acquire(sid);           // pause: the frozen frame and the RAM the picker reads agree
+  await Promise.race([held, new Promise(r => setTimeout(r, 600))]);
+  const shot = await gbox.captureOS?.().catch(() => null); if (!shot) { PWD.hold.release(sid); return toast("⚠ Could not capture the game window"); }
   const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = shot; });
   const k = img.width / innerWidth, R = EMB.rect;
   const full = Object.assign(document.createElement("canvas"), { width: Math.round(R.w * k), height: Math.round(R.h * k) });
   full.getContext("2d").drawImage(img, R.x * k, R.y * k, R.w * k, R.h * k, 0, 0, full.width, full.height);
   const W = 320, H = Math.max(1, Math.round(full.height * W / full.width));      // analysis copy (fast flood fill)
   const small = Object.assign(document.createElement("canvas"), { width: W, height: H }); small.getContext("2d").drawImage(full, 0, 0, W, H);
-  Object.assign(EYE, { on: true, full, px: small.getContext("2d").getImageData(0, 0, W, H), W, H, R, mask: null, box: null, ctx: await chatContext().catch(() => ({})) });
+  Object.assign(EYE, { on: true, sid, full, px: small.getContext("2d").getImageData(0, 0, W, H), W, H, R, mask: null, box: null, region: null,
+                       target: null, cur: null, preview: null, label: null, at: null, ctx: await chatContext().catch(() => ({})) });
+  held.then(r => { if (r.error) toast("⚠ could not pause the game: " + r.error.slice(0, 120)); });
   EMB.last = ""; embedTick();
   $("#eyepip")?.remove(); clearInterval(EYE.follow);              // one inspector at a time (a stale copy can't be dragged)
   document.body.insertAdjacentHTML("beforeend", `<div id="eye"><canvas></canvas><div class="eyehint">Eyedropper · hover to pre-select · click to grab · Esc to cancel</div></div>
@@ -3602,37 +3682,31 @@ async function eyeStart() {
   Object.assign(ov.style, { left: R.x + "px", top: R.y + "px", width: R.w + "px", height: R.h + "px" });
   cv.width = full.width; cv.height = full.height; EYE.cv = cv;
   floating($("#eyepip"), $("#eyepip .ah"), "eyepip");
-  eyeDraw();
+  PW.ensureCss(document);
+  EYE.lab = Object.assign(document.createElement("div"), { className: "pw-label" }); EYE.lab.style.display = "none"; document.body.append(EYE.lab);
+  EYE.hover = PW.createHover({                                 // latest wins: one pick_preview in flight, stale answers dropped
+    request: at => PW.runTool({ api: pwApi }, "pick_preview", { session_id: sid, x: +at[0].toFixed(4), y: +at[1].toFixed(4), window_aspect: R.w / R.h },
+                              { ms: 150, max: 60 }).then(r => r.result),
+    apply: res => eyePreviewUpdate(res) });
+  eyeDraw(); EYE.anim = requestAnimationFrame(eyeAnim);
+  cv.oncontextmenu = e => { e.preventDefault(); pwMenuAt(e.clientX, e.clientY); };
   cv.onpointermove = e => { const r = cv.getBoundingClientRect(); EYE.at = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
     if (!EYE.raf) EYE.raf = requestAnimationFrame(() => { EYE.raf = 0; eyeHover(); }); };
-  cv.onclick = () => eyeGrab();
+  cv.onclick = () => { if (Date.now() - (PWD.dismissed || 0) > 400) eyeGrab(); };
   addEventListener("keydown", EYE.esc = e => { if (e.key === "Escape") eyeStop(); });
 }
 function eyeStop() {
   EYE.on = false; $("#eye")?.remove(); if (!EYE.keepPip) $("#eyepip")?.remove(); EYE.keepPip = false;
+  EYE.hover?.stop(); cancelAnimationFrame(EYE.anim); EYE.lab?.remove(); EYE.lab = null;
+  if (EYE.sid) PWD.hold.release(EYE.sid); EYE.sid = null;
   removeEventListener("keydown", EYE.esc); EMB.last = ""; embedTick();
 }
-function eyeHover() {                                          // flood-fill the colour region under the cursor (pre-selection)
-  if (EYE.at) {
-    const at = [...EYE.at];
-    clearTimeout(EYE.previewTimer);
-    EYE.previewTimer = setTimeout(() => eyePreview(at), 150);
-  }
-  const { W, H, px } = EYE, d = px.data, x0 = Math.min(W - 1, Math.floor(EYE.at[0] * W)), y0 = Math.min(H - 1, Math.floor(EYE.at[1] * H));
-  const i0 = (y0 * W + x0) * 4, ref = [d[i0], d[i0 + 1], d[i0 + 2]], tol = 34 * 34 * 3;
-  const mask = new Uint8Array(W * H), st = [y0 * W + x0]; mask[st[0]] = 1;
-  let n = 0, bx0 = x0, by0 = y0, bx1 = x0, by1 = y0;
-  while (st.length && n < W * H * 0.45) {                       // ponytail: colour flood fill, not true object segmentation
-    const p = st.pop(), x = p % W, y = (p / W) | 0; n++;
-    bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y);
-    for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1]) {
-      if (q < 0 || mask[q]) continue;
-      const j = q * 4, dr = d[j] - ref[0], dg = d[j + 1] - ref[1], db = d[j + 2] - ref[2];
-      if (dr * dr + dg * dg + db * db < tol) { mask[q] = 1; st.push(q); }
-    }
-  }
-  EYE.mask = mask; EYE.box = [bx0 / W, by0 / H, (bx1 + 1) / W, (by1 + 1) / H]; EYE.n = n;
-  eyeDraw();
+function eyeHover() {                                          // pre-selection: the colour region + the entity the picker sees there
+  if (!EYE.at) return;
+  EYE.hover?.move([...EYE.at]);                                // pick_preview at the cursor (latest wins)
+  const { W, H, px } = EYE, d = px.data, g = PW.floodRegion(px, W, H, EYE.at), [x0, y0] = g.at, ref = g.ref, n = g.n;
+  EYE.region = g; EYE.mask = g.mask; EYE.box = g.box; EYE.n = n;   // ponytail: colour flood fill, not true object segmentation
+  EYE.target = PW.outlineOf(EYE.preview, g, EYE.R.w / EYE.R.h) || EYE.target;
   const z = $("#eye-zoom").getContext("2d"), F = EYE.full, b = EYE.box;
   z.imageSmoothingEnabled = false; z.fillStyle = "#000"; z.fillRect(0, 0, 160, 120);
   const bw = (b[2] - b[0]) * F.width, bh = (b[3] - b[1]) * F.height, s = Math.min(160 / bw, 120 / bh);
@@ -3647,7 +3721,7 @@ function eyeHover() {                                          // flood-fill the
   }
   $("#eye-hex").textContent = rows.join("\n");
 }
-async function eyePreview(at) {                                 // live semantic preview of the pre-selected region
+async function eyePreview(at) {                                 // (older path, kept for callers): a semantic preview of the region
   if (!EYE.on || !EYE.box || !EMB.sid || !EMB.rect || String(EYE.at) !== String(at)) return;
   const R = EMB.rect, b = EYE.box;
   const x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
@@ -3667,8 +3741,14 @@ async function eyePreview(at) {                                 // live semantic
   } catch (e) { console.warn("pick_preview:", e); }
 }
 function eyePreviewUpdate(p) {                                  // update the inspector PiP with entity + RAM + RE evidence
+  if (EYE.on) {                                                // the outline + label follow what the picker found
+    EYE.preview = p?.picked ? p : null;
+    EYE.target = PW.outlineOf(EYE.preview, EYE.region, EYE.R.w / EYE.R.h) || EYE.target;
+    EYE.label = EYE.preview ? PW.labelOf(EYE.preview) : null;
+  }
   const meta = $("#eye-meta"), ram = $("#eye-ram");
-  if (!p?.picked) { meta.innerHTML = ""; ram.textContent = ""; return; }
+  if (!meta || !ram) return;
+  if (!p?.picked) { meta.innerHTML = p?.note ? `<span class="mut">${esc(p.note)}</span>` : ""; ram.textContent = ""; return; }
   const e = p.picked;
   const fmt = n => (typeof n === "number" ? n.toFixed(1) : n);
   let html = `<b>${esc(e.class || e.kind || "entity")}</b> · ${e.kind || ""} <code>${esc(e.ptr || "?")}</code>`;
@@ -3686,8 +3766,18 @@ function eyePreviewUpdate(p) {                                  // update the in
   meta.innerHTML = html;
   ram.textContent = p.hex ? `RAM @ ${esc(e.ptr || "?")}: ${p.hex}` : "";
 }
-function eyeDraw() {
+function eyeAnim(t) {                                          // the outline eases toward its target; the label rides on it
+  if (!EYE.on) return;
+  const dt = t - (EYE.t || t); EYE.t = t;
+  if (EYE.target) EYE.cur = PW.easeBox(EYE.cur, EYE.target.box, dt);
+  eyeDraw(t);
+  PW.placeLabel(document, EYE.lab, EYE.R, EYE.cur || [0, 0, 0, 0], !EYE.target ? null : EYE.label ||
+    { name: "colour region", kind: "", model: "", slot: "", via: "no entity data here: right-click for actions" });
+  EYE.anim = requestAnimationFrame(eyeAnim);
+}
+function eyeDraw(now = 0) {
   const c = EYE.cv.getContext("2d"), F = EYE.full; c.drawImage(F, 0, 0);
+  if (EYE.target && EYE.cur) return PW.paintOutline(c, EYE.target, EYE.cur, F.width, F.height, { t: now, aspect: EYE.R.w / EYE.R.h });
   if (!EYE.mask) return;
   const { W, H, mask } = EYE, m = c.createImageData(W, H);
   for (let i = 0; i < W * H; i++) if (mask[i]) { m.data[i * 4] = 124; m.data[i * 4 + 1] = 150; m.data[i * 4 + 2] = 255; m.data[i * 4 + 3] = 120; }
@@ -3698,7 +3788,9 @@ function eyeDraw() {
 }
 async function eyeGrab() {
   if (!EYE.box) return;
-  const F = EYE.full, b = EYE.box, pad = 0.03;
+  const F = EYE.full, b = EYE.cur || EYE.box, pad = 0.03, at = EYE.at || [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], R0 = EYE.R;
+  pwCon().anchor(R0.x + b[2] * R0.w + 12, R0.y + b[1] * R0.h);
+  const task = pwCon().open("grab-" + Date.now().toString(36), `Grab ${EYE.label?.name || "selection"}`);
   const x = Math.max(0, b[0] - pad) * F.width, y = Math.max(0, b[1] - pad) * F.height;
   const w = Math.min(1, b[2] + pad) * F.width - x, h = Math.min(1, b[3] + pad) * F.height - y;
   const crop = Object.assign(document.createElement("canvas"), { width: Math.round(w), height: Math.round(h) });
@@ -3708,12 +3800,12 @@ async function eyeGrab() {
   let pickText = "", pick = null;
   if (EMB.sid && EMB.rect) {                                   // try a semantic pick/extraction at the centre of the selection
     try {
-      const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, window_aspect: EMB.rect.w / EMB.rect.h } });
+      const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: +at[0].toFixed(4), y: +at[1].toFixed(4), window_aspect: EMB.rect.w / EMB.rect.h } });
       if (r.ok && r.data?.id) {
-        const j = await jobWait(jobOf(r, "pick"), "pick", 200);
+        const j = await PW.waitJob({ api: pwApi }, jobOf(r, "pick"), { ms: 200, onUpdate: x => task.update(x) });
         if (j.state === "succeeded") { pick = j.output?.result || {}; EYE.pick = pick; }
       }
-    } catch (e) { console.warn("eyeGrab pick:", e); }
+    } catch (e) { console.warn("eyeGrab pick:", e); task.log("pick: " + e.message); }
     if (pick?.picked) {
       const p = pick.picked, fmt = n => typeof n === "number" ? n.toFixed(1) : n;
       pickText = `The semantic picker found ${p.class || p.kind} (id ${p.entity_id}, ptr ${p.ptr || "?"}, world ${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}). `;
@@ -3735,7 +3827,8 @@ async function eyeGrab() {
     const r = await gbox.api(`/api/chat/${CH.cid}`); if (!r.ok) return;
     const ev = r.data.events.slice(-6).filter(e => e.type === "tool_call" || e.type === "assistant");
     $("#eye-log").innerHTML = ev.map(e => e.type === "tool_call" ? `🔧 ${esc(e.name)} ${esc(JSON.stringify(e.args).slice(0, 80))}` : `💬 ${esc((e.text || "").slice(0, 160))}`).join("<br>");
-    if (!r.data.busy) { clearInterval(EYE.follow); setTimeout(() => $("#eyepip")?.remove(), 30000); }
+    task.lines(ev.map(e => e.type === "tool_call" ? `🔧 ${e.name} ${JSON.stringify(e.args).slice(0, 80)}` : `💬 ${(e.text || "").slice(0, 160)}`));
+    if (!r.data.busy) { clearInterval(EYE.follow); task.done(true, "gBox finished: see the chat"); setTimeout(() => $("#eyepip")?.remove(), 30000); }
   }, 1500);
 }
 document.addEventListener("click", e => { if (e.target.closest("#sb-eye")) eyeStart(); });   // the status bar is created further down
@@ -5198,8 +5291,9 @@ async function autoWhipFailure({ sid, game, model, character, target, targetKind
     action: "pick whip model replacement", target, moment, detail, job_id: jobId || "",
     character: character || "", target_kind: targetKind || "", x, y,
     needs_rebuild: rebuild, replacement_requested: requested, image_b64: shot || null }).catch(() => null);
-  if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); }
-  else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
+  if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); return r.data; }
+  toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
+  return null;
 }
 async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
@@ -5213,7 +5307,7 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
+    <button data-w="live"><span>▶</span>Replace live (falls back to a build)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
@@ -5251,14 +5345,20 @@ async function whipCardMenu(card, gp, ev) {
     if (bt.dataset.w === "live") {
       const sid = targetSid;
       if (!sid || EMB.sid !== sid) { toast("The selected game changed; pick the target again."); return; }
-      toast(`Preparing ${card.name} for an in-game replacement…`, 60000);
-      try {
-        const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
-          x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
-        toast(res.message || res.status, 12000);
-        if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
-          await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });
+      toast(`Preparing ${card.name} for an in-game replacement…`, 8000);
+      const x = +f[0].toFixed(4), y = +f[1].toFixed(4);
+      pwCon().anchor(gp[0] + 24, gp[1] - 20);
+      const task = pwCon().open("whip-" + Date.now().toString(36), `Replace ${T.name} → ${card.name}`);
+      try {                                                    // pick_replace live -> build; before it exists: live_use, then a rebuild request
+        const res = await PW.replace({ api: pwApi }, { sid, character: card.slug, x, y, pick: { x, y, window_aspect: r.w / r.h, target: T.name, kind: T.kind },
+          onUpdate: j => task.update(j), log: t => task.log(t),
+          fallbackLive: () => gameJob("characters", { op: "live_use", character: card.slug, session_id: sid, x, y }),
+          fallbackBuild: steps => autoWhipFailure({ ...reportContext, requested: true, rebuild: true,
+            detail: (steps || []).map(s => `${s.via} ${s.mode}: ${s.error || s.status}`).join("; ") || "live replacement unavailable" }) });
+        task.done(res.ok, res.ok ? `${card.name}: ${res.mode === "live" ? "replaced live" : "build requested"} (${res.via})` : "could not replace: a report was filed");
+        toast(res.ok ? `${card.name}: ${res.mode === "live" ? "replaced live" : "build requested"}` : `${card.name}: replacement failed`, 12000);
       } catch (err) {
+        task.done(false, err.message);
         await autoWhipFailure({ ...reportContext, detail: err.message, jobId: err.jobId });
       }
       return;

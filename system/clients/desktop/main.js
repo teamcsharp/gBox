@@ -95,6 +95,7 @@ app.on("web-contents-created", (_e, wc) => {
   });
   wc.on("render-process-gone", (_e, details) => {
     logPush(`${wc.getType()}:error`, `render-process-gone: reason=${details?.reason} exitCode=${details?.exitCode}`);
+    if (wc.getType() === "window" && win && !win.isDestroyed() && wc === win.webContents) pickHoldReleaseAll("window crashed");
   });
 });
 ipcMain.handle("console:tail", (_e, n = 200000) => CONSOLE.slice(-n));
@@ -205,7 +206,24 @@ ipcMain.handle("settings:get", () => settings());
 ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); settingsStamp = null; cachedToken = null; return settings(); });
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
-ipcMain.handle("api", async (_e, p, body) => { try { return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
+// Pick whip pause hold (gbox/pickwhip.py): the renderer pauses the game through POST /api/pickwhip/{sid}/hold. Main
+// remembers every hold it forwarded, so a crashed or closed window resumes the game at once instead of waiting for the
+// server's lease watchdog (which still covers main itself dying).
+const PICK_HOLDS = new Map();                         // sid -> holder
+function pickHoldTrack(p, body) {
+  const m = /^\/api\/pickwhip\/([^/?]+)\/hold$/.exec(p || ""); if (!m || !body) return;
+  const sid = decodeURIComponent(m[1]);
+  if (body.op === "pause") PICK_HOLDS.set(sid, body.holder || "app");
+  else if (body.op === "release") PICK_HOLDS.delete(sid);
+}
+function pickHoldReleaseAll(why) {
+  for (const [sid, holder] of PICK_HOLDS) {
+    logPush("main:log", `pick whip: resuming ${sid} (${why})`);
+    api(`/api/pickwhip/${encodeURIComponent(sid)}/hold`, { op: "release", holder }).catch(() => {});
+  }
+  PICK_HOLDS.clear();
+}
+ipcMain.handle("api", async (_e, p, body) => { try { pickHoldTrack(p, body); return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
 // a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
 ipcMain.handle("api:tagged", async (_e, p, have) => {
   try {
@@ -838,6 +856,8 @@ app.whenReady().then(() => {
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
   win.loadFile(path.join(__dirname, "index.html"));
+  win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) pickHoldReleaseAll("window reloaded"); });
+  win.on("closed", () => pickHoldReleaseAll("window closed"));
   startPadWatcher();
   win.on("focus", () => win.webContents.send("app-focus"));   // coming back to gBox: the renderer decides whether the game gets focus
   cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
@@ -848,6 +868,7 @@ app.whenReady().then(() => {
 });
 let sessionsShutDown = false;
 function shutdownSessions() {
+  pickHoldReleaseAll("gBox quitting");
   if (sessionsShutDown) return;
   sessionsShutDown = true;
   quitting = true;
