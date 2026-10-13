@@ -56,6 +56,8 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
             m = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
+        if not isinstance(m, dict) or not m.get("name"):
+            continue                    # a bookkeeping folder (e.g. "shared": slug + targets only) is not a character
         if game_id:
             m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
         out.append(m)
