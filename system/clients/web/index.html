@@ -268,6 +268,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/padglyph.js"></script>
 <script src="/viz/session-pause.js"></script>
 <script src="/viz/session-move.js"></script>
+<script src="/viz/session-build.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/build-actions.js"></script>
 <script src="/viz/game-menu.js"></script>
@@ -428,6 +429,7 @@ if (!tok) $("#tok").style.display = "";                    // only a plain brows
 
 // ---- header tray: every running session as a clickable icon (yours bright, agents' dimmed) + a bell for notifications ----
 const TRAY = { open: false, notes: [], bn: {}, seen: null };
+const SESSIONBUILD = { ctl: null, session: null };            // the Sessions header's build name (viz/session-build.js)
 // build notifications (viz/build-notes.js over gbox/build_notify.py): thumbnail, summary, Play (this PC, the game menu's
 // launch path: the mod is staged / fetched there), ▾ other launch options, Open in Mods; errors: Open request / Retry build
 document.head.insertAdjacentHTML("beforeend", `<style>${GBoxBuildNotes.CSS}</style>`);
@@ -471,17 +473,18 @@ async function trayTick() {
     const online = new Set((ws || []).filter(w => w.online).map(w => w.id));
     const run = ss.filter(x => x.state === "running" && (!ws?.length || online.has(x.session_id.split("-")[0])));   // stale ones (worker restarted) are gone
     TRAY.notes = notes;
+    if (SESSIONBUILD.ctl) SESSIONBUILD.ctl.sync(ss.find(x => x.session_id === SESSIONBUILD.ctl.sid));   // renamed in Mods / Builds / the app
     if (TRAY.seen === null) TRAY.seen = GBoxBuildNotes.seenOf(notes);       // opening the page announces nothing old
     else GBoxBuildNotes.fresh(notes, TRAY.seen).slice(0, 1).forEach(bnAnnounce);
     const unread = GBoxBuildNotes.unread(notes), cur = (window.active || {}).sid;
     const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent";
       return `<button class="tchip${agent ? " agent" : ""}${x.session_id === cur ? " cur" : ""}" data-sid="${esc(x.session_id)}"
-        title="${esc((l.label ? l.label + " · " : "") + (x.title || "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + " · " + x.session_id)}">
+        title="${esc((l.label ? l.label + " · " : "") + (x.title || "") + (x.mod_title ? " · " + x.mod_title : "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + " · " + x.session_id)}">
         <img alt="" src="/api/sessions/${encodeURIComponent(x.session_id)}/frame.jpg?${tq()}&t=${Math.floor(Date.now() / 15000)}" onload="this.style.visibility='visible'" onerror="this.style.visibility='hidden'">
         ${sessionIsLocal(x) ? ICON_LOCAL : ICON_REMOTE}
         <span>${esc((l.label || x.title || "game").replace(/\s*\(.*$/, "").slice(0, 14))}</span>${agent ? '<i>agent</i>' : ""}</button>`; };
     run.sort((a, b) => ((labels[a.session_id] || {}).owner === "agent") - ((labels[b.session_id] || {}).owner === "agent"));
-    const signature = JSON.stringify(run.map(x => [x.session_id, x.title, labels[x.session_id]?.label, labels[x.session_id]?.owner,
+    const signature = JSON.stringify(run.map(x => [x.session_id, x.title, x.mod_title, labels[x.session_id]?.label, labels[x.session_id]?.owner,
       x.session_id === cur, sessionWorkerName(x), sessionIsLocal(x)]));
     const tray = $("#tray"), frameKey = Math.floor(Date.now() / 15000);
     if (TRAY.signature !== signature) {
@@ -1577,7 +1580,8 @@ async function sessionsView(sid, mode) {
   sid = s.session_id || sid;
   const local = !!(s.detail && s.detail.local_window);
   const btn = k => `<button class="act" data-k="${k}">${k}</button>`;
-  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button><b>${esc(s.title || 'Game session')}</b>
+  SESSIONBUILD.session = s;                                   // sessionsView.after mounts the header's build rename on it
+  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button>${window.GBoxSessionBuild ? GBoxSessionBuild.titleHTML(s) : `<b>${esc(s.title || 'Game session')}</b>`}
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
@@ -1961,10 +1965,24 @@ async function gfxInit() {
   };
   try { draw(await gfxJob(el, "get")); } catch (e) { el.innerHTML = `<h4>Graphics</h4><p class="mut">${esc(e.message)}</p>`; }
 }
+// ---- the session header's build name (viz/session-build.js): "<game> · <build>"; click the name (or ✎) to rename the
+// build (the same PATCH as Mods / Builds / Special builds), ★ Favorite this build after; the stock game renames nothing
+function sessionBuildMount(head) {
+  SESSIONBUILD.ctl?.dispose(); SESSIONBUILD.ctl = null;
+  const s = SESSIONBUILD.session;
+  if (!head || !window.GBoxSessionBuild || !s || s.session_id !== head.dataset.sid) return null;
+  return SESSIONBUILD.ctl = GBoxSessionBuild.mount(head, { session: s, api,
+    onRenamed: info => sessionBuildChanged("buildrenamed", info), onFavorite: info => sessionBuildChanged("buildfavorite", info) });
+}
+function sessionBuildChanged(ev, info) {
+  trayTick();                                                 // notifications: the server names build entries at read time
+  if (bnEmbedded()) console.log("GBOX:" + JSON.stringify({ ev, ...info }));   // the desktop app: its launch bar and Mods page
+}
 sessionsView.after = (sid, mode) => {
   if (!sid) return;
   syncSessionFav();
   const head = $("#session-head");
+  sessionBuildMount(head);
   if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
   sid = head.dataset.sid; playing = sid;
   watchSessionPause(sid);
