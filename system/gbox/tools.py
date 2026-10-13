@@ -231,9 +231,16 @@ class LaunchIn(BaseModel):
     game: CatalogEntry
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
-    examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    mod_title: str = ""                    # the operator's name for that build (labels only: launch bar, loader)
+    examine:bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
+    capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
+                                           # its own config files, RenderDoc inside, no rewind/recording, window off-screen
+    capture_for: str = ""                  # the operator session this capture session captures (scene_relay)
+    boot_timeout_s: float | None = Field(default=None, ge=10, le=600)   # how long the emulator may take to report the
+                                           # game running (None = the adapter's default, 30 s for RetroArch); the
+                                           # launch failure remedy relaunches a slow boot with a longer one
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -304,9 +311,9 @@ def _close_previous_games(ctx, keep: str = ""):
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
-            rewind.stop(sid)
-            ring_record.stop(sid)
+            sr = rewind.detach(sid)
             SESSIONS.pop(sid, None)
+            _teardown(sid, sr)
             continue
         if _session_ended_on_server(ctx, sid):
             # The control plane already ended this session (app relaunch, lost stop): nobody is playing it, so it is
@@ -325,19 +332,116 @@ def _close_previous_games(ctx, keep: str = ""):
     for sid, ad, _ in previous:
         if sid not in SESSIONS:
             continue
+        sr = rewind.detach(sid)                     # every game was saved above; the ring takes nothing more
         ad.stop_game()
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is None:
+            rewind.reattach(sid, sr, lambda sid=sid: sid in SESSIONS)
             raise RuntimeError('The previous emulator is still running; another game was not started')
         snapshot = next(s for s in checkpoints if s['session_id'] == sid)
         if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
-        rewind.stop(sid)
-        ring_record.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
+        _teardown(sid, sr)
     return checkpoints
+
+
+STOP_SAVE_CAP_S = 2.0          # Save & stop (only when the operator asks for it) waits at most this long for the save
+STOP_MOMENT_CAP_S = 4.0        # Stop with moment (last played): the save + upload of the moment, then the game closes anyway
+STOP_TEARDOWN_WAIT_S = 1.0     # rewind / gameplay-ring teardown awaited at most this long; the rest ends in the background
+
+
+def _within(fn, seconds: float, name: str):
+    """Run fn on a daemon thread and wait at most `seconds`: (finished, result, error)."""
+    box = {}
+
+    def run():
+        try:
+            box['result'] = fn()
+        except Exception as e:                       # noqa: BLE001 - reported to the caller
+            box['error'] = e
+    t = threading.Thread(target=run, daemon=True, name=name)
+    t.start()
+    t.join(max(0.0, seconds))
+    return not t.is_alive(), box.get('result'), box.get('error')
+
+
+def _teardown(sid: str, sr, wait: float = STOP_TEARDOWN_WAIT_S) -> bool:
+    """After the emulator is gone: close its rewind (gives the operator's save slot back, deletes the ring) and stop the
+    gameplay ring's ffmpeg. A checkpoint still waiting on the dead emulator, or ffmpeg finalising its last segment
+    (up to 8 + 5 s), went on the Stop button's clock before (#1504); now it finishes in the background."""
+    def work():
+        if sr is not None:
+            try:
+                sr.close()
+            except Exception as e:                   # noqa: BLE001
+                print(f'gBox: rewind teardown of {sid} failed: {e}', flush=True)
+        try:
+            ring_record.stop(sid)
+        except Exception as e:                       # noqa: BLE001
+            print(f'gBox: gameplay ring teardown of {sid} failed: {e}', flush=True)
+    return _within(work, wait, f'session-teardown-{sid}')[0]
+
+
+def _stop_session(sid: str, args: dict, ctx) -> dict:
+    """Stop = the emulator's process tree killed now (#1504). A save happens only when the operator asked for one
+    (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
+    ad, _ = SESSIONS[sid]
+    t0 = time.monotonic()
+    timings, saved, moment = {}, None, None
+    if args.get('moment'):
+        # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
+        # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
+
+        def keep_moment():
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            try:
+                png = ad.get_frame()
+                ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')
+                out['frame'] = sha256(png)
+            except Exception:                        # noqa: BLE001 - a moment without a picture still reloads
+                pass
+            return out
+        done, res, err = _within(keep_moment, cap, f'stop-moment-{sid}')
+        moment = res if done and err is None else {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else
+                                                   f'saving took longer than {cap:g} s'}
+        timings['moment_s'] = round(time.monotonic() - t0, 3)
+    if args.get('save'):
+        cap = float(args.get('save_cap_s') or STOP_SAVE_CAP_S)
+
+        def save():
+            with rewind.guard(sid, 'save_state'):
+                return ad.save_state()
+        done, res, err = _within(save, cap, f'stop-save-{sid}')
+        if done and err is None:
+            saved = res if isinstance(res, dict) else {'value': str(res)[:200]}
+        else:
+            saved = {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else f'the save took longer than {cap:g} s'}
+        timings['save_s'] = round(time.monotonic() - t0, 3)
+    sr = rewind.detach(sid)
+    t = time.monotonic()
+    res = ad.stop_game()
+    timings['kill_s'] = round(time.monotonic() - t, 3)
+    proc = getattr(ad, 'proc', None)
+    if proc is not None and proc.poll() is None:
+        rewind.reattach(sid, sr, lambda: sid in SESSIONS)
+        raise RuntimeError('Emulator process is still running; stop was not confirmed')
+    SESSIONS.pop(sid, None)
+    track_emulator(ctx.config, sid, None, add=False)
+    t = time.monotonic()
+    timings['teardown_done'] = _teardown(sid, sr)
+    timings['teardown_s'] = round(time.monotonic() - t, 3)
+    timings['total_s'] = round(time.monotonic() - t0, 3)
+    out = dict(res) if isinstance(res, dict) else {'value': str(res)[:200]}
+    out['timings'] = timings
+    if saved is not None:
+        out['save'] = saved
+    if moment is not None:
+        out['moment'] = moment
+    return {'result': out, 'session_id': sid, 'ended': True}
 
 
 @tool("launch_game", "1.2", LaunchIn, LaunchOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=900,
@@ -346,28 +450,109 @@ def _close_previous_games(ctx, keep: str = ""):
 def launch_game(inp: LaunchIn, ctx: Ctx):
     """Launch a cataloged game on this node; missing cores/BIOS are installed automatically. Streams to the UI."""
     with _LAUNCH_LOCK:
-        return _launch_game(inp, ctx)
+        diag: dict = {}
+        _LAUNCH_DIAG.d = diag                                  # _launch_game records how far it got (one launch at a time)
+        try:
+            return _launch_game(inp, ctx)
+        except Exception as exc:
+            _launch_failure_evidence(inp, ctx, diag, exc)
+            raise
+        finally:
+            _LAUNCH_DIAG.d = None
+
+
+_LAUNCH_DIAG = threading.local()
+
+
+def _launch_failure_evidence(inp: LaunchIn, ctx: Ctx, diag: dict, exc: BaseException):
+    """A failed launch leaves its evidence on the job: launch-failure.json (adapter, core, stage reached, timings,
+    staging) and the emulator's own log tail, for the launch failure report (gbox/launch_failures.py)."""
+    try:
+        ad = diag.pop("_adapter", None)
+        log = ""
+        if ad is not None and callable(getattr(type(ad), "log_tail", None)):
+            try:
+                log = ad.log_tail(60000) or ""
+            except Exception:                                  # noqa: BLE001 - the log may be gone with the process
+                log = ""
+        info = {k: v for k, v in diag.items() if not k.startswith("_")} | {
+            "error": f"{type(exc).__name__}: {exc}"[:4000], "game_id": inp.game.game_id, "mod": inp.mod,
+            "boot_timeout_s": inp.boot_timeout_s, "host_os": HOST_OS, "worker_name": __import__("platform").node()}
+        ctx.artifact("launch-failure.json", json.dumps(info, default=str, indent=1).encode(), "application/json",
+                     game=inp.game.game_id)
+        if log:
+            ctx.artifact("emulator-log.txt", log.encode("utf-8", "replace"), "text/plain", game=inp.game.game_id)
+    except Exception:                                          # noqa: BLE001 - evidence never hides the real error
+        pass
+
+
+def _capture_plan(ad, g, want: str, ctx) -> dict:
+    """Backend of an agent-owned Examine 3D capture session (gbox/capture_backend.py): "auto" = the matrix's choice,
+    "vulkan" / "glcore" = that driver. RenderDoc is installed on this PC first if it has none (pinned portable build)."""
+    from . import capture_backend, scene_capture
+    if HOST_OS != "windows":
+        raise Unsupported("Examine 3D capture sessions run on a Windows worker (RenderDoc)")
+    core = getattr(getattr(ad, "cfg", None), "core", None) or g.core
+    plan = capture_backend.plan(ad.name, core)
+    if plan is None:
+        raise Unsupported(f"{ad.name}{' / ' + str(core) if core else ''} has no 3D capture path (2D frame only)")
+    if want in ("vulkan", "glcore") and want != plan["driver"] and ad.name == "retroarch":
+        plan = plan | {"driver": want, "attach": "layer" if want == "vulkan" else "inject",
+                       "ra_cfg": {"video_driver": want}, "core_options": {} if want == "glcore" else plan["core_options"]}
+    ctx.progress(4, f"Capture session: {plan['driver']} with RenderDoc ({'Vulkan layer' if plan['attach'] == 'layer' else 'injected'})")
+    rd = scene_capture.renderdoc_dir(provision=True)
+    return plan | {"renderdoc": str(rd)}
 
 
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
+    timings, staging = {}, None
+    diag = getattr(_LAUNCH_DIAG, "d", None)
+    diag = {} if diag is None else diag
+    diag["timings"] = timings                                 # filled as the stages pass (a failure shows how far it got)
+    t_start = mark = time.monotonic()
+
+    def lap(name):
+        nonlocal mark
+        now = time.monotonic()
+        timings[name] = round(timings.get(name, 0) + now - mark, 3)
+        mark = now
+    ctx.nowait = True                                     # progress lines never wait on the control plane (registry.Ctx)
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
+    diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
     ad.progress = ctx.progress
+    diag.update(_adapter=ad, adapter=ad.name, core=getattr(getattr(ad, "cfg", None), "core", None) or g.core,
+                stage="prepare")
+    if inp.boot_timeout_s:
+        ad.boot_timeout_s = float(inp.boot_timeout_s)
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
+    if inp.capture_backend:
+        ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
+        ad.examine = True
+    try:                                                  # Windows: pick + wake the output device while we stage
+        prepare = getattr(ad, "prepare_audio", None)
+        if prepare:
+            prepare()
+    except Exception as e:                                 # noqa: BLE001 - never block the launch
+        print(f"gBox: audio device prefetch failed: {e}", flush=True)
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
+    lap("runtime_s")
     if g.launch.get("kind") == "steam":
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        lap("close_previous_s")
         detail = ad.launch_game(g.launch["appid"], (g.source_paths or [None])[0])
     elif isinstance(ad, adapters.RocketLauncherAdapter):
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        lap("close_previous_s")
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
         src = rom_path(g, ctx.config)
         if not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
+        lap("rom_s")
         if isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
             eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
             if not eboot:
@@ -390,29 +575,44 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
             ctx.progress(28, f"Mod: {launch_mod}")
+            diag["staged_mod"] = launch_mod
+        lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
         if g.platform not in ("ps3", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Switch XCI/NSP streams from the user's share; copying 15+ GB before play stalls launch
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
-            last = [0.0]
-            def copied(done, total):
-                if time.time() - last[0] > 0.5:
-                    last[0] = time.time()
-                    ctx.progress(30 + 40 * done / total, f"Staging {src.name}: {done / 2**20:,.0f} / {total / 2**20:,.0f} MB")
-            receipt = catalog.stage(src, g.game_id, ctx.config, copied)
-            staged_on = __import__("platform").node()
-            ctx.progress(70, f"Staged to cache ({'reused' if not receipt.get('copied', True) else 'copied'}) · evicted {len(receipt['evicted'])}")
-            ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
-            src = Path(receipt["dst"])
+            receipt = _stage_for_launch(src, g, ctx, must_wait=bool(emu and emu.stage_local))
+            staging = {k: receipt[k] for k in ("copied", "hashed", "seconds", "mb_s", "resumed_from", "background",
+                                                "eta_s", "size") if k in receipt}
+            diag["staging"] = staging
+            if receipt.get("background"):
+                left = f"~{receipt['eta_s'] / 60:,.0f} min at {receipt['mb_s']} MB/s" if receipt.get("eta_s") else "share not answering yet"
+                ctx.progress(70, f"Playing {src.name} from the library share; the cache copy continues in the background "
+                                 f"({left}), so the next launch is local")
+            else:
+                staged_on = __import__("platform").node()
+                ctx.progress(70, f"Staged to cache ({'copied' if receipt.get('copied') else 'reused'}) · evicted {len(receipt['evicted'])}")
+                ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
+                src = Path(receipt["dst"])
+        lap("stage_s")
         if g.launch.get("archive_member") and not inp.mod:
             from . import rom_archives
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
+            lap("unpack_s")
+        diag["stage"] = "close the previous game"
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        lap("close_previous_s")
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
+        diag["stage"] = "start the emulator"
         detail = ad.launch_game(str(src))
+    lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
+    timings["total_s"] = round(time.monotonic() - t_start, 3)
+    detail["timings"] = timings                               # #1506: where a launch's time went, per stage
+    if staging is not None:
+        detail["staging"] = staging
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
     sid = f"{ctx.worker}-{ctx.job_id}"
     gd = g.model_dump()
@@ -438,15 +638,21 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     detail['previous_checkpoints'] = checkpoints
     # Select+L2 rewind / Select+R2 fast-forward on the operator's own pad, in every game (#454, #1382): RetroArch's own
     # rewind where it is on, gBox's checkpoint ring elsewhere, the 2x/4x/16x ramp for R2 in both cases (gbox/rewind.py)
-    try:
-        detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
-    except Exception as e:                                     # noqa: BLE001 - never block the launch
-        detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
-    # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
-    try:
-        detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
-    except Exception as e:                                     # noqa: BLE001 - never block the launch
-        detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
+    if inp.capture_backend:                                    # Examine 3D capture session: no checkpoint ring, no recording
+        detail["capture_session"] = {k: v for k, v in ad.capture_backend.items() if k != "core_options"} | {
+            "capture_for": inp.capture_for, "core_options": ad.capture_backend.get("core_options") or {}}
+        detail["rewind"] = {"rewind": "unsupported", "reason": "Examine 3D capture session"}
+        detail["recording"] = {"state": "unsupported", "reason": "Examine 3D capture session"}
+    else:
+        try:
+            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
+        # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
+        try:
+            detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -461,60 +667,172 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     return {"session_id": sid, "adapter": ad.name, "capabilities": caps, "detail": detail}
 
 
+def _emulator_in_front(fg_pid: int | None, docked_pids: set, emulator_pids: set, docked_ok: bool, fg_is_gbox: bool = False) -> bool:
+    """Should a game hotkey be held right now? Only while the emulator's own window is the foreground window (fg_pid is
+    the emulator or one of its child processes), or, with docked_ok, while gBox is: the foreground window has the emulator
+    docked inside it (docked_pids = the processes owning that window's child windows) or is the gBox app itself
+    (fg_is_gbox: gBox.exe, e.g. showing the game as a GPU capture). Any other application in front (Blender, a
+    browser...) -> False: the key is released and reaches that application untouched."""
+    if not fg_pid or not emulator_pids:
+        return False
+    if fg_pid in emulator_pids:
+        return True
+    return bool(docked_ok and (fg_is_gbox or set(docked_pids or ()) & set(emulator_pids)))
+
+
+def _exe_name(pid: int | None) -> str:
+    """Lower-case image name of a process ("gbox.exe"), "" when unknown."""
+    if not pid:
+        return ""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, int(pid))                 # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        buf, n = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        ok = k32.QueryFullProcessImageNameW(wintypes.HANDLE(h), 0, buf, ctypes.byref(n))
+        return Path(buf.value).name.lower() if ok else ""
+    finally:
+        k32.CloseHandle(wintypes.HANDLE(h))
+
+
+def _process_tree(pids) -> set:
+    """pids + every descendant process (wrappers/launchers start the real emulator)."""
+    out = set()
+    for p in pids:
+        if p:
+            out.add(p)
+            try:
+                out.update(adapters._win_descendants(p))
+            except OSError:
+                pass
+    return out
+
+
+def _foreground_pids(user32, children: bool = True) -> tuple:
+    """(foreground window's process id, the process ids owning that window's child windows: a game docked in gBox)."""
+    import ctypes
+    from ctypes import wintypes
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return None, set()
+    pid, kids = wintypes.DWORD(), set()
+    user32.GetWindowThreadProcessId(wintypes.HWND(fg), ctypes.byref(pid))
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _):
+        p = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(p))
+        kids.add(p.value)
+        return True
+    if children:
+        user32.EnumChildWindows(wintypes.HWND(fg), cb, 0)
+    return pid.value, kids
+
+
+def _scoped_hotkey(name: str, hk_id: int, vk: int, sessions, fire, docked_ok: bool) -> threading.Thread:
+    """Hold RegisterHotKey(vk) ONLY while the emulator is the foreground window (_emulator_in_front), checked every 30 ms:
+    registered when it comes to the front, unregistered the moment anything else does, so the key is never taken from
+    another application. A press that lands in the gap after a switch is replayed to the window now in front.
+    sessions() -> the adapters this hotkey serves (the loop ends, releasing the key, when there are none)."""
+    def loop():
+        import ctypes
+        from ctypes import wintypes
+        user32, WM_HOTKEY, msg = ctypes.windll.user32, 0x0312, wintypes.MSG()
+        held, tree, tree_at, tree_key, names = False, set(), 0.0, None, {}
+        try:
+            while targets := sessions():
+                pids = tuple(sorted({p for a in targets if (p := getattr(getattr(a, "proc", None), "pid", None))}))
+                if pids != tree_key or time.monotonic() - tree_at > 2.0:      # emulator + children, refreshed every 2 s
+                    tree, tree_at, tree_key = _process_tree(pids), time.monotonic(), pids
+                fg_pid, docked = _foreground_pids(user32, children=docked_ok)
+                if len(names) > 256:
+                    names.clear()
+                if docked_ok and fg_pid and fg_pid not in names:
+                    names[fg_pid] = _exe_name(fg_pid)
+                front = _emulator_in_front(fg_pid, docked, tree, docked_ok, names.get(fg_pid) == "gbox.exe")
+                if front and not held:
+                    held = bool(user32.RegisterHotKey(None, hk_id, 0x4000, vk))      # MOD_NOREPEAT
+                elif not front and held:
+                    user32.UnregisterHotKey(None, hk_id)
+                    held = False
+                while user32.PeekMessageW(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY, 1):
+                    if front:
+                        fire(targets)
+                    else:                                                     # pressed as another app came to the front
+                        sc = user32.MapVirtualKeyW(vk, 0)
+                        user32.keybd_event(vk, sc, 0, 0)
+                        user32.keybd_event(vk, sc, 2, 0)                      # KEYEVENTF_KEYUP
+                time.sleep(0.03)
+        finally:
+            if held:
+                user32.UnregisterHotKey(None, hk_id)                          # the key works normally again
+    t = threading.Thread(target=loop, daemon=True, name=name)
+    t.start()
+    return t
+
+
 _HOTKEY = {"thread": None}
 
 
 def _ensure_rewind_hotkey():
-    """Keypad minus -> rewind 5 s in native RetroArch windows. Registered system-wide only while such a game runs."""
+    """Keypad minus -> rewind 5 s in native RetroArch windows. Held only while that RetroArch window (on its own or docked
+    in the gBox window) is in front: Blender and every other app keep keypad minus (zoom out) when they are in front."""
     if _HOTKEY["thread"] and _HOTKEY["thread"].is_alive():
         return
 
-    def loop():
-        import ctypes
-        from ctypes import wintypes
-        user32, VK_SUBTRACT, WM_HOTKEY, HK = ctypes.windll.user32, 0x6D, 0x0312, 0xB0C5
-        if not user32.RegisterHotKey(None, HK, 0x4000, VK_SUBTRACT):      # MOD_NOREPEAT
-            return
-        msg = wintypes.MSG()
-        try:
-            while any(getattr(a, "rewind_on", False) for a, _ in SESSIONS.values()):
-                while user32.PeekMessageW(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY, 1):
-                    for a, _ in list(SESSIONS.values()):
-                        if getattr(a, "rewind_on", False):
-                            threading.Thread(target=a.rewind, args=(5,), daemon=True).start()
-                time.sleep(0.03)
-        finally:
-            user32.UnregisterHotKey(None, HK)                            # keypad minus works normally again
-    _HOTKEY["thread"] = threading.Thread(target=loop, daemon=True, name="rewind-hotkey")
-    _HOTKEY["thread"].start()
+    def fire(targets):
+        for a in targets:
+            threading.Thread(target=a.rewind, args=(5,), daemon=True).start()
+    _HOTKEY["thread"] = _scoped_hotkey(
+        "rewind-hotkey", 0xB0C5, 0x6D,                                           # VK_SUBTRACT
+        lambda: [a for a, _ in list(SESSIONS.values()) if getattr(a, "rewind_on", False)], fire, docked_ok=True)
 
 
 _PS3_HOTKEY = {"thread": None}
 
 
 def _ensure_ps3_load_hotkey():
-    """F4 -> load the newest save state (RPCS3 relaunch) while a PS3 game runs on this PC; released when none does."""
+    """F4 -> load the newest save state (RPCS3 relaunch) while RPCS3's own window is in front; released whenever anything
+    else is. Docked in gBox, gBox's own F4 (main.js, held while gBox is in front) loads instead, so the two never overlap."""
     if _PS3_HOTKEY["thread"] and _PS3_HOTKEY["thread"].is_alive():
         return
 
-    def loop():
-        import ctypes
-        from ctypes import wintypes
-        user32, VK_F4, WM_HOTKEY, HK = ctypes.windll.user32, 0x73, 0x0312, 0xB0C6
-        if not user32.RegisterHotKey(None, HK, 0x4000, VK_F4):           # MOD_NOREPEAT
-            return
-        msg = wintypes.MSG()
-        try:
-            while any(isinstance(a, adapters.RPCS3Adapter) for a, _ in SESSIONS.values()):
-                while user32.PeekMessageW(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY, 1):
-                    for a, _ in list(SESSIONS.values()):
-                        if isinstance(a, adapters.RPCS3Adapter):
-                            threading.Thread(target=a.load_state, daemon=True).start()
-                time.sleep(0.03)
-        finally:
-            user32.UnregisterHotKey(None, HK)                            # F4 works normally again
-    _PS3_HOTKEY["thread"] = threading.Thread(target=loop, daemon=True, name="ps3-load-hotkey")
-    _PS3_HOTKEY["thread"].start()
+    def fire(targets):
+        for a in targets:
+            threading.Thread(target=a.load_state, daemon=True).start()
+    _PS3_HOTKEY["thread"] = _scoped_hotkey(
+        "ps3-load-hotkey", 0xB0C6, 0x73,                                         # VK_F4
+        lambda: [a for a, _ in list(SESSIONS.values()) if isinstance(a, adapters.RPCS3Adapter)], fire, docked_ok=False)
+
+
+def _stage_for_launch(src: Path, g, ctx, must_wait: bool = False) -> dict:
+    """The cache copy of a big library file for this launch (#1506). A file already cached comes back at once (its
+    hashes remembered, not re-read). A copy that will finish within config.stage_wait_s is waited for; a longer one
+    (7.4 GB at ~10-20 MB/s over Wi-Fi = 6-13 min) goes on in the background, capped at stage_background_mb_s while a
+    game plays here, and the game starts from the library share now: {"background": True, ...}."""
+    job = catalog.stage_begin(src, g.game_id, ctx.config)
+    if isinstance(job, dict):
+        return job
+    budget = 0.0 if must_wait else float(ctx.config.stage_wait_s or 0)
+    t0, shown = time.monotonic(), 0.0
+    while not job.finished.wait(0.25):
+        done, total, rate = job.done, job.total, job.rate()
+        left_s = (total - done) / rate if rate else float("inf")
+        if time.monotonic() - shown > 0.5:
+            shown = time.monotonic()
+            eta = f" · {left_s:,.0f} s left" if rate else ""
+            ctx.progress(30 + 40 * done / max(total, 1), f"Staging {src.name}: {done / 2**20:,.0f} / {total / 2**20:,.0f} MB{eta}")
+        waited, measured = time.monotonic() - t0, time.monotonic() - job.t0 >= 3
+        if budget and (waited >= budget or (measured and waited + left_s > budget)):
+            cap = float(ctx.config.stage_background_mb_s or 0) * 2**20
+            job.limit = (lambda: cap if SESSIONS else None) if cap > 0 else None
+            return {"background": True, "src": str(src), "dst": None, "size": total, "copied": False, "done": done,
+                    "mb_s": round(rate / 2**20, 1), "eta_s": round(left_s) if rate else None, "evicted": []}
+    return job.result()
 
 
 def _stageable(src: Path) -> bool:
@@ -536,30 +854,85 @@ def _rpc_answerer(sid: str, client):
             pass
     return answer
 
+class _EmulatorLiveness:
+    """Whether the session's emulator process still runs, polled at most every `every` seconds (poll() per frame at
+    60 fps would be wasted work). Adapters without a process handle count as alive."""
+
+    def __init__(self, ad, every: float = 0.5, clock=time.monotonic):
+        self.ad, self.every, self.clock = ad, every, clock
+        self.at, self.alive = -1e9, True
+
+    def __call__(self) -> bool:
+        now = self.clock()
+        if now - self.at >= self.every:
+            self.at = now
+            proc = getattr(self.ad, "__dict__", {}).get("proc")
+            try:
+                self.alive = proc is None or proc.poll() is None
+            except Exception:                            # noqa: BLE001 - unknown means keep streaming
+                self.alive = True
+        return self.alive
+
+
+def _stream_event_reporter(sid: str, server: str, headers: dict):
+    """Encoder stalls/restarts go to the control plane (GET /api/sessions/{sid}/stream/health) from one background
+    thread with a bounded queue: reporting can never block or slow the frame path."""
+    import queue
+    q = queue.Queue(maxsize=50)
+
+    def run():
+        with httpx.Client(base_url=server, headers=headers, timeout=5) as c:
+            while sid in SESSIONS or not q.empty():
+                try:
+                    ev = q.get(timeout=5)
+                except queue.Empty:
+                    continue
+                try:
+                    c.post(f"/api/sessions/{sid}/stream/event", json=ev)
+                except httpx.HTTPError:
+                    pass
+    threading.Thread(target=run, daemon=True, name=f"stream-events-{sid}").start()
+
+    def report(ev: dict):
+        try:
+            q.put_nowait(ev)
+        except queue.Full:
+            pass
+    return report
+
+
 def _pump(sid: str, ad, server: str, headers: dict):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
     input   - long-polled from the control plane and applied immediately,
     status  - every 3 s; marks the session ended when the emulator exits."""
     stream = ad.stream_session() if "stream_session" in ad.supported else None
+    if stream is not None and hasattr(stream, "events"):
+        stream.label = sid
+        stream.on_event = _stream_event_reporter(sid, server, headers)
 
     def frames():
         if stream is None:                               # local native window: nothing to stream
             return
         # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
         def body():
-            last = -1
+            last, live = -1, _EmulatorLiveness(ad)
             while sid in SESSIONS:
                 if stream.wait(last, 1.0):
                     last, data = stream.seq, stream.latest
-                    yield len(data).to_bytes(4, "big") + data
+                    # An exited emulator leaves its virtual display empty (black). Those grabs are never sent: the
+                    # operator keeps the last real game frame until the session ends or the game comes back.
+                    yield (len(data).to_bytes(4, "big") + data) if live() else b"\0\0\0\0"
                 else:
                     yield b"\0\0\0\0"                     # keepalive (zero-length frame)
         while sid in SESSIONS:
             try:
                 with httpx.Client(base_url=server, headers=headers, timeout=httpx.Timeout(10, read=None, write=None)) as c:
                     c.post(f"/api/sessions/{sid}/stream", content=body(), headers={"content-type": "application/octet-stream"})
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                if sid in SESSIONS:
+                    print(f"gBox stream: upload of {sid} interrupted at {adapters._wall()} "
+                          f"({type(e).__name__}); reconnecting", flush=True)
                 time.sleep(1)
 
     answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10))
@@ -598,7 +971,14 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     pid = now
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
-                    c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
+                    rc = getattr(getattr(ad, "proc", None), "returncode", None)
+                    end = {"returncode": rc}
+                    if rc not in (None, 0) and callable(getattr(type(ad), "log_tail", None)):
+                        try:                                   # a crash report (gbox/launch_failures.py) wants the log
+                            end["log_tail"] = (ad.log_tail(20000) or "")[-20000:]
+                        except Exception:                      # noqa: BLE001
+                            pass
+                    c.post(f"/api/sessions/{sid}/ended", json=end)
                     rewind.stop(sid)
                     ring_record.stop(sid)
                     SESSIONS.pop(sid, None)
@@ -755,7 +1135,10 @@ class SessionOut(BaseModel):
 
 def _session_accept(store, out: SessionOut, actor: str):
     if out.ended and (s := store.get("session", out.session_id)) and s.get("state") != "ended":
-        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result})
+        m = out.result.get("moment") if isinstance(out.result.get("moment"), dict) else {}
+        kept = {"checkpoint": m["artifact"], "moment_ts": time.time(), **({"moment_frame": m["frame"]} if m.get("frame") else {})} \
+            if m.get("artifact") else {}                     # last played: the moment saved as the game stopped
+        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result, **kept})
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
       on_accept=_session_accept)
@@ -780,10 +1163,13 @@ def session_op(inp: SessionIn, ctx: Ctx):
     if inp.op == "reset":                                            # restart the emulated console (the session stays)
         ad, _ = SESSIONS[inp.session_id]
         if not callable(getattr(type(ad), "reset", None)):
-            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset: relaunch the game instead")
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset of its own (POST /api/sessions/{{sid}}/reset "
+                              "relaunches the same game and mod on this PC instead, the old copy closing only once it runs)")
         return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
+    if inp.op == "stop_game":
+        return _stop_session(inp.session_id, inp.args or {}, ctx)
     if inp.op == "send_input":                                       # controller glyph shows gBox's presses
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
@@ -807,16 +1193,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
             res["frame"] = sha256(png)
         except Exception:
             pass
-    if inp.op == "stop_game":
-        proc = getattr(ad, 'proc', None)
-        if proc is not None and proc.poll() is None:
-            raise RuntimeError('Emulator process is still running; stop was not confirmed')
-        rewind.stop(inp.session_id)
-        ring_record.stop(inp.session_id)
-        SESSIONS.pop(inp.session_id, None)
-        track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
-            "ended": inp.op == "stop_game"}
+            "ended": False}
 
 
 # --- background gameplay ring (#1084) -------------------------------------------------------
@@ -2210,35 +2588,60 @@ def game_link(inp: LinkIn, ctx: Ctx):
 class BevyIn(BaseModel):
     name: str = "scene"
     # [{"package": "pso_dc_forest01", "translation": [x,y,z], "scale": 1.0, "rotation_y_deg": 0}]
-    items: list[dict]
+    items: list[dict] = []
     camera: dict = {}                      # {"eye": [x,y,z], "target": [x,y,z]}
-    screenshot: bool = True                # True: render, capture a PNG, exit; False: open an interactive window
+    screenshot: bool = True                # render: True = capture a PNG and exit; False = open an interactive window
+    op: str = "render"                     # render | open | snapshot | set_camera | add | remove | close | list
+    index: int | None = None               # remove: which item (0-based)
 
 class BevyOut(BaseModel):
-    scene: str
+    scene: str = ""
     screenshot: str | None = None
     pid: int | None = None
+    items: list[dict] = []
+    live: list[dict] = []
+    scenes: list[dict] = []
+    renders: list[dict] = []
 
 
 VIEWER_SRC = Path(__file__).resolve().parent.parent / "projects" / "gbox_viewer"
 
+# Live Bevy windows on this worker: name -> {"proc": Popen, "scene": Path (scene.json), "spec": {...}}
+BEVY: dict[str, dict] = {}
 
-@tool("bevy_scene", "1.0", BevyIn, BevyOut, capabilities=["asset", "bevy"], timeout_s=3600,
-      side_effects=["writes glTF + scene files", "builds the gBox Bevy viewer on first use (cargo)"], artifacts=["bevy.png"])
-def bevy_scene(inp: BevyIn, ctx: Ctx):
-    """Put collection entries ({character: slug} / {environment: slug}) and gBox asset packages ({package}) into a Bevy
-    scene and render it with the gBox Bevy viewer (Rust/Bevy, built once with cargo). screenshot=true returns a PNG
-    artifact; false opens a window."""
+
+def _abs(p) -> str:                        # glTF paths in scene.json: absolute, forward slashes (Path.join on the
+    return str(Path(p).resolve()).replace("\\", "/")   # viewer side makes them pass through unchanged on every OS)
+
+
+def _bevy_viewer_exe(ctx) -> Path:
+    target = ctx.config.runtime / "bevy-target"        # local SSD; Bevy's ~500 crates compile once
+    return target / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
+
+
+def _bevy_build(ctx, target: Path, exe: Path):
+    if exe.exists() and VIEWER_SRC.joinpath("src", "main.rs").stat().st_mtime <= exe.stat().st_mtime:
+        return
+    ctx.progress(10, "building the Bevy viewer (first build takes several minutes)")
+    cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
+    r = subprocess.run([cargo, "build", "--release"], cwd=VIEWER_SRC, capture_output=True, text=True,
+                       env=dict(os.environ, CARGO_TARGET_DIR=str(target)), timeout=3000)
+    if r.returncode:
+        raise RuntimeError("cargo build failed:\n" + r.stderr[-3000:])
+
+
+def _bevy_resolve(ctx, items: list[dict]) -> list[tuple[Path, dict]]:
+    """Resolve {character|environment|package} entries to absolute glTF files + item options."""
     uroot = ctx.config.data_dir / "uap"
     share = Path("//10.89.1.246/ehm_eckx/gBox/system/gbox-data/uap")   # ponytail: packages extracted on the Spark
-    if not all((uroot / it["package"]).exists() for it in inp.items if "package" in it) and share.exists():
+    if not all((uroot / it["package"]).exists() for it in items if "package" in it) and share.exists():
         uroot = share
     # collection entries ({character: slug} / {environment: slug}) are read where the collection lives (the Spark's
     # cache, the same folder through the share on Windows)
     from . import characters as K
     croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else Path("//10.89.1.246/ehm_eckx/gbox-cache")
     files = []                                             # (absolute model file, item options)
-    for it in inp.items:
+    for it in items:
         opts = {k: v for k, v in it.items() if k not in ("package", "character", "environment")}
         if it.get("character") or it.get("environment"):
             sub = "environments" if it.get("environment") else "characters"
@@ -2253,32 +2656,147 @@ def bevy_scene(inp: BevyIn, ctx: Ctx):
         if not gl.exists():
             gl.write_text(json.dumps(uap.to_gltf(uap.load(pkg))))
         files.append((gl, opts))
-    aroot = Path(os.path.commonpath([str(f.parent) for f, _ in files])) if files else uroot
-    items = [{"gltf": os.path.relpath(f, aroot).replace("\\", "/"), **o} for f, o in files]
+    return files
+
+
+def _bevy_scene_spec(ctx, items: list[dict]) -> dict:
+    """Resolve items into the scene.json spec: absolute glTF paths + camera."""
+    files = _bevy_resolve(ctx, items)
+    aroot = Path(os.path.commonpath([str(f.parent) for f, _ in files])) if files else (ctx.config.data_dir / "uap")
+    spec = {"assets_root": _abs(aroot),
+            "items": [{"gltf": _abs(f), **o} for f, o in files],
+            "camera": {},
+            "_src": items}                    # the original portable items ({package}/{character}/...) for cross-node reuse
+    return spec
+
+
+def _bevy_scene_path(ctx, name: str) -> Path:
     sdir = ctx.config.data_dir / "bevy"
     sdir.mkdir(parents=True, exist_ok=True)
-    scene = sdir / f"{inp.name}.json"
-    scene.write_text(json.dumps({"assets_root": str(aroot).replace("\\", "/"), "items": items, "camera": inp.camera}, indent=1))
-    target = ctx.config.runtime / "bevy-target"             # local SSD; Bevy's ~500 crates compile once
-    exe = target / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
-    if not exe.exists() or VIEWER_SRC.joinpath("src", "main.rs").stat().st_mtime > exe.stat().st_mtime:
-        ctx.progress(10, "building the Bevy viewer (first build takes several minutes)")
-        cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
-        r = subprocess.run([cargo, "build", "--release"], cwd=VIEWER_SRC, capture_output=True, text=True,
-                           env=dict(os.environ, CARGO_TARGET_DIR=str(target)), timeout=3000)
-        if r.returncode:
-            raise RuntimeError("cargo build failed:\n" + r.stderr[-3000:])
-    if not inp.screenshot:
-        p = subprocess.Popen([str(exe), str(scene)], cwd=sdir)
-        return {"scene": str(scene), "pid": p.pid}
-    png = sdir / f"{inp.name}.png"
-    png.unlink(missing_ok=True)
-    ctx.progress(70, "rendering")
-    subprocess.run([str(exe), str(scene), "--screenshot", str(png)], cwd=sdir, capture_output=True, timeout=300)
-    if not png.exists():
-        raise RuntimeError("the viewer did not produce a screenshot")
-    ctx.artifact("bevy.png", png.read_bytes(), "image/png", scene=inp.name)
-    return {"scene": str(scene), "screenshot": str(png)}
+    return sdir / f"{name}.json"
+
+
+def _bevy_write(spec: dict, scene: Path):
+    scene.write_text(json.dumps(spec, indent=1))
+
+
+def _bevy_wait_png(png: Path, timeout_s: float = 60.0) -> Path | None:
+    """The viewer's screenshot once it is fully written (the same non-zero size on two polls 0.5 s apart)."""
+    t0, last = time.time(), -1
+    while time.time() - t0 < timeout_s:
+        size = png.stat().st_size if png.exists() else 0
+        if size > 0 and size == last:
+            return png
+        last = size
+        time.sleep(0.5)
+    return png if (png.exists() and png.stat().st_size > 0) else None
+
+
+@tool("bevy_scene", "1.1", BevyIn, BevyOut, capabilities=["asset", "bevy"], timeout_s=3600,
+      side_effects=["writes glTF + scene files", "builds the gBox Bevy viewer on first use (cargo)",
+                    "op=open/snapshot/set_camera/add/remove/close drive a live viewer window"],
+      artifacts=["bevy.png"])
+def bevy_scene(inp: BevyIn, ctx: Ctx):
+    """Render gBox Bevy scenes and drive a live viewer reactively.
+
+    One-shot (op=render, the default): put collection entries ({character: slug} / {environment: slug}) and gBox asset
+    packages ({package: 'pso_dc_forest01'}) into a Bevy scene and render it with the gBox Bevy viewer (Rust/Bevy,
+    built once with cargo). screenshot=true returns a PNG artifact; false opens a window and returns its pid.
+
+    Reactive ops (the viewer's window stays open and reacts to file commands):
+      op=open          start the viewer on a scene (items + camera), keep the window, return pid
+      op=snapshot      capture the live window to {name}.png and return it as an artifact
+      op=set_camera    move the live camera ({camera: {eye, target}})
+      op=add           add more items to the live scene (items=[...])
+      op=remove        drop item {index} from the live scene
+      op=close         close the live window
+      op=list          live sessions + saved scenes and renders on this node
+    """
+    sdir = ctx.config.data_dir / "bevy"
+    sdir.mkdir(parents=True, exist_ok=True)
+    if inp.op == "list":
+        live = [{"name": n, "pid": s["proc"].pid, "items": len(s["spec"]["items"]), "camera": s["spec"]["camera"]}
+                for n, s in BEVY.items() if s["proc"].poll() is None]
+        scenes = [{"name": f.stem, "mtime": f.stat().st_mtime,
+                   "items": len(json.loads(f.read_text()).get("items", []))}
+                  for f in sorted(sdir.glob("*.json"))]
+        renders = [{"name": f.stem, "mtime": f.stat().st_mtime} for f in sorted(sdir.glob("*.png"))]
+        return {"live": live, "scenes": scenes, "renders": renders}
+
+    if inp.op in ("open", "render"):
+        scene = _bevy_scene_path(ctx, inp.name)
+        if inp.items:
+            spec = _bevy_scene_spec(ctx, inp.items)
+            if inp.camera:
+                spec["camera"] = inp.camera
+            if not inp.screenshot and inp.op == "render":      # backward-compatible window mode
+                inp.op = "open"
+            _bevy_write(spec, scene)
+        elif scene.exists():                                   # re-render / reopen a saved scene
+            try:
+                spec = json.loads(scene.read_text())
+            except Exception as e:
+                raise ValueError(f"scene {inp.name} is not readable: {e}")
+        else:
+            raise ValueError("bevy_scene op=render/open needs items, or an already saved scene name")
+        if inp.op == "render":
+            png = sdir / f"{inp.name}.png"
+            png.unlink(missing_ok=True)
+            target = ctx.config.runtime / "bevy-target"
+            _bevy_build(ctx, target, _bevy_viewer_exe(ctx))
+            ctx.progress(70, "rendering")
+            subprocess.run([str(_bevy_viewer_exe(ctx)), str(scene), "--screenshot", str(png)],
+                           cwd=sdir, capture_output=True, timeout=300)
+            if not png.exists():
+                raise RuntimeError("the viewer did not produce a screenshot")
+            ctx.artifact("bevy.png", png.read_bytes(), "image/png", scene=inp.name)
+            return {"scene": str(scene), "screenshot": str(png), "items": spec["items"]}
+        # op=open: live window
+        _bevy_build(ctx, ctx.config.runtime / "bevy-target", _bevy_viewer_exe(ctx))
+        p = subprocess.Popen([str(_bevy_viewer_exe(ctx)), str(scene), "--live"], cwd=sdir)
+        BEVY[inp.name] = {"proc": p, "scene": scene, "spec": spec}
+        return {"scene": str(scene), "pid": p.pid, "items": spec["items"]}
+
+    sess = BEVY.get(inp.name)
+    if inp.op in ("snapshot", "set_camera", "add", "remove") and (not sess or sess["proc"].poll() is not None):
+        raise ValueError(f"no live viewer named {inp.name} (bevy_scene op=open first, or op=list)")
+    if inp.op == "close":
+        if sess:
+            (sess["scene"].parent / f"{inp.name}.quit").write_text("")
+            try:
+                sess["proc"].wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                sess["proc"].terminate()
+            BEVY.pop(inp.name, None)
+        return {"scene": str(_bevy_scene_path(ctx, inp.name))}
+    assert sess is not None                                     # guarded above for snapshot/set_camera/add/remove
+    if inp.op == "snapshot":
+        png = sdir / f"{inp.name}.png"
+        png.unlink(missing_ok=True)
+        (sess["scene"].parent / f"{inp.name}.shot").write_text(_abs(png))
+        got = _bevy_wait_png(png)
+        if got is None:
+            raise RuntimeError("the viewer did not produce a screenshot")
+        ctx.artifact("bevy.png", got.read_bytes(), "image/png", scene=inp.name)
+        return {"scene": str(sess["scene"]), "screenshot": str(got), "pid": sess["proc"].pid}
+    if inp.op == "set_camera":
+        if inp.camera:
+            sess["spec"]["camera"] = inp.camera
+            _bevy_write(sess["spec"], sess["scene"])
+        return {"scene": str(sess["scene"]), "pid": sess["proc"].pid, "camera": sess["spec"]["camera"],
+                "items": sess["spec"]["items"]}
+    if inp.op == "add":
+        for f, o in _bevy_resolve(ctx, inp.items):
+            sess["spec"]["items"].append({"gltf": _abs(f), **o})
+        _bevy_write(sess["spec"], sess["scene"])
+        return {"scene": str(sess["scene"]), "pid": sess["proc"].pid, "items": sess["spec"]["items"]}
+    if inp.op == "remove":
+        i = inp.index if inp.index is not None else len(sess["spec"]["items"]) - 1
+        if 0 <= i < len(sess["spec"]["items"]):
+            sess["spec"]["items"].pop(i)
+            _bevy_write(sess["spec"], sess["scene"])
+        return {"scene": str(sess["scene"]), "pid": sess["proc"].pid, "items": sess["spec"]["items"]}
+    raise ValueError(f"bevy_scene: op={inp.op} needs items (open/render/add) or a live session (snapshot/set_camera/remove)")
 
 
 class VideoIn(BaseModel):
@@ -2386,7 +2904,7 @@ def video_tool(inp: VideoIn, ctx: Ctx):
 
 class FileModIn(BaseModel):
     game_id: str
-    op: str = "list"                       # list | build | remove
+    op: str = "list"                       # list | build | remove | delete_build (this PC's copies + staged copies)
     name: str = ""
     # build: {"PS3_GAME/USRDIR/...": {"patch": [{"offset": "0x10", "hex": "ff"}]} | {"from": "<local file>"} | {"artifact": "<sha256>"}}
     changes: dict = {}
@@ -2399,8 +2917,22 @@ class FileModOut(BaseModel):
       side_effects=["copies the game once into the node cache", "writes mod folders (hard links + changed files)"])
 def file_mod(inp: FileModIn, ctx: Ctx):
     """File-replacement mods for folder games: build a modded copy (original untouched, unchanged files hard-linked to
-    one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>."""
+    one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>.
+    delete_build (Builds ▸ Delete): this PC's copies of a build, its staged copies included; refused while a running
+    game on this PC uses one."""
     from . import filemods
+    if inp.op == "delete_build":                       # no catalog / rom needed: the game may not be on this PC at all
+        if not inp.name:
+            raise ValueError("delete_build needs the build's name")
+        r = httpx.get(f"{ctx.server}/api/sessions?include_ended=false", headers=ctx.headers, timeout=30)
+        r.raise_for_status()
+        # (any running session of the build blocks it, wherever it runs: over-cautious beats a half-deleted copy)
+        in_use = [str(s.get(k) or "") for s in r.json() if s.get("state") == "running" and s.get("game_id") == inp.game_id
+                  for k in ("mod", "collection_mod")]
+        res = filemods.delete_build(ctx.config, inp.game_id, inp.name, [m for m in in_use if m])
+        if res["errors"]:
+            raise RuntimeError("some copies could not be deleted (open in another program?): " + "; ".join(res["errors"]))
+        return {"result": res}
     r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
     r.raise_for_status()
     g = CatalogEntry.model_validate(r.json())
@@ -2421,6 +2953,9 @@ def file_mod(inp: FileModIn, ctx: Ctx):
             changes[rel] = ch
         build = filemods.build if filemods.is_folder_game(rom) else filemods.build_image   # folder game | ROM / disc image
         res = build(ctx.config, g.game_id, rom, inp.name, changes, ctx.progress)
+        from . import build_record                     # the Builds view: which job built it and the exact call
+        build_record.stamp_marker(filemods.mod_dir(ctx.config, g.game_id, inp.name),
+                                  build_call=build_record.call_of("file_mod", inp), **build_record.from_ctx(ctx))
         ctx.artifact("mod.json", json.dumps(res).encode(), "application/json", game=g.game_id, mod=inp.name)
         return {"result": res}
     raise ValueError(f"unknown op {inp.op}")
@@ -3276,14 +3811,17 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
+                              "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
                               "aki_wrestling",   # aki_wrestling: No Mercy / Revenge / World Tour writers (via characters op=use|match)
                               "yukes_sd",   # yukes_sd: WWF SmackDown! 2 (PS1) reader + writer (via characters op=use|match|extract)
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
+                              "assimilate",    # assimilate: fingerprint a game (formats, engine, nearest assimilated titles)
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
+                              "pickwhip",      # pickwhip: pick_name (local-LLM naming of a pick whip target)
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
                               "ninja_ripper",  # ninja_ripper: NinjaRipper launch/attach/rip on agent test PCs, .rip -> GLB
@@ -3298,7 +3836,9 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "ghidra_bridge_tool",   # ghidra_bridge: the operator's Ghidra as JSON functions (Dryxio/ghidra-bridge)
                               "re_agent",        # re_agent: ReAgent reverser/checker/fix loop over the Ghidra Bridge
                               "gta_live",        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
-                              "audio_cpp")):     # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
+                              "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
+                              "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
     import sys
@@ -3377,8 +3917,10 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         raise Unsupported('This session ended. Open the running game before transferring its state.')
     ad, g = session
     kind = getattr(ad, "name", "")
-    if kind == "retroarch":
-        states, pattern = ctx.config.runtime / "states", "*.state*"
+    if kind == "retroarch":                                    # a capture session keeps its states in its own folder
+        sd = getattr(ad, "state_dir", None)
+        states = Path(sd()) if callable(sd) and getattr(ad, "states_override", None) else ctx.config.runtime / "states"
+        pattern = "*.state*"
     elif kind == "dolphin":                                    # same Dolphin release on both machines (2609): states are compatible
         exe = getattr(ad, "_exe", None)
         states = (exe().parent / "User" / "StateSaves") if exe else (ctx.config.runtime / "dolphin-user" / "StateSaves")
@@ -3477,7 +4019,8 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
         _validate_state_container(data, kind)
-        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"),
+                     session=inp.session_id, **details)          # last played finds the moment by session
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
         return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
     if inp.op == "import":

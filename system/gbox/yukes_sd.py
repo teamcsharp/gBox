@@ -36,6 +36,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from .formats.texture import tim_build, tim_parse  # noqa: F401  (shared, moved to gbox.formats)
 
 GAME_IDS = {"276334ad218ffb46": "WWF SmackDown! 2 - Know Your Role (USA)"}
 SD1_IDS = {"4e59d0d55cc190cb": "WWF SmackDown! (USA)"}      # same containers (D/C/EH/EB/EL.PAC); reader only, see docs
@@ -87,11 +88,14 @@ GLTF_SCALE = 0.001                  # game units -> metres in the collection (a 
 # chunk slots by the bones their original chunk uses -> the new model's bones that go there
 SLOT_BONES = {"head": [3, 4], "torso": [1, 2], "larm": [6, 8], "lhand": [11], "rarm": [13, 15], "rhand": [18],
               "lleg": [19, 21, 23], "rleg": [0, 25, 27, 29]}
-# (vertices, faces) per bone part; a chunk stays < 128 vertices, a wrestler around the original ~520 primitives
+# (vertices, faces) per bone part: the faces weigh each slot's share of its part file's EMD room (slot_budgets)
 CAPS = {4: (84, 120), 3: (12, 12), 2: (48, 64), 1: (22, 24), 6: (24, 30), 8: (24, 30), 11: (36, 36), 13: (24, 30),
         15: (24, 30), 18: (36, 36), 0: (30, 40), 19: (26, 32), 21: (24, 28), 23: (24, 28), 25: (26, 32), 27: (24, 28),
         29: (24, 28)}
 FILE_SLOTS = {"ED1H.PAC": ("head",), "ED1B.PAC": ("torso", "larm", "lhand", "rarm", "rhand"), "ED1L.PAC": ("lleg", "rleg")}
+SLOT_OF = {b: s for s, bs in SLOT_BONES.items() for b in bs}
+VERTS_PER_FACE = 0.62      # welded slot meshes (no seam copies: uvs live on the primitives): ~0.5 closed, ~0.7 open
+FIT_VERSION = 2            # bump when the writer's output changes: older mods (.gbox-mod.json "fit") are rebuilt
 
 
 # ---------------------------------------------------------------- BPE (Yuke's: Gage's byte-pair encoding, LE sizes)
@@ -242,36 +246,6 @@ def pac_build(items: list[tuple[int, bytes]]) -> bytes:
         head += struct.pack("<H", t) + len(body).to_bytes(3, "little") + len(d).to_bytes(3, "little")
         body += d
     return bytes(head + body)
-
-
-def tim_parse(t: bytes) -> dict:
-    _magic, flags = struct.unpack_from("<II", t, 0)
-    o, out = 8, {"bpp": flags & 3}
-    if flags & 8:
-        ln, cx, cy, cw, ch = struct.unpack_from("<IHHHH", t, o)
-        out["clut_xy"] = (cx, cy, cw, ch)
-        out["clut"] = np.frombuffer(t, "<u2", cw * ch, o + 12).copy()
-        o += ln
-    ln, px, py, pw, ph = struct.unpack_from("<IHHHH", t, o)
-    out["rect"] = (px, py, pw, ph)
-    out["pix"] = np.frombuffer(t, np.uint8, pw * 2 * ph, o + 12).reshape(ph, pw * 2).copy()
-    return out
-
-
-def tim_build(tim: dict) -> bytes:
-    """tim_parse's dict -> TIM bytes. CLUT-less TIMs (16-bpp pages, e.g. CAW group 0x111) have no "clut_xy"."""
-    px, py, pw, ph = tim["rect"]
-    pix = np.asarray(tim["pix"], np.uint8).tobytes()
-    flags, clut_block = tim.get("bpp", 1), b""
-    if tim.get("clut_xy") is not None:
-        cx, cy, cw, ch = tim["clut_xy"]
-        clut = np.asarray(tim["clut"], "<u2").tobytes()
-        if len(clut) != 2 * cw * ch:
-            raise ValueError("TIM CLUT size doesn't match the header")
-        flags, clut_block = flags | 8, struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut
-    if len(pix) != 2 * pw * ph:
-        raise ValueError("TIM pixel size doesn't match the header")
-    return struct.pack("<II", 0x10, flags) + clut_block + struct.pack("<IHHHH", 12 + len(pix), px, py, pw, ph) + pix
 
 
 def repaintable(tim: dict) -> bool:
@@ -626,28 +600,240 @@ def target_skeleton(bones: list) -> dict:
             "joints": 31}
 
 
-def budgets(tmpl: dict) -> dict:
-    """CAPS scaled per part file so the new EMD (first variants + the ghost groups, 12 bytes per vertex and per
-    triangle) fits in the replaced wrestler's own EMD size."""
-    caps = dict(CAPS)
+def _first_chunks(emd: dict):
+    firsts = {st for st, cnt in emd["slots"] if cnt}
+    for i, ch in enumerate(emd["chunks"]):
+        if ch is not None and i in firsts:
+            yield i, ch
+
+
+def slot_allowed(tmpl: dict) -> dict[str, set]:
+    """Bones each slot's chunk may bind vertices to: the template chunk's own vertex groups (the stock arm chunk also
+    carries the chest/clavicle groups, the right leg chunk the pelvis and the left thigh: that is how the game stitches
+    the parts) plus the slot's own bones."""
+    allowed = {s: set(bs) for s, bs in SLOT_BONES.items()}
+    for f in PART_FILES:
+        for _i, ch in _first_chunks(tmpl[f]["emd"]):
+            allowed[chunk_slot(ch)].update(b for b, _v in ch["groups"])
+    return allowed
+
+
+def slot_budgets(tmpl: dict, shrink: dict | None = None) -> dict[str, tuple[int, int]]:
+    """(vertices, faces) per slot chunk: each part file's EMD room (the replaced wrestler's own EMD size, less the
+    headers and the ghost groups) shared between its slots by CAPS weight, 12 bytes per vertex and per primitive;
+    a chunk also stays within 128 vertices with its ghosts. shrink {slot: k} scales a slot down (a retry)."""
+    out = {}
     for f in PART_FILES:
         emd = tmpl[f]["emd"]
-        firsts = {st for st, cnt in emd["slots"] if cnt}
         fixed = emd["aoff"] + 4 * len(emd["slots"]) + 8 * len(emd["desc"])
-        ghosts = 0
-        for i, ch in enumerate(emd["chunks"]):
-            if ch is None or i not in firsts:
-                continue
+        ghosts = {}
+        for _i, ch in _first_chunks(emd):
             s = chunk_slot(ch)
-            fixed += 4 + 4 * len(ch["groups"]) + 8
-            ghosts += sum(len(v) for b, v in ch["groups"] if b not in SLOT_BONES.get(s, []))
-        bones = [b for s in FILE_SLOTS[f] for b in SLOT_BONES[s]]
-        need = sum(12 * (caps[b][0] * 1.1 + caps[b][1]) for b in bones)
-        room = len(emd["raw"]) - fixed - 12 * ghosts
-        k = min(1.0, max(0.2, room / max(need, 1)))
-        for b in bones:
-            caps[b] = (max(6, int(caps[b][0] * k)), max(6, int(caps[b][1] * k)))
-    return caps
+            fixed += 4 + 4 * len(ch["groups"]) + 8 + 4      # chunk header, group headers, prim block headers, pad
+            ghosts[s] = ghosts.get(s, 0) + sum(len(v) for b, v in ch["groups"] if b not in SLOT_BONES.get(s, []))
+        room = (len(emd["raw"]) - fixed - 12 * sum(ghosts.values())) / 12
+        w = {s: sum(CAPS[b][1] for b in SLOT_BONES[s]) for s in FILE_SLOTS[f]}
+        for s in FILE_SLOTS[f]:
+            rec = room * w[s] / sum(w.values()) * (shrink or {}).get(s, 1.0)
+            fc = int(rec / (1 + VERTS_PER_FACE))
+            vc = int(min(128 - ghosts.get(s, 0), rec - fc))
+            out[s] = (max(6, vc), max(6, fc))
+    return out
+
+
+def vertex_bones(P: np.ndarray, J: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """The game bone of every vertex (retargeted world positions P, glTF space, game units; J = the retarget's joint):
+    the torso by height like the game's own parts (pelvis 0, waist 1, chest 2, neck 3), the head's base on the neck.
+    Per vertex, not per face, so a face can span two bones and stretch like the stock models do."""
+    y = P[:, 1]
+    vb = np.asarray(J).copy()
+    band = np.where(y >= T[3][1], 3, np.where(y >= T[2][1] - 40, 2, np.where(y >= T[1][1] - 60, 1, 0)))
+    tor = np.isin(vb, (0, 2))
+    vb[tor] = band[tor]
+    vb[(vb == 4) & (y < T[3][1] + 25)] = 3
+    vb[~np.isin(vb, list(CAPS))] = 2
+    return vb
+
+
+def _ancestors(b: int) -> list[int]:
+    out = []
+    while PARENT[b] >= 0:
+        b = PARENT[b]
+        out.append(b)
+    return out
+
+
+def resolve_bones(F: np.ndarray, vb: np.ndarray, allowed: dict[str, set], rounds: int = 4) -> np.ndarray:
+    """No chunk can bind some faces' bones together (a waist vertex and a thigh vertex: only the right leg chunk holds
+    the pelvis + thighs, only the torso chunk the waist). Move one corner of each such face up its bone's parent chain
+    until a chunk can (the waist corner onto the pelvis), the fewest steps first, then the minority corner. Per vertex,
+    once for the whole model: every chunk that copies the vertex then binds it to the same bone (no cracks)."""
+    vb = vb.copy()
+    sets = [frozenset(a) for a in allowed.values()]
+    ok = lambda bs: any(set(bs) <= a for a in sets)         # noqa: E731
+    for _ in range(rounds):
+        bad = [i for i, f in enumerate(F) if not ok(vb[f].tolist())]
+        if not bad:
+            break
+        for i in bad:
+            bs = vb[F[i]].tolist()
+            if ok(bs):
+                continue
+            cnt = Counter(bs)
+            best = None
+            for k in range(3):
+                for step, a in enumerate(_ancestors(bs[k])):
+                    if ok(bs[:k] + [a] + bs[k + 1:]):
+                        key = (step, cnt[bs[k]])
+                        if best is None or key < best[0]:
+                            best = (key, k, a)
+                        break
+            if best is not None:
+                k, a = best[1], best[2]
+                b0 = bs[k]
+                for v in F[i]:                             # every corner of this face on that bone moves together
+                    if vb[v] == b0:
+                        vb[v] = a
+    return vb
+
+
+def face_slots(FB: np.ndarray, allowed: dict[str, set]) -> np.ndarray:
+    """Each face (its three vertex bones) -> the slot chunk that draws it: the majority bone's slot if that chunk may
+    bind all three bones, else another slot that can (an armpit face goes to the arm chunk, which carries the chest
+    group), else the majority bone's slot (its stray corners are rebound there)."""
+    cache, out = {}, []
+    for bs in map(tuple, np.asarray(FB).tolist()):
+        if bs not in cache:
+            maj = Counter(bs).most_common(1)[0][0]        # (a helper bone, e.g. a clavicle, has no slot of its own)
+            pref = [s for s in [SLOT_OF.get(maj)] + [SLOT_OF.get(b) for b in bs] + list(SLOT_BONES) if s]
+            cache[bs] = next((s for s in pref if set(bs) <= allowed[s]),
+                             SLOT_OF.get(maj) or next((s for s in SLOT_BONES if maj in allowed[s]), "torso"))
+        out.append(cache[bs])
+    return np.array(out, dtype=object)
+
+
+def _nearest(src: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    out = np.empty(len(pts), int)
+    for k in range(0, len(pts), 512):
+        out[k:k + 512] = ((pts[k:k + 512, None] - src[None]) ** 2).sum(2).argmin(1)
+    return out
+
+
+def emd_size(emd: dict, counts: dict[str, tuple[dict, int]]) -> int:
+    """Bytes emd_build + _like will write for {slot: ({bone: new vertices}, faces)} on this template EMD."""
+    size = emd["aoff"] + 4 * len(emd["slots"]) + 8 * len(emd["desc"])
+    for _i, ch in _first_chunks(emd):
+        s = chunk_slot(ch)
+        if s not in counts:
+            continue
+        new, nf = counts[s]
+        order = [b for b, _v in ch["groups"]]
+        nv = sum(new[b] if new.get(b) else max(1, len(v)) for b, v in ch["groups"])
+        nv += sum(n for b, n in new.items() if b not in order and n)
+        ng = len(order) + sum(1 for b, n in new.items() if b not in order and n)
+        c = 4 + 4 * ng + 12 * min(nv, 128) + 4 * max(1, -(-nf // 255)) + 12 * nf
+        size += c + (-c) % 4
+    return size
+
+
+def cut_slots(P, N, UV, F, FM, JV, T, tmpl: dict, mats: list, work: Path, blender, progress) -> tuple[dict, dict]:
+    """The retargeted model (world positions, glTF space, game units) -> one welded mesh per slot chunk, every vertex
+    on its own game bone: {slot: {P, N, F, bone (per vertex), part (bake tile bone per face), src}}, report.
+
+    The stock wrestlers are built this way: a chunk's triangles index vertices of several bone groups, so elbows,
+    knees, the waist and the neck stretch as the bones turn. Cutting the model into one closed-off shell per bone
+    instead (the first writer) leaves every joint open: the shells pull apart and overlap as soon as the wrestler
+    moves, and their duplicated boundary rings (plus the uv seam copies an N64-style bake makes; here the uvs live on
+    the primitives) spend half the vertex budget, so the parts came out with ~45% of the stock triangle count."""
+    from .aki_wrestling import _decimate_parts
+    allowed = slot_allowed(tmpl)
+    _u, first, wid = np.unique(np.round(P, 2), axis=0, return_index=True, return_inverse=True)
+    wid = wid.reshape(-1)                                  # split copies of one point (uv seams) share one bone
+    vb = resolve_bones(wid[F], vertex_bones(P, JV, T)[first], allowed)[wid]
+    fs = face_slots(vb[F], allowed)
+    sid = {s: i for i, s in enumerate(SLOT_BONES)}
+    part = np.array([sid[s] for s in fs])
+    slots = [s for s in SLOT_BONES if (fs == s).any()]
+    shrink = {}
+    for attempt in range(4):
+        caps = slot_budgets(tmpl, shrink)
+        dcaps = {sid[s]: (int(caps[s][0] * 1.12) + 2, caps[s][1] + 2) for s in SLOT_BONES}   # its seam allowance off
+        dec = _decimate_parts(P, N, UV, F, FM, part, mats, dcaps, Path(work), blender, progress)
+        geo, report = {}, {}
+        for s in slots:
+            g = dec[sid[s]]
+            used = np.unique(F[fs == s])
+            sb = vb[used].copy()
+            own = np.array(SLOT_BONES[s])
+            bad = ~np.isin(sb, list(allowed[s]))
+            if bad.any():                                  # a corner on a bone this chunk can't bind: its own nearest
+                sb[bad] = own[_nearest(T[own], P[used][bad])]
+            Pv, Nv, Fv = np.asarray(g["P"], float), np.asarray(g["N"], float), np.asarray(g["F"], int).reshape(-1, 3)
+            vc, fc = caps[s]
+            nf0 = len(Fv)
+            if len(np.unique(Fv)) > vc or len(Fv) > fc:    # still over (no Blender): keep the largest faces that fit
+                area = np.linalg.norm(np.cross(Pv[Fv[:, 1]] - Pv[Fv[:, 0]], Pv[Fv[:, 2]] - Pv[Fv[:, 0]]), axis=1)
+                seen, keep = set(), []
+                for i in np.argsort(-area):
+                    new = set(Fv[i].tolist()) - seen
+                    if len(keep) < fc and len(seen) + len(new) <= vc:
+                        keep.append(i)
+                        seen |= new
+                Fv = Fv[np.sort(keep)]
+            used2, Fl = np.unique(Fv, return_inverse=True)
+            Pv, Nv, Fv = Pv[used2], Nv[used2], Fl.reshape(-1, 3)
+            bone = sb[_nearest(P[used], Pv)] if len(Pv) else np.zeros(0, int)
+            tile = np.empty(len(Fv), int)
+            for i, q in enumerate(bone[Fv] if len(Fv) else []):
+                maj = Counter(q.tolist()).most_common(1)[0][0]
+                tile[i] = maj if maj in own else own[np.argmin(np.linalg.norm(T[own] - T[maj], axis=1))]
+            geo[s] = {"P": Pv, "N": Nv, "F": Fv, "bone": bone, "part": tile, "src": g["src"]}
+            report[f"slot_{s}"] = {"verts": len(Pv), "faces": len(Fv), "budget": [vc, fc], "dropped": nf0 - len(Fv),
+                                   "bones": {int(b): int(n) for b, n in zip(*np.unique(bone, return_counts=True))}}
+        over = {}
+        for f in PART_FILES:                               # the exact EMD size against the wrestler's own
+            emd = tmpl[f]["emd"]
+            cnt = {s: ({int(b): int(n) for b, n in zip(*np.unique(geo[s]["bone"], return_counts=True))}, len(geo[s]["F"]))
+                   for s in FILE_SLOTS[f] if s in geo}
+            need = emd_size(emd, cnt)
+            if need > len(emd["raw"]):
+                over[f] = need / len(emd["raw"])
+        if not over:
+            break
+        for f, r in over.items():
+            for s in FILE_SLOTS[f]:
+                shrink[s] = shrink.get(s, 1.0) / r * 0.97
+        progress(55, f"Model over the wrestler's size in {', '.join(over)}: refitting smaller")
+    else:
+        raise ValueError(f"model still over the wrestler's EMD size in {', '.join(over)}")
+    return geo, report
+
+
+def slot_chunk(g: dict | None, corners: list, W: list, speck_bone: int, uv0=(0, 0)) -> tuple[list, list]:
+    """One slot's mesh (cut_slots geometry; corners = [(slot vertex triple, uv triple)], glTF winding) -> chunk_build
+    input: a vertex group per bone (positions and 4.12 normals in the bone's rest frame), triangles in the game's
+    winding indexing across the groups."""
+    groups, tris = [], []
+    if g is not None and corners:
+        used = sorted({x for q, _uv in corners for x in q})
+        ci, k0 = {}, 0
+        for b in sorted({int(g["bone"][x]) for x in used}):
+            R, t = W[b]
+            vs = []
+            for x in used:
+                if g["bone"][x] != b:
+                    continue
+                n = R.T @ (G @ np.asarray(g["N"][x], float))
+                vs.append(tuple(R.T @ (G @ np.asarray(g["P"][x], float) - t)) + tuple(n / (np.linalg.norm(n) or 1) * 4096))
+                ci[x] = k0
+                k0 += 1
+            groups.append((b, vs))
+        for q, uv in corners:                              # glTF counter-clockwise -> the game's winding
+            tris.append(((ci[q[0]], ci[q[2]], ci[q[1]]), (uv[0], uv[2], uv[1])))
+    if not groups:                                         # every slot draws something: a hidden speck
+        groups = [(speck_bone, [(0, 0, 0, 0, 0, 4096), (1, 0, 0, 0, 0, 4096), (0, 1, 0, 0, 0, 4096)])]
+        tris = [((0, 1, 2), (tuple(uv0), tuple(uv0), tuple(uv0)))]
+    return groups, tris
 
 
 def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path, name: str, props=(), scale=None,
@@ -655,7 +841,7 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     """-> {file: {"emd": parsed original (template), "chunks": {slot: (groups, tris)}, "atlas": (img, rect, tpage,
     clut)}, "rigged", "report"} for the replaced wrestler (costume 0's layout)."""
     from .sm64_swap import load_rig, retarget, write_rigged, read_rigged
-    from .aki_wrestling import _decimate_parts, _bake_parts
+    from .aki_wrestling import _bake_parts
     from .re4gc_enemies import decimate
     tmpl = entry_parts(files, group, 0)
     bones = tmpl["ED1B.PAC"]["emd"]["bones"]
@@ -665,15 +851,20 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     rig = load_rig(Path(model), roles, props)
     jm = {r: b for r, b in ROLE_BONE.items() if r != "neck"}
     prims, rep = retarget(rig, tgt, scale, jm)
+    from . import fit_events as FE
+    FE.weights(prims, ROLE_BONE, skeleton=len(bones))
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     rigged = write_rigged(prims, tgt, work / "sd2_rigged.gltf", name)
     src = rigged
     tris_src = sum(len(p["tris"]) for p in rig["prims"])
     if tris_src > 8000 and blender:
+        FE.stage("decimate", "running", {"from": tris_src, "to": 8000})
         src = decimate(rigged, work / "sd2_dec.glb", 8000.0, blender)
     rp = read_rigged(src)
-    progress(30, "Cutting the model into the wrestler's bone parts")
+    FE.stage("decimate", "done" if src is not rigged else "skipped",
+             {"from": tris_src, "triangles": int(sum(len(p["tris"]) for p in rp))}, prims=rp if src is not rigged else None)
+    progress(30, "Cutting the model into the wrestler's part meshes")
     mats, mkey = [], {}
     allP, allN, allUV, allJ, F, FM = [], [], [], [], [], []
     base = 0
@@ -688,66 +879,40 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
         base += len(p["pos"])
     P, N, UV, JV = np.concatenate(allP), np.concatenate(allN), np.concatenate(allUV), np.concatenate(allJ)
     F, FM = np.concatenate(F), np.concatenate(FM)
-    fj = np.array([np.bincount(JV[f]).argmax() for f in F])
-    cen = P[F].mean(1)
     T = tgt["T"]
-    part = fj.copy()
-    for i, (j, c) in enumerate(zip(fj, cen)):              # torso + head by height, like the game's parts
-        if j in (0, 2):
-            part[i] = 3 if c[1] >= T[3][1] else 2 if c[1] >= T[2][1] - 40 else 1 if c[1] >= T[1][1] - 60 else 0
-        elif j == 4 and c[1] < T[3][1] + 25:
-            part[i] = 3
-    part[~np.isin(part, list(CAPS))] = 2
-    caps = budgets(tmpl)
-    geo = _decimate_parts(P, N, UV, F, FM, part, mats, caps, work, blender, progress)
-    out, report = {}, {}
+    geo, report = cut_slots(P, N, UV, F, FM, JV, T, tmpl, mats, work, blender, progress)
+    out = {}
     for f in PART_FILES:
         p0 = tmpl[f]
         ch0 = next(c for c in p0["emd"]["chunks"] if c is not None)
         tpage, clut = ch0["tpage"], ch0["clut"]
         u0, v0, rw, rh = _cover_rect(p0["tims"], tpage)
-        members = [b for s in FILE_SLOTS[f] for b in SLOT_BONES[s] if b in geo and len(geo[b]["F"])]
-        img, parts_v = _bake_parts([geo[b] for b in members], mats, rw, rh, [T[b] for b in members])
-        verts = {}
-        for b, (vp, vn, vu, faces) in zip(members, parts_v):
-            cv, cf = caps[b]
-            vp, vn, vu, faces = list(vp), list(vn), list(vu), list(faces)
-            dropped = 0
-            while len(vp) > cv or len(faces) > cf:          # the cylinder seam duplicates: drop the smallest faces
-                area = [np.linalg.norm(np.cross(vp[q[1]] - vp[q[0]], vp[q[2]] - vp[q[0]])) for q in faces]
-                faces.pop(int(np.argmin(area)))
-                dropped += 1
-                used = sorted({x for q in faces for x in q})
-                rm = {x: i for i, x in enumerate(used)}
-                vp = [vp[x] for x in used]; vn = [vn[x] for x in used]; vu = [vu[x] for x in used]
-                faces = [[rm[x] for x in q] for q in faces]
-            R, t = W[b]
-            loc = [R.T @ (G @ np.asarray(x, float) - t) for x in vp]
-            nl = [R.T @ (G @ np.asarray(n, float)) for n in vn]
-            nl = [n / (np.linalg.norm(n) or 1) * 4096 for n in nl]
-            uv = [(u0 + x[0], v0 + x[1]) for x in vu]
-            verts[b] = (loc, nl, uv, faces)
-            report[f"bone{b:02d}"] = {"verts": len(vp), "faces": len(faces), "budget": [cv, cf], "dropped": dropped}
-        chunks = {}
+        tiles = []                                         # (slot, face indices): one texture tile per bone part
         for s in FILE_SLOTS[f]:
-            groups, tris, k0 = [], [], 0
+            g = geo.get(s)
+            if g is None:
+                continue
             for b in SLOT_BONES[s]:
-                if b not in verts:
-                    continue
-                loc, nl, uv, faces = verts[b]
-                groups.append((b, [tuple(list(x) + list(n)) for x, n in zip(loc, nl)]))
-                for q in faces:                            # glTF counter-clockwise -> the game's winding
-                    tris.append(((k0 + q[0], k0 + q[2], k0 + q[1]), (uv[q[0]], uv[q[2]], uv[q[1]])))
-                k0 += len(loc)
-            if not groups:                                 # every slot draws something: a hidden speck
-                b = SLOT_BONES[s][0]
-                groups = [(b, [(0, 0, 0, 0, 0, 4096), (1, 0, 0, 0, 0, 4096), (0, 1, 0, 0, 0, 4096)])]
-                tris = [((0, 1, 2), ((u0, v0), (u0, v0), (u0, v0)))]
-            chunks[s] = (groups, tris)
+                sel = np.where(g["part"] == b)[0]
+                if len(sel):
+                    tiles.append((s, sel))
+        parts = []
+        for s, sel in tiles:
+            g = geo[s]
+            used, Fl = np.unique(g["F"][sel], return_inverse=True)
+            parts.append({"P": g["P"][used], "N": g["N"][used], "F": Fl.reshape(-1, 3), "src": g["src"], "used": used})
+        img, parts_v = _bake_parts(parts, mats, rw, rh, [None] * len(parts))
+        corners = {s: [] for s in FILE_SLOTS[f]}           # (slot vertex triple, uv triple) per face
+        for (s, _sel), part, (vp, _vn, vu, faces) in zip(tiles, parts, parts_v):
+            at = {tuple(x): int(i) for x, i in zip(part["P"], part["used"])}
+            for q in faces:                                # the bake's corners are copies of the part's vertices
+                corners[s].append(([at[tuple(vp[k])] for k in q], [(u0 + vu[k][0], v0 + vu[k][1]) for k in q]))
+        chunks = {s: slot_chunk(geo.get(s), corners[s], W, SLOT_BONES[s][0], (u0, v0)) for s in FILE_SLOTS[f]}
         out[f] = {"tmpl": p0, "chunks": chunks, "atlas": (img, (u0, v0, rw, rh), tpage, clut)}
-    report["triangles"] = sum(v["faces"] for k, v in report.items() if k.startswith("bone"))
+    report["triangles"] = sum(v["faces"] for k, v in report.items() if k.startswith("slot_"))
     report["retarget"] = rep
     report["source_triangles"] = tris_src
+    FE.stage("encode", data={"triangles": report["triangles"], "files": len(out), "source_triangles": tris_src})
     return {"files": out, "rigged": rigged, "report": report}
 
 
@@ -849,7 +1014,10 @@ def build_disc(base: Path, out_bin: Path, jobs: list[dict], work: Path, blender=
     files = read_files(base)
     newf = {f: bytearray(files[f]) for f in PART_FILES}
     reports = []
+    from . import fit_events as FE
     for k, jb in enumerate(jobs):
+        if jb.get("fit_key"):                             # the cast's model for this wrestler (the Fitting pop-up)
+            FE.model(jb["fit_key"])
         fit = fit_character(files, jb["group"], jb["model"], jb["roles"], Path(work) / f"g{jb['group']}", jb["name"],
                             jb.get("props", ()), jb.get("scale"), blender,
                             progress=lambda p, m, k=k: progress(5 + (k * 80 + p * 0.8) / max(1, len(jobs)), m))
@@ -863,6 +1031,9 @@ def build_disc(base: Path, out_bin: Path, jobs: list[dict], work: Path, blender=
                     raise ValueError(f"{jb['name']}: {f} entry {eid:#x} needs {len(data)} bytes, has {room}")
                 newf[f][o:o + room] = data + bytes(room - len(data))
             sizes[f] = [len(data), min(u * 0x100 for _e, u, _o in ents)]
+        FE.stage("encode", data={"bytes": sum(s[0] for s in sizes.values()), "budget": sum(s[1] for s in sizes.values()),
+                                 "files": len(sizes), "triangles": fit["report"]["triangles"],
+                                 "relocated": False, "where": "every costume entry rewritten in place"})
         reports.append({"group": jb["group"], "character": jb["name"], "rigged": str(fit["rigged"]), "sizes": sizes,
                         **fit["report"]})
     progress(90, "Writing the disc image")
@@ -903,6 +1074,11 @@ ROSTER_NAMES = [(0, "The Rock"), (1, "Stone Cold"), (2, "The Undertaker"), (3, "
                 (65, "Cactus Jack"), (66, "Steven Richards"), (67, "Debra")]
 
 
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per wrestler (every costume), the names op=match resolves."""
+    return [{"slot": n, "name": n, "kind": "wrestler", "group": i, "writer": "gbox.yukes_sd"} for i, n in ROSTER_NAMES]
+
+
 def extract_run(ctx, game, e, work):
     """characters.DEDICATED run: the wrestler's costume 0 (head + body + legs, standing pose, one rigid joint per
     vertex) with its own TIM textures."""
@@ -937,7 +1113,8 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         if "hip" not in roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"group": w["id"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
-                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
+                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale"),
+                     "fit_key": w.get("fit_key")})
     name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / name
     shutil.rmtree(work, ignore_errors=True)
@@ -960,11 +1137,25 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
     mj = {"name": name, "game_id": gid, "image": cue, "title": t, "built": time.time(),
           "files": ["ED1H.PAC / ED1B.PAC / ED1L.PAC: wrestler model entries (gbox.yukes_sd)"],
           "characters": [m["slug"] for m, _w in pairs], "replaces": [w["name"] for _m, w in pairs],
-          "triangles": [r["triangles"] for r in b["reports"]]}
+          "triangles": [r["triangles"] for r in b["reports"]], "fit": FIT_VERSION}
     (d / ".gbox-mod.json").write_text(json.dumps(mj))
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE
+    for (_meta, w), r in zip(pairs, b["reports"]):       # every wrestler's entries, in the one disc image
+        if w.get("fit_key"):
+            FE.model(w["fit_key"])
+        FE.stage("write", data={"mod": name, "image": cue, "wrestler": w["name"], "files": len(r.get("sizes") or {}),
+                                "bytes": sum(s[0] for s in (r.get("sizes") or {}).values())})
     return {"mod": name, "image": cue, "previews": previews,
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
+
+
+def built_current(mod_dir: Path) -> bool:
+    """A mod built by this writer version (an older fit, e.g. the per-bone shells before FIT_VERSION 2, is rebuilt)."""
+    try:
+        return json.loads((Path(mod_dir) / ".gbox-mod.json").read_text()).get("fit", 1) == FIT_VERSION
+    except (OSError, ValueError):
+        return False
 
 
 def _roster_for(ctx, game) -> list[dict]:
@@ -998,7 +1189,7 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
             w = find_wrestler(ros, inp.slot if inp.slot and inp.slot != "player" else "The Rock")
             pairs = [(meta, w)]
         name = mod_name(pairs, title)
-        have = (filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json").exists()
+        have = built_current(filemods.mod_dir(ctx.config, gid, name))
         built = None
         if inp.rebuild or not have:
             built = build_mod(ctx.config, game, pairs, ctx.progress, title=title)
@@ -1036,7 +1227,9 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
         if w["id"] in used:
             raise ValueError(f"{w['name']} is already replaced in this match")
         used.add(w["id"])
-        pairs.append((meta, w))
+        pairs.append((meta, dict(w, fit_key=wq or w["name"])))   # the Fitting pop-up's model: the cast slot
+    from . import fit_events as FE                         # every wrestler of the match up front (Fitting k/N)
+    FE.plan([(w["fit_key"], m["slug"], f"{m['name']} -> {w['name']}") for m, w in pairs])
     return use(ctx, pairs[0][0], game, inp, pairs, title)
 
 

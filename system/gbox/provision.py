@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -192,6 +193,88 @@ def ensure_platform(cfg: Config, platform_: str, core: str | None = None) -> tup
     return path, ensure_bios(cfg, bios)
 
 
+# --- the runtime check of a launch, remembered per emulator version ------------------------------------------------
+# A RetroArch launch checked the core, its assets and the BIOS every time. The BIOS check walks the drive's BIOS folder
+# over SMB (Dreamcast "dc": 68 files): 1.4 s warm, 18.7 s cold on JAYBUILTFINALE (2026-10-13). The result is kept in
+# <runtime>/runtime-check.json keyed by platform + core, valid while the core file and the RetroArch executable are the
+# same files (size + mtime) and the BIOS files it found are still in the local system folder; past RUNTIME_RECHECK_S
+# the drive is re-scanned in the background (it only ever adds missing files), never on the launch's path.
+
+RUNTIME_CHECK = "runtime-check.json"
+RUNTIME_RECHECK_S = 6 * 3600.0
+_RC_LOCK = threading.Lock()
+_RC_REFRESHING: set[str] = set()
+
+
+def _file_ident(p) -> list[int] | None:
+    try:
+        st = Path(p).stat()
+        return [st.st_size, st.st_mtime_ns]
+    except (OSError, TypeError):
+        return None
+
+
+def _rc_load(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _rc_set(path: Path, key: str, value: dict) -> None:
+    with _RC_LOCK:
+        db = _rc_load(path)
+        db[key] = value
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(db, indent=1))
+        tmp.replace(path)
+
+
+def _bios_local_names(names: list[str]) -> list[str]:
+    return [n.split("->")[-1] for n in names]
+
+
+def _refresh_bios_later(cfg: Config, path: Path, key: str, rec: dict) -> None:
+    if key in _RC_REFRESHING:
+        return
+    _RC_REFRESHING.add(key)
+
+    def run():
+        try:
+            copied = ensure_bios(cfg, rec.get("bios") or [])
+            dest = cfg.runtime / "system"
+            _rc_set(path, key, rec | {"at": time.time(), "bios_local": [n for n in _bios_local_names(rec.get("bios") or [])
+                                                                        if (dest / n).exists()],
+                                      "bios_copied_later": copied})
+        except Exception as e:                       # noqa: BLE001 - the next stale launch tries again
+            print(f"gBox: background BIOS check for {key} failed: {e}", flush=True)
+        finally:
+            _RC_REFRESHING.discard(key)
+    threading.Thread(target=run, daemon=True, name=f"bios-{key}").start()
+
+
+def runtime_check(cfg: Config, platform_: str, core: str | None = None, exe: str | None = None) -> dict:
+    """ensure_platform for a launch, remembered per emulator version (core file + RetroArch executable).
+    {"core": Path, "bios_copied": [...], "cached": bool}."""
+    core0, bios = systems.core_for(platform_)
+    key = f"{platform_}|{core or core0}"
+    path = cfg.runtime / RUNTIME_CHECK
+    rec = _rc_load(path).get(key) or {}
+    exe_ident = _file_ident(exe) if exe else None
+    dest = cfg.runtime / "system"
+    if (rec.get("core") and _file_ident(rec["core"]) == rec.get("core_ident") and rec.get("exe_ident") == exe_ident
+            and rec.get("bios") == list(bios) and all((dest / n).exists() for n in rec.get("bios_local") or [])):
+        if time.time() - rec.get("at", 0) > RUNTIME_RECHECK_S:
+            _refresh_bios_later(cfg, path, key, rec)
+        return {"core": Path(rec["core"]), "bios_copied": [], "cached": True, "checked_at": rec.get("at")}
+    core_path_, copied = ensure_platform(cfg, platform_, core)
+    _rc_set(path, key, {"core": str(core_path_), "core_ident": _file_ident(core_path_), "exe": exe, "exe_ident": exe_ident,
+                        "bios": list(bios), "bios_local": [n for n in _bios_local_names(list(bios)) if (dest / n).exists()],
+                        "at": time.time()})
+    return {"core": core_path_, "bios_copied": copied, "cached": False}
+
+
 def retroarch_exe(cfg: Config) -> str:
     """libretro's own nightly RetroArch build. Ubuntu's arm64 package is OpenGL-ES only, which cannot host
     desktop-GL cores such as the buildbot Flycast ('Requesting OpenGL context, but RetroArch is compiled against
@@ -314,11 +397,18 @@ def _retroarch_windows(cfg: Config) -> str:
     return str(branded)
 
 
+_RA_WIN: dict[str, str] = {}             # runtime root -> retroarch.exe (globbing the whole tree took ~0.5 s a launch)
+
+
 def _retroarch_windows_raw(cfg: Config) -> str:
     """Native RetroArch for local play on a Windows node (full FPS, real audio, XInput pads, no stream)."""
     root = cfg.runtime / "retroarch-win"
+    known = _RA_WIN.get(str(root))
+    if known and Path(known).is_file():
+        return known
     found = sorted(root.glob("**/retroarch.exe"))
     if found:
+        _RA_WIN[str(root)] = str(found[0])
         return str(found[0])
     seven = _seven_zip()
     url = f"{BUILDBOT}/windows/x86_64/RetroArch.7z"

@@ -92,6 +92,42 @@ class VoiceConfig(BaseModel):
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
 
 
+class ShowcaseConfig(BaseModel):
+    """[showcase] the Sonic showcase (gbox/sonic_showcase.py, docs/sonic_showcase.md): a background service on the
+    control plane that builds `showcase_sonic_<title>` cast swaps (SA1 + SA2 cast) of the favorites and recently
+    played titles, and queues readiness work for titles without a writer. The gBox Settings toggle overrides these."""
+    enabled: bool = False             # off until the operator turns it on (Settings card or PUT /api/showcase)
+    paused: bool = False              # the pause switch: nothing new is planned, built or queued
+    favorites: int = 25               # favorites considered per pass (starred titles first)
+    recent: int = 10                  # then this many recently played titles
+    budget_gb: float = 50.0           # disk cap for showcase builds; older showcase builds are evicted (LRU) to fit
+    builds_per_hour: int = 3          # build jobs started per rolling hour
+    whole_cast_max_slots: int = 16    # whole cast when it has at most this many slots, else player + main cast
+    interval_s: float = 300.0         # seconds between passes (a settings change or POST /api/showcase/run wakes it)
+    recheck_hours: float = 6.0        # an up-to-date title is planned again after this long (new donors, writer fixes)
+    retry_failed_hours: float = 24.0  # a failed plan is not built again before this, unless the plan changes
+    hdd_root: dict[str, str] = {"linux": "/home/ehm_eckx/samples"}   # os -> the external HDD mount; builds only there
+    require_hdd: bool = True          # refuse to build when the mod cache is not on that mount (never fill the NVMe)
+    min_free_gb: float = 50.0         # and when the HDD has less than this free
+    dedupe: bool = True               # hard-link identical files of a new build to the game's base copy / other showcases
+    dedupe_min_mb: int = 4            # files below this size are not compared
+    pause_while_playing_anywhere: bool = False   # also wait while a game runs on a Windows PC (default: Spark only)
+
+
+class GameAudioConfig(BaseModel):
+    """[game_audio] where emulators send their sound on a Windows node, and what a slow sound device may cost a launch
+    (gbox/game_audio.py). A sleeping or switching output (wireless headset) can hold an emulator's audio init for many
+    seconds; RetroArch's main loop, and with it the launch, waits on it."""
+    device: str = ""                  # output device name; "" = the default playback device when active, else the first active one
+    retroarch_drivers: list[str] = ["xaudio", "wasapi", "null"]   # tried in order; the next one when audio init stalls
+    init_grace_s: float = 3.0         # audio init this long without returning -> relaunch with the next driver
+    stall_s: float = 6.0              # audio opened slowly, then the core's loop still not answering for this long -> next driver
+    boot_wait_s: float = 30.0         # content running within this long (no audio trouble seen)
+    extended_wait_s: float = 120.0    # content loaded and audio still opening: wait up to this long instead of failing
+    warm_device: bool = True          # open a silent stream on the chosen device while the launch prepares (wakes it)
+    remember_driver_h: float = 24.0   # a driver that took over from a stalled one starts first on that device for this long
+
+
 class RecordingConfig(BaseModel):
     """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
     operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
@@ -108,6 +144,50 @@ class RecordingConfig(BaseModel):
     keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
 
 
+class HermesLocalConfig(BaseModel):
+    """[hermes.local] the Spark's GPU model as Hermes's last-resort route (docs/hermes-local-fallback.md).
+
+    Hermes's route supervisor (hermes_feedback.adjust_routes) switches cron work to this route only when every paid
+    route is cooling down or out of credit, or when the operator sets local only; it rotates back by itself as soon as
+    a paid route recovers. Hermes reaches the model through gBox's proxy (gbox/llm_proxy.py), never Ollama directly."""
+    enabled: bool = True
+    provider: str = "spark-local"     # the Hermes custom provider name the supervisor registers
+    model: str = "gpt-oss:20b"        # best tool caller on the GB10: MoE (3.6B active), native tool calls, 128k context
+    upstream: str = "http://127.0.0.1:11434"   # Ollama on the Spark (native /api/chat: the only API that sets num_ctx)
+    proxy_url: str | None = None      # what Hermes calls; default http://127.0.0.1:<api_port>/api/llm/local/v1
+    context_tokens: int = 65536       # num_ctx the proxy asks Ollama for; prompts are capped to fit (per-model: contexts)
+    contexts: dict[str, int] = {}     # model -> its context limit, when a non-default model is chosen
+    max_output_tokens: int = 8192     # reserved for the answer inside the context
+    chars_per_token: float = 3.0      # conservative prompt-size estimate (no tokenizer in the control plane)
+    keep_alive: str = "10m"           # Ollama unloads the model this long after the last call (frees GPU memory)
+    reasoning_effort: str = "medium"  # gpt-oss think level when the call names none (low | medium | high)
+    local_only: bool = False          # operator: Hermes uses only the local route (also POST /api/hermes/local)
+    queue_limit: int = 8              # calls waiting for the single slot; more answer 503 at once
+    queue_wait_s: float = 900.0       # a waiting call gives up with 503 after this long
+    request_timeout_s: float = 1800.0 # one model call (prefill of a long prompt on the GPU can take minutes)
+    retry_after_s: int = 120          # Retry-After on a 503 while the operator plays on the Spark
+    tool_budget: int = 20             # tool calls a local run may make (paid runs: 45), the last 6 for handoff
+    pr_label: str = "local model"     # label on draft PRs a local run publishes
+
+
+class GruntConfig(BaseModel):
+    """[hermes.grunt] the Spark helper: LLM-free chores for Hermes, one at a time at idle priority (gbox/spark_grunt.py)."""
+    enabled: bool = True
+    tick_s: float = 60.0              # how often the helper looks for a due chore
+    start_delay_s: float = 180.0      # after the service starts, before the first chore
+    disabled: list[str] = []          # chore names switched off (GET /api/grunt lists them)
+    cooldowns: dict[str, float] = {}  # chore name -> seconds between runs (overrides the built-in cooldown)
+    verify_nodes: list[str] = ["i9-NUC", "spark"]   # verification launches only here ("spark" = this control plane's node)
+    never_nodes: list[str] = ["JAYBUILTFINALE"]     # never used for verification launches, whatever else says
+    pr_test_timeout_s: float = 900.0  # one draft PR's focused tests
+    manifest_budget_mb: int = 4096    # bytes hashed per built-mod manifest pass
+
+
+class HermesConfig(BaseModel):
+    local: HermesLocalConfig = HermesLocalConfig()
+    grunt: GruntConfig = GruntConfig()
+
+
 class Config(BaseModel):
     data_dir: Path = Path("gbox-data")
     libraries: list[Library] = []
@@ -117,8 +197,19 @@ class Config(BaseModel):
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)
     cache_limit_gb: float = 20.0
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
+    # Two-tier cache (gbox/cache_tiers.py, docs/cache-tiers.md): cache_dirs is the fast hot tier, cold_cache_dirs a big
+    # slow disk behind it. Least recently used per-game units move to the cold tier only while the node is idle and
+    # leave a symlink, so <cache>/... paths keep working; access moves them back. Unset for an OS = one tier.
+    cold_cache_dirs: dict[str, str] = {}      # os -> cold tier root (must exist: a missing mount is never created)
+    hot_cache_limit_gb: dict[str, float] = {} # os -> size the idle demoter keeps the hot tier under (default: cache_limit)
+    cache_tier_idle_minutes: float = 30.0     # no session / job / launch on this node for this long before demoting
+    cache_tier_warm_fraction: float = 0.5     # after the migration, recently used cold units are promoted up to this share
+    cache_tier_promote_wait_s: float = 60.0   # a launch waits for its unit's promotion only if it fits in this; else later
     runtime_dirs: dict[str, str] = {}        # os -> local disk for emulators/cores (never run binaries off a network share)
     stage_min_mb: int = 32            # stage library files larger than this (disc images) onto the local cache before launch
+    stage_wait_s: float = 45.0        # a launch waits for a cache copy only if it will finish within this; else the game
+                                      # plays from the share and the copy finishes in the background (#1506; 0 = always wait)
+    stage_background_mb_s: float = 6.0   # background copy speed cap while a game plays on this PC (0 = no cap)
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     public_url: str | None = None     # how other machines (Blender add-on, clients) reach the control plane
@@ -134,15 +225,22 @@ class Config(BaseModel):
     retroarch_bios: dict[str, str] = {}   # os -> BIOS source dir (copied per core on demand)
     display: str = ":90"              # linux: Xvfb display used for headless emulator sessions
     llm_endpoints: list[LLMEndpoint] = []
+    # [token_prices] USD per million tokens for the Detailed report's cost estimates, over request_story.DEFAULT_PRICES:
+    # "provider/model" or "provider" = { in = 0.6, out = 2.2, cache_read = 0.11 }. Unknown providers get no cost.
+    token_prices: dict[str, dict[str, float]] = {}
     agent: dict = {"llm_url": "http://127.0.0.1:11434/v1", "model": "qwen3.6:35b", "searx_url": "http://127.0.0.1:8081",
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    examine_capture_worker: str = "JAYBUILTFINALE"   # Examine 3D capture sessions run here first (gbox/scene_relay.py)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
+    hermes: HermesConfig = HermesConfig()            # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
+    showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
+    game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -154,6 +252,16 @@ class Config(BaseModel):
     @property
     def cache_limit(self) -> float:
         return self.cache_limits_gb.get(HOST_OS, self.cache_limit_gb)
+
+    @property
+    def cold_cache(self) -> Path | None:
+        """The cold tier behind self.cache on this OS, or None (single-tier cache)."""
+        d = self.cold_cache_dirs.get(HOST_OS)
+        return Path(os.path.expandvars(d)) if d else None
+
+    @property
+    def hot_cache_limit(self) -> float:
+        return self.hot_cache_limit_gb.get(HOST_OS, self.cache_limit)
 
     @property
     def runtime(self) -> Path:
@@ -228,6 +336,19 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # tts_family = "kokoro_tts"       # tts_model / stt_model = explicit GGUF paths when discovery finds none
 # tts_voice = "af_heart"
 # stt_family = "qwen3_asr"
+# [hermes.local]                  # the Spark's GPU model as Hermes's last-resort route (docs/hermes-local-fallback.md)
+# model = "gpt-oss:20b"           # or "qwen3.8:27b-mtp-q4_K_M" (slower, dense); any Ollama model with tool calls
+# context_tokens = 65536
+# local_only = false              # true: Hermes uses only the local route
+# [hermes.grunt]                  # Spark helper chores at idle priority (GET /api/grunt)
+# disabled = []                   # e.g. ["verify_launch_fixes"]
+# verify_nodes = ["i9-NUC", "spark"]
+# [game_audio]                    # emulator sound on a Windows node (gbox/game_audio.py)
+# device = ""                     # output device name; "" = default playback device if active, else the first active one
+# retroarch_drivers = ["xaudio", "wasapi", "null"]   # next driver when audio init stalls past init_grace_s
+# init_grace_s = 3.0
+# extended_wait_s = 120.0         # content loaded, audio still opening: the launch waits this long instead of failing
+
 # [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
 # enabled = true                  # records only while the pad was used in the last idle_s seconds
 # seconds = 120                   # how far back a clip can reach

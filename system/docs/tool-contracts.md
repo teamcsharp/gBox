@@ -11,10 +11,16 @@ Every tool is registered with `@tool(name, version, In, Out, ...)` in `gbox/tool
 | read_memory | read | artifact length/hash | protocol tested via fake |
 | write_memory | memory_write | schema; rollback bytes saved | rejection tested |
 | get_frame | read | PNG signature + IHDR + hash | tested (real capture) |
+| evidence_capture | read (in-server job; agent test sessions) | frames are get_frame PNG artifacts; pairs PNG | fake sessions tested; live untested (docs/pr-evidence.md) |
 | export_asset | read | UAP validator + glTF round trip | tested |
 | open_in_blender | read | vertex/bone counts vs UAP | written, unverified |
 | analyze_binary | read | artifact counts | written, unverified |
+| ue_steam | read, execute | schema; refuses anti-cheat games before opening paks | synthetic paks tested; live read-only check on owned UE 4.27 games (docs/ue_steam.md) |
 | llm_complete | network | non-empty; output is a hypothesis | smoke-tested with Ollama |
+| pick_identify | read | schema | synthetic RAM + fake sessions tested (docs/live-inject.md); live emulator untested |
+| pick_replace | execute, memory_write | schema; live writes re-read, read back, rolled back on mismatch | synthetic RAM + fake sessions tested; live emulator untested |
+| pick_prepare | execute | schema | the routed writer (characters op=use launch=false) + live patch; tested through pick_replace |
+| pick_ghidra | read | schema | FindRefs / ExplainAddresses parsing tested with a fake analyzeHeadless |
 
 ## Adding a tool
 

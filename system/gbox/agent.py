@@ -28,7 +28,8 @@ Keep related calls on the same worker. Preserve evidence/unknowns; check actual 
 How to work:
 - Understand the request in the operator's words. If it's about a specific game, use the session context or search_games.
 - Reverse engineering (Ghidra, "find the code that…", model/file formats, patch points, character swaps a game has no writer
-  for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
+  for): assimilate op=fingerprint first when the title has no reader yet (formats, engine, nearest assimilated titles,
+  the reader to start from), re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - PC game modding (universal-modder, the um_* tools): "what engine is this", "how do I mod X", "has anyone modded X" -> um_scan
@@ -69,6 +70,9 @@ How to work:
 - Ripping a PC game's meshes when RenderDoc can't (characters op=extract / scene_capture first): ninja_ripper op=launch
   exe=<game.exe> (an agent test PC picked for you, never the operator's game) -> op=rip pid=<pid> worker=<its worker> ->
   op=import worker=<its worker> name=<name> (one GLB, stored in the collection) -> op=stop pid=<pid>.
+- Unreal Engine Steam game's actor / animation data: ue_steam op=status appid=<id> (anti-cheat games are refused: say
+  so) -> op=inventory (manifest of meshes, skeletons, animations, pawn blueprints) -> op=export paths=[<mesh path>]
+  (rigged GLB) or op=extract paths=[...] (raw assets). Encrypted paks: report that the game's AES key is needed.
 - "Put me on <stage/world/level>", "play as <character>", "skip to <boss>": DO IT, don't explain how the operator could.
   Playbook, in order, until it works: (0) recall + re_dossier op=read (addresses gBox already verified) and the game's own
   tool when it has the warp (zelda_oot op=goto / skip_deku_tree, stage_warp op=warp, re_mods, gta_mods, pso autoplay);
@@ -174,9 +178,15 @@ How to work:
   (pick whip "Extract X's model ...") -> characters op=extract character=X kind=character|vehicle|object|environment
   session_id, x/y = X's position on the frame as fractions ("45% across, 60% down" -> x=0.45 y=0.6). "Play as X",
   "replace A / me with B", pick-whip swaps -> characters op=use character=B session_id (not in the collection: op=extract first;
-  RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri). OoT pick whip
+  RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri; MGS VR
+  Missions: slot=player (Snake) | enemy:soldier (every soldier) | enemy:ninja | enemies | all, or op=live_use session_id
+  x/y: the figure there, swapped into the running game at the same moment); Twin Snakes
+  GC: slot=player (Snake) | enemies (the Genome soldiers) | bosses | model:<key> | x/y + target=<what is there>). OoT pick whip
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
-  ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. use says "missing" (no writer for that game) or the operator wants it now ->
+  ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
+  everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
+  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role] [slots=all|main|enemies] (plan_only=true shows
+  the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
   Report the status as returned; "extracted" only with checked.ok. Unknown model
   format: Ghidra (analyze_binary / ghidra_script) on the game's executable to find the loader. View an entry: bevy_scene;
@@ -271,6 +281,12 @@ def tool_specs() -> list[dict]:
            "= artifact sha256s that prove it; or question = an open question.",
            {"op": s, "game": s, "kind": s, "address": s, "name": s, "role": s, "status": s, "evidence": {"type": "array", "items": s},
             "question": s}, ["op"]),
+        fn("assimilate", "Step one before reverse engineering a title or writing a reader: fingerprint its owned files and "
+           "executable. Ranks containers, codecs, model/texture/animation formats and the engine/middleware (Ninja, "
+           "RenderWare, Unreal, EAGL, Eurocom, MT Framework, CRI, Tecmo, AKI, Yuke's, ...), names the nearest titles gBox "
+           "already assimilated and the reader to start from, with a reader skeleton. Recorded in the dossier as a "
+           "hypothesis. op=fingerprint (default) | known (assimilated titles) | evaluate (leave-one-out accuracy).",
+           {"op": s, "game": s}),
         fn("re_study", "Prepare a title for Ghidra: extract its main executable from the disc/ROM as an ELF at the right load "
            "address and processor (GameCube, Wii, Dreamcast, PS1, PS2, N64, GBA, Xbox 360), or source=ram + session_id to "
            "snapshot the running game's RAM; analyze=true also runs Ghidra auto-analysis. Results go into the title's dossier "
@@ -394,6 +410,8 @@ def tool_specs() -> list[dict]:
            "'make this item a Durandal', 'make my weapon rare'; for a Ctrl+clicked item, op=list first and match the name), "
            "multi_equip (target = slot | item code | weapon/armor/mag: equip it ON TOP of what's equipped, stats stack - the "
            "'multi-equip bug'; on=false target='' unequips all extras), "
+           "dupe (target = slot | item code | weapon/armor/mag: exact clone with stats, percentages, grind and stack count "
+           "- 'duplicate my weapon', 'dupe it x5'; count=N, equip=true also equips the first copy), "
            "status, unhook. give with equip=true also equips the first item ('equip me with a DB saber' = give code count=1 "
            "equip=true; add equip_any first if the class can't normally use it).",
            {"session_id": s, "op": s, "on": b, "value": i, "factor": i, "code": s, "count": i, "equip": b, "name": s,
@@ -648,12 +666,15 @@ def tool_specs() -> list[dict]:
            "guest_session_id and memory watch specs (trigger/win/lose). session_id is the running Stranglehold host.",
            {"op": s, "session_id": s, "verdict": s, "guest": s, "round": s, "guest_session_id": s, "guest_node": s,
             "style": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
-        fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
-           "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
-           "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
-           "extracted model; false opens a live Bevy window on the operator's PC.",
+        fn("bevy_scene", "The gBox Bevy viewer (Rust/Bevy, real-time 3D): render collection entries (items=[{character: slug} "
+           "or {environment: slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation "
+           "[x,y,z], scale, rotation_y_deg; camera={eye, target}. op=render + screenshot=true (default) returns a PNG shown "
+           "in the chat - use it to look at an extracted model or stage a scene. Reactive: op=open starts a live window on "
+           "the operator's PC; then react to what you see with op=snapshot (capture the live window to {name}.png), "
+           "op=set_camera (move it), op=add (more items), op=remove (drop item index), op=close (stop it); op=list shows "
+           "live sessions and saved scenes/renders.",
            {"name": s, "items": {"type": "array", "items": {"type": "object"}}, "camera": {"type": "object"},
-            "screenshot": {"type": "boolean"}}, ["items"]),
+            "screenshot": {"type": "boolean"}, "op": s, "index": {"type": "integer"}}, []),
         fn("mashup", "Cross-title mashup planner: turn a request like 'put Mario 64 in Ocarina of Time' into a resolved source "
            "character + target game, a feasibility check (native writer vs overlay-only) and an ordered plan. Explicit source "
            "(character name/slug) and target (game title/id) override the parsed request. auto_dispatch=true submits the "
@@ -714,6 +735,15 @@ def tool_specs() -> list[dict]:
            "later call. Never used on the operator's own game.",
            {"op": s, "exe": s, "args": {"type": "array", "items": s}, "session_id": s, "pid": i, "path": s, "hotkey": s,
             "wait_s": {"type": "number"}, "name": s, "kind": s, "worker": s, "mode": s}, ["op"]),
+        fn("ue_steam", "Unreal Engine 4/5 Steam games installed on the Windows PC, static only (never launches the game; "
+           "refuses any game shipping anti-cheat). op=status (appid: engine, anti-cheat check, pak count) | analyze (Ghidra "
+           "movement/animation symbols) | list_files (paths) | inventory (actor + animation manifest: SkeletalMesh, "
+           "Skeleton, AnimSequence/Montage/BlendSpace, AnimBlueprint, pawn Blueprints and the meshes they use) | extract "
+           "(paths: raw .uasset/.uexp/.ubulk to a work dir) | export (paths: UE 4.24-4.27 SkeletalMesh -> rigged GLB with "
+           "skin weights, Skeleton -> bone JSON). AES-encrypted paks need the game's key (unsupported, says so); IoStore "
+           ".utoc/.ucas are listed only. engine='4.27' overrides the detected engine.",
+           {"op": s, "appid": s, "title": s, "engine": s, "paths": {"type": "array", "items": s},
+            "extensions": {"type": "array", "items": s}, "max_files": i, "max_packages": i}, ["op", "appid"]),
         fn("characters", "collect (game): extract the supported native character roster without vision calls; returns verified models, mapped rig readiness and individual failures. gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
            "reusable in any game. use/live_use/overlay/place require a nonempty character copied from the operator's exact slug/name. "
            "Overlay/missing/pending results do not complete a native swap; keep the request pending until native verification. "
@@ -729,10 +759,15 @@ def tool_specs() -> list[dict]:
            "the player | unplace (OoT; session_id, optional character) | overlay (character, session_id, "
            "optional x/y = the target's point 0..1): any game, now: the model tracks and covers the player on screen in the "
            "desktop app (an overlay, not in-engine) | add (character = new name, from_clipboard=true): store a "
-           "model edited in Blender. game = title or catalog game_id (default: the chat's game); extract needs a running "
-           "session only when the thing has to be cut from the frame.",
+           "model edited in Blender | readiness (optional game_id / character, rebuild=true to recompute all): replacement "
+           "readiness of every collected character (roles, bind pose, proportions, budgets) and which game slots each can "
+           "replace; returns the per-game gap report | cast_swap (target_game, source = a game or a group like 'wrestlers', mapping = "
+           "auto|random|by_role, seed, slots = all|main|enemies, plan_only, launch): replace the ENTIRE cast of one game "
+           "with the cast of another in one mod ('replace everyone in PSO with wrestlers'). game = title or catalog "
+           "game_id (default: the chat's game); extract needs a running session only when the thing has to be cut from the frame.",
            {"op": s, "character": s, "kind": s, "session_id": s, "game": s, "x": {"type": "number"}, "y": {"type": "number"},
-            "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"}}, ["op"]),
+            "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"},
+            "target_game": s, "source": s, "mapping": s, "seed": s, "slots": s, "plan_only": b, "launch": b}, ["op"]),
         fn("scene_capture", "Capture the frame on screen of a live session (Windows PC emulators started with Examine 3D) as a "
            "real 3D scene: glTF with one node per draw call + textures, HUD separate. For extracting a model into the "
            "collection use characters op=extract (it does this and cuts the object out); this is for looking at the raw scene.",
@@ -965,6 +1000,21 @@ class Agent:
             return self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": kind, "address": str(address or ""), "name": name,
                                  "role": role, "status": status, "evidence": evidence or [], "question": question}).json()
         return {"error": "op: read | record"}
+
+    def assimilate(self, op="fingerprint", game=""):
+        if op in ("known", "evaluate"):
+            j = self._job("assimilate", {"op": op}, node="linux", limit=600)
+            return j["output"]["result"] if j.get("state") == "succeeded" else {"error": f"assimilate {j.get('state')}: {j.get('error')}"}
+        gid = self._re_gid(game)
+        j = self._job("assimilate", {"op": "fingerprint", "game_id": gid}, node="linux", limit=1800)
+        if j.get("state") != "succeeded":
+            return {"error": f"assimilate {j.get('state')}: {j.get('error')}", "next": "re_study, then playbook asset-loader-format"}
+        fp = j["output"]["result"]
+        self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": "note", "name": "assimilate fingerprint",
+                                                                "role": fp.get("summary", "")[:800], "status": "hypothesis"})
+        return {"game_id": gid, "summary": fp.get("summary"), "engines": fp.get("engines", [])[:3],
+                "nearest_titles": fp.get("nearest_titles"), "proposal": fp.get("proposal"),
+                "next": "re_playbook op=get id=assimilate-title; verify the fingerprint against the files before trusting it"}
 
     def re_study(self, game="", source="auto", session_id="", analyze=True):
         gid = self._re_gid(game)
@@ -1300,12 +1350,27 @@ class Agent:
     def um_render3d(self, **args):
         return self._um("um_render3d", args)
 
-    def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
-        j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
+    def bevy_scene(self, items=None, name="scene", camera=None, screenshot=True, op=None, index=None):
+        inp = {"name": name, "items": items or [], "camera": camera or {}, "screenshot": bool(screenshot)}
+        if op:
+            inp["op"] = op
+        if index is not None:
+            inp["index"] = index
+        # A live window exists only in the worker process that opened it: later ops on that scene go to the same PC.
+        live = getattr(self, "_bevy_live", None)
+        if live is None:
+            live = self._bevy_live = {}
+        pinned = live.get(name) if op in ("snapshot", "set_camera", "add", "remove", "close") else None
+        j = self._job("bevy_scene", inp, None if pinned else "windows", 3600, worker=pinned)
+        if op == "open" and j.get("state") == "succeeded" and j.get("worker_id"):
+            live[name] = j["worker_id"]
+        elif op == "close":
+            live.pop(name, None)
         out = j.get("output") or {}
         if j["state"] != "succeeded":
             return {"state": j["state"], "error": j.get("error")}
-        res = {k: out.get(k) for k in ("scene", "screenshot", "pid")}
+        # every field the op returned (op=list: live / scenes / renders; add/remove/set_camera: items, camera)
+        res = {k: v for k, v in out.items() if v not in (None, [], "")}
         try:                                                   # the screenshot as an image in the chat sidebar
             arts = self.api.get(f"/api/receipts/{j['receipt_id']}").json().get("artifacts", [])
             res["artifact"] = next((a["sha256"] for a in arts if a["name"] == "bevy.png"), None)
@@ -1367,6 +1432,14 @@ class Agent:
                "target_asm": target_asm, "context": context, "source_code": source_code, "name": name}
         j = self._job("decomp_me", inp, limit=180)
         return j.get("output") or {"state": j.get("state"), "error": j.get("error")}
+
+    def ue_steam(self, op="status", appid="", title="", engine="", paths=None, extensions=None, max_files=200,
+                 max_packages=100000):
+        inp = {"op": op, "appid": str(appid), "title": title or f"Steam app {appid}", "engine": engine or "",
+               "paths": list(paths or []), "extensions": list(extensions or []), "max_files": int(max_files or 200),
+               "max_packages": int(max_packages or 100000)}
+        j = self._job("ue_steam", inp, node="windows", limit=7200)
+        return (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
 
     def ninja_ripper(self, op="status", exe="", args=None, session_id="", pid=0, path="", hotkey="", wait_s=30.0, name="",
                      kind="object", worker="", mode="auto"):
@@ -1501,17 +1574,26 @@ class Agent:
         return [{k: x[k] for k in ("name", "category", "description")} for x in ss if q in (x["name"] + x["category"] + x["description"]).lower()][:25]
 
     def characters(self, op="list", character="", session_id="", game="", slot="player", kind="", x=None, y=None,
-                   from_clipboard=False, a="", b="", one_way=False, near="", size=0.0):
+                   from_clipboard=False, a="", b="", one_way=False, near="", size=0.0, target_game="", source="",
+                   mapping="auto", seed="", slots="all", plan_only=False, launch=None):
         require_character(op, character)
         if session_id and (bad := self._live_session(session_id)):
             return bad  # preserve the requested live target; never silently relaunch a different session
         if not session_id and not game and op in ("collect", "extract", "use", "add", "swap", "place", "unplace"):   # the chat's game
             game = getattr(self, "context_game", "") or ""
+        if op == "cast_swap" and not target_game and not game:
+            game = getattr(self, "context_game", "") or ""
         inp = {"op": op, "character": character, "session_id": session_id, "game": game, "slot": slot,
                "kind": kind or ("object" if op == "extract" else "character"), "x": x, "y": y, "from_clipboard": bool(from_clipboard),
                "a": str(a or ""), "b": str(b or ""), "one_way": bool(one_way), "near": near or "", "size": float(size or 0)}
+        if op == "cast_swap":                         # the whole cast of target_game as source's (gbox.cast_swap)
+            inp |= {"target_game": target_game or game, "source": source, "mapping": mapping or "auto", "seed": str(seed or ""),
+                    "slots": slots or "all", "plan_only": bool(plan_only)}
+            if launch is not None:
+                inp["launch"] = bool(launch)
         # extract / add / blender write the collection: they run where it lives (the Spark)
-        j = self._job("characters", inp, limit=14400 if op == "collect" else 3600, node=None if op == "use" and session_id else "linux")
+        j = self._job("characters", inp, limit=14400 if op in ("collect", "cast_swap") else 3600,
+                      node=None if op == "use" and session_id else "linux")
         result = (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
         if op in ("use", "live_use"):
             outcome = native_swap_result({"state": j.get("state"), "error": j.get("error"), "result": result})
@@ -1822,7 +1904,8 @@ def _modifies_game(name: str, args: dict) -> bool:
             op == "time" and (args.get("hours") is not None or args.get("minutes") is not None) or \
             op == "wanted" and args.get("level") is not None
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages",
+                      "readiness"}
 
 
 class ChatHub:
@@ -1899,7 +1982,7 @@ class ChatHub:
         errs = [e for e in turn if e.get("type") in ("tool_result", "error") and failed(e)]
         final = next((e.get("text") or "" for e in reversed(turn) if e.get("type") == "assistant"), "")
         if status != "blocked":
-            if final and not self.GAP_GAVE_UP.search(final):
+            if final and not self.GAP_GAVE_UP.search(re.sub(r"```.*?(```|$)", " ", final, flags=re.S)):   # returned data isn't a give-up
                 return                                # it recovered and delivered: errors on the way aren't a gap
             if not final and not errs:
                 return

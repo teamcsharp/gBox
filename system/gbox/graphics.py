@@ -6,6 +6,8 @@ post-process shader (FXAA / advanced AA / FSR) + vsync. Temporal AA does not exi
 vectors the original games never produce.
 """
 import json
+import threading
+import time
 from pathlib import Path
 
 FIELDS = {
@@ -18,6 +20,10 @@ FIELDS = {
     "vsync": [True, False],
 }
 DEFAULT = {"res_scale": 100, "msaa": "auto", "aniso": 0, "upscaler": "bilinear", "sharpen": 50, "post_aa": "none", "vsync": True}
+_SAVE_LOCK = threading.RLock()
+_GPU_LOCK = threading.Lock()
+_GPU_CACHE = None
+_GPU_EXPIRES = 0.0
 
 # These are the controls gBox actually writes into each emulator's launch config.
 # A stored preference for one runtime must never be presented as an active
@@ -47,10 +53,23 @@ def best_for_gpu(vram_mb: int) -> dict:
 
 
 def gpu() -> dict:
+    """The installed GPU, cached for a minute: every Graphics panel read used to start nvidia-smi (#712)."""
+    global _GPU_CACHE, _GPU_EXPIRES
+    with _GPU_LOCK:
+        if _GPU_CACHE is None or time.monotonic() >= _GPU_EXPIRES:
+            _GPU_CACHE = _read_gpu()
+            _GPU_EXPIRES = time.monotonic() + 60
+        return dict(_GPU_CACHE)
+
+
+def _read_gpu() -> dict:
     import subprocess
+    import sys
     try:
+        # CREATE_NO_WINDOW: the windowless worker would otherwise flash a console window over the game (#1081)
         out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=10).stdout.strip().splitlines()[0]
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=0x08000000 if sys.platform == "win32" else 0).stdout.strip().splitlines()[0]
         name, mb = [x.strip() for x in out.split(",")]
         return {"name": name, "vram_mb": int(float(mb))}
     except Exception:
@@ -92,18 +111,23 @@ def get(cfg, game_id: str | None) -> dict:
 
 
 def save(cfg, game_id: str, prefs: dict) -> dict:
-    bad = {k: v for k, v in prefs.items() if k not in FIELDS or v not in FIELDS[k]}
+    # exact types: True == 1 and 1.0 == 1, so `in` alone accepted vsync=1 or res_scale=True
+    bad = {k: v for k, v in prefs.items() if k not in FIELDS or
+           not any(type(v) is type(option) and v == option for option in FIELDS[k])}
     if bad:
         raise ValueError(f"unsupported values {bad}; choices: {FIELDS}")
-    f = _file(cfg)
-    try:
-        allp = json.loads(f.read_text())
-    except (OSError, ValueError):
-        allp = {}
-    allp[game_id] = get(cfg, game_id) | prefs
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(allp, indent=1))
-    return allp[game_id]
+    with _SAVE_LOCK:                                   # concurrent saves for two games must not drop either one
+        f = _file(cfg)
+        try:
+            allp = json.loads(f.read_text())
+        except (OSError, ValueError):
+            allp = {}
+        allp[game_id] = get(cfg, game_id) | prefs
+        f.parent.mkdir(parents=True, exist_ok=True)
+        temporary = f.with_suffix(".tmp")               # a crash mid-write leaves the previous file intact
+        temporary.write_text(json.dumps(allp, indent=1))
+        temporary.replace(f)
+        return allp[game_id]
 
 
 def rpcs3_yaml(p: dict) -> str:

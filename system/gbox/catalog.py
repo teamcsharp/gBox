@@ -1,12 +1,16 @@
 """Game library scanner (read-only), Steam library reader, and bounded LRU staging cache."""
+import collections
 import hashlib
+import itertools
 import json
 import os
 import re
 import shutil
 import sys
+import threading
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import systems
@@ -562,41 +566,273 @@ def scan_steam(steam_root: Path) -> tuple[list[CatalogEntry], list[str]]:
 
 # --- bounded staging cache -----------------------------------------------------------------
 
-def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
-    """Copy a source file into the LRU cache (never touching the original). Returns a staging receipt.
-    progress(done_bytes, total_bytes) is called while copying."""
-    cache = config.cache
+# #1506: a launch re-read the whole staged file for its SHA-1 every time (Metroid: Other M, 7.4 GB: ~51 s on the
+# operator's cache disk at 147 MiB/s), and a first copy read 8 MiB, wrote it, then read the next (9.5 MB/s from the
+# library share over the PC's Wi-Fi, where reads alone reach 15-17 MB/s, ~20 with 4 in flight). Now hashes are
+# remembered by size + mtime, a copy hashes as it goes with reads running ahead of the writes, an interrupted copy
+# resumes, and the launch can play from the share while the copy finishes in the background (tools._launch_game).
+
+STAGE_DB = ".gbox-staged.json"           # <cache>/: staged file -> its hashes + the source identity it was copied from
+STAGE_BLOCK = 8 << 20
+STAGE_STREAMS = 4                        # reads in flight from the share
+_STAGE_LOCK = threading.RLock()
+_COPIES: dict[str, "StageCopy"] = {}     # dst -> the copy filling it (one per file; a second launch joins it)
+
+
+def _ident(st) -> list[int]:
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _db_load(cache: Path) -> dict:
     try:
-        inside = Path(src).resolve().is_relative_to(Path(cache).resolve())
+        return json.loads((Path(cache) / STAGE_DB).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _db_set(cache: Path, key: str, value: dict | None) -> None:
+    with _STAGE_LOCK:
+        db = _db_load(cache)
+        if value is None:
+            if db.pop(key, None) is None:
+                return
+        else:
+            db[key] = value
+        p = Path(cache) / STAGE_DB
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(db))
+        tmp.replace(p)
+
+
+def _reuse(path: Path, config: Config, in_cache: bool = False) -> dict:
+    """A file already on the local disk: its hashes come from the stage db while size + mtime are unchanged."""
+    cache, t0 = config.cache, time.monotonic()
+    rec = _db_load(cache).get(str(path)) or {}
+    known = rec.get("sha1") and rec.get("ident") == _ident(path.stat())
+    hashes = {"sha1": rec["sha1"], "crc32": rec.get("crc32")} if known else file_hashes(path, {})
+    os.utime(path)                                        # mtime = last use, drives LRU
+    _db_set(cache, str(path), rec | hashes | {"ident": _ident(path.stat())})
+    if not in_cache:                 # a reuse adds no bytes: the LRU trim (a walk of the whole cache) runs off the launch
+        threading.Thread(target=_evict_quietly, args=(cache, int(config.cache_limit * 1024**3), path), daemon=True,
+                         name="stage-evict").start()
+    evicted: list[str] = []
+    out = {"src": str(path), "dst": str(path), "size": path.stat().st_size, "copied": False, "sha1": hashes["sha1"],
+           "hashed": not known, "seconds": round(time.monotonic() - t0, 3), "staged_at": time.time(), "evicted": evicted}
+    return out | ({"in_cache": True} if in_cache else {})
+
+
+def _evict_quietly(cache: Path, limit: int, keep: Path) -> None:
+    try:
+        evict(cache, limit, keep=keep)
+    except Exception as e:                                # noqa: BLE001 - the next copy trims again
+        print(f"gBox: cache trim after a reuse failed: {e}", flush=True)
+
+
+def _read_ahead(src: Path, start: int, total: int, streams: int = STAGE_STREAMS, block: int = STAGE_BLOCK):
+    """Yield src[start:total] in order while up to 2 x `streams` blocks are read ahead on separate handles."""
+    local, handles = threading.local(), []
+
+    def read(off: int) -> bytes:
+        f = getattr(local, "f", None)
+        if f is None:
+            f = local.f = open(src, "rb", buffering=0)
+            handles.append(f)
+        f.seek(off)
+        want, out = min(block, total - off), bytearray()
+        while len(out) < want:
+            chunk = f.read(want - len(out))
+            if not chunk:
+                raise OSError(f"{src} ended at byte {off + len(out)} of {total}")
+            out += chunk
+        return bytes(out)
+    offsets = iter(range(start, total, block))
+    pool = ThreadPoolExecutor(max(1, streams), thread_name_prefix="stage-read")
+    pending = collections.deque(pool.submit(read, off) for off in itertools.islice(offsets, max(1, streams) * 2))
+    try:
+        while pending:
+            data = pending.popleft().result()
+            nxt = next(offsets, None)
+            if nxt is not None:
+                pending.append(pool.submit(read, nxt))
+            yield data
+    finally:
+        for p in pending:
+            p.cancel()
+        pool.shutdown(wait=True)
+        for f in handles:
+            f.close()
+
+
+class StageCopy:
+    """One copy of a library file into the cache, on its own thread. Written to <name>.part and renamed only when
+    complete, so a launch never sees half a file; `limit()` (bytes/s or None) slows it while a game plays."""
+
+    def __init__(self, src: Path, dst: Path, config: Config):
+        self.src, self.dst, self.config = Path(src), Path(dst), config
+        st = self.src.stat()
+        self.total, self.src_ident = st.st_size, _ident(st)
+        self.done = self.resumed_from = 0
+        self.t0, self.error, self.receipt, self.limit = time.monotonic(), None, None, None
+        self.finished = threading.Event()
+        self._window = None
+        self.thread = threading.Thread(target=self._run, daemon=True, name=f"stage-{self.dst.name}")
+
+    @property
+    def part(self) -> Path:
+        return self.dst.with_name(self.dst.name + ".part")
+
+    def rate(self) -> float:
+        """Bytes per second copied by this run (0 until something moved)."""
+        moved, dt = self.done - self.resumed_from, time.monotonic() - self.t0
+        return moved / dt if moved > 0 and dt > 0 else 0.0
+
+    def result(self) -> dict:
+        self.finished.wait()
+        if self.error is not None:
+            raise self.error
+        return self.receipt
+
+    def _run(self):
+        try:
+            self.receipt = self._copy()
+        except BaseException as e:                       # noqa: BLE001 - reported through result()
+            self.error = e
+            print(f"gBox: staging {self.src} -> {self.dst} failed: {type(e).__name__}: {e}", flush=True)
+        finally:
+            with _STAGE_LOCK:
+                if _COPIES.get(str(self.dst)) is self:
+                    _COPIES.pop(str(self.dst), None)
+            self.finished.set()
+
+    def _pace(self, n: int) -> None:
+        cap = self.limit() if self.limit else None
+        if not cap:
+            self._window = None
+            return
+        now = time.monotonic()
+        if self._window is None:
+            self._window = [now, 0]
+        self._window[1] += n
+        ahead = self._window[1] / cap - (now - self._window[0])
+        if ahead > 0:
+            time.sleep(min(ahead, 2.0))
+
+    def _copy(self) -> dict:
+        cache, part = self.config.cache, self.part
+        part.parent.mkdir(parents=True, exist_ok=True)
+        sha1, crc, start = hashlib.sha1(), 0, 0
+        rec = _db_load(cache).get(str(part)) or {}
+        if part.exists() and rec.get("src") == self.src_ident:      # a copy of this same source was interrupted
+            start = min(part.stat().st_size, self.total) // STAGE_BLOCK * STAGE_BLOCK
+            with open(part, "rb") as f:
+                left = start
+                while left and (chunk := f.read(min(STAGE_BLOCK, left))):
+                    sha1.update(chunk)
+                    crc = zlib.crc32(chunk, crc)
+                    left -= len(chunk)
+            start -= left
+        else:
+            _db_set(cache, str(part), {"src": self.src_ident})
+        self.done = self.resumed_from = start
+        self.t0 = time.monotonic()
+        with open(part, "r+b" if start else "wb") as fo:
+            fo.seek(start)
+            fo.truncate()
+            for chunk in _read_ahead(self.src, start, self.total, STAGE_STREAMS, STAGE_BLOCK):
+                fo.write(chunk)
+                sha1.update(chunk)
+                crc = zlib.crc32(chunk, crc)
+                self.done += len(chunk)
+                self._pace(len(chunk))
+        if part.stat().st_size != self.total:
+            raise OSError(f"staging {self.src.name}: wrote {part.stat().st_size} of {self.total} bytes")
+        shutil.copystat(self.src, part)
+        part.replace(self.dst)
+        os.utime(self.dst)                                # mtime = last use, drives LRU
+        seconds = time.monotonic() - self.t0
+        _db_set(cache, str(part), None)
+        _db_set(cache, str(self.dst), {"ident": _ident(self.dst.stat()), "sha1": sha1.hexdigest(),
+                                       "crc32": f"{crc:08x}", "src": self.src_ident})
+        evicted = evict(cache, int(self.config.cache_limit * 1024**3), keep=self.dst)
+        moved = self.total - self.resumed_from
+        return {"src": str(self.src), "dst": str(self.dst), "size": self.total, "copied": True, "sha1": sha1.hexdigest(),
+                "hashed": False, "resumed_from": self.resumed_from, "seconds": round(seconds, 3),
+                "mb_s": round(moved / 2**20 / seconds, 1) if seconds > 0 else None,
+                "staged_at": time.time(), "evicted": evicted}
+
+
+def stage_begin(src: Path, game_id: str, config: Config) -> "dict | StageCopy":
+    """A staging receipt when the cache already holds this file (or it is on the local disk already), else the
+    running StageCopy filling the cache (a launch of the same game while one runs joins it)."""
+    src, cache = Path(src), config.cache
+    try:
+        from . import cache_tiers                  # a demoted unit resolves into the cold tier: still "in the cache"
+        real = src.resolve()
+        inside = any(real.is_relative_to(Path(r).resolve()) for r in (cache, cache_tiers.cold_root()) if r)
     except OSError:
         inside = False
     if inside:              # a built file mod (or anything already on the local disk): use it in place. Copying it to
-        os.utime(src)       # <cache>/<game>/<name> made every mod of a game collide with the plain game's staged copy.
-        return {"src": str(src), "dst": str(src), "size": Path(src).stat().st_size, "copied": False,
-                "sha1": file_hashes(Path(src), {})["sha1"],
-                "staged_at": time.time(), "evicted": [], "in_cache": True}
+        return _reuse(src, config, in_cache=True)   # <cache>/<game>/<name> made every mod of a game collide with the game
     dst = cache / game_id / src.name
-    copied = not dst.exists() or dst.stat().st_size != src.stat().st_size
-    if copied:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        total, done, tmp = src.stat().st_size, 0, dst.with_suffix(dst.suffix + ".part")
-        with open(src, "rb") as fi, open(tmp, "wb") as fo:
-            while chunk := fi.read(8 << 20):
-                fo.write(chunk)
-                done += len(chunk)
-                if progress:
-                    progress(done, total)
-        shutil.copystat(src, tmp)
-        tmp.replace(dst)
-    os.utime(dst)                                         # mtime = last use, drives LRU
-    evicted = evict(cache, int(config.cache_limit * 1024**3), keep=dst)
-    return {"src": str(src), "dst": str(dst), "size": dst.stat().st_size, "copied": copied,
-            "sha1": file_hashes(dst, {})["sha1"], "staged_at": time.time(), "evicted": evicted}
+    with _STAGE_LOCK:
+        running = _COPIES.get(str(dst))
+        if running is not None:
+            return running
+        st = src.stat()
+        rec = _db_load(cache).get(str(dst)) or {}
+        # same size, and the source the db says it came from (files staged before the db: the size alone, as before)
+        if dst.exists() and dst.stat().st_size == st.st_size and rec.get("src", _ident(st)) == _ident(st):
+            if "src" not in rec:
+                _db_set(cache, str(dst), rec | {"src": _ident(st)})
+            return _reuse(dst, config)
+        copy = _COPIES[str(dst)] = StageCopy(src, dst, config)
+        copy.thread.start()
+        return copy
+
+
+def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
+    """Copy a source file into the LRU cache (never touching the original). Returns a staging receipt.
+    progress(done_bytes, total_bytes) is called while copying."""
+    job = stage_begin(src, game_id, config)
+    if isinstance(job, dict):
+        return job
+    while not job.finished.wait(0.25):
+        if progress:
+            progress(job.done, job.total)
+    if progress and job.error is None:
+        progress(job.total, job.total)
+    return job.result()
+
+
+# never evicted: built mods and their base copies (mods hard-link onto modbase; not a cache of anything), the character
+# and environment libraries, and the two-tier cache's own state (gbox/cache_tiers.py)
+EVICT_KEEP = ("mods", "modbase", "characters", "environments", "characters_mirror", ".gbox-tiers")
+
+
+def _evictable(cache: Path):
+    """Real files of the cache that are copies of something: symlinked folders (data demoted to the cold tier of a
+    two-tier cache) are never followed, so only the hot tier's own files count against the limit."""
+    try:
+        top = list(os.scandir(cache))
+    except OSError:
+        return
+    for e in top:
+        if e.name in EVICT_KEEP or e.is_symlink():
+            continue
+        p = Path(e.path)
+        if e.is_file(follow_symlinks=False):
+            yield p
+        elif e.is_dir(follow_symlinks=False):
+            yield from (f for f in p.rglob("*") if f.is_file() and not f.is_symlink())
 
 
 def evict(cache: Path, limit: int, keep: Path | None = None) -> list[str]:
-    mods = (cache / "mods").resolve()                     # built mods are not a cache of anything: never evict them
-    files = sorted((p for p in cache.rglob("*") if p.is_file() and not p.resolve().is_relative_to(mods)), key=lambda p: p.stat().st_mtime)
+    cache = Path(cache)
+    with _STAGE_LOCK:
+        busy = {c.part for c in _COPIES.values()}         # a copy still filling its .part
+    files = sorted((p for p in _evictable(cache) if p.name not in (STAGE_DB, STAGE_DB + ".tmp") and p not in busy),
+                   key=lambda p: p.stat().st_mtime)
     total, evicted = sum(p.stat().st_size for p in files), []
     for p in files:
         if total <= limit:
@@ -605,6 +841,7 @@ def evict(cache: Path, limit: int, keep: Path | None = None) -> list[str]:
             continue
         total -= p.stat().st_size
         p.unlink()
+        _db_set(cache, str(p), None)
         evicted.append(str(p))
     return evicted
 

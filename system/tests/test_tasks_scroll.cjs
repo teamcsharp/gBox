@@ -58,17 +58,40 @@ async function withPage(fn) {
   const exited = new Promise(resolve => proc.once('exit', resolve));
   let ws;
   try {
+    // Same startup as test_chat_conversation_composer.cjs: wait for each condition (up to 30 s), and
+    // evaluate only after our own about:blank load so the command-line navigation cannot replace the
+    // document mid-script.
+    const until = async (what, probe) => {
+      for (const end = Date.now() + 30000; ;) {
+        const value = await probe().catch(() => null);
+        if (value) return value;
+        if (Date.now() > end || proc.exitCode !== null) throw new Error(`headless browser: no ${what}`);
+        await new Promise(r => setTimeout(r, 50));
+      }
+    };
     const portFile = path.join(profile, 'DevToolsActivePort');
-    for (let i = 0; i < 200 && !fs.existsSync(portFile); i++) await new Promise(r => setTimeout(r, 50));
-    const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    ws = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
+    const port = await until('DevToolsActivePort', async () => {
+      const line = fs.readFileSync(portFile, 'utf8').split('\n')[0].trim();
+      return /^\d+$/.test(line) && line;
+    });
+    const page = await until('page target', async () =>
+      (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === 'page' && t.webSocketDebuggerUrl));
+    ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no; });
-    let seq = 0; const waiting = new Map();
-    ws.onmessage = e => { const m = JSON.parse(e.data); waiting.get(m.id)?.(m); waiting.delete(m.id); };
+    let seq = 0; const waiting = new Map(), events = [];
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.id === undefined) { events.push(m.method); return; }
+      waiting.get(m.id)?.(m); waiting.delete(m.id);
+    };
     const send = (method, params) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+    await send('Page.enable', {});
+    events.length = 0;
+    await send('Page.navigate', { url: 'about:blank' });
+    await until('page load', async () => events.includes('Page.loadEventFired'));
     const evaluate = async expression => {
       const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      if (r.error) throw new Error('Runtime.evaluate: ' + JSON.stringify(r.error));
       if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
       return r.result.result.value;
     };
@@ -83,10 +106,10 @@ async function withPage(fn) {
     }
     ws?.close();
     // Windows can retain a profile file handle briefly after the parent browser exits.
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 300; i++) {
       try { fs.rmSync(profile, { recursive: true, force: true }); break; }
       catch (error) {
-        if (i === 79 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
+        if (i === 299 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
@@ -159,7 +182,7 @@ const setup = `
 document.body.innerHTML='<style>#tk-technical{height:300px;overflow:auto}#taskpanel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}#taskpanel .task-detail pre{margin:6px 0;padding:8px}#taskpanel .mc{padding:8px}</style><div id="taskpanel" class="on"><div id="tk-at"></div><div id="tk-technical"><div id="tk-local"></div><div id="tk-body"></div></div></div>';
 const $=s=>document.querySelector(s),esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const TK={busy:false,expanded:new Set(['j1']),localExpanded:new Set(),hermesExpanded:new Set(),resolutionExpanded:new Set(),hermesOutput:new Map(),hermesScroll:new Map(),jobDetail:new Map(),pointerDown:0,scrolledAt:0};
-const tkVisualUpdate=()=>{},tkAge=()=>'',tkTokenSummary=()=>'',tkBar=()=>'',tkProgress=()=>'';
+const tkVisualUpdate=()=>{},tkProvidersLoad=()=>{},tkAge=()=>'',tkTokenSummary=()=>'',tkBar=()=>'',tkProgress=()=>'';
 const S={apiUrl:'https://fixture.invalid',tok:'fixture'};
 const lines=n=>Array.from({length:n},(_,i)=>'trace '+i).join('\\n');
 const F={job:{id:'j1',state:'running',input:{},progress_log:['short progress'],log_sha:'abc'},longLog:lines(1000),hermesLog:lines(1000),pauseLog:false,resolveLog:null,data:{hermes:[],resolutions:[],machines:[{worker_id:'w',name:'Worker',totals:{cpu_pct:1},tasks:[]}],jobs:[{id:'j1',state:'running',tool:'characters',created:1}],recent:[]}};

@@ -1,5 +1,6 @@
 """Tests for gbox.ssb64_inventory: LBTableEntry parsing, table location,
 VPK0 decoding and the fighter file map."""
+import os
 import struct
 
 import pytest
@@ -125,9 +126,63 @@ def test_load_names_from_data_file():
 def test_fighter_map_covers_twelve_roster():
     fighters = {k: s.FIGHTERS[k] for k in s.ROSTER}
     assert len(fighters) == 12
-    assert fighters["mario"] == (202, 204)
-    assert fighters["ness"] == (238, 240)
-    assert s.FIGHTERS["boss"] == (249, 250)
+    assert fighters["mario"] == (215, 217)   # US 202..204 shifted +13
+    assert fighters["ness"] == (251, 253)    # US 238..240 shifted +13
+    assert s.FIGHTERS["boss"] == (262, 263)  # US 249..250 shifted +13
+    assert s.FIGHTERS["mario"] == (s.us_to_eur(202), s.us_to_eur(204))
     assert len(s.POLYGON_TEAM) == 12
     for (lo, hi) in fighters.values():
-        assert 202 <= lo <= hi <= 248
+        assert 215 <= lo <= hi <= 261
+
+
+# ---- region detection / USA numbering (#1605) ----------------------------
+
+def _header(cart=b"NALE"):
+    rom = bytearray(0x40)
+    rom[:4] = b"\x80\x37\x12\x40"
+    rom[0x20:0x34] = b"SMASH BROTHERS      "
+    rom[0x3B:0x3F] = cart
+    return bytes(rom)
+
+
+def test_detect_region_from_cart_id():
+    assert s.detect_region(_header(b"NALE")) == "us"
+    assert s.detect_region(_header(b"NALP")) == "eur"
+    with pytest.raises(ValueError):
+        s.detect_region(_header(b"NALJ"))      # Japan: different table
+    with pytest.raises(ValueError):
+        s.detect_region(_header(b"NSME"))      # not SSB64
+    with pytest.raises(ValueError):
+        s.detect_region(b"\x37\x80\x40\x12" + _header()[4:])  # byte-swapped
+
+
+def test_us_ids_are_decomp_ids_and_eur_is_shifted():
+    assert s.to_us_id("us", 202) == 202
+    assert s.to_us_id("eur", 215) == 202
+    assert s.fighters_for("us")["mario"] == (202, 204)
+    assert s.fighters_for("eur")["mario"] == (215, 217)
+    assert s.fighters_for("us")["boss"] == (249, 250)
+    names = s.load_names()
+    for fighter, (lo, hi) in s.fighters_for("us").items():
+        for fid in range(lo, hi + 1):
+            assert names[s.to_us_id("us", fid)].lower().lstrip("nmg").startswith(
+                fighter.lstrip("nmg")[:4]), (fighter, fid, names[fid])
+
+
+US_ROM = os.environ.get("GBOX_SSB64_US_ROM")
+
+
+@pytest.mark.skipif(not US_ROM or not os.path.isfile(US_ROM or ""),
+                    reason="owned SSB64 USA z64 not available (GBOX_SSB64_US_ROM)")
+def test_owned_usa_rom_inventory():
+    m = s.inventory(US_ROM, verify=True)
+    assert m["region"] == "us" and m["cart_id"] == "NALE"
+    assert m["decomp_baserom"] is True
+    assert m["table_addr"] == 0x1AC870 and m["file_count"] == s.US_FILE_COUNT
+    assert m["decode"] == {"ok": 2132, "failed": 0}
+    links = m["fighter_links"]
+    assert links["mario"]["main"] == 203 and links["mario"]["models"] == [296]
+    assert links["link"]["linked"]["324"] == "LinkModel"
+    assert links["boss"]["models"] == [344]
+    for fighter in s.ROSTER:
+        assert links[fighter]["models"], fighter

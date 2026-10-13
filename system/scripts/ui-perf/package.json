@@ -1,0 +1,5 @@
+{
+  "name": "gbox-ui-perf-probe",
+  "private": true,
+  "main": "probe.cjs"
+}

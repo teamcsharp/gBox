@@ -105,6 +105,10 @@ test('every writer wording of decimate / simplify / fit / retarget drives a stag
   assert.equal(D('Decimating Amy to 1500 triangles (Blender)').to, 1500);
   fx = D('Simplifying the props 300 -> 200 triangles (Blender)');
   assert.equal(fx.kind, 'decimate'); assert.equal(fx.from, 300); assert.equal(fx.to, 200);
+  // gta_vc_swap names the current count first, then the target with no unit after it
+  fx = D('5400 triangles: decimating to ~2700 (Blender)');
+  assert.equal(fx.kind, 'decimate'); assert.equal(fx.from, 5400); assert.equal(fx.to, 2700);
+  assert.equal(fx.label, 'decimate 5,400 → 2,700 tris'); assert.equal(popup.decimateRatio(fx, 999), 0.5);
   // budget fitting is a decimation; fitting onto a skeleton / body / nodes is a retarget
   assert.deepEqual(D("Fitting 3 parts into the game's vertex/face budget (Blender, pass 1)"),
     { kind: 'decimate', ratio: 0.5, label: 'fit to budget' });
