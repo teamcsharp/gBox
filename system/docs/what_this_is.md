@@ -240,7 +240,8 @@ are not used by gBox at runtime.
   CPU halt; RetroArch RAM reads in 16 KB UDP requests (16 MB Dreamcast RAM in ~17 s); `player_only` state reads for
   movement loops.
 * Catalog: SQLite FTS5 with chunked upserts; thumbnail cache; library staging cache (Spark 150 GB, Windows D: 250 GB,
-  LRU) for large discs.
+  LRU) for large discs. The Spark's cache has two tiers (docs/cache-tiers.md): a 100 GB NVMe hot tier with the
+  character library pinned, and the Elements HDD behind it; idle-time LRU demotion per game, promotion on use.
 * Windows native play for zero input lag; Spark streaming for anything else.
 
 ## 14. DGX Spark integration guide (condensed)
@@ -260,7 +261,7 @@ are not used by gBox at runtime.
 * Repo (code + docs + brand assets): a few MB; `gBox.exe` ≈ 8 MB.
 * Spark `gbox-data/` ≈ 3.1 GB (SQLite catalog/state, artifacts incl. MP4 recordings and UAP packages, thumbnails,
   runtime: RetroArch build, ~45 libretro cores, BIOS copies, save states, Dolphin user dir).
-* Spark `~/gbox-cache` ≈ 7.3 GB (staged discs, extracted Dreamcast GD-ROM ≈ 1.3 GB, debug scratch).
+* Spark `~/gbox-cache`: the NVMe hot tier (≤ 100 GB); cold games are symlinks into `~/samples/gbox-cache` (HDD).
 * Windows `D:\gBox` (cache up to 250 GB, runtime: RetroArch-win + cores, Ghidra ≈ 1 GB, JDK 21, recordings),
   `%LOCALAPPDATA%\gbox` (Electron runtime + branded exe, worker venv).
 

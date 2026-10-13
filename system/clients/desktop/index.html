@@ -48,6 +48,12 @@
   label { display:grid; gap:4px; margin-bottom:10px; font-size:13px; color:var(--mut); }
   input[type=text], input[type=password] { font:inherit; padding:6px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; }
   .mut { color:var(--mut); }
+  /* Settings: the Spark's two-tier game cache (GET /api/cache/tiers, docs/cache-tiers.md) */
+  #tiers { margin-top:18px; font-size:13px; } #tiers h2 { font-size:15px; margin:0 0 8px; }
+  #tiers .meter { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:6px 0 10px; }
+  #tiers .meter span { display:block; height:100%; background:var(--acc); } #tiers .meter span.over { background:var(--bad); }
+  #tiers table { width:100%; border-collapse:collapse; margin-top:8px; } #tiers td, #tiers th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); }
+  #tiers th { color:var(--mut); font-weight:normal; } #tiers .warn { color:var(--warn); } #tiers ul { margin:4px 0 0; padding-left:18px; }
 
   /* --- custom title bar --- */
   #titlebar { position:fixed; top:0; left:0; right:0; height:36px; display:flex; align-items:center; gap:10px; padding:0 10px;
@@ -1130,6 +1136,7 @@ window.taskVizCreate = canvas => {
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+      <div class="card" id="tiers"><h2>Game cache drives</h2><span class="mut">Loading...</span></div>
     </div></section>
   </main>
 </div>
@@ -1239,6 +1246,7 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   if (b.dataset.s === "control") refresh();
   if (b.dataset.s === "requests") refreshInbox();
   if (b.dataset.s === "mods") modsGalleryOpen();
+  if (b.dataset.s === "settings") loadCacheTiers();
 });
 $("#chat-home").onclick = () => viewAction("library");
 // Keep the input's size independent of the microphone wrapper added after the Spark connects.
@@ -2307,6 +2315,41 @@ $("#ssave").onclick = async () => {
   vovEnable(!!f.get("voiceOverlay"));
   S = await gbox.saveSettings(s); $("#ssaved").textContent = "saved"; playLoaded = false; refresh();
 };
+
+// The Spark's two-tier game cache (docs/cache-tiers.md): NVMe hot tier (capped) in front of the HDD; idle-time moves.
+const tierGB = b => b == null ? "?" : (b / 2 ** 30).toFixed(b >= 10 * 2 ** 30 ? 0 : 1) + " GB";
+const tierAgo = t => { if (!t) return "never"; const m = (Date.now() / 1000 - t) / 60;
+  return m < 60 ? `${Math.max(0, Math.round(m))} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+function renderCacheTiers(t) {
+  if (!t.enabled) return `<h2>Game cache drive</h2><span class="mut">One drive: ${esc(t.cache)} (up to ${tierGB(t.cap)}).</span>`;
+  const h = t.hot, pct = Math.min(100, 100 * h.used / Math.max(1, h.cap)), u = t.units || {};
+  const moving = (t.moving || []).map(m => `<li>${m.op === "demote" ? "To the HDD" : "To the NVMe"}: ${esc(m.unit)} ${m.total ? Math.round(100 * m.done / m.total) + "%" : ""}</li>`).join("");
+  const moves = (t.moves || []).slice(0, 5).map(m => `<li>${m.op === "demote" ? "To the HDD" : "To the NVMe"}: ${esc(m.unit)}, ${tierGB(m.bytes)}, ${tierAgo(m.at)}</li>`).join("");
+  const rows = (t.top || []).slice(0, 12).map(r => `<tr><td title="${esc(r.unit)}">${esc(r.unit)}</td><td>${r.tier === "hot" ? "NVMe" : r.tier === "cold" ? "HDD" : esc(r.tier)}</td>` +
+    `<td>${tierGB(r.size)}</td><td>${tierAgo(r.last_used)}</td><td><input type="checkbox" data-tier-pin="${esc(r.unit)}" ${r.pin ? "checked" : ""}></td></tr>`).join("");
+  return `<h2>Game cache drives</h2>` +
+    `<div>Fast drive (NVMe): <b>${tierGB(h.used)}</b> of ${tierGB(h.cap)}, of which ${tierGB(h.pinned)} is the character library and indexes (always kept here).</div>` +
+    `<div class="meter"><span class="${h.used > h.cap ? "over" : ""}" style="width:${pct.toFixed(1)}%"></span></div>` +
+    `<div class="mut">Games on the NVMe: ${u.hot || 0} · on the HDD: ${u.cold || 0}${u.mixed ? ` · split: ${u.mixed}` : ""} · HDD ${t.cold.available ? "connected" : "<b class=warn>not available</b>"}. ` +
+    `Old games move to the HDD only after ${Math.round(t.idle_minutes)} min with nothing running (now: ${esc(t.idle)}); a game comes back when it is used.</div>` +
+    ((t.warnings || []).map(w => `<div class="warn">${esc(w)}</div>`).join("")) + (t.error ? `<div class="warn">${esc(t.error)}</div>` : "") +
+    (moving ? `<div style="margin-top:8px">Moving now:<ul>${moving}</ul></div>` : "") +
+    (moves ? `<div style="margin-top:8px">Last moves:<ul>${moves}</ul></div>` : "") +
+    (rows ? `<table><tr><th>Game</th><th>Drive</th><th>Size</th><th>Last used</th><th title="Never moved to the HDD">Keep on NVMe</th></tr>${rows}</table>` : "");
+}
+async function loadCacheTiers() {
+  const box = $("#tiers");
+  if (!box) return;
+  const r = await gbox.api("/api/cache/tiers");
+  box.innerHTML = r.ok ? renderCacheTiers(r.data) : `<h2>Game cache drives</h2><span class="mut">Not available: ${esc(r.error)}</span>`;
+}
+$("#tiers").addEventListener("change", async e => {
+  const unit = e.target.dataset?.tierPin;
+  if (!unit) return;
+  const r = await gbox.api("/api/cache/tiers/pin", { unit, pin: e.target.checked });
+  if (!r.ok) { e.target.checked = !e.target.checked; toast?.(`Could not change ${unit}: ${r.error}`, 6000); }
+  loadCacheTiers();
+});
 
 // ---------------- system eyedropper (runs in the shell AND inside the embedded gBox view) ----------------
 const PICKER_SRC = `(() => new Promise(resolve => {
@@ -5201,6 +5244,8 @@ async function autoWhipFailure({ sid, game, model, character, target, targetKind
   if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); }
   else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
 }
+// games whose characters tool resolves a dropped point to a writer slot (characters op=resolve_slot): VR Missions (USA)
+var SLOT_PICK_GAMES = new Set(["afd2fc507bb69843", "f55555ee6513391b"]);
 async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
@@ -5213,7 +5258,7 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
+    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
@@ -5221,6 +5266,16 @@ async function whipCardMenu(card, gp, ev) {
   m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
   if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
   m.insertAdjacentHTML("beforeend", '<button data-w="rebuild">Identify target and mark for rebuild</button>');
+  let slot = null;                                             // the writer slot under the drop (VR Missions: Snake / the soldiers)
+  if (SLOT_PICK_GAMES.has(EMB.game || "") && targetSid)
+    gameJob("characters", { op: "resolve_slot", session_id: targetSid, x: +f[0].toFixed(4), y: +f[1].toFixed(4),
+                            window_aspect: +(r.w / r.h).toFixed(4) }).then(res => {
+      if (!res?.slot || EMB.sid !== targetSid) return;
+      slot = res.slot; T = { name: res.name, kind: res.kind };
+      const box = m.querySelector("#whip-target-name"); if (box) box.value = res.name;
+      const b = m.querySelector('button[data-w="live"]');
+      if (b) b.innerHTML = `<span>▶</span>Put ${esc(card.name)} in place of ${esc(res.name)} (running game, same moment)`;
+    }).catch(() => {});                                        // no resolver answer: the generic choices stay
   m.onclick = async e => {
     const bt = e.target.closest("button[data-w]"); if (!bt) return;
     if (bt.dataset.w === "identify") {
@@ -5254,7 +5309,8 @@ async function whipCardMenu(card, gp, ev) {
       toast(`Preparing ${card.name} for an in-game replacement…`, 60000);
       try {
         const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
-          x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
+          ...(slot ? { slot } : { x: +f[0].toFixed(4), y: +f[1].toFixed(4), window_aspect: +(r.w / r.h).toFixed(4),
+            ...((T.kind === "player" || T.name) ? { target: T.kind === "player" ? "player" : T.name } : {}) }) });
         toast(res.message || res.status, 12000);
         if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
           await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });
