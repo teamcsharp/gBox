@@ -114,11 +114,23 @@ def test_alpha_and_direct_formats():
     assert direct[0, 0].tolist() == [255, 0, 0, 255] and direct[0, 1, 3] == 0
 
 
+def _w(r, g, b):
+    """5-bit channels -> a BGR555 word."""
+    return r | g << 5 | b << 10
+
+
+def _x(v):
+    """A 5-bit channel widened like the hardware does (bit copy)."""
+    return v << 3 | v >> 2
+
+
 @pytest.mark.parametrize("mode,expect", [
     (0, [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [None, None, None, 0]]),
-    (1, [[255, 0, 0, 255], [0, 255, 0, 255], [127, 127, 0, 255], [None, None, None, 0]]),
+    # interpolated colours blend the 5-bit fields and truncate (GBATEK; melonDS): (31 + 0) / 2 = 15 -> 123
+    (1, [[255, 0, 0, 255], [0, 255, 0, 255], [123, 123, 0, 255], [None, None, None, 0]]),
     (2, [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 255, 255]]),
-    (3, [[255, 0, 0, 255], [0, 255, 0, 255], [159, 95, 0, 255], [95, 159, 0, 255]]),
+    # (5 * 31 + 3 * 0) / 8 = 19 -> 156, (3 * 31) / 8 = 11 -> 90
+    (3, [[255, 0, 0, 255], [0, 255, 0, 255], [156, 90, 0, 255], [90, 156, 0, 255]]),
 ])
 def test_4x4_compressed_modes(mode, expect):
     pal = struct.pack("<4H", 0x001F, 0x03E0, 0x7C00, 0x7FFF)
@@ -129,6 +141,62 @@ def test_4x4_compressed_modes(mode, expect):
         assert got[3] == want[3]
         if want[0] is not None:
             assert got[:3] == want[:3], (mode, k, got)
+
+
+def test_4x4_mode3_known_colours_all_channels():
+    c0, c1 = _w(20, 10, 4), _w(4, 26, 30)
+    pal = struct.pack("<2H", c0, c1)
+    texels = struct.pack("<I", 0b11_10_01_00)                       # row 0: 0 1 2 3
+    px = nitro.decode_texture(5, 4, 4, texels, pal, palette_index=struct.pack("<H", 3 << 14))
+    mix = lambda a, b: [_x((a[i] * 5 + b[i] * 3) // 8) for i in range(3)]
+    a, b = (20, 10, 4), (4, 26, 30)
+    assert px[0, 0, :3].tolist() == [_x(v) for v in a]
+    assert px[0, 1, :3].tolist() == [_x(v) for v in b]
+    assert px[0, 2, :3].tolist() == mix(a, b)
+    assert px[0, 3, :3].tolist() == mix(b, a)
+    assert px[..., 3].min() == 255                                  # mode 3 has no transparent texel
+
+
+def test_4x4_texel_order_block_order_and_palette_offset():
+    """8x8 = 2x2 blocks. Each block's u32 holds one row per byte, the leftmost texel in the low two bits; blocks run
+    row-major; a block's palette offset counts 4-byte steps (two colours), so offset n starts at colour 2n."""
+    colours = [_w(31, 0, 0), _w(0, 31, 0), _w(0, 0, 31), _w(31, 31, 0),            # offset 0: c0..c3
+               _w(0, 31, 31), _w(31, 0, 31), _w(8, 8, 8), _w(16, 16, 16)]          # offset 2 starts at colour 4
+    pal = struct.pack("<8H", *colours)
+    # block 0: row y holds index y in every column except x == y (index 3); blocks 1..3 all index 0
+    rows = [sum((3 if x == y else y) << (2 * x) for x in range(4)) for y in range(4)]
+    blk0 = rows[0] | rows[1] << 8 | rows[2] << 16 | rows[3] << 24
+    texels = struct.pack("<4I", blk0, 0, 0, 0)
+    pidx = struct.pack("<4H", 2 << 14, 1 << 14 | 1, 2 << 14 | 2, 2 << 14 | 3)
+    px = nitro.decode_texture(5, 8, 8, texels, pal, palette_index=pidx)
+    for y in range(4):
+        for x in range(4):
+            want = colours[3 if x == y else y]
+            assert px[y, x, :3].tolist() == [_x(want & 31), _x(want >> 5 & 31), _x(want >> 10 & 31)], (x, y)
+    assert px[0, 4, :3].tolist() == [0, 0, 255]                     # block 1 (top right), offset 1 -> colour 2
+    assert px[4, 0, :3].tolist() == [0, 255, 255]                   # block 2 (bottom left), offset 2 -> colour 4
+    assert px[4, 4, :3].tolist() == [_x(8)] * 3                     # block 3, offset 3 -> colour 6
+
+
+def test_4x4_flat_region_decodes_flat():
+    """A flat colour stays one colour whatever the indices say, in every mode where c0 == c1."""
+    flat = _w(5, 6, 10)
+    pal = struct.pack("<4H", flat, flat, flat, flat)
+    rng = np.random.default_rng(1)
+    texels = rng.integers(0, 2 ** 32, 16, dtype=np.uint64).astype("<u4").tobytes()
+    for mode in (2, 3):
+        px = nitro.decode_texture(5, 16, 16, texels, pal, palette_index=struct.pack("<16H", *[mode << 14] * 16))
+        assert len(np.unique(px.reshape(-1, 4), axis=0)) == 1, mode
+
+
+def test_screen_door_score():
+    opaque = np.full((8, 8, 4), 255, np.uint8)
+    assert nitro.screen_door(opaque) == 0.0
+    cut = opaque.copy()
+    cut[:, :3, 3] = 0                                               # a solid cut-out margin
+    door = opaque.copy()
+    door[(np.indices((8, 8)).sum(0) % 2) == 0, 3] = 0               # every other texel dropped
+    assert nitro.screen_door(cut) < 0.15 < 0.4 < nitro.screen_door(door)
 
 
 def test_texture_errors():
@@ -255,6 +323,33 @@ def test_bmd_to_glb_is_rigged_and_textured(tmp_path):
     assert not uap.validate(man, tmp_path)
 
 
+def _two_texture_bmd(names=("head_1", "head_2")) -> dict:
+    """A parsed-BMD stand-in: two 8x8 direct-colour textures, the second a screen-door stipple (Luigi's vanish head),
+    and a material that names the stipple."""
+    solid = struct.pack("<64H", *[0x8000 | _w(20, 12, 6)] * 64)
+    door = struct.pack("<64H", *[(0x8000 if (i // 8 + i % 8) % 2 else 0) | _w(20, 12, 6) for i in range(64)])
+    raw = solid + door
+    param = 7 << 26
+    return {"raw": raw, "palettes": [],
+            "textures": [{"name": names[0], "data": 0, "size": 128, "width": 8, "height": 8, "param": param},
+                         {"name": names[1], "data": 128, "size": 128, "width": 8, "height": 8, "param": param}],
+            "materials": [{"name": "mat_head", "texture": 1, "palette": None}]}
+
+
+def test_screen_door_material_takes_its_opaque_sibling():
+    bmd = _two_texture_bmd()
+    tex, _pal, note = S.pick_texture(bmd, bmd["materials"][0])
+    assert tex == 0 and note["texture_substituted"]["drawn"] == "head_1"
+    tex, _pal, note = S.pick_texture(bmd, bmd["materials"][0], "head_1")          # named outright (CHARACTERS)
+    assert tex == 0 and note["texture_substituted"]["reason"].startswith("state variant")
+    with pytest.raises(ValueError):
+        S.pick_texture(bmd, bmd["materials"][0], "nope")
+    lone = _two_texture_bmd(("solid", "door"))                                      # no sibling: kept, flagged
+    tex, _pal, note = S.pick_texture(lone, lone["materials"][0])
+    assert tex == 1 and note["screen_door"] > S.SCREEN_DOOR
+    assert S.CHARACTERS["luigi"]["textures"] == {"head:mat_head": "luigi_head_1"}
+
+
 def test_head_attach_chest_insert_and_facing(monkeypatch):
     body = build_bmd()
 
@@ -324,7 +419,7 @@ def _owned() -> Path | None:
 def test_owned_rom_cast(tmp_path):
     rom = S.SM64DSRom(S.load_rom(_owned()))
     assert rom.sha256 == S.ROM_SHA256
-    for key in ("mario", "yoshi", "peach", "bowser", "toad"):
+    for key in ("mario", "yoshi", "peach", "bowser", "toad", "luigi"):
         glb = S.export(None, tmp_path / key, key, rom=rom)
         st = C.model_stats(glb)
         assert st["triangles"] > 200 and st["rig"]["skinned"] and st["textures"] >= 1, key
@@ -334,3 +429,17 @@ def test_owned_rom_cast(tmp_path):
     mario = S.build(rom, "mario")[0]
     w = {n: mario.world[i][:3, 3] for i, n in enumerate(mario.names)}
     assert w["arm_l1"][0] > 0 > w["arm_r1"][0] and w["face_1"][1] > w["spin"][1] > w["skl_root"][1] > w["ankle_l1"][1]
+
+
+@pytest.mark.skipif(_owned() is None, reason="owned Super Mario 64 DS ROM not on this node")
+def test_owned_rom_no_character_draws_a_screen_door_texture():
+    """Luigi's head material names his vanish texture (luigi_head_2, 66 % of its texels transparent in a stipple); the
+    reader draws luigi_head_1. No collected material may be a stipple."""
+    rom = S.SM64DSRom(S.load_rom(_owned()))
+    luigi = S.build(rom, "luigi")[0]
+    head = luigi.materials["head:mat_head"]
+    assert head["texture"] == "luigi_head_1" and head["source"]["texture_substituted"]["bmd_names"] == "luigi_head_2"
+    for key in S.CHARACTERS:
+        model = S.build(rom, key)[0]
+        for name, mat in model.materials.items():
+            assert "screen_door" not in mat["source"], (key, name)

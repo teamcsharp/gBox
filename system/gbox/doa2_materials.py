@@ -157,7 +157,10 @@ def _candidate(material: dict, tex: T.Texture, options: list[dict], allow_downsc
     down = max(0, math.log2(sw / w)) + max(0, math.log2(sh / h))
     aspect = abs(math.log2((w / h) / (sw / sh)))
     up = max(0, math.log2(w / sw)) + max(0, math.log2(h / sh))
-    pixel_penalty = 0 if tex.pixel == 1 and alpha == 'opaque' else 1 if tex.pixel == 0 else 3 if alpha == 'opaque' else 0
+    # colour precision first: RGB565 for opaque donors; ARGB1555 for binary alpha (5-bit colour, its 1-bit alpha is
+    # exactly a cut-out) ahead of ARGB4444 (4-bit colour bands smooth shading); graded alpha needs ARGB4444
+    pixel_penalty = {('opaque', 1): 0, ('opaque', 0): 1, ('opaque', 2): 3,
+                     ('binary', 0): 0, ('binary', 2): 2, ('graded', 2): 0}.get((alpha, tex.pixel), 3)
     compression = 8 if tex.format == 3 else 0
     # RGB donors prefer an opaque header; avoid inheriting an eye/hair draw mode.
     def header_rank(option):
@@ -247,25 +250,30 @@ def allocate(archive: dict, bin_data: bytes, primitives: list[dict], *, allow_do
     slots = [i for i in sorted(bank) if i not in excluded]
     choices = [[_candidate(m, textures[i], bank[i], allow_downscale) for i in slots] for m in materials]
     if retype_argb4444:
-        virtual_textures = [replace_dataclass(tex, pixel=2) for tex in textures]
-        virtual_bank = extend_bank(archive, virtual_textures, {})
+        # ARGB4444 for graded alpha; binary alpha may also take ARGB1555 (same size, five bits of colour instead of
+        # four), which _candidate ranks above ARGB4444
+        virtual_textures = {pix: [replace_dataclass(tex, pixel=pix) for tex in textures] for pix in (0, 2)}
+        virtual_bank = {pix: extend_bank(archive, virtual_textures[pix], {}) for pix in (0, 2)}
         for row, material in enumerate(materials):
             if material['alpha'] == 'opaque':
                 continue
+            targets = (0, 2) if material['alpha'] == 'binary' else (2,)
             for column, slot in enumerate(slots):
-                if textures[slot].pixel == 2:
-                    continue
-                virtual = virtual_textures[slot]
-                converted = _candidate(material, virtual, virtual_bank[slot], allow_downscale)
-                if converted is None:
-                    continue
-                cost, option = converted
-                # Strongly prefer unchanged descriptors when a suitable slot
-                # exists; conversion still wins over destructive downsampling.
-                cost += 2_000_000
-                if choices[row][column] is None or cost < choices[row][column][0]:
-                    choices[row][column] = (cost, {**option, 'texture_override': virtual,
-                                                  'retyped_descriptor': True})
+                native = textures[slot].pixel
+                for pix in targets:
+                    if native == pix or (native == 0 and pix == 2):     # never trade ARGB1555 for ARGB4444
+                        continue
+                    virtual = virtual_textures[pix][slot]
+                    converted = _candidate(material, virtual, virtual_bank[pix][slot], allow_downscale)
+                    if converted is None:
+                        continue
+                    cost, option = converted
+                    # Strongly prefer unchanged descriptors when a suitable slot
+                    # exists; conversion still wins over destructive downsampling.
+                    cost += 2_000_000
+                    if choices[row][column] is None or cost < choices[row][column][0]:
+                        choices[row][column] = (cost, {**option, 'texture_override': virtual,
+                                                      'retyped_descriptor': True})
     costs = [[c[0] if c is not None else None for c in row] for row in choices]
     summary = {'donor_primitives': len(primitives), 'donor_materials': len(materials),
                'native_textures': len(textures), 'eligible_slots': len(slots),

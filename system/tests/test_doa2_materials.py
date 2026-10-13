@@ -140,3 +140,23 @@ def test_empty_donor_and_deterministic_distinct_assignment():
     second = A.allocate(archive, binary, donor)
     assert first['bin_data'] == second['bin_data']
     assert len(set(m['texture_id'] for m in first['materials'])) == 2
+
+
+def test_binary_alpha_prefers_argb1555_over_argb4444():
+    """A cut-out donor keeps five bits of colour: a native ARGB1555 slot beats an ARGB4444 one of the same size."""
+    archive, binary = fixture([(8, 8, 2, 1), (8, 8, 0, 1)])
+    source = primitive((200, 120, 40, 255))
+    source['tex'][:4, :, 3] = 0
+    result = A.allocate(archive, binary, [source])
+    assert result['primitives'][0]['texture_id'] == 1 and result['primitives'][0]['pixel'] == 0
+
+
+def test_binary_alpha_retypes_to_argb1555_and_graded_to_argb4444():
+    archive, binary = fixture([(8, 8, 1, 1, 0), (8, 8, 1, 1, 0)])
+    cut = primitive((200, 120, 40, 255))
+    cut['tex'][:4, :, 3] = 0
+    soft = primitive((90, 90, 200, 255), alpha=136)
+    result = A.allocate(archive, binary, [cut, soft], synthesize_headers=True, retype_argb4444=True)
+    by = {p['alpha']: p['pixel'] for p in result['materials']}
+    assert by == {'binary': 0, 'graded': 2}
+    assert sorted(r['new_pixel'] for r in result['report']['descriptor_retypes']) == [0, 2]

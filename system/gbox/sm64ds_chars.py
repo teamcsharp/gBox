@@ -27,6 +27,11 @@ matrix is T * Rz * Ry * Rx * S. Texture coordinates are in texels (12.4) times t
 repeat (flip bits) is baked into a mirrored texture. The 4x4-compressed format's palette-index data follows its
 texel data (size / 2 bytes).
 
+Some materials name a state variant rather than the texture the game normally draws: Luigi's head material points at
+luigi_head_2, the screen-door texture of his vanish power-up (every other texel transparent). CHARACTERS[...]["textures"]
+names the texture to draw per material; any other material whose texture is a stipple (nitro.screen_door) takes the
+opaque sibling of the same name stem (name_1 for name_2) when the BMD has one, and the swap is recorded in its source.
+
 Characters with a separate head model (the playable four) get it attached under the body's face_1 bone, as the game
 draws it. Models face +Z with +Y up (left at +X), the convention of characters.tree_roles and the swap writers.
 
@@ -46,7 +51,7 @@ from .formats import nitro
 
 GAME_IDS = {"917483267d246594": "Super Mario 64 DS (USA)"}
 READER = "gbox.sm64ds_chars + gbox.formats.nitro"
-READER_VERSION = 1
+READER_VERSION = 2          # 2: Luigi's head draws luigi_head_1, not the screen-door "vanish" texture; 4x4 blends in 5 bits
 GAMECODE = "ASME"
 ROM_SHA256 = "916056a27ffb07d1bae2ce0ca6f6464c1621c737dc96657a7b9eab4d3bccfc87"   # the owned dump (16 MiB)
 
@@ -65,7 +70,10 @@ CHARACTERS: dict[str, dict] = {
               "body": "data/player/mario_model.bmd", "head": "data/player/mario_head_cap.bmd", "roles": HEADED,
               "lead": True},
     "luigi": {"name": "Luigi", "aliases": ["SM64DS Luigi", "Luigi (Super Mario 64 DS)"],
-              "body": "data/player/luigi_model.bmd", "head": "data/player/luigi_head_cap.bmd", "roles": HEADED},
+              "body": "data/player/luigi_model.bmd", "head": "data/player/luigi_head_cap.bmd", "roles": HEADED,
+              # the head BMD's material names luigi_head_2, the stippled texture of Luigi's vanish power-up (two thirds
+              # of its texels transparent); the game draws luigi_head_1 the rest of the time
+              "textures": {"head:mat_head": "luigi_head_1"}},
     "wario": {"name": "Wario", "aliases": ["SM64DS Wario", "Wario (Super Mario 64 DS)"],
               "body": "data/player/wario_model.bmd", "head": "data/player/wario_head_cap.bmd", "roles": HEADED},
     "yoshi": {"name": "Yoshi", "aliases": ["SM64DS Yoshi", "Yoshi (Super Mario 64 DS)"],
@@ -328,6 +336,47 @@ def texture_rgba(bmd: dict, tex_id: int, pal_id: int | None) -> np.ndarray:
                                 palette_index=pidx)
 
 
+SCREEN_DOOR = 0.2      # nitro.screen_door above this = a stipple (Luigi's vanish head 0.55; real cut-outs stay < 0.05)
+
+
+def _palette_for(bmd: dict, tex: int, fallback: int | None) -> int | None:
+    """A texture's own palette: the one named '<texture>_pl', else the same index, else the material's."""
+    name = bmd["textures"][tex]["name"]
+    for i, p in enumerate(bmd["palettes"]):
+        if p["name"] == name + "_pl":
+            return i
+    return tex if tex < len(bmd["palettes"]) else fallback
+
+
+def _stem(name: str) -> str:
+    return name.rstrip("0123456789").rstrip("_")
+
+
+def pick_texture(bmd: dict, mat: dict, wanted: str | None = None) -> tuple[int, int | None, dict]:
+    """(texture id, palette id, source note) the material should draw. `wanted` names the texture outright; otherwise
+    a stippled (screen-door) texture gives way to an opaque sibling with the same name stem."""
+    tex, pal = mat["texture"], mat["palette"]
+    names = [t["name"] for t in bmd["textures"]]
+    if wanted is not None:
+        if wanted not in names:
+            raise ValueError(f"{mat['name']}: no texture {wanted!r} in the BMD ({names})")
+        new = names.index(wanted)
+        if new == tex:
+            return tex, pal, {}
+        return new, _palette_for(bmd, new, pal), {"texture_substituted": {"bmd_names": names[tex], "drawn": wanted,
+                                                                          "reason": "state variant (CHARACTERS)"}}
+    score = nitro.screen_door(texture_rgba(bmd, tex, pal))
+    if score <= SCREEN_DOOR:
+        return tex, pal, {}
+    for i, nm in enumerate(names):
+        if i != tex and _stem(nm) == _stem(names[tex]):
+            p = _palette_for(bmd, i, pal)
+            if nitro.screen_door(texture_rgba(bmd, i, p)) <= SCREEN_DOOR:
+                return i, p, {"texture_substituted": {"bmd_names": names[tex], "drawn": nm,
+                                                      "reason": f"screen-door texture ({score:.2f})"}}
+    return tex, pal, {"screen_door": round(score, 3)}
+
+
 def _png(rgba: np.ndarray) -> bytes:
     from .ninja import png
     h, w = rgba.shape[:2]
@@ -339,7 +388,8 @@ def _png(rgba: np.ndarray) -> bytes:
 class Model:
     """Bones (world matrices) + rigid, textured primitives assembled from one or more BMDs."""
 
-    def __init__(self):
+    def __init__(self, textures: dict[str, str] | None = None):
+        self.texture_names = dict(textures or {})   # material key -> texture name to draw (state variants)
         self.names: list[str] = []
         self.parent: list[int] = []
         self.world: list[np.ndarray] = []
@@ -392,8 +442,9 @@ class Model:
         if tex is None or tex >= len(bmd["textures"]):
             self.materials.setdefault(key, {"png": None, "source": {"material": mat["name"]}})
             return key, 0, 0, (1.0, 1.0)
+        tex, pal, note = pick_texture(bmd, mat, self.texture_names.get(key))
         t = bmd["textures"][tex]
-        rgba = texture_rgba(bmd, tex, mat["palette"])
+        rgba = texture_rgba(bmd, tex, pal)
         h, w = rgba.shape[:2]
         sc = list(mat["scale"])
         p = nitro.teximage(mat["param"])
@@ -408,7 +459,7 @@ class Model:
                                    "source": {"material": mat["name"], "texture": t["name"],
                                               "format": nitro.FORMATS[nitro.teximage(t["param"])["format"]],
                                               "teximage_param": f"{mat['param']:#010x}",
-                                              "polygon_attr": f"{mat['polygon_attr']:#010x}"}}
+                                              "polygon_attr": f"{mat['polygon_attr']:#010x}"} | note}
         return key, w, h, tuple(sc)
 
     def insert_bone(self, name: str, parent: int, at: np.ndarray, children: list[int]) -> int:
@@ -519,7 +570,7 @@ def to_manifest(model: Model, name: str, source: dict, out: Path):
 def build(rom: SM64DSRom, key: str) -> tuple[Model, dict, list[str]]:
     """Assemble one character -> (model, roles {role: bone name}, source files)."""
     spec = CHARACTERS[key]
-    model = Model()
+    model = Model(spec.get("textures"))
     body = parse_bmd(rom.read(spec["body"]))
     files = [rom.where(spec["body"])]
     model.add_bmd(body)
