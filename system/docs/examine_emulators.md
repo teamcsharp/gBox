@@ -44,3 +44,26 @@ Run these on the agent test PC (JAYBUILTFINALE, 2% audio), never in the operator
 - A PS2 game (pcsx2 core, d3d11) -> `supported`; Examine 3D returns a GLB.
 - A Switch game (Yuzu) -> `unsupported`, reason names the planned Vulkan route; the still frame is still available.
 - A SNES game (snes9x) -> `unsupported`, 2D frame only.
+
+## Capture sessions for `relaunch_under_capture` rows (#971 stages 2-3)
+
+When a RetroArch session rates `relaunch_under_capture` with driver `vulkan` or `glcore` (for example PSO Ver.2 on
+Flycast under `gl`), **Examine 3D** no longer stops at the reason text. `scene_capture` calls
+`gbox/capture_relaunch.py`, which works as follows:
+
+1. It saves the operator's moment to the agent-owned state slot 70 and puts the operator's slot counter back.
+2. It starts a separate RetroArch under RenderDoc (`frame_rip.launch`) with the same core file and content. The
+   capture session uses its own config dir, `runtime/capture_sessions/<ms>/ra.cfg`, and never touches the operator's
+   `retroarch.cfg`. Its video_driver is the matrix driver: `vulkan` loads RenderDoc's Vulkan layer for that process
+   only (`VK_LAYER_PATH`, `VK_INSTANCE_LAYERS`, `ENABLE_VULKAN_RENDERDOC_CAPTURE`) with no injection, and `glcore`
+   requests the core-profile GL context that RenderDoc supports.
+3. It loads the saved state (slot 0, in a flat state folder), captures, rebuilds the GLB and stops the capture
+   session.
+
+The operator's game is never paused. The result carries `summary.capture_session` = {driver, moment
+(`save_state` | `fresh_boot`), note, work}, plus `paused: false` and `resume_on_leave: false`. If the save fails,
+the capture session boots the content fresh and says so in `note`.
+
+Live check, still outstanding, on JAYBUILTFINALE after deployment: launch PSO Ver.2 (Flycast, `gl`), press
+Examine 3D, and expect a GLB with `capture_session.driver = vulkan`, `moment = save_state`, and the operator's
+window still running. Then repeat with a GL-only core (`glcore`).

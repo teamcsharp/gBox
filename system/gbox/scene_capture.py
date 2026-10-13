@@ -905,6 +905,8 @@ def capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect:
         except Exception:
             pass
         raise
+    if result.get("capture_session"):                  # captured in a separate session: the game was never paused
+        return result | {"resume_on_leave": False}
     return result | {"resume_on_leave": not was_paused}
 
 
@@ -916,6 +918,9 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
     say = progress or (lambda p, m: None)
     proc = getattr(ad, "proc", None)
     if not hooked(proc):
+        from . import capture_relaunch                     # #971: GL session -> separate vulkan/glcore capture session
+        if capture_relaunch.plan(ad) is not None:
+            return capture_relaunch.run(ad, out_dir, frames, fovy, aspect, progress)
         if reason := getattr(ad, "examine_unavailable_reason", None):
             raise Unsupported(reason)
         if getattr(ad, "name", None):                      # the capability matrix says why and what would work
@@ -1033,7 +1038,9 @@ def _scene_validate(out: SceneOut, arts):
       check=lambda c: None if sys.platform == "win32" else "RenderDoc capture runs on the Windows node")
 def scene_capture(inp: SceneIn, ctx: Ctx):
     """Examine in 3D: pause a live session and rebuild the frame on screen as a 3D scene (glTF + textures, one node
-    per draw call, HUD as its own layer). The game stays paused; resume with session_op resume."""
+    per draw call, HUD as its own layer). The game stays paused; resume with session_op resume. A session RenderDoc
+    can't enter (RetroArch on GL) is captured through a separate vulkan/glcore capture session at the same moment
+    (gbox/capture_relaunch.py); that game is never paused."""
     from .tools import SESSIONS
     from .registry import Unsupported
     session = SESSIONS.get(inp.session_id)
@@ -1052,7 +1059,8 @@ def scene_capture(inp: SceneIn, ctx: Ctx):
             ctx.artifact("frame.png", (out / "frame.png").read_bytes(), "image/png", **meta)
         small = {k: v for k, v in s.items() if k not in ("draw_list", "projection")}
         small["glb_bytes"] = len(glb)
-        return {"session_id": inp.session_id, "glb": sha256(glb), "summary": small, "paused": True,
+        return {"session_id": inp.session_id, "glb": sha256(glb), "summary": small,
+                "paused": not s.get("capture_session"),
                 "resume_on_leave": s["resume_on_leave"]}
     except Exception:
         if s["resume_on_leave"]:

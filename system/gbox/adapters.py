@@ -984,6 +984,7 @@ class RetroArchAdapter(CommandAdapter):
         from .scene_support import video_driver
         self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
         self.core_path = argv[argv.index("-L") + 1] if "-L" in argv else None
+        self.content_path, self.retroarch_exe = rom, (argv[0] if argv else None)   # capture sessions (#971)
         self.examine_unavailable_reason = None
         if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
             self.examine_unavailable_reason = (

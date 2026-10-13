@@ -237,13 +237,16 @@ BEETLE_VK_OPTIONS = {
 
 def launch(content: str, work: Path, core: str = "mednafen_psx_hw", retroarch: str | None = None,
            cmd_port: int = 55433, pad_port: int = 55440, core_options: dict | None = None,
-           extra_cfg: dict | None = None) -> subprocess.Popen:
+           extra_cfg: dict | None = None, core_path: str | None = None) -> subprocess.Popen:
     """Start RetroArch (Vulkan) under renderdoccmd with its own config dir `work` (never the worker's session config).
+    `core_path` reuses a live session's core instead of provisioning `core` (Examine 3D capture sessions,
+    gbox/capture_relaunch.py); extra_cfg {"video_driver": "glcore"} runs a GL-only core on core-profile GL.
     Captures land in work/cap. PS1 CHD v4 images are not readable by Beetle's libchdr: convert to bin/cue first
     (psx_chd_to_bin)."""
     from . import provision
     cfg = _cfg()
-    core_path = provision.ensure_platform(cfg, "psx", core)[0] if core == "mednafen_psx_hw" else provision.ensure_core(cfg, core)
+    core_path = core_path or (provision.ensure_platform(cfg, "psx", core)[0] if core == "mednafen_psx_hw"
+                              else provision.ensure_core(cfg, core))
     ra = retroarch or provision._retroarch_windows_raw(cfg)
     work = Path(work)
     for d in ("saves", "states", "shots", "cap"):
