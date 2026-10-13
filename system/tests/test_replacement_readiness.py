@@ -228,7 +228,7 @@ def test_every_writer_has_a_target_spec():
     assert RR.spec_for("gbox.sm64_swap")["tris"] == 1600 and RR.spec_for("gbox.sm64_swap")["influences"] == 1
     assert set(RR.spec_for("gbox.doa2_swap")["required"]) == RR.RETARGET_ROLES
     assert RR.spec_for("gbox.clayfighter_swap")["kind"] == "sprite"
-    assert RR.spec_for("gbox.mgs_vr_swap")["donors"] == ["hucast"]
+    assert RR.spec_for("gbox.mgs1_swap")["donors"] == ["hucast"] and RR.spec_for("gbox.mgs_vr_swap").get("donors") is None
 
 
 def test_slot_table_lists_writer_games_with_reader_and_slots():
@@ -255,7 +255,7 @@ def test_compat_budget_roles_kinds_and_writer_limits():
     doa2 = RR.spec_for("gbox.doa2_swap")
     assert not RR.compat(hero | {"roles": ["hip", "head", "chest"]}, doa2)["ok"]
     assert RR.compat(hero, doa2)["ok"]
-    mgs = RR.spec_for("gbox.mgs_vr_swap")
+    mgs = RR.spec_for("gbox.mgs1_swap")                # MGS1 still takes HUcast only; VR Missions takes any donor
     assert not RR.compat(hero, mgs, slug="sonic")["ok"] and RR.compat(hero, mgs, slug="hucast")["ok"]
     creature = hero | {"body": "creature", "roles": [], "status": "limited"}
     assert not RR.compat(creature, sm64)["ok"]

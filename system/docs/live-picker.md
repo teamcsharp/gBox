@@ -1,6 +1,6 @@
 # Live picker (eyedropper) and pick whip
 
-Status: **implemented on the client; identification and replacement grow with the backend tools.**
+Status: **implemented: the client menus on top of the `pick_identify` / `pick_replace` backend (docs/live-inject.md) and the Blender round trip.**
 
 The pick whip is the one tool for pointing at something in the running game and doing something with it. Every game task should leave it stronger: a new profile, reader, writer or hot path makes the same menu do more without UI changes.
 
@@ -10,7 +10,7 @@ The pick whip is the one tool for pointing at something in the running game and 
 | --- | --- | --- |
 | Desktop app, any docked game | **Ctrl+I** (a global shortcut while a game is docked, so it works when the game has focus) or the status-bar dropper | The game pauses, the frame freezes, hovering outlines the character under the cursor and labels it (name, model, slot). Left click grabs it (extract + chat); right click opens the character menu. Esc closes and resumes the game. |
 | Desktop app, any docked game | **Right-click a character** (`winembed.py` forwards right-clicks from the native game window) | The character menu opens at that point and the game pauses until the menu closes. "Game menu…" at the bottom opens the old game menu (autoplay, save states, settings). |
-| Desktop app | **Alt+drag** (pick whip) or drag a collection card onto the game | The existing whip menus. "Replace live" now runs the same replacement chain as the character menu and streams it into the mini console. |
+| Desktop app | **Alt+drag** (pick whip) or drag a collection card onto the game | The existing whip menus. "Replace it in the running game" runs the same replacement chain as the character menu and streams it into the mini console (see "Collection card dropped on a game" below). |
 | Web viewer and the desktop's Sessions page (streamed game, e.g. a Spark session) | **⌖** in the session bar, or **right-click any emulator view** (the Play stream, Inspect's picture, Examine's live frame) | The same outline, label, menu and console on the MJPEG picture. The menu always opens, even when the freeze, the pause or the identification fails. |
 | Anywhere above | **Report…** (first item of the character menu and of the desktop game menu) | The report pop-up: "⚑ Report: Problem at this spot (x% across, y% down)", plus "on <name>" when something was picked, with an optional "What did you expect?" field. It files the report into the inbox. |
 
@@ -27,12 +27,17 @@ The pick whip is the one tool for pointing at something in the running game and 
 ### The character menu
 
 * **Report…** files a problem at this spot (see above).
-* **Replace with…** opens a character browser with previews. Characters are filtered by compatibility: vehicles for vehicles, bodies for bodies. Ready-in-this-game characters come first, then previously fitted ones that need a rebuild, then everything else that has a model. Picking one runs `pick_replace` in live mode, then `pick_replace` in build mode if live did not take. Until `pick_replace` is registered, it runs `characters op=live_use`, and if that fails it files a rebuild request (`/api/requests/auto-mod-failure` with `needs_rebuild` and `replacement_requested`).
-* **Copy to clipboard** puts the identification text on the OS clipboard. When the model can be extracted, it also puts the GLB on the gBox clipboard.
+* **Replace with…** opens a character browser with previews. Characters are filtered by compatibility: vehicles for vehicles, bodies for bodies. Ready-in-this-game characters come first, then previously fitted ones that need a rebuild, then everything else that has a model. Picking one runs the replacement chain (`replace` in `pick-whip.js`):
+  1. The pick sent to `pick_replace` is the `pick_identify` result (its slot, RAM and learned signatures). When nothing was identified yet, the menu runs `pick_identify` first.
+  2. `pick_replace` in live mode. When live is not possible, the backend itself builds the writer's mod and swaps the session at the same moment (`fell_back`), and the console shows both steps. A live job that failed outright is retried in build mode.
+  3. When `pick_replace` can't map the pick to a writer slot (`not_replaceable`), `characters op=live_use` runs with the point and the target (the game-specific live routes: OoT NPCs, VR Missions, Twin Snakes, MGS2 casts).
+  4. When nothing took, it files a rebuild request (`/api/requests/auto-mod-failure` with `needs_rebuild` and `replacement_requested`) with every step tried.
+  5. On an older control plane without `pick_replace`, it runs `characters op=live_use`, then the rebuild request.
+* **Copy to clipboard** puts the identification text (name, model, slot, RAM addresses) on the OS clipboard. When the model can be extracted, it also puts the GLB on the gBox clipboard. When `pick_identify` matched a library model, its round-trip GLB goes on the gBox clipboard (`POST /api/characters/{slug}/blender/copy`).
 * **Copy to Blender** writes Blender's own clipboard on this PC with `blender_copy` (artifact = the extracted GLB, or the collection character), so you can press Ctrl+V in a 3D viewport. The Blender paste pop-up shows what was copied.
 * **Open retarget editor…** asks for a donor in the same browser, then opens `GBoxRetargetEditor` for the donor, this game and the picked slot.
-* **Identify** runs `pick_identify`, or `pick_preview` until `pick_identify` is registered. The entity, model, RAM, slot and evidence stream into the console.
-* **Export to Blender (round trip)** puts the GLB on the gBox clipboard tagged with `round_trip`, `session_id`, `game_id`, `slot`, `name` and `pick`. In Blender, press Ctrl+Shift+V (gBox add-on) to import it, edit it, then use "Send to gBox"; the live link sends it back.
+* **Identify** runs `pick_identify` (with the window aspect), or `pick_preview` on an older control plane. The entity, model, RAM, slot and evidence stream into the console. `pick_identify` returns `ram` as an object of addresses; the label and console show its keys and addresses (`entity 0x… · model 0x… · skeleton 0x…`, `ramText` in `pick-whip.js`), never the object itself.
+* **Export to Blender (round trip)** puts an extracted GLB on the gBox clipboard tagged with `round_trip`, `session_id`, `game_id`, `slot`, `name` and `pick`. For a library model (`pick_identify`'s `model`, or a collection character), it uses the Blender round trip (`POST /api/characters/{slug}/blender/copy`, docs/blender-bridge.md): the GLB carries the rig role names and props. In Blender, press Ctrl+Shift+V (gBox add-on) to import it, edit it, then use "Send to gBox"; it comes back as a variant of the original, and the live link sends it back.
 * **Show in Assets** opens the asset sidebar filtered to the model or name.
 * Toggles: **Pause while picking** and **Cloud naming** (off by default; local only).
 
@@ -82,17 +87,35 @@ The tool calls run as ordinary jobs on the session's PC. Routing (`llm_routes`) 
 
 If no model is available, the answer falls back to the picker's own evidence (entity class or model mapping), so the pick whip never needs cloud credit. Vision-capable header models also get a crop of the frozen frame.
 
-## Backend contracts the client is ready for
+### Collection card dropped on a game
 
-These tools are built by other work. The client calls them through `/api/jobs` and degrades gracefully while they are missing (404 "unknown tool").
+* Pick whip, collection card dropped on a game: for games with a slot resolver (`characters op=resolve_slot session_id
+  x y`; today Metal Gear Solid VR Missions, `gbox/mgs_vr_tool.py` op=pick through the game's own view matrix) the menu
+  names what is under the drop ("Put Sonic in place of Genome soldiers (every VR soldier)") and "Replace it in the
+  running game" runs `characters op=live_use` with that slot: the disc is rebuilt with the replacement stacked on the
+  session's current mod and applied through session_swap at the same moment. OoT keeps its in-RAM object swap
+  (`oot_hot_swap`); other games answer unsupported and the menu keeps its generic choices.
 
-* `pick_identify {session_id, x, y}` returns a result that may contain `entity` (`{name, class, kind, ptr, model, slot, outline | mask | bounds | screen}`), `model`, `ram`, `slot`, `evidence` / `ghidra` / `rea`, `package` (an extracted UAP), and `collection` (`{slug}`) for a known collection character.
-* `pick_replace {session_id, pick, character, mode: "live" | "build"}` returns a job with fit events. `pick` carries `{x, y, window_aspect, entity, slot}`. A `result.status` matching `unsupported|failed|error|missing|blocked|reverted|no writer` counts as "did not take", and the client then tries the build mode.
+The whip's "Replace it in the running game" uses the same chain as **Replace with…**. When the resolver named a slot, `characters op=live_use` with that slot runs first; otherwise the point is identified with `pick_identify` and replaced with `pick_replace`, and `live_use` (point, window aspect and target) is the fallback for picks `pick_replace` can't map. When nothing took, a rebuild request is filed.
+
+## Identify and replace backend
+
+`pick_identify` and `pick_replace` (docs/live-inject.md) are the pick whip's backend.
+
+* `pick_identify {session_id, x, y, region?}` returns the entity under the point, its writer slot, and its RAM: the entity struct, model / node tree, display lists, vertex buffers, skeleton and textures. It also returns evidence (profile, `oot_live`, `doa2_context`, pointer walk, learned paths, Ghidra), a confidence, and `replaceable {live, build, reason}`.
+* `pick_replace {session_id, pick, character, mode: live|build}` emits fit events for the slot. `live` writes the fitted model into the running game's RAM: paused, verified, and restored on failure. `build` (also live's fallback) builds the writer's mod and swaps the session to it, keeping the moment.
+
+Each pick teaches the game's learned profile (`/api/profiles/{game_id}/pick`), so the next one is faster.
+
+How the client uses them (`clients/web/viz/pick-whip.js`, through `/api/jobs`; a control plane without them answers 404 "unknown tool" and the client degrades as described above):
+
+* `pick_identify {session_id, x, y, window_aspect}`: `entity` (`{class, kind, ptr, ...}`), `slot`, `model` (the library slug that is this model), `ram` (addresses by role: `entity_struct`, `model`, `skeleton`, `display_list`, `vertex_buffer`, plus details, paths and structures), `evidence`, `confidence` and `replaceable`.
+* `pick_replace {session_id, pick: the pick_identify result, character, mode: "live"}`: `result.status` `live` or `swapped` means it took; `not_replaceable`, `live_failed` and `failed` mean it did not. `fell_back`, `fallback_reason` and `mode_used` say whether the backend went from live to build.
 * `pick_preview` and `pick` are unchanged. Probe-based picks (`picked.screen_box` in picker pixels) are outlined from their box.
 
 ## Files
 
-* `clients/web/viz/pick-whip.js` is the shared logic and UI (geometry, hover scheduler, hold, tool fallbacks, menu, browser, console, and the web overlay `mountOverlay`).
+* `clients/web/viz/pick-whip.js` is the shared logic and UI (geometry, hover scheduler, hold, the identify / replace chain and its fallbacks, menu, browser, console, and the web overlay `mountOverlay`).
 * `clients/desktop/index.html` has the eyedropper (outline and label, hold), `pwRightClick`, `pwMenuAt` and `pwIO`, and whip "Replace live".
 * `clients/desktop/main.js` releases holds on crash, reload, close or quit.
 * `clients/web/index.html` has the ⌖ button, right-click on `#scr`, and the `mountOverlay` IO.
@@ -106,4 +129,4 @@ These tools are built by other work. The client calls them through `/api/jobs` a
 ## Remaining work
 
 * A live outline over the running (unpaused) native game would need a transparent overlay window like `overlay.js`. With pausing on, the frozen frame shows the same picture.
-* Per-game profile `camera` and `models` mappings, and `pick_identify`, are still what make identification semantic. Unsupported games show the colour region and let the local model describe the crop.
+* Per-game profile `camera` and `models` mappings are still what make identification semantic for games without a dedicated entity reader in `pick_identify`. Unsupported games show the colour region and let the local model describe the crop.

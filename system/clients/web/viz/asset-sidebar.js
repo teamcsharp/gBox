@@ -39,7 +39,7 @@
       .asset-dialog .as-dialog-bar { display:flex; gap:8px; align-items:center; margin-bottom:10px; } .asset-dialog .as-dialog-bar b { flex:1; }
       .asset-dialog button,.asset-dialog a { font:inherit; color:var(--fg); border:1px solid var(--line); background:var(--card); border-radius:5px; padding:6px 10px; text-decoration:none; cursor:pointer; }
     `; document.head.append(css);
-    const $ = selector => root.querySelector(selector), state = { items: [], textures: new Map(), groups: new Map(), revision: 0, busy: false, polling: false, signature: '', disposed: false };
+    const $ = selector => root.querySelector(selector), state = { items: [], textures: new Map(), groups: new Map(), revision: 0, busy: false, polling: false, signature: '', disposed: false, retryTimer: 0, retryDelay: 0 };
     let prefs = {}; try { prefs = JSON.parse(localStorage.getItem('gbox_asset_sidebar') || '{}'); } catch {}
     const expanded = new Set(prefs.expanded || []);
     root.innerHTML = `<div class="as-head"><b>Assets</b><button class="as-refresh" title="Refresh extracted assets" aria-label="Refresh extracted assets">↻</button><button class="as-toggle" aria-expanded="true" title="Collapse asset sidebar">›</button></div>
@@ -50,7 +50,7 @@
     function collapse(closed) {
       root.classList.toggle('closed', closed); options.host.style.setProperty('--assets-width', closed ? '36px' : '280px');
       $('.as-toggle').textContent = closed ? 'Assets' : '›'; $('.as-toggle').setAttribute('aria-expanded', String(!closed)); save();
-      if (!closed) load(true);
+      if (!closed) load();
     }
     $('.as-toggle').onclick = () => collapse(!root.classList.contains('closed'));
     const url = path => options.url(path);
@@ -82,7 +82,7 @@
         delete element.dataset.loaded; rows.innerHTML = `<div class="as-sub">Files failed to load: ${esc(e.message)}</div>`;
       }
     }
-    function query(game, offset = 0) { return (game === undefined ? '/api/asset-groups?' : '/api/assets?') + new URLSearchParams({ q: $('.as-search').value, sort: $('.as-sort').value, kind: $('.as-kind').value, game: game ?? $('.as-game').value, offset, limit: 60 }); }
+    function query(game, offset = 0, fresh = false) { return (game === undefined ? '/api/asset-groups?' : '/api/assets?') + new URLSearchParams({ q: $('.as-search').value, sort: $('.as-sort').value, kind: $('.as-kind').value, game: game ?? $('.as-game').value, offset, limit: 60, ...(fresh ? { fresh: 1 } : {}) }); }
     const signature = page => JSON.stringify([page.total, page.nested, page.hidden_assets, page.hidden_textures, page.groups.map(g => [g.title, g.count, g.copied, g.added])]);
     const groupElement = title => [...root.querySelectorAll('.as-group')].find(el => el.dataset.game === title);
     async function loadGroup(title) {
@@ -105,13 +105,24 @@
       el.innerHTML = `<option value="">${label}</option>` + values.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
       if (values.includes(selected)) el.value = selected;
     }
-    async function load() {
+    // The control plane indexes the asset folders in the background; until its first index exists (or while a slow
+    // control plane times the request out) the list says so and asks again with backoff instead of failing.
+    const slow = e => /timeout|timed out|abort/i.test(String(e?.name || '') + ' ' + String(e?.message || ''));
+    function retryLater(revision) {
+      clearTimeout(state.retryTimer);
+      state.retryDelay = Math.min(Math.max(state.retryDelay * 2, 2000), 15000);
+      $('.as-count').textContent = 'Indexing assets…'; $('.as-message').textContent = '';
+      state.retryTimer = setTimeout(() => { if (revision === state.revision && !state.disposed) load(); }, state.retryDelay);
+    }
+    async function load(fresh = false) {
       if (state.disposed || root.classList.contains('closed')) return;
-      const revision = ++state.revision; state.busy = true;
+      const revision = ++state.revision; state.busy = true; clearTimeout(state.retryTimer);
       $('.as-message').textContent = '';
       try {
-        const page = await options.api(query());
+        const page = await options.api(query(undefined, 0, fresh));
         if (revision !== state.revision || state.disposed) return;
+        if (page.indexing) { retryLater(revision); return; }
+        state.retryDelay = 0;
         state.groups = new Map(page.groups.map(g => [g.title, {items: [], more: true, loading: false}])); state.items = []; state.textures = new Map();
         $('.as-rows').innerHTML = page.groups.map(g => `<details class="as-group" data-game="${esc(g.title)}" ${expanded.has(g.title) ? 'open' : ''}><summary><img loading="lazy" src="${esc(url(g.preview_url))}" alt=""><b>${esc(g.title)}</b><span>${g.count}</span></summary><div class="as-group-rows"></div><button class="as-group-more">Load assets · ${g.count}</button></details>`).join('');
         $('.as-list').scrollTop = 0;
@@ -120,11 +131,13 @@
         $('.as-count').textContent = `${page.total} assets · ${page.groups.length} titles${page.nested ? ` · ${page.nested} files inside` : ''}${page.total + (page.hidden_assets ?? page.hidden_textures ?? 0) !== page.total_all ? ` · ${page.total_all} total` : ''}`;
         if (!page.total) $('.as-rows').innerHTML = '<p>No assets match these filters.</p>';
         await Promise.all(page.groups.filter(g => expanded.has(g.title)).map(g => loadGroup(g.title))); save();
-      } catch (e) { if (revision === state.revision) $('.as-message').textContent = 'Could not load assets: ' + e.message; }
-      finally { if (revision === state.revision) state.busy = false; }
+      } catch (e) {
+        if (revision !== state.revision || state.disposed) return;
+        if (slow(e)) retryLater(revision); else $('.as-message').textContent = 'Could not load assets: ' + e.message;
+      } finally { if (revision === state.revision) state.busy = false; }
     }
-    const refresh = () => load(true);
-    $('.as-refresh').onclick = refresh; $('.as-changed').onclick = refresh;
+    const refresh = () => load();
+    $('.as-refresh').onclick = () => load(true); $('.as-changed').onclick = refresh;   // ↻ also rescans every asset file
     let debounce;
     $('.as-search').oninput = () => { clearTimeout(debounce); debounce = setTimeout(refresh, 200); };
     for (const selector of ['.as-sort', '.as-kind', '.as-game']) $(selector).onchange = refresh;
@@ -139,7 +152,7 @@
     async function copy(a, button) {
       button.disabled = true; $('.as-message').textContent = 'Copying ' + a.name + '…';
       try { await options.api(`/api/assets/${a.id}/copy`, {});
-        if ($('.as-sort').value === 'copied') await load(true);
+        if ($('.as-sort').value === 'copied') await load();
         $('.as-message').textContent = a.format === 'GLB' || a.format === 'GLTF' || a.format === 'UAP' ? 'Copied. Paste in Blender with Ctrl+Shift+V (gBox add-on).' : 'Copied to the gBox asset clipboard.';
       } catch (e) { $('.as-message').textContent = 'Copy failed: ' + e.message; }
       finally { button.disabled = false; }
@@ -165,7 +178,7 @@
       try {
         const revision = state.revision, page = await options.api(query());
         if (revision !== state.revision || state.disposed || root.classList.contains('closed')) return;
-        if (signature(page) !== state.signature) { if ($('.as-list').scrollTop < 40 && state.items.length <= 60) load(true); else $('.as-changed').hidden = false; }
+        if (signature(page) !== state.signature) { if ($('.as-list').scrollTop < 40 && state.items.length <= 60) load(); else $('.as-changed').hidden = false; }
       } catch { /* Keep the current list during a reconnect; manual refresh exposes the error. */ }
       finally { state.polling = false; }
     }, 10000);
@@ -174,6 +187,6 @@
     collapse(!!prefs.closed);
     // reveal(q): open the sidebar filtered to q (the pick whip's "Show in Assets")
     function reveal(q) { collapse(false); $('.as-search').value = String(q || ''); save(); refresh(); root.scrollIntoView?.({ block: 'nearest' }); }
-    return { refresh, reveal, dispose() { state.disposed = true; clearInterval(interval); clearTimeout(debounce); root.remove(); css.remove(); } };
+    return { refresh, reveal, dispose() { state.disposed = true; clearInterval(interval); clearTimeout(debounce); clearTimeout(state.retryTimer); root.remove(); css.remove(); } };
   } };
 })();

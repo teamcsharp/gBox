@@ -70,7 +70,11 @@ test('naming uses the header model; replace falls back to live_use, then a rebui
   assert.equal(desktop({ model: 'auto' }).pw.pwModel().name, '');
   const io = await d.pw.pwIO();
   await io.fallbackLive({ character: 'amy', x: 0.5, y: 0.4 });
-  assert.deepEqual(plain(d.seen.jobs[0]), { tool: 'characters', input: { op: 'live_use', character: 'amy', session_id: 'w1-s1', x: 0.5, y: 0.4 } });
+  assert.deepEqual(plain(d.seen.jobs[0]), { tool: 'characters', input: { op: 'live_use', character: 'amy', session_id: 'w1-s1', x: 0.5, y: 0.4,
+    window_aspect: 1.3333 } });
+  await io.fallbackLive({ character: 'amy', x: 0.5, y: 0.4, aspect: 16 / 9, target: 'bot', kind: 'npc' });   // the one pick-whip target field
+  assert.deepEqual(plain(d.seen.jobs[1]).input, { op: 'live_use', character: 'amy', session_id: 'w1-s1', x: 0.5, y: 0.4,
+    window_aspect: 1.7778, target: 'bot' });
   await io.fallbackBuild({ character: 'amy', name: 'Amy', target: 'bot', kind: 'npc', slot: 'npc_3', x: 0.5, y: 0.4, steps: [{ via: 'characters live_use', mode: 'live', status: 'unsupported' }] });
   const rep = d.seen.reports[0];
   assert.equal(rep.requested, true); assert.equal(rep.rebuild, true); assert.equal(rep.character, 'amy');

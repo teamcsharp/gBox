@@ -5,8 +5,12 @@
      hover requests are latest-wins (one in flight), the outline eases toward its target, the game is never blocked
    - pause hold: the game pauses while the pick whip is open (POST /api/pickwhip/{sid}/hold, gbox/pickwhip.py); the
      server's lease watchdog resumes it when the client goes away
-   - tools with graceful degradation: pick_identify -> pick_preview, pick_replace live -> build -> the existing
-     characters live_use / rebuild request paths, pick_name (local LLM) -> the picker's own evidence
+   - the backend tools (gbox/pick_tool.py, docs/live-inject.md): pick_identify (entity, slot, RAM, library model) and
+     pick_replace {pick: the pick_identify result, mode live (-> build + session swap)}; an older control plane without
+     them degrades: pick_identify -> pick_preview, pick_replace -> characters live_use -> a rebuild request;
+     pick_name (local LLM) -> the picker's own evidence
+   - Blender: blender_copy (Blender's own Ctrl+V) and the round trip (POST /api/characters/{slug}/blender/copy,
+     gbox/blender_roundtrip.py) for library models
    - the mini console: small floating panels next to the pick, one per task, streaming job progress and fit events
    Shared verbatim by the web shell (/viz/pick-whip.js) and the desktop app (../web/viz/pick-whip.js). */
 (function (root, factory) {
@@ -177,6 +181,24 @@
     if (typeof m === "object") return m.name || m.file || m.path || "";
     return String(m);
   }
+  // pick_identify's ram is an object of addresses ({entity_struct, model, skeleton, display_list, vertex_buffer, ...}
+  // plus *_detail / *_path / structures / textures); older pickers sent a string or a list. -> "entity 0x80.. · model 0x80.."
+  const HEXV = v => (typeof v === "string" && /^0x[0-9a-f]+$/i.test(v)) || (typeof v === "number" && isFinite(v));
+  const hexOf = v => typeof v === "number" ? "0x" + v.toString(16).toUpperCase() : String(v);
+  const RAM_ORDER = ["entity_struct", "model", "skeleton", "display_list", "vertex_buffer", "skel_anime", "joint_table"];
+  function ramText(ram, max = 5) {
+    if (ram == null || ram === "") return "";
+    if (Array.isArray(ram)) {
+      return ram.map(r => r && typeof r === "object" ? [r.name || r.kind, r.address || r.base || r.at].filter(Boolean).map(hexOf).join(" ") : (r == null ? "" : hexOf(r)))
+        .filter(Boolean).slice(0, max).join(" · ");
+    }
+    if (typeof ram !== "object") return String(ram);
+    const keys = Object.keys(ram).filter(k => !k.startsWith("_") && HEXV(ram[k]))
+      .sort((a, b) => (RAM_ORDER.indexOf(a) + 1 || 99) - (RAM_ORDER.indexOf(b) + 1 || 99));
+    const out = keys.map(k => `${k === "entity_struct" ? "entity" : k.replace(/_/g, " ")} ${hexOf(ram[k])}`);
+    if (!out.length && Array.isArray(ram.model_images) && ram.model_images.length) out.push(`model image ${hexOf(ram.model_images[0].base)}`);
+    return out.slice(0, max).join(" · ");
+  }
   // name, model, slot from whatever is known: the local model's answer > pick_identify > pick_preview
   function labelOf(preview, ident, named) {
     const p = (preview && preview.picked) || {}, i = ident || {}, ie = (i.entity && typeof i.entity === "object") ? i.entity : {}, n = named || {};
@@ -185,7 +207,7 @@
     const slot = n.slot || i.slot || ie.slot || p.slot || "";
     const kind = n.kind || i.kind || ie.kind || p.kind || "";
     const id = p.entity_id ?? ie.entity_id ?? ie.id;
-    const ram = p.ptr || ie.ptr || (Array.isArray(i.ram) ? (i.ram[0] && (i.ram[0].address || i.ram[0])) : i.ram) || "";
+    const ram = ramText(i.ram) || p.ptr || ie.ptr || "";
     const via = n.route ? (n.route === "evidence" ? "picker evidence" : `${n.llm_model || "model"} (${n.route})`) : (ident ? "pick_identify" : preview ? "pick_preview" : "");
     return { name: String(name || "something"), model: String(model || ""), slot: String(slot || ""), kind: String(kind || ""),
       id: id == null ? "" : String(id), ram: String(ram || ""), via, known: !!name };
@@ -251,7 +273,7 @@
     const input = { session_id: sid, x: +(+x).toFixed(4), y: +(+y).toFixed(4) };
     if (deep) {
       try {
-        const r = await runTool(io, "pick_identify", input, { onJob, onUpdate });
+        const r = await runTool(io, "pick_identify", Object.assign({ window_aspect: +(+aspect).toFixed(4) }, input), { onJob, onUpdate });
         if (r.ok) return { source: "pick_identify", result: r.result, job: r.job };
         if (r.job && r.job.error) log(`pick_identify: ${r.job.error}`);
       } catch (e) { if (!e.missing) throw e; log("pick_identify is not on this gBox yet: using pick_preview"); }
@@ -271,43 +293,93 @@
     } catch (e) { if (e.missing) return null; throw e; }
   }
 
-  const FAILED = /unsupported|failed|error|not_in_collection|missing|blocked|reverted|no writer/i;
-  // Replace: pick_replace live -> pick_replace build; before pick_replace exists: fallbackLive (characters live_use) and
-  // fallbackBuild (the rebuild request). steps says what was tried, for the console and the failure report.
-  async function replace(io, { sid, pick, character, x, y, onJob, onUpdate, fallbackLive, fallbackBuild, log = () => {} }) {
+  // pick_replace answers status live | swapped (done) or not_replaceable | live_failed | failed; characters live_use
+  // answers live_swapped / ok, or unsupported / overlay / ... when it did not take
+  const FAILED = /unsupported|failed|error|not_in_collection|not_replaceable|missing|blocked|reverted|no writer|overlay/i;
+  const isPick = p => !!(p && typeof p === "object" && ("replaceable" in p || "backend" in p) && "ram" in p);   // a pick_identify result
+  // Replace (gbox/pick_tool.py pick_replace): the pick is the pick_identify result (its slot, RAM and learned
+  // signatures), so a bare point is identified first. mode live writes the model into the running game's RAM and the
+  // backend itself falls back to build + session swap (result.fell_back). pick_replace can't map the pick
+  // (not_replaceable) -> fallbackLive (characters live_use: the game-specific live routes); nothing took -> fallbackBuild
+  // (the rebuild request). An older control plane without pick_replace: fallbackLive, then fallbackBuild.
+  // liveFirst: fallbackLive before pick_replace (a slot a game-specific resolver already mapped). steps says what was
+  // tried, for the console and the failure report.
+  async function replace(io, { sid, pick, character, x, y, aspect = PICTURE, liveFirst = false, onJob, onUpdate, onIdentified,
+    fallbackLive, fallbackBuild, log = () => {} }) {
     const steps = [];
+    let liveTried = false;
+    const tryLive = async () => {
+      if (!fallbackLive || liveTried) return null;
+      liveTried = true;
+      try {
+        const res = await fallbackLive();
+        const ok = !FAILED.test(String(res && res.status || "")) && !(res && res.error);
+        steps.push({ via: "characters live_use", mode: "live", ok, status: (res && (res.status || res.message)) || "" });
+        if (ok) return { mode: "live", ok: true, via: "characters live_use", result: res, steps };
+      } catch (err) { steps.push({ via: "characters live_use", mode: "live", ok: false, error: err.message }); }
+      return null;
+    };
+    const request = async () => {
+      const res = fallbackBuild ? await fallbackBuild(steps) : null;
+      steps.push({ via: "rebuild request", mode: "build", ok: !!res, status: res ? "requested" : "not available" });
+      return res;
+    };
+    if (liveFirst) { const done = await tryLive(); if (done) return done; }
+    let thePick = pick || { x, y, window_aspect: aspect };
+    if (!isPick(thePick) && sid && x != null && y != null) {          // pick_replace wants pick_identify's answer
+      try {
+        log("identifying what is there (pick_identify)…");
+        const r = await runTool(io, "pick_identify", { session_id: sid, x: +(+x).toFixed(4), y: +(+y).toFixed(4),
+          window_aspect: +(+aspect).toFixed(4) }, { onJob, onUpdate });
+        if (r.ok && r.result && typeof r.result === "object") {
+          thePick = Object.assign({}, thePick, r.result, { slot: r.result.slot || thePick.slot || null });
+          if (onIdentified) onIdentified(r.result);
+        } else if (r.job && r.job.error) log(`pick_identify: ${r.job.error}`);
+      } catch (e) { if (!e.missing) log(`pick_identify: ${e.message}`); }
+    }
     const attempt = async mode => {
-      const r = await runTool(io, "pick_replace", { session_id: sid, pick: pick || { x, y }, character, mode }, { onJob, onUpdate });
-      const status = String(r.result.status || "");
+      const r = await runTool(io, "pick_replace", { session_id: sid, pick: thePick, character, mode }, { onJob, onUpdate });
+      const res = r.result || {}, status = String(res.status || "");
       const ok = r.ok && !FAILED.test(status);
-      steps.push({ via: "pick_replace", mode, ok, status: status || r.job.state, error: r.job.error || "" });
-      return Object.assign({}, r, { mode, ok, via: "pick_replace" });   // ok = the job succeeded AND the swap took
+      if (res.fell_back) {                                        // the backend's own live -> build fallback: both steps
+        steps.push({ via: "pick_replace", mode: "live", ok: false, status: "live not possible", error: String(res.fallback_reason || "") });
+        steps.push({ via: "pick_replace", mode: "build", ok, status: status || r.job.state, error: r.job.error || (ok ? "" : String(res.message || "")) });
+      } else steps.push({ via: "pick_replace", mode, ok, status: status || r.job.state, error: r.job.error || (ok ? "" : String(res.message || "")) });
+      return Object.assign({}, r, { mode: res.mode_used || mode, ok, via: "pick_replace" });   // ok = the job succeeded AND the swap took
     };
     let live;
     try { live = await attempt("live"); }
     catch (e) {
       if (!e.missing) throw e;
       log("pick_replace is not on this gBox yet: trying the character live swap");
-      if (fallbackLive) {
-        try {
-          const res = await fallbackLive();
-          const ok = !FAILED.test(String(res && res.status || "")) && !(res && res.error);
-          steps.push({ via: "characters live_use", mode: "live", ok, status: (res && (res.status || res.message)) || "" });
-          if (ok) return { mode: "live", ok: true, via: "characters live_use", result: res, steps };
-        } catch (err) { steps.push({ via: "characters live_use", mode: "live", ok: false, error: err.message }); }
-      }
+      const done = await tryLive(); if (done) return done;
       log("live swap unavailable here: asking for a build");
-      const res = fallbackBuild ? await fallbackBuild(steps) : null;
-      steps.push({ via: "rebuild request", mode: "build", ok: !!res, status: res ? "requested" : "not available" });
+      const res = await request();
       return { mode: "build", ok: !!res, via: "rebuild request", result: res, steps };
     }
     if (live.ok) return Object.assign(live, { steps });
-    log(`live replacement ${live.job.state === "succeeded" ? live.result.status || "did not take" : "failed"}: building instead`);
-    const built = await attempt("build");
-    if (built.ok) return Object.assign(built, { steps });
-    const res = fallbackBuild ? await fallbackBuild(steps) : null;
-    if (res) steps.push({ via: "rebuild request", mode: "build", ok: true, status: "requested" });
-    return Object.assign(built, { ok: !!res, steps, request: res });
+    const status = String(live.result.status || "");
+    if (/not_replaceable/i.test(status)) {                          // no writer slot for this pick: the game-specific live routes
+      log(`pick_replace: ${live.result.message || status}: trying the character live swap`);
+      const done = await tryLive(); if (done) return done;
+    } else if (live.result.fell_back || live.result.mode_used === "build") {
+      log(`live replacement not possible (${live.result.fallback_reason || "?"}); the build + session swap: ${status || "failed"}`);
+    } else {
+      log(`live replacement ${live.job.state === "succeeded" ? status || "did not take" : "failed"}: building instead`);
+      const built = await attempt("build");
+      if (built.ok) return Object.assign(built, { steps });
+      live = built;
+    }
+    const res = await request();
+    return Object.assign(live, { ok: !!res, mode: res ? "build" : live.mode, via: res ? "rebuild request" : live.via, steps, request: res });
+  }
+  // one line for the console / toast: what a replace() did
+  function replaceText(r, name) {
+    const res = (r && r.result) || {}, who = name || res.character || "the character";
+    if (!r || !r.ok) return `${who}: could not replace`;
+    const what = r.via === "rebuild request" ? "build requested"
+      : r.mode === "live" ? "replaced live" : res.status === "swapped" ? "built and swapped in at the same moment" : "build requested";
+    return `${who}: ${what} (${r.via})${res.message ? " · " + String(res.message).slice(0, 200) : ""}`;
   }
 
   // ---- the character browser: who can replace this, best first ---------------------------------------------------------
@@ -822,7 +894,8 @@
 
     async function assetOf(h) {                              // the model as an asset package: known, or extracted now
       if (st.asset) return st.asset;
-      const known = (st.ident && (st.ident.package || (st.ident.collection && st.ident.collection.slug && { character: st.ident.collection.slug })))
+      const known = (st.ident && (st.ident.package || (st.ident.collection && st.ident.collection.slug && { character: st.ident.collection.slug })
+          || (typeof st.ident.model === "string" && st.ident.model && { character: st.ident.model })))   // pick_identify: the library model's slug
         || (st.preview && st.preview.package);
       if (known) return (st.asset = typeof known === "string" ? { package: known } : known);
       h.log("extracting the model (pick)…");
@@ -877,7 +950,10 @@
         try {
           const a = await assetOf(h);
           if (a && a.package) { await toClipboard(a); h.done(true, `${a.package} is on the gBox clipboard (Blender add-on: Ctrl+Shift+V)`); }
-          else if (a && a.character) { h.done(true, `collection character ${a.character}: use Copy to Blender for its model`); }
+          else if (a && a.character) {                       // a library model: its round-trip GLB (gbox/blender_roundtrip.py)
+            const c = await io.api(`/api/characters/${encodeURIComponent(a.character)}/blender/copy`, {});
+            h.done(true, `${(c && c.name) || a.character} is on the gBox clipboard (Blender add-on: Ctrl+Shift+V)`);
+          }
           else h.done(true, "text copied; no model to put on the clipboard yet");
         } catch (e) { h.done(false, e.message); }
         return;
@@ -897,8 +973,11 @@
             const clip = a.package ? await toClipboard(a) : null;
             if (clip) await io.api("/api/clipboard", { kind: "gltf", name: clip.name || a.package, artifact: clip.sha256,
               meta: { package: a.package, session_id: o.sid, game_id: o.gid, slot: l.slot, name: l.name, model: l.model, pick: { x: o.at[0], y: o.at[1] }, round_trip: true } });
-            h.done(!!clip, clip ? "in Blender: Ctrl+Shift+V (gBox add-on), edit, then Send to gBox: it comes back to this slot"
-              : `collection character ${a.character}: open it from the add-on's collection list`);
+            if (clip) { h.done(true, "in Blender: Ctrl+Shift+V (gBox add-on), edit, then Send to gBox: it comes back to this slot"); return; }
+            // a library model: the round-trip GLB (rig role names, props) on the gBox clipboard; Send to gBox stores it
+            // as a variant of the original (characters op=add), which Replace with… can then put in this slot
+            const c = await io.api(`/api/characters/${encodeURIComponent(a.character)}/blender/copy`, {});
+            h.done(true, (c && c.next) || "in Blender: Ctrl+Shift+V (gBox add-on), edit, then Send to gBox");
           }
         } catch (e) { h.done(false, e.message); }
         return;
@@ -910,12 +989,14 @@
       const h = task("replace", `Replace ${l.known ? l.name : "character"} → ${c.name}`);
       h.log(`donor ${c.slug}${l.slot ? " · slot " + l.slot : ""}`);
       try {
-        const r = await replace(io, { sid: o.sid, character: c.slug, x: pickArgs.x, y: pickArgs.y,
-          pick: { x: pickArgs.x, y: pickArgs.y, window_aspect: o.aspect, entity: st.ident || (st.preview && st.preview.picked) || null, slot: l.slot || "" },
-          onUpdate: j => h.update(j), log: t => h.log(t),
-          fallbackLive: io.fallbackLive ? () => io.fallbackLive({ character: c.slug, name: c.name, x: pickArgs.x, y: pickArgs.y }) : null,
+        const r = await replace(io, { sid: o.sid, character: c.slug, x: pickArgs.x, y: pickArgs.y, aspect: o.aspect,
+          pick: st.ident ? Object.assign({}, st.ident, { x: pickArgs.x, y: pickArgs.y, window_aspect: o.aspect })   // pick_identify's answer
+            : { x: pickArgs.x, y: pickArgs.y, window_aspect: o.aspect, entity: (st.preview && st.preview.picked) || null, slot: l.slot || "" },
+          onUpdate: j => h.update(j), log: t => h.log(t), onIdentified: res => { st.ident = res; },
+          fallbackLive: io.fallbackLive ? () => io.fallbackLive({ character: c.slug, name: c.name, x: pickArgs.x, y: pickArgs.y,
+            aspect: o.aspect, target: l.known ? l.name : "", kind: l.kind }) : null,
           fallbackBuild: io.fallbackBuild ? steps => io.fallbackBuild({ character: c.slug, name: c.name, target: l.name, kind: l.kind, slot: l.slot, x: pickArgs.x, y: pickArgs.y, steps }) : null });
-        h.done(r.ok, r.ok ? `${c.name}: ${r.mode === "live" ? "replaced live" : "build requested"} (${r.via})`
+        h.done(r.ok, r.ok ? replaceText(r, c.name)
           : `could not replace: ${(r.steps || []).map(s => `${s.via} ${s.mode}: ${s.error || s.status}`).join("; ")}`);
       } catch (e) { h.done(false, e.message); }
     }
@@ -923,7 +1004,7 @@
   }
 
   return { settings, saveSettings, windowToPicture, pictureToWindow, clampBox, floodRegion, decodeMask, maskBox, maskEdges, outlineOf,
-    easeBox, labelOf, labelHTML, createHover, missingTool, startJob, waitJob, runTool, identify, nameLocal, replace, rankCharacters,
+    easeBox, labelOf, labelHTML, ramText, createHover, missingTool, startJob, waitJob, runTool, identify, nameLocal, replace, replaceText, rankCharacters,
     menuItems, consoleLines, fitLines, ensureCss, paintOutline, placeLabel, openMenu, setMenuHead, closeMenu, browser, createConsole,
     createHold, mountOverlay, characterMenu, reportBody, reportPopup, markedFrame, PICTURE };
 });

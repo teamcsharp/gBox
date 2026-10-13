@@ -281,8 +281,69 @@ test('replace: pick_replace live, then build when live does not take', async () 
   const logs = [];
   r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.5, y: 0.5, log: t => logs.push(t) });
   assert.equal(r.mode, 'build'); assert.equal(r.ok, true);
-  assert.deepEqual(f.calls.filter(c => c.path === '/api/jobs').map(c => c.body.input.mode), ['live', 'build']);
-  assert.match(logs[0], /building instead/);
+  assert.deepEqual(f.calls.filter(c => c.path === '/api/jobs' && c.body.tool === 'pick_replace').map(c => c.body.input.mode), ['live', 'build']);
+  assert.ok(logs.some(t => /building instead/.test(t)));
+});
+
+// ---- the real backend (gbox/pick_tool.py): pick_identify's answer is the pick, the backend's own build fallback ----------
+const IDENT = { entity: { class: 'En_Wolf', kind: 'enemy', ptr: '0x80123400' }, game_id: 'g1', slot: 'enemy:wolf', model: 'wolf',
+  ram: { entity_struct: '0x80123400', model: '0x80400000', skeleton: '0x80401000', model_detail: { kind: 'ninja' }, structures: [{ at: '0x80400000' }] },
+  evidence: [], confidence: 0.8, replaceable: { live: true, build: true }, backend: 'profile' };
+
+test('replace: a bare point is identified first and pick_replace gets the pick_identify result', async () => {
+  const f = fakeApi({ pick_identify: IDENT, pick_replace: i => ({ status: 'live', mode_used: 'live', message: 'Amy replaces enemy:wolf' }) });
+  let seen = null;
+  const r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.25, y: 0.5, aspect: 16 / 9, onIdentified: p => { seen = p; } });
+  assert.equal(r.ok, true); assert.equal(r.mode, 'live'); assert.equal(seen.slot, 'enemy:wolf');
+  const ident = f.calls.find(c => c.body && c.body.tool === 'pick_identify').body.input;
+  assert.equal(ident.window_aspect, +(16 / 9).toFixed(4));
+  const rep = f.calls.find(c => c.body && c.body.tool === 'pick_replace').body.input;
+  assert.equal(rep.pick.slot, 'enemy:wolf'); assert.equal(rep.pick.ram.model, '0x80400000'); assert.equal(rep.mode, 'live');
+  assert.match(PW.replaceText(r, 'Amy'), /replaced live/);
+});
+
+test('replace: a pick_identify result is passed as is (no second identify)', async () => {
+  const f = fakeApi({ pick_identify: () => { throw new Error('should not identify again'); }, pick_replace: { status: 'live' } });
+  const r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.5, y: 0.5, pick: Object.assign({}, IDENT, { x: 0.5, y: 0.5 }) });
+  assert.equal(r.ok, true);
+  assert.equal(f.calls.filter(c => c.body && c.body.tool === 'pick_identify').length, 0);
+});
+
+test('replace: the backend fell back to build itself: no second build job, both steps shown', async () => {
+  const f = fakeApi({ pick_identify: IDENT, pick_replace: { status: 'swapped', mode_used: 'build', fell_back: true, fallback_reason: 'no RAM image', message: 'Amy is in mod_x' } });
+  const r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.5, y: 0.5 });
+  assert.equal(r.ok, true); assert.equal(r.mode, 'build');
+  assert.equal(f.calls.filter(c => c.body && c.body.tool === 'pick_replace').length, 1);
+  assert.deepEqual(r.steps.map(s => [s.mode, s.ok]), [['live', false], ['build', true]]);
+  assert.match(PW.replaceText(r, 'Amy'), /built and swapped in/);
+});
+
+test('replace: not_replaceable -> characters live_use, then the rebuild request', async () => {
+  const f = fakeApi({ pick_identify: Object.assign({}, IDENT, { slot: null }), pick_replace: { status: 'not_replaceable', message: 'no writer slot' } });
+  let r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.5, y: 0.5, fallbackLive: async () => ({ status: 'live_swapped' }) });
+  assert.equal(r.ok, true); assert.equal(r.via, 'characters live_use');
+  assert.equal(f.calls.filter(c => c.body && c.body.tool === 'pick_replace').length, 1);   // no build attempt: it has no slot either
+  let steps = null;
+  r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.5, y: 0.5, fallbackLive: async () => ({ status: 'unsupported' }),
+    fallbackBuild: async s => { steps = s.slice(); return { number: 9 }; } });
+  assert.equal(r.ok, true); assert.equal(r.via, 'rebuild request');
+  assert.deepEqual(steps.map(s => s.via), ['pick_replace', 'characters live_use']);
+});
+
+test('replace: liveFirst runs the game-specific live_use before pick_replace', async () => {
+  const f = fakeApi({ pick_identify: IDENT, pick_replace: { status: 'live' } });
+  const r = await PW.replace(f, { sid: 'w1-s1', character: 'amy', x: 0.5, y: 0.5, liveFirst: true, fallbackLive: async () => ({ status: 'live_swapped', message: 'Snake is Amy' }) });
+  assert.equal(r.via, 'characters live_use'); assert.equal(f.calls.filter(c => c.path === '/api/jobs').length, 0);
+});
+
+test('labels: pick_identify ram (an object) shows its keys and addresses, never [object Object]', () => {
+  const l = PW.labelOf(null, IDENT);
+  assert.doesNotMatch(l.ram, /object Object/);
+  assert.equal(l.ram, 'entity 0x80123400 · model 0x80400000 · skeleton 0x80401000');
+  assert.equal(PW.ramText({ model_images: [{ name: 'chr', base: '0x80500000' }] }), 'model image 0x80500000');
+  assert.equal(PW.ramText([{ address: '0x80001000' }]), '0x80001000');
+  assert.equal(PW.ramText('0x80002000'), '0x80002000');
+  assert.equal(PW.labelOf({ picked: { class: 'Soldier', ptr: '0x8000F000' } }).ram, '0x8000F000');
 });
 
 test('replace: before pick_replace exists, live_use then the rebuild request', async () => {
