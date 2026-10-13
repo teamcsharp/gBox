@@ -893,6 +893,7 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
     iso = C._gc_iso(ctx, game)
     disc = GCDisc(iso)
     bank = disc.read(CTS.BANK)
+    texbank = disc.read(CTS.TEXBANK) if CTS.TEXBANK in getattr(disc, "files", {}) else None
     disc.f.close()
     groups = CTS.people(ct.read_bank(bank))
 
@@ -901,14 +902,17 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
             sl = CTS.parse_slot(slot, "axel", groups)
             glb = C._local_or_fetch(ctx, meta, meta["model"])
             from .retarget_profile import profile_of
-            new, _rep = CTS.swap_bank(files[CTS.BANK], glb, dict((meta.get("rig") or {}).get("roles") or {}), sl,
-                                      profile=profile_of((meta.get("rig") or {}).get("scale")))
-            return {CTS.BANK: new}
+            new, _rep = CTS.swap_files(files, glb, dict((meta.get("rig") or {}).get("roles") or {}), sl,
+                                       profile=profile_of((meta.get("rig") or {}).get("scale")))
+            return new
         return run
-    files, per = chain({CTS.BANK: bank}, [(s, step(s, m)) for s, m in pairs], ctx.progress)
+    staged = {CTS.BANK: bank, **({CTS.TEXBANK: texbank} if texbank is not None else {})}
+    files, per = chain(staged, [(s, step(s, m)) for s, m in pairs], ctx.progress)
     if not any(r["status"] == "built" for r in per.values()):
         return {"mod": None, "slots": per}
-    b = ct.build_mod(ctx.config, game, iso, files[CTS.BANK], name, f"Crazy Taxi {name}.iso", progress=ctx.progress)
+    extra = {CTS.TEXBANK: files[CTS.TEXBANK]} if texbank is not None and files[CTS.TEXBANK] != texbank else {}
+    b = ct.build_mod(ctx.config, game, iso, files[CTS.BANK], name, f"Crazy Taxi {name}.iso", progress=ctx.progress,
+                     **({"extra": extra} if extra else {}))
     chain_written(per, name, Path(str((b or {}).get("image") or f"Crazy Taxi {name}.iso")).name, files)
     return {"mod": name, "slots": per}
 
