@@ -619,7 +619,8 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 | WWF No Mercy (USA; EU Rev A reader) / WCW Revenge / World Tour | n64 | nomercy | nm_kane, nm_mankind, nm_steve_austin, nm_the_rock, nm_undertaker; not ripped: the rest of the roster | **gbox.aki_wrestling**: any wrestler, player |
 | GTA: Liberty City Stories | ps2 | gta_lcs | lcs_toni, toni_cipriani; not ripped: the other Toni outfits | **gbox.gta_stories_models**: player (every outfit) |
 | Sonic Adventure 2 | dreamcast | sa2 | sonic, sa2_shadow, sa2_tails, sa2_knuckles, sa2_rouge, sa2_dr_eggman, sa2_amy_rose, sa2_metal_sonic, sa2_tikal, sa2_chaos_0 | **gbox.sa2_chars**: player (Sonic; section 13) |
-| Phantasy Star Online Ver. 2 | dreamcast | pso | hucast; not ripped: the other 8 classes | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
+| Clay Fighter: Sculptor's Cut (USA) | n64 | clayfighter (sprite sheets of the 16 fighters) | (op=collect) | **gbox.clayfighter_swap**: fighter:<name>, player (sprites donor re-draws every frame; docs/clayfighter_swap.md) |
+| Phantasy Star Online Ver. 2 | dreamcast | pso | all 9 classes (hucast, pso_humar ... pso_fonewearl), each with body roles | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
 | Super Smash Bros. Melee | gamecube | melee | 27 fighters | overlay only |
 | Shenmue (Disc 1) | dreamcast | shenmue | ryo | overlay only |
 | Resident Evil 4 (2023, Steam) | pc | re4r | re4r_leon, re4r_ashley (no roles) | overlay only |
@@ -680,6 +681,31 @@ Findings from the Spark (offline mode only, never online):
   for the body file / why it needs the weighted chunks (Ghidra on 1ST_READ.BIN: the player model loader), or write the
   character as weighted chunks in the original slots (0x2C vertices with Ninja-flag weights), keeping the original
   vertex counts per chunk.
+
+**Class body role maps** (#1485, read off the owned 2OEF disc). The native collection holds all nine classes
+(`characters op=collect`, extractor `pso`). It used to report 1 of 9 retargetable, because only the hand-mapped HUcast had
+`rig.roles`. All nine bodies `PSO/PL<x>BDY00.NJ` (x = A..I: HUmar, HUnewearl, HUcast, RAmar, RAcast, RAcaseal, FOmarl,
+FOnewm, FOnewearl) are **one 64-node tree**: every node has the same parent in every class, because the game drives
+them all with one motion set. They differ only in bone lengths (hip at y 14.3 for HUcast, 10.5 for HUnewearl) and in
+flag bits of nodes that no role uses. So every class has the same map (`pso_player.CLASS_ROLES`, node index, joint
+`nodeNNN` in the collection model):
+
+| role | node | | role | node | | role | node |
+|---|---|---|---|---|---|---|---|
+| hip | 2 (pelvis) | | l_upper / l_fore / l_hand | 28 / 29 / 34 | | l_thigh / l_shin / l_foot | 4 / 5 / 8 |
+| chest | 25 (torso) | | r_upper / r_fore / r_hand | 41 / 42 / 47 | | r_thigh / r_shin / r_foot | 13 / 14 / 17 |
+| head | 56 | | | | | | |
+
+- `pso_player.check_roles` checks the map against a class's own tree. It must be the player tree (`PLAYER_PARENTS`),
+  every role node must draw vertices, left limbs must be at +X, each limb must chain below the chest or hip, and the
+  heights must go head > chest > hip > feet.
+- `body_roles` runs that check on extraction: `_pso_run` reports the roles, which become `rig.roles`.
+- Entries collected before this get the roles from their `manifest.json` (`ROLE_BACKFILL["pso"]` →
+  `pso_player.model_roles`, checked on the exported bind pose).
+- A stored partial collection result is re-checked against the library (`characters.refresh_collection`, called by
+  `AutoCollection.status`). The session observer then sees it as complete and stops filing the models gap, and the
+  roster job isn't queued again.
+- The enemy roster entries (`kind` enemy, `gbox.pso_enemy`) aren't part of the collection count.
 
 ## 15. RE6 Leon (`re6_leon`) in other games, and fixes found on the way (2026-10-07)
 
