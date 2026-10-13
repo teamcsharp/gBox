@@ -62,6 +62,12 @@ def test_njtl_rejects_garbage():
         iv.njtl(b"\x00" * 64)
 
 
+def test_njtl_rejects_entry_count_past_the_file():
+    with pytest.raises(ValueError, match="overrun"):
+        iv.njtl(b"NJTL" + struct.pack("<III", 0, 8, 0x10000000) + b"\0" * 16)
+
+
+
 def test_afs_and_cgam_and_cglc_headers():
     afs = b"AFS\0" + struct.pack("<I", 1) + struct.pack("<II", 0x80000, 0x1464)
     assert iv.afs(afs)["count"] == 1

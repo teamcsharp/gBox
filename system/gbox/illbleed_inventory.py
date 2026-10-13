@@ -54,6 +54,8 @@ def njtl(data: bytes) -> dict:
     if len(data) < 0x10 or data[:4] != b"NJTL":
         raise ValueError("no NJTL header")
     hdr4, base, count = struct.unpack_from("<III", data, 4)
+    if 0x10 + count * 12 > len(data):
+        raise ValueError(f"{count} NJTL entries overrun the file")
     names, name_end = [], 0
     for i in range(count):
         off = struct.unpack_from("<I", data, 0x10 + i * 12)[0]
