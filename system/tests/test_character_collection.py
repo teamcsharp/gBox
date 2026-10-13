@@ -257,3 +257,18 @@ def test_list_all_skips_entries_without_a_name(tmp_path):
     (tmp_path / "sonic").mkdir(); (tmp_path / "sonic" / "meta.json").write_text(json.dumps({"slug": "sonic", "name": "Sonic"}))
     assert [m["slug"] for m in C.list_all(tmp_path)] == ["sonic"]
 
+
+def test_list_all_is_cached_and_refreshed_by_writes(tmp_path, monkeypatch):
+    """The library on the Spark's NTFS HDD took ~13 s to read per call; list_all must not re-read every time."""
+    import json
+    from gbox import characters as C
+    (tmp_path / "sonic").mkdir(); (tmp_path / "sonic" / "meta.json").write_text(json.dumps({"slug": "sonic", "name": "Sonic"}))
+    assert [m["slug"] for m in C.list_all(tmp_path)] == ["sonic"]
+    reads = []
+    real = C._list_all_uncached
+    monkeypatch.setattr(C, "_list_all_uncached", lambda root: reads.append(1) or real(root))
+    C.list_all(tmp_path); C.list_all(tmp_path, "g")
+    assert reads == []                                   # served from the cache
+    C.put_meta(tmp_path, {"slug": "amy", "name": "Amy"})
+    assert sorted(m["slug"] for m in C.list_all(tmp_path)) == ["amy", "sonic"] and reads == []   # updated in place, no re-read
+

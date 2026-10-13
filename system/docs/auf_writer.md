@@ -132,7 +132,22 @@ string is `Entity+0x28`, read by `gbox.entity_probe` with `profiles/auf-gcn-us.j
 `models/mp_player_griffen.men` for a bot. That one gives `model:griffin_body`, so a whipped bot or enemy maps to
 the body this writer replaces.
 
-`op=collect` on the game lists these slots (`auf_swap.cast_slots`, kind `slot`, nothing extracted).
+`op=collect` on the game returns these slots (`auf_swap.cast_slots`) and collects the cast itself
+(`gbox/auf_chars.py`, reader v2; v1 listed the slots only and extracted nothing):
+* All 45 bodies become library characters `auf_<body>`. Each comes from one representative level: the first mission
+  level that has it, else the first multiplayer map.
+* The entity that wears the body is picked by LOD (`_h` first), then class (Player, actor, then DeathmatchPlayer),
+  then script name.
+* The body and its head model become one skinned GLB on the body's skeleton. The head's bones are matched by hash,
+  and its vertices are moved onto the body's rest pose.
+* Each entry has the level's textures (opaque), the 18 `auto_roles` body roles, and the library frame (left +X,
+  up +Y, facing +Z).
+* Names and aliases come from the `.men` scripts: the script names, `classname`, and the `mp_player_<name>` names
+  of the 16 multiplayer characters.
+* Meta `auf_slot` = `model:<body>` links each entry back to its writer slot.
+* Offline against the owned GCZ, the 45 entries are verified and retargetable and pass the cast-swap donor gate.
+  `python -m gbox.auf_chars <gcz> <out dir> [body ...]` writes the GLBs without the library.
+
 `characters op=coverage` lists the writer (`char_coverage.WRITERS`). The mod is named
 `auf_<slot>_<plan hash>` and is built on the control plane, where the collection is.
 

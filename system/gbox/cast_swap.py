@@ -53,7 +53,7 @@ ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr":
           "pe2": "parasite eve ii", "sm64": "super mario 64", "oot": "ocarina of time", "wcw": "wcw"}
 AGGREGATE = {"enemies", "enemy", "enemy:all", "drivers", "pedestrians", "passengers", "peds", "peds:all", "all",
              "roster", "cast", "fares"}
-MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver"}
+MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver", "sage"}
 STOP = {"the", "a", "of", "in", "usa", "europe", "japan", "ver", "disc", "and", "with", "as", "game", "games"}
 
 
@@ -312,7 +312,8 @@ def filter_slots(rows: list[dict], which: str = "all") -> list[dict]:
     if w == "main":
         return [r for r in rows if r["kind"] in MAIN_KINDS]
     kinds = {"enemies": "enemy", "npcs": "npc", "pedestrians": "pedestrian", "passengers": "passenger",
-             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character"}
+             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character",
+             "bosses": "boss", "sages": "sage"}
     if w in kinds or w in {r["kind"] for r in rows}:
         k = kinds.get(w, w)
         return [r for r in rows if r["kind"] == k]
@@ -408,6 +409,8 @@ STRATEGIES = {
     "gbox.yukes_sd": ("pairs", "SmackDown! 2: op=match (every wrestler in one disc)"),
     "gbox.aki_wrestling": ("pairs", "No Mercy / WCW: op=match (every wrestler in one ROM)"),
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
+    "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
+                               "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
 }
@@ -422,10 +425,12 @@ def chain(files: dict, steps: list[tuple[str, object]], progress=lambda p, m: No
     staged copy {path: bytes} (never the original image); steps: [(slot, step(files) -> {path: new bytes})]. A
     failing step leaves the files as they were and is reported; the next step continues from there.
     -> (final files, {slot: {status, reason?}})."""
+    from . import fit_events as FE
     state = dict(files)
     report: dict[str, dict] = {}
     for i, (slot, step) in enumerate(steps):
         progress(5 + 80 * i / max(1, len(steps)), f"{slot} ({i + 1}/{len(steps)})")
+        FE.model(slot)                                    # this step's fits belong to the slot's model
         try:
             new = step(dict(state)) or {}
             unknown = set(new) - set(state)
@@ -475,7 +480,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     chosen = filter_slots(all_slots, slots)
     for s in chosen:
         if s.get("status") == "not_working":
-            s["skip"] = "the game doesn't draw this writer's output yet (status not_working); left as it is"
+            s["skip"] = s.get("reason") or "the game doesn't draw this writer's output yet (status not_working); left as it is"
     if strategy(w["writer"])[0] == "single":               # one slot per mod: the player (or the first slot) only
         first = next((s for s in chosen if not s.get("skip") and s["kind"] == "player"),
                      next((s for s in chosen if not s.get("skip")), None))
@@ -619,15 +624,22 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             metas[r["character"]] = C.get(root, r["character"])
         except KeyError:
             pass
-    pairs = [(r["slot"], metas[r["character"]]) for r in p["assignments"]]
+    from . import fit_events as FE, retarget_profile as RP
+    # the operator's Retarget editor profiles (per donor, per slot) go into each donor's meta before any fit
+    pairs = [(r["slot"], RP.apply_to_meta(metas[r["character"]], gid, r["slot"])) for r in p["assignments"]]
+    profiles = ",".join(sorted({f"{s}={m.get('retarget_profile_digest')}" for s, m in pairs
+                                if m.get("retarget_profile_digest")}))
     have = filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json"
     if have.is_file() and not inp.rebuild:
         try:
             rec = json.loads(have.read_text())
             slots = rec.get("cast") or []
-            return _report(p, {s["slot"]: s for s in slots}, name, "ready", launch and _launch(ctx, gid, name))
+            if rec.get("retarget_profiles", "") == profiles:
+                return _report(p, {s["slot"]: s for s in slots}, name, "ready", launch and _launch(ctx, gid, name))
+            inp = _rebuild(inp)                           # a profile changed in the Retarget editor since the build
         except (OSError, ValueError):
             pass
+    FE.plan([(s, m["slug"], f"{m.get('name', m['slug'])} -> {_slot_name(p, s)}") for s, m in pairs])
     strat = p["strategy"]
     builder = BUILDERS.get(p["writer"])
     if builder is None:
@@ -643,6 +655,11 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     per = res.get("slots") or {}
     mod = res.get("mod")
     built = [s for s, r in per.items() if r.get("status") in ("built", "partial")]
+    for s, _m in pairs:                                   # every model's last stage in the Fitting pop-up
+        FE.model(s)
+        ok = s in built and mod
+        FE.stage("write", "done" if ok else "failed",
+                 {"mod": mod} if ok else {"reason": str((per.get(s) or {}).get("reason") or "not built")[:150]})
     if mod and built:
         d = filemods.mod_dir(ctx.config, gid, mod)
         rec_path = d / ".gbox-mod.json"
@@ -652,7 +669,8 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             rec = {"name": mod, "game_id": gid}
         rec |= {"cast": [{"slot": r["slot"], "character": r["character"], **per.get(r["slot"], {"status": "failed"})}
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
-                "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False}
+                "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
+                "retarget_profiles": profiles}
         if rec_path.parent.is_dir():
             rec_path.write_text(json.dumps(rec, default=str))
         for r in p["assignments"]:
@@ -693,6 +711,17 @@ def _report(p: dict, per: dict, mod, status: str, launch, detail=None) -> dict:
 
 
 # ---------------------------------------------------------------- per-writer multi-slot builders
+
+def _rebuild(inp):
+    """The same request with rebuild=True (pydantic CharIn or a SimpleNamespace)."""
+    if hasattr(inp, "model_copy"):
+        return inp.model_copy(update={"rebuild": True})
+    return SimpleNamespace(**{**vars(inp), "rebuild": True})
+
+
+def _slot_name(p: dict, slot: str) -> str:
+    return next((r.get("slot_name") or slot for r in p.get("assignments") or [] if r.get("slot") == slot), slot)
+
 
 def _shim(inp, **kw):
     """A CharIn-like copy for a writer's own use()/match() (never launches)."""
@@ -755,6 +784,12 @@ def _gta_vc(ctx, game, pairs, name, inp):
     return gta_vc_swap.build_cast(ctx.config, game, C._rom(ctx, game), pairs, name, ctx.progress)
 
 
+def _oot(ctx, game, pairs, name, inp):
+    from . import oot_swap
+    return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
+                               strict_cutscenes=bool(getattr(inp, "strict_cutscenes", False)))
+
+
 def _jgr(ctx, game, pairs, name, inp):
     from . import characters as C, filemods, jgr, jgr_swap
     from .gdrom import GDRom, patch_gdi
@@ -800,7 +835,9 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
         def run(files):
             sl = CTS.parse_slot(slot, "axel", groups)
             glb = C._local_or_fetch(ctx, meta, meta["model"])
-            new, _rep = CTS.swap_bank(files[CTS.BANK], glb, dict((meta.get("rig") or {}).get("roles") or {}), sl)
+            from .retarget_profile import profile_of
+            new, _rep = CTS.swap_bank(files[CTS.BANK], glb, dict((meta.get("rig") or {}).get("roles") or {}), sl,
+                                      profile=profile_of((meta.get("rig") or {}).get("scale")))
             return {CTS.BANK: new}
         return run
     files, per = chain({CTS.BANK: bank}, [(s, step(s, m)) for s, m in pairs], ctx.progress)
@@ -817,6 +854,7 @@ BUILDERS = {
     "gbox.yukes_sd": _match_builder("yukes_sd"),
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
+    "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
 }

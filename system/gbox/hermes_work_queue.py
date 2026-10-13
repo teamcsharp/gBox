@@ -270,9 +270,32 @@ def _prompt(item):
         return header + mode._handoff()
     stage = next_stage(item)
     template = Path(__file__).resolve().parents[1] / 'hermes/gbox/FAVORITE_WORK.md'
+    fp = item.get('fingerprint') or {}
+    hint = ''
+    if stage in ('inventory', 'analysis'):
+        hint = ('\nAssimilation fingerprint attached to this ticket: ' + fp['summary']
+                + (f" Start from {fp.get('start_from') or fp.get('engine_reader')}."
+                   if fp.get('start_from') or fp.get('engine_reader') else '')
+                if fp.get('summary') and fp.get('source') != 'error' else
+                '\nNo fingerprint yet: run assimilate op=fingerprint for this game_id first (start_job).')
     return header + f"\nGame: {item['title']} ({item['platform']}), game_id={item['game_id']}. " + (
         f"Next unfinished stage: {stage}. Preserved checkpoint: " + json.dumps(item.get('stages', {}))
-        + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+        + hint + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+
+
+FINGERPRINT = None  # (game_id, title, platform, api=) -> compact dict; None = gbox.assimilate.ticket_fingerprint
+
+
+def _fingerprint(item):
+    """Step one of readiness: the assimilate fingerprint (engine, containers, codecs, nearest assimilated titles,
+    reader to start from). Best effort: a ticket is never blocked on it."""
+    try:
+        from .assimilate import ticket_fingerprint
+        fn = FINGERPRINT or ticket_fingerprint
+        return fn(item['game_id'], item.get('title') or '', item.get('platform') or '', api=lambda p: _api(p),
+                  max_files=1500)
+    except Exception as e:  # noqa: BLE001
+        return {'source': 'error', 'error': f'{type(e).__name__}: {e}'[:200], 'summary': 'fingerprint unavailable'}
 
 
 def _ensure_request(data, item, requests):
@@ -281,18 +304,23 @@ def _ensure_request(data, item, requests):
     parent = data.get('parent_request_id')
     if not parent or not any(r['id'] == parent for r in requests):
         raise ValueError('Favorites queue requires its existing operator parent request')
+    if not item.get('fingerprint'):
+        item['fingerprint'] = _fingerprint(item)
+    fp = item['fingerprint']
     # Persist before POST. Lost responses are recovered by the context marker on the next scan.
     item['request_uncertain'] = True
     _save(data)
     r = _api('/api/requests', {
         'title': f"Character replacement readiness: {item['title']}", 'source': 'automation',
         'author': 'agent', 'automated': True, 'parent_request_id': parent,
-        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id']},
+        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id'],
+                    'assimilation_fingerprint': fp},
         'body': (f"Persistent work for favorite game {item['game_id']} ({item['platform']}). "
                  "Inventory the owned build, analyze executable/asset loaders, implement and test native "
                  "character extraction and replacement, then verify the rebuilt game. Preserve hash-identified "
                  "artifacts, reusable Ghidra projects and exact pending job IDs. Each run advances one bounded "
-                 "stage; a report, extracted binary or preview alone is not a working character replacement.")})
+                 "stage; a report, extracted binary or preview alone is not a working character replacement."
+                 f"\n\nFingerprint (gbox.assimilate, step one of inventory): {fp.get('summary', '')}")})
     if not ID.fullmatch(str(r.get('id', ''))):
         raise ValueError('Request creation was not acknowledged')
     item.update(request_id=r['id'], number=r['number'])

@@ -49,7 +49,70 @@ def slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+_LIST_CACHE: dict = {}            # str(root) -> {"at": built_at, "entries": {slug: meta}, "refreshing": bool}
+LIST_TTL_S = 600.0               # full re-read at most this often, in the background (writes elsewhere show up then)
+import threading as _threading
+_LIST_LOCK = _threading.Lock()
+
+
+def _invalidate_list(root=None, meta=None):
+    """A write through put_meta updates the cached entry in place: no full re-read of the HDD library."""
+    with _LIST_LOCK:
+        for key, c in _LIST_CACHE.items():
+            if root is not None and key != str(root):
+                continue
+            if meta and meta.get("slug"):
+                c["entries"][meta["slug"]] = json.loads(json.dumps(meta))
+            else:
+                c["at"] = 0
+
+
+def _refresh_list(root):
+    key = str(root)
+    try:
+        entries = {m["slug"]: m for m in _list_all_uncached(root) if m.get("slug")}
+        with _LIST_LOCK:
+            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False}
+    except Exception:
+        with _LIST_LOCK:
+            if key in _LIST_CACHE:
+                _LIST_CACHE[key]["refreshing"] = False
+
+
 def list_all(root: Path, game_id: str = "") -> list[dict]:
+    """Every character entry. Cached: the library lives on an NTFS HDD where reading 645 meta.json files takes
+    13-80 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13). Only the very first
+    call reads synchronously; afterwards a stale cache is served while a background thread refreshes it."""
+    import copy
+    import time as _t
+    key = str(root)
+    with _LIST_LOCK:
+        c = _LIST_CACHE.get(key)
+        stale = c is not None and _t.time() - c["at"] > LIST_TTL_S and not c.get("refreshing")
+        if stale:
+            c["refreshing"] = True
+    if c is None:
+        _refresh_list(root)
+        c = _LIST_CACHE[key]
+    elif stale:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+    with _LIST_LOCK:
+        out = copy.deepcopy(list(c["entries"].values()))
+    out = [m for m in out if isinstance(m, dict) and m.get("name")]
+    out.sort(key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
+    if game_id:
+        for m in out:
+            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
+    return out
+
+
+def warm_list(root: Path) -> None:
+    """Fill the cache in the background at startup so the first menu doesn't pay the HDD read."""
+    if str(root) not in _LIST_CACHE:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+
+
+def _list_all_uncached(root: Path) -> list[dict]:
     out = []
     for p in sorted(Path(root).glob("*/meta.json")):
         try:
@@ -58,8 +121,6 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
             continue
         if not isinstance(m, dict) or not m.get("name"):
             continue                    # a bookkeeping folder (e.g. "shared": slug + targets only) is not a character
-        if game_id:
-            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
         out.append(m)
     return sorted(out, key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
 
@@ -99,6 +160,7 @@ def put_meta(root: Path, meta: dict) -> dict:
     tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
+    _invalidate_list(root, meta)
     return meta
 
 
@@ -575,7 +637,8 @@ class CharIn(BaseModel):
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
-    launch: bool = True                    # use: launch after building
+    strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
+    launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
@@ -1366,8 +1429,9 @@ def _mgs_vr_run(ctx, game, entry, work):
 
 
 def _auf_run(ctx, game, e, work):
-    """AUF roster entries are writer slots (gbox.auf_swap), not extractable characters."""
-    raise ValueError(f"{e.get('name')} is a 007 Agent Under Fire writer slot: use characters op=use slot={e.get('slot')}")
+    """One AUF body (gbox.auf_chars): body + head of its representative level as a rigged, textured GLB with roles."""
+    from . import auf_chars
+    return auf_chars.extract_run(ctx, game, e, work)
 
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
@@ -1407,10 +1471,11 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
-    # 007 Agent Under Fire GC: the writer's slots (Bond, enemies, bosses, npcs, bots, every body model); kind "slot"
-    # entries are listed by op=collect and never extracted (gbox.auf_swap.roster)
+    # 007 Agent Under Fire GC: every body model of the cast (Bond's outfits, henchmen, bosses, npcs, the 16 multiplayer
+    # characters) as a rigged GLB from its representative level (gbox.auf_chars); the writer's slots stay in
+    # gbox.auf_swap (roster / cast_slots, characters op=use slot=...)
     ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
-     lambda: __import__("gbox.auf_swap", fromlist=["x"]).roster(), _auf_run),
+     lambda: __import__("gbox.auf_chars", fromlist=["x"]).roster(), _auf_run),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1488,7 +1553,18 @@ def dedicated_entries(config, game, name, roster):
 # extractor -> (module with READER_VERSION [and needs_refresh(meta)], the meta field its entries record the version in;
 # entries without the field were made by version 1). A newer reader re-extracts older entries (extract_dedicated,
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader")}
+# AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
+# stored collection made by an older reader is collected again at the next launch (character_collection).
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader")}
+
+
+def reader_version(extractor: str | None) -> int | None:
+    """The current READER_VERSION of a versioned DEDICATED reader, else None."""
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    return int(getattr(importlib.import_module(spec[0]), "READER_VERSION", 1))
 
 
 def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
@@ -1575,7 +1651,7 @@ def collect(ctx, inp):
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     from . import char_coverage
     return collection_status(results) | {
-        'game_id': game['game_id'], 'extractor': name,
+        'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
@@ -2207,6 +2283,8 @@ def characters_tool(inp: CharIn, ctx):
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        from . import retarget_profile as _RP                # game-wide Retarget editor profiles
+        chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2253,6 +2331,16 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"unknown op {inp.op} (list | get | use | overlay | extract | add | blender | environments | coverage)")
     game = _game(ctx, inp)
     gid = game["game_id"]
+    from . import retarget_profile as _RP, fit_events as _FE   # the operator's Retarget editor profile + Fitting pop-up
+    profiled = _RP.apply_to_meta(meta, gid, inp.slot)
+    if profiled is not meta:
+        sk = _RP.slot_key(inp.slot)
+        if not inp.rebuild and any(t.get("needs_rebuild") and (sk == "*" or _RP.slot_key(t.get("slot")) in (sk, "*"))
+                                   for t in (meta.get("targets") or {}).get(gid, [])):
+            inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
+        meta = profiled
+    _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
+                      meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
