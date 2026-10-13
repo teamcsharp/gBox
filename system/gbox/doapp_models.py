@@ -13,10 +13,11 @@ everything that is established from the game's own code (docs/doapp_pipeline.md)
   from the 13-byte tables at 0x80103ed0) and draws group p's chunks (`u16 count, u16 kind` + prebuilt GPU packets).
 * the TIM run: standard PS1 TIMs back to back.
 
-Not established, so not produced here: the skeleton (bone hierarchy + rest transforms). The per-bone vertex batches
-are in bone-local frames whose axes differ per bone (thighs extend along -z, shins along +z), so the rest pose comes
-from the motion evaluator, which has not been located. Without it there is no honest rigged GLB; this module is
-therefore not registered as a characters.DEDICATED reader (see docs/doapp_pipeline.md "Status").
+* chunk records -> primitives (primitives(); layouts from the draw routines, see CHUNK_LAYOUTS) and the TIMs as
+  VRAM texture pages (vram(), texture_page()).
+
+The skeleton is not in the model: the per-bone batches are in bone-local frames that the game's skeleton build
+places. gbox.doapp_motion runs that build; gbox.doapp_chars assembles the rigged GLB (docs/doapp_pipeline.md).
 """
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ MESH_SLOTS = 8                     # slot k = section 3 + k (body, then limbs / 
 SLOT_ENTRIES = 13                  # 13 count/start entries and 13 bone bytes per slot
 MESH_MARKER = 0x42                 # first word the expander writes
 UNPACK_FN = 0x8006C718             # fight loader's section expander (a0 player, a1 src, a2 dest) -> new src
-WORK_BASE = 0x801E8000             # player 0 work buffer (0x8008775c[0]); 14 section pointers sit at its start
+WORK_BASE = 0x801E8000             # where unpack_model() expands (scratch; the game's player 0 buffer is 0x801fe800 in
+                                   # its 4 MiB RAM, 0x8008775c[0]; doapp_motion.Rig uses that one)
 LOAD_AT = 0x80140000               # where unpack_model() places the file (free RAM during the fight loader)
 BONE_TABLE_RAM = 0x80103ED0        # overlay: 13 bone bytes per slot; 0x80103f2c is the 10-part body variant
 SCRATCH_VERTEX = 0x1F800000        # transformed vertex i lives at SCRATCH_VERTEX + 8 * i ...

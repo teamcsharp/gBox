@@ -10,8 +10,8 @@ ISO9660; everything lives in the 0x2800000-byte `bankedroms` region the CPU sees
 | Stage | State | Where |
 | --- | --- | --- |
 | Inventory (identity, files, fighter index) | done, verified against the owned ROMs | `gbox/doapp_inventory.py`, `gbox/zn_tps_boot.py` |
-| Format analysis | file table, model container, mesh sections, renderer located | this document |
-| Reader (rigged GLB) | blocked on the skeleton (see Status); format-level parsers done | `gbox/doapp_models.py` |
+| Format analysis | file table, model container, mesh sections + primitives, motion banks, skeleton build | this document |
+| Reader (rigged GLB) | done: 44/44 costumes verified, registered in `characters.DEDICATED` (`doapp`) | `gbox/doapp_chars.py`, `gbox/doapp_motion.py`, `gbox/doapp_models.py` |
 | Writer | not started (constraints in Status) | — |
 
 ## Owned source
@@ -100,9 +100,109 @@ so primitives can join vertices of different bones (rigid one-bone-per-vertex sk
 all 44 costume models: the batches cover every vertex of every mesh exactly, and the mesh group count equals the
 batch count (one more in slots 0, 1 and 3 when those carry an extra group). Bones 0-14 are the main skeleton (15 matrices, post-processed by 0x800ad810), 15-26 are
 costume accessory chains (hair, ribbons; mesh slot 7, matrices from the chain solver 0x800aa1c0 driven by the
-per-fighter/costume table at 0x80103ab8). Batch extents give the local frames: bones 3/9 feet, 4/10 and 8/14 the two
-arm segments, 5/11 hands (three alternative hand shapes in slots 2 and 4, one drawn per frame), 6/12 and 7/13 the two
-leg segments, 0/1/2 torso / head / pelvis (labels from geometry, not from code).
+per-fighter/costume table at 0x80103ab8). Bone roles, now from the skeleton build (below): 2 pelvis, 0 upper body,
+1 head; left arm 8 / 4 / 5 (upper, forearm, hand), right arm 14 / 10 / 11, left leg 6 / 7 / 3 (thigh, shin, foot),
+right leg 12 / 13 / 9 ("left" = the fighter's left at facing +1: +x in the game frame; 0x80102238 is the game's
+left/right swap table for facing -1). Slots 2 and 4 hold three alternative hand shapes, one drawn per frame (u8 at
+0x8011d40d / 0x8011d40c + 2 * player).
+
+### Primitives (`doapp_models.primitives`)
+
+A chunk record holds the same prebuilt GPU packet twice (double buffer), then the corner pointers, then per-kind data
+(layouts from the draw routines 0x800acd08 / 0x800aca74 / 0x800ac2cc / 0x800ac010 / 0x800ac8c8 / 0x800ac6ec /
+0x800acbd4 / 0x800ac51c):
+
+| kind | record | packet | corners | after the pointers | drawing |
+| --- | --- | --- | --- | --- | --- |
+| 0x8018 | 0x54 | FT3 | +0x40.. | 1 normal | culled, flat lit |
+| 0x8019 | 0x68 | FT4 | +0x50.. | 1 normal | culled, flat lit |
+| 0x801a | 0x74 | GT3 | +0x50.. | 3 normals | culled, gouraud lit |
+| 0x801b | 0x98 | GT4 | +0x68.. | 4 normals | culled, gouraud lit |
+| 0x803a / 0x803b | as 0x801a / 0x801b | GT3 / GT4 | | | double-sided |
+| 0x29 | 0x60 | FT4 | +0x50.. | — | double-sided, unlit |
+| 0x805a | 0x74 | GT3 | +0x50.. | 3 x 2 colour pointers | seam triangles (below) |
+| 1 | 0x70 | FT4 | 4 inline SVECTORs | — | section 12 only (effect quads drawn on a player flag) |
+
+CLUT = high half of packet word 3, tpage = high half of word 5 (GT) / 4 (FT). All 27258 primitives of the 44 costume
+models parse, every chunk tiles to the next, every vertex index is in range, and every primitive samples texels and a
+palette of the model's own TIMs (4 triangles of Lei Fang costume 3's hands run 4 texels past their TIM). The 0x805a
+triangles (the last group of slots 0, 1, 3) are the only primitives joining two batches: the seams between bones,
+reusing vertices the slot's other batches transformed and borrowing their neighbours' lit colours. Drawn corner order
+(0, 1, 2) + (1, 3, 2) faces into the mesh in the game's y-down frame; the reader reverses it.
+
+## Motion banks (files 27-37, `gbox/doapp_motion.py`)
+
+Loaded per player at *(0x80087288 + 4p) (0x80196800 / 0x80226800) and relocated by the fight loader 0x8006c618:
+
+```
++0x0000  4 x 0x404   IK bend tables (s16[0x202]; entry ((dist + 3) * 512) // 1000 = elbow / knee bend)
++0x1010  4 x u32     their offsets
++0x1020  u32 list    0-terminated motion record offsets (265 for Tina; records can be shared)
+record   9 x u32     rot track x3 | limb track x4 | curve block | twist keys (0 = none)
+```
+
+* rotation track: one u32 per frame, x = (w >> 20) & 0xffe, y = (w >> 9) & 0xffc, z = (w << 1) & 0xffe (4096 = 360
+  degrees); tracks 0 / 1 / 2 feed rotation slots 0 (upper body), 1 (head), 2 (pelvis); facing +1 uses (x, -y, z).
+* limb track: 5 bytes per frame, four big-endian 10-bit fields << 2 = the end bone's rotation (x, -y, z) and the
+  limb's twist angle. The game's limbs 0..3 (right arm, left arm, right leg, left leg) read record words 6, 4, 5, 3
+  (0x80100118; 0x80100128 when mirrored), and the rotation slot a limb writes is the same number.
+* curve block: 15 s16 halfword offsets; curves 0..2 = root x, y, z (x / z applied as deltas), 3+3k..5+3k = IK target
+  (x, y, z) of limb k in player space. A curve is a run of segments, type = low 3 bits of the first halfword:
+  0 = quadratic (frames in bits 3..11, 20-bit acceleration, start), 4 = linear, 2/6 = short quadratic (3..10 frames),
+  1/5 = one-frame hold, 3/7 = end. Frame t of a segment is ((a t + b) t >> 10) + start / 4 with
+  b = ((end - start) << 8) / frames - a frames, end = the next segment's start (handlers 0x80100210 / 0x801001d0 /
+  0x801001b0 / 0x801001f0, lengths 0x80100230). The motion lasts until the root-x curve reaches its end segment.
+* half-rate motions (tracks hold about half as many frames as the curves; the move script's 0x6666 opcode sets the
+  flag at 0x8011d430): the stepper 0x80099fa4 shows each track frame, then the wrapped midpoint to the next one, and
+  applies the twist keys (record word 8: u16 frame markers with bit 15, keys with bit 14 for limb h & 0x3fff followed by
+  an s16 twist << 4; 0x8009abac). Full-rate motions use 0x8009adbc.
+* `doapp_motion.channels()` decodes all of this in Python; checked frame by frame against the game's own stepper
+  state (rotation slots, twists, IK targets, root height) for every motion of all 11 fighters.
+
+The neutral move (move 0, script in `small_a` sub-table 0x15) plays motion 0, a loop (its last frame equals its first)
+at one motion frame per game frame (the script sets speed 0x1000; 60 fps).
+
+## Skeleton build (the "motion evaluator")
+
+There is no per-bone keyframe data: per frame the game builds the 15 matrices from the channels above. 0x800a0ce8
+(per-player update) loads the player transform (position + root height, facing yaw) into the GTE and calls 0x800a1710
+(IK targets to world) and 0x800a4848, which:
+
+1. rotates by the pelvis slot (X, Y, Z order, 0x8002f634 / 0x8002f6e4 / 0x8002f574) -> bone 2;
+2. translates by the fighter's torso offset (0x801011d8 + 8 * s16 0x80102248[fighter]) and rotates by the upper-body
+   slot -> bone 0;
+3. places the IK roots at the fighter's joint offsets (same table, entries +0x70 / +0x40 in the torso frame for the
+   shoulders, +0x60 / +0x30 in the pelvis frame for the hips) with pole points (-154, 265, 0) / (154, 265, 0) in the
+   torso frame and (-76, -17, 26) / (76, -17, 26) in the pelvis frame; head look 0x800a6cb4 -> bone 1;
+4. 0x800ace28: for each limb, the distance to the target (sqrt 0x800ad7a0), clamped to the limb's reach (lengths
+   0x80101b80 + 32 * fighter), bend angle from the IK table, aim (atan2 0x800ad624), twist; writes upper / end / lower
+   bones from the table at 0x80103f44 (14/11/10, 8/5/4, 12/9/13, 6/3/7) with the end bone's rotation slot;
+5. 0x800aa1c0: accessory chain physics (bones 15+, state initialised by the fight init 0x800a996c from 0x80103ab8),
+   then 0x800ad810 (hit spheres; does not change the matrices).
+
+Output: 32-byte PS1 MATRIX records (s16 3x3 4.12 + s32 translation) at 0x8011ca60 + 0x340 * player, world space, y
+down. Transforming each batch with its bone's matrix assembles the fighter (checked visually and by the seam triangles
+on all 44 costumes).
+
+`doapp_motion.Rig` runs exactly this code: a 4 MiB ZN RAM (`zn_tps_boot.ZNMemory(ram_size=0x400000)`) with the
+decoded program, both players' `small_a` (relocated by 0x8006a754), motion bank and model (expanded by 0x8006c718 into
+the work buffer *(0x8008775c + 4p) = 0x801fe800 / 0x8028e800), the fight init 0x800a860c, then 0x8009f0a8 (set
+motion) / 0x800996f4 (tick) / the build, on `zn_tps_boot.R3000` with the GTE model `gbox/psx_gte.py` (MVMVA, RTPS/RTPT,
+NCLIP, SQR, OP, AVSZ, GPF/GPL; lighting commands raise).
+
+## Reader (`gbox/doapp_chars.py`)
+
+Per costume: bind pose = frame 0 of motion 0 after one full loop (so the chains have settled); joints = the 15 body
+bones (pelvis root, roles hip / chest / head / l_upper / l_fore / l_hand / r_... / l_thigh / l_shin / l_foot /
+r_...) plus the accessory bones the mesh uses (chain links parented to their anchor / previous link from 0x80103ab8;
+other accessory bones to the nearest body bone); one joint per vertex; per (tpage, CLUT, sidedness) a texture page
+cropped to what its primitives sample; glTF frame (x, -y, -z) x 0.001 m, facing +Z. A 'stance' clip (motion 0 at 60
+fps) is included; any motion can be exported (`--clips name=index`). Verification: every vertex has a bone, every
+primitive's texels come from the model's TIMs, seam-triangle edges <= 400 units, feet on the ground (within 60), height
+1300-2000 units. All 44 costumes pass (`python -m gbox.doapp_chars <roms dir> <out dir>`).
+
+Not exported: section 12 (effect quads with inline vertices, drawn only when player byte 0x8009638f is set), the two
+unused hand shapes of slots 2 / 4, per-vertex lighting colours.
 
 ## Status
 
@@ -111,27 +211,26 @@ leg segments, 0/1/2 torso / head / pelvis (labels from geometry, not from code).
   points at the directory with `doapp.zip` + `coh1002m.zip`; they decode the program, ~40 s).
 * **Format: container, section expansion, meshes, batches, bones, TIMs done** (`gbox/doapp_models.py`,
   `python -m gbox.doapp_models <roms dir> tina --expand`). The expansion runs the game's own 0x8006c718 on the
-  interpreter rather than a port; the per-kind chunk layouts are not decoded yet (kind 0x801b was seen to hold 0x3c GT4
-  packets, then four vertex-buffer pointers and four 4.12 normals per quad).
-* **Reader (rigged GLB): blocked on the skeleton.** Each bone's batch is in its own local frame and those frames are
-  not aligned (thigh geometry runs along -z, shin along +z), so assembling the body needs the rest rotations and
-  joint offsets. They come from the motion evaluator: motion banks (files 27-37) are four 0x404-byte curve tables
-  then 265 motions of 8 bit-packed per-frame tracks, relocated by the loader at +0x1010/+0x1020; the code that turns
-  a frame into the 15 bone matrices at 0x8011ca60 + 0x340 * player was not found (the functions that touch those
-  matrices are the camera transform 0x800a4798, the head-look 0x800a76a0 / 0x800a791c / 0x800a6d30, the accessory
-  chains and post-processing). The per-fighter data file (`small_a`, relocated by 0x8006a754, 32 sub-tables) holds
-  hit spheres and move data, not bone lengths. Not registered in `characters.DEDICATED`: an unrigged or guessed pose
-  would be a substitute, which gBox refuses.
+  interpreter rather than a port; chunk records decode to primitives (`primitives()`, table above).
+* **Motion: format decoded and the evaluator found** (`gbox/doapp_motion.py`): it was not a separate evaluator but
+  the skeleton build 0x800a4848 (FK + IK + chains) fed by the track / curve stepper; see the two sections above.
+  Tests: `tests/test_doapp_motion.py` (synthetic codecs, curves, half-rate + twist keys; owned: Python decode == the
+  game's stepper state, rest pose sanity).
+* **Reader (rigged GLB): done** (`gbox/doapp_chars.py`, `characters.DEDICATED` entry `doapp` for the arcade titles
+  starting "Dead Or Alive ++"; needs doapp.zip + coh1002m.zip beside the catalog's zip; the program decode is cached
+  under `<cache>/doapp/`). Tests: `tests/test_doapp_chars.py` (synthetic primitives / texture page / skeleton / GLB with
+  roles and a clip; owned: Tina and Kasumi extract verified).
 * **Writer: not started.** Constraints found so far: files are packed back to back and the table that sizes them is
   inside the encoded program, so a replacement model must fit the original file size (`file_room()`), keep the
   14-section container, and expand within the player work buffer; the mod would be a rebuilt `doapp-1.217` /
   `doapp-2.218` in a mod ROM set (MAME validates ROM CRCs per set, so it needs its own set name or `-skip_gameinfo`
   with a renamed zip). Re-encoding the program is not needed for in-place replacement.
 
-Next step for whoever continues: locate the motion evaluator (start from the per-frame player update that calls
-0x800a4848 via 0x800a1510, or from readers of the motion list at character-data +0x58 / curve tables +0x5c), decode
-one frame of motion 0 into the 15 matrices, and check it by transforming the batches: the seams between batches must
-close. That gives the rest pose for a rigged GLB and the bone frames a writer retargets into.
+Next step for whoever continues: the writer. The bind matrices of the reader are the frames a replacement mesh has to
+be expressed in (per bone: inverse of the stance-frame matrix, in game units, y down); a new model must re-emit the
+14-section container with packed sections the expander 0x8006c718 accepts (source kinds 0 and 1; see its 0x58-byte
+kind-0 records), the batch tables (sections 1 / 2), chunk records with both packet copies and vertex pointers, the
+0x805a seam chunk, and TIMs at the VRAM rectangles the costume uses, all within `file_room()`.
 
 ## Live check for the maintainer
 
@@ -141,5 +240,6 @@ On the agent test PC, with the HyperSpin MAME roms reachable:
 copy "\\10.89.1.125\HyperSpin Attraction\Arcade\collections\Mame\roms\doapp.zip" + coh1002m.zip  ->  %TEMP%\doapp\
 python -m gbox.doapp_inventory %TEMP%\doapp --decode          # derived.file_table_matches_snapshot: true
 python -m gbox.doapp_models %TEMP%\doapp tina --expand        # every mesh: covered == vertices
-set GBOX_DOAPP_ROMS=%TEMP%\doapp && python -m pytest tests/test_doapp_inventory.py tests/test_doapp_models.py -q
+python -m gbox.doapp_chars %TEMP%\doapp %TEMP%\doapp\glb tina   # 4 GLBs, each line "verified": true
+set GBOX_DOAPP_ROMS=%TEMP%\doapp && python -m pytest tests/test_doapp_inventory.py tests/test_doapp_models.py tests/test_doapp_motion.py tests/test_doapp_chars.py -q
 ```
