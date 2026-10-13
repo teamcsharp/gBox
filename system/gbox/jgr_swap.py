@@ -59,7 +59,8 @@ def cast_slots() -> list[dict]:
     """The cast menu for characters op=collect / char_coverage.cast_slots: player first, then every cast member."""
     beat = next(c for c in cast() if c["native_id"] == PLAYER_DEFAULT_ID)
     rows = [{"slot": "player", "name": f"Player ({beat['name']} at a new game; pass active_id for another)",
-             "kind": "player", "native_id": PLAYER_DEFAULT_ID, "archive": beat["archive"]}]
+             "kind": "player", "native_id": PLAYER_DEFAULT_ID, "archive": beat["archive"],
+             "alias_of": beat["slot"]}]                     # the same model as Beat's slot (a cast swap fills it once)
     for c in cast():
         rows.append({"slot": c["slot"], "name": c["name"], "kind": "character", "native_id": c["native_id"],
                      "archive": c["archive"]})

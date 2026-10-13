@@ -46,10 +46,19 @@ WRITERS = [
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
      "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
+    ("auf_swap", ["player", "model:<body>", "enemies", "bosses", "npcs", "bots", "all", "cast"],
+     "007 Agent Under Fire GC: Bond (every outfit), any of the 45 body models in every level, the mission enemies, "
+     "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "
+     "re-encoded .gcm on the slot's skeleton (native animations), donor atlas in the level's texture chunk, rebuilt "
+     "maps/*.ngc in a disc-image copy; unverified in game"),
     ("crazy_taxi_swap", ["player", "driver:<axel|bd_joe|gena|gus>", "drivers", "pedestrian:<group>", "pedestrians",
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("doapp_swap", ["<fighter>[:<costume>]", "player"],
+     "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
+     "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
+     "the game's fight init + skeleton build; unverified in MAME"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
@@ -104,7 +113,9 @@ def cast_slots(game: dict) -> list[dict]:
     m = _mod(w["writer"].split(".")[-1])
     if m is not None and callable(getattr(m, "cast_slots", None)):
         try:
-            out += [dict(s, writer=s.get("writer", w["writer"])) for s in m.cast_slots()]
+            fn = m.cast_slots
+            rows = fn(game=game) if "game" in inspect.signature(fn).parameters else fn()   # per-title rosters (WCW)
+            out += [dict(s, writer=s.get("writer", w["writer"])) for s in rows]
         except Exception:                                  # noqa: BLE001 - a writer that can't list keeps its fixed slots
             pass
     for s in w["slots"]:
