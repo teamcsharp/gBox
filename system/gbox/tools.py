@@ -1861,8 +1861,12 @@ def memory_search(inp: MemSearchIn, ctx: Ctx):
 class LinkIn(BaseModel):
     op: str = "start"                      # start | stop | status
     host: str = ""                         # session whose moment triggers the minigame (e.g. Stranglehold)
-    guest: str = ""                        # minigame session (e.g. Puyo Puyo Tetris, parked on a save state of the match)
-    # watch specs: {"address": "0x..", "type": "u8|u16|u32|f32", "eq"|"ne"|"lt"|"gt": value}
+    guest: str = ""                        # minigame session (e.g. Tetris DS, parked on a save state of the match); it may
+                                           #   run on another worker: it is then driven through the control plane
+    # watch specs: {"address": "0x..", "type": "u8|u16|u32|f32", "eq"|"ne"|"lt"|"gt"|"ge"|"le": value}
+    #   + "path": pointer steps from address (int = deref at that offset; {"walk": next_off, "until": {"offset", "mask"}}
+    #     follows a linked list; {"add": off}), e.g. GWorld -> ... -> player pawn -> field;
+    #   or {"any": [spec, ...]} / {"all": [spec, ...]}
     trigger: dict = {}                     # host: when true, a shot/moment starts
     win: dict = {}                         # guest: when true, the player won the match
     lose: dict = {}                        # guest: when true, the player lost
@@ -1870,8 +1874,11 @@ class LinkIn(BaseModel):
     on_lose: str = "god_miss"              # ... and for a loss
     poll_s: float = 0.1
     style: str = "pause"                   # pause: freeze the host | overlay: host keeps running in slow motion behind
+                                           #   the guest's UI | pip: freeze the host, the guest's picture in a corner of it
     overlay_rects: list[list[float]] = []  #   the guest's UI clipped to these rects (fractions of its picture)
     slow_rate: float = 0.08                #   host speed while the minigame runs (overlay style)
+    pip_box: list[float] = [0.56, 0.04, 0.4, 0.6]   # pip style: x, y, w, h of the guest window as fractions of the host's
+    guest_reload: bool = True              # load the guest's parked save state at the start of every round
 
 class LinkOut(BaseModel):
     result: dict
@@ -1879,13 +1886,116 @@ class LinkOut(BaseModel):
 LINKS: dict[str, dict] = {}
 
 
+_WATCH_OPS = (("eq", lambda a, b: a == b), ("ne", lambda a, b: a != b), ("lt", lambda a, b: a < b),
+              ("gt", lambda a, b: a > b), ("ge", lambda a, b: a >= b), ("le", lambda a, b: a <= b))
+
+
+def _watch_address(ad, spec: dict, big: bool) -> int | None:
+    """The address a watch spec reads: its address, followed along its pointer path. None = a null pointer on the way
+    (e.g. no player pawn during a loading screen)."""
+    import struct as S
+    def ptr(a):
+        return S.unpack(("<>"[big]) + "I", ad.read_memory(a, 4))[0]
+    a = int(str(spec["address"]), 0)
+    for step in spec.get("path", []):
+        if not isinstance(step, dict):
+            step = {"deref": step}
+        if "deref" in step:
+            a = ptr(a + int(str(step["deref"]), 0))
+        elif "walk" in step:                               # linked list: first node whose until-field has the mask bits
+            u, nxt = step["until"], int(str(step["walk"]), 0)
+            for _ in range(int(step.get("max", 64))):
+                if not a or ptr(a + int(str(u["offset"]), 0)) & int(str(u.get("mask", "0xFFFFFFFF")), 0):
+                    break
+                a = ptr(a + nxt)
+            else:
+                return None
+        elif "add" in step:
+            a += int(str(step["add"]), 0)
+        if not a:
+            return None
+    return a
+
+
 def _watch_true(ad, spec: dict, big: bool) -> bool:
     import struct as S
-    w = {"u8": 1, "u16": 2, "u32": 4, "f32": 4}[spec.get("type", "u32")]
-    fmt = ("<>"[big]) + {"u8": "B", "u16": "H", "u32": "I", "f32": "f"}[spec.get("type", "u32")]
-    v = S.unpack(fmt, ad.read_memory(int(str(spec["address"]), 0), w))[0]
-    return any(op in spec and f(v, spec[op]) for op, f in
-               (("eq", lambda a, b: a == b), ("ne", lambda a, b: a != b), ("lt", lambda a, b: a < b), ("gt", lambda a, b: a > b)))
+    if "any" in spec:
+        return any(_watch_true(ad, s, big) for s in spec["any"])
+    if "all" in spec:
+        return all(_watch_true(ad, s, big) for s in spec["all"])
+    typ = spec.get("type", "u32")
+    w = {"u8": 1, "u16": 2, "u32": 4, "f32": 4}[typ]
+    fmt = ("<>"[big]) + {"u8": "B", "u16": "H", "u32": "I", "f32": "f"}[typ]
+    if spec.get("path"):
+        try:
+            a = _watch_address(ad, spec, big)
+        except Exception:                                  # unmapped pointer mid-chain: the object is not there yet
+            return False
+        if a is None:
+            return False
+    else:
+        a = int(str(spec["address"]), 0)
+    v = S.unpack(fmt, ad.read_memory(a, w))[0]
+    return any(op in spec and f(v, spec[op]) for op, f in _WATCH_OPS)
+
+
+class RemoteSession:
+    """A live session on another worker, driven through the control plane: memory reads and pause/resume over the
+    session's live channel (POST /api/sessions/{sid}/rpc), save-state loads as a session_op job routed to its worker.
+    Lets a game_link host (Stranglehold on the operator's PC) use a guest that runs elsewhere (Tetris DS on the Spark)."""
+    name = "remote"
+    supported = {"read_memory", "pause", "resume", "load_state"}
+
+    def __init__(self, sid: str, server: str, headers: dict | None = None, call=None):
+        self.sid, self.server, self.headers = sid, server, headers or {}
+        self._call = call or self._http
+        self._info = None
+
+    def _http(self, method: str, path: str, body: dict | None = None):
+        r = httpx.request(method, f"{self.server}{path}", headers=self.headers, json=body, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    def _rpc(self, op: str, args: dict | None = None):
+        return self._call("POST", f"/api/sessions/{self.sid}/rpc", {"op": op, "args": args or {}})
+
+    def info(self) -> dict:
+        if self._info is None:
+            self._info = self._rpc("info") or {}
+        return self._info
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        return bytes.fromhex(self._rpc("read_memory", {"address": address, "length": length}))
+
+    def pause(self) -> dict:
+        return self._rpc("pause") or {}
+
+    def resume(self) -> dict:
+        return self._rpc("resume") or {}
+
+    def load_state(self, slot: int | None = None, wait_s: float = 90) -> dict:
+        j = self._call("POST", "/api/jobs", {"tool": "session_op", "input": {
+            "session_id": self.sid, "op": "load_state", "args": {} if slot is None else {"slot": slot}}})
+        t0 = time.time()
+        while j.get("state") in ("queued", "running") and time.time() - t0 < wait_s:
+            time.sleep(0.5)
+            j = self._call("GET", f"/api/jobs/{j['id']}", None)
+        if j.get("state") != "succeeded":
+            raise RuntimeError(f"guest load_state: {j.get('state')} {j.get('error') or ''}".strip())
+        return (j.get("output") or {}).get("result") or {}
+
+
+def _link_session(L: dict, sid: str):
+    """(adapter, game) for a link session: this worker's own, else a RemoteSession through the control plane."""
+    if sid in SESSIONS:
+        return SESSIONS[sid]
+    if not L.get("server"):
+        raise KeyError(f"session {sid} is not on this worker and no control plane is known")
+    rem = L.setdefault("remote", {})
+    if sid not in rem:
+        ad = RemoteSession(sid, L["server"], L.get("headers"), L.get("call"))
+        rem[sid] = (ad, {"platform": ad.info().get("platform"), "title": ad.info().get("title"), "remote": True})
+    return rem[sid]
 
 
 def _link_loop(key: str):
@@ -1895,15 +2005,18 @@ def _link_loop(key: str):
     while L["on"]:
         try:
             had, hg = SESSIONS[hs]
-            gad, gg = SESSIONS[gs]
+            gad, gg = _link_session(L, gs)
             if not _watch_true(had, L["in"].trigger, hg.get("platform") in BIG_ENDIAN):
                 time.sleep(L["in"].poll_s)
                 continue
             overlay = L["in"].style == "overlay" and L["in"].overlay_rects and hasattr(had, "slowmo")
+            local_windows = HOST_OS == "windows" and getattr(gad, "proc", None) and getattr(had, "proc", None)
+            pip = L["in"].style == "pip"
             had.slowmo(L["in"].slow_rate) if overlay else had.pause()
             L["state"], L["rounds"] = "minigame", L["rounds"] + 1
             gad.resume()
-            gad.load_state()                               # back to the parked match
+            if L["in"].guest_reload:
+                gad.load_state()                           # back to the parked match
             if HOST_OS == "windows" and getattr(gad, "proc", None):   # RPCS3 load state = relaunch: wait for its window
                 from . import overlay as ov
                 for _ in range(120):
@@ -1911,9 +2024,15 @@ def _link_loop(key: str):
                         break
                     time.sleep(0.25)
             time.sleep(2)                                  # ponytail: settle after the reload; tune per game
-            if overlay:                                    # Tetris UI over the slow-motion bullet scene
+            if overlay and local_windows:                  # Tetris UI over the slow-motion bullet scene
                 from . import overlay as ov
                 ov.overlay_on(gad.proc.pid, had.proc.pid, L["in"].overlay_rects)
+            if pip:                                        # guest picture in a corner of the frozen host
+                if local_windows:
+                    from . import overlay as ov
+                    L["pip"] = {"session_id": gs, "window": ov.pip_on(gad.proc.pid, had.proc.pid, L["in"].pip_box)}
+                else:                                      # another worker: the app shows its stream picture-in-picture
+                    L["pip"] = {"session_id": gs, "mjpeg": f"/api/sessions/{gs}/mjpeg", "title": gg.get("title")}
             big = gg.get("platform") in BIG_ENDIAN
             while L["on"]:
                 if _watch_true(gad, L["in"].win, big):
@@ -1926,39 +2045,57 @@ def _link_loop(key: str):
             else:
                 break
             gad.pause()
-            if overlay:
+            if (overlay or pip) and local_windows:
                 from . import overlay as ov
                 ov.overlay_off(gad.proc.pid)
+            if overlay:
                 had.slowmo(1.0)
-            had.resume()
+            L["pip"] = None
+            # the verdict goes in while the host is still frozen, so the shot cannot resolve before it
             getattr(script_patch, "__wrapped__", script_patch)(
                 ScriptPatchIn(session_id=hs, op="preset", preset=L["in"].on_win if verdict == "win" else L["in"].on_lose), _quiet())
+            had.resume()
             L["history"].append({"round": L["rounds"], "verdict": verdict, "at": time.time()})
             L["state"] = "waiting"
             while L["on"] and _watch_true(had, L["in"].trigger, hg.get("platform") in BIG_ENDIAN):
                 time.sleep(L["in"].poll_s)                 # let this moment finish before arming again
         except Exception as e:
             L["error"] = f"{type(e).__name__}: {e}"
+            if L.get("state") == "minigame":               # never leave the host frozen after a failed round
+                L["state"] = "waiting"
+                try:
+                    SESSIONS[hs][0].resume()
+                    while L["on"] and _watch_true(SESSIONS[hs][0], L["in"].trigger, SESSIONS[hs][1].get("platform") in BIG_ENDIAN):
+                        time.sleep(L["in"].poll_s)         # no new round for the moment that failed
+                except Exception:
+                    pass
             time.sleep(1)
 
 
 @tool("game_link", "1.0", LinkIn, LinkOut, capabilities=["runtime", "memory", "mod"], permissions=[P.MEMORY_WRITE],
       side_effects=["pauses/resumes two live sessions and applies script-patch presets on the host"])
 def game_link(inp: LinkIn, ctx: Ctx):
-    """Cross-game link: when the host game's trigger fires (e.g. Stranglehold bullet-cam), pause it and play a match in
-    the guest game (e.g. Puyo Puyo Tetris, from its save state); a win/lose applies the host preset (hit / miss)."""
+    """Cross-game link: when the host game's trigger fires (e.g. Stranglehold precision aim), pause it and play a match
+    in the guest game (e.g. Tetris DS or Puyo Puyo Tetris, from its save state; the guest may run on another worker);
+    a win/lose applies the host preset (hit / miss) before the host resumes."""
     key = f"{inp.host}|{inp.guest}"
     if inp.op == "start":
+        def has_address(spec):
+            return bool(spec.get("address")) or any(has_address(s) for s in spec.get("any", []) + spec.get("all", []))
         for need in ("trigger", "win", "lose"):
-            if not getattr(inp, need).get("address"):
+            if not has_address(getattr(inp, need)):
                 raise ValueError(f"{need} needs an address (find it with memory_search)")
-        LINKS[key] = {"in": inp, "on": True, "state": "waiting", "rounds": 0, "history": [], "error": None}
+        if key in LINKS:
+            LINKS[key]["on"] = False                       # a restart replaces the running loop
+        LINKS[key] = {"in": inp, "on": True, "state": "waiting", "rounds": 0, "history": [], "error": None, "pip": None,
+                      "server": getattr(ctx, "server", None), "headers": getattr(ctx, "headers", None)}
         threading.Thread(target=_link_loop, args=(key,), daemon=True).start()
     elif inp.op == "stop" and key in LINKS:
         LINKS[key]["on"] = False
     L = LINKS.get(key) or {}
     return {"result": {"running": L.get("on", False), "state": L.get("state"), "rounds": L.get("rounds", 0),
-                       "history": L.get("history", [])[-10:], "error": L.get("error")}}
+                       "history": L.get("history", [])[-10:], "error": L.get("error"), "pip": L.get("pip"),
+                       "guest_remote": inp.guest not in SESSIONS if inp.guest else None}}
 
 
 class BevyIn(BaseModel):
