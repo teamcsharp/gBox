@@ -2372,7 +2372,8 @@ async function loadSettings() {
   S = await gbox.settings();
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
-    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>`;
+    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 reset · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
