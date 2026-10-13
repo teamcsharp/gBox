@@ -142,7 +142,8 @@ def _disc_files(extra_stage=b""):
                                              (0x7F000002, [(0x13, SNA_MT, _pack()), (0x0A, SNA, sna),
                                                            (0x0A, BDN, bdn), (0x0A, OTHER, other)])])
     st2 = stage_blob("w00a", 0x3DB7B4DA, [(0x7F000002, [(0x0A, OTHER, other), (0x0C, 0x777777, b"motion" * 50)])])
-    dat = stage_dat([("r_sna_b", st1), ("w00a", st2)], slack=6)
+    st4 = stage_blob("r_tnk0", 0x3DB7B4DA, [(0x7F000002, [(0x13, SNA_MT, _pack()), (0x0A, SNA, sna)])])
+    dat = stage_dat([("r_sna_b", st1), ("w00a", st2), ("r_tnk0", st4)], slack=6)
     st3 = stage_blob("w51a", 0x3DB7B7DB, [(0x7F000002, [(0x0A, OTHER, other)])])
     dat2 = stage_dat([("w51a", st3)], key=0x3DB7B7DB)
     l0 = {"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_205.54;1\r\nVER = 1.00\r\nVMODE = NTSC\r\n", "SLUS_205.54": FAKE_ELF,
@@ -174,7 +175,7 @@ def test_two_layers_and_identity(dvd):
 def test_archive_toc_stages_pages_and_rebuild(dvd):
     d = inv.Disc(dvd)
     a = inv.StageArchive(d)
-    assert a.names() == ["r_sna_b", "w00a"] and a.count == 2
+    assert a.names() == ["r_sna_b", "w00a", "r_tnk0"] and a.count == 3
     st = a.stage("r_sna_b")
     assert [p.marker for p in st.pages] == [0x7F010000, 0x7F000002]
     assert {(f[0], f[1]) for f in st.pages[1].files} == {(0x13, SNA_MT), (0x0A, SNA), (0x0A, BDN), (0x0A, OTHER)}
@@ -188,7 +189,7 @@ def test_archive_toc_stages_pages_and_rebuild(dvd):
     with pytest.raises(inv.FormatError):
         inv.rebuild_stage(st, a.key, {1: big}, raw)
     inv_ = inv.inventory(dvd)
-    assert inv_["archives"]["MGS2/STAGE.DAT"]["stages"] == 2
+    assert inv_["archives"]["MGS2/STAGE.DAT"]["stages"] == 3
     d.close()
 
 
@@ -258,7 +259,7 @@ def test_build_disc_rewrites_only_the_slot_stage(dvd, tmp_path, donor):
     assert reps["snake"]["status"] == "built" and reps["raiden"]["status"] == "failed"
     built = [m for m in reps["snake"]["models"] if m["status"] == "built"]
     hidden = [m for m in reps["snake"]["models"] if m["status"] == "hidden"]
-    assert len(built) == 1 and len(hidden) == 1 and built[0]["read_back"]
+    assert len(built) == 2 and len(hidden) == 1 and built[0]["read_back"]
     a0, a1 = inv.Disc(dvd), inv.Disc(out)
     s0, s1 = inv.StageArchive(a0), inv.StageArchive(a1)
     st0, st1 = s0.stage("r_sna_b"), s1.stage("r_sna_b")
@@ -267,11 +268,28 @@ def test_build_disc_rewrites_only_the_slot_stage(dvd, tmp_path, donor):
     assert M.triangles(M.parse_kms(s1.file(st1, 0x0A, BDN))) == len(BONES)           # accessory collapsed
     w0, w1 = s0.stage("w00a"), s1.stage("w00a")
     assert s1.page_raw(w1, 0) == s0.page_raw(w0, 0)                                  # other stages byte-identical
-    # everything outside STAGE.DAT's r_sna_b span is byte-identical
-    lba = a0.files["MGS2/STAGE.DAT"][0] + st0.sector
+    # every stage that carries the model got its own atlas: the model's texture is the atlas in both
+    for name in ("r_sna_b", "r_tnk0"):
+        st_ = s1.stage(name)
+        k_ = M.parse_kms(s1.file(st_, 0x0A, SNA))
+        t_ = {p["tex"][0] for m in k_["meshes"] for p in m["parts"]}
+        assert len(t_) == 1
+        img = M.TexturePack(s1.file(st_, 0x13, SNA_MT)).image(t_.pop())
+        assert img.shape[0] >= 254 and img.shape[1] >= 254
+    # everything outside STAGE.DAT's r_sna_b and r_tnk0 spans is byte-identical
     b0, b1 = Path(dvd).read_bytes(), out.read_bytes()
-    lo, hi = lba * 2048, (lba + st0.sectors) * 2048
-    assert b0[:lo] == b1[:lo] and b0[hi:] == b1[hi:] and b0 != b1
+    spans = []
+    for name in ("r_sna_b", "r_tnk0"):
+        st_ = s0.stage(name)
+        lba = a0.files["MGS2/STAGE.DAT"][0] + st_.sector
+        spans.append((lba * 2048, (lba + st_.sectors) * 2048))
+    spans.sort()
+    cut0, cut1, pos = bytearray(), bytearray(), 0
+    for lo, hi in spans:
+        cut0 += b0[pos:lo]
+        cut1 += b1[pos:lo]
+        pos = hi
+    assert bytes(cut0) + b0[pos:] == bytes(cut1) + b1[pos:] and b0 != b1
     a0.close()
     a1.close()
     assert Path(dvd).read_bytes() == b0                                               # the source untouched

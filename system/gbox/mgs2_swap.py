@@ -449,43 +449,57 @@ def _clut_bytes(mem: GSMemory, e: dict) -> np.ndarray:
     return np.unique(np.concatenate([a + k for k in range(4)]))
 
 
-def plan_atlas(pack: M.TexturePack, own: set[int], usage: dict[int, int]) -> dict:
+def plan_atlas(pack: M.TexturePack, own: set[int], usage: dict[int, int], claimed: dict | None = None,
+               mine: set[int] | None = None) -> dict:
     """Where the donor atlas can go in this pack: a PSMT8 page region and a CLUT that no texture outside `own` (the
-    slot's own textures) touches; the hijacked entry is the slot's most used PSMT8 texture."""
+    textures of every model this build replaces or hides) touches and no earlier slot of the build claimed
+    (`claimed` {pix, clut, entries}); the hijacked entry is the slot's (`mine`) most used PSMT8 texture."""
+    claimed = claimed or {"pix": set(), "clut": set(), "entries": set()}
+    mine = own if mine is None else mine
     pix = GSMemory(max(pack.pix_blocks * 256, 1 << 16) * 2)
     limit = pack.pix_blocks * 256
-    protected = set()
+    protected = set(claimed["pix"])
     for h, e in pack.entries.items():
         if h not in own:
             protected |= set(_bytes_of(pix, e, *_rect_texels(e)).tolist())
     clut_mem = GSMemory(max(pack.clut_blocks * 256, 1 << 14) * 2)
-    cl_prot = set()
+    cl_prot = set(claimed["clut"])
     for h, e in pack.entries.items():
         if h not in own:
             cl_prot |= set(_clut_bytes(clut_mem, e).tolist())
     eights = [e | {"hash": h} for h, e in pack.entries.items() if h in own and e["psm"] == 0x13]
-    if not eights:
-        raise SwapError("the slot's textures have no 8-bit page in this pack")
-    eights.sort(key=lambda e: -usage.get(e["hash"], 0))
+    hij = [e for e in eights if e["hash"] in mine and e["hash"] not in claimed["entries"]]
+    if not hij:
+        raise SwapError("the slot's textures have no 8-bit entry of their own in this pack")
+    hij.sort(key=lambda e: -usage.get(e["hash"], 0))
     pages = []
-    for e in eights:
+    for e in sorted(eights, key=lambda e: -usage.get(e["hash"], 0)):
         if (e["tbp"], e["tbw"]) not in [(p["tbp"], p["tbw"]) for p in pages]:
             pages.append(e)
-    cluts = [e for e in eights if not (set(_clut_bytes(clut_mem, e).tolist()) & cl_prot)
+    cl_entries = sorted({e["cbp"]: e for e in eights}.values(), key=lambda e: e["cbp"])
+    cluts = [e for e in cl_entries if not (set(_clut_bytes(clut_mem, e).tolist()) & cl_prot)
              and (e["cbp"] + 4) * 256 <= pack.clut_blocks * 256]
     if not cluts:
-        raise SwapError("no CLUT in this pack is used by the slot's textures only")
+        raise SwapError("no CLUT in this pack is used by the replaced models only")
+    prot = np.fromiter(protected, np.int64) if protected else None
     for A in ATLAS:
         for pg in pages:
             if A > pg["tbw"] * 64 or A > pg["th"]:
                 continue
-            y, x = np.mgrid[0:A, 0:A]
-            ad = pix.addr8(pg["tbp"], pg["tbw"], x, y)
-            if ad.max() >= limit:
-                continue
-            if protected and np.isin(ad, np.fromiter(protected, np.int64)).any():
-                continue
-            return {"page": pg, "A": A, "hijack": eights[0]["hash"], "clut": cluts[0]["cbp"]}
+            for oy in range(0, max(1, pg["th"] - A + 1), A):            # the page's free rows, in atlas steps
+                y, x = np.mgrid[oy:oy + A, 0:A]
+                ad = pix.addr8(pg["tbp"], pg["tbw"], x, y)
+                if ad.max() >= limit:
+                    break
+                if prot is not None and np.isin(ad, prot).any():
+                    continue
+                cl = cluts[0]
+                cy, cx = np.mgrid[0:16, 0:16]
+                cad = clut_mem.addr32(cl["cbp"], 1, cx, cy)
+                return {"page": pg, "A": A, "oy": oy, "hijack": hij[0]["hash"], "clut": cl["cbp"],
+                        "claim": {"pix": set(np.unique(ad).tolist()),
+                                  "clut": set(np.unique(np.concatenate([cad.reshape(-1) + k for k in range(4)])).tolist()),
+                                  "entry": hij[0]["hash"]}}
     raise SwapError("no free 8-bit page region for the donor atlas in this pack")
 
 
@@ -500,7 +514,10 @@ def write_atlas(pack_bytes: bytes, plan: dict, index: np.ndarray, palette: np.nd
     if index.shape != (A, A):
         from PIL import Image
         index = np.asarray(Image.fromarray(index).resize((A, A), Image.NEAREST))
-    pix.write8(np.asarray(index, np.uint8), pg["tbp"], pg["tbw"])
+    oy = int(plan.get("oy", 0))
+    full = pix.read8(pg["tbp"], pg["tbw"], pg["tbw"] * 64, oy + A)
+    full[oy:oy + A, :A] = np.asarray(index, np.uint8)
+    pix.write8(full, pg["tbp"], pg["tbw"])
     b[pack.pix_off:pack.pix_off + 256 * pack.pix_blocks] = pix.dump_linear(0, pack.pix_blocks)
     clut = GSMemory(max(pack.clut_blocks * 256, 1 << 14) * 2)
     clut.load_linear(pack_bytes[pack.clut_off:pack.clut_off + 256 * pack.clut_blocks])
@@ -516,7 +533,7 @@ def write_atlas(pack_bytes: bytes, plan: dict, index: np.ndarray, palette: np.nd
     t0 = pg["tex0"]
     t0 = (t0 & ~(0x3FFF << 37)) | (plan["clut"] << 37)
     t0 &= ~(0x1F << 56)                                   # CSA 0
-    u0, v0 = 0.5 / tw, 0.5 / th
+    u0, v0 = 0.5 / tw, (oy + 0.5) / th
     du, dv = (A - 1) / tw, (A - 1) / th
     struct.pack_into("<4f", b, o, u0, v0, du, dv)
     for kk in range(5):
@@ -528,7 +545,7 @@ def write_atlas(pack_bytes: bytes, plan: dict, index: np.ndarray, palette: np.nd
             d = (d & ~((0x3FFF << 37) | (0x1F << 56))) | (plan["clut"] << 37)
             d = (d & ~(0x3F << 20)) | (0x13 << 20)
         elif reg == 0x08:                                  # CLAMP_1: region clamp to the atlas
-            d = 2 | (2 << 2) | (0 << 4) | ((A - 1) << 14) | (0 << 24) | ((A - 1) << 34)
+            d = 2 | (2 << 2) | (0 << 4) | ((A - 1) << 14) | (oy << 24) | ((oy + A - 1) << 34)
         struct.pack_into("<Q", b, o + 0x30 + 16 * kk, d)
     struct.pack_into("<6f", b, o + 0x80, -du / 2, -dv / 2, 1.0, 1.0, u0 + du / 2, v0 + dv / 2)
     out = bytes(b)
@@ -573,9 +590,10 @@ def _textures(k: dict) -> set[int]:
     return {t for m in k["meshes"] for p in m["parts"] for t in p["tex"] if t}
 
 
-def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p, m: None) -> dict:
+def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=lambda p, m: None) -> dict:
     """jobs [{slot, model, roles, name, props, scale, fit_key}] -> a copy of the ISO with every stage that carries a
-    slot's models rewritten. A slot that fails (no roles, nothing fits) is reported and skipped."""
+    slot's models rewritten. A slot that fails (no roles, nothing fits) is reported and skipped. out_iso None = a dry
+    run: everything is fitted, encoded and every stage rebuilt in memory, nothing is written."""
     from . import fit_events as FE
     disc = inv.Disc(src_iso)
     ident = inv.identify(disc)
@@ -585,6 +603,14 @@ def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p
     reports, changes = [], {}                              # changes[(fn, stage)][(type, hash)] = bytes
     fits_cache: dict = {}
     page_cache: dict = {}
+    claims: dict = {}                                      # (fn, stage, pack) -> what earlier slots took
+    replaced = set()                                       # every model this build replaces or hides
+    for jb in jobs:
+        try:
+            for kk in resolve_slot(jb["slot"] if isinstance(jb, dict) else jb.slot):
+                replaced |= set(SLOTS[kk][2]) | set(SLOTS[kk][3])
+        except SwapError:
+            pass
     for n, jb in enumerate(jobs):
         jb = jb if isinstance(jb, _Job) else _Job(**jb)
         rep = {"slot": jb.slot, "character": jb.name, "models": [], "packs": [], "status": "failed"}
@@ -600,6 +626,7 @@ def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p
             progress(25 + 45 * n / max(len(jobs), 1), f"Fitting {jb.name} onto {key}")
             done_stages = set()
             plans: dict = {}
+            written: set = set()
             for h in models:
                 places = idx.stages_with(inv.T_KMS, h)
                 for fn, stage in places:
@@ -621,20 +648,30 @@ def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p
                             pk_h = k["tex"]
                             pkey = (fn, stage, pk_h)
                             if pkey not in plans:              # one atlas place per pack: every slot model shares it
-                                own, usage = set(), {}
-                                for hh in list(models) + list(hide):
-                                    other = idx.read(fn, stage, inv.T_KMS, hh, page_cache)
-                                    if other is None:
-                                        continue
-                                    ko = M.parse_kms(other)
-                                    own |= _textures(ko)
-                                    if hh in models and ko["tex"] == pk_h:
-                                        for t, nv in _usage(ko).items():
-                                            usage[t] = usage.get(t, 0) + nv
-                                pb = idx.read(fn, stage, inv.T_TEX, pk_h, page_cache)
+                                own, mine, usage = set(), set(), {}
+                                for p_ in idx.stage(fn, stage).pages:
+                                    for f_ in p_.files:
+                                        if f_[0] != inv.T_KMS or f_[1] not in replaced:
+                                            continue
+                                        ko = M.parse_kms(idx.read(fn, stage, inv.T_KMS, f_[1], page_cache))
+                                        tx = _textures(ko)
+                                        own |= tx
+                                        if f_[1] in models or f_[1] in hide:
+                                            mine |= tx
+                                        if f_[1] in models and ko["tex"] == pk_h:
+                                            for t, nv in _usage(ko).items():
+                                                usage[t] = usage.get(t, 0) + nv
+                                pb = changes.get((fn, stage), {}).get((inv.T_TEX, pk_h)) or \
+                                    idx.read(fn, stage, inv.T_TEX, pk_h, page_cache)
                                 if pb is None:
                                     raise SwapError(f"texture pack {pk_h:06x} is not in this stage")
-                                plans[pkey] = (plan_atlas(M.TexturePack(pb), own, usage), pb)
+                                cl = claims.setdefault(pkey, {"pix": set(), "clut": set(), "entries": set()})
+                                pl = plan_atlas(M.TexturePack(idx.read(fn, stage, inv.T_TEX, pk_h, page_cache)), own,
+                                                usage, cl, mine)
+                                cl["pix"] |= pl["claim"]["pix"]
+                                cl["clut"] |= pl["claim"]["clut"]
+                                cl["entries"].add(pl["claim"]["entry"])
+                                plans[pkey] = (pl, pb)
                             plan, pack_b = plans[pkey]
                             tex_hash = plan["hijack"]
                         fk = (sig, plan["A"] if plan else 128)
@@ -658,8 +695,10 @@ def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p
                         if tex_hash:
                             data = _retex(data, tex_hash)
                         ch[(inv.T_KMS, h)] = data
-                        if plan is not None and (inv.T_TEX, k["tex"]) not in ch:
-                            ch[(inv.T_TEX, k["tex"])] = write_atlas(pack_b, plan, tri["index"], tri["palette"])
+                        if plan is not None and (fn, stage, k["tex"], key) not in written:
+                            written.add((fn, stage, k["tex"], key))
+                            base_pack = ch.get((inv.T_TEX, k["tex"])) or pack_b
+                            ch[(inv.T_TEX, k["tex"])] = write_atlas(base_pack, plan, tri["index"], tri["palette"])
                             rep["packs"].append({"pack": f"{k['tex']:06x}", "stage": f"{fn}:{stage}", "atlas": plan["A"],
                                                  "hijack": f"{plan['hijack']:06x}", "clut": plan["clut"]})
                         rep["models"].append({"model": f"{h:06x}", "stage": f"{fn}:{stage}", "status": "built",
@@ -744,6 +783,8 @@ def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p
         rep["status"] = "built" if built and not rest else "partial" if built else "failed"
     if not patches:
         raise SwapError("no stage could be rebuilt within its sectors")
+    if out_iso is None:
+        return {"image": None, "reports": reports, "stages": stage_rows}
     out_iso = Path(out_iso)
     out_iso.parent.mkdir(parents=True, exist_ok=True)
     progress(83, f"Copying the disc image ({Path(src_iso).stat().st_size >> 20} MB)")

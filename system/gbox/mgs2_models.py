@@ -70,7 +70,7 @@ def parse_kms(b: bytes) -> dict:
     flags, nb, nm, tex = struct.unpack_from("<4I", b, 0)
     extra = struct.unpack_from("<3I", b, 0x10)
     bmin, bmax = struct.unpack_from("<3f", b, 0x1C), struct.unpack_from("<3f", b, 0x28)
-    if not 0 < nm <= 256 or HDR + MESH * nm > len(b):
+    if not 0 < nm <= 2048 or HDR + MESH * nm > len(b):
         raise FormatError(f"{nm} meshes do not fit the file")
     meshes = []
     for i in range(nm):
