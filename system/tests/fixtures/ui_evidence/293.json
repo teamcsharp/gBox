@@ -1,0 +1,46 @@
+{
+  "pr": 293,
+  "title": "Pick whip backend: pick_identify / pick_replace with live RAM injection",
+  "branch": "pick-live-inject",
+  "about": "#293 has no client code. Its UI surface is the pick whip (#288, clients/web/viz/pick-whip.js): run these shots with --clients from the pickwhip-ux branch. The job results below follow #293's pick_identify / pick_replace output (gbox/pick_tool.py: entity, slot, model, ram{...}, evidence, confidence, replaceable; status live / swapped).",
+  "include": ["288.json"],
+  "routes": {
+    "POST /api/jobs": {"$by": "tool", "cases": {
+      "pick_preview": {"id": "jp1", "tool": "pick_preview", "state": "succeeded",
+        "output": {"result": {"picked": {"name": "Fighter B", "class": "fighter", "kind": "character", "slot": "fighter:B", "ptr": "0x80A1C340", "entity_id": 7},
+          "model": "fighter_b.chr", "space": "window",
+          "outline": [[0.42, 0.292], [0.442, 0.302], [0.448, 0.336], [0.442, 0.37], [0.458, 0.385], [0.535, 0.512], [0.522, 0.53], [0.456, 0.44],
+                      [0.456, 0.555], [0.448, 0.785], [0.432, 0.785], [0.422, 0.57], [0.418, 0.57], [0.408, 0.785], [0.392, 0.785], [0.384, 0.555],
+                      [0.384, 0.44], [0.318, 0.53], [0.305, 0.512], [0.382, 0.385], [0.398, 0.37], [0.392, 0.336], [0.398, 0.302]]}}},
+      "pick_name": {"id": "jn1", "tool": "pick_name", "state": "failed", "error": "unknown tool pick_name"},
+      "pick_identify": {"id": "ji1", "tool": "pick_identify", "state": "succeeded",
+        "progress_log": ["entity under the point: Fighter B (npc) 0.012 from the point", "struct at 0x80A1C340 (0x140 bytes), skeleton 21 limbs",
+                         "learned model image of fighter:B located in RAM at 0x80B20010", "replaceable: live (learned signatures), build (writer etm_swap)"],
+        "output": {"result": {"entity": {"class": "Fighter B", "kind": "npc", "ptr": "0x80A1C340", "actor_id": 7, "object": 12, "object_name": "object_fighter_b"},
+          "game_id": "a1b2c3d4e5f60718", "slot": "fighter:B", "model": "arena_b", "title": "Arena Fighters 2", "backend": "synthetic",
+          "ram": {"entity_struct": "0x80A1C340", "model": "0x80B20010", "model_kind": "object (segment 6 file as loaded)", "skel_anime": "0x80A1C3C0", "limbs": 21},
+          "evidence": [{"step": "entity", "ok": true, "source": "picker", "text": "Fighter B (npc) 0.012 from the point"},
+                       {"step": "model image", "ok": true, "source": "gbox.live_inject.find_signatures", "text": "1 learned model image of slot fighter:B located in RAM"}],
+          "confidence": 0.85, "replaceable": {"live": true, "build": true, "reason": "live: learned model image in RAM; build: writer etm_swap"}}}},
+      "pick_replace": {"id": "jr1", "tool": "pick_replace", "state": "succeeded",
+        "progress_log": ["fit: scale ×0.93 · head ×1.1", "fit: retarget 18 roles", "live write: game paused, 3 regions written, read back OK", "resumed"],
+        "fitting": {"order": ["fighter:B"], "current": "fighter:B", "models": {"fighter:B": {"label": "Blue Hero -> Arena Fighters 2 (fighter:B)", "state": "done", "current": "write",
+          "stages": {"scale": {"state": "done"}, "retarget": {"state": "done"}, "encode": {"state": "done"}, "write": {"state": "done"}}}}},
+        "output": {"result": {"status": "live", "mode_used": "live", "character": "Blue Hero", "slug": "hero_blue", "game_id": "a1b2c3d4e5f60718", "slot": "fighter:B",
+          "session_id": "w1-s1", "message": "Blue Hero replaces fighter:B in the running game (live write, verified); same session, same moment"}}}
+    }, "$default": {"id": "jx", "state": "succeeded", "output": {"result": {"status": "ok"}}}}
+  },
+  "shots": [
+    {"name": "surface-identify-console", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait": 800}, {"eval": "$setup_js"}, {"wait": 600}, {"eval": "PWW.start()"}, {"wait": 500},
+                 {"mouse": [430, 400]}, {"mouse": [443, 380]}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 700},
+                 {"click": "#pwmenu button[data-pw=identify]"}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 900},
+                 {"eval": "(() => { const c = document.getElementById('pwcon'); c.style.left = '972px'; c.style.top = '60px'; })()"}, {"wait": 200}]},
+    {"name": "surface-replace-live-console", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait": 800}, {"eval": "$setup_js"}, {"wait": 600}, {"eval": "PWW.start()"}, {"wait": 500},
+                 {"mouse": [430, 400]}, {"mouse": [443, 380]}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 700},
+                 {"click": "#pwmenu button[data-pw=identify]"}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 700},
+                 {"click": "#pwmenu button[data-pw=replace]"}, {"wait": 900}, {"click": "#pwmenu .pw-grid button[data-slug=hero_blue]"}, {"wait": 1500},
+                 {"eval": "(() => { const c = document.getElementById('pwcon'); c.style.left = '972px'; c.style.top = '60px'; })()"}, {"wait": 200}]}
+  ]
+}

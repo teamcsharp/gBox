@@ -1,0 +1,60 @@
+{
+  "pr": 281,
+  "title": "Retarget goals: R buttons in the Fitting pop-up, a Goals view with draggable joint circles",
+  "branch": "retarget-goals-editor",
+  "include": ["_web_shell.json"],
+  "routes": {
+    "/api/jobs?state=queued,running&limit=100": [
+      {"id": "j1", "state": "running", "tool": "characters", "created": "$now-120", "started": "$now-110", "worker": "spark",
+       "input": {"op": "cast_swap", "target_game": "a1b2c3d4e5f60718", "source": "lab_heroes", "slots": "all",
+                 "assignments": [{"slot": "fighter:A", "character": "hero_blue"}, {"slot": "fighter:B", "character": "hero_red"}, {"slot": "fighter:C", "character": "hero_green"}]},
+       "progress": {"pct": 48, "msg": "fighter:B: Red Hero → Fighter B: proportion"},
+       "progress_log": ["planning 3 slots", "fighter:A: Blue Hero → Fighter A: written", "fighter:B: Red Hero → Fighter B: retarget (15 roles)"],
+       "fitting": {"order": ["fighter:A", "fighter:B", "fighter:C"], "current": "fighter:B", "updated": 30, "models": {
+         "fighter:A": {"label": "Blue Hero → Fighter A", "donor": "hero_blue", "game": "a1b2c3d4e5f60718", "slot": "fighter:A", "state": "done", "current": "write",
+                       "snapshot": "/api/jobs/j1/fitting/files/a-decimate-3.glb", "snapshot_stage": "decimate",
+                       "stages": {"scale": {"state": "done", "data": {"scale": 0.93, "head_scale": 1.1}}, "retarget": {"state": "done", "data": {"roles": 18, "vertices": 864}},
+                                  "proportion": {"state": "done", "data": {"applied": true, "height": 0.95, "head": 1.2, "torso_width": 1, "roles_adjusted": ["l_fore"]}},
+                                  "weights": {"state": "done", "data": {"vertices_reduced": 12, "max_influences": 2}}, "decimate": {"state": "done", "data": {"from": 864, "triangles": 576}},
+                                  "encode": {"state": "done", "data": {"chr_bytes": 40960, "bin_bytes": 8192}}, "write": {"state": "done", "data": {"mod": "cast_arena"}}}},
+         "fighter:B": {"label": "Red Hero → Fighter B", "donor": "hero_red", "game": "a1b2c3d4e5f60718", "slot": "fighter:B", "state": "running", "current": "proportion",
+                       "snapshot": "/api/jobs/j1/fitting/files/b-retarget-5.glb", "snapshot_stage": "retarget",
+                       "stages": {"scale": {"state": "done", "data": {"scale": 1.04}}, "retarget": {"state": "done", "data": {"roles": 15}}, "proportion": {"state": "running", "data": {}}}},
+         "fighter:C": {"label": "Green Hero → Fighter C", "donor": "hero_green", "game": "a1b2c3d4e5f60718", "slot": "fighter:C", "state": "pending", "stages": {}}}}}
+    ],
+    "/api/jobs/j1/fitting/files/a-decimate-3.glb": {"$glb": {"height": 1.62, "pose": "A", "color": [0.3, 0.5, 0.95]}},
+    "/api/jobs/j1/fitting/files/b-retarget-5.glb": {"$glb": {"height": 1.7, "pose": "A", "color": [0.9, 0.3, 0.3], "arms": 1.1}},
+    "/api/characters/hero_red/retarget_profile*": {
+      "slug": "hero_red", "name": "Red Hero", "model_url": "/api/characters/hero_red/file/hero_red.glb", "profile": null, "game_wide": null,
+      "source": {"game_id": "lab_heroes"},
+      "rig_roles": {"hip": "Hips", "chest": "Spine", "neck": "Neck", "head": "Head", "l_clav": "LeftShoulder", "l_upper": "LeftArm", "l_fore": "LeftForeArm",
+                    "l_hand": "LeftHand", "r_clav": "RightShoulder", "r_upper": "RightArm", "r_fore": "RightForeArm", "r_hand": "RightHand",
+                    "l_thigh": "LeftUpLeg", "l_shin": "LeftLeg", "l_foot": "LeftFoot", "r_thigh": "RightUpLeg", "r_shin": "RightLeg", "r_foot": "RightFoot"},
+      "resolved": {"head": 1.1}},
+    "/api/characters/hero_red/file/hero_red.glb": {"$glb": {"height": 1.8, "pose": "A", "color": [0.9, 0.3, 0.3], "arms": 1.1}},
+    "/api/retarget/reference*": {"reference": {"slug": "arena_b", "name": "Fighter B", "roles": {}, "model_url": ""}},
+    "/api/cast_swap/sources*": {"slots": [{"slot": "fighter:A", "name": "Fighter A"}, {"slot": "fighter:B", "name": "Fighter B"}, {"slot": "fighter:C", "name": "Fighter C"}]},
+    "/api/catalog/a1b2c3d4e5f60718": {"title": "Arena Fighters 2", "game_id": "a1b2c3d4e5f60718"},
+    "/api/retarget/goals*": {"goals": {"target_ground": 0.0, "target": {
+      "hip": [0.0, 0.905, 0.0], "chest": [0.0, 1.191, 0.0], "neck": [0.0, 1.41, 0.0], "head": [0.0, 1.529, 0.0],
+      "l_clav": [0.057, 1.353, 0.0], "l_upper": [0.172, 1.353, 0.0], "l_fore": [0.39, 1.353, 0.0], "l_hand": [0.593, 1.353, 0.0],
+      "r_clav": [-0.057, 1.353, 0.0], "r_upper": [-0.172, 1.353, 0.0], "r_fore": [-0.39, 1.353, 0.0], "r_hand": [-0.593, 1.353, 0.0],
+      "l_thigh": [0.095, 0.858, 0.0], "l_shin": [0.095, 0.476, 0.01], "l_foot": [0.095, 0.076, 0.0],
+      "r_thigh": [-0.095, 0.858, 0.0], "r_shin": [-0.095, 0.476, 0.01], "r_foot": [-0.095, 0.076, 0.0]}}},
+    "/api/games/a1b2c3d4e5f60718/special_builds": {"groups": []}
+  },
+  "shots": [
+    {"name": "fitting-popup-r-buttons", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait_for": ".gbox-pp .pp-rr"}, {"wait": 3000}], "clip": ".gbox-pp", "pad": 10},
+    {"name": "goals-view", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait_for": ".gbox-pp [data-pp-r='fighter:B']"}, {"wait": 800}, {"click": ".gbox-pp [data-pp-r='fighter:B']"},
+                 {"wait_for": "#rtedit"}, {"eval": "document.querySelector('.gbox-pp') && (document.querySelector('.gbox-pp').style.display = 'none')"},
+                 {"wait": 5000}], "clip": "#rtedit", "pad": 6},
+    {"name": "goals-joint-moved", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait_for": ".gbox-pp [data-pp-r='fighter:B']"}, {"wait": 800}, {"click": ".gbox-pp [data-pp-r='fighter:B']"},
+                 {"wait_for": "#rtedit"}, {"eval": "document.querySelector('.gbox-pp') && (document.querySelector('.gbox-pp').style.display = 'none')"},
+                 {"wait": 4500}, {"click": "#rtedit [data-rt-joint-pick=l_fore]"}, {"wait": 300},
+                 {"eval": "(() => { const s = document.querySelector('#rtedit [data-rt-set=\"joints.l_fore.1\"]'); s.value = -0.045; s.dispatchEvent(new Event('input', {bubbles: true})); const x = document.querySelector('#rtedit [data-rt-set=\"joints.l_fore.0\"]'); x.value = 0.03; x.dispatchEvent(new Event('input', {bubbles: true})); })()"},
+                 {"wait": 800}], "clip": "#rtedit", "pad": 6}
+  ]
+}

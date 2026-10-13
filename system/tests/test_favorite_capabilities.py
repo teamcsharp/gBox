@@ -199,10 +199,11 @@ def test_coverage_includes_favorites_absent_from_static_supported_games(monkeypa
     assert result['summary']['favorites'] == 1 and result['favorite_catalog']['pagination_complete']
 
 
-def test_mgs_writer_scope_stays_hucast_only():
+def test_mgs_writer_scope_names_every_figure_and_stays_unverified():
     writer = CC.writer_for(game('f55555ee6513391b', title='Metal Gear Solid - VR Missions', platform='psx'))
     assert writer['routed'] and writer['writer'] == 'gbox.mgs_vr_swap'
-    assert 'HUcast' in writer['replaces'] and 'unsupported' in writer['replaces']
+    assert {'player', 'enemy:soldier', 'enemy:ninja'} <= set(writer['slots'])
+    assert 'any collection character' in writer['replaces'] and 'unverified in game' in writer['replaces']
 
 
 def test_doa_available_source_exports_are_verified_separately_from_collection_and_stages():

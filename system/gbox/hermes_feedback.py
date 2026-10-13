@@ -289,32 +289,42 @@ def adjust_routes() -> dict:
         if result.returncode:
             raise RuntimeError('Hermes canonical MCP configuration update failed')
     cron = config.get('cron') or {}
+    from . import hermes_local
+    local = hermes_local.settings()
     routes = hermes_quota.routes(config, data.get('routes') or [])
     primary = {'provider': cron.get('model_provider'), 'model': cron.get('model')}
-    if primary not in routes and all(primary.values()):
+    if (primary not in routes and all(primary.values()) and primary['provider'].casefold() not in hermes_quota.excluded_providers()
+            and not hermes_local.is_local(primary, local)):
         routes.insert(0, primary)
-    eligible = [r for r in routes if r['provider'] + '/' + r['model'] not in data['cooldowns']]
+    # The local route is never a paid route's fallback: it is chosen alone, only when no paid route is left.
+    paid = [r for r in routes if not hermes_local.is_local(r, local)]
+    lifted = _lift_recovered_credit(data)
     # Rotation is done only between agent runs. Never mutate an in-flight route.
     busy = any(hermes_task_mode._active(j['id']) and not j.get('no_agent') for j in hermes_task_mode._jobs())
-    if busy or not eligible:
+    pick = hermes_local.choose(paid, data['cooldowns'], time.time(), primary=primary,
+                               rotation_pending=bool(data.get('rotation_pending')), busy=busy, s=local)
+    shown = paid + ([hermes_local.route(local)] if local.enabled else [])   # the Providers view lists the local route
+    if busy or pick['mode'] == 'none':
         path = hermes_delivery.state_dir() / 'feedback.json'
         with hermes_delivery.locked('feedback'):
             saved = json.loads(path.read_text())
-            saved['routes'] = routes
+            saved['routes'] = shown
             saved['completed_usage'] = accounting
             _save(path, saved)
         return {'changed': False, 'reason': 'Agent run is active' if busy else 'All connected routes are cooling down',
                 'route': primary, 'agent_busy': busy, 'cooldowns': data['cooldowns'],
                 'new_lessons': data['new_lessons'], 'providers': provider_status(data, config),
-                'completed_usage': accounting}
-    chosen = primary
-    if primary not in eligible or (data.get('rotation_pending') and not busy):
-        index = eligible.index(primary) if primary in eligible else -1
-        chosen = eligible[(index + 1) % len(eligible)]
+                'completed_usage': accounting, 'credit_recovered': lifted}
+    chosen = pick['route']
+    registered = False
+    if pick['mode'] == 'local' and hermes_local.merged_providers(config.get('custom_providers'), local) is not None:
+        # In-process edit of config.yaml: `hermes config set custom_providers` would put every provider's api_key
+        # on a command line. Done before the route switch, so Hermes never runs on an unknown provider.
+        registered = hermes_local.register_provider(hermes_task_mode._home() / 'config.yaml', local)
     changes = {'cron.model_provider': chosen['provider'], 'cron.model': chosen['model'],
-               'fallback_providers': [r for r in eligible if r != chosen]}
+               'fallback_providers': pick['fallbacks']}
     for key, value in changes.items():
-        old = config.get(key) if key == 'fallback_providers' else cron.get(key.split('.')[1])
+        old = config.get(key) if '.' not in key else cron.get(key.split('.')[1])
         if old != value:
             result = subprocess.run([cli, 'config', 'set', key, json.dumps(value) if isinstance(value, list) else value],
                                     capture_output=True, text=True, timeout=30)
@@ -323,16 +333,51 @@ def adjust_routes() -> dict:
     path = hermes_delivery.state_dir() / 'feedback.json'
     with hermes_delivery.locked('feedback'):
         saved = json.loads(path.read_text())
-        saved.update(routes=routes, current_route=chosen, completed_usage=accounting)
+        saved.update(routes=shown, current_route=chosen, completed_usage=accounting)
+        previous = saved.get('local_mode') or {}
+        now = time.time()
+        if pick['mode'] == 'local':
+            saved['local_mode'] = {'active': True, 'reason': pick['reason'], 'next_paid_at': pick['next_paid_at'],
+                                   'since': previous.get('since') if previous.get('active') else now}
+        else:
+            saved['local_mode'] = {'active': False, 'reason': pick['reason'], 'next_paid_at': None,
+                                   'since': previous.get('since') if previous and not previous.get('active') else now}
         if chosen != primary or not busy:
             saved['rotation_pending'] = False
         _save(path, saved)
     from .hermes_recovery import recover
-    return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
+    return {'route': chosen, 'mode': pick['mode'], 'mode_reason': pick['reason'],
+            'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
             'completed_usage': accounting, 'merges': merges, 'summaries': summaries,
-            'capped': capped, 'cleanup': cleanup,
+            'capped': capped, 'cleanup': cleanup, 'credit_recovered': lifted, 'local_provider_registered': registered,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
+
+
+def _lift_recovered_credit(data, *, balance=None, now=None) -> list[str]:
+    """End an OpenRouter quota cooldown early when its account shows credit again (the operator topped it up)."""
+    from . import hermes_local
+    now = time.time() if now is None else now
+    if not any(v > now and k.startswith('openrouter/') for k, v in data.get('cooldowns', {}).items()):
+        return []
+    if balance is None:
+        try:
+            from .hermes_providers import openrouter_balance
+            balance = openrouter_balance(wait=True)
+        except Exception:                      # noqa: BLE001 - a balance check never blocks route supervision
+            return []
+    keys = hermes_local.credit_recovered(data['cooldowns'], data.get('cooldown_details', {}), balance, now)
+    if not keys:
+        return []
+    path = hermes_delivery.state_dir() / 'feedback.json'
+    with hermes_delivery.locked('feedback'):
+        saved = json.loads(path.read_text()) if path.exists() else {}
+        for target in (data, saved):
+            for key in keys:
+                target.get('cooldowns', {}).pop(key, None)
+                target.get('cooldown_details', {}).pop(key, None)
+        _save(path, saved)
+    return keys
 
 
 def _recorded_usage(now):
