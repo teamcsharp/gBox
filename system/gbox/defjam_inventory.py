@@ -101,13 +101,20 @@ class Iso:
         return self.files[name.upper()][1]
 
     def read(self, name: str, offset: int = 0, size: int | None = None) -> bytes:
+        return self.read_many(name, [(offset, size)])[0]
+
+    def read_many(self, name: str, spans) -> list[bytes]:
+        """Several (offset, size) reads of one file through one handle (the ISO may sit on a slow share)."""
         lba, n = self.files[name.upper()]
-        size = n - offset if size is None else size
-        if offset < 0 or size < 0 or offset + size > n:
-            raise FormatError(f"{name}: read 0x{offset:x}+0x{size:x} outside 0x{n:x} bytes")
+        out = []
         with open(self.path, "rb") as f:
-            f.seek(lba * 2048 + offset)
-            return f.read(size)
+            for offset, size in spans:
+                size = n - offset if size is None else size
+                if offset < 0 or size < 0 or offset + size > n:
+                    raise FormatError(f"{name}: read 0x{offset:x}+0x{size:x} outside 0x{n:x} bytes")
+                f.seek(lba * 2048 + offset)
+                out.append(f.read(size))
+        return out
 
 
 # --- ELF ---------------------------------------------------------------------------------------------------
@@ -243,13 +250,16 @@ def identify(iso) -> dict:
 
 
 def entries(disc: Iso, elf: bytes | None = None) -> list[dict]:
-    """Every data.bin entry with its sector span and container kind (from the 4-byte magic)."""
+    """Every data.bin entry with its sector span and container kind (from the 4-byte magic); cached on the disc."""
+    if getattr(disc, "_entries", None) is not None:
+        return disc._entries
     table = file_table(elf if elf is not None else disc.read(SERIAL), disc.size(DATA_NAME))
     out = []
-    for i, (sec, cnt) in enumerate(table):
-        head = disc.read(DATA_NAME, sec * 2048, 4)
+    heads = disc.read_many(DATA_NAME, [(sec * 2048, 4) for sec, _ in table])
+    for i, ((sec, cnt), head) in enumerate(zip(table, heads)):
         out.append({"index": i, "sector": sec, "sectors": cnt, "offset": sec * 2048, "size": cnt * 2048,
                     "magic": head.hex(), "kind": KINDS.get(head, "data")})
+    disc._entries = out
     return out
 
 
@@ -294,10 +304,8 @@ def inventory(iso) -> dict:
     for e in ents:
         kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
     fighters = []
-    for e in ents:
-        if e["kind"] != "fighter":
-            continue
-        b = read_entry(disc, e)
+    fents = [e for e in ents if e["kind"] == "fighter"]
+    for e, b in zip(fents, disc.read_many(DATA_NAME, [(e["offset"], e["size"]) for e in fents])):
         rec = {"index": e["index"], "sector": e["sector"], "size": e["size"], **names.get(e["index"], {})}
         try:
             w = parse_wrs(b)
