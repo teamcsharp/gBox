@@ -1,9 +1,10 @@
 """Inventory the owned 007 - GoldenEye (Europe) N64 build.
 
-GoldenEye stores its executable and all assets in one flat ROM image.
-Unlike its successor Perfect Dark it has no central file table; asset
-offsets (model block, stage setups, textures, animations, sounds) are
-hard-coded in the game code and differ between regional builds.  This
+GoldenEye stores its executable and all assets in one ROM image.  The
+analysis stage (gbox.goldeneye_files) found the central file table inside
+the rarezip-compressed data segment (ROM 0x1F850, VRAM 0x8001EC50; 771
+entries at 0x8003EAC4), so asset offsets come from that table rather than
+from hard-coded constants; they still differ between regional builds.  This
 module therefore focuses on identifying the exact owned build, verifying
 its integrity, recording the header/boot-code layout, and producing a
 high-level region map that the analysis stage can use to pin the real
