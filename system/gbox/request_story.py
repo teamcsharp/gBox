@@ -197,7 +197,7 @@ def parse_diff(text: str) -> list[dict]:
 
 
 def _git(repo: Path, *args, timeout=15, limit=6_000_000):
-    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=timeout)
+    r = subprocess.run(["git", "-c", "core.quotepath=false", "-C", str(repo), *args], capture_output=True, timeout=timeout)
     if r.returncode:
         return None
     return r.stdout[:limit].decode("utf-8", "replace")
