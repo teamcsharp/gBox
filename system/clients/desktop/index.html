@@ -1140,6 +1140,8 @@ window.taskVizCreate = canvas => {
 <script src="task-activity.js"></script>
 <script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
+<script src="../web/viz/retarget-handles.js"></script>
+<script src="../web/viz/retarget-editor.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
@@ -5022,7 +5024,15 @@ async function castSwapOpen(gid, title) {
   const tok = encodeURIComponent(await gbox.token());
   const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   return GBoxCastSwap.open(document, { api, img: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
-    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000) }, { gid, title });
+    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000), retarget: retargetOpen }, { gid, title });
+}
+// Retarget editor (../web/viz/retarget-editor.js; gbox/retarget_profile.py): how a collection character is scaled and
+// proportioned into one game's slot. Opened from the cast plan rows (✎) and the pick-whip card menu.
+async function retargetOpen(o) {
+  const tok = encodeURIComponent(await gbox.token());
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  return GBoxRetargetEditor.open(document, { api, url: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    drag: dragAnywhere, confirm: s => confirm(s), onSaved: st => toast(`Retarget profile saved for ${st.name || st.slug}: the next build uses it`, 6000) }, o);
 }
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();
@@ -5115,6 +5125,7 @@ async function whipCardMenu(card, gp, ev) {
     <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
+    <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
     <button data-w="x"><span>…</span>Something else (type it)</button>`;
   m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
   if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
@@ -5133,6 +5144,11 @@ async function whipCardMenu(card, gp, ev) {
     }
     m.classList.remove("on");
     T.name = m.querySelector("#whip-target-name")?.value.trim() || T.name;
+    if (bt.dataset.w === "retarget") {                        // the Retarget editor for this donor in this game
+      if (!/^[0-9a-f]{16}$/.test(EMB.game || "")) { toast("Open the game first: the Retarget editor needs its game id."); return; }
+      retargetOpen({ slug: card.slug, name: card.name, gid: EMB.game, title: EMB.title || "", slot: "player" });  // the editor's slot picker lists the game's other slots
+      return;
+    }
     if (!targetSid || EMB.sid !== targetSid) { toast("The selected game changed; pick the target again."); return; }
     const reportContext = { sid: targetSid, game, model: card.name, character: card.slug,
       target: T.name, targetKind: T.kind, x: +f[0].toFixed(4), y: +f[1].toFixed(4), moment: at, shot };

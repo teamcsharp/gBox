@@ -129,6 +129,14 @@ test('every bone takes its nearest assigned ancestor role', () => {
     ['hip', 'hip', 'chest', 'chest', 'head', 'head', 'chest']);
 });
 
+test('a rip lying on its back with its left on -X turns to the editor frame', () => {
+  // up is +Z, the character's left is -X: rows map left -> +X, up -> +Y
+  const R = H.facing({ hip: [0, 0, 1], head: [0, 0, 1.6], l_thigh: [-0.1, 0, 0.95], r_thigh: [0.1, 0, 0.95] });
+  assert.deepEqual(R[0], [-1, 0, 0]); assert.deepEqual(R[1], [0, 0, 1]);
+  close(H.rotate(R, [0, 0, 1.6]), [0, 1.6, 0]); close(H.rotate(R, [-0.1, 0, 0]), [0.1, 0, 0]);
+  assert.deepEqual(H.facing(POS), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+});
+
 test('the preview base fit matches figure heights and hips', () => {
   const donor = { hip: [5, 10, 0], head: [5, 18, 0] }, target = { hip: [0, 1, 0], head: [0, 1.6, 0] };
   const f = H.baseFit(donor, 2, target, 0);

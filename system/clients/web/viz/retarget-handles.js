@@ -277,6 +277,22 @@
     const t = [ft.centre[0] - fd.centre[0] * s, ft.ground - fd.ground * s, ft.centre[2] - fd.centre[2] * s];
     return { s, t, apply: v => [v[0] * s + t[0], v[1] * s + t[1], v[2] * s + t[2]] };
   }
+  // rows of the rotation that turns a rip to the editor's frame (left -> +X, up -> +Y, front -> +Z), like
+  // sm64_swap.facing: up = hip -> head, left = right -> left shoulders/thighs, each snapped to its nearest axis
+  function facing(rolePos) {
+    const snap = (v, skip = -1) => { const a = v.map(Math.abs); if (skip >= 0) a[skip] = -1;
+      const i = a.indexOf(Math.max(...a)), o = [0, 0, 0]; o[i] = Math.sign(v[i]) || 1; return o; };
+    const P = rolePos || {}, top = ["head", "neck", "chest"].find(r => P[r]);
+    let up = top && P.hip ? sub(P[top], P.hip) : [0, 1, 0];
+    const lefts = ["thigh", "upper", "shin", "fore", "clav"].filter(s => P["l_" + s] && P["r_" + s]).map(s => sub(P["l_" + s], P["r_" + s]));
+    let left = lefts.length ? sc(lefts.reduce(add, [0, 0, 0]), 1 / lefts.length) : [1, 0, 0];
+    if (norm(up) < 1e-9) up = [0, 1, 0];
+    if (norm(left) < 1e-9) left = [1, 0, 0];
+    const u = snap(up), l = snap(left, u.findIndex(x => x !== 0));
+    return [l, u, [l[1] * u[2] - l[2] * u[1], l[2] * u[0] - l[0] * u[2], l[0] * u[1] - l[1] * u[0]]];
+  }
+  const rotate = (R, v) => mv(R, v);
+
   // a humanoid at the target game's proportions when no stock model of that slot is in the collection
   function standardSkeleton(height = 1.7) {
     const k = height / 1.7, P = { hip: [0, 0.95, 0], chest: [0, 1.25, 0], neck: [0, 1.48, 0], head: [0, 1.58, 0],
@@ -288,7 +304,7 @@
 
   const api = { ROLES, LABELS, REQUIRED, DEFAULT, CHILD, PARENT, normalize, isIdentity, adjustOf, setAdjust, roleTransforms,
     applyVertex, applyPositions, guessRoles, assign, issues, roleOverrides, applyOverrides, boneRoles, handles, drag, hit,
-    view, frame, baseFit, standardSkeleton, euler };
+    view, frame, baseFit, standardSkeleton, euler, facing, rotate };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxRetargetHandles = api;
 })(typeof window !== "undefined" ? window : globalThis);
