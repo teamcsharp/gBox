@@ -1629,6 +1629,11 @@ DEDICATED = [
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Crazy Taxi 2 (DC): the eight drivers from polPP??H.BIN / texPP??H.BIN (NAOMI-library rigid parts, PowerVR
+    # textures) on an 18-joint rest rig, parts named by 1ST_READ.BIN's slot tables (gbox.crazy_taxi2, docs/crazy_taxi2.md)
+    ("crazy_taxi2", lambda t, p: __import__("gbox.crazy_taxi2", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.crazy_taxi2", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.crazy_taxi2", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta3", lambda t, p: ("grand theft auto iii" in t or t.startswith("gta iii") or t == "gta 3") and p == "ps2",
      lambda: __import__("gbox.gta3_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1727,7 +1732,8 @@ def dedicated_entries(config, game, name, roster):
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
-                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader")}
+                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
+                   "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
