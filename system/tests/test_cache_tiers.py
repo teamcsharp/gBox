@@ -1,7 +1,6 @@
 """Two-tier cache (gbox/cache_tiers.py): two temp dirs stand in for the NVMe (hot) and the HDD (cold)."""
 import json
 import os
-import time
 import types
 
 import pytest
@@ -191,6 +190,37 @@ def test_open_file_guard(tmp_path):
     assert t.tier("g1") == "hot" and not any(os.path.lexists(t.cold / p) for p in parts())
     held.clear()
     assert t.demote("g1") and t.tier("g1") == "cold"
+
+
+def test_a_failed_background_move_backs_off(tmp_path, monkeypatch):
+    t, clock = make(tmp_path, cap=1000, idle_s=60)
+    game(t.hot)
+    t.state["warm_done"] = 1
+    clock.t += 10_000
+    calls = []
+
+    def broken(self):
+        calls.append(1)
+        raise RuntimeError("Invalid argument: a name NTFS refuses")
+    monkeypatch.setattr(cache_tiers.Copier, "verify", broken)
+    assert t.tick()["demoted"] == [] and calls == [1]
+    assert t.tier("g1") == "hot" and not any(os.path.lexists(t.cold / p) for p in parts())
+    row = t.status()["top"][0]
+    assert row["failed"]["op"] == "demoting" and "NTFS" in row["failed"]["error"]
+    t.tick()
+    assert calls == [1]                                   # not re-read every tick
+    clock.t += cache_tiers.FAIL_BACKOFF_S + 1
+    t.tick()
+    assert calls == [1, 1]
+
+
+def test_a_move_needs_room_on_the_target_disk(tmp_path, monkeypatch):
+    t, _ = make(tmp_path)
+    game(t.hot)
+    monkeypatch.setattr(cache_tiers.shutil, "disk_usage", lambda p: types.SimpleNamespace(free=10 << 20, total=1 << 40))
+    with pytest.raises(OSError, match="needs"):
+        t.demote("g1")
+    assert t.tier("g1") == "hot" and not list(t.journal_dir.glob("*.json"))
 
 
 def test_demotion_gives_way_when_the_unit_is_asked_for(tmp_path):

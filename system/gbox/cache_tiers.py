@@ -61,6 +61,9 @@ USAGE_TTL_S = 300.0
 NAMES_TTL_S = 30.0
 TICK_S = 30.0
 LAUNCH_TOOLS = ("launch_game",)
+FAIL_BACKOFF_S = 6 * 3600                     # a unit whose background move failed is left alone this long
+PINNED_BACKOFF_S = 600.0
+SPACE_MARGIN = 2 << 30                        # a move needs its size plus this free on the target disk
 MAX_PROMOTE_PER_JOB = 4                       # a job naming more units (a sweep, a batch) only marks them used
 IS_LINUX = sys.platform.startswith("linux")
 
@@ -303,7 +306,8 @@ class Copier:
             self.progress(self.done, self.total)
 
     def run(self) -> dict:
-        self.total = tree_size(self.src_root, self.parts)
+        if not self.total:
+            self.total = tree_size(self.src_root, self.parts)
         for p in self.parts:
             self._copy_part(p)
         for _ in range(4):                        # writes that landed while we copied
@@ -793,6 +797,19 @@ class Tiers:
         return best
 
     # -- locks
+    def _failed(self, key: str, op: str, e: BaseException, backoff: float = FAIL_BACKOFF_S) -> None:
+        """A background move failed (not gave way): leave the unit alone for a while instead of re-reading it every tick."""
+        self.last_error = f"{op} {key}: {type(e).__name__}: {e}"
+        _log(self.last_error)
+        with self._lock:
+            rec = self._unit_rec(key)
+            rec["failed"] = {"op": op, "error": f"{type(e).__name__}: {e}"[:300], "at": self.clock()}
+            rec["skip_until"] = self.clock() + backoff
+            self._dirty = True
+
+    def _skipped(self, key: str) -> bool:
+        return self.clock() < ((self.state["units"].get(key) or {}).get("skip_until") or 0)
+
     def _ulock(self, key: str) -> threading.Lock:
         with self._lock:
             return self._ulocks.setdefault(key, threading.Lock())
@@ -862,6 +879,10 @@ class Tiers:
 
     def _move(self, key: str, op: str, parts: list[str], progress=None, cancel=None, aside: bool = False) -> dict:
         src_root, dst_root = (self.hot, self.cold) if op == "demote" else (self.cold, self.hot)
+        total = tree_size(src_root, parts)
+        free = shutil.disk_usage(dst_root).free
+        if free < total + SPACE_MARGIN:
+            raise OSError(errno.ENOSPC, f"{key} needs {total / 2**30:.1f} GB; {dst_root} has {free / 2**30:.1f} GB free")
         mid = _stamp()
         staging = self._area(dst_root, "incoming", mid)
         j = {"id": mid, "op": op, "unit": key, "parts": parts, "phase": "copying", "aside": aside, "at": self.clock()}
@@ -875,6 +896,7 @@ class Tiers:
                 progress(done, total)
         copier = Copier(src_root, staging, parts, cancel=cancel, progress=prog, verify=self.verify,
                         drop_cache=(op == "demote"))
+        copier.total = total
         try:
             try:
                 man = copier.run()
@@ -1266,14 +1288,15 @@ class Tiers:
         """Copy the pinned libraries off the cold tier (not idle-gated: they are what made the HDD slow to use)."""
         done = []
         for name in self.pinned_pending():
+            if self._skipped(name):
+                continue
             try:
                 rec = self.promote(name, aside=True, background=True)
                 if rec:
                     done.append(rec)
                     _invalidate_characters(self.hot / name)
-            except Exception as e:                     # noqa: BLE001 - retried on the next tick
-                self.last_error = f"pinning {name}: {type(e).__name__}: {e}"
-                _log(self.last_error)
+            except Exception as e:                     # noqa: BLE001 - retried after a pause
+                self._failed(name, "pinning", e, PINNED_BACKOFF_S)
         return done
 
     # -- the background loop
@@ -1325,6 +1348,8 @@ class Tiers:
             if now - ((self.state["units"].get(key) or {}).get("atime") or 0) < self.idle_s:
                 continue                                # still in use (a remote download, a session): later
             self._queue.discard(key)
+            if self._skipped(key):
+                continue
             size = self.unit_size(key)
             if size is None:
                 size = self.measure(key)
@@ -1338,6 +1363,8 @@ class Tiers:
             except Cancelled:
                 self._queue.add(key)
                 return out
+            except Exception as e:                     # noqa: BLE001 - next unit; reported in the status
+                self._failed(key, "promoting", e)
         u = self.usage()
         if u["total"] > self.cap:
             out["demoted"] = self._demote_lru(u, give_way)
@@ -1357,7 +1384,7 @@ class Tiers:
         cands = []
         for key, size in u["units"].items():
             rec = self.state["units"].get(key) or {}
-            if rec.get("pin") or now - rec.get("atime", 0) < self.idle_s:
+            if rec.get("pin") or now - rec.get("atime", 0) < self.idle_s or self._skipped(key):
                 continue
             cands.append((rec.get("atime", 0), key, size))
         for _at, key, size in sorted(cands):
@@ -1372,8 +1399,7 @@ class Tiers:
                 if self.busy_reason():
                     break
             except Exception as e:                     # noqa: BLE001 - next unit; reported in the status
-                self.last_error = f"demoting {key}: {type(e).__name__}: {e}"
-                _log(self.last_error)
+                self._failed(key, "demoting", e)
         if total > self.cap and not cands:
             self.last_error = "the hot tier is over its cap and nothing can be demoted (pinned or recently used)"
         return done
@@ -1389,6 +1415,8 @@ class Tiers:
             if self.busy_reason():
                 finished = False
                 break
+            if self._skipped(key):
+                continue
             size = self.unit_size(key)
             if size is None:
                 size = self.measure(key)
@@ -1401,6 +1429,8 @@ class Tiers:
             except Cancelled:
                 finished = False
                 break
+            except Exception as e:                     # noqa: BLE001 - next unit
+                self._failed(key, "promoting", e)
         if finished:
             with self._lock:
                 self.state["warm_done"] = self.clock()
@@ -1447,7 +1477,8 @@ class Tiers:
                 tiers[t] += 1
             rec = self.state["units"].get(k) or {}
             units.append({"unit": k, "tier": t, "size": u["units"].get(k) if t == "hot" else rec.get("size"),
-                          "last_used": rec.get("atime"), "pin": bool(rec.get("pin"))})
+                          "last_used": rec.get("atime"), "pin": bool(rec.get("pin")),
+                          **({"failed": rec["failed"]} if rec.get("failed") and self._skipped(k) else {})})
         units.sort(key=lambda r: -(r["last_used"] or 0))
         warnings = []
         if not self.cold_ok():

@@ -103,6 +103,10 @@ The status shows the pinned size. If pinned data alone reaches 80% of the cap, i
   The HDD stores times in 100 ns steps. After a demotion, the hash sidecars and the stage db get the new mtimes for
   files whose content was verified, so nothing is re-hashed.
 
+  A move needs its size plus 2 GB free on the target disk. A background move can fail, for example on a file name
+  that the NTFS side refuses. The game is then left alone for 6 hours (10 minutes for a pinned library) instead of
+  being re-read on every pass, and the status shows the error on its row.
+
 - **Promotion (HDD to NVMe)** happens on access. Every tool run on the Spark goes through `registry.execute`. When the
   run's input names a game (its id in any field, or a path under either cache root), that game moves up before the
   tool runs, and the job shows "Moving <gid> to the fast drive". This covers builds, writers, collect, file mods and
