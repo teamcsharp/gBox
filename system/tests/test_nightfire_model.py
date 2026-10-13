@@ -1,3 +1,4 @@
+import math
 import os
 import struct
 from pathlib import Path
@@ -79,40 +80,93 @@ def test_owned_bond_model_vertices(level):
     assert 0.98 < st["mean"] < 1.02
 
 
+def test_synthetic_strips_runs_and_quats():
+    groups = [{"strips": 2}]
+    # strip 1: 2 triangles over 4 entries, strip 2: 1 triangle + a degenerate restart window
+    tris, deg = nm.strip_triangles(groups, [2, 2], [0, 1, 2, 3, 4, 4, 5, 6])
+    assert deg == 1
+    assert tris == [(0, 0, 2, 1), (0, 1, 2, 3), (0, 5, 6, 7)]
+    j, w = nm.run_weights([(3, 7, 1), (5, nm.NO_BONE, 1)], [8192, 8192, 16384, 0])
+    assert j == [(3, 7), (5, 0)] and w == [(0.5, 0.5), (1.0, 0.0)]
+    with pytest.raises(ValueError):
+        nm.run_weights([(5, nm.NO_BONE, 1)], [8192, 8192])
+    import numpy as np
+    m = nm._quat_matrix([0, 0, math.sqrt(0.5), math.sqrt(0.5)])
+    assert np.allclose(nm._quat_matrix(nm._matrix_quat(m)), m)
+    ibm, world, local = nm.skeleton_matrices(nm.skin_skeleton(_skin()))
+    # bind records are absolute inverse binds: bones 1 and 2 both sit at -t, so bone 2 is local zero
+    assert np.allclose(world[2][:3, 3], [0, -0.5, 0]) and np.allclose(local[1][:3, 3], [0, -0.5, 0])
+    assert np.allclose(local[2], np.eye(4)) and np.allclose(ibm[2] @ world[2], np.eye(4))
+
+
 def test_owned_bond_mesh_faces(level):
     data, by, _ = level
     mesh = nm.object_mesh(data, "01000075")
-    assert mesh["vertex_block_offset"] == 0x4ACC0
-    assert mesh["runtime_base"] == 4093296
-    assert len(mesh["faces"]) > 2000
-    # All face indices are inside the vertex array and every triangle edge is short (scale 1/8192)
-    import math
-    scale = mesh["scale"]
-    bad = 0
-    for a, b, c in mesh["faces"]:
-        assert a < 1278 and b < 1278 and c < 1278
-        for p, q in ((a, b), (b, c), (a, c)):
-            pa = mesh["positions"][p]
-            qa = mesh["positions"][q]
-            d = math.sqrt(sum(((pa[i] - qa[i]) * scale) ** 2 for i in range(3)))
-            if d > 2.0:
-                bad += 1
-    assert bad == 0
+    tab = mesh["tables"]
+    assert mesh["vertex_block_offset"] == 0x4ACC0 and mesh["runtime_base"] == 4093296
+    assert [(g["strips"], g["tri_slots"], g["material"]) for g in tab["groups"]][:2] == [(29, 865, 0), (2, 78, 1)]
+    assert len(tab["strip_tris"]) == 127 and len(tab["pos_idx"]) == 3392
+    assert len(mesh["faces"]) == 2449 and tab["degenerate"] == tab["degenerate_header"] == 689
+    assert len(tab["uvs"]) == 1141 and max(tab["uv_idx"]) == 1140
+    assert len(tab["runs"]) == 96 and sum(c for *_, c in tab["runs"]) == 1278
+    assert sum(c for _, b, c in tab["runs"] if b != nm.NO_BONE) == 415
+
+
+@pytest.mark.parametrize("obj,faces,deg,groups", [("01000075", 2449, 689, 7), ("01000145", 2408, 680, 5),
+                                                  ("0100006f", 2081, 599, 8)])
+def test_owned_roster_rigs(level, obj, faces, deg, groups):
+    data, by, _ = level
+    sk = nm.skin_skeleton(_payload(data, by["05000007"]))
+    mesh = nm.object_mesh(data, obj)
+    r = nm.rig_report(mesh, sk)
+    assert (r["faces"], r["degenerate"], r["degenerate_header"], r["groups"]) == (faces, deg, deg, groups)
+    assert r["max_bone"] < sk["bones"] == 73
+    assert r["rigid_run_own_bone_top4"] >= 0.75 and r["rigid_run_median_dist_m"] < 0.1
+    assert r["edge_max_m"] < 0.3 and r["winding_agrees_with_normals"] > 0.98
+    if obj == "0100006f":  # grunt has two-texture groups (strip-count high nibble)
+        assert any(g["flags"] and len(g["materials"]) == 2 for g in mesh["tables"]["groups"])
 
 
 def test_owned_bond_glb(level, tmp_path):
+    import json
+    import numpy as np
     data, by, _ = level
     out = tmp_path / "bond.glb"
     nm.export_glb(data, str(out), "01000075", "05000007")
-    assert out.stat().st_size > 0
-    # Minimal GLB parse: verify the JSON chunk mentions the right accessors and the skin has 73 joints.
-    import json, struct
     d = out.read_bytes()
     jl = struct.unpack_from("<I", d, 12)[0]
     gltf = json.loads(d[20:20 + jl])
-    pos_acc = gltf["accessors"][gltf["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
-    idx_acc = gltf["accessors"][gltf["meshes"][0]["primitives"][0]["indices"]]
+    b0 = 20 + jl + 8
+
+    def acc(i):
+        a = gltf["accessors"][i]
+        v = gltf["bufferViews"][a["bufferView"]]
+        dt = {5126: np.float32, 5121: np.uint8, 5123: np.uint16, 5125: np.uint32}[a["componentType"]]
+        n = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}[a["type"]]
+        return np.frombuffer(d, dt, a["count"] * n, b0 + v["byteOffset"]).reshape(a["count"], n)
+
+    prims = gltf["meshes"][0]["primitives"]
+    at = prims[0]["attributes"]
+    assert len(prims) == 7 and set(at) == {"POSITION", "NORMAL", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"}
+    assert sum(gltf["accessors"][p["indices"]]["count"] for p in prims) == 2449 * 3
+    pos, jnt, wgt = acc(at["POSITION"]), acc(at["JOINTS_0"]), acc(at["WEIGHTS_0"])
+    assert len(pos) == 1664 and np.allclose(wgt.sum(1), 1.0) and jnt.max() < 73
     skin = gltf["skins"][0]
-    assert pos_acc["count"] == 1278 and idx_acc["count"] == 2694 * 3
     assert len(skin["joints"]) == 73
-    assert gltf["skins"][0]["inverseBindMatrices"] is not None
+    # rest pose: world(joint) @ inverseBind(joint) must be identity for every joint
+    ibm = acc(skin["inverseBindMatrices"]).reshape(-1, 4, 4).transpose(0, 2, 1)
+    nodes = gltf["nodes"]
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+
+    def world(i):
+        m = np.eye(4)
+        while i is not None and i < 73:
+            n = nodes[i]
+            loc = np.eye(4)
+            loc[:3, :3] = nm._quat_matrix(n["rotation"])
+            loc[:3, 3] = n["translation"]
+            m = loc @ m
+            i = parent.get(i)
+        return m
+
+    assert max(np.abs(world(j) @ ibm[j] - np.eye(4)).max() for j in range(73)) < 1e-5
