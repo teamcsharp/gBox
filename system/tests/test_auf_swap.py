@@ -274,17 +274,22 @@ def _model(names, mesh=True):
     return G.encode_gcm(tpl, P, Nn, UV, J, Wt, F, np.arange(len(F)) % len(names), list(names))[0]
 
 
-def level_package() -> bytes:
+def level_package(other_head: bool = False) -> bytes:
+    """other_head: the 'other' character's head has geometry too (as every head on the disc does), so 'other' can be
+    replaced as well; by default it is an empty template."""
     hb, hh, hs, ho = (W.hash_string(n) for n in ("body_mat", "head_mat", "hand_mat", "other_mat"))
     head = template(names=("head_mat",))
     P, Nn, UV, J, Wt, F = body_mesh()
     sel = np.all(np.isin(J[F, 0], [13, 14]), axis=1) | np.all(np.isin(J[F, 0], [12]), axis=1)
     head = G.encode_gcm(head, P, Nn, UV, J, Wt, F[sel], np.zeros(sel.sum(), int), ["head_mat"])[0]
+    head2 = template(names=("other_mat",))
+    if other_head:
+        head2 = G.encode_gcm(head2, P, Nn, UV, J, Wt, F[sel], np.zeros(sel.sum(), int), ["other_mat"])[0]
     files = {
         "models/actors/test/body_l.gcm": _model(("body_mat", "hand_mat")),
         "models/actors/actorheads/head_l.gcm": head,
         "models/actors/other/other_l.gcm": _model(("other_mat", "hand_mat")),
-        "models/actors/actorheads/head2_l.gcm": template(names=("other_mat",)),
+        "models/actors/actorheads/head2_l.gcm": head2,
         "models/mp_player_test.men": _men(["MEAN", "setup", "{", "path", "models/actors", "lod_model", "{",
                                            "test/body_l.o3d", "}", "lod_head", "{", "actorheads/head_l.o3d", "}", "}",
                                            "init", "{", "server", "{", "classname", "DeathmatchPlayer", "}", "}",
@@ -587,8 +592,35 @@ def test_roster_and_cast_slots_list_without_collecting():
     ros = S.roster()
     assert len(ros) == len(S.NAMES) and all(r["kind"] == "slot" and r["collect"] is False for r in ros)
     cast = S.cast_slots()
-    assert [c["slot"] for c in cast[:7]] == ["player", "enemies", "bosses", "npcs", "bots", "all", "cast"]
+    assert [c["slot"] for c in cast[:9]] == ["player", "enemies", "bosses", "npcs", "bots", "all", "cast", "campaign",
+                                             "multiplayer"]
     assert len({c["slot"] for c in cast}) == len(cast)
+    # groups and model:<body> are aggregates over the per-context rows, which split every (level, body) pair once
+    agg = [c for c in cast if c.get("aggregate")]
+    ctx = [c for c in cast if not c.get("aggregate")]
+    assert len(agg) == 9 + len(S.NAMES) and len(ctx) == 57
+    assert next(c for c in cast if c["slot"] == "model:henchmen_vest")["parts"] == ["campaign:henchmen_vest",
+                                                                                     "mp:henchmen_vest"]
+    hv = {c["slot"]: c for c in ctx if c["body"] == "henchmen_vest"}
+    assert hv["campaign:henchmen_vest"]["kind"] == "enemy" and hv["mp:henchmen_vest"]["kind"] == "bot"
+    assert "enemies" in hv["campaign:henchmen_vest"]["groups"] and "bots" in hv["mp:henchmen_vest"]["groups"]
+    assert hv["campaign:henchmen_vest"]["levels"] == ["m6_1", "m6_2", "m6_3"] and len(hv["mp:henchmen_vest"]["levels"]) == 17
+
+
+def test_context_slots_split_campaign_and_multiplayer():
+    assert S.select("campaign:henchmen_vest") == {(lv, "henchmen_vest") for lv in ("m6_1", "m6_2", "m6_3")}
+    assert S.select("mp:henchmen_vest") == S.select("bot:henchmen_vest") == {(lv, "henchmen_vest") for lv in S.MP_MAPS}
+    assert S.select("campaign:henchmen_vest") | S.select("mp:henchmen_vest") == S.select("model:henchmen_vest")
+    assert S.select("campaign") | S.select("multiplayer") == S.select("all")
+    assert not S.select("campaign") & S.select("multiplayer") and S.select("mp:vip_body") <= S.select("multiplayer")
+    assert all(S.is_slot(s) for s in ("campaign", "multiplayer", "campaign:zoe_body", "mp:zoe_body", "bot:twins_mp"))
+    with pytest.raises(ValueError):
+        S.select("campaign:nobody")
+    assert S.select("mp:malprave_gown") == set()                           # the gown is mission-only
+    # a narrower target wins: a body in one context over the body everywhere over a group
+    p = S.plan_cast([("all", "a"), ("model:zoe_body", "b"), ("mp:zoe_body", "c")])
+    assert p[("alp2_1", "zoe_body")] == "b" and p[("dm1", "zoe_body")] == "c" and p[("m6_1", "henchmen_vest")] == "a"
+    assert S.is_mp_level("dm11_4p") and S.is_mp_level("maps/escort4p.ngc") and not S.is_mp_level("m6_1")
 
 
 def test_use_builds_the_mod_and_records_the_target(tmp_path, monkeypatch):
@@ -618,6 +650,100 @@ def test_use_builds_the_mod_and_records_the_target(tmp_path, monkeypatch):
     assert calls and calls[0][1] == "/api/characters/synthetic_wrestler/targets" and calls[0][2]["slot"] == "bots"
     again = S.use(ctx, meta, game, inp)
     assert again["status"] == "ready" and again["mod"] == r["mod"] and len(calls) == 1
+
+
+def _cast_fixture(tmp_path, monkeypatch):
+    """A synthetic AUF disc (dm1 + m6_1, both the test level: 'body' a DeathmatchPlayer, 'other' an actor), two
+    donors in a library, and the characters helpers pointed at them (POSTs recorded, nothing sent)."""
+    from gbox import characters as C
+    lib = tmp_path / "lib"
+    roles = {r: "bone%02d_%08x" % (i, 0x1000 + i) for r, i in G.auto_roles(N.skeleton(template())).items()}
+    chars = []
+    for slug in ("wrestler_a", "wrestler_b"):
+        (lib / slug).mkdir(parents=True)
+        N.to_glb(N.mesh(_model(("body_mat",))), lib / slug / "donor.glb", slug)
+        meta = {"slug": slug, "name": slug.replace("_", " ").title(), "kind": "character", "model": "donor.glb",
+                "rig": {"roles": roles}, "source": {"game_title": "Synthetic Wrestling", "game_id": "a" * 16}}
+        (lib / slug / "meta.json").write_text(json.dumps(meta))
+        chars.append(meta)
+    iso = gc_image(tmp_path / "auf.iso", {"maps/dm1.ngc": level_package(True), "maps/m6_1.ngc": level_package(True),
+                                          "opening.bnr": b"x" * 64})
+    calls = []
+    monkeypatch.setattr(C, "library_root", lambda cfg=None: lib)
+    monkeypatch.setattr(C, "_gc_iso", lambda ctx, game: iso)
+    monkeypatch.setattr(C, "_api", lambda ctx, method, path, **kw: calls.append((method, path)) or {})
+    monkeypatch.setattr(S, "NAMES", {"body": ("Body", "bot"), "other": ("Other", "npc")})
+    monkeypatch.setattr(os, "cpu_count", lambda: 1)                      # one level at a time, in this process
+    ctx = types.SimpleNamespace(config=types.SimpleNamespace(cache=tmp_path / "cache"), progress=lambda p, m: None,
+                                job_id="j1", worker=None)
+    game = {"game_id": S.GAME_ID, "title": "007 - Agent Under Fire (USA)", "platform": "gamecube"}
+    return ctx, game, chars, iso, calls
+
+
+def test_whole_cast_swap_builds_every_context_slot_into_one_disc(tmp_path, monkeypatch):
+    """characters op=cast_swap on AUF: the disc's own level cast -> one slot per body per context -> random donors
+    -> one disc with both levels rebuilt -> per-slot report and a marker that says what changed."""
+    from gbox import cast_swap as CS, filemods
+    from gbox.gcdisc import GCDisc
+    ctx, game, chars, iso, calls = _cast_fixture(tmp_path, monkeypatch)
+    levels = S.disc_level_keys(iso, S.level_cache_path(ctx.config))
+    assert levels == {"dm1": {"body": "deathmatchplayer", "other": "actor"},
+                      "m6_1": {"body": "deathmatchplayer", "other": "actor"}}
+    assert S.cast_slots_live(ctx, game) == S.cast_slots(levels)                # the cache feeds the planner
+    p = CS.plan(game, chars, "a" * 16, "random", "s", "all", slot_list=S.cast_slots_live(ctx, game))
+    assert [r["slot"] for r in p["assignments"]] == ["campaign:other", "campaign:body", "mp:body", "mp:other"] or \
+        sorted(r["slot"] for r in p["assignments"]) == ["campaign:body", "campaign:other", "mp:body", "mp:other"]
+    assert p["strategy"] == "pairs" and len({r["character"] for r in p["assignments"]}) == 2
+    p["mod"] = "auf_cast_test"
+    inp = types.SimpleNamespace(rebuild=False, seed="s", mod_name="auf_cast_test", showcase=False)
+    r = CS.build(ctx, game, p, chars, tmp_path / "lib", inp)
+    assert r["status"] == "built", r["report"]
+    assert r["mod"] == "auf_cast_test" and all(x["status"] == "built" for x in r["report"])
+    d = filemods.mod_dir(ctx.config, S.GAME_ID, "auf_cast_test")
+    rec = json.loads((d / ".gbox-mod.json").read_text())
+    assert rec["writer"] == "gbox.auf_swap" and rec["kind"] == "cast" and len(rec["cast"]) == 4
+    assert {c["slot"]: c["status"] for c in rec["cast"]} == {s: "built" for s in ("campaign:other", "campaign:body",
+                                                                                     "mp:body", "mp:other")}
+    assert "mission characters" in rec["what"] and "multiplayer characters" in rec["what"] and "2 levels" in rec["what"]
+    assert rec["where_to_look"].startswith("Multiplayer: Combat Training") and rec["levels"].keys() == {"dm1", "m6_1"}
+    disc = GCDisc(d / rec["image"])
+    try:
+        for lv in ("dm1", "m6_1"):                         # every rebuilt level read back from the new image
+            q = N.NgcPackage(disc.read(f"maps/{lv}.ngc"))
+            assert rec["levels"][lv]["sha256"] == hashlib.sha256(disc.read(f"maps/{lv}.ngc")).hexdigest()
+            assert _drawn_area(q.read("models/actors/actorheads/head_l.gcm")) == 0.0
+            for m in ("models/actors/test/body_l.gcm", "models/actors/other/other_l.gcm"):
+                assert N.tile_check(N.gcm_info(q.read(m))) == [] and len(N.mesh(q.read(m))["faces"]) > 50
+    finally:
+        disc.f.close()
+    from gbox import build_summary
+    s = build_summary.summarize("auf_cast_test", S.GAME_ID, rec, None, None)
+    assert s["status"] == "recorded" and s["lines"][0] == rec["what"] and "Combat Training" in s["where"]
+    assert [c for c in calls if c[0] == "POST"]                  # Play-as targets for the built donors
+    again = CS.build(ctx, game, p, chars, tmp_path / "lib", inp)
+    assert again["status"] == "ready"                             # the same plan reuses the build
+
+
+def test_whole_cast_level_failure_leaves_that_level_stock_and_reports_partial(tmp_path, monkeypatch):
+    ctx, game, chars, iso, _calls = _cast_fixture(tmp_path, monkeypatch)
+    real = S.swap_level
+
+    def flaky(data, assign, level="", progress=None, snap=False):
+        if level == "m6_1":
+            raise ValueError("m6_1: 2 donor(s) need a texture each, but only 1 textures are used")
+        return real(data, assign, level, progress, snap)
+    monkeypatch.setattr(S, "swap_level", flaky)
+    metas = {m["slug"]: m for m in chars}
+    pairs = [("mp:body", metas["wrestler_a"]), ("campaign:other", metas["wrestler_b"]), ("mp:other", metas["wrestler_b"]),
+             ("campaign:nobody", metas["wrestler_a"])]
+    out = S.build_cast(ctx, game, pairs, "auf_partial")
+    st = {s: r["status"] for s, r in out["slots"].items()}
+    assert st == {"mp:body": "built", "mp:other": "built", "campaign:other": "failed", "campaign:nobody": "failed"}
+    assert "only 1 textures" in out["slots"]["campaign:other"]["reason"]
+    assert out["detail"]["level_errors"].keys() == {"m6_1"} and out["detail"]["levels_rebuilt"] == 1
+    assert "unknown AUF body" in out["slots"]["campaign:nobody"]["reason"]
+    rec = json.loads((ctx.config.cache / "mods" / S.GAME_ID / "auf_partial" / ".gbox-mod.json").read_text())
+    assert "error" in rec["levels"]["m6_1"] and rec["levels"]["dm1"]["replaced"] == 2
 
 
 def test_writer_is_registered_and_routed():

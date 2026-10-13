@@ -1540,12 +1540,15 @@ def create_app(config: Config) -> FastAPI:
         if game_id:
             g = store.catalog_get(game_id) or _404()
             out["slots"] = cast_swap.slot_rows(g)
+            out["slot_sets"] = cast_swap.slot_sets(out["slots"])
         return out
 
     class CastPlanIn(BaseModel):
         game_id: str
         source: str = ""
         mapping: str = "auto"
+        assign: str = ""                                    # random | by_role | auto: wins over mapping
+        prefer: str = ""                                    # a source whose donors are dealt first
         seed: str = ""
         slots: str = "all"
         assignments: list[dict] = []
@@ -1559,8 +1562,8 @@ def create_app(config: Config) -> FastAPI:
         if not inp.source:
             return {"status": "needs_source", "sources": cast_swap.source_groups(chars), "slots": cast_swap.slot_rows(g)}
         try:
-            return cast_swap.plan(g, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments,
-                                  root if root.is_dir() else None)
+            return cast_swap.plan(g, chars, inp.source, cast_swap.mapping_of(inp), inp.seed, inp.slots,
+                                  inp.assignments, root if root.is_dir() else None, prefer=inp.prefer)
         except ValueError as e:
             raise HTTPException(422, str(e))
 

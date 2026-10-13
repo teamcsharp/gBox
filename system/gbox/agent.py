@@ -185,7 +185,8 @@ How to work:
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
   ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
   everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
-  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role] [slots=all|main|enemies] (plan_only=true shows
+  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role | assign=random seed=x] [prefer=<source dealt
+  first>] [slots=all|main|enemies|bosses|npcs|bots|campaign|<comma list>] (AUF: slots=campaign,bots) (plan_only=true shows
   the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
   Report the status as returned; "extracted" only with checked.ok. Unknown model
