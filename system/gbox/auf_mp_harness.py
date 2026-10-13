@@ -20,6 +20,17 @@ Findings (request #1362, private flatpak Dolphin 2609, Xvfb 640x480):
   OPTIONS, WEAPONS, POWERUPS, MODIFIERS, BOTS).
 - MULTIPLAYER GAME SELECT is a carousel; it remembers the last mode, so do not assume
   COMBAT TRAINING is selected after a previous session.
+- Run r11: Combat Training Setup rows = Number of Players, Time Limit, Point Limit, Map
+  Settings, Combat Training Map (4x D-pad Down from the top).  D-pad Right (P1 ``h``) on the
+  map row walks MP_MAPS forward; Cooling Station is maps/dm1.ngc (Bond.elf strings).
+- Player Character: BOND is skipped while the other agent holds it (MP_CHARACTERS, P2 ``u``
+  forward); otherwise MP_CHARACTERS_WITH_BOND applies (P2 ``o`` forward, BOND between
+  IDENTICON GUARD and SUPER THUG).  Other characters may be duplicated.
+- dm1 has both models/mp_player_bondcombat.men and mp_player_bondtux.men; they differ only
+  in two model indices (body 0x1276 vs 0x1294, limb 0x1278 vs 0x1295) and share the head
+  index 0x1277 (bond_head_l.gcm), so a head swap is visible whichever body the menu uses.
+- Use radar_bearing() for BOTH halves (P2 radar centre y=302, not 75.5+240); ad-hoc
+  colour/centre guesses made the r11 homing loop chase noise.
 """
 from __future__ import annotations
 
@@ -40,6 +51,26 @@ KEYS = {
         "RIGHT": "o", "STICK_UP": "y", "STICK_DOWN": "n", "STICK_LEFT": "b",
         "STICK_RIGHT": "m"},
 }
+
+# Combat Training Map carousel order (setup screen, D-pad Right = forward), observed r11.
+MP_MAPS = ("Dungeon", "Town", "Wine Cellar", "Red Sector", "Castle", "Cooling Station",
+           "Abbey", "Arsenal")
+MAP_LEVEL = {"Cooling Station": "maps/dm1.ngc"}
+
+# Player Character cycle (P2 D-pad Left = forward), observed r11 on the GW7E69 disc.
+MP_CHARACTERS = ("SUPER THUG", "IDENTICON GUARD", "JACKAL", "MALPRAVE", "RIG DIVER",
+                 "BLOCH", "GRIFFIN CLONE", "EVIL ZOE CLONE", "TWIN")
+MP_CHARACTERS_WITH_BOND = ("SUPER THUG", "TWIN", "EVIL ZOE CLONE", "GRIFFIN CLONE", "BLOCH",
+                           "RIG DIVER", "MALPRAVE", "JACKAL", "IDENTICON GUARD", "BOND")
+
+
+def cycle_keys(order: Sequence[str], current: str, target: str, fwd: str, back: str) -> Sequence[str]:
+    """Shortest key list to move a wrap-around menu value from ``current`` to ``target``."""
+    n = len(order)
+    i, j = order.index(current), order.index(target)
+    ahead = (j - i) % n
+    return [fwd] * ahead if ahead <= n - ahead else [back] * (n - ahead)
+
 
 PAUSE_ITEMS = ("Continue Mission", "Options", "Pause Game", "Restart Mission", "Quit Mission")
 

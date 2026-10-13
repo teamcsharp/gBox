@@ -44,3 +44,15 @@ def test_turn_key():
     assert h.turn_key(5) is None
     assert h.turn_key(40) == "Right"
     assert h.turn_key(-40, player=2) == "b"
+
+
+def test_cycle_keys_maps_and_characters():
+    assert h.cycle_keys(h.MP_MAPS, "Arsenal", "Cooling Station", "h", "f") == ["f", "f"]
+    assert h.cycle_keys(h.MP_MAPS, "Dungeon", "Cooling Station", "h", "f") == ["f", "f", "f"]
+    assert h.cycle_keys(h.MP_MAPS, "Castle", "Cooling Station", "h", "f") == ["h"]
+    assert h.cycle_keys(h.MP_MAPS, "Abbey", "Abbey", "h", "f") == []
+    assert h.MAP_LEVEL["Cooling Station"] == "maps/dm1.ngc"
+    order = h.MP_CHARACTERS_WITH_BOND
+    assert h.cycle_keys(order, "IDENTICON GUARD", "BOND", "o", "u") == ["o"]
+    assert h.cycle_keys(order, "SUPER THUG", "BOND", "o", "u") == ["u"]
+    assert set(h.MP_CHARACTERS) | {"BOND"} == set(order)
