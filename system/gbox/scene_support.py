@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 SUPPORTED, RELAUNCH, UNSUPPORTED = "supported", "relaunch_under_capture", "unsupported"
@@ -81,7 +82,7 @@ def _out(status, reason, driver=None, adapter="", core="", *, attach=None, relay
             "fallback": "frame_2d" if status != SUPPORTED else None, "adapter": adapter, "core": core}
 
 
-def support(adapter: str, core: str | None = None, driver: str | None = None, *, hooked: bool | None = None,
+def _matrix(adapter: str, core: str | None = None, driver: str | None = None, *, hooked: bool | None = None,
             host_os: str | None = None) -> dict:
     """The matrix row for one session. `driver` = the renderer the session runs now (RetroArch video_driver, or the
     standalone emulator's backend: "opengl" disables the Vulkan layer route); `hooked` = RenderDoc is inside the
@@ -149,17 +150,65 @@ def support(adapter: str, core: str | None = None, driver: str | None = None, *,
     return _out(UNSUPPORTED, reason, None, adapter, c)
 
 
+_NAMES = {**_VULKAN_STANDALONE, "dolphin": "Dolphin", "retroarch": "RetroArch"}
+LAYER_PENDING_MAX_S = 300           # a layer-started emulator gets this long to create its Vulkan device (game boot)
+
+
+def support(adapter: str, core: str | None = None, driver: str | None = None, *, hooked: bool | None = None,
+            host_os: str | None = None, layer: str | None = None) -> dict:
+    """The matrix row for one session (_matrix). `layer` (#971, Vulkan layer route): "pending" = started with
+    RenderDoc's Vulkan layer, which the loader maps only once the emulator creates its Vulkan device (Yuzu / RPCS3 do
+    that after the game boots, later than the launch check), so it may still load; "missed" = it never loaded within
+    LAYER_PENDING_MAX_S. Neither case is "Examine 3D was off at launch"."""
+    row = _matrix(adapter, core, driver, hooked=None if layer == "pending" else hooked, host_os=host_os)
+    name = _NAMES.get((adapter or "").lower(), adapter or "The emulator")
+    if layer == "pending" and row["status"] == SUPPORTED:
+        row.update(layer="pending", attach="layer", reason=(
+            f"{name} was started with Examine 3D on. RenderDoc's Vulkan layer loads when {name} creates its Vulkan "
+            "device, once the game has booted; 3D capture works from then on (this row updates by itself)."))
+    elif layer == "missed" and row["status"] == RELAUNCH:
+        row.update(layer="missed", reason=(
+            f"This {name} session was started with Examine 3D on, but RenderDoc's Vulkan layer never loaded: {name} "
+            f"made no Vulkan device within {LAYER_PENDING_MAX_S // 60} minutes of launch. " + (
+                "Capture again runs this moment in a separate capture session." if row.get("relay") else
+                f"Check that {name} renders with Vulkan, then relaunch the game with Examine 3D on (save in-game "
+                "first).")))
+    return row
+
+
+def layer_state(proc, info: dict) -> tuple:
+    """(layer, hooked) for a process started with RenderDoc's Vulkan layer (#971). A live process is re-checked now
+    (the launch check gives up after 10-15 s, before Yuzu has booted the game and made its Vulkan device); one still
+    inside LAYER_PENDING_MAX_S of its start is "pending", past that "missed". A process that was never probed keeps the
+    old answer (RenderDoc counted as inside)."""
+    alive = callable(getattr(proc, "poll", None)) and getattr(proc, "pid", None) is not None and proc.poll() is None
+    loaded = info.get("loaded")
+    if not loaded and alive:
+        try:
+            from .scene_capture import layer_check
+            loaded = layer_check(proc, 0)
+        except Exception:                                  # noqa: BLE001 - a failed probe keeps the last answer
+            loaded = info.get("loaded")
+    if loaded or "loaded" not in info:
+        return None, True
+    started = info.get("started")
+    if alive and started:
+        return ("pending", None) if time.time() - float(started) < LAYER_PENDING_MAX_S else ("missed", False)
+    return None, False
+
+
 def session_support(ad, host_os: str | None = None) -> dict:
     """The matrix row for a live adapter instance (tools.SESSIONS)."""
     proc = getattr(ad, "proc", None)
     info = getattr(proc, "renderdoc", None) if proc is not None else None
     hooked = (bool(info) and "error" not in info) if proc is not None else None
-    if hooked and isinstance(info, dict) and info.get("attach") == "layer" and "loaded" in info:
-        hooked = bool(info["loaded"])                     # the Vulkan loader only loads the layer for a Vulkan device
+    layer = None
+    if hooked and isinstance(info, dict) and info.get("attach") == "layer":
+        layer, hooked = layer_state(proc, info)           # the Vulkan loader only loads the layer for a Vulkan device
     cfg = getattr(ad, "cfg", None)
     core = getattr(cfg, "core", None) if cfg is not None else None
     return support(getattr(ad, "name", "") or "", getattr(ad, "core_path", None) or core,
-                   getattr(ad, "video_driver", None), hooked=hooked, host_os=host_os)
+                   getattr(ad, "video_driver", None), hooked=hooked, host_os=host_os, layer=layer)
 
 
 def video_driver(argv) -> str | None:

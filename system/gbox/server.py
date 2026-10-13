@@ -2479,11 +2479,15 @@ def create_app(config: Config) -> FastAPI:
             return evidence_job(inp, actor)
         if t.name == "scene_capture":
             session = store.get("session", inp["session_id"])
-            if not session or session.get("state") != "running":
+            if inp.get("rebuild"):                          # replay the capture kept when the GPU ran out of memory:
+                if not session:                             # the game may have ended (that frees it); runs on its worker
+                    raise HTTPException(404, "Unknown game session.")
+            elif not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
-            from . import scene_relay
-            if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
-                return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
+            else:
+                from . import scene_relay
+                if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
+                    return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id,
                   agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin),
