@@ -383,3 +383,38 @@ def test_jgr_chain_names_each_step_and_writes_every_built_slot(tmp_path, monkeyp
     assert wr == {"mod": "cast_jgr", "image": "cast_jgr.gdi", "files": 1, "bytes": 5}
     gum = last(evs, "character:gum", "write")
     assert gum["state"] == "failed" and gum["data"]["reason"] == "does not fit"
+
+
+# ---------------------------------------------------------------- Vice City peds (gta_vc_swap.build_cast)
+
+def test_vice_city_build_cast_fits_each_ped_onto_its_skeleton(tmp_path, monkeypatch):
+    from pathlib import Path
+    from gbox import gta_vc_swap as S
+    Y = importlib.import_module("gta_vc_synth")
+    inst = Y.install(tmp_path / "vc")
+    (tmp_path / "lib" / "donor").mkdir(parents=True)
+    Y.donor_glb(tmp_path / "lib" / "donor" / "donor.glb")
+    meta = {"slug": "donor", "name": "Donor", "model": "donor.glb", "rig": {"roles": Y.DONOR_ROLES}}
+    monkeypatch.setattr(C, "_blender", lambda cfg: None)
+    game = {"game_id": "1fd42f50b10252e6", "title": "Grand Theft Auto Vice City", "platform": "windows_native"}
+    pairs = [("ped:cop", meta), ("ped:male01", meta), ("ped:nosuch", meta)]
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        r = S.build_cast(SimpleNamespace(cache=str(tmp_path / "cache")), game, Path(inst["exe"]), pairs, "cast_vc",
+                         root=tmp_path / "lib")
+    assert r["mod"] == "cast_vc" and r["slots"]["ped:nosuch"]["status"] == "failed"
+    evs = events(lines)
+    assert [x["model"] for x in evs[0]["plan"]] == ["ped:cop", "ped:male01", "ped:nosuch"]
+    for slot in ("ped:cop", "ped:male01"):
+        assert order(evs, slot) == FULL, (slot, order(evs, slot))
+        assert_snapshots(evs, slot)
+        assert last(evs, slot, "scale")["data"]["donor_height"] > 0
+        w = last(evs, slot, "weights")["data"]
+        assert w["vertices"] == sum(w["per_limb"].values()) > 0 and any("Head" in k for k in w["per_limb"])
+        assert last(evs, slot, "decimate")["state"] == "skipped"
+        enc = last(evs, slot, "encode")["data"]
+        assert enc["bytes"] == enc["dff_bytes"] + enc["txd_bytes"] and enc["triangles"] == 16 * 12
+        wr = last(evs, slot, "write")
+        assert wr["state"] == "done" and wr["data"]["mod"] == "cast_vc" and wr["data"]["entries"] == 2
+    assert last(evs, "ped:nosuch", "write")["state"] == "failed"
+    assert "entries" not in r["slots"]["ped:cop"]
