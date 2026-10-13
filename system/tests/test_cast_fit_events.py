@@ -455,3 +455,33 @@ def test_auf_cast_reports_each_body_even_from_level_worker_processes(tmp_path, w
     assert all("_snap" not in e for lv in r["levels"] for e in lv["replaced"])      # never in the result
     json.dumps(r["levels"])
     assert Path(r["dir"]).is_dir()
+
+
+# ---------------------------------------------------------------- Dead Or Alive ++ (doapp_swap.build)
+
+def test_doapp_build_reports_each_costume_from_the_donor_to_the_encoded_file(tmp_path, monkeypatch):
+    from gbox import doapp_motion as DM, doapp_swap as W
+    TD = importlib.import_module("test_doapp_swap")
+    roles = TD.humanoid(tmp_path / "tube.gltf")
+    model = TD.synthetic_original()
+    monkeypatch.setattr(DM, "Rig", lambda *a: None)
+    monkeypatch.setattr(W, "target", lambda ram, banked, f, c, rig=None: TD.synthetic_target(model, f["models"][c]))
+    monkeypatch.setattr(W, "SLOT_VERTEX_CAP", {0: 60, 2: 10, 4: 10, 7: 66})    # tight caps: the fit decimates
+    monkeypatch.setattr(W, "budget", lambda i: 0x1BAB4)
+    jobs = [({"name": "KASUMI", "id": 1, "models": [49, 50]}, 0), ({"name": "KASUMI", "id": 1, "models": [49, 50]}, 1)]
+    keys = ["kasumi:kasumi:1", "kasumi:kasumi:2"]
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        FE.plan([(k, "tube", f"Tube -> {k}") for k in keys])
+        r = W.build(None, None, tmp_path / "tube.gltf", roles, jobs, tmp_path / "work", "Tube", verify=False,
+                    fit_keys=keys)
+    evs = events(lines)
+    for k, idx in zip(keys, (49, 50)):
+        assert order(evs, k) == FULL[:-1], (k, order(evs, k))
+        assert_snapshots(evs, k, ("scale", "retarget", "decimate"))
+        w = last(evs, k, "weights")["data"]
+        assert w["skeleton_limbs"] == 15 and "head (bone 1)" in w["per_limb"]
+        dec = last(evs, k, "decimate")["data"]
+        assert dec["from"] > dec["triangles"] > 0 and int(dec["caps"]["0"]) <= 60
+        enc = last(evs, k, "encode")["data"]
+        assert enc["bytes"] == r["reports"][idx]["bytes"] <= enc["budget"] and enc["relocated"] is False
