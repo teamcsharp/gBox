@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -65,7 +66,7 @@ def find_binary(cfg: Config) -> Path | None:
     a = cfg.audio_cpp
     if a.binary:
         p = _path(a.binary)
-        return p if p.is_file() else None
+        return p.absolute() if p.is_file() else None
     if hit := shutil.which("audiocpp_server"):
         return Path(hit)
     for root in _roots(cfg):
@@ -135,6 +136,19 @@ def available(cfg: Config) -> str | None:
     return None
 
 
+_client: httpx.Client | None = None
+_client_lock = threading.Lock()
+
+
+def _http() -> httpx.Client:
+    """One pooled client for every audio.cpp call (building one per request costs seconds; no proxy for a local port)."""
+    global _client
+    with _client_lock:
+        if _client is None:
+            _client = httpx.Client(trust_env=False, timeout=30)
+        return _client
+
+
 def _repo_root(binary: Path) -> Path:
     """audio.cpp finds model_specs/ relative to its working folder: the checkout that built the binary, if any."""
     for p in binary.parents:
@@ -175,8 +189,13 @@ class Service:
         return self.proc is not None and self.proc.poll() is None
 
     def health(self, timeout: float = 2.0) -> dict | None:
+        u = httpx.URL(self.url)
+        try:                                       # a closed local port costs ~2 s per HTTP attempt on Windows
+            socket.create_connection((u.host, u.port or 80), timeout=min(timeout, 0.5)).close()
+        except OSError:
+            return None
         try:
-            r = httpx.get(f"{self.url}/health", timeout=timeout)
+            r = _http().get(f"{self.url}/health", timeout=timeout)
         except httpx.HTTPError:
             return None
         if r.status_code != 200:
@@ -366,7 +385,7 @@ def speak(cfg: Config, text: str, voice: str | None = None, speed: float | None 
     if a.busy_timeout_ms:
         body["busy_timeout_ms"] = a.busy_timeout_ms
     try:
-        r = httpx.post(f"{s.url}/v1/audio/speech", json=body, timeout=180)
+        r = _http().post(f"{s.url}/v1/audio/speech", json=body, timeout=180)
     except httpx.HTTPError as e:
         raise Down(f"audio.cpp unreachable: {e}") from e
     _check(r, "speech")
@@ -398,7 +417,7 @@ def transcribe(cfg: Config, audio: bytes, language: str | None = None, wait_star
     if a.busy_timeout_ms:
         data["busy_timeout_ms"] = str(a.busy_timeout_ms)
     try:
-        r = httpx.post(f"{s.url}/v1/audio/transcriptions", data=data,
+        r = _http().post(f"{s.url}/v1/audio/transcriptions", data=data,
                        files={"file": ("speech.wav", as_wav(audio), "audio/wav")}, timeout=180)
     except httpx.HTTPError as e:
         raise Down(f"audio.cpp unreachable: {e}") from e
@@ -411,7 +430,7 @@ def voices(cfg: Config) -> list[str]:
     s = service(cfg)
     mid = model_id(cfg, "tts") or TTS_ID
     try:
-        r = httpx.get(f"{s.url}/v1/audio/voices", params={"model": mid}, timeout=3)
+        r = _http().get(f"{s.url}/v1/audio/voices", params={"model": mid}, timeout=3)
         return [str(v) for v in r.json().get("voices", [])] if r.status_code == 200 else []
     except (httpx.HTTPError, ValueError, AttributeError):
         return []
