@@ -326,6 +326,18 @@ def weights(prims, jmap: dict | None = None, mode: str = "rigid per bone (one bo
                            "vertices": int(sum(counts.values())), "per_limb": counts, **extra})
 
 
+def compact(P, F, max_tris: int = SNAPSHOT_TRIS) -> dict:
+    """A snapshot-sized copy of a mesh ({pos, tris}, at most max_tris triangles, unused vertices dropped): what a
+    writer's worker process hands back so the parent can show it (the sink lives in the parent only)."""
+    P, F = np.asarray(P, np.float32).reshape(-1, 3), np.asarray(F, np.int64).reshape(-1, 3)
+    if len(F) > max_tris:
+        F = F[np.linspace(0, len(F) - 1, max_tris).astype(np.int64)]
+    used = np.unique(F)
+    remap = np.full(len(P), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    return {"pos": P[used], "tris": remap[F]}
+
+
 def mesh(parts, pos: str = "P", tris: str = "F") -> list[dict]:
     """Writer parts ({P, F} dicts, or (P, N, ..., F) tuples) -> snapshot prims."""
     out = []

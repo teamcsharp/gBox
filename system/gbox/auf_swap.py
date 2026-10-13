@@ -815,8 +815,12 @@ def _tris(gcm: bytes) -> int:
     return struct.unpack_from(">I", gcm, G.HDR + 0x68)[0]
 
 
-def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=None) -> tuple[bytes, dict]:
-    """Rebuild one level package with ``assign`` {body key: Donor}.  Returns (package bytes, report)."""
+def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=None,
+               snap: bool = False) -> tuple[bytes, dict]:
+    """Rebuild one level package with ``assign`` {body key: Donor}.  Returns (package bytes, report). snap: each
+    replaced body's report also carries "_snap" (the fitted and the decimated mesh, snapshot-sized) for the Fitting
+    pop-up - a worker process has no event sink, its parent shows them (build_mod pops them from the report)."""
+    from . import fit_events as FE
     progress = progress or (lambda p, m: None)
     pkg = ngc.NgcPackage(data)
     cast = level_cast(pkg)
@@ -887,6 +891,7 @@ def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=
         for b in bodies[k]:
             body = pkg.read(b)
             budget = max(MIN_BUDGET, int((_tris(body) + (stub_tris if own_head_stubbed else 0)) * BUDGET_FACTOR))
+            FE.model(k)                                   # in this process: the retarget's own stages land on k
             fit = fit_donor(d, body, head0)
             m = slot_mesh(fit, budget, not own_head_stubbed, ngc.skeleton(body), layout)
             pal = struct.unpack_from(">H", body, G.HDR + 0x54)[0] + (max(0, stub_pal) if own_head_stubbed else 0)
@@ -900,7 +905,15 @@ def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=
                                        "budget": budget, "palette": rep["palette"], "palette_limit": rep["palette_limit"],
                                        "weight_step": rep["weight_step"], "bytes": len(gcm), "source_bytes": len(body),
                                        "sections": shader_names, "head": "stubbed" if own_head_stubbed else "kept",
-                                       "fit": fit["report"]})
+                                       "fit": fit["report"], "fit_triangles": int(len(fit["F"])),
+                                       "fit_vertices": int(len(fit["P"])), "skeleton_bones": len(ngc.skeleton(body)),
+                                       "blended": int((np.asarray(fit["J"])[:, 1] >= 0).sum()),
+                                       "per_bone": FE.per_limb([{"J": np.asarray(fit["J"])[:, :1]}],
+                                                               {int(j): f"{r} (bone {j})"
+                                                                for r, j in (fit.get("roles") or {}).items()})})
+            if snap:
+                report["replaced"][-1]["_snap"] = {"fit": FE.compact(fit["P"], fit["F"]),
+                                                   "mesh": FE.compact(m["P"], m["F"])}
     for h in stub_heads:
         repl[h] = G.empty_gcm(pkg.read(h))
     progress(90, f"{level}: re-encoding the texture and file-system chunks")
@@ -935,8 +948,55 @@ def level_path(level: str) -> str:
 
 
 def _swap_job(args):
-    data, assign, lv = args
-    return swap_level(data, assign, lv)
+    data, assign, lv, snap = args
+    return swap_level(data, assign, lv, snap=snap)
+
+
+def _report_fits(plan: dict, donors: dict[str, Donor], reports: list[dict], mod: str, image: str, files: dict):
+    """The Fitting pop-up for a cast build: per body key (one model each, every level and LOD it appears in), the
+    donor as loaded, its fit on the body's skeleton, the bones it rides, the decimation to the body's budget, the
+    encoded models and where the rebuilt levels sit in the new image. Run in the parent (level workers have no sink)."""
+    from . import fit_events as FE, sm64_swap as S
+    rows: dict[str, list[dict]] = {}
+    for r in reports:
+        for e in r.get("replaced") or []:
+            rows.setdefault(e["key"], []).append(e | {"level": r["level"]})
+    for k in sorted({k for (_lv, k) in plan}):
+        FE.model(k)
+        es = rows.get(k)
+        if not es:
+            FE.stage("write", "failed", {"reason": "none of this body's levels changed"})
+            continue
+        e0, d = es[0], donors[es[0]["donor"]]
+        snap = e0.get("_snap") or {}
+        basis = S.facing(d.rig) if not d.rig.get("static") and "hip" in (d.rig.get("roles") or {}) else None
+        fit = e0.get("fit") or {}
+        FE.stage("scale", data={k2: v for k2, v in fit.items() if k2 in ("scale", "torso_up", "torso_down",
+                                                                         "head_scale", "height_scale")}
+                 | FE.donor_numbers(d.rig, basis, fitted_height=FE.height([snap["fit"]]) if snap else None),
+                 prims=FE.donor(d.rig, basis))
+        FE.stage("retarget", data={"mode": "static T-pose rigged to the body" if fit.get("static") else "weighted retarget",
+                                   "vertices": e0.get("fit_vertices"), "triangles": e0.get("fit_triangles"),
+                                   "bodies": len(es), "levels": len({x["level"] for x in es})},
+                 prims=[snap["fit"]] if snap else None)
+        FE.stage("proportion", "skipped", {"profile": "none"})
+        FE.stage("weights", data={"mode": "two-bone skin", "limbs": len(e0.get("per_bone") or {}),
+                                  "skeleton_limbs": e0.get("skeleton_bones"), "vertices": e0.get("fit_vertices"),
+                                  "blended_vertices": e0.get("blended"), "per_limb": e0.get("per_bone") or {}})
+        FE.stage("decimate", data={"from": e0.get("fit_triangles"), "triangles": e0["triangles"], "to": e0["budget"],
+                                   "lods": len(es), "smallest": min(x["triangles"] for x in es)},
+                 prims=[snap["mesh"]] if snap else None)
+        FE.stage("encode", data={"bytes": sum(x["bytes"] for x in es), "was_bytes": sum(x["source_bytes"] for x in es),
+                                 "models": len(es), "palette": e0.get("palette"), "triangles": e0["triangles"],
+                                 "relocated": any(x["bytes"] != x["source_bytes"] for x in es),
+                                 "where": "the level packages' file tables rebuilt"})
+        lv = sorted({x["level"] for x in es})
+        at = files.get(level_path(lv[0])) or {}
+        FE.stage("write", data={"mod": mod, "image": image, "levels": len(lv), "level": lv[0],
+                                **({"vrom": f"{level_path(lv[0])} @ {at['offset']:#x}"} if at.get("offset") else {})})
+    for r in reports:                                     # the snapshots never reach the mod record / the result
+        for e in r.get("replaced") or []:
+            e.pop("_snap", None)
 
 
 def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor], progress=None,
@@ -946,19 +1006,24 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
     import os
     import types
     from concurrent.futures import ProcessPoolExecutor
-    from . import filemods
+    from . import filemods, fit_events as FE
     from .gcdisc import GCDisc
     progress = progress or (lambda p, m: None)
     image = Path(image)
     by_level: dict = {}
     for (lv, k), slug in plan.items():
         by_level.setdefault(lv, {})[k] = donors[slug]
+    first = {}                                            # every body up front ("Fitting k/N")
+    for (_lv, k), slug in sorted(plan.items()):
+        first.setdefault(k, slug)
+    FE.plan([(k, slug, f"{donors[slug].name} -> {NAMES.get(k, (k,))[0]}") for k, slug in sorted(first.items())])
     workers = workers if workers is not None else max(1, min(6, (os.cpu_count() or 2) // 2))
     changes, reports = {}, []
+    snap = FE.active()
     src = _disc_reader(image)
     try:
         levels = sorted(by_level)
-        jobs = [(src(level_path(lv)), by_level[lv], lv) for lv in levels]
+        jobs = [(src(level_path(lv)), by_level[lv], lv, snap) for lv in levels]
     finally:
         getattr(src, "close", lambda: None)()
     progress(5, f"Rebuilding {len(levels)} level(s) with {workers} worker(s)")
@@ -971,14 +1036,18 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
                 progress(5 + 80 * (i + 1) / len(jobs), f"Rebuilt {levels[i]} ({i + 1}/{len(jobs)})")
     else:
         results = []
-        for i, job in enumerate(jobs):
+        for i, (data, assign, lv, sn) in enumerate(jobs):
             base = 5 + 80 * i / len(jobs)
-            results.append(swap_level(*job, lambda p, m, base=base: progress(base + 80 / len(jobs) * p / 100, m)))
+            results.append(swap_level(data, assign, lv, lambda p, m, base=base: progress(base + 80 / len(jobs) * p / 100, m),
+                                      snap=sn))
     for lv, (out, rep) in zip(levels, results):
         if rep.get("replaced"):
             changes[level_path(lv)] = {"bytes": out}
         reports.append(rep)
     if not changes:
+        for r in reports:
+            for e in r.get("replaced") or []:
+                e.pop("_snap", None)
         raise ValueError("no level changed: the plan's characters are not on this disc")
     progress(88, "Writing the disc image")
     cfg = cfg if hasattr(cfg, "cache") else types.SimpleNamespace(cache=Path(cfg))
@@ -996,7 +1065,9 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
                 raise ValueError(f"{k}: the image does not hold the rebuilt level")
     finally:
         disc.f.close()
-    return b | {"levels": reports, "files": {k: {"offset": o, "size": s} for k, (o, s) in moved.items()}}
+    files = {k: {"offset": o, "size": s} for k, (o, s) in moved.items()}
+    _report_fits(plan, donors, reports, name, Path(str(b["image"])).name, files)
+    return b | {"levels": reports, "files": files}
 
 
 def _disc_reader(image: Path):

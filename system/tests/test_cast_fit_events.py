@@ -418,3 +418,40 @@ def test_vice_city_build_cast_fits_each_ped_onto_its_skeleton(tmp_path, monkeypa
         assert wr["state"] == "done" and wr["data"]["mod"] == "cast_vc" and wr["data"]["entries"] == 2
     assert last(evs, "ped:nosuch", "write")["state"] == "failed"
     assert "entries" not in r["slots"]["ped:cop"]
+
+
+# ---------------------------------------------------------------- 007 Agent Under Fire (auf_swap.build_mod)
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_auf_cast_reports_each_body_even_from_level_worker_processes(tmp_path, workers):
+    import json
+    from pathlib import Path
+    from gbox import auf_gcm as G, auf_ngc as N, auf_swap as S
+    TA = importlib.import_module("test_auf_swap")
+    m = N.mesh(TA._model(("body_mat",)))
+    N.to_glb(m, tmp_path / "donor.glb", "donor")
+    roles = {r: "bone%02d_%08x" % (i, 0x1000 + i) for r, i in G.auto_roles(N.skeleton(TA.template())).items()}
+    donor = S.load_donor("synthetic_wrestler", tmp_path / "donor.glb", roles, "Synthetic Wrestler")
+    level = TA.level_package()
+    src = TA.gc_image(tmp_path / "auf.iso", {"maps/dm1.ngc": level, "maps/dm2.ngc": level, "opening.bnr": b"x" * 64})
+    plan = {("dm1", "body"): "synthetic_wrestler", ("dm2", "body"): "synthetic_wrestler"}
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        r = S.build_mod(tmp_path / "cache", src, "auf_fit", plan, {"synthetic_wrestler": donor}, workers=workers)
+    evs = events(lines)
+    assert evs[0]["plan"] == [{"model": "body", "label": "Synthetic Wrestler -> body"}]
+    assert order(evs, "body") == FULL, order(evs, "body")
+    assert_snapshots(evs, "body", ("scale", "retarget", "decimate"))
+    sc = last(evs, "body", "scale")["data"]
+    assert sc["donor_height"] > 0 and sc["donor_triangles"] > 0 and sc["scale"] > 0
+    w = last(evs, "body", "weights")["data"]
+    assert w["vertices"] > 0 and sum(w["per_limb"].values()) == w["vertices"] and w["skeleton_limbs"] > 10
+    dec = last(evs, "body", "decimate")["data"]
+    assert dec["lods"] == 2 and dec["to"] > 0 and dec["triangles"] <= dec["to"]
+    enc = last(evs, "body", "encode")["data"]
+    assert enc["models"] == 2 and enc["bytes"] > 0
+    wr = last(evs, "body", "write")["data"]
+    assert wr["mod"] == "auf_fit" and wr["levels"] == 2 and wr["vrom"].startswith("maps/dm1.ngc @ 0x")
+    assert all("_snap" not in e for lv in r["levels"] for e in lv["replaced"])      # never in the result
+    json.dumps(r["levels"])
+    assert Path(r["dir"]).is_dir()
