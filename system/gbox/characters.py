@@ -676,7 +676,7 @@ class CharIn(BaseModel):
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes) | MGS VR Missions: player (Snake) | enemy:soldier (every Genome soldier) | enemy:ninja | model:<hash> | enemies | all | cast (+pairs [{slot, character}])
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes) | MGS VR Missions: player (Snake) | enemy:soldier (every Genome soldier) | enemy:ninja | model:<hash> | enemies | all | cast (+pairs [{slot, character}]) | Crazy Taxi 2 (DC): player (Slash) | driver:<axel|bd_joe|gena|gus|slash|iceman|cinnamon|hot_d> | drivers (all eight)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -2679,6 +2679,11 @@ def characters_tool(inp: CharIn, ctx):
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
         return {"result": out | crazy_taxi_swap.use(ctx, meta, game, inp)}
+    from . import crazy_taxi2_swap
+    if gid in crazy_taxi2_swap.GAME_IDS and crazy_taxi2_swap.is_slot(inp.slot):
+        # Crazy Taxi 2 DC: player (Slash) | driver:<name> | drivers -> ct2_<slug>_<slot> (pol/tex + 1ST_READ.BIN slot
+        # tables in a copied GD-ROM)
+        return {"result": out | crazy_taxi2_swap.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}

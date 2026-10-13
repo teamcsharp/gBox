@@ -244,7 +244,23 @@ KNOWN_TABLES = {
         "normal": (0x0C133E48, 0x0C133EC4, 0x0C13D4C4, 0x0C133F40),
         "high": (0x0C133E68, 0x0C133EE4, 0x0C13D4E4, 0x0C133F60)},
 }
-PLAYER_KEYS = ("PP1A", "PP1B", "PP1C", "PP1D", "PP2A", "PP2B", "PP2C", "PP2D")   # model numbers 0..7 of the player groups
+# the same builds by their code (the first MB, before the tables a writer patches) - a modded 1ST_READ.BIN still matches
+CODE_SHA256 = {"8dd103582e9e2dfec07c92cd8d3e379c3bb421cc14a0a8ee64f46ba20b5e6da8": FILES_SHA256["1ST_READ.BIN"],
+               "4c66db6a568b72cf01dc66c2321dbb4e702ba5a0be2657c70d4d7d4035026ccb":
+                   "8057a8e37636ad78b1fc70ee590bd314686546b13ffe100623d86b572aec53c1"}
+
+
+def known_build(exe: bytes) -> dict | None:
+    """KNOWN_TABLES entry of this 1ST_READ.BIN (by its sha256, or by its code region when the tables were patched)."""
+    import hashlib
+    t = KNOWN_TABLES.get(hashlib.sha256(exe).hexdigest())
+    if t is None and len(exe) > 0x100000:
+        t = KNOWN_TABLES.get(CODE_SHA256.get(hashlib.sha256(exe[:0x100000]).hexdigest(), ""))
+    return t
+
+
+# model numbers 0..7 of the player groups
+PLAYER_KEYS = ("PP1A", "PP1B", "PP1C", "PP1D", "PP2A", "PP2B", "PP2C", "PP2D")
 TEX_ENTRY = 16                   # u16 width, u16 height, u8 pixel format, u8 data format, u16 0, u32 address, u32 0
 TEX_END = 0xFFFFFFFF
 
@@ -308,7 +324,8 @@ def _tex_tables(exe: bytes) -> list[tuple[int, list[dict]]]:
         while start >= 4:
             wh, kind, addr, zero = (int(x) for x in w[start - 4:start])
             ww, hh = wh & 0xFFFF, wh >> 16
-            if zero or not (8 <= ww <= 1024 and 8 <= hh <= 1024) or ww & (ww - 1) or hh & (hh - 1)                     or kind >> 16 or (kind & 0xFF) > 6 or not 1 <= (kind >> 8) <= 0x12 or addr >> 28:
+            if zero or not (8 <= ww <= 1024 and 8 <= hh <= 1024) or ww & (ww - 1) or hh & (hh - 1) \
+                    or kind >> 16 or (kind & 0xFF) > 6 or not 1 <= (kind >> 8) <= 0x12 or addr >> 28:
                 break
             start -= 4
         if start < t:
@@ -366,8 +383,7 @@ def player_tables(exe: bytes, key: str, high: bool = False, pol: bytes | None = 
     """{slots: [object offset per sorted part name], textures: [...], alloc: pol buffer bytes} of player model `key`
     (PP1A..PP2D). The owned build's addresses are known (KNOWN_TABLES); any other build is searched by content
     (`find_tables`, needs pol + tex)."""
-    import hashlib
-    t = KNOWN_TABLES.get(hashlib.sha256(exe).hexdigest())
+    t = known_build(exe)
     if t is None:
         if pol is None:
             raise ValueError("unknown 1ST_READ.BIN build: pass the pol/tex files to locate the tables by content")
@@ -481,9 +497,10 @@ def frame_of(part: str) -> np.ndarray:
 
 
 def part_names(objs: list[Obj], slots: list[int]) -> dict[str, int]:
-    """{part name: object index} from the name-sorted slot table. A drawn object whose bounding box stays more than
-    ACCESSORY_REACH from its own joint (Gus's wristband, ude_lB x 2.04..2.50) is an accessory: it is named after the
-    part sorted just before it with a `+` suffix and rides that part's joint."""
+    """{part name: object index} from the name-sorted slot table. Drawn objects beyond the rig's 21 (or 15) are
+    accessories, the ones whose bounding boxes stay furthest from their joint (more than ACCESSORY_REACH; Gus's
+    wristband ude_lB, x 2.04..2.50): each is named after the part sorted just before it with a `+` suffix and rides
+    that part's joint."""
     at = {o.offset: i for i, o in enumerate(objs)}
     try:
         order = [at[s] for s in slots]
@@ -494,12 +511,15 @@ def part_names(objs: list[Obj], slots: list[int]) -> dict[str, int]:
     def reach(i):
         P = np.array([p for m in objs[i].meshes for p in m.pos])
         return float(np.linalg.norm(np.maximum(0.0, np.maximum(P.min(0), -P.max(0)))))
-    main = [i for i in drawn if reach(i) <= ACCESSORY_REACH]
     plain = tuple(p for p in PARTS if p not in HAND_POSES)            # polPP2CH draws no gesture hands
-    if len(main) not in (len(PARTS), len(plain)):
-        raise ValueError(f"{len(main)} drawn main parts, the rig has {len(PARTS)} (or {len(plain)})")
+    want = len(PARTS) if len(drawn) >= len(PARTS) else len(plain)
+    extra = sorted(drawn, key=reach, reverse=True)[:max(0, len(drawn) - want)]
+    if len(drawn) < want or any(reach(i) <= ACCESSORY_REACH for i in extra):
+        raise ValueError(f"{len(drawn)} drawn parts do not make the {len(PARTS)} (or {len(plain)}) of the rig "
+                         "plus accessories")
+    main = [i for i in drawn if i not in extra]
     out, last = {}, None
-    names = iter(PARTS if len(main) == len(PARTS) else plain)
+    names = iter(PARTS if want == len(PARTS) else plain)
     for i in drawn:
         if i in main:
             last = next(names)
@@ -533,7 +553,8 @@ def measures(objs: list[Obj], names: dict[str, int]) -> dict:
     m["hips"] = max(0.3, hi["koshi"][0] + 0.5 * (lo["momo_l"][0] + lo["momo_r"][0]))
     m["hip_w"] = 0.5 * (hi["momo_l"][2] - lo["momo_r"][2]) + 0.02         # inner side of each thigh at the midline
     chest = _cloud(objs, names["mune"])
-    m["neck"] = float(chest[np.abs(chest[:, 2]) < 0.35 * np.abs(chest[:, 2]).max(), 0].max())
+    centre = chest[np.abs(chest[:, 2]) < 0.35 * np.abs(chest[:, 2]).max()]
+    m["neck"] = float((centre if len(centre) else chest)[:, 0].max())     # top of the chest at the midline
     outer = chest[np.abs(chest[:, 2]) > 0.75 * np.abs(chest[:, 2]).max()]
     m["shoulder_h"] = float(outer[:, 0].max()) + 0.5 * float(lo["kata_l"][0] + lo["kata_r"][0])
     m["shoulder_w"] = float(np.abs(outer[:, 2]).mean())
@@ -573,13 +594,14 @@ def joint_of(part: str) -> str:
             "te_r_ch": "te_r", "te_r_gu": "te_r", "te_r_ok": "te_r"}.get(base, base)
 
 
-def assemble(pol: bytes, tex: bytes | None, tables: dict, hands: str = "") -> dict:
+def assemble(pol: bytes, tex: bytes | None, tables: dict, hands: str = "", measures_from: dict | None = None) -> dict:
     """A driver's pol*.bin (+ tex*.bin and its 1ST_READ tables) -> {joints, parts, materials, textures, measures}.
     Every part's vertices go to the rest pose through its joint (rigid, one joint per part). hands = "" draws the
-    open hands; "gu"/"ch"/"ok" draws that gesture instead."""
+    open hands; "gu"/"ch"/"ok" draws that gesture instead. measures_from: another model's `measures` (a written
+    driver drawn on the stock driver's skeleton, as the game does: its rig does not follow the meshes)."""
     objs = walk(pol)
     names = part_names(objs, tables["slots"])
-    m = measures(objs, names)
+    m = dict(measures_from) if measures_from else measures(objs, names)
     W = skeleton(m)
     texs = textures(tex, tables["textures"]) if tex is not None else []
     skip = {p for p in HAND_POSES if not hands or not p.endswith("_" + hands)}
@@ -653,7 +675,8 @@ def write_glb(path, a: dict, name: str, extras: dict | None = None) -> Path:
     def view(data: bytes, target=None) -> int:
         while len(blob) % 4:
             blob.append(0)
-        views.append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(data), **({"target": target} if target else {})})
+        views.append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(data),
+                      **({"target": target} if target else {})})
         blob.extend(data)
         return len(views) - 1
 
