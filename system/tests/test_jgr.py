@@ -698,7 +698,7 @@ def test_jgr_coverage_advertises_explicit_ids_and_native_verification_limit():
     from gbox import char_coverage
     writer = char_coverage.writer_for({"game_id": "4187aeab4d67638c", "title": "Jet Grind Radio (USA)",
                                       "platform": "dreamcast"})
-    assert writer["routed"] and "id:N" in writer["slots"]
+    assert writer["routed"] and "id:<N>" in writer["slots"]
     assert "unverified" in writer["replaces"]
 
 

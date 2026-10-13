@@ -569,6 +569,27 @@ def _donor_dirs(root: Path, slugs: set[str]) -> dict[str, Path]:
     return found
 
 
+def _roster_on_control_plane(ctx, game, inp, plan):
+    """A Windows worker has no character collection (#1361: 'Not in the collection' for every SA2 donor), so the roster
+    disc is built on the online Linux control plane that holds it; the launch, if asked, then happens here."""
+    from . import characters as C
+    me = getattr(ctx, 'worker', None)      # never this worker: a plane whose collection is missing would queue itself forever
+    plane = next((w['id'] for w in C._api(ctx, 'GET', '/api/workers')
+                  if w.get('os') == 'linux' and w.get('online') and 'characters' in (w.get('tools') or [])
+                  and w.get('id') != me), None)
+    if not plane:
+        raise RuntimeError("The roster build needs the character collection on the Linux control plane, which is "
+                           f"{'missing it here' if C.HOST_OS == 'linux' else 'offline'} ({C.library_root(ctx.config)})")
+    job = C._job(ctx, 'characters', inp.model_dump() | {'session_id': '', 'game_id': game['game_id'], 'launch': False},
+                 plane, 3600)
+    if job.get('state') != 'succeeded':
+        raise RuntimeError(f"roster build on the control plane {job.get('state')}: {job.get('error')}")
+    result = dict(job['output']['result'])
+    result['built_by'] = job.get('id')
+    result['launch'] = C._launch(ctx, game['game_id'], result['mod'], C.HOST_OS) if inp.launch else None
+    return result
+
+
 def use_roster(ctx, meta, game, inp):
     """slot='roster': every selectable fighter replaced in one disc (#1385). `pairs` = [{character, slot?}]: entries
     with a fighter are fixed, the rest are dealt at random (deterministically) over the remaining fighters."""
@@ -577,6 +598,8 @@ def use_roster(ctx, meta, game, inp):
     if not pairs:
         pairs = [('', meta['slug'])]
     plan = plan_roster(pairs, seed=inp.title or '')
+    if not C.library_root(ctx.config).is_dir():
+        return _roster_on_control_plane(ctx, game, inp, plan)
     donors = _donor_dirs(C.library_root(ctx.config), {slug for _f, slug in plan})
     digest = hashlib.sha256(json.dumps(plan).encode()).hexdigest()[:8]
     name = f"doa2_roster_{digest}"

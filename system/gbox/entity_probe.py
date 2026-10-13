@@ -475,9 +475,13 @@ class Probe:
         w, h = scan.get("frame", [640, 480])
         tol = tolerance * w
         hits, near = [], []
-        for e in scan.get("entities", []):
+        ents = scan.get("entities", [])
+        owners = {_twin_key(e): e for e in ents if e.get("class") not in TWIN_CLASSES}
+        for e in ents:
             if (e.get("is_viewer") and not include_viewer) or e.get("kind") == "world":
                 continue
+            if e.get("class") in TWIN_CLASSES and (o := owners.get(_twin_key(e))) is not None:
+                continue                      # AUF live table: each player/bot has a ClonePlayer twin; name the owner
             rank = KIND_RANK.get(e.get("kind"), 6)
             box = e.get("screen_box")
             if box:
@@ -502,6 +506,15 @@ class Probe:
             near.sort(key=lambda t: (t[0], t[1], t[2]))
             return {"entity": near[0][3], "contained": False, "miss": round(near[0][0], 1), "others": [t[3] for t in near[1:4]]}
         return {"entity": None, "contained": False, "miss": None, "others": []}
+
+
+# Render twins that copy their owner's model and origin every frame (AUF multiplayer, verified live on
+# JAYBUILTFINALE 2026-10-12: records 108/111/114/117 mirror the player and bots 0..3).
+TWIN_CLASSES = {"ClonePlayer"}
+
+
+def _twin_key(e: dict):
+    return (e.get("model"), round(e.get("x") or 0.0, 1), round(e.get("y") or 0.0, 1), round(e.get("z") or 0.0, 1))
 
 
 def scan(profile: dict, read, width: int = 640, height: int = 480) -> dict:

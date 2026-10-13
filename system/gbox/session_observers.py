@@ -79,8 +79,9 @@ def _item_text(item):
 
 
 def observation_list(value, key):
-    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping."""
-    if value is None:
+    """A model's list field as at most 20 strings, flattening objects, a lone string, or a mapping. A bare
+    true/false ("actors": false on an empty ring, "hud": true on a fight with health bars) carries no item."""
+    if value is None or isinstance(value, bool):
         items = []
     elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
         items = [value]
@@ -169,12 +170,11 @@ class SessionObservers:
             return row
 
     def _user_session(self, session):
+        from .background_testing import agent_owned
         sid = session['session_id']
         label = self.store.get('slabel', sid) or {}
-        if label.get('owner') == 'you':
-            return True
         job = self.store.get('job', sid.split('-', 1)[-1]) or {}
-        return label.get('owner') != 'agent' and not job.get('agent_use')
+        return not agent_owned(label, job)
 
     def _gap(self, session, role, reason, frame=None):
         """One durable request per game/role; reconcile before POST after a restart."""

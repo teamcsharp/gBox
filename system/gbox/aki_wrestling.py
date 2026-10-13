@@ -770,6 +770,11 @@ def _sample_source(src: dict, pts: np.ndarray, mats: list) -> np.ndarray:
     out = np.zeros((len(pts), 3), np.uint8)
     if not len(T):
         return out
+    step = max(256, int(2e7 // max(len(T), 1)))            # bound the (points x triangles) distance table (~160 MB)
+    if len(pts) > step:                                    # big pages (Def Jam's 512 x 512): the same result in chunks
+        for i in range(0, len(pts), step):
+            out[i:i + step] = _sample_source(src, pts[i:i + step], mats)
+        return out
     k = min(6, len(T))
     d2 = ((pts[:, None, :] - cen[None]) ** 2).sum(2)
     cand = np.argsort(d2, 1)[:, :k]

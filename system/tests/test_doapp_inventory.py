@@ -125,3 +125,116 @@ def test_inventory_manifest_structure(src_dir, tmp_path):
 def test_inventory_requires_all_zips(tmp_path):
     with pytest.raises(FileNotFoundError):
         inventory(str(tmp_path))
+
+
+# ------------------------------------------------------------------------------------------ Japan parent (doapp)
+import struct  # noqa: E402
+
+from gbox import doapp_inventory as D  # noqa: E402
+
+OWNED = os.environ.get("GBOX_DOAPP_ROMS", "")
+needs_roms = pytest.mark.skipif(not (OWNED and os.path.isfile(os.path.join(OWNED, "doapp.zip"))),
+                                reason="set GBOX_DOAPP_ROMS to the directory with doapp.zip + coh1002m.zip")
+
+
+def test_jp_identity_and_table_shape():
+    assert D.GAME_IDS[D.GAME_ID_JP] == "doapp" and D.GAME_IDS[D.GAME_ID] == "doappk"
+    assert len(D.FILE_TABLE) == D.FILE_COUNT == 280
+    assert D.FILE_TABLE[0] == (0, 0xA0000, 0x90930)          # the plain overlay right after the encoded program
+    for bank, off, size in D.FILE_TABLE:
+        assert 0 <= bank <= 3 and off + size <= D.BANK_SIZE
+        assert bank * D.BANK_SIZE + off + size <= 0x1C00000  # inside the six data ROMs + program
+
+
+def test_jp_fighters_cover_roster_with_distinct_costume_files():
+    names = {f["name"].replace(" ", "-") for f in D.FIGHTERS}
+    assert names == set(ROSTER)
+    seen = set()
+    for f in D.FIGHTERS:
+        assert len(f["models"]) == D.COSTUMES
+        assert D.FILE_TABLE[f["hidden_costume_file"]][2] == 0  # slot 4 is a zero-size table entry
+        for m in f["models"]:
+            assert D.FILE_TABLE[m][2] > 0x10000 and m not in seen
+            seen.add(m)
+    assert seen == set(range(49, 103)) - {53, 58, 63, 68, 73, 78, 83, 88, 93, 98}
+    assert D.fighter("lei-fang")["id"] == 12 and D.fighter("jannlee")["name"] == "JANN LEE"
+    assert D.fighter(13)["name"] == "AYANE"
+    with pytest.raises(KeyError):
+        D.fighter("ryu")
+
+
+def test_merge_parent_interleaves_program_and_places_banks(tmp_path):
+    members = {"doapp119.bin": b"\x11" * 16, "doapp120.bin": b"\x22" * 16}
+    for i, n in enumerate(D.DATA_BANKS):
+        members[n] = bytes([0x30 + i]) * 8
+    p = _make_zip(str(tmp_path / "doapp.zip"), members)
+    m = D.merge_parent(p)
+    assert len(m) == 0x1C00000 and m[:4] == b"\x22\x11\x22\x11"
+    assert m[0x400000] == 0x30 and m[0x1800000] == 0x35
+
+
+def _ram_with(table, fighters):
+    ram = bytearray(0x200000)
+    base = D.FILE_TABLE_RAM & 0x1FFFFF
+    for i, rec in enumerate(table):
+        struct.pack_into("<III", ram, base + 12 * i, *rec)
+    for f in fighters:
+        for c, m in enumerate(f["models"] + [f["hidden_costume_file"]]):
+            struct.pack_into("<H", ram, (D.MODEL_TABLE_RAM & 0x1FFFFF) + 4 * (f["id"] * D.COSTUME_SLOTS + c), m)
+        for key, addr in D.CHAR_TABLES.items():
+            struct.pack_into("<H", ram, (addr & 0x1FFFFF) + 2 * f["id"], f[key])
+    return bytes(ram)
+
+
+def test_tables_read_back_from_a_program_image():
+    ram = _ram_with(D.FILE_TABLE, D.FIGHTERS)
+    assert D.file_table_from_ram(ram) == D.FILE_TABLE
+    assert D.fighters_from_ram(ram) == [dict(f) for f in D.FIGHTERS]
+
+
+def test_file_table_from_ram_rejects_out_of_range_records():
+    bad = list(D.FILE_TABLE)
+    bad[7] = (5, 0, 0x10)
+    with pytest.raises(ValueError):
+        D.file_table_from_ram(_ram_with(bad, []))
+    with pytest.raises(ValueError):
+        D.file_table_from_ram(b"\0" * 100)
+
+
+def test_file_span_read_and_room():
+    start, size = D.file_span(49)
+    assert (start, size) == (0x800000, 0x1BAB4)
+    banked = bytes(0x1C00000)
+    assert len(D.read_file(banked, 49)) == size
+    assert D.file_room(49) == size                          # model files are packed back to back
+    assert D.file_room(94) > D.FILE_TABLE[94][2]            # Bass C1 ends before the 0x400000 ROM boundary
+    with pytest.raises(IndexError):
+        D.file_span(280)
+    with pytest.raises(ValueError):
+        D.read_file(b"\0" * 0x10, 49)
+
+
+def test_cli_doapp_manifest(tmp_path, capsys):
+    members = {"doapp119.bin": b"\0" * 16, "doapp120.bin": b"\0" * 16, "mg05": b"\0" * 8}
+    for n in D.DATA_BANKS:
+        members[n] = b"\0" * 16
+    _make_zip(str(tmp_path / "doapp.zip"), members)
+    _make_zip(str(tmp_path / "coh1002m.zip"), {"m534002c-61.ic353": b"\0", "mg01.ic652": b"\0" * 8})
+    out = tmp_path / "m.json"
+    assert D.main([str(tmp_path), "--out", str(out)]) == 0
+    m = json.load(open(out))
+    assert m["game_id"] == "a19b4e641b155364" and m["program"]["known"] is False
+    assert len(m["files"]) == 280 and m["rom_verification"]          # synthetic zips fail the dat check loudly
+    assert m["fighters"][0]["model_sizes"][0] == D.FILE_TABLE[59][2]
+    assert '"files": 280' in capsys.readouterr().out
+
+
+@needs_roms
+def test_owned_roms_decode_to_the_snapshot():
+    banked, ram, entry = D.decode_owned(OWNED)
+    assert entry == D.ENTRY_POINT
+    assert hashlib.sha1(banked[:0x200000]).hexdigest() == D.PROGRAM_SHA1["doapp"]
+    assert D.file_table_from_ram(ram) == D.FILE_TABLE
+    assert D.fighters_from_ram(ram) == [dict(f) for f in D.FIGHTERS]
+    model = D.read_file(banked, D.fighter("tina")["models"][0])
+    assert struct.unpack_from("<I", model)[0] < len(model) and model[struct.unpack_from("<I", model)[0]] == 0x10
