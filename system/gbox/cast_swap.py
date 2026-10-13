@@ -57,7 +57,6 @@ ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr":
           "pe2": "parasite eve ii", "sm64": "super mario 64", "oot": "ocarina of time", "wcw": "wcw"}
 AGGREGATE = {"enemies", "enemy", "enemy:all", "drivers", "pedestrians", "passengers", "peds", "peds:all", "all",
              "roster", "cast", "fares"}
-MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver"}
 SEQUEL = re.compile(r"\d+|ii|iii|iv|vi|vii|viii|ix")
 MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver", "sage"}
 STOP = {"the", "a", "of", "in", "usa", "europe", "japan", "ver", "disc", "and", "with", "as", "game", "games"}
