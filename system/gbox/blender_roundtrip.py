@@ -177,6 +177,23 @@ def _roles(model: Path, inp, info: dict, base_meta: dict | None) -> tuple[dict, 
     return merged, {k: v for k, v in det.items() if k != "roles"}
 
 
+# asset extras gbox_source keys copied into the entry's meta (a converted / downloaded model says where it came from:
+# gbox.sm64_decomp writes them for the SM64 ROM and Render96 HD donors); `licence` replaces characters.LICENCE
+SOURCE_META = ("licence", "attribution", "character", "donor_group", "donor_quality", "pose", "reader",
+               "reader_version")
+
+
+def source_info(model: Path) -> dict:
+    """The model's asset extras gbox_source ({pack, url, licence, attribution, game_title, character, donor_group,
+    donor_quality ...}), else {}."""
+    try:
+        gl, _ = attachments.read_gltf(model)
+    except (OSError, ValueError):
+        return {}
+    gs = ((gl.get("asset") or {}).get("extras") or {}).get("gbox_source")
+    return dict(gs) if isinstance(gs, dict) else {}
+
+
 def store_new(ctx, root: Path, f: Path, name: str, inp, game: dict | None, cls: dict) -> dict:
     """A character modelled (or re-boned) in Blender -> a collection entry: detected / auto-rigged roles, props."""
     from . import characters as C, rig_detect
@@ -203,6 +220,10 @@ def store_new(ctx, root: Path, f: Path, name: str, inp, game: dict | None, cls: 
     slug = C.free_slug(root, name)
     src = {"game_title": (game or {}).get("title") or (f"made from {base_meta['name']} in Blender" if base_meta else "made in Blender"),
            "game_id": (game or {}).get("game_id"), "from": "clipboard" if inp.from_clipboard else inp.artifact or inp.path}
+    gs = source_info(f)
+    if gs and not game:                                    # where a downloaded / converted model came from (module doc)
+        src.update({k: gs[k] for k in ("game_title", "game_id", "platform", "pack", "url", "branch", "commit")
+                    if gs.get(k)})
     if base_meta:
         src["derived_from"] = base_meta["slug"]
         notes.append(f"derived from {base_meta['name']} (skeleton changed: {'; '.join((cls.get('skeleton') or {}).get('problems') or [])})")
@@ -212,8 +233,13 @@ def store_new(ctx, root: Path, f: Path, name: str, inp, game: dict | None, cls: 
                                          "detected_roles": len(roles)}}
     if base_meta:
         extra["derived_from"] = base_meta["slug"]
-    meta = C.add(root, slug, name, [f], src, "Blender (gBox add-on: Send to gBox)",
-                 kind=inp.kind if inp.kind in C.KINDS else "character", aliases=[name],
+    if gs:
+        extra.update({k: gs[k] for k in SOURCE_META if gs.get(k)})
+        notes.append(f"source: {gs.get('pack') or gs.get('game_title')}" + (f" ({gs['url']})" if gs.get("url") else ""))
+    shown = (gs or {}).get("name") or name                # the slug comes from `name`, the shown name from the source
+    meta = C.add(root, slug, shown, [f], src, (gs or {}).get("reader") or "Blender (gBox add-on: Send to gBox)",
+                 kind=inp.kind if inp.kind in C.KINDS else "character",
+                 aliases=[name] + ([shown] if shown != name else []) + list((gs or {}).get("aliases") or []),
                  rig={"roles": roles, "detected": rig_how.get("rig")} if roles else None, notes="; ".join(notes), extra=extra)
     ready = bool(roles.get("hip"))
     return {"status": "added", "entry": meta, "env": False, "mode": cls["mode"], "roles": roles, "rig": rig_how,

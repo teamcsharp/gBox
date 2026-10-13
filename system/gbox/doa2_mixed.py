@@ -41,7 +41,16 @@ HEADLINE = {"AYA": "sa2_amy_rose", "LEI": "sa2_rouge", "HIK": "sa2_tikal", "RYU"
 
 
 def franchise(slug: str) -> str:
-    return "SM64DS" if slug.startswith("sm64ds_") else "SA2"
+    """The Mario side is every Mario-series donor: SM64 DS, SM64 (sm64_* / mario) and the HD models (*_hd)."""
+    return "SM64DS" if slug.startswith(("sm64ds_", "sm64_")) or slug.endswith("_hd") or slug == "mario" else "SA2"
+
+
+def mario_group(library) -> tuple[list[str], dict[str, str]]:
+    """The Mario side upgraded to the collection's best model per character (gbox.cast_swap group 'mario': the HD
+    model when imported, else SM64, else SM64 DS) -> (SM64DS pool, HEADLINE)."""
+    from . import cast_swap
+    up = cast_swap.upgrade_slugs(SM64DS, cast_swap.library_metas(Path(library)))
+    return [up[s] for s in SM64DS], {k: up.get(v, v) for k, v in HEADLINE.items()}
 
 
 def plan_pools(costumes: dict[str, list[str]], sa2: list[str] = SA2, sm64ds: list[str] = SM64DS,
@@ -288,7 +297,8 @@ def verify(image, changes: dict[str, bytes], reports: list[dict], plan, pools, w
 
 
 def main(argv=None):
-    """python -m gbox.doa2_mixed DISC.gdi LIBRARY OUT_DIR [--seed S]: plan from the disc, build, verify."""
+    """python -m gbox.doa2_mixed DISC.gdi LIBRARY OUT_DIR [--seed S] [--mario-group] [--name MOD]: plan from the disc,
+    build, verify."""
     import argparse
     from .gdrom import GDRom
     ap = argparse.ArgumentParser(description="DOA2 LE: SA2 vs SM64DS cast, random donor on every selection")
@@ -296,13 +306,20 @@ def main(argv=None):
     ap.add_argument("library")
     ap.add_argument("out")
     ap.add_argument("--seed", default="")
+    ap.add_argument("--mario-group", action="store_true",
+                    help="the Mario side from cast_swap's 'mario' group: the best model per character (HD > SM64 > DS)")
+    ap.add_argument("--name", default=MOD_NAME)
     a = ap.parse_args(argv)
-    plan = plan_pools(disc_costumes(GDRom(a.gdi)), seed=a.seed)
+    pool, heads = mario_group(a.library) if a.mario_group else (SM64DS, HEADLINE)
+    if a.mario_group:
+        print(json.dumps({"mario_group": dict(zip(SM64DS, pool))}), flush=True)
+    plan = plan_pools(disc_costumes(GDRom(a.gdi)), sm64ds=pool, headline=heads, seed=a.seed)
     donors = {s: Path(a.library) / s for p in plan.values() for _c, s in p}
     missing = sorted(s for s, d in donors.items() if not (d / "meta.json").is_file())
     if missing:
         raise SystemExit(f"not in the library: {', '.join(missing)}")
-    res = build(a.gdi, donors, a.out, plan, progress=lambda p, m: print(f"[{p:5.1f}%] {m}", flush=True))
+    res = build(a.gdi, donors, a.out, plan, name=a.name,
+                progress=lambda p, m: print(f"[{p:5.1f}%] {m}", flush=True))
     print(json.dumps({k: res[k] for k in ("mod", "image", "status", "plan_check")}, indent=1, default=str))
 
 
