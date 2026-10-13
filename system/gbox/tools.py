@@ -3041,6 +3041,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
                               "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
                               "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
+                              "sa2_mods",      # sa2_mods: Sonic Adventure 2 (DC/GC USA): finish stage, A rank, emblems
                               "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
                               "stranglehold")):   # stranglehold: PS3 bullet-time interception systems and chat driver
     import importlib
