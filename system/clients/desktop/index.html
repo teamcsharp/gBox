@@ -151,6 +151,13 @@
   .chip { font-size:11px; padding:1px 8px; border-radius:10px; border:1px solid var(--line); }
   .chip.open { color:var(--warn); } .chip.in_progress { color:var(--acc); } .chip.done { color:var(--ok); } .chip.blocked { color:var(--bad); }
   .req .m { font-size:12px; color:var(--mut); margin-top:4px; }
+  .req-group { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; background:var(--card); }
+  .req-group > summary { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px; cursor:pointer; list-style:none; }
+  .req-group > summary::-webkit-details-marker { display:none; } .req-group > summary::before { content:"B8"; color:var(--mut); width:10px; }
+  .req-group[open] > summary::before { content:"BE"; }
+  .req-group > summary .gl { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1 1 260px; font-size:12px; color:var(--mut); }
+  .req-group > .req-group-items { padding:0 10px 2px; } .req-group > .req-group-items > .mut { font-size:12px; margin:0 0 10px; }
+  .req .req-group { margin:8px 0; background:transparent; }
   .req .thread { margin-top:8px; display:none; } .req.open-thread .thread { display:block; }
   .msg { padding:6px 8px; border-radius:6px; margin:4px 0; background:var(--bg); font-size:13px; white-space:pre-wrap; }
   .msg.agent { border-left:3px solid var(--acc); } .msg.operator { border-left:3px solid var(--ok); }
@@ -1184,6 +1191,7 @@ window.taskVizCreate = canvas => {
 </div>
 <script src="floating.js"></script>
 <script src="inbox-view.js"></script>
+<script src="inbox-groups.js"></script>
 <script src="live-poll.js"></script>
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
@@ -2986,7 +2994,8 @@ const inboxPoll = singleFlightPoll(async () => {
   const art = d => `${S.apiUrl}/api/artifacts/${d}?token=${encodeURIComponent(tok)}`;
   const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; roots.forEach(x => t[x.status]++);
   const tot = all.reduce((a, x) => ({ in: a.in + (x.metrics.tokens_in || 0), out: a.out + (x.metrics.tokens_out || 0) }), { in: 0, out: 0 });
-  $("#reqsum").textContent = `${roots.length} your requests · ${all.length - roots.length} automated sub-requests · ${t.open} open · ${t.in_progress} in progress · ${t.done} done · tokens ${fmtTok(tot.in)} in / ${fmtTok(tot.out)} out`;
+  const ownRoots = roots.filter(x => !GBoxInboxGroups.groupKey(x)).length;
+  $("#reqsum").textContent = `${ownRoots} your requests · ${all.length - ownRoots} automated · ${t.open} open · ${t.in_progress} in progress · ${t.done} done · tokens ${fmtTok(tot.in)} in / ${fmtTok(tot.out)} out`;
   const renderRequest = x => {
     const m = x.metrics, tools = Object.entries(m.tools || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join(", ");
     const ms = modsFor(x.number);
@@ -3013,14 +3022,19 @@ const inboxPoll = singleFlightPoll(async () => {
         <div class="att reply-att"></div>
         <div class="btns"><input type="text" class="reply" placeholder="Reply / follow-up… (Ctrl+V or drop images)" style="flex:1;min-width:200px">
           <button class="act send">Send</button>${x.status !== "done" ? `<button class="act markdone">Mark done</button>` : ""}</div></div>
-      ${children.has(x.id) ? `<details class="subrequests" style="margin:8px 12px"><summary>${children.get(x.id).length} automated sub-requests${children.get(x.id).some(hasPending) ? " · work pending" : ""}</summary>${children.get(x.id).map(renderRequest).join("")}</details>` : ""}</div>`;
+      ${children.has(x.id) ? `<details class="subrequests" style="margin:8px 12px"><summary>${children.get(x.id).length} automated sub-requests${children.get(x.id).some(hasPending) ? " · work pending" : ""}</summary>${renderEntries(GBoxInboxGroups.group(children.get(x.id), { pending: hasPending }))}</details>` : ""}</div>`;
   };
+  // #1788: automated tickets of one kind collapse into a single entry (count, pending, newest); expanding it shows them.
+  const GROUP_SHOW = 40;
+  const renderGroup = g => `<details class="req-group" data-group-key="${esc(g.key)}"><summary><b>${esc(g.label)}</b><span class="chip">${g.count}</span>${g.pending ? `<span class="chip open">${g.pending} pending</span>` : `<span class="chip done">all done</span>`}<span class="chip">automated</span><span class="gl">newest ${new Date(g.newest * 1000).toLocaleString()} · #${g.latest.number} ${esc(g.latest.title || "")}</span></summary><div class="req-group-items">${g.items.slice(0, GROUP_SHOW).map(renderRequest).join("")}${g.count > GROUP_SHOW ? `<p class="mut">Showing the newest ${GROUP_SHOW} of ${g.count}. Export history lists them all.</p>` : ""}</div></details>`;
+  const renderEntries = entries => entries.map(e => e.type === "group" ? renderGroup(e) : renderRequest(e.request)).join("");
   const matches = x => requestFilter === "all" || (requestFilter === "pending" ? hasPending(x) : !hasPending(x));
   const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
-  const shownRoots = visibleRoots.slice(0, INBOX_PAGE.limit), olderRoots = visibleRoots.length - shownRoots.length;
-  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (shownRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
-    + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older requests (${olderRoots} not shown)</button>` : "")
-    + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.slice(0, INBOX_PAGE.limit).map(renderRequest).join("")}</details>` : ""), replyAtt);
+  const rootEntries = GBoxInboxGroups.group(visibleRoots, { pending: hasPending });
+  const shownRoots = rootEntries.slice(0, INBOX_PAGE.limit), olderRoots = rootEntries.length - shownRoots.length;
+  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (renderEntries(shownRoots) || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
+    + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older entries (${olderRoots} not shown)</button>` : "")
+    + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${renderEntries(GBoxInboxGroups.group(visibleUnresolved, { pending: hasPending }).slice(0, INBOX_PAGE.limit))}</details>` : ""), replyAtt);
   GBoxReportStory.reattach(host);                             // the open Detailed report keeps running in its re-rendered row
 });
 $("#reqlist").addEventListener("change", async e => {
