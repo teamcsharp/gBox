@@ -780,8 +780,10 @@ def save_hints(name: str, det: dict) -> list[str]:
     return out
 
 
-def scan(query: str) -> dict:
+def scan(query: str, name: str | None = None) -> dict:
     game = resolve_game(query)
+    if name and not game.get("store"):     # gBox: the catalog title beats the folder name (known-game routes, online check)
+        game = {**game, "name": name}
     root = Path(game["path"])
     ix = Index(root)
     hits, facts = detect(ix)
