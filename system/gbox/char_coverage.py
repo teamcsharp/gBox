@@ -38,7 +38,6 @@ WRITERS = [
      "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
-    ("crazy_taxi", ["player"], "Crazy Taxi GC: Axel the driver (15 rigid .shp parts + hand/head variants and sl_ LODs)"),
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
      "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
