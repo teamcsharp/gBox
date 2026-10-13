@@ -178,6 +178,57 @@ def test_stalled_stream_waits_instead_of_starting_another_capture(observer):
     assert not o.store.all('job') and not o.store.all('request')
 
 
+def test_stale_model_gap_closes_once_a_registered_reader_collects(observer):
+    """#1623: the gap filed before the Twin Snakes reader shipped closes with evidence when collection succeeds,
+    and a later failure reopens the same request."""
+    o = observer
+    o._models(o.session)
+    assert o.store.get('request', 'request0')['status'] == 'open'
+    o.store.put('job', 'collect1', {'id': 'collect1', 'state': 'succeeded', 'output': {
+        'result': {'characters': 17, 'collected': 17, 'status': 'complete', 'entries': []}}})
+    o.store.put('character_collection', 'testgame', {'state': 'queued', 'job_id': 'collect1', 'updated': 1})
+    o._models(o.session | {'session_id': 'worker-later'})
+    req = o.store.get('request', 'request0')
+    assert req['status'] == 'done' and 'collected 17 of 17' in req['note'] and 'collect1' in req['note']
+    assert o.store.get('session_observer', 'worker-later')['models']['request_id'] == 'request0'
+    assert len(o.store.all('request')) == 1
+    n = len(o.calls)
+    o._models(o.session | {'session_id': 'worker-later'})       # already done: no repeated status writes
+    assert not [c for c in o.calls[n:] if c[0].endswith('/status')]
+    o.store.put('job', 'collect1', o.store.get('job', 'collect1') | {'state': 'failed', 'error': 'disc missing'})
+    o._models(o.session)
+    assert o.store.get('request', 'request0')['status'] == 'open'
+
+
+def test_succeeded_collection_without_a_gap_files_nothing(observer):
+    o = observer
+    o.store.put('job', 'c', {'id': 'c', 'state': 'succeeded', 'output': {'result': {'characters': 2, 'collected': 2}}})
+    o.store.put('character_collection', 'testgame', {'state': 'queued', 'job_id': 'c', 'updated': 1})
+    o._models(o.session)
+    assert not o.store.all('request')
+    assert 'request_id' not in o.store.get('session_observer', 'worker-launch')['models']
+
+
+def test_ended_session_view_shows_current_collection_not_frozen_snapshot(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    app = create_app(cfg)
+    st = app.state.store
+    st.put('session', 's', {'state': 'ended', 'game_id': 'g'})
+    st.put('session_observer', 's', {'session_id': 's', 'game_id': 'g', 'state': 'ended', 'models': {
+        'state': 'unsupported', 'updated': 5, 'message': 'No native model reader registered for this game.',
+        'request_id': 'r1'}})
+    st.put('job', 'j', {'id': 'j', 'state': 'succeeded', 'output': {'result': {'characters': 3, 'collected': 3}}})
+    st.put('character_collection', 'g', {'state': 'queued', 'job_id': 'j', 'updated': 9})
+    with TestClient(app) as client:
+        client.headers['Authorization'] = 'Bearer ' + cfg.token()
+        data = client.get('/api/sessions/s/observers').json()
+    m = data['models']
+    assert m['state'] == 'succeeded' and m['result']['collected'] == 3 and m['request_id'] == 'r1'
+    assert m['snapshot']['state'] == 'unsupported'
+    models_agent = next(a for a in data['goals']['agents'] if a['agent'] == 'models')
+    assert 'No native model reader' not in models_agent['blocked_by']
+
+
 def test_collection_waits_while_the_operator_plays_on_the_linux_node(observer):
     o = observer
     original = o.api
@@ -399,54 +450,3 @@ def test_timeout_detection():
     assert is_timeout(TimeoutError()) and is_timeout(httpx.ConnectTimeout('x'))
     assert is_timeout(RuntimeError('TimeoutError: ')) and is_timeout(RuntimeError('ReadTimeout: timed out'))
     assert not is_timeout(RuntimeError('vision unavailable')) and not is_timeout(KeyError('sha256'))
-
-
-def test_stale_model_gap_closes_once_a_registered_reader_collects(observer):
-    """#1623: the gap filed before the Twin Snakes reader shipped closes with evidence when collection succeeds,
-    and a later failure reopens the same request."""
-    o = observer
-    o._models(o.session)
-    assert o.store.get('request', 'request0')['status'] == 'open'
-    o.store.put('job', 'collect1', {'id': 'collect1', 'state': 'succeeded', 'output': {
-        'result': {'characters': 17, 'collected': 17, 'status': 'complete', 'entries': []}}})
-    o.store.put('character_collection', 'testgame', {'state': 'queued', 'job_id': 'collect1', 'updated': 1})
-    o._models(o.session | {'session_id': 'worker-later'})
-    req = o.store.get('request', 'request0')
-    assert req['status'] == 'done' and 'collected 17 of 17' in req['note'] and 'collect1' in req['note']
-    assert o.store.get('session_observer', 'worker-later')['models']['request_id'] == 'request0'
-    assert len(o.store.all('request')) == 1
-    n = len(o.calls)
-    o._models(o.session | {'session_id': 'worker-later'})       # already done: no repeated status writes
-    assert not [c for c in o.calls[n:] if c[0].endswith('/status')]
-    o.store.put('job', 'collect1', o.store.get('job', 'collect1') | {'state': 'failed', 'error': 'disc missing'})
-    o._models(o.session)
-    assert o.store.get('request', 'request0')['status'] == 'open'
-
-
-def test_succeeded_collection_without_a_gap_files_nothing(observer):
-    o = observer
-    o.store.put('job', 'c', {'id': 'c', 'state': 'succeeded', 'output': {'result': {'characters': 2, 'collected': 2}}})
-    o.store.put('character_collection', 'testgame', {'state': 'queued', 'job_id': 'c', 'updated': 1})
-    o._models(o.session)
-    assert not o.store.all('request')
-    assert 'request_id' not in o.store.get('session_observer', 'worker-launch')['models']
-
-
-def test_ended_session_view_shows_current_collection_not_frozen_snapshot(tmp_path):
-    cfg = Config(data_dir=tmp_path)
-    app = create_app(cfg)
-    st = app.state.store
-    st.put('session', 's', {'state': 'ended', 'game_id': 'g'})
-    st.put('session_observer', 's', {'session_id': 's', 'game_id': 'g', 'state': 'ended', 'models': {
-        'state': 'unsupported', 'updated': 5, 'message': 'No native model reader registered for this game.',
-        'request_id': 'r1'}})
-    st.put('job', 'j', {'id': 'j', 'state': 'succeeded', 'output': {'result': {'characters': 3, 'collected': 3}}})
-    st.put('character_collection', 'g', {'state': 'queued', 'job_id': 'j', 'updated': 9})
-    with TestClient(app) as client:
-        client.headers['Authorization'] = 'Bearer ' + cfg.token()
-        data = client.get('/api/sessions/s/observers').json()
-    m = data['models']
-    assert m['state'] == 'succeeded' and m['result']['collected'] == 3 and m['request_id'] == 'r1'
-    assert m['snapshot']['state'] == 'unsupported'
-    models_agent = next(a for a in data['goals']['agents'] if a['agent'] == 'models')
-    assert 'No native model reader' not in models_agent['blocked_by']
