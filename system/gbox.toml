@@ -7,8 +7,14 @@ api_port = 8765
 public_url = "http://10.89.1.246:8765"
 cache_limit_gb = 200
 stage_min_mb = 32                 # disc images above this are copied to the node's local cache before launch
-cache_dirs = { linux = "/home/ehm_eckx/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified)
-cache_limits_gb = { linux = 150, windows = 250 }
+cache_dirs = { linux = "/home/ehm_eckx/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified); the Spark: the NVMe hot tier
+cache_limits_gb = { linux = 150, windows = 250 }   # ceiling for staged library copies on that disk (LRU eviction; never mods, bases, libraries or cold data)
+# Two-tier cache (docs/cache-tiers.md): the Spark keeps at most hot_cache_limit_gb on the NVMe (character library and
+# indexes pinned there); least recently used games move to the Elements HDD only while the Spark is idle, leaving a
+# symlink, and move back when used. Nodes without a cold_cache_dirs entry (the Windows PCs) keep a single tier.
+cold_cache_dirs = { linux = "/home/ehm_eckx/samples/gbox-cache" }
+hot_cache_limit_gb = { linux = 100 }
+cache_tier_idle_minutes = 30         # no session, job or launch on the node for this long before anything is demoted
 runtime_dirs = { windows = "D:/gBox/runtime" }   # emulators/cores on the local SSD, not the share
 
 smb_credentials = "/etc/exbox.cred"   # existing NAS credentials file on the Spark (not stored here)
@@ -229,3 +235,6 @@ exclude_files = ["*bios*", "*[[]0100F2C0115B6800[]]*"] # title update, not a sta
 mount = "//10.89.1.125/QuickSwap2"
 mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/_switch", windows = "//10.89.1.125/QuickSwap2/Emulation/_switch" }
+
+[rewind]
+checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not to stall Flycast/Dolphin (operator saw 2 fps, #1489)

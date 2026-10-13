@@ -144,5 +144,13 @@ def test_tool_result_carries_the_source_for_the_preview(fake_blender, monkeypatc
     monkeypatch.setattr(bc, "_fetch", lambda ctx, url, suffix: fetched.append(url) or (tmp_path / "asset.glb"))
     r = bc.blender_copy(bc.CopyIn(artifact="ab12"), None)["result"]            # @tool returns the plain function
     assert fetched == ["/api/artifacts/ab12"] and r["source"] == "/api/artifacts/ab12" and r["copybuffers"] == [str(a / "copybuffer.blend")]
+    # a character: the round-trip GLB (role names, props), the plain model from an older control plane
+    assert bc.blender_copy(bc.CopyIn(character="mario"), None)["result"]["source"] == "/api/characters/mario/blender"
+
+    def old_plane(ctx, url, suffix):
+        if url.endswith("/blender"):
+            raise RuntimeError("404")
+        return tmp_path / "asset.glb"
+    monkeypatch.setattr(bc, "_fetch", old_plane)
     assert bc.blender_copy(bc.CopyIn(character="mario"), None)["result"]["source"] == "/api/characters/mario/model"
     assert bc.blender_copy(bc.CopyIn(path=str(tmp_path / "asset.glb")), None)["result"]["source"] == str(tmp_path / "asset.glb")

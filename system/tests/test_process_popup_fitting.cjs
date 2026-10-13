@@ -98,6 +98,8 @@ test('the window shows the fitting list and labels the current stage over the 3D
   const fit = x.elements.find(e => e.className === 'pp-fit'), op = x.elements.find(e => e.className === 'pp-op');
   assert.match(fit.innerHTML, /Sonic → Ryu/);
   assert.equal(op.textContent, 'proportion · 2/3');
+  const cal = x.elements.find(e => e.className === 'pp-cal');           // #1385 calibration play-by-play caption
+  assert.equal(cal.textContent, 'Calibrating Sonic → Ryu: size ×0.9');
   const later = JSON.parse(JSON.stringify(FITTING));
   later.models['fighter:RYU'].state = 'done'; later.models['fighter:RYU'].current = 'write';
   later.models['fighter:RYU'].stages.write = { state: 'done', data: { mod: 'm' } };
@@ -106,6 +108,7 @@ test('the window shows the fitting list and labels the current stage over the 3D
   x.win.sync([job({ fitting: later })]);
   assert.match(fit.innerHTML, /<b>Fitting<\/b> 2\/3 models/);
   assert.equal(op.textContent, 'scale · 3/3');
+  assert.equal(cal.textContent, '');                                     // Tina's scale has no numbers yet
   x.win.dispose();
 });
 
