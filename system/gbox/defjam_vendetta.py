@@ -52,7 +52,10 @@ from pathlib import Path
 
 import numpy as np
 
+from .defjam_models import GLTF_SCALE, ROLE_NODES
+
 GPL_MAGIC = 0x00B749E0
+ACT_MAGIC = 0x007B7960
 TPL_MAGIC = 0x0020AF30
 DISC_ID = "GDTE69"
 ISO_SHA256 = "780138844d35d8b5087d8ace9f7efa5f1ab3776ea6f77a5d025c2e3adae2ad63"
@@ -61,6 +64,13 @@ BASE = 0x1C
 ATTRS = ["mtx", "pos", "nrm", "clr0", "clr1"] + [f"tex{i}" for i in range(8)]
 PART_ROLES = {0: "body", 1: "face", 2: "left_hand", 3: "right_hand", 4: "part4", 5: "accessory"}
 MIN_WINDING = 0.85          # share of triangles whose face normal agrees with the stored vertex normals
+READER_VERSION = 2          # 1: static bind-pose meshes, no roles; 2: .act skeleton + .skn weights, 18 body roles
+BODY_NODES = 42
+# part -> {part node: BODY node}: face / accessory node 1 (head_bone) is BODY head 7, hand node 1 is the wrist
+# 13 / 19, the "al" part's 10 nodes are BODY's spine 0..8 + Direction 41; node 0 is BODY's root everywhere
+SHARED = {1: {0: 0, 1: 7}, 2: {0: 0, 1: 13}, 3: {0: 0, 1: 19}, 4: {**{k: k for k in range(9)}, 9: 41}, 5: {0: 0, 1: 7}}
+SHARED_TREE = {5: 1}        # the accessory is skinned to the face's 11-node skeleton (same T-pose on the disc)
+MAX_ATTACH_OFFSET = 0.5     # game units (~4 cm); the disc's worst is s402a's face head_bone, 0.29 off BODY's head
 
 
 class FormatError(ValueError):
@@ -167,7 +177,7 @@ def parse_gpl(b: bytes) -> dict:
     names = [s.decode("latin-1") for s in b[dl + dl_size:].split(b"\0") if s.strip()]
     used = np.array(sorted({c[0] for t in tris for c in t}), dtype=np.int64)
     used_n = np.array(sorted({c[1] for t in tris for c in t}), dtype=np.int64)
-    return {"used": used, "used_normal_length": float(ln[used_n].mean()) if len(used_n) else 0.0, "positions": (raw[:, :3] / float(1 << frac)).astype(np.float32),
+    return {"raw": raw.astype(np.int16), "used": used, "used_normal_length": float(ln[used_n].mean()) if len(used_n) else 0.0, "positions": (raw[:, :3] / float(1 << frac)).astype(np.float32),
             "normals": (nrm_raw / np.where(ln == 0, 1, ln)).astype(np.float32), "uvs": uv,
             "triangles": tris, "primitives": prims, "vertex_count": nv, "uv_count": nuv, "bones": _u32(b, dh),
             "vcd": vcd, "fraction_bits": frac, "normal_length": float(ln.mean()) if nv else 0.0,
@@ -196,7 +206,148 @@ def winding(mesh: dict) -> float:
     return float(((fn * vn).sum(1)[ok] > 0).mean()) if ok.any() else 0.0
 
 
-# --- GX textures (TPL) ---------------------------------------------------------------------------------------
+# --- skeleton (.act) and weights (.skn) ---------------------------------------------------------------------------
+def _quat_matrix(x, y, z, w) -> np.ndarray:
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def parse_act(b: bytes) -> dict:
+    """.act -> {count, names, parent, trs [(scale, quat xyzw, translation)], local, world}. Matrices are 4x4 for
+    column vectors (local = T R S, world = parent world @ local), in game units."""
+    if len(b) < 0x24 or _u32(b, 0) != ACT_MAGIC:
+        raise FormatError("not a Def Jam Vendetta .act skeleton (magic 0x007B7960)")
+    n, recs, actu = _u32(b, 4), _u32(b, 0x0C), _u32(b, 0x1C)
+    if not 0 < n <= 256:
+        raise FormatError(f".act node count {n} is out of range")
+    _need(b, recs, n * 0x1C, ".act node records")
+    index = {recs + 0x1C * i: i for i in range(n)}
+    parent, trs, local = [], [], []
+    for i in range(n):
+        xf, _prev, _next, par, _child = struct.unpack_from(">5I", b, recs + 0x1C * i)
+        if par and par not in index:
+            raise FormatError(f".act node {i}: parent pointer 0x{par:x} is not a node record")
+        parent.append(index[par] if par else -1)
+        _need(b, xf, 0x2C, f".act node {i} transform")
+        if _u32(b, xf) != 0x0D000000:
+            raise FormatError(f".act node {i}: unknown transform tag 0x{_u32(b, xf):08x}")
+        v = struct.unpack_from(">10f", b, xf + 4)
+        s, q, t = np.array(v[0:3]), np.array(v[3:7]), np.array(v[7:10])
+        if abs(np.linalg.norm(q) - 1) > 1e-3:
+            raise FormatError(f".act node {i}: rotation is not a unit quaternion ({np.round(q, 4).tolist()})")
+        M = np.eye(4)
+        M[:3, :3] = _quat_matrix(*q) * s
+        M[:3, 3] = t
+        trs.append((s, q, t))
+        local.append(M)
+    world = [np.eye(4)] * n
+    for i in range(n):
+        if parent[i] >= i:
+            raise FormatError(f".act node {i}: parent {parent[i]} does not precede it")
+        world[i] = local[i] if parent[i] < 0 else world[parent[i]] @ local[i]
+    names = [""] * n
+    if actu and b[actu:actu + 4] == b"ACTU":
+        cnt = min(_u32(b, actu + 12), n)
+        _need(b, actu + 20, 4 * cnt, "ACTU name table")
+        for i in range(cnt):
+            o = actu + _u32(b, actu + 20 + 4 * i)
+            end = b.find(b"\0", o)
+            names[i] = b[o:end if end >= 0 else len(b)].decode("latin-1")
+    return {"count": n, "names": names, "parent": parent, "trs": trs, "local": local, "world": world}
+
+
+def parse_skn(b: bytes) -> dict:
+    """.skn -> {fraction_bits, groups [{kind, bones, start, count, src, weights}], lists [{bone, vertices, weights,
+    src}]}. Group ranges index the .gpl vertex block. Pair weights are u8 (bone a, bone b) per vertex, summing to
+    256: the first byte belongs to the first bone (weight continuity across mesh edges prefers that order on all
+    235 parts with pair groups; the swapped order wins on none)."""
+    if len(b) < 0x18:
+        raise FormatError(".skn header runs past the end of the file")
+    n1, n2, n3, frac, zero, t1, t2, t3 = struct.unpack_from(">HHHBBIII", b, 0)
+    if zero or not 4 <= frac <= 14:
+        raise FormatError(f"not a Def Jam Vendetta .skn (fraction bits {frac}, pad {zero})")
+    groups, lists = [], []
+    _need(b, t1, n1 * 0x40, ".skn single table")
+    for i in range(n1):
+        src, dst, bone, n, skip = struct.unpack_from(">IIHHB", b, t1 + 0x40 * i + 0x30)
+        if (dst + skip) % 12:
+            raise FormatError(f".skn single group {i}: vertex offset 0x{dst + skip:x} is not on a vertex")
+        groups.append({"kind": "single", "bones": (bone,), "start": (dst + skip) // 12, "count": n, "src": src + skip,
+                       "weights": None})
+    _need(b, t2, n2 * 0x74, ".skn pair table")
+    for i in range(n2):
+        src, wp, dst, ba, bb, n, skip = struct.unpack_from(">IIIHHHB", b, t2 + 0x74 * i + 0x60)
+        if (dst + skip) % 12:
+            raise FormatError(f".skn pair group {i}: vertex offset 0x{dst + skip:x} is not on a vertex")
+        _need(b, wp, 2 * n, f".skn pair group {i} weights")
+        w = np.frombuffer(b, np.uint8, 2 * n, wp).reshape(n, 2).astype(np.int64)
+        groups.append({"kind": "pair", "bones": (ba, bb), "start": (dst + skip) // 12, "count": n, "src": src + skip,
+                       "weights": w})
+    _need(b, t3, n3 * 0x44, ".skn list table")
+    for i in range(n3):
+        src, vp, _z, wp, bone, n = struct.unpack_from(">IIIIHH", b, t3 + 0x44 * i + 0x30)
+        _need(b, vp, 2 * n, f".skn list {i} vertices")
+        _need(b, wp, n, f".skn list {i} weights")
+        lists.append({"bone": bone, "vertices": np.frombuffer(b, ">u2", n, vp).astype(np.int64),
+                      "weights": np.frombuffer(b, np.uint8, n, wp).astype(np.int64), "src": src})
+    copies = [(g["src"], g["count"]) for g in groups] + [(x["src"], len(x["vertices"])) for x in lists]
+    for src, n in copies:
+        _need(b, src, 12 * n, ".skn vertex copy")
+    return {"fraction_bits": frac, "groups": groups, "lists": lists,
+            "copies": [np.frombuffer(b, ">i2", 6 * n, src).reshape(n, 6).astype(np.int16) for src, n in copies]}
+
+
+def skin_weights(skn: dict, mesh: dict, bones: int) -> tuple[np.ndarray, np.ndarray, dict]:
+    """parse_skn + parse_gpl -> (joints (nv, 4) part node indices, weights (nv, 4) normalised, report). Strict: a
+    stored vertex copy that differs from the .gpl block, a bone outside the skeleton, overlapping groups, or a used
+    vertex with no weight or weights that do not sum to 256 raise FormatError."""
+    nv, raw = mesh["vertex_count"], mesh["raw"]
+    acc = np.zeros((nv, bones), np.int64)
+    seen = np.zeros(nv, np.int64)
+    copies = iter(skn["copies"])
+    for g in skn["groups"]:
+        st, n = g["start"], g["count"]
+        if st + n > nv:
+            raise FormatError(f".skn {g['kind']} group at vertex {st} runs past the {nv} .gpl vertices")
+        if max(g["bones"]) >= bones:
+            raise FormatError(f".skn {g['kind']} group uses bone {max(g['bones'])} of a {bones}-node skeleton")
+        if not np.array_equal(next(copies), raw[st:st + n]):
+            raise FormatError(f".skn {g['kind']} group at vertex {st}: stored vertex copy differs from the .gpl")
+        seen[st:st + n] += 1
+        if g["kind"] == "single":
+            acc[st:st + n, g["bones"][0]] += 256
+        else:
+            acc[st:st + n, g["bones"][0]] += g["weights"][:, 0]
+            acc[st:st + n, g["bones"][1]] += g["weights"][:, 1]
+    for li in skn["lists"]:
+        v = li["vertices"]
+        if len(v) and int(v.max()) >= nv:
+            raise FormatError(f".skn list vertex {int(v.max())} >= {nv}")
+        if li["bone"] >= bones:
+            raise FormatError(f".skn list uses bone {li['bone']} of a {bones}-node skeleton")
+        if not np.array_equal(next(copies), raw[v]):
+            raise FormatError(f".skn list on bone {li['bone']}: stored vertex copy differs from the .gpl")
+        np.add.at(acc[:, li["bone"]], v, li["weights"])
+    if (seen > 1).any():
+        raise FormatError(f".skn groups overlap on {int((seen > 1).sum())} vertices")
+    used = mesh["used"]
+    tot = acc.sum(1)
+    if (tot[used] == 0).any():
+        raise FormatError(f"{int((tot[used] == 0).sum())} used vertices have no skin weight")
+    if (tot[used] != 256).any():
+        raise FormatError(f"{int((tot[used] != 256).sum())} used vertices have weights that do not sum to 256")
+    order = np.argsort(-acc, axis=1, kind="stable")[:, :4]
+    W = np.take_along_axis(acc, order, 1).astype(np.float64)
+    J = np.where(W > 0, order, 0)
+    W /= np.maximum(W.sum(1, keepdims=True), 1)
+    infl = np.count_nonzero(acc[used], axis=1)
+    return J.astype(np.uint16), W.astype(np.float32), {
+        "max_influences": int(infl.max()) if len(used) else 0, "over_four": int((infl > 4).sum()),
+        "groups": len(skn["groups"]), "lists": len(skn["lists"])}
+
+
+# --- GX textures (TPL)---------------------------------------------------------------------------------------
 BLOCK = {0: (8, 8, 4), 1: (8, 4, 8), 2: (8, 4, 8), 3: (4, 4, 16), 4: (4, 4, 16), 5: (4, 4, 16), 6: (4, 4, 32),
          8: (8, 8, 4), 9: (8, 4, 8), 10: (4, 4, 16), 14: (8, 8, 4)}
 
@@ -325,10 +476,136 @@ def png_bytes(rgba: np.ndarray) -> bytes:
             chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
+# --- one skeleton for all parts ------------------------------------------------------------------------------------
+def _joint_name(part: int, k: int) -> str:
+    return f"{PART_ROLES[part]}_{k:02d}"
+
+
+def assemble_skin(parts: dict[int, dict]) -> dict:
+    """{part: {mesh, act, skn}} -> {joints [{name, parent, t, q, s, world}], parts {part: {joints, weights,
+    positions}}, report}. BODY's 42 nodes are joints body_00..body_41; a part's nodes that are BODY nodes (SHARED) use
+    them, the accessory reuses the face's joints, the rest join the tree under their attach node. Vertices are in
+    model space (bind pose), raw s16 / 2^(.skn fraction bits) game units."""
+    if 0 not in parts:
+        raise FormatError("no BODY part (m0)")
+    body = parts[0]["act"]
+    if body["count"] != BODY_NODES:
+        raise FormatError(f"BODY .act has {body['count']} nodes, the reader knows the {BODY_NODES}-node tree")
+    joints = [{"name": _joint_name(0, k), "parent": body["parent"][k], "t": body["trs"][k][2], "q": body["trs"][k][1],
+               "s": body["trs"][k][0], "world": body["world"][k]} for k in range(BODY_NODES)]
+    maps, report = {0: list(range(BODY_NODES))}, {}
+    for part in sorted(p for p in parts if p):
+        a = parts[part]["act"]
+        nodes = SHARED.get(part, {})
+        share = parts.get(SHARED_TREE.get(part, -1))
+        if share and share["act"]["count"] == a["count"] and all(
+                np.abs(share["act"]["world"][k] - a["world"][k]).max() < 1e-3 for k in range(a["count"])):
+            maps[part] = list(maps[SHARED_TREE[part]])
+            report[part] = {"shares": PART_ROLES[SHARED_TREE[part]]}
+            continue
+        if not nodes:
+            raise FormatError(f"part m{part} ({a['count']} nodes) has no known attach point on BODY")
+        m, offset = [], 0.0
+        for k in range(a["count"]):
+            if k in nodes:
+                g = nodes[k]
+                offset = max(offset, float(np.abs(a["world"][k] - body["world"][g]).max()))
+                m.append(g)
+                continue
+            p = a["parent"][k]
+            if p < 0:
+                raise FormatError(f"part m{part} node {k} is a second root")
+            gp = m[p]
+            W = a["world"][k]
+            if np.abs(joints[gp]["world"] - a["world"][p]).max() < 1e-4:
+                t, q, s = a["trs"][k][2], a["trs"][k][1], a["trs"][k][0]
+            else:                                          # attach node sits a little off BODY's (s402a face +0.29 z)
+                t, q, s = _decompose(np.linalg.inv(joints[gp]["world"]) @ W)
+            m.append(len(joints))
+            joints.append({"name": _joint_name(part, k), "parent": gp, "t": t, "q": q, "s": s, "world": W})
+        if offset > MAX_ATTACH_OFFSET:
+            raise FormatError(f"part m{part}: its BODY nodes are {offset:.2f} units off BODY's skeleton")
+        maps[part] = m
+        report[part] = {"attach_offset": round(offset, 4)}
+    out = {}
+    for part, p in parts.items():
+        J, W, rep = skin_weights(p["skn"], p["mesh"], p["act"]["count"])
+        J = np.asarray(maps[part], np.uint16)[J]
+        pos = (p["mesh"]["raw"][:, :3].astype(np.float64) / float(1 << p["skn"]["fraction_bits"])).astype(np.float32)
+        out[part] = {"joints": J, "weights": W, "positions": pos}
+        report.setdefault(part, {}).update(rep)
+    return {"joints": joints, "parts": out, "report": report}
+
+
+def _decompose(M: np.ndarray):
+    """4x4 (column vectors, positive scale) -> (t, q xyzw, s)."""
+    R = M[:3, :3]
+    s = np.linalg.norm(R, axis=0)
+    R = R / np.where(s == 0, 1, s)
+    tr = np.trace(R)
+    if tr > 0:
+        k = np.sqrt(tr + 1.0) * 2
+        q = [(R[2, 1] - R[1, 2]) / k, (R[0, 2] - R[2, 0]) / k, (R[1, 0] - R[0, 1]) / k, 0.25 * k]
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        k = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+        q = [0.25 * k, (R[0, 1] + R[1, 0]) / k, (R[0, 2] + R[2, 0]) / k, (R[2, 1] - R[1, 2]) / k]
+    elif R[1, 1] > R[2, 2]:
+        k = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+        q = [(R[0, 1] + R[1, 0]) / k, 0.25 * k, (R[1, 2] + R[2, 1]) / k, (R[0, 2] - R[2, 0]) / k]
+    else:
+        k = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+        q = [(R[0, 2] + R[2, 0]) / k, (R[1, 2] + R[2, 1]) / k, 0.25 * k, (R[1, 0] - R[0, 1]) / k]
+    q = np.array(q)
+    return M[:3, 3].copy(), q / np.linalg.norm(q), s
+
+
+def _trs_matrix(t, q, s) -> np.ndarray:
+    M = np.eye(4)
+    M[:3, :3] = _quat_matrix(*q) * np.asarray(s)
+    M[:3, 3] = t
+    return M
+
+
+def bind_error(skin: dict) -> float:
+    """Largest distance (game units) between a vertex and its skinned position at rest, with the joint worlds
+    rebuilt from the written node TRS chain and the inverse binds from the stored worlds: 0 when the GLB's skeleton,
+    inverse binds and weights agree."""
+    J = skin["joints"]
+    world = []
+    for j in J:
+        L = _trs_matrix(j["t"], j["q"], j["s"])
+        world.append(L if j["parent"] < 0 else world[j["parent"]] @ L)
+    skinmats = np.array([world[i] @ np.linalg.inv(j["world"]) for i, j in enumerate(J)])
+    err = 0.0
+    for p in skin["parts"].values():
+        P = np.c_[p["positions"], np.ones(len(p["positions"]))]
+        M = (skinmats[p["joints"].astype(np.int64)] * p["weights"][:, :, None, None]).sum(1)
+        S = np.einsum("nij,nj->ni", M, P)[:, :3]
+        used = p.get("used")
+        d = np.linalg.norm(S - p["positions"], axis=1)
+        err = max(err, float((d if used is None else d[used]).max()) if len(d) else 0.0)
+    return err
+
+
 # --- glTF --------------------------------------------------------------------------------------------------
-def write_glb(path: Path, parts: list[dict], name: str, extras: dict | None = None) -> Path:
-    """parts: {name, mesh (parse_gpl), flip (bool), image (RGBA ndarray or None)} -> one static GLB."""
+def write_glb(path: Path, parts: list[dict], name: str, extras: dict | None = None, skin: dict | None = None) -> Path:
+    """parts: {name, mesh (parse_gpl), flip (bool), image (RGBA ndarray or None)} -> one GLB. Without `skin` every
+    part is its own static mesh in the .gpl's units. With `skin` (assemble_skin; parts carry `part`) the parts are
+    primitives of one skinned mesh: joint nodes with the .act TRS, inverse binds from the T-pose, JOINTS_0/WEIGHTS_0
+    (4 columns), everything in metres (game units x skin["scale"])."""
     bin_, views, accs, meshes, nodes, mats, texs, imgs = bytearray(), [], [], [], [], [], [], []
+    scale = float(skin.get("scale", GLTF_SCALE)) if skin else 1.0
+    prims_all = []
+    if skin:
+        for j in skin["joints"]:
+            nd = {"name": j["name"], "translation": [float(v * scale) for v in j["t"]],
+                  "rotation": [float(v) for v in j["q"]]}
+            if np.abs(np.asarray(j["s"]) - 1).max() > 1e-5:
+                nd["scale"] = [float(v) for v in j["s"]]
+            nodes.append(nd)
+        for i, j in enumerate(skin["joints"]):
+            if j["parent"] >= 0:
+                nodes[j["parent"]].setdefault("children", []).append(i)
 
     def view(data: bytes, target=None):
         while len(bin_) % 4:
@@ -355,8 +632,13 @@ def write_glb(path: Path, parts: list[dict], name: str, extras: dict | None = No
                 idx.append(k)
         if not idx:
             continue
-        attrs = {"POSITION": acc(np.ascontiguousarray(m["positions"][P], np.float32), "VEC3", minmax=True),
+        sp = skin["parts"][part["part"]] if skin else None
+        pos = sp["positions"][P] * scale if skin else m["positions"][P]
+        attrs = {"POSITION": acc(np.ascontiguousarray(pos, np.float32), "VEC3", minmax=True),
                  "NORMAL": acc(np.ascontiguousarray(m["normals"][N], np.float32), "VEC3")}
+        if skin:
+            attrs["JOINTS_0"] = acc(np.ascontiguousarray(sp["joints"][P], np.uint16), "VEC4", 5123)
+            attrs["WEIGHTS_0"] = acc(np.ascontiguousarray(sp["weights"][P], np.float32), "VEC4")
         prim = {"attributes": attrs, "indices": acc(np.array(idx, np.uint32), "SCALAR", 5125, 34963)}
         if min(T) >= 0 and len(m["uvs"]):
             attrs["TEXCOORD_0"] = acc(np.ascontiguousarray(m["uvs"][T], np.float32), "VEC2")
@@ -370,11 +652,28 @@ def write_glb(path: Path, parts: list[dict], name: str, extras: dict | None = No
                     mat.update(alphaMode="MASK", alphaCutoff=0.5)
                 mats.append(mat)
                 prim["material"] = len(mats) - 1
+        if skin:
+            prims_all.append(prim)
+            continue
         meshes.append({"name": part["name"], "primitives": [prim]})
         nodes.append({"name": part["name"], "mesh": len(meshes) - 1})
+    scene = list(range(len(nodes)))
+    skins = []
+    if skin:
+        J = skin["joints"]
+        K = np.diag([scale, scale, scale, 1.0])
+        ibm = [(K @ np.linalg.inv(j["world"]) @ np.linalg.inv(K)).reshape(16, order="F") for j in J]
+        roots = [i for i, j in enumerate(J) if j["parent"] < 0]
+        skins = [{"name": f"{name}_rig", "joints": list(range(len(J))), "skeleton": roots[0],
+                  "inverseBindMatrices": acc(np.array(ibm, np.float32), "MAT4", target=None)}]
+        meshes.append({"name": name, "primitives": prims_all})
+        nodes.append({"name": name, "mesh": 0, "skin": 0})
+        scene = roots + [len(nodes) - 1]
     gl = {"asset": {"version": "2.0", "generator": "gbox.defjam_vendetta", **({"extras": extras} if extras else {})},
-          "scene": 0, "scenes": [{"name": name, "nodes": list(range(len(nodes)))}], "nodes": nodes, "meshes": meshes,
+          "scene": 0, "scenes": [{"name": name, "nodes": scene}], "nodes": nodes, "meshes": meshes,
           "accessors": accs, "bufferViews": views, "buffers": [{"byteLength": len(bin_)}]}
+    if skins:
+        gl["skins"] = skins
     if mats:
         gl.update(materials=mats, textures=texs, images=imgs, samplers=[{"wrapS": 10497, "wrapT": 10497}])
     js = json.dumps(gl, separators=(",", ":")).encode()
@@ -415,15 +714,22 @@ def _find(disc, folder: str, base: str | None):
     return next((n for n in sorted(disc.files) if n.lower().rsplit("/", 1)[-1] == low), None)
 
 
-def extract_model(disc, folder: str, stem: str, out: Path) -> dict:
-    """All parts `folder/stem_mK.gpl` (fighter costume dir, or one crowd model) -> one static GLB + checks."""
+def extract_model(disc, folder: str, stem: str, out: Path, rig: bool = True) -> dict:
+    """All parts `folder/stem_mK.gpl` (fighter costume dir, or one crowd model) -> one GLB + checks. A fighter whose
+    parts all carry .act + .skn comes out skinned on one skeleton, in metres, with the 18 body roles; crowd models
+    (no _mK parts) and `rig=False` stay static in the .gpl's own units."""
     files = sorted(n for n in disc.files if re.fullmatch(rf"{re.escape(folder)}/{re.escape(stem)}(_m\d+)?\.gpl", n))
     if not files:
         raise FormatError(f"no .gpl under {folder} for {stem}")
-    parts, report = [], []
+    parts, report, rigged = [], [], {}
     for n in files:
         m = parse_gpl(disc.read(n))
         k = re.search(r"_m(\d+)\.gpl$", n)
+        if rig and k:
+            act, skn = n[:-4] + ".act", n[:-4] + ".skn"
+            if act in disc.files and skn in disc.files:
+                rigged[int(k[1])] = {"mesh": m, "act": parse_act(disc.read(act)), "skn": parse_skn(disc.read(skn)),
+                                     "files": [act, skn]}
         w = winding(m)
         flip = w < 0.5
         tex = _find(disc, folder, m["texture"])
@@ -433,28 +739,62 @@ def extract_model(disc, folder: str, stem: str, out: Path) -> dict:
                 image = decode_image(disc.read(tex), parse_tpl(disc.read(tex))[0])
             except FormatError as e:
                 tex_err = str(e)
-        pos = m["positions"][m["used"]] if len(m["used"]) else m["positions"]
         label = (m["mesh_name"] or n.rsplit("/", 1)[-1]).split("-", 1)[-1]
         rec = {"file": n, "part": int(k[1]) if k else None, "role": PART_ROLES.get(int(k[1])) if k else "crowd",
                "mesh_name": m["mesh_name"], "vertices": m["vertex_count"], "uvs": m["uv_count"],
                "triangles": len(m["triangles"]), "primitives": m["primitives"], "bones": m["bones"],
                "vcd": f"0x{m['vcd']:04x}", "normal_length": round(m["used_normal_length"], 1),
                "winding": round(max(w, 1 - w), 4), "flipped": flip, "texture": m["texture"], "texture_file": tex,
-               "texture_error": tex_err, "bbox": [pos.min(0).round(2).tolist(), pos.max(0).round(2).tolist()]}
+               "texture_error": tex_err}
         rec["verified"] = bool(rec["triangles"] and rec["winding"] >= MIN_WINDING and normal_scale_ok(rec["normal_length"]))
         report.append(rec)
-        parts.append({"name": f"{stem}_{rec['role'] or 'part'}_{label}", "mesh": m, "flip": flip, "image": image})
+        parts.append({"name": f"{stem}_{rec['role'] or 'part'}_{label}", "mesh": m, "flip": flip, "image": image,
+                      "part": rec["part"]})
+    skin = None
+    fighter_parts = {r["part"] for r in report if r["part"] is not None}
+    if rig and fighter_parts:
+        missing = sorted(fighter_parts - set(rigged))
+        if missing:
+            raise FormatError(f"{stem}: parts {missing} have no .act/.skn")
+        skin = assemble_skin(rigged)
+        skin["scale"] = GLTF_SCALE
+        for kp, p in skin["parts"].items():
+            p["used"] = rigged[kp]["mesh"]["used"]
+    for rec, part in zip(report, parts):
+        m = part["mesh"]
+        P = skin["parts"][rec["part"]]["positions"] if skin else m["positions"]
+        pos = P[m["used"]] if len(m["used"]) else P
+        rec["bbox"] = [pos.min(0).round(2).tolist(), pos.max(0).round(2).tolist()]
+        if skin:
+            rec["skin"] = skin["report"][rec["part"]]
     body = next((r for r in report if r["part"] == 0), report[0])
     lo, hi = np.array(body["bbox"][0]), np.array(body["bbox"][1])
     pad = (hi - lo) * 0.1
     for r in report:                                       # model space: every part sits on the body, not at a joint
         c = (np.array(r["bbox"][0]) + np.array(r["bbox"][1])) / 2
         r["inside_body_bbox"] = bool(((c >= lo - pad) & (c <= hi + pad)).all())
-    glb = write_glb(out, parts, stem, {"source": "Def Jam Vendetta GDTE69 rev 0", "files": files,
-                                       "units": "s16 / 2^fraction_bits game units, unrigged bind pose"})
-    ok = all(r["verified"] and r["inside_body_bbox"] for r in report)
-    return {"model": stem, "folder": folder, "glb": str(glb), "verified": ok, "parts": report,
-            "height": round(float(hi[1] - lo[1]), 2)}
+    extras = {"source": "Def Jam Vendetta GDTE69 rev 0", "files": files}
+    out_r = {"model": stem, "folder": folder, "parts": report, "height": round(float(hi[1] - lo[1]), 2),
+             "skinned": skin is not None, "roles": {}}
+    if skin:
+        err = bind_error(skin)
+        bw = skin["joints"]
+        out_r.update(joints=len(bw), bind_error=round(err, 6), roles={r: f"body_{n:02d}" for r, n in ROLE_NODES.items()},
+                     skeleton={"pelvis_y": round(float(bw[2]["world"][1, 3]), 3),
+                               "head_end_y": round(float(bw[8]["world"][1, 3]), 3),
+                               "hands_x": [round(float(bw[13]["world"][0, 3]), 3), round(float(bw[19]["world"][0, 3]), 3)]},
+                     rig_files=sorted(f for p in rigged.values() for f in p["files"]))
+        if err > 1e-3:
+            raise FormatError(f"{stem}: skinned bind pose is {err:.4f} units off the .gpl vertices")
+        extras.update(units=f"metres (game units x {GLTF_SCALE:.6f}; game unit = s16 / 2^.skn fraction bits)",
+                      skeleton=f"{len(bw)} joints: BODY .act + face / hand nodes under their attach joints",
+                      reader=f"djv_gc_reader {READER_VERSION}")
+    else:
+        extras["units"] = "s16 / 2^fraction_bits game units, unrigged bind pose"
+    glb = write_glb(out, parts, stem, extras, skin=skin)
+    out_r["glb"] = str(glb)
+    out_r["verified"] = all(r["verified"] and r["inside_body_bbox"] for r in report)
+    return out_r
 
 
 def extract_all(iso, out_dir: Path) -> dict:
@@ -488,21 +828,30 @@ def roster() -> list[dict]:
 
 
 def extract_run(ctx, game: dict, e: dict, work: Path) -> dict:
-    """characters.DEDICATED hook: one costume directory -> verified static GLB (no rig: roles stay empty)."""
+    """characters.DEDICATED hook: one costume directory -> verified skinned GLB with the 18 body roles."""
     from . import characters as C
     from .gcdisc import GCDisc
     iso = C._gc_iso(ctx, game)
     ident = identify(iso)
     if not ident["exact_build"]:
         raise FormatError(f"{ident['game_id']} rev {ident['revision']}: the reader is verified on {DISC_ID} rev 0 only")
-    r = extract_model(GCDisc(iso), f"data/{e['key']}", e["key"], Path(work) / f"{e['slug']}.glb")
+    return run_result(extract_model(GCDisc(iso), f"data/{e['key']}", e["key"], Path(work) / f"{e['slug']}.glb"), e["key"])
+
+
+def run_result(r: dict, key: str) -> dict:
+    """extract_model's report -> the characters.DEDICATED result (fails unless every part verified and skinned)."""
     bad = [p["file"] for p in r["parts"] if not (p["verified"] and p["inside_body_bbox"])]
     if bad:
-        raise FormatError(f"{e['key']}: parts failed verification: {', '.join(bad)}")
-    return {"files": [Path(r["glb"])], "roles": {}, "tool": "gbox.defjam_vendetta",
-            "source_files": [p["file"] for p in r["parts"]] + sorted({p["texture_file"] for p in r["parts"] if p["texture_file"]}),
-            "notes": (f"Native GDTE69 rev 0 meshes, {sum(p['triangles'] for p in r['parts'])} triangles, static bind pose. "
-                      "Skeleton (.act) and weights (.skn) are not decoded, so the model is not retargetable yet.")}
+        raise FormatError(f"{key}: parts failed verification: {', '.join(bad)}")
+    if not r["skinned"] or len(r["roles"]) != len(ROLE_NODES):
+        raise FormatError(f"{key}: no skeleton (skinned {r['skinned']}, {len(r['roles'])} roles)")
+    tris = sum(p["triangles"] for p in r["parts"])
+    return {"files": [Path(r["glb"])], "roles": r["roles"], "tool": "gbox.defjam_vendetta",
+            "extra": {"djv_gc_reader": READER_VERSION},
+            "source_files": [p["file"] for p in r["parts"]] + r["rig_files"] +
+                            sorted({p["texture_file"] for p in r["parts"] if p["texture_file"]}),
+            "notes": (f"Native GDTE69 rev 0 meshes on one {r['joints']}-joint skeleton (BODY .act + face / hand nodes, "
+                      f"T-pose bind, .skn weights, up to 2 per vertex), {tris} triangles, metres at the PS2 scale.")}
 
 
 if __name__ == "__main__":
