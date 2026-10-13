@@ -17,7 +17,7 @@
 
   function filterMods(items, { game = "", writer = "", q = "" } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
-    const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
+    const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
     return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && words.every(w => hay(m).includes(w)))
       .sort((a, b) => (b.built || 0) - (a.built || 0));

@@ -2710,6 +2710,9 @@ def file_mod(inp: FileModIn, ctx: Ctx):
             changes[rel] = ch
         build = filemods.build if filemods.is_folder_game(rom) else filemods.build_image   # folder game | ROM / disc image
         res = build(ctx.config, g.game_id, rom, inp.name, changes, ctx.progress)
+        from . import build_record                     # the Builds view: which job built it and the exact call
+        build_record.stamp_marker(filemods.mod_dir(ctx.config, g.game_id, inp.name),
+                                  build_call=build_record.call_of("file_mod", inp), **build_record.from_ctx(ctx))
         ctx.artifact("mod.json", json.dumps(res).encode(), "application/json", game=g.game_id, mod=inp.name)
         return {"result": res}
     raise ValueError(f"unknown op {inp.op}")

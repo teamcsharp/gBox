@@ -272,6 +272,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/game-menu.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
+<script src="/viz/builds.js"></script>
 <script src="/viz/retarget-handles.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -348,7 +349,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
   <div class="grip" id="pipgrip" title="Drag to resize"></div>
 </div>
 <script>
-const tabs = { Library: library, Mods: modsView, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
+const tabs = { Library: library, Mods: modsView, Builds: buildsView, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 // Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
@@ -1018,6 +1019,16 @@ modsView.after = () => {
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto", q: focus.q, game: focus.game,
     url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
     visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i) });
+};
+// ---- Builds: every custom build + the scheduled / running build jobs (viz/builds.js over /api/builds; the desktop app shows this shell) ----
+// launches go through the game menu's Special builds path (this PC's worker, the loader); details load 360° viewers lazily
+const BUILDSV = { ctl: null };
+function buildsView() { BUILDSV.ctl?.stop(); BUILDSV.ctl = null; return `<div id="buildsview"></div>`; }
+buildsView.after = () => {
+  BUILDSV.ctl = GBoxBuilds.mount($("#buildsview"), { api, here: window.GBOX_LOCAL?.worker || "auto",
+    url: u => /^(https?|data|blob):/.test(u) || /[?&]token=/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
+    visible: () => cur === "Builds" && !!$("#buildsview"), launch: (gid, x) => gameMenuIO().launch(gid, x),
+    confirm: s => confirm(s) });
 };
 async function library() {
   newLibraryPage(); L.jumping = false;

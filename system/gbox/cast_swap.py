@@ -709,6 +709,12 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
                 "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
                 "retarget_profiles": profiles}
+        from . import build_record                       # who went where, by name (the Builds view's 360 pairs)
+        rec = build_record.stamp(
+            rec, kind="cast", slots=[{"slot": r["slot"], "slot_name": r.get("slot_name") or r["slot"],
+                                      "donor": r["character"], "donor_name": r.get("donor") or r["character"],
+                                      "source": r.get("source") or ""} for r in p["assignments"]],
+            **build_record.from_ctx(ctx))
         if rec_path.parent.is_dir():
             rec_path.write_text(json.dumps(rec, default=str))
         for r in p["assignments"]:
