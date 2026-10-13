@@ -5,6 +5,9 @@
 //   game, kind, date, size, where it lives, ▶ Launch (this PC) and ▾ the other launch options (gbox.special_builds),
 //   ✎ Rename… and ★ favorite (a right-click on the row opens the same options). #1656: ☆/★ on each row, a ★ Favorites
 //   filter, favorites first.
+//   #1639: the download icon at the right end of each row (viz/build-local.js): on this PC / not on this PC (a click
+//   downloads it into this PC's cache, never launching it) / downloading; right-click or ▾: Download to this PC, Export…,
+//   Open folder, Delete from this PC.
 //   Details ▸ per build: modifications (changed files), characters inserted (slot <- donor, each with two 360° three.js
 //   turntables: the donor as fitted, "who they are", and the original character, "who they're replacing"; GLBs load
 //   only while the details are open and the viewer is on screen, previews otherwise), codes / cheats / hacks, compile
@@ -24,6 +27,8 @@
   const TICK = 4000;                                        // scheduled jobs poll (ms) while the view is shown
   // What this changes / Delete / Report (viz/build-actions.js; loaded before this file, or required by node tests)
   const BA = () => root.GBoxBuildActions || (typeof module === "object" && module.exports ? require("./build-actions.js") : null);
+  // On this PC: the download icon, its menu and the Export dialog (viz/build-local.js)
+  const BL = () => root.GBoxBuildLocal || (typeof module === "object" && module.exports ? require("./build-local.js") : null);
   const LIST_EVERY = 30000;                                 // the build list (5 s while the index is still working)
   const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/+esm";
   const GLTF_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
@@ -106,8 +111,8 @@
       <div class="bv-date" title="${ESC(fmtDate(b.built))}">${ESC(fmtAge(b.built, now))}</div>
       <div class="bv-size">${b.local_only ? '<span class="mut" title="only on a PC: sized when it reaches the Spark">–</span>' : ESC(fmtSize(sizeOf(b)))}</div>
       <div class="bv-where">${whereHTML(b)}</div>
-      <div class="bv-launch"><button class="act pri" type="button" data-bv="launch" ${d ? "" : "disabled"} title="${ESC(d ? optLabel(d, env.here) : "no launch option")}">▶ Launch</button><button class="act" type="button" data-bv="opts" aria-haspopup="menu" aria-expanded="${st.opts === b.key}" title="Launch options">▾</button><button class="act" type="button" data-bv="shot" ${b.card_id ? "" : "disabled"} title="${b.card_id ? "Screenshot: this build running now = a frame of it; another build of the game running = you choose; nothing running = launch, then capture" : "No mod card for this build yet: nothing to add a picture to"}" aria-label="Screenshot">📷</button><button class="act bv-act" type="button" data-bv="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…" aria-label="Report">⚑</button><button class="act bv-act bv-del" type="button" data-bv="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></div>
-    </div>${st.shot?.get?.(b.key) && BS ? `<div class="bv-shot" data-bv-key="${ESC(b.key)}">${BS.choiceHTML(st.shot.get(b.key), "data-bv")}</div>` : ""}${st.opts === b.key ? optionsHTML(b, env.here) : ""}${open ? `<div class="bv-det" data-bv-det="${ESC(b.key)}">${detailsBody(st.details?.get?.(b.key), env)}</div>` : ""}`;
+      <div class="bv-launch"><button class="act pri" type="button" data-bv="launch" ${d ? "" : "disabled"} title="${ESC(d ? optLabel(d, env.here) : "no launch option")}">▶ Launch</button><button class="act" type="button" data-bv="opts" aria-haspopup="menu" aria-expanded="${st.opts === b.key}" title="Launch options">▾</button><button class="act" type="button" data-bv="shot" ${b.card_id ? "" : "disabled"} title="${b.card_id ? "Screenshot: this build running now = a frame of it; another build of the game running = you choose; nothing running = launch, then capture" : "No mod card for this build yet: nothing to add a picture to"}" aria-label="Screenshot">📷</button><button class="act bv-act" type="button" data-bv="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…" aria-label="Report">⚑</button><button class="act bv-act bv-del" type="button" data-bv="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button>${st.local ? `<span class="bv-dl">${st.local.iconHTML(b)}</span>` : ""}</div>
+    </div>${st.local?.menu === b.key ? `<div class="bv-dlm">${st.local.menuHTML(b)}</div>` : ""}${st.shot?.get?.(b.key) && BS ? `<div class="bv-shot" data-bv-key="${ESC(b.key)}">${BS.choiceHTML(st.shot.get(b.key), "data-bv")}</div>` : ""}${st.opts === b.key ? optionsHTML(b, env.here) : ""}${open ? `<div class="bv-det" data-bv-det="${ESC(b.key)}">${detailsBody(st.details?.get?.(b.key), env)}</div>` : ""}`;
   }
   // ▾ (or a right-click on the row): the launch options, then ✎ Rename…, ★ favorite, restore the original name
   function optionsHTML(b, here) {
@@ -364,7 +369,8 @@
     .bv-edit,.bv-inv{margin:6px 0 4px 30px;padding:8px;border:1px solid var(--line,#333);border-radius:6px;font-size:12px}
     .bv-ef{display:flex;gap:6px;align-items:flex-start;margin:3px 0}.bv-ef span{min-width:110px}.bv-ef input,.bv-ef textarea{flex:1;font:12px monospace}
     .bv-ebtn{display:flex;gap:6px;align-items:center;margin-top:6px}.bv-inv-h{display:flex;gap:6px;align-items:center;justify-content:space-between}.bv-recent{margin:12px 0 4px}
-    .bv-shot{padding:2px 6px 8px 92px;border-bottom:1px solid var(--line,#2a2c33)}${BS ? BS.CSS : ""}
+    .bv-shot{padding:2px 6px 8px 92px;border-bottom:1px solid var(--line,#2a2c33)}${BS ? BS.CSS : ""}${BL() ? BL().CSS : ""}
+    .bv-dl{display:inline-flex;margin-left:6px;align-self:center}.bv-dlm{display:flex;justify-content:flex-end;padding:4px 6px 8px;border-bottom:1px solid var(--line,#2a2c33)}
     @media (max-width:900px){.bv-head{display:none}.bv-row{grid-template-columns:22px 56px 1fr;grid-auto-rows:auto}.bv-row>.bv-game,.bv-row>.bv-kinds,.bv-row>.bv-date,.bv-row>.bv-size,.bv-row>.bv-where,.bv-row>.bv-launch{grid-column:3}
       .bv-jrow{grid-template-columns:22px 1fr}.bv-jrow>*:nth-child(n+3){grid-column:1/-1}.bv-det{padding-left:8px}.bv-opts{padding-left:8px}.bv-shot{padding-left:8px}}`;
 
@@ -602,7 +608,9 @@
     const three = threeLoader(env);
     const tts = createTurntables({ ...env, three }), flows = createFlows({ ...env, three });
     const toast = env.toast || (() => {}), wait = env.wait || sleep;
-    let timer = null, built = false, listAt = 0, busyRename = false;
+    let timer = null, built = false, listAt = 0, busyRename = false, localAt = 0;
+    // the download icon: this PC's copy of each build, downloads / exports from here (viz/build-local.js)
+    st.local = BL() ? BL().create(env, { redraw: () => { if (!st.renaming) drawList(); }, note: (b, t) => st.msg.set(b.key, t), toast: t => toast(t) }) : null;
     const part = sel => host.querySelector(sel);
     const fullItems = () => st.data?.items || [];
     const shown = () => filterBuilds(fullItems(), st);
@@ -804,6 +812,10 @@
       if (t.closest?.("[data-bv-art]")) return;                 // artifact links open as links
       const rowEl = t.closest?.("[data-bv-key]"), b = rowEl && find(rowEl.dataset.bvKey);
       const jobEl = t.closest?.("[data-bv-jid]"), j = jobEl && findJob(jobEl.dataset.bvJid);
+      if (st.local && t.closest?.("[data-bl]")) {               // the download icon and its menu (under the row)
+        return st.local.onClick(e, b || find(t.closest?.("[data-bl-menu]")?.dataset?.blMenu));
+      }
+      if (st.local?.menu && !t.closest?.("[data-bl-menu]")) { st.local.menu = null; drawList(); if (!act) return; }
       if (act === "more") { st.page++; drawList(); return; }
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} st.listSig = ""; await loadList(true); await loadSched(); return; }
       if (act === "launchopt") { const bb = find(a.dataset.key); return launch(bb, (bb?.launch_options || []).find(o => o.id === a.dataset.opt)); }
@@ -856,8 +868,12 @@
     }
     // right-click a build: its options (launch options, Rename…, favorite) under the row
     function onContext(e) {
+      const menuEl = e.target?.closest?.("[data-bl-menu]");
+      if (st.local && menuEl && st.local.onContext(e, find(menuEl.dataset.blMenu))) return;
       const rowEl = e.target?.closest?.("[data-bv-key]"); if (!rowEl || e.target.closest?.("input, textarea")) return;
+      if (st.local && st.local.onContext(e, find(rowEl.dataset.bvKey))) { st.opts = null; return; }   // the icon: its own menu
       e.preventDefault?.(); e.stopPropagation?.();
+      if (st.local) st.local.menu = null;
       st.opts = rowEl.dataset.bvKey; drawList();
     }
     host.addEventListener("click", onClick);
@@ -872,11 +888,18 @@
       if (env.visible && !env.visible()) { stop(); return; }   // the view was left: free the viewers and the polls
       const tasks = [loadSched()];
       if (Date.now() - listAt >= (busy() ? 5000 : LIST_EVERY)) tasks.push(loadList());
+      if (st.local && Date.now() - localAt >= 20000) {          // this PC's copies (its heartbeat) every 20 s
+        localAt = Date.now();
+        const before = JSON.stringify(st.local.local);
+        tasks.push(st.local.refresh().then(() => { if (JSON.stringify(st.local.local) !== before && !st.renaming) drawList(); }));
+      }
       await Promise.all(tasks);
     }
     async function start() {
       shell(); drawList(); drawSched();
-      await Promise.all([loadList(), loadSched()]);
+      localAt = Date.now();
+      await Promise.all([loadList(), loadSched(), st.local?.refresh()]);
+      drawList();
       timer = setInterval(tick, env.tick || TICK);
       return ctl;
     }
