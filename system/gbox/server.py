@@ -1782,6 +1782,14 @@ def create_app(config: Config) -> FastAPI:
         if len(data) > 8 << 20:
             raise HTTPException(413, "fitting snapshot too large")
         d = _fitting_dir(jid)
+        if not d.is_dir():                                   # a new job's snapshots: drop those older than 3 days
+            import shutil
+            for old in (d.parent.iterdir() if d.parent.is_dir() else []):
+                try:
+                    if old.is_dir() and time.time() - old.stat().st_mtime > 3 * 86400:
+                        shutil.rmtree(old, ignore_errors=True)
+                except OSError:
+                    pass
         d.mkdir(parents=True, exist_ok=True)
         if sum(f.stat().st_size for f in d.iterdir() if f.is_file()) + len(data) > 256 << 20:
             raise HTTPException(413, "this job's fitting snapshots are over 256 MB")
