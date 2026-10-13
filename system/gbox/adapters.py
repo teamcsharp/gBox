@@ -520,9 +520,10 @@ def _pad_binds() -> dict:
     return out
 
 
-def _examine_driver_ok(argv) -> bool:
+def _examine_driver_ok(argv, also: tuple = ()) -> bool:
     """RenderDoc injection only for Direct3D/Vulkan renderers: under it RetroArch's OpenGL driver can't create its window
-    ("win32_set_video_mode failed", the game never starts: N64 parallel_n64 and the other GL cores)."""
+    ("win32_set_video_mode failed", the game never starts: N64 parallel_n64 and the other GL cores). `also` adds
+    drivers a capture session may inject into (core-profile "glcore", #971)."""
     import re
     if "--config" not in argv:
         return True                                   # standalone emulators here (Dolphin D3D12) are Direct3D
@@ -531,24 +532,40 @@ def _examine_driver_ok(argv) -> bool:
     except (OSError, IndexError):
         return False
     m = re.search(r'^video_driver\s*=\s*"([^"]*)"', cfg, re.M)
-    return bool(m) and m.group(1) in ("d3d11", "d3d12", "vulkan")
+    return bool(m) and m.group(1) in ("d3d11", "d3d12", "vulkan", *also)
 
 
 def _popen(ad, argv, **kw) -> subprocess.Popen:
     """Start a local-window emulator; with Examine 3D on (ad.examine) RenderDoc is loaded into it from the first
-    instruction, so the frame on screen can be captured as a 3D scene later (gbox.scene_capture)."""
+    instruction, so the frame on screen can be captured as a 3D scene later (gbox.scene_capture).
+    An agent-owned capture session (ad.capture_backend, #971) with a Vulkan backend gets RenderDoc through its Vulkan
+    layer instead (environment only, no injection), and its window stays parked off-screen for its whole life."""
+    cap = getattr(ad, "capture_backend", None)
     if HOST_OS == "windows":
         from .graphics import prefer_gpu
         prefer_gpu(argv[0])                                # the discrete GPU, never a virtual display / iGPU
-        kw.setdefault("startupinfo", hidden_start())
-    if HOST_OS == "windows" and getattr(ad, "examine", False) and _examine_driver_ok(argv):
+        kw.setdefault("startupinfo", capture_start() if cap else hidden_start())
+    cap_dir = ad.config.runtime / "scene_capture" / "rdc" if getattr(ad, "config", None) else None
+    if HOST_OS == "windows" and getattr(ad, "examine", False) and (cap or {}).get("attach") == "layer":
         from . import scene_capture
-        p = scene_capture.popen_hooked(argv, cap_dir=ad.config.runtime / "scene_capture" / "rdc" if ad.config else None, **kw)
+        p = scene_capture.popen_layer(argv, cap_dir, **kw)
+    elif HOST_OS == "windows" and getattr(ad, "examine", False) and _examine_driver_ok(argv, ("glcore",) if cap else ()):
+        from . import scene_capture
+        p = scene_capture.popen_hooked(argv, cap_dir=cap_dir, **kw)
     else:
         p = subprocess.Popen(argv, **kw)
     if HOST_OS == "windows":
-        keep_offscreen(p.pid)
+        keep_offscreen(p.pid, **({"limit_s": 1800.0, "give_up_s": float("inf")} if cap else {}))
     return p
+
+
+def capture_start():
+    """Windows: a capture session's window is shown normally but never activated (a minimized Vulkan/GL window has
+    no swapchain to present, so RenderDoc would never see a frame); keep_offscreen parks it off-screen as it opens."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 4                                     # SW_SHOWNOACTIVATE
+    return si
 
 
 def hidden_start():
@@ -715,8 +732,13 @@ def win_resume_threads(tids: list[int]) -> int:
     return n
 
 
-def _examine_ok(proc) -> bool:
+def _examine_ok(proc, wait_s: float = 0.0) -> bool:
+    """RenderDoc is inside the emulator: injected at launch, or (Vulkan layer) loaded once the game made its Vulkan
+    device; wait_s gives the layer that long to show up."""
     info = getattr(proc, "renderdoc", None)
+    if isinstance(info, dict) and info.get("attach") == "layer" and "error" not in info:
+        from .scene_capture import layer_check
+        return bool(layer_check(proc, wait_s))
     return bool(info) and "error" not in info
 
 
@@ -841,6 +863,13 @@ class RetroArchAdapter(CommandAdapter):
                 "gamemode_enable": "false",          # GameMode needs a D-Bus session bus; services have none (abort -6)
                 "suspend_screensaver_enable": "false", "video_font_enable": "false"}
         co = d["retroarch"] / "core-options.cfg"              # Flycast: threaded rendering lets the state grow between the size
+        cap = getattr(self, "capture_backend", None)          # agent-owned capture session (#971): its own files only,
+        if cap:                                               # the operator's retroarch/core options are only read
+            from . import capture_backend
+            work = rt / "capture_sessions" / f"ra-{self.addr[1]}"
+            for sub in ("states", "saves", "shots"):
+                (work / sub).mkdir(parents=True, exist_ok=True)
+            co = capture_backend.core_options_file(co, {}, work)
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") in FLYCAST_PLATFORMS:
@@ -885,6 +914,11 @@ class RetroArchAdapter(CommandAdapter):
                                             Path(provision.retroarch_exe(self.config)).parent)
         if HOST_OS == "windows" and (self.platform or "") == "ps2":
             opts["video_shader_enable"] = "false"            # the .glslp post-AA presets don't load under d3d11
+        if cap:                                              # the capture backend: vulkan (layer) or glcore (injected)
+            _set_core_opts(co, cap.get("core_options") or {})
+            opts = capture_backend.retroarch_cfg(opts, cap, work)
+            self.states_override = work / "states"
+            cfg = work / "retroarch.cfg"
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))
         return cfg
 
@@ -1054,13 +1088,9 @@ class RetroArchAdapter(CommandAdapter):
         from .scene_support import video_driver
         self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
         self.core_path = argv[argv.index("-L") + 1] if "-L" in argv else None
+        # an OpenGL session can't hold RenderDoc; the capability matrix (scene_support) names the capture session that
+        # captures its moment instead (#971), so there is no blanket "unavailable" reason here any more
         self.examine_unavailable_reason = None
-        if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
-            self.examine_unavailable_reason = (
-                "3D draw-call capture is unavailable for this OpenGL RetroArch session. "
-                "RenderDoc injection prevents this core from opening its game window; "
-                "relaunching with Examine 3D would not fix it. The game remains playable and can be paused."
-            )
         if "-L" in argv:
             try:
                 n = len(self.install_cheats(argv[argv.index("-L") + 1], rom))
@@ -1106,7 +1136,7 @@ class RetroArchAdapter(CommandAdapter):
                     return {"pid": self.proc.pid, "display": self.display and self.display.name, "port": self.addr[1],
                             "local_window": HOST_OS == "windows", "worker_name": __import__("platform").node(),
                             "core": argv[argv.index("-L") + 1], "status": st, "log": str(self.log_path),
-                            "renderer": self.renderer(), "examine": _examine_ok(self.proc)}
+                            "renderer": self.renderer(), "examine": _examine_ok(self.proc, 5.0)}
             except RuntimeError:
                 pass
             time.sleep(0.2)
@@ -1212,7 +1242,7 @@ class RetroArchAdapter(CommandAdapter):
         return {"fast_forward": "toggled", "on": self.ff_on}
 
     def state_dir(self) -> Path:
-        return self.config.runtime / "states"
+        return getattr(self, "states_override", None) or self.config.runtime / "states"
 
     def step_frames(self, n: int = 1) -> dict:
         for _ in range(n):
@@ -1295,9 +1325,29 @@ class RetroArchAdapter(CommandAdapter):
         return MemoryDebugger(self, CPUS[self.platform])
 
     def get_frame(self) -> bytes:
+        if getattr(self, "capture_backend", None) and getattr(self, "states_override", None):
+            return self._screenshot(Path(self.states_override).parent / "shots")
         if HOST_OS == "windows":
             return win_grab(self.proc.pid if self.proc else 0)
         return grab_png(self.display.name if self.display else None)
+
+    def _screenshot(self, shots: Path, timeout: float = 6.0) -> bytes:
+        """A capture session's window is parked off-screen (a desktop grab is black): RetroArch's own SCREENSHOT reads
+        the frame from the GPU into the session's shots folder."""
+        before = set(shots.glob("*.png")) if shots.exists() else set()
+        self.cmd("SCREENSHOT")
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            new = (set(shots.glob("*.png")) if shots.exists() else set()) - before
+            if new:
+                f = max(new, key=lambda p: p.stat().st_mtime)
+                size = -1
+                while size != f.stat().st_size:                  # written asynchronously
+                    size = f.stat().st_size
+                    time.sleep(0.2)
+                return f.read_bytes()
+            time.sleep(0.1)
+        raise RuntimeError("RetroArch did not write a screenshot")
 
     def stream_session(self) -> MjpegStream:
         if not self.stream:
@@ -1778,6 +1828,9 @@ D-Pad/Right = `Pad E`
                 # a raw memory card file keeps its serial between boots; the GCI-folder card's changes, and games that
                 # bind saves to the card (RE4) then call every save "corrupted" on the next boot
                 "Dolphin.Core.SlotA": "1", "Dolphin.Core.MemcardAPath": str(user / "GC" / "MemoryCardA.USA.raw")}
+        if getattr(self, "capture_backend", None):                  # agent-owned capture session (#971): Vulkan via -C,
+            opts["Dolphin.Core.GFXBackend"] = "Vulkan"              # Dolphin's command-line layer is never saved
+            opts["Dolphin.DSP.Backend"] = "No Audio Output"
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
@@ -1796,6 +1849,8 @@ D-Pad/Right = `Pad E`
         si = subprocess.STARTUPINFO()                                # minimized, no focus: no boot window on screen;
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW                # the app docks (and restores) the game window
         si.wShowWindow = 7                                           # SW_SHOWMINNOACTIVE
+        if getattr(self, "capture_backend", None):
+            si = capture_start()                                     # a minimized window presents no frames to capture
         self.proc = _popen(self, argv, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=str(Path(argv[0]).parent),
                            startupinfo=si)
         self._p(70, "Dolphin started; releasing the boot hold")
@@ -1816,7 +1871,7 @@ D-Pad/Right = `Pad E`
             self._p(95, f"running without memory access (no memory mods): {e}")
         return {"pid": self.proc.pid, "local_window": True, "debug_port": self.port, "debugger": bool(self.dbg),
                 "worker_name": __import__("platform").node(), "emulator": "dolphin (Windows)", "log": str(self.log_path),
-                "examine": _examine_ok(self.proc)}
+                "examine": _examine_ok(self.proc, 10.0)}
 
     def stop_game(self) -> dict:
         if self.paused_tids:
@@ -2004,7 +2059,7 @@ class YuzuAdapter(Adapter):
         self.proc = None
         self.bridge_proc = None
         self.paused_tids = []
-        self.examine_unavailable_reason = "3D draw-call capture is not integrated with the Yuzu window yet."
+        self.video_driver = None                       # Yuzu's renderer (qt-config.ini), for the Examine 3D matrix
 
     def launch_game(self, rom: str) -> dict:
         exe = self.config.library("hyperspin").root() / "emulators" / "yuzu" / "yuzu.exe"
@@ -2018,8 +2073,16 @@ class YuzuAdapter(Adapter):
             gamepads.enable_yuzu_mouse_touch(controller_config)
         if bridge:
             gamepads.bind_yuzu_xinput_bridge(controller_config)
-        self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(),
-                                     env=gamepads.emulator_environment(os.environ))
+        from .capture_backend import yuzu_backend
+        self.video_driver = yuzu_backend(exe.parent / "user" / "config" / "qt-config.ini")
+        env = gamepads.emulator_environment(os.environ)
+        if getattr(self, "examine", False) and self.video_driver == "vulkan":
+            # Examine 3D (#971): RenderDoc's Vulkan layer for this process only (no injection, Yuzu's config untouched)
+            from . import scene_capture
+            self.proc = scene_capture.popen_layer([str(exe), "-g", rom], self.config.runtime / "scene_capture" / "rdc",
+                                                  cwd=exe.parent, startupinfo=hidden_start(), env=env)
+        else:
+            self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(), env=env)
         keep_offscreen(self.proc.pid)
         for _ in range(60):
             if self.proc.poll() is not None:
@@ -2035,7 +2098,8 @@ class YuzuAdapter(Adapter):
                                                 stdin=subprocess.PIPE, startupinfo=hidden_start())
         return {"pid": self.proc.pid, "rom": rom, "local_window": True, "controller_guid": guid,
                 "controller_mode": "xinput_keyboard_bridge" if bridge else "sdl",
-                "worker_name": __import__("platform").node(), "emulator": "yuzu"}
+                "worker_name": __import__("platform").node(), "emulator": "yuzu", "renderer": self.video_driver,
+                "examine": _examine_ok(self.proc, 10.0)}
 
     def stop_game(self) -> dict:
         if self.paused_tids:
@@ -2175,9 +2239,25 @@ class RPCS3Adapter(Adapter):
         gui.write_text(ini, encoding="utf-8")
         self.home = home
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
-        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", rom], cwd=home, startupinfo=hidden_start())
-        keep_offscreen(self.proc.pid)
-        return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node()}
+        argv = [str(home / "rpcs3.exe"), "--no-gui"]
+        cap = getattr(self, "capture_backend", None)
+        if cap:                                            # agent-owned capture session (#971): Vulkan in a config file of
+            from .capture_backend import rpcs3_renderer_yaml      # its own, passed with --config (never the shared one)
+            own = self.config.runtime / "capture_sessions" / f"rpcs3-{int(time.time() * 1000)}.yml"
+            own.parent.mkdir(parents=True, exist_ok=True)
+            base = cc.read_text(encoding="utf-8") if getattr(self, "serial", None) and cc.exists() else ""
+            own.write_text(rpcs3_renderer_yaml(base, "Vulkan"), encoding="utf-8")
+            argv += ["--config", str(own)]
+        if getattr(self, "examine", False):
+            # Examine 3D (#971): RPCS3 renders with Vulkan by default; RenderDoc's Vulkan layer for this process only
+            from . import scene_capture
+            self.proc = scene_capture.popen_layer([*argv, rom], self.config.runtime / "scene_capture" / "rdc", cwd=home,
+                                                  startupinfo=capture_start() if cap else hidden_start())
+        else:
+            self.proc = subprocess.Popen([*argv, rom], cwd=home, startupinfo=hidden_start())
+        keep_offscreen(self.proc.pid, **({"limit_s": 1800.0, "give_up_s": float("inf")} if cap else {}))
+        return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node(),
+                "examine": _examine_ok(self.proc, 15.0) if getattr(self, "examine", False) else False}
 
     def stop_game(self) -> dict:
         if self.stream:
