@@ -287,7 +287,7 @@ class Chd:
         mh = self.f.read(16)
         mapbytes = struct.unpack_from(">I", mh, 0)[0]
         first = int.from_bytes(mh[4:10], "big")
-        lbits, sbits, pbits = mh[12], mh[13], mh[14]
+        lbits, sbits = mh[12], mh[13]                     # mh[14]: parent bits (no parents here)
         if not 0 < mapbytes <= 64 << 20:
             raise ChdError(f"map size {mapbytes}")
         bits = _Bits(self.f.read(mapbytes))

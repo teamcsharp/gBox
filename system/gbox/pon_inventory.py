@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 import sys
 from pathlib import Path
@@ -96,14 +97,10 @@ def parse_package(b: bytes) -> dict:
         if off < start or off + size > len(b):
             raise FormatError(f"chunk {i} 0x{off:x}+0x{size:x} outside the package")
         c = {"index": i, "id": cid, "offset": off, "size": size, "type": typ, "kind": CHUNK_TYPES.get(typ, "?")}
-        if typ == 3:
-            head = b[off:off + 0x200]
-            k = head.find(b".dcn_")
-            if k > 0:
-                s = k
-                while s > 0 and 32 < head[s - 1] < 127:
-                    s -= 1
-                c["model"] = head[s:k].decode("latin-1")         # the field is 16 bytes: ".dcn_11" may be cut
+        if typ == 3:                                       # the name field is 16 bytes: ".dcn_11" may be cut short
+            mt = re.search(rb"([A-Za-z0-9_\-]{2,})\.d(?:c(?:n(?:_\d*)?)?)?\x00", b[off:off + 0x200])
+            if mt:
+                c["model"] = mt.group(1).decode("latin-1")
         chunks.append(c)
         end = max(end, off + size)
     return {"start": start, "count": count, "author": b[0x14:0x34].split(b"\0")[0].decode("latin-1"),
@@ -115,7 +112,7 @@ def levels(dfu: Dfu) -> list[dict]:
     archive's own hash of levels\\<level>.lvl_3."""
     out = []
     for e in dfu.entries:
-        if e.size < 4096 or e.compressed:
+        if e.size < PKG_TABLE or e.compressed:
             continue
         spans = dfu.spans(e, PKG_TABLE)
         head = b"".join(dfu.disc.read(p, o, n) for p, o, n in spans)

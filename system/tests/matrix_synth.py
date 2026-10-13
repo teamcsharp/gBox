@@ -63,7 +63,7 @@ class _BitWriter:
 def make_chd(iso: bytes, frames_per_hunk: int = 8) -> bytes:
     """A MODE1 (cooked) single-track CHD v5: hunk 0 cdzl, other hunks cdlz, repeats as self references, the last
     hunk stored uncompressed."""
-    frame, sector, sub = 2448, 2352, 96
+    frame, sector = 2448, 2352
     nfr = len(iso) // 2048
     hb = frames_per_hunk * frame
     nh = -(-nfr // frames_per_hunk)
@@ -296,9 +296,10 @@ def make_dcn(meshes: list[bytes], textures: list[tuple[bytes, bytes]], materials
     return out
 
 
-def humanoid_dcn(name: str = "Synthetic") -> bytes:
+def humanoid_dcn(name: str = "Synthetic", extra_pages: int = 0) -> bytes:
     """A small but complete character: flat quad patches on torso, head, both arms and legs, one triangle patch and
-    two plain triangles, two textures (4- and 8-bit), two materials, a full config and a LOD config."""
+    two plain triangles, two textures (4- and 8-bit), two materials, a full config and a LOD config. extra_pages
+    adds unused 256 x 256 8-bit textures (a bigger file, so a writer has room)."""
     P = skeleton()
     quads = []
     for joint, center, size in ((7, (0, 118, -10), 20), (0, (0, 92, -10), 18), (15, (0, 145, -11), 12),
@@ -317,5 +318,6 @@ def humanoid_dcn(name: str = "Synthetic") -> bytes:
     full = mesh({0: quads, 1: [tri]})
     lod = mesh({2: t3})
     texs = [texture("body.tga", 32, 32, 4), texture("head.tga", 64, 64, 8)]
+    texs += [texture(f"spare{i}.tga", 256, 256, 8) for i in range(extra_pages)]
     mats = [material("body", 0), material("head", 1)]
     return make_dcn([full, lod], texs, mats, [([0], [0, 1]), ([1], [0, 1])], name=name, P=P)

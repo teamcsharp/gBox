@@ -347,8 +347,13 @@ def build_disc(src_iso: Path, out_iso: Path, jobs: list[dict], progress=lambda p
         rep = {"slot": jb["slot"], "character": jb["name"], "entries": [], "status": "failed"}
         try:
             stems = resolve_slot(jb["slot"])
+            if "hip" not in (jb.get("roles") or {}):
+                raise SwapError("the character has no body roles (rig.roles): it can't be mapped onto the ETM skeleton")
+            have = [st for st in stems if M.model_path(st) in dfu]
+            if not have:
+                raise SwapError(f"none of the slot's models ({', '.join(stems)}) is on this disc")
             progress(30 + 50 * k / max(len(jobs), 1), f"Fitting {jb['name']} onto {jb['slot']} ({len(stems)} models)")
-            first = dfu.read(M.model_path(stems[0]))
+            first = dfu.read(M.model_path(have[0]))
             fitted = fit(jb["model"], jb["roles"], target(M.parse_dcn(first)), jb.get("props") or (), jb.get("scale"))
             for st in stems:                               # one file failing doesn't stop the slot's other files
                 path = M.model_path(st)
