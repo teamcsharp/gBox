@@ -408,6 +408,8 @@ STRATEGIES = {
     "gbox.yukes_sd": ("pairs", "SmackDown! 2: op=match (every wrestler in one disc)"),
     "gbox.aki_wrestling": ("pairs", "No Mercy / WCW: op=match (every wrestler in one ROM)"),
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
+    "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
+                               "(etm_swap.build_cast)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
 }
@@ -755,6 +757,11 @@ def _gta_vc(ctx, game, pairs, name, inp):
     return gta_vc_swap.build_cast(ctx.config, game, C._rom(ctx, game), pairs, name, ctx.progress)
 
 
+def _etm(ctx, game, pairs, name, inp):
+    from . import etm_swap
+    return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _jgr(ctx, game, pairs, name, inp):
     from . import characters as C, filemods, jgr, jgr_swap
     from .gdrom import GDRom, patch_gdi
@@ -817,6 +824,7 @@ BUILDERS = {
     "gbox.yukes_sd": _match_builder("yukes_sd"),
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
+    "gbox.etm_swap": _etm,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
 }

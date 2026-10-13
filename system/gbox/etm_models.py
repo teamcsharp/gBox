@@ -62,6 +62,8 @@ JOINT_NAMES = {0: "pelvis", 1: "l_thigh", 2: "spine", 3: "r_thigh", 4: "l_thigh_
                13: "r_ankle", 14: "r_clavicle", 15: "head", 16: "l_toe", 17: "l_shoulder", 18: "r_toe",
                19: "r_shoulder", 20: "l_upperarm_twist", 21: "r_upperarm_twist", 22: "l_elbow", 23: "r_elbow",
                24: "l_forearm_twist", 25: "r_forearm_twist", 26: "l_wrist", 27: "r_wrist", 28: "r_hand", 29: "l_hand"}
+SHARED_PARENTS = ([-1, 0, 0, 0, 1, 3, 2, 6, 4, 5, 8, 7, 7, 9, 7, 12, 10, 11, 13, 14, 17, 19, 20, 21, 22, 23, 24, 25,
+                   27, 26] + [28] * 5 + list(range(30, 40)) + [29] * 5 + list(range(45, 55)) + [15] * 29)
 ROLE_JOINTS = {"hip": 0, "chest": 7, "neck": 12, "head": 15, "l_clav": 11, "r_clav": 14, "l_upper": 17, "l_fore": 22,
                "l_hand": 26, "r_upper": 19, "r_fore": 23, "r_hand": 27, "l_thigh": 1, "l_shin": 8, "l_foot": 10,
                "r_thigh": 3, "r_shin": 9, "r_foot": 13}
@@ -242,23 +244,28 @@ def parse_dcn(b: bytes) -> dict:
             "size": len(b)}
 
 
+def _fits(J1: np.ndarray, J2: np.ndarray, par: list[int]) -> bool:
+    for i, p in enumerate(par):
+        L = float(np.linalg.norm(J1[i]))
+        if p >= 0 and abs(float(np.linalg.norm(J2[i] - J2[p])) - L) > 2e-3 + 1e-4 * L:
+            return False
+    return True
+
+
 def parents(J1: np.ndarray, J2: np.ndarray) -> list[int]:
-    """The joint tree from the two joint arrays: a joint's parent is the earlier joint whose distance equals the
-    joint's offset length (the order is breadth first, so parent indices never decrease)."""
-    out, last = [], 0
-    for i in range(len(J2)):
-        if i == 0:
-            out.append(-1)
-            continue
+    """The joint tree. The shared 89-joint skeleton's tree (SHARED_PARENTS) when the file's offsets fit it (every
+    human and most props: joints stacked on one point make the distances ambiguous, so it is not re-derived);
+    otherwise each joint's parent is the latest earlier joint whose distance equals the joint's offset length."""
+    if len(J2) == len(SHARED_PARENTS) and _fits(J1, J2, SHARED_PARENTS):
+        return list(SHARED_PARENTS)
+    out = [-1] if len(J2) else []
+    for i in range(1, len(J2)):
         L = float(np.linalg.norm(J1[i]))
         d = np.abs(np.linalg.norm(J2[:i] - J2[i], axis=1) - L)
-        cand = [int(c) for c in np.where(d < 2e-3 + 1e-4 * L)[0]]
-        if not cand:
+        cand = np.where(d < 2e-3 + 1e-4 * L)[0]
+        if not len(cand):
             raise FormatError(f"joint {i}: no earlier joint at its offset length {L:.3f}")
-        good = [c for c in cand if c >= last]
-        par = good[0] if good else cand[-1]
-        out.append(par)
-        last = max(last, par)
+        out.append(int(cand[-1]))
     return out
 
 

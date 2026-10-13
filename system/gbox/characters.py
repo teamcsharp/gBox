@@ -1441,6 +1441,12 @@ DEDICATED = [
     ("doapp", lambda t, p: t.startswith("dead or alive ++") and p == "arcade",
      lambda: __import__("gbox.doapp_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.doapp_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Enter the Matrix (USA): the windows_native entry 3f43b79a68a60b41 is the PS2 disc SLUS-20454 (HyperSpin CHD,
+    # read in place by gbox.chd): actors\*.dcn Bezier-patch models on the shared 89-joint skeleton, tessellated to
+    # rigged GLBs with body roles (docs/matrix_pipeline.md). The GameCube discs are not read yet.
+    ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
@@ -2184,12 +2190,13 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2287,6 +2294,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import defjam_writer
     if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
         return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
+    from . import etm_swap
+    if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
+        return {"result": out | etm_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)
