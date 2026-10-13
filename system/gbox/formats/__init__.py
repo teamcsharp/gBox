@@ -10,6 +10,7 @@ another title's module (docs/assimilation.md has the per-title history; gbox.ass
   rig           body-role vocabulary, role_of_joint, check_role_map (skinning/retarget role maps)
   oracle        the game's own routine as the oracle (R3000 interpreter harness, inverse/reader checks)
   insn_pattern  find code by masked instruction shape (overlays, per-build patch sites, lis/addi + jal xrefs)
+  nitro         Nintendo DS: NitroFS (FNT/FAT), NARC, LZ77 tag + LZ10/LZ11, the seven DS texel formats, GX display lists
   sega_md       Mega Drive art: Nemesis, Kosinski (decode + test encoders), 4bpp VDP tiles, colour words -> RGBA
 
 INDEX below says which title modules use which shared piece (kept honest by tests/test_formats.py).
@@ -22,7 +23,9 @@ INDEX = {
     "lz.mio0_decompress (MIO0)": ["sm64_mario", "sm64_inventory", "sf64_inventory"],
     "lz.yaz0_decompress (Yaz0)": ["oot_writer", "mm_inventory"],
     "lz.lzss_decompress (Okumura LZSS)": ["mm64_inventory", "ff7_models", "aki_wrestling"],
-    "lz.lz10_decompress (LZ10)": ["tetris_ds"],
+    "lz.lz10_decompress (LZ10)": ["tetris_ds", "sm64ds_chars (through formats.nitro)"],
+    "nitro.NitroROM / narc / decompress / decode_texture / decode_display_list (Nintendo DS)":
+        ["sm64ds_chars", "formats.disc (NDS listing)"],
     "lz.vpk0_decode (VPK0)": ["ssb64_inventory", "ssb64_analysis"],
     "rnc.decode_rnc (RNC)": ["turok_inventory", "turok2_inventory", "turok_analysis"],
     "lz.refpack_decompress (RefPack)": ["mayhem_inventory (via gbox.refpack)"],
