@@ -225,7 +225,7 @@ def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max
         for rnd in range(1, max_rounds + 1):
             # reverse / fix, answering evidence requests first (bounded)
             while True:
-                reply = ask(llm, history)
+                reply = ask(llm, list(history))
                 transcript.append({"round": rnd, "role": "reverser", "text": reply})
                 acts = parse_actions(reply)
                 if acts is None or investigations >= max_investigations:
