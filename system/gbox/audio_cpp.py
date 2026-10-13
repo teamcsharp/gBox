@@ -206,10 +206,15 @@ class Service:
             body = {}
         return body if isinstance(body, dict) else {"body": body}
 
-    def start(self, wait: bool = True) -> dict:
-        """Start audiocpp_server (no-op when it already answers or the server is external). Raises Down on failure."""
+    def start(self, wait: bool = True, _supervisor: bool = False) -> dict:
+        """Start audiocpp_server (no-op when it already answers or the server is external). Raises Down on failure.
+        An explicit start re-arms the service; the supervisor's own restarts never override a stop()."""
         with self.lock:
-            self.stopping.clear()
+            if _supervisor:
+                if self.stopping.is_set():
+                    return self.status()
+            else:
+                self.stopping.clear()
             if not self.managed or self.running():
                 return self._wait() if wait and self.managed else self.status()
             if self.health(1.0) is not None:
@@ -293,8 +298,10 @@ class Service:
             if not self.running() and not (self.adopted and self.health() is not None):
                 if self.proc is not None:                  # it was running and exited
                     self.restarts += 1
+                if self.stopping.is_set():
+                    break
                 try:
-                    self.start(wait=True)
+                    self.start(wait=True, _supervisor=True)
                     backoff = every_s
                 except Down:
                     backoff = min(backoff * 2, 300.0)
