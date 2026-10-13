@@ -81,9 +81,25 @@ in the strings.
     - +0x1e: `0x414`
   - Bone records, 32 bytes each: `u16 stores, u16 adds, u32 rows, u32 extra (cloth tables in the tail), u16 positions,
     u16 normals, 4 x s16 rest angles (1/65536 turn, R = Rz Ry Rx), 3 x s16 translation / 16000, s16 parent`.
-  - Rows are `x, y, z, w` in bone space, 16 bytes each, with the positions first and then the normals. The low 12
-    mantissa bits of `w` are the output slot, and the rest of `w` is the weight. The game skins by accumulation: the
-    first `stores` rows store `w * M @ p` and the rest add to it. Normals are stored pointing **inward**.
+  - Rows are `x, y, z, w` in bone space, 16 bytes each, with the positions first and then the normals. The `w`
+    word packs the output slot (low 12 bits), an **add flag** (bit 15) and the weight (upper 16 bits; bits 12..14
+    are 0 in every stock row). Normals are stored pointing **inward**.
+  - **Skinning, as the engine runs it** (`0x8c03cea0`, read from the SH-4 code; `soulcalibur_dc.engine_skin`
+    emulates it). Bones go in index order; a bone with no position rows is skipped, normals included. XMTRX is the
+    bone's matrix and `ftrv` transforms the whole row:
+    - Positions (`0x8c03c920`): the result is `R @ xyz + w * t`. So the stored `xyz` is the weight-premultiplied
+      bone-local point `w * p`, and the bone adds `w * (R p + t)`. In all 45 costumes the bones agree on a blended
+      vertex only under this reading (spread 0.5 mm, against 96 mm when `xyz` is read as unweighted).
+    - The first `stores` rows go to **consecutive slots starting at row 0's slot**: the slot is read once, before
+      the loop, and the pointer then moves 16 bytes per row. The slot bits of the other store rows are never read.
+      The `adds` rows add at their own slot.
+    - Normals (`0x8c03cba0`, lit variant `0x8c03c9ec`) have no count. Rows store to consecutive slots from row 0's
+      slot until the first row with bit 15 set; from that row on, every row adds at its own slot. The translation is
+      cleared. The lit variant also copies the low byte of each normal row's `z` into its output. `0x8c03ca9c` reads
+      that byte as a per-vertex highlight strength; the stock values are 25..255 in steps of 25.5.
+    - Header `+0x14` / `+0x16` are the position / normal slot counts. `0x8c03c998` projects that many positions.
+    - Stock layout: each bone's stores are one consecutive slot run, adds carry bit 15, and every add lands on a slot
+      stored earlier in the frame. `pack_model(parse_model(m)) == m` holds for every costume.
   - Strips: sections of `u8 material, u8 flags, 0, u8 count` headers, each followed by `count x (u16 position,
     u16 normal | 0x8000 on the last, u16 u, u16 v)`. UVs are the upper half of a float. Triangle k is
     `(k, k+1, k+2)` when k is even and `(k+1, k, k+2)` when k is odd, and faces out in the game's space. `u32 0`
@@ -165,9 +181,23 @@ Limits:
   Fitting pop-up gets scale, retarget, proportion, weights, decimate, encode and write events per costume.
 - **Encode** (`encode_model`):
   - The stock bone records are kept, including rest angles, hierarchy, and the cloth, face and weapon bones.
-  - New rows are written per bone. Each vertex gets up to 4 influences. The vertex's lowest bone stores and the other
-    bones add.
-  - Normals are stored inward.
+  - New rows are written per bone. Each vertex gets up to 4 influences. The vertex's lowest bone stores it and the
+    other bones add. Slots are numbered bone by bone, so each bone's stores are one consecutive run, as the engine
+    writes them.
+  - Each position row is `w * inverse(rest) @ P` with the exact `w` word the engine multiplies by (slot and flag bits
+    included). Weights are rounded to the upper 16 bits, the add rows set bit 15, and the storing weight makes the
+    sum 1.
+  - Normals are skinned the same way as positions. Each distinct (influences, normal) pair gets one normal slot,
+    with rows on every influencing bone at the same premultiplied weights: the lowest bone stores and the others
+    add. Normals are stored inward (checked against the geometry: 84-93% of stock normals point into the body) and
+    carry the stock model's usual highlight byte.
+  - Corner normals (`corner_normals`) are the smooth geometric normal of the fitted surface: area-weighted,
+    counter-clockwise faces, welded by position. Where the donor's own normal agrees with it (dot > 0.5), the
+    donor's normal is kept. The SM64DS library normals agree with their own triangles only about half the time.
+    Written as-is, the emulated engine lighting (`engine_light`, `0x8c03c7c0` + `0x8c03c9ec`) lit 27-31% of their
+    corners backwards, against 3-6% for stock. With geometric normals it is 1.5%.
+  - The model is laid out by `soulcalibur_dc.pack_model`, the same packer that rebuilds every stock model byte for
+    byte.
   - The triangles are stripified with the game's winding, after the library-to-game mirror.
   - Texture page indices go in the material byte.
   - The tail after the strips stays at its stock offset, so the records' extra offsets still hold.
@@ -184,7 +214,9 @@ Limits:
 - **Read-back** (`verify_build`):
   - HUMAN.DAT and 1ST_READ.BIN are compared byte for byte with the planned files.
   - Every other disc file is checked as unchanged.
-  - Every rebuilt costume parses and skins to finite positions, with its tail in place.
+  - Every rebuilt costume runs through `engine_skin`, the game's own maths. Every slot a strip draws must be stored
+    in the frame, no add may read a stale slot, and the strips must stay within the header's counts. The tail must
+    be in place.
   - Every untouched HUMAN entry is byte-identical.
   - The patch is checked and interpreted.
 
@@ -228,9 +260,34 @@ The donor pools are the 12 SA2 entries and the 9 replacement-ready SM64DS humano
 `D:\gBox\research\soulcalibur\evidence\*_before_after.png`. These are offline renders of every costume, stock next to
 the build read back from the disc.
 
-**Not verified in game.** No session was started. Things to check when the operator plays it:
+### In game: v1 exploded; v2 and v3 are the fixes
 
-- the load (the HUMAN work buffer was never exceeded: every entry keeps its stock size)
-- lighting with the inward normals
-- the hook's randomness on Flycast's TMU emulation
+**v1 (`sc_sonic_vs_mario_random`) exploded in game.** Ivy and Taki were huge stretched triangles, and Nightmare
+was a blob with spikes. Its rows followed the reader's guess at the format, not the engine (see "Skinning, as the
+engine runs it"):
+
+- Stores were scattered over slots, but the engine writes each bone's stores to consecutive slots.
+- Rows were not weight-premultiplied.
+
+Through `engine_skin`, 13-60% of the slots v1 draws are never written in a frame, and adds pile onto stale
+memory. Its own read-back missed this because it re-read the build with the same reader.
+
+**v2 (`sc_sonic_vs_mario_random_v2`)** is the engine-exact skinning. In-game frames from i9-NUC
+(`evidence_capture`) show whole bodies. The SM64DS donors were lit in dark, blotchy patches, because their
+library normals disagree with their own faces.
+
+**v3 (`sc_sonic_vs_mario_random_v3`)** adds the geometric normals and the skinned normal rows. In game, Luigi,
+Mario, Eggman and Shadow are smoothly lit. The frames are in `D:\gBox\research\soulcalibur\evidence\v2\`, listed in
+`evidence.json`.
+
+Known limits:
+
+- The SM64DS Peach library entry (`sm64ds_peach`) is stretched before any fitting: one primitive spans 17 units
+  with 5.5-unit edges. Ivy's and Seung Mina's Peach costumes show long spikes until that donor is fixed upstream.
+- VS BATTLE and TEAM BATTLE wait for "PRESS 2P START". `evidence_capture` only drives the player-1 pad, so the
+  in-game frames are Arcade fights, player 1 against the CPU. Both fighters still load through the patched loader.
+
+Still unchecked:
+
+- the hook's randomness on Flycast's TMU emulation, beyond the costumes seen
 - how the green-key and blend materials behave now that donors use opaque `0x3x` materials only

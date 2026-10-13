@@ -104,8 +104,14 @@
   function createModel({ fetchJob = null, now = () => Date.now(), onChange = () => {} } = {}) {
     const live = new Map(), observedAt = new Map(), settling = new Set(), finished = new Set();
     const emitted = new Map(), peak = new Map(), dismissed = new Set();
+    const renamed = new Map();                       // "game/folder" -> the name given while the launch runs (Sessions header)
     let outcome = null;
     const groupKey = j => gameOf(j).id || j.id;
+    const modOf = j => {
+      const g = gameOf(j), folder = String(((j && j.input) || {}).mod || "").split("~")[0];
+      const k = `${g.id}/${folder}`;
+      return folder && renamed.has(k) ? renamed.get(k) : g.mod;
+    };
 
     function track(j) {
       if (!live.has(j.id)) outcome = null;                                   // a new launch replaces the last outcome
@@ -122,7 +128,7 @@
       const jobs = g.jobs, swap = jobs.find(j => j.tool === "session_swap");
       const named = jobs.map(gameOf).find(x => x.title) || gameOf(jobs[0]);
       const name = named.title || named.id || "the game";
-      const mod = (swap ? gameOf(swap).mod : "") || jobs.map(gameOf).map(x => x.mod).find(Boolean) || "";
+      const mod = (swap ? modOf(swap) : "") || jobs.map(modOf).find(Boolean) || "";
       return (swap ? "Swapping " : "Launching ") + name + (mod ? ` · ${mod}` : "");
     }
     // A swap that starts a launch: the launch's progress fills what is left of the swap's.
@@ -221,7 +227,15 @@
       if (!j || !outcome || outcome.kind !== "error" || !outcome.job || outcome.job.id !== j.id) return false;
       outcome = { ...outcome, job: { ...outcome.job, ...j } }; onChange(); return true;
     }
-    return { remote, observe, view, drain, dismiss, clearOutcome, refresh, get outcome() { return outcome; }, live };
+    // a build renamed while it launches: the bar shows the new name ("" or the folder: its folder name again)
+    function rename(gameId, folder, label) {
+      if (!gameId || !folder) return false;
+      renamed.set(`${gameId}/${String(folder).split("~")[0]}`, String(label || folder));
+      if (outcome && outcome.job && gameOf(outcome.job).id === gameId && modOf(outcome.job))
+        outcome = { ...outcome, title: outcome.title.replace(/ · .*$/, "") + ` · ${modOf(outcome.job)}` };
+      onChange(); return true;
+    }
+    return { remote, observe, view, drain, dismiss, clearOutcome, refresh, rename, get outcome() { return outcome; }, live };
   }
 
   // ---- the bar ----------------------------------------------------------------------------------------------------
@@ -249,6 +263,13 @@
 #launchbar .lb-count { flex:none; background:rgba(0,0,0,.6); border-radius:8px; padding:0 6px; line-height:14px; }
 #launchbar .lb-x { flex:none; background:none; border:0; color:#fff; cursor:pointer; font:16px/16px sans-serif; padding:0 6px; text-shadow:${OUTLINE}; }
 #launchbar.err { background:#7f1d1d; } #launchbar.err .lb-fill { width:100% !important; background:#b91c1c !important; box-shadow:none !important; }
+/* the failure line wraps instead of cutting the title and the reason: the bar grows upward from its bottom edge, a few
+   lines at most (it scrolls inside itself past that), so it never reaches the header */
+#launchbar.err { height:auto; min-height:18px; max-height:min(30vh, 76px); overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
+#launchbar.err .lb-row { position:relative; inset:auto; min-height:18px; align-items:flex-start; }
+#launchbar.err .lb-title { max-width:45%; white-space:normal; overflow:visible; overflow-wrap:anywhere; }
+#launchbar.err .lb-view { height:auto; overflow:visible; }
+#launchbar.err .lb-static { white-space:normal; overflow:visible; overflow-wrap:anywhere; }
 #launchbar .lb-rep { flex:none; display:none; background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.35); border-radius:9px; color:#fff;
   font:600 11px/14px "Segoe UI", system-ui, sans-serif; padding:0 8px; cursor:pointer; text-shadow:none; white-space:nowrap; }
 #launchbar .lb-rep.ok { background:#14532d; border-color:#22c55e; } #launchbar.err .lb-rep.on { display:inline-block; }
@@ -412,6 +433,7 @@
       remote: jobs => model.remote(jobs),
       observe: job => model.observe(job),
       dismiss: () => { model.dismiss(); render(); },
+      rename: (gameId, folder, label) => model.rename(gameId, folder, label),
       view: () => model.view(),
       render, tick,
       dispose() { for (const t of timers) cancel(t); timers = []; mq.raf = 0; if (el.parentNode) el.parentNode.removeChild(el); },

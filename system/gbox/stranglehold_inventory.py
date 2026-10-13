@@ -215,7 +215,8 @@ def inventory(root: Path | None = None, pattern: str = "*.xxx", progress=None) -
             "errors": errors}
 
 
-# What a native model reader still needs (tracked on #1410; the inventory above is the first stage).
+# The plan the native reader started from (#1410). It is implemented in gbox/stranglehold_models.py; the PS3 cook
+# stores no rigid/soft vertex arrays and no index buffer, only SPU segments (docs/stranglehold.md).
 READER_NOTES = """\
 A UE3 v375/licensee-25 SkeletalMesh reader needs, per export blob (offset/size from the export table, logical
 package offsets, the chunks above decompressed in full):

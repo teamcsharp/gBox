@@ -341,7 +341,7 @@ def create_app(config: Config) -> FastAPI:
         if jj["state"] != "succeeded":
             raise HTTPException(409, f"couldn't capture the game: {jj.get('error') or jj['state']}")
         o = jj["output"]
-        if (o.get("mean_luma") or 0) < 6:
+        if o.get("mean_luma") is not None and o["mean_luma"] < 6:   # None = the luma probe gave up, not a black screen
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
         return normalize(store.read_artifact(o["sha256"]) or b"")
 
@@ -607,6 +607,10 @@ def create_app(config: Config) -> FastAPI:
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
+
+    # ghost runs (gbox/ghost_runs.py, #1098): recorded runs per game, the live player for the overlay, ghost picks
+    from . import ghost_runs
+    ghost_runs.register(app, auth, store)
 
     # Blender round trip (gbox/blender_roundtrip.py): a character out as one GLB with its rig role names / props,
     # copy to the clipboard (the picker's right-click), import back as a variant / new donor (a characters job)
@@ -1508,6 +1512,70 @@ def create_app(config: Config) -> FastAPI:
         d = re_lab.set_study(store, store.catalog_get(gid) or _404(), s.executable, s.analysis)
         return {"ok": True, "text": re_lab.render_dossier(d)}
 
+    class SignaturesIn(BaseModel):
+        exe_artifact: str = ""               # sha256 of the executable (ELF or raw image) in the artifact store
+        exe_rel: str = ""                    # or the re_study ELF: path relative to <data_dir>/analysis
+        processor: str                       # Ghidra processor id, e.g. SuperH4:LE:32:default
+        base: str | int = 0                  # load address of a raw image (ELF segments carry their own)
+        functions: list[dict] = []           # [{address, size, name?}] e.g. Ghidra list_functions with sizes
+        record: bool = True
+        source: str = ""
+
+    def _sig_exe(s: "SignaturesIn") -> tuple[bytes, int]:
+        from . import re_transfer
+        exe = store.read_artifact(s.exe_artifact) if re.fullmatch(r"[0-9a-f]{64}", s.exe_artifact or "") else None
+        if exe is None and s.exe_rel:
+            from .re_lab_tool import analysis_root
+            root = analysis_root(config)
+            p = (root / s.exe_rel).resolve()
+            if p.is_relative_to(root) and p.is_file():
+                exe = p.read_bytes()
+        if exe is None:
+            raise HTTPException(404, f"executable artifact {s.exe_artifact!r} not found")
+        try:
+            re_transfer.arch_of(s.processor)
+            return exe, re_transfer._int(s.base or 0)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/api/re/signatures")
+    def re_signatures(actor=Depends(auth)):
+        """Cross-title function-body library: per arch, how many named bodies and which titles taught them."""
+        from . import re_transfer
+        out = {}
+        for arch in ("sh4", "ppc-be", "ppc-le", "mips-le", "mips-be"):
+            lib = store.get(re_transfer.LIB_KIND, arch)
+            if lib:
+                out[arch] = {"bodies": len(lib["sigs"]), "ambiguous": sum(1 for v in lib["sigs"].values()
+                                                                         if v.get("ambiguous")),
+                             "sources": lib.get("sources", {})}
+        return out
+
+    @app.post("/api/re/dossier/{gid}/signatures/learn")
+    def re_signatures_learn(gid: str, s: SignaturesIn, actor=Depends(auth)):
+        """Teach the library this title's named functions (dossier documented/validated names win over Ghidra's)."""
+        from . import re_lab, re_transfer
+        g = store.catalog_get(gid) or _404()
+        exe, base = _sig_exe(s)
+        d = re_lab.dossier(store, g)
+        names = {f["address"]: f["name"] for f in d.get("findings", []) if f.get("kind") == "function"
+                 and f.get("address") and f.get("status") in ("documented", "validated") and f.get("name")}
+        fns = s.functions or re_transfer.elf_functions(exe)        # a debug/prototype ELF names itself
+        r = re_transfer.learn(store, s.source or g.get("title") or gid, exe, base, s.processor, fns, names)
+        store.audit(actor, "re.signatures.learn", gid, {k: r[k] for k in ("arch", "added", "library")})
+        return r
+
+    @app.post("/api/re/dossier/{gid}/signatures/transfer")
+    def re_signatures_transfer(gid: str, s: SignaturesIn, actor=Depends(auth)):
+        """Name this title's functions from bodies other titles already named; hits land in the dossier."""
+        from . import re_transfer
+        g = store.catalog_get(gid) or _404()
+        exe, base = _sig_exe(s)
+        r = re_transfer.transfer(store, g, exe, base, s.processor, s.functions or None, s.record,
+                                 exclude_source=g.get("title") or "")
+        store.audit(actor, "re.signatures.transfer", gid, {k: r[k] for k in ("arch", "named", "library")})
+        return r
+
     @app.get("/api/games/{gid}/roster")
     def game_roster(gid: str, actor=Depends(auth)):
         """Who this game's own extractor can pull out (SmackDown! 2, No Mercy, SA2, FF7...), and which are collected."""
@@ -1540,12 +1608,15 @@ def create_app(config: Config) -> FastAPI:
         if game_id:
             g = store.catalog_get(game_id) or _404()
             out["slots"] = cast_swap.slot_rows(g)
+            out["slot_sets"] = cast_swap.slot_sets(out["slots"])
         return out
 
     class CastPlanIn(BaseModel):
         game_id: str
         source: str = ""
         mapping: str = "auto"
+        assign: str = ""                                    # random | by_role | auto: wins over mapping
+        prefer: str = ""                                    # a source whose donors are dealt first
         seed: str = ""
         slots: str = "all"
         assignments: list[dict] = []
@@ -1559,8 +1630,8 @@ def create_app(config: Config) -> FastAPI:
         if not inp.source:
             return {"status": "needs_source", "sources": cast_swap.source_groups(chars), "slots": cast_swap.slot_rows(g)}
         try:
-            return cast_swap.plan(g, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments,
-                                  root if root.is_dir() else None)
+            return cast_swap.plan(g, chars, inp.source, cast_swap.mapping_of(inp), inp.seed, inp.slots,
+                                  inp.assignments, root if root.is_dir() else None, prefer=inp.prefer)
         except ValueError as e:
             raise HTTPException(422, str(e))
 
@@ -2408,11 +2479,15 @@ def create_app(config: Config) -> FastAPI:
             return evidence_job(inp, actor)
         if t.name == "scene_capture":
             session = store.get("session", inp["session_id"])
-            if not session or session.get("state") != "running":
+            if inp.get("rebuild"):                          # replay the capture kept when the GPU ran out of memory:
+                if not session:                             # the game may have ended (that frees it); runs on its worker
+                    raise HTTPException(404, "Unknown game session.")
+            elif not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
-            from . import scene_relay
-            if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
-                return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
+            else:
+                from . import scene_relay
+                if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
+                    return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id,
                   agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin),
@@ -3068,14 +3143,21 @@ def create_app(config: Config) -> FastAPI:
         now = time.time()
         from . import built_mods
         names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
+        favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
         for s_ in store.all("session", reverse=True):
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
-            named = names.get(f"{s_.get('game_id')}/{s_.get('collection_mod') or s_.get('mod') or ''}")
-            if named:
-                row["mod_title"] = named
+            # the build folder it runs (a staged "<mod>~<build>" copy is still that build): the header renames it
+            build = str(s_.get("collection_mod") or s_.get("mod") or "").split(built_mods.STAGED_SEP)[0]
+            if build:
+                row["mod_build"] = build
+                named = names.get(f"{s_.get('game_id')}/{build}")
+                if named:
+                    row["mod_title"] = named
+                if f"{s_.get('game_id')}/{build}" in favs:
+                    row["mod_favorite"] = True
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
             if s_.get("state") == "running":         # Hermes / observers keep heavy work off the operator's game
@@ -3103,7 +3185,21 @@ def create_app(config: Config) -> FastAPI:
             'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
             'service_error': runtime.get('error'), 'interval_seconds': 30}
         view.setdefault('title', session.get('title'))
-        view['goals'] = _session_agent_goals(view, view.get('game_id') or session.get('game_id') or '')
+        gid = view.get('game_id') or session.get('game_id') or ''
+        if gid and isinstance(view.get('models'), dict):
+            # The stored snapshot freezes when the session ends (#1623: an ended Twin Snakes session kept saying
+            # "No native model reader registered" after the reader shipped and collected 17/17). Show the game's
+            # collection as it is now; keep the snapshot's repair request id and state for the history.
+            try:
+                snap = view['models']
+                live = auto_collection.status(gid)
+                if (live.get('state'), live.get('job_id')) != (snap.get('state'), snap.get('job_id')):
+                    view['models'] = live | {'request_id': snap.get('request_id'),
+                                             'snapshot': {'state': snap.get('state'), 'updated': snap.get('updated'),
+                                                          'message': snap.get('message')}}
+            except Exception:                # a status read never hides the observations themselves
+                pass
+        view['goals'] = _session_agent_goals(view, gid)
         return view
 
     def _session_agent_goals(view: dict, gid: str) -> dict:

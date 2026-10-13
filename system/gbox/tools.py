@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .agent_contracts import validate_cheat_call
 
-from . import adapters, catalog, provision, rewind, ring_record, uap
+from . import adapters, catalog, ghost_runs, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
 from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
@@ -382,6 +382,10 @@ def _teardown(sid: str, sr, wait: float = STOP_TEARDOWN_WAIT_S) -> bool:
             ring_record.stop(sid)
         except Exception as e:                       # noqa: BLE001
             print(f'gBox: gameplay ring teardown of {sid} failed: {e}', flush=True)
+        try:
+            ghost_runs.stop(sid)                     # ghost runs (#1098): the run in progress is kept as session_end
+        except Exception as e:                       # noqa: BLE001
+            print(f'gBox: ghost-run recorder teardown of {sid} failed: {e}', flush=True)
     return _within(work, wait, f'session-teardown-{sid}')[0]
 
 
@@ -653,6 +657,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
+        # ghost runs (#1098): every run of a profiled game (Super Mario Bros.) recorded from RAM per frame, raced later
+        try:
+            detail["ghost_runs"] = ghost_runs.start(sid, ad, gd, ctx.server, ctx.headers, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["ghost_runs"] = {"state": "unsupported", "reason": f"ghost-run recorder setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -962,6 +971,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
+        scene_watch = _scene_row_watch(ad)                 # Examine 3D row still settling (#971)
         while sid in SESSIONS:
             time.sleep(3)
             try:
@@ -969,6 +979,8 @@ def _pump(sid: str, ad, server: str, headers: dict):
                 if now and now != pid:                     # emulator relaunched in place (RPCS3 load state): re-dock it
                     c.post(f"/api/sessions/{sid}/detail", json={"pid": now})
                     pid = now
+                if scene_watch:                                # the Vulkan layer loads once the game boots
+                    scene_watch = _refresh_scene_row(c, sid, ad)
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
                     rc = getattr(getattr(ad, "proc", None), "returncode", None)
@@ -981,9 +993,32 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     c.post(f"/api/sessions/{sid}/ended", json=end)
                     rewind.stop(sid)
                     ring_record.stop(sid)
+                    try:
+                        ghost_runs.stop(sid)
+                    except Exception:                  # noqa: BLE001
+                        pass
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
+
+
+def _scene_row_watch(ad) -> bool:
+    """Whether this session's Examine 3D row may still change: started with RenderDoc's Vulkan layer, which hasn't
+    loaded yet (Yuzu / RPCS3 create their Vulkan device once the game boots, after the launch check, #971)."""
+    info = getattr(getattr(ad, "proc", None), "renderdoc", None)
+    return isinstance(info, dict) and info.get("attach") == "layer" and "error" not in info and not info.get("loaded")
+
+
+def _refresh_scene_row(c, sid: str, ad) -> bool:
+    """Re-rate a pending Examine 3D row; once it settles, post it to the session detail (the Examine 3D panel and
+    the relay decision read it there). Returns whether to keep watching."""
+    from .scene_support import session_support
+    row = session_support(ad, HOST_OS)
+    if row.get("layer") == "pending":
+        return True
+    c.post(f"/api/sessions/{sid}/detail", json={"scene_capture": row, "examine": row.get("status") == "supported"})
+    return False
+
 
 
 # --- inspector: read-only peeks over the live session channel (writes go through the audited write_memory job) ---
@@ -1542,15 +1577,45 @@ def get_frame(inp: FrameIn, ctx: Ctx):
 
 
 def mean_luma(png: bytes) -> float | None:
-    """Average brightness via ffmpeg signalstats (no imaging library needed)."""
-    with tempfile.TemporaryDirectory() as t:
-        f = Path(t) / "f.png"
-        f.write_bytes(png)
-        r = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(f), "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
-                            "-f", "null", "-"], capture_output=True, text=True, timeout=30)
-    for ln in (r.stdout + r.stderr).splitlines():
+    """Mean full-range BT.601 luma of a PNG frame: 0-255, ~0 means a black screen.
+
+    Decoded in-process with Pillow (a declared dependency; emulation_issue.py uses the same measure). The probe is
+    best effort and must never fail a capture: #1546's observer get_frame job dcad3153a9564007 failed because an
+    ffmpeg signalstats subprocess timed out after 30 s on a loaded operator PC. ffmpeg's YAVG is also limited-range
+    for colour PNGs (black 16, white 235), so the `< 6` / `<= 3` black-screen guards never fired on black frames.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageStat
+        with Image.open(BytesIO(png)) as im:
+            return round(ImageStat.Stat(im.convert("L")).mean[0], 2)
+    except Exception:                      # no Pillow / undecodable: hardened ffmpeg fallback, still non-fatal
+        return _ffmpeg_luma(png)
+
+
+def _ffmpeg_luma(png: bytes, timeout: float = 10) -> float | None:
+    """ffmpeg signalstats YAVG mapped to full range; None on any failure (missing ffmpeg, timeout, bad output)."""
+    exe = shutil.which("ffmpeg")
+    if not exe or png[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:
+            f = Path(t) / "f.png"
+            f.write_bytes(png)
+            r = subprocess.run([exe, "-hide_banner", "-nostdin", "-i", str(f), "-frames:v", "1", "-vf",
+                                "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for ln in ((r.stdout or "") + (r.stderr or "")).splitlines():
         if "YAVG=" in ln:
-            return round(float(ln.split("YAVG=")[1]), 2)
+            try:
+                y = float(ln.split("YAVG=")[1].split()[0])
+            except (IndexError, ValueError):
+                return None
+            if png[25:26] not in (b"\x00", b"\x04"):   # colour/palette PNG -> limited-range YUV; grey stays full
+                y = (y - 16) * 255 / 219
+            return round(min(255.0, max(0.0, y)), 2)
     return None
 
 
@@ -3444,6 +3509,11 @@ def _pick_from_probe(scan: dict, cx: float, cy: float) -> dict:
            "click": [round(cx, 3), round(cy, 3)], "click_px": [round(cx * w, 1), round(cy * h, 1)],
            "others": [entity_probe.summary(o) for o in hit["others"]], "camera": scan["camera"],
            "entities": len(scan["entities"]), "diagnostics": scan["diagnostics"][:20]}
+    check = scan.get("recheck") or scan.get("camera_check")
+    if check is not None:
+        out["camera_check"] = {k: check.get(k) for k in ("stable", "cut", "eye", "angle", "fov", "source_changed")}
+        if check.get("cut") and scan.get("camera"):
+            out["warning"] = "the camera cut while the game was read: the boxes may belong to the previous shot, click again"
     if e is None:
         out["note"] = "nothing projectable near the click" if scan["camera"] else "camera unreadable (see diagnostics)"
     elif e.get("model"):
@@ -3472,7 +3542,9 @@ def pick(inp: PickIn, ctx: Ctx):
         prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
         if prof and (prof.get("camera") or {}).get("layout") == "pos_angles_fov":      # table-of-records games (AUF)
             from . import entity_probe
-            probe_scan = entity_probe.Probe(prof, ad.read_memory).scan(*PICK_FRAME, entities=st.get("entities"))
+            probe = entity_probe.Probe(prof, ad.read_memory)
+            probe_scan = probe.scan(*PICK_FRAME, entities=st.get("entities"))
+            probe_scan["recheck"] = probe.recheck(probe_scan)      # a shot change around the click shows up here
         elif prof and prof.get("camera"):
             cam_raw = (ad.read_memory(int(prof["camera"]["eye"], 16), 12), ad.read_memory(int(prof["camera"]["target"], 16), 12))
     finally:

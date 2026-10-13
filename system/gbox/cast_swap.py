@@ -1,8 +1,11 @@
 """Whole-cast swap: replace the entire cast of one game with the entire cast of another ("everyone in Phantasy Star
 Online as the Def Jam wrestlers", "the Jet Grind Radio crew as the SmackDown! 2 roster"), built as ONE mod.
 
-`characters op=cast_swap target_game=<id|title> source=<game id|title|group> [mapping=auto|random|by_role] [seed]
-[slots=all|main|enemies|...] [assignments=[{slot, character}]] [plan_only] [launch]` routes here.
+`characters op=cast_swap target_game=<id|title> source=<game id|title|group> [mapping=auto|random|by_role]
+[assign=random] [seed] [prefer=<source>] [slots=all|main|enemies|bots|campaign|<comma list>]
+[assignments=[{slot, character}]] [plan_only] [launch]` routes here. `assign=random` (any game) deals the source's
+donors at random over the chosen slots: seeded, no donor repeats before every donor has been used, every character name
+once before a name repeats, `prefer=` donors first.
 
 1. Slots: the target's writer lists them (gbox.char_coverage.cast_slots: the writer module's cast_slots()). Aggregate
    slots (enemy:boomas, drivers, pedestrians, peds:all, roster) and aliases (JGR / Crazy Taxi `player`) are dropped so
@@ -375,7 +378,7 @@ def donor_rows(donors: list[dict], root: Path | None = None) -> list[dict]:
                      "preview_url": m.get("preview_url") or f"/api/characters/{m['slug']}/preview",
                      "lead": bool(m.get("native_player")) or any(str(a).lower() in ("player", "hero", "protagonist")
                                                                   for a in m.get("aliases") or []),
-                     "height": model_height(root, m)})
+                     "height": model_height(root, m), "name_key": name_key(m)})
     by_game: dict[str, list[float]] = {}
     for r in rows:
         if r["height"]:
@@ -406,25 +409,60 @@ def slot_rows(game: dict, rows: list[dict] | None = None) -> list[dict]:
     return out
 
 
+KIND_WORDS = {"enemies": "enemy", "npcs": "npc", "pedestrians": "pedestrian", "passengers": "passenger",
+              "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character",
+              "bosses": "boss", "sages": "sage", "bots": "bot"}
+
+
 def filter_slots(rows: list[dict], which: str = "all") -> list[dict]:
-    """slots=all | main (players, fighters, drivers, cast members) | enemies | npcs | pedestrians | passengers |
-    <kind> | a comma list of slot names."""
+    """slots=all | main (players, fighters, drivers, cast members) | enemies | npcs | bosses | bots | pedestrians |
+    passengers | <kind> | a group the writer's rows name (`groups`: AUF's campaign, multiplayer, bots, model:<body>) |
+    a slot name, or a comma list of any of these (the union, in the writer's order: slots=campaign,bots)."""
     w = (which or "all").strip().lower()
     if w in ("", "all", "everyone", "*"):
         return rows
-    if w == "main":
-        return [r for r in rows if r["kind"] in MAIN_KINDS]
-    kinds = {"enemies": "enemy", "npcs": "npc", "pedestrians": "pedestrian", "passengers": "passenger",
-             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character",
-             "bosses": "boss", "sages": "sage"}
-    if w in kinds or w in {r["kind"] for r in rows}:
-        k = kinds.get(w, w)
-        return [r for r in rows if r["kind"] == k]
-    names = [x.strip() for x in w.split(",") if x.strip()]
-    got = [r for r in rows if r["slot"].lower() in names]
-    if not got:
-        raise ValueError(f"slots={which!r} matches none of {', '.join(r['slot'] for r in rows[:20])}")
-    return got
+    toks = [x.strip() for x in w.split(",") if x.strip()]
+    kinds_present = {r["kind"] for r in rows}
+    groups_present = {str(g).lower() for r in rows for g in r.get("groups") or []}
+    keep, unknown = set(), []
+    for t in toks:
+        if t in ("all", "everyone", "*"):
+            return rows
+        known = t == "main" or t in KIND_WORDS or t in kinds_present or t in groups_present
+        hit = {i for i, r in enumerate(rows)
+               if (t == "main" and r["kind"] in MAIN_KINDS) or r["kind"] == KIND_WORDS.get(t, t)
+               or t in {str(g).lower() for g in r.get("groups") or []} or r["slot"].lower() == t}
+        if not hit and not known:
+            unknown.append(t)
+        keep |= hit
+    if unknown or not keep and len(toks) > 1:
+        raise ValueError(f"slots={which!r}: {', '.join(unknown) or 'nothing'} matches none of "
+                         f"{', '.join(sorted(groups_present)[:12] or [r['slot'] for r in rows[:20]])}")
+    return [r for i, r in enumerate(rows) if i in keep]
+
+
+def slot_sets(rows: list[dict]) -> list[list[str]]:
+    """The menu's "Slots" choices for this target: everyone, main cast, enemies, then the groups its rows name (AUF:
+    campaign, bots, bosses, npcs ...), each with how many slots it covers."""
+    out = [["all", f"Everyone ({len(rows)})"]]
+    main = sum(r["kind"] in MAIN_KINDS for r in rows)
+    if main and main < len(rows):
+        out.append(["main", f"Main cast only ({main})"])
+    seen = {"all", "main"}
+    for key, label in (("enemies", "Enemies"), ("bosses", "Bosses"), ("npcs", "NPCs / allies"), ("bots", "Bots"),
+                       ("campaign", "Campaign (story mode)"), ("multiplayer", "Multiplayer"), ("player", "Player")):
+        try:
+            n = len(filter_slots(rows, key))
+        except ValueError:
+            continue
+        if n and n < len(rows) and key not in seen:
+            out.append([key, f"{label} ({n})"])
+            seen.add(key)
+    if any(r.get("groups") for r in rows) and "campaign" in seen and "bots" in seen:
+        n = len(filter_slots(rows, "campaign,bots"))
+        if n < len(rows):
+            out.append(["campaign,bots", f"Campaign + multiplayer bots ({n})"])
+    return out
 
 
 # ---------------------------------------------------------------- the mapping
@@ -449,12 +487,15 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
             if not deck:
                 deck = list(donors)
                 rng.shuffle(deck)
-            out.append((s, deck.pop(0), "random (seeded)"))
+                deck = spread(deck)
+            d = deck.pop(0)
+            out.append((s, d, "random (seeded" + (", preferred source)" if d.get("preferred") else ")")))
         return [_row(s, d, why) for s, d, why in out]
     # by_role (auto is by_role: it falls back to the seeded order when sizes are unknown)
     tie = {d["slug"]: rng.random() for d in donors}
-    leads = sorted([d for d in donors if d.get("lead")], key=lambda d: tie[d["slug"]])
-    rest = sorted([d for d in donors if not d.get("lead")], key=lambda d: (-(d.get("size") or 1.0), tie[d["slug"]]))
+    leads = sorted([d for d in donors if d.get("lead")], key=lambda d: (not d.get("preferred"), tie[d["slug"]]))
+    rest = sorted([d for d in donors if not d.get("lead")],
+                  key=lambda d: (not d.get("preferred"), -(d.get("size") or 1.0), tie[d["slug"]]))
     order = leads + rest
     players = [s for s in todo if s["kind"] == "player" or (s.get("lead_slot") and leads)]
     others = sorted([s for s in todo if s not in players],
@@ -477,6 +518,26 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
         out.append(_row(s, d, why))
     pos = {s["slot"]: i for i, s in enumerate(todo)}
     return sorted(out, key=lambda r: pos[r["slot"]])
+
+
+def name_key(meta: dict) -> str:
+    """One character across games: the base name without costume tags or a "(Game)" suffix, letters and digits only
+    ("The Rock" of No Mercy and of SmackDown! 2 are one wrestler)."""
+    n = re.sub(r"\([^)]*\)", " ", base_name(meta))
+    return re.sub(r"[^a-z0-9]+", "", n.lower()) or str(meta.get("slug") or "")
+
+
+def spread(deck: list[dict]) -> list[dict]:
+    """One shuffled round of donors reordered so preferred donors (prefer=) come first and every character name is
+    dealt once before any name repeats (the same wrestler from another game goes to the end of the round). A deck
+    with no preferred donors and no shared names keeps its shuffled order."""
+    seen: dict[str, int] = {}
+    keyed = []
+    for i, d in enumerate(sorted(deck, key=lambda d: not d.get("preferred"))):   # stable: the shuffle within each tier
+        k = d.get("name_key") or d["slug"]
+        keyed.append(((seen.get(k, 0), not d.get("preferred"), i), d))
+        seen[k] = seen.get(k, 0) + 1
+    return [d for _k, d in sorted(keyed, key=lambda kd: kd[0])]
 
 
 def _row(s: dict, d: dict, why: str) -> dict:
@@ -531,6 +592,11 @@ STRATEGIES = {
                                        "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
     "gbox.soulcalibur2_swap": ("pairs", "Soul Calibur II GC: every fighter's costume packages rewritten in place in "
                                         "human.olk, one disc image (soulcalibur2_swap.build_cast)"),
+    "gbox.stranglehold_swap": ("pairs", "Stranglehold PS3: every slot's char_*.xxx package rewritten in one folder mod "
+                                        "(stranglehold_swap.build_cast; PS3TOC.txt updated once)"),
+    "gbox.auf_swap": ("pairs", "007 Agent Under Fire GC: every body in the missions (campaign:<body>) and in the "
+                               "multiplayer maps (mp:<body>, the bots) gets its donor; every level rebuilt once, one disc "
+                               "image (auf_swap.build_cast)"),
 }
 
 
@@ -639,8 +705,10 @@ def _named(inp) -> str:
 
 def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed: str = "", slots: str = "all",
          assignments: list[dict] | None = None, root: Path | None = None, slot_list: list[dict] | None = None,
-         refresh=None) -> dict:
-    """The whole plan, without building: target slots, eligible / refused / deduplicated donors, assignments."""
+         refresh=None, prefer: str = "") -> dict:
+    """The whole plan, without building: target slots, eligible / refused / deduplicated donors, assignments.
+    prefer: a source spec (same forms as source) whose donors are dealt first by the random mapping (assign=random)
+    and by by_role among equals ("wrestlers, preferring the WWF games": prefer=smackdown2,nomercy)."""
     from . import char_coverage as CC
     w = CC.writer_for(game)
     if not w or not w.get("routed"):
@@ -681,9 +749,14 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
         donors = [m for m in donors if not member(m) or m["slug"] in kept]
     pos = {m["slug"]: i for i, m in enumerate(entries)}    # the source's own order, re-extracted or not: same plan
     rows = donor_rows(sorted(donors, key=lambda m: pos.get(m["slug"], 1 << 30)), root)
+    pref = {m["slug"] for m in resolve_source(prefer, chars, kind)["entries"]} if (prefer or "").strip() else set()
     for r in rows:
         if r["slug"] in stale:
             r["stale"] = True
+        if r["slug"] in pref:
+            r["preferred"] = True
+    if pref and not any(r.get("preferred") for r in rows):
+        raise ValueError(f"prefer={prefer!r} names none of the usable donors of source={source!r}")
     why = {r["slug"]: r["reason"] for r in refused}
     for e in assignments or []:                            # a reviewed row whose donor the gate refused is left out
         if e.get("character") in why:
@@ -697,9 +770,10 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     strat, how = strategy(w["writer"])
     return {"status": "planned" if out else "empty", "game_id": game["game_id"], "title": game.get("title"),
             "writer": w["writer"], "strategy": strat, "how": how, "source": src["label"], "mapping": mapping,
-            "seed": seed, "slots_filter": slots,
-            "slots": [{k: s.get(k) for k in ("slot", "name", "kind", "status", "skip", "size") if s.get(k) is not None}
-                      for s in chosen],
+            "seed": seed, "slots_filter": slots, **({"prefer": prefer} if pref else {}),
+            "slot_sets": slot_sets(all_slots),
+            "slots": [{k: s.get(k) for k in ("slot", "name", "kind", "status", "skip", "size", "context", "groups")
+                       if s.get(k) is not None} for s in chosen],
             "donors": rows, "refused": refused, "costumes_merged": costumes, "refreshed": refreshed,
             **({"superseded": superseded} if superseded else {}),
             "assignments": out, "skipped": [{"slot": s["slot"], "reason": s["skip"]} for s in chosen if s.get("skip")],
@@ -735,6 +809,14 @@ def _target_game(ctx, inp) -> dict:
     return C._game(ctx, q)
 
 
+def mapping_of(inp) -> str:
+    """assign= (random | by_role | auto) wins over mapping=: `assign=random seed=x` deals the source's donors at random
+    over the chosen slots for any game (seeded, no donor repeats before every donor has been used once, every
+    character name once before any name repeats, prefer= donors first)."""
+    a = str(getattr(inp, "assign", "") or "").strip().lower()
+    return a or str(getattr(inp, "mapping", "") or "auto")
+
+
 def run(ctx, inp) -> dict:
     """characters op=cast_swap: plan (plan_only) or plan + quality gate + one build; per-slot report."""
     from . import characters as C
@@ -746,16 +828,17 @@ def run(ctx, inp) -> dict:
         return {"status": "needs_source", "game_id": game["game_id"], "title": game.get("title"),
                 "sources": source_groups(chars), "message": "name a source: a game or a group (wrestlers, fighters, ...)"}
     live = _live_slots(ctx, game) if local else None
+    mapping, prefer = mapping_of(inp), str(getattr(inp, "prefer", "") or "")
     if inp.plan_only or not local:
-        p = plan(game, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments, root if local else None,
-                 live)
+        p = plan(game, chars, inp.source, mapping, inp.seed, inp.slots, inp.assignments, root if local else None,
+                 live, prefer=prefer)
         if p["status"] == "planned" and _named(inp):
             p["mod"] = _named(inp)
         if inp.plan_only or p["status"] != "planned":
             return p
         return _on_control_plane(ctx, game, inp)
-    p = plan(game, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments, root, live,
-             refresh=_refresher(ctx, root))
+    p = plan(game, chars, inp.source, mapping, inp.seed, inp.slots, inp.assignments, root, live,
+             refresh=_refresher(ctx, root), prefer=prefer)
     if p["status"] != "planned":
         return p
     if _named(inp):                                        # a fixed name: the plan hash decides a rebuild instead
@@ -874,6 +957,15 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
                 "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
                 "retarget_profiles": profiles, "cast_plan": digest, "built": time.time()}
+        if p.get("prefer"):
+            rec["cast_prefer"] = p["prefer"]
+        if p.get("slots_filter") not in (None, "", "all"):
+            rec["cast_slots"] = p["slots_filter"]
+        # "What this changes" (gbox.build_summary reads `what` / `where_to_look`): the writer's own summary when it
+        # gives one (AUF: mission and multiplayer characters, donors, levels)
+        for k in ("what", "where_to_look"):
+            if (res.get("summary") or {}).get(k):
+                rec[k] = res["summary"][k]
         if showcase:
             rec["title"] = f"{game.get('title')}: Sonic showcase ({p['source']})"
             rec["showcase"] = {"source": p["source"], "plan": digest, "writer": p["writer"], "strategy": p["strategy"],
@@ -1104,8 +1196,19 @@ def _soulcalibur2(ctx, game, pairs, name, inp):
     return soulcalibur2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
+def _stranglehold(ctx, game, pairs, name, inp):
+    from . import stranglehold_swap
+    return stranglehold_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
+def _auf(ctx, game, pairs, name, inp):
+    from . import auf_swap
+    return auf_swap.build_cast(ctx, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
     "gbox.twin_snakes_swap": _twin_snakes,
+    "gbox.stranglehold_swap": _stranglehold,
     "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
@@ -1120,4 +1223,5 @@ BUILDERS = {
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
     "gbox.mgs_vr_swap": _mgs_vr,
+    "gbox.auf_swap": _auf,
 }

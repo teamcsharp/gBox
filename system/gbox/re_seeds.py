@@ -12,7 +12,7 @@ merged into a title's dossier the first time it is studied. They are not LLM cla
 
 PLAYBOOKS = [
     {
-        "id": "study-title", "seed_version": 2, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
+        "id": "study-title", "seed_version": 3, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
         "goal": "Have the title's executable in Ghidra with the right processor and registers, and know what gBox "
                 "already found, before working on any task in that game.",
         "when": ["ghidra", "reverse engineer", "analyze the executable", "decompile", "disassemble", "study this game",
@@ -33,11 +33,19 @@ PLAYBOOKS = [
                    "time), snapshot the live game's RAM instead: get the game to gameplay first.", "tool": "re_study",
              "args": {"source": "ram", "session_id": "<session_id>", "analyze": True},
              "expect": "a RAM-image ELF at the platform's RAM base"},
+            {"do": "Name what other titles already named: functions whose masked bodies (call targets and relocated "
+                   "addresses ignored, everything else identical) match the cross-title library land in the dossier "
+                   "as hypotheses citing their source title. SDK/middleware code (Katana, Dolphin SDK, PsyQ, libultra) "
+                   "is named in seconds this way.", "tool": "re_dossier", "args": {"op": "transfer"},
+             "expect": "named / recorded counts and a sample; 0 on the first title of a new SDK is normal"},
             {"do": "Pick the playbook for the actual task and follow it.", "tool": "re_playbook",
              "args": {"op": "list", "query": "<task words>"}},
             {"do": "Record each address you confirm (with how), each dead end and each open question.",
              "tool": "re_dossier", "args": {"op": "record", "kind": "function", "address": "0x...", "name": "...",
                                             "role": "...", "status": "hypothesis"}},
+            {"do": "When the title is done (or its executable has debug symbols), teach the library its named "
+                   "functions so the next title on the same SDK/engine starts with them.", "tool": "re_dossier",
+             "args": {"op": "teach"}, "expect": "added / ambiguous counts and the library size"},
         ],
         "pitfalls": [
             "GameCube/Wii: processor PowerPC:BE:32:default. 'PowerPC:BE:32:Gekko_Broadway' does NOT exist in gBox's "

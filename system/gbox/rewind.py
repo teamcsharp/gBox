@@ -411,26 +411,9 @@ class XInputPad:
     """The operator's Xbox-layout pad on Windows (XInput slot 0): Select = Back / View, L2 / R2 = the triggers."""
 
     def __init__(self, slot: int = 0):
-        self.slot, self.dll, self.state, self._byref = slot, None, None, None
-        if os.name != "nt":
-            return
-        import ctypes
-
-        class GP(ctypes.Structure):
-            _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                        ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-
-        class ST(ctypes.Structure):
-            _fields_ = [("packet", ctypes.c_uint), ("gp", GP)]
-        for name in ("xinput1_4", "xinput9_1_0"):
-            try:
-                dll = getattr(ctypes.windll, name)
-            except OSError:
-                continue
-            dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(ST)]
-            dll.XInputGetState.restype = ctypes.c_uint
-            self.dll, self.state, self._byref = dll, ST(), ctypes.byref
-            break
+        from . import xinput
+        self.slot, self.state = slot, xinput.XInputState()
+        self.dll = xinput.load()            # shared XInputGetState (#1638); None off Windows or without XInput
 
     @property
     def ok(self) -> bool:
@@ -438,9 +421,10 @@ class XInputPad:
 
     def read(self) -> tuple[bool, bool, bool] | None:
         """(select, l2, r2) held, or None without a pad in the slot."""
-        if self.dll is None or self.dll.XInputGetState(self.slot, self._byref(self.state)) != 0:
+        from . import xinput
+        if self.dll is None or xinput.read(self.dll, self.slot, self.state) is None:
             return None
-        g = self.state.gp
+        g = self.state.gamepad
         return (bool(g.buttons & BACK), g.lt > TRIGGER, g.rt > TRIGGER)
 
 

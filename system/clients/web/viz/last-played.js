@@ -36,7 +36,8 @@
   }
 
   const CSS = `.lp-back{position:fixed;inset:0;background:#0008;z-index:9998;display:flex;align-items:center;justify-content:center;padding:16px}
-    .lp-box{background:var(--card,#1f1f25);color:var(--fg,#e8e8ee);border:1px solid var(--line,#2c2c34);border-radius:10px;padding:16px 18px;width:min(520px,100%);box-shadow:0 10px 40px #000a;font-size:14px}
+    .lp-box{background:var(--card,#1f1f25);color:var(--fg,#e8e8ee);border:1px solid var(--line,#2c2c34);border-radius:10px;padding:16px 18px;width:min(520px,100%);box-shadow:0 10px 40px #000a;font-size:14px;
+      max-height:100%;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere;box-sizing:border-box}
     .lp-box.lp-bad{border-color:var(--bad,#ff6b6b)}.lp-h{font-size:17px;font-weight:600;margin-bottom:4px}.lp-why{margin:4px 0}.lp-why.lp-bad{color:var(--bad,#ff6b6b)}
     .lp-sub{font-size:12px;margin-bottom:10px}.lp-moment{display:flex;gap:10px;align-items:center;margin:8px 0 12px}
     .lp-moment img,.lp-noimg{width:160px;height:120px;object-fit:cover;border-radius:6px;background:#000}.lp-noimg{display:flex;align-items:center;justify-content:center;font-size:11px;color:#888}
@@ -44,7 +45,8 @@
     .lp-busy{margin-top:8px;color:var(--acc,#7c96ff)}.lp-err{margin-top:8px;color:var(--bad,#ff6b6b);font-weight:600}`;
 
   // env = { api(path, body?) -> data (throws), host (element the pop-up goes in), url?(path), wait?(ms), now?(),
-  //         onReloaded?(sid), openReport?(id), visible?() }
+  //         onReloaded?(sid), openReport?(id), visible?(), top?() -> the shell's header bottom in px (the box stays below it,
+  //         inside the window, and scrolls inside itself when taller than the room left; laid out again on resize) }
   function mount(env) {
     const st = { entry: null, busy: "", error: "", shownFor: null, closed: new Set(), timer: null };
     const wait = env.wait || (ms => new Promise(r => setTimeout(r, ms)));
@@ -54,7 +56,15 @@
       if (!st.entry || st.closed.has(st.entry.session_id)) return;
       if (!env.host.querySelector?.("#lp-css")) env.host.insertAdjacentHTML("beforeend", `<style id="lp-css">${CSS}</style>`);
       env.host.insertAdjacentHTML("beforeend", html(st.entry, { url: env.url, now: env.now?.(), busy: st.busy, error: st.error }));
+      place();
     }
+    function place() {
+      const b = box(); if (!b || !b.style) return;
+      let top = 0; try { top = Math.max(0, +(env.top?.() || 0) || 0); } catch { top = 0; }
+      b.style.paddingTop = (top + 16) + "px";
+    }
+    const view = env.host.ownerDocument?.defaultView;
+    view?.addEventListener?.("resize", place);
     async function check() {
       if (st.busy || (env.visible && !env.visible())) return st.entry;
       let r; try { r = await env.api("/api/last_played"); } catch { return st.entry; }
@@ -96,8 +106,8 @@
     const ready = check();
     st.timer = setInterval(check, env.poll || POLL);
     st.timer?.unref?.();                                     // node (tests): never keeps the process alive
-    function stop() { clearInterval(st.timer); env.host.removeEventListener?.("click", onClick); }
-    return { st, check, reload, dismiss, onClick, draw, stop, ready };
+    function stop() { clearInterval(st.timer); env.host.removeEventListener?.("click", onClick); view?.removeEventListener?.("resize", place); }
+    return { st, check, reload, dismiss, onClick, draw, place, stop, ready };
   }
 
   const api = { html, mount, ago, CSS, POLL };

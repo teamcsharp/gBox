@@ -180,6 +180,34 @@ class Camera:
                 "forward": [round(v, 4) for v in self.forward], "source": self.source}
 
 
+def _cam_fields(c) -> tuple | None:
+    if c is None:
+        return None
+    if isinstance(c, Camera):
+        return c.eye, c.angles, c.fov_deg, c.source
+    return c.get("eye"), c.get("angles"), c.get("fov"), c.get("source")
+
+
+def camera_delta(a, b, cut_eye: float = 64.0, cut_angle: float = 15.0) -> dict:
+    """How far the camera moved between two reads (Camera or Camera.as_dict()). `cut` is true for a shot change: the
+    scripted/view source flipped, the fov changed, the eye jumped more than `cut_eye` world units or an angle turned more
+    than `cut_angle` degrees. A pick or drop-point frame paired with RAM across a cut names the wrong entity (#1438 m3)."""
+    fa, fb = _cam_fields(a), _cam_fields(b)
+    ok_a = fa is not None and None not in fa[:3]
+    ok_b = fb is not None and None not in fb[:3]
+    if not (ok_a and ok_b):
+        # neither read has a camera (title, FMV, loading: AUF's g_entities/gClientArr are null, seen live on the Spark
+        # 2026-10-13): nothing to compare, so no cut. A camera that appears or vanishes between the reads is a cut.
+        return {"eye": None, "angle": None, "fov": None, "source_changed": None, "cut": ok_a != ok_b, "readable": False}
+    eye = math.dist([float(v) for v in fa[0]], [float(v) for v in fb[0]])
+    ang = max(abs((float(x) - float(y) + 180.0) % 360.0 - 180.0) for x, y in zip(fa[1], fb[1]))
+    fov = abs(float(fa[2]) - float(fb[2]))
+    src = fa[3] != fb[3]
+    cut = bool(src or fov > 0.5 or eye > cut_eye or ang > cut_angle)
+    return {"eye": round(eye, 3), "angle": round(ang, 3), "fov": round(fov, 3), "source_changed": src, "cut": cut,
+            "readable": True}
+
+
 class Probe:
     def __init__(self, profile: dict, read, max_entities: int | None = None):
         self.p = profile
@@ -436,11 +464,48 @@ class Probe:
                       float(cam.get("near", 1.0)), source)
 
     # --- projection and picking -------------------------------------------------------------------------------------
-    def scan(self, width: int = 640, height: int = 480, entities: list | None = None) -> dict:
+    def _cut_limits(self) -> tuple[float, float]:
+        cam = self.p.get("camera") or {}
+        return float(cam.get("cut_eye", 64.0)), float(cam.get("cut_angle", 15.0))
+
+    def recheck(self, scan: dict) -> dict:
+        """Read the camera again and compare it with the one `scan` projected through. Call it right after the frame
+        the operator clicked was taken: `cut` true means RAM and picture show different shots, so re-take both."""
+        before = scan.get("camera")
+        now = self.camera()
+        d = camera_delta(before, now, *self._cut_limits())
+        d["stable"] = not d["cut"]
+        d["camera_now"] = now.as_dict() if now else None
+        return d
+
+    def scan(self, width: int = 640, height: int = 480, entities: list | None = None,
+             camera_before=None, retries: int = 1) -> dict:
         """Entities with screen coordinates in pixels (width x height) and the camera used; what fails is reported.
-        `entities` reuses a list this probe (or semantic.Extractor) already read instead of walking the table again."""
-        ents = self.entities() if entities is None else entities
-        cam = self.camera()
+        `entities` reuses a list this probe (or semantic.Extractor) already read instead of walking the table again;
+        pass `camera_before` (a camera read before that list) so a shot change during the read is still detected.
+        When the probe walks the table itself it reads the camera before and after, and re-walks up to `retries` times
+        if a cut fell in between. scan["camera_check"] reports whether entities and camera belong to one shot."""
+        limits = self._cut_limits()
+        if entities is None:
+            first = self.camera()
+            ents = self.entities()
+            cam = self.camera()
+            tries = 0
+            while first is not None and cam is not None and camera_delta(first, cam, *limits)["cut"] and tries < retries:
+                tries += 1
+                first, ents, cam = cam, self.entities(), self.camera()
+            check = camera_delta(first, cam, *limits) if first is not None else None
+        else:
+            ents = entities
+            cam = self.camera()
+            tries = 0
+            check = camera_delta(camera_before, cam, *limits) if camera_before is not None else None
+        if check is not None:
+            check["stable"] = not check["cut"]
+            check["retried"] = tries
+            if check["cut"]:
+                self._note(f"camera cut while reading entities (eye {check['eye']}, angle {check['angle']}, "
+                           f"fov {check['fov']}); screen boxes may belong to the previous shot")
         viewer = self.p["entities"].get("viewer")
         client = self.camera_client() if viewer else None
         for e in ents:
@@ -466,7 +531,7 @@ class Probe:
             if e["screen"] is None and e["screen_box"] is None:
                 e["behind_camera"] = True
         return {"entities": ents, "camera": cam.as_dict() if cam else None, "frame": [width, height],
-                "diagnostics": list(self.diagnostics)}
+                "camera_check": check, "diagnostics": list(self.diagnostics)}
 
     @staticmethod
     def under_point(x: float, y: float, scan: dict, tolerance: float = 0.06, include_viewer: bool = False) -> dict:

@@ -185,7 +185,8 @@ How to work:
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
   ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
   everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
-  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role] [slots=all|main|enemies] (plan_only=true shows
+  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role | assign=random seed=x] [prefer=<source dealt
+  first>] [slots=all|main|enemies|bosses|npcs|bots|campaign|<comma list>] (AUF: slots=campaign,bots) (plan_only=true shows
   the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
   Report the status as returned; "extracted" only with checked.ok. Unknown model
@@ -278,7 +279,9 @@ def tool_specs() -> list[dict]:
            "Ghidra summary, every known function/global/table/hook with its status (validated / documented / hypothesis) and "
            "open questions. op=read before working on a title; op=record after you find something: kind function|global|table|"
            "hook|format|struct|note, address, name, role (what it does), status hypothesis (default) or validated with evidence "
-           "= artifact sha256s that prove it; or question = an open question.",
+           "= artifact sha256s that prove it; or question = an open question. op=transfer (after re_study) names this title's "
+           "functions whose masked bodies match functions other titles already named (Katana/Dolphin SDK, PsyQ, "
+           "libultra, shared engines) in seconds; op=teach adds this title's named functions to that library.",
            {"op": s, "game": s, "kind": s, "address": s, "name": s, "role": s, "status": s, "evidence": {"type": "array", "items": s},
             "question": s}, ["op"]),
         fn("assimilate", "Step one before reverse engineering a title or writing a reader: fingerprint its owned files and "
@@ -644,6 +647,14 @@ def tool_specs() -> list[dict]:
            "title-screen stage-select sequence (down x5, right x7, B, A, Start), then the operator picks the stage. Recipes are "
            "cited per game; use op=stages to see them.",
            {"session_id": s, "op": s, "stage": s, "game": s}, ["session_id", "op"]),
+        fn("ghost_runs", "Ghost runs (speedrun ghosts): every run the operator plays of Super Mario Bros. (NES) is recorded "
+           "per frame from RAM (position, facing, animation, power-up, level/area, inputs) with splits, and earlier runs race "
+           "the live game as translucent ghosts (Runs panel in the session view). op=list game_id (runs, times, splits, best "
+           "flags) | show run_id | rename run_id name | delete run_id | pick game_id pick=best|last|pb_segments|custom|none "
+           "[runs=[run ids]] [mode=level|run] (which ghosts the overlay shows) | status session_id (the live recorder) | "
+           "profiles (supported games).",
+           {"op": s, "game_id": s, "session_id": s, "run_id": s, "name": s, "pick": s, "runs": {"type": "array", "items": s},
+            "mode": s}, ["op"]),
         fn("autoplay", "Take control: gBox plays the live game itself (scripted mission through the debugger). op=list | "
            "start (mission optional; assist=true holds the player's HP so it can't die) | stop (hand control back) | status.",
            {"session_id": s, "op": s, "mission": s, "assist": b}, ["session_id", "op"]),
@@ -999,7 +1010,20 @@ class Agent:
         if op == "record":
             return self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": kind, "address": str(address or ""), "name": name,
                                  "role": role, "status": status, "evidence": evidence or [], "question": question}).json()
-        return {"error": "op: read | record"}
+        if op in ("transfer", "teach"):
+            ex = (self.api.get(f"/api/re/dossier/{gid}").json().get("executable") or {})
+            if not ex.get("processor") or not (ex.get("sha256") or ex.get("rel")):
+                return {"error": "no studied executable yet", "next": "re_study, then re_dossier op=transfer"}
+            body = {"exe_artifact": ex.get("sha256") or "", "exe_rel": ex.get("rel") or "",
+                    "processor": ex["processor"], "base": ex.get("base") or 0}
+            r = self.api.post(f"/api/re/dossier/{gid}/signatures/{'transfer' if op == 'transfer' else 'learn'}",
+                              json=body).json()
+            if op == "transfer" and isinstance(r, dict) and "recorded" in r:
+                r = {k: r.get(k) for k in ("arch", "library", "named", "confirmed", "conflicts", "duplicates", "seconds")} | {
+                    "recorded": len(r["recorded"]), "sample": r["recorded"][:25],
+                    "next": "names are hypotheses from other titles' identical bodies: decompile one caller to confirm"}
+            return r
+        return {"error": "op: read | record | transfer | teach"}
 
     def assimilate(self, op="fingerprint", game=""):
         if op in ("known", "evaluate"):
@@ -1295,6 +1319,12 @@ class Agent:
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
                                     "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
                       worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def ghost_runs(self, op="list", game_id="", session_id="", run_id="", name="", pick="", runs=None, mode=""):
+        inp = {"op": op or "list", "game_id": game_id or "", "session_id": session_id or "", "run_id": run_id or "",
+               "name": name or "", "pick": pick or "", "runs": list(runs or []), "mode": mode or ""}
+        j = self._job("ghost_runs", inp, worker=session_id.rsplit("-", 1)[0] if op == "status" and session_id else None)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def autoplay(self, session_id, op="status", mission="", assist=False):
