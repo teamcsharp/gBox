@@ -5201,6 +5201,8 @@ async function autoWhipFailure({ sid, game, model, character, target, targetKind
   if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); }
   else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
 }
+// games whose characters tool resolves a dropped point to a writer slot (characters op=resolve_slot): VR Missions (USA)
+var SLOT_PICK_GAMES = new Set(["afd2fc507bb69843", "f55555ee6513391b"]);
 async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
@@ -5213,7 +5215,7 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs, Twin Snakes)</button>
+    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
@@ -5221,6 +5223,16 @@ async function whipCardMenu(card, gp, ev) {
   m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
   if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
   m.insertAdjacentHTML("beforeend", '<button data-w="rebuild">Identify target and mark for rebuild</button>');
+  let slot = null;                                             // the writer slot under the drop (VR Missions: Snake / the soldiers)
+  if (SLOT_PICK_GAMES.has(EMB.game || "") && targetSid)
+    gameJob("characters", { op: "resolve_slot", session_id: targetSid, x: +f[0].toFixed(4), y: +f[1].toFixed(4),
+                            window_aspect: +(r.w / r.h).toFixed(4) }).then(res => {
+      if (!res?.slot || EMB.sid !== targetSid) return;
+      slot = res.slot; T = { name: res.name, kind: res.kind };
+      const box = m.querySelector("#whip-target-name"); if (box) box.value = res.name;
+      const b = m.querySelector('button[data-w="live"]');
+      if (b) b.innerHTML = `<span>▶</span>Put ${esc(card.name)} in place of ${esc(res.name)} (running game, same moment)`;
+    }).catch(() => {});                                        // no resolver answer: the generic choices stay
   m.onclick = async e => {
     const bt = e.target.closest("button[data-w]"); if (!bt) return;
     if (bt.dataset.w === "identify") {
@@ -5254,7 +5266,8 @@ async function whipCardMenu(card, gp, ev) {
       toast(`Preparing ${card.name} for an in-game replacement…`, 60000);
       try {
         const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
-          x: +f[0].toFixed(4), y: +f[1].toFixed(4), target: T.kind === "player" ? "player" : (T.name || "") });
+          ...(slot ? { slot } : { x: +f[0].toFixed(4), y: +f[1].toFixed(4), window_aspect: +(r.w / r.h).toFixed(4),
+            ...((T.kind === "player" || T.name) ? { target: T.kind === "player" ? "player" : T.name } : {}) }) });
         toast(res.message || res.status, 12000);
         if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
           await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });

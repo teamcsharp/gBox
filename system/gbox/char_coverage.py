@@ -41,7 +41,10 @@ WRITERS = [
     ("jgr_swap", ["player", "character:<name>", "id:<N>", "<00-15>"],
      "JGR USA: any of the 16 PLAYER.AFS cast (player = Beat unless active_id): every textured body group and its "
      "texlist's body atlas rebuilt in a new GD-ROM mod; gameplay replacement unverified until launched"),
-    ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
+    ("mgs_vr_swap", ["player", "enemy:soldier", "enemy:ninja", "model:<hash>", "enemies", "all", "cast"],
+     "Metal Gear Solid VR Missions: any collection character as Snake, every Genome soldier (38582 + 55267 in all 88 "
+     "mission stages), the ninja or the other 16-object figures, one native disc (fitted KMDs with their own textures; "
+     "cast_swap pairs); pick whip / live_use swaps a running session in place (session_swap); unverified in game"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "

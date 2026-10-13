@@ -431,6 +431,9 @@ STRATEGIES = {
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
+    "gbox.mgs_vr_swap": ("pairs", "Metal Gear Solid VR Missions: Snake, every soldier and the other 16-object figures "
+                                  "fitted into one disc (mgs_vr_swap.build_cast: each mission stage's copy of a model "
+                                  "and its texture archive, native STAGE.DIR rewrite)"),
     "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
                                        "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
 }
@@ -861,6 +864,14 @@ def _jgr(ctx, game, pairs, name, inp):
     return {"mod": name, "slots": per}
 
 
+def _mgs_vr(ctx, game, pairs, name, inp):
+    from . import mgs_vr_swap
+    try:
+        return mgs_vr_swap.build_cast(ctx, game, pairs, name, inp)
+    except Exception as e:                                # noqa: BLE001 - the report names why
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
+
+
 def _crazy_taxi(ctx, game, pairs, name, inp):
     from . import characters as C, crazy_taxi as ct, crazy_taxi_swap as CTS
     from .gcdisc import GCDisc
@@ -904,4 +915,5 @@ BUILDERS = {
     "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
+    "gbox.mgs_vr_swap": _mgs_vr,
 }
