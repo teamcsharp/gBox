@@ -5215,7 +5215,7 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers)</button>
+    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
@@ -5266,7 +5266,8 @@ async function whipCardMenu(card, gp, ev) {
       toast(`Preparing ${card.name} for an in-game replacement…`, 60000);
       try {
         const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
-          ...(slot ? { slot } : { x: +f[0].toFixed(4), y: +f[1].toFixed(4), window_aspect: +(r.w / r.h).toFixed(4) }) });
+          ...(slot ? { slot } : { x: +f[0].toFixed(4), y: +f[1].toFixed(4), window_aspect: +(r.w / r.h).toFixed(4),
+            ...((T.kind === "player" || T.name) ? { target: T.kind === "player" ? "player" : T.name } : {}) }) });
         toast(res.message || res.status, 12000);
         if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
           await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });

@@ -434,6 +434,8 @@ STRATEGIES = {
     "gbox.mgs_vr_swap": ("pairs", "Metal Gear Solid VR Missions: Snake, every soldier and the other 16-object figures "
                                   "fitted into one disc (mgs_vr_swap.build_cast: each mission stage's copy of a model "
                                   "and its texture archive, native STAGE.DIR rewrite)"),
+    "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
+                                       "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
 }
 
 
@@ -896,7 +898,13 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
     return {"mod": name, "slots": per}
 
 
+def _twin_snakes(ctx, game, pairs, name, inp):
+    from . import twin_snakes_swap
+    return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
+    "gbox.twin_snakes_swap": _twin_snakes,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
     "gbox.defjam_writer": _match_builder("defjam_writer"),

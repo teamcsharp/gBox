@@ -81,5 +81,5 @@ test('a game without a slot resolver is not asked and the live swap sends the po
   assert.equal(f.jobs.length, 0);
   await f.menu.onclick({ target: { closest: () => ({ dataset: { w: 'live' } }) } });
   assert.deepEqual(f.jobs[0].inp, { op: 'live_use', character: 'sonic', session_id: 'pc-vr', x: .5, y: .5,
-                                    window_aspect: 1.3333 });
+                                    window_aspect: 1.3333, target: 'the character at this point' });
 });

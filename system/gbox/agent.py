@@ -180,7 +180,8 @@ How to work:
   "replace A / me with B", pick-whip swaps -> characters op=use character=B session_id (not in the collection: op=extract first;
   RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri; MGS VR
   Missions: slot=player (Snake) | enemy:soldier (every soldier) | enemy:ninja | enemies | all, or op=live_use session_id
-  x/y: the figure there, swapped into the running game at the same moment). OoT pick whip
+  x/y: the figure there, swapped into the running game at the same moment); Twin Snakes
+  GC: slot=player (Snake) | enemies (the Genome soldiers) | bosses | model:<key> | x/y + target=<what is there>). OoT pick whip
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
   ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
   everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
