@@ -232,37 +232,10 @@ def mio0_decompress(blob):
     all section offsets relative to the blob start (see
     tools/mio0-decompressor/libmio0.c in sonicdcer/sf64).
     """
+    from .formats.lz import mio0_decompress as shared  # shared MIO0 codec (also sm64_mario)
     if len(blob) < 16 or blob[:4] != b"MIO0":
         raise ValueError("not a MIO0 blob")
-    dest_size, comp_off, uncomp_off = struct.unpack(">III", blob[4:16])
-    bits = blob[16:comp_off]
-    comp = blob[comp_off:uncomp_off]
-    uncomp = blob[uncomp_off:]
-    out = bytearray()
-    ci = ui = 0
-    for bit_i in range(len(bits) * 8):
-        if len(out) >= dest_size:
-            break
-        if bits[bit_i // 8] & (1 << (7 - bit_i % 8)):
-            if ui >= len(uncomp):
-                raise ValueError("MIO0 uncompressed section overrun")
-            out.append(uncomp[ui])
-            ui += 1
-        else:
-            if ci + 2 > len(comp):
-                raise ValueError("MIO0 compressed section overrun")
-            b0, b1 = comp[ci], comp[ci + 1]
-            ci += 2
-            length = (b0 >> 4) + 3
-            dist = ((b0 & 0x0F) << 8) + b1 + 1
-            for _ in range(length):
-                if len(out) < dist:
-                    raise ValueError("MIO0 back-reference before output start")
-                out.append(out[-dist])
-    if len(out) != dest_size:
-        raise ValueError("MIO0 size mismatch: decoded %d, header says %d"
-                         % (len(out), dest_size))
-    return bytes(out)
+    return shared(blob, 0, strict=True)
 
 
 def decode_file(rom, entry):

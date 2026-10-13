@@ -36,6 +36,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from .formats.texture import tim_build, tim_parse  # noqa: F401  (shared, moved to gbox.formats)
 
 GAME_IDS = {"276334ad218ffb46": "WWF SmackDown! 2 - Know Your Role (USA)"}
 SD1_IDS = {"4e59d0d55cc190cb": "WWF SmackDown! (USA)"}      # same containers (D/C/EH/EB/EL.PAC); reader only, see docs
@@ -245,36 +246,6 @@ def pac_build(items: list[tuple[int, bytes]]) -> bytes:
         head += struct.pack("<H", t) + len(body).to_bytes(3, "little") + len(d).to_bytes(3, "little")
         body += d
     return bytes(head + body)
-
-
-def tim_parse(t: bytes) -> dict:
-    _magic, flags = struct.unpack_from("<II", t, 0)
-    o, out = 8, {"bpp": flags & 3}
-    if flags & 8:
-        ln, cx, cy, cw, ch = struct.unpack_from("<IHHHH", t, o)
-        out["clut_xy"] = (cx, cy, cw, ch)
-        out["clut"] = np.frombuffer(t, "<u2", cw * ch, o + 12).copy()
-        o += ln
-    ln, px, py, pw, ph = struct.unpack_from("<IHHHH", t, o)
-    out["rect"] = (px, py, pw, ph)
-    out["pix"] = np.frombuffer(t, np.uint8, pw * 2 * ph, o + 12).reshape(ph, pw * 2).copy()
-    return out
-
-
-def tim_build(tim: dict) -> bytes:
-    """tim_parse's dict -> TIM bytes. CLUT-less TIMs (16-bpp pages, e.g. CAW group 0x111) have no "clut_xy"."""
-    px, py, pw, ph = tim["rect"]
-    pix = np.asarray(tim["pix"], np.uint8).tobytes()
-    flags, clut_block = tim.get("bpp", 1), b""
-    if tim.get("clut_xy") is not None:
-        cx, cy, cw, ch = tim["clut_xy"]
-        clut = np.asarray(tim["clut"], "<u2").tobytes()
-        if len(clut) != 2 * cw * ch:
-            raise ValueError("TIM CLUT size doesn't match the header")
-        flags, clut_block = flags | 8, struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut
-    if len(pix) != 2 * pw * ph:
-        raise ValueError("TIM pixel size doesn't match the header")
-    return struct.pack("<II", 0x10, flags) + clut_block + struct.pack("<IHHHH", 12 + len(pix), px, py, pw, ph) + pix
 
 
 def repaintable(tim: dict) -> bool:

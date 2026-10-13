@@ -41,7 +41,7 @@ import json
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from .formats.lz import vpk0_decode  # noqa: F401  (shared codec, moved to gbox.formats)
 
 ENTRY_SIZE = 12
 TABLE_SCAN_LO = 0x150000
@@ -240,111 +240,6 @@ def locate_table(rom: bytes) -> tuple[int, int] | None:
         if count > EXPECTED_FILES_HI:
             break
     return best
-
-
-def vpk0_decode(src: bytes, out_size: int) -> bytes | None:
-    """Decode a VPK0 stream; None when the stream is malformed.
-
-    Ported from the US decomp src/sys/dma.c (syDmaDecodeVpk0). Bit order
-    is MSB-first within a big-endian word; the first 4 bytes of the
-    stream carry the decompressed size.
-    """
-    if len(src) < 5:
-        return None
-    bits = src
-    pos = 0
-
-    def get_bits(count: int) -> int:
-        nonlocal pos
-        if count == 0:
-            return 0
-        if pos + count > len(bits) * 8:
-            raise ValueError("vpk0: bitstream overrun")
-        value = 0
-        for _ in range(count):
-            value = (value << 1) | ((bits[pos >> 3] >> (7 - (pos & 7))) & 1)
-            pos += 1
-        return value
-
-    # Stream layout (dma.c syDmaDecodeVpk0): 4-byte "vpk0" magic, u32 BE
-    # decompressed size, u8 sample method, two Huffman trees, LZ bitstream.
-    magic = get_bits(32)
-    if magic != 0x76706B30:  # b"vpk0"
-        return None
-    header_size = get_bits(32)
-    sample_method = get_bits(8)
-
-    def read_tree() -> Any:  # noqa: ANN401 - recursive tree, ints/tuples mix
-        stack: list = []
-        try:
-            while True:
-                node = get_bits(1)
-                if node and len(stack) < 2:
-                    return stack[0] if stack else None
-                if node:
-                    right = stack.pop()
-                    left = stack.pop()
-                    stack.append((left, right))
-                else:
-                    stack.append(get_bits(8))
-        except ValueError:
-            return None
-
-    offsets_tree = read_tree()
-    lengths_tree = read_tree()
-    if offsets_tree is None or lengths_tree is None:
-        return None
-
-    out = bytearray()
-    try:
-        while len(out) < out_size:
-            flag = get_bits(1)
-            if not flag:
-                out.append(get_bits(8))
-            else:
-                # Offsets first, then lengths (bit order matters).
-                if sample_method:
-                    sp64 = 0
-                    s1 = offsets_tree
-                    while isinstance(s1, tuple):
-                        s1 = s1[0 if get_bits(1) == 0 else 1]
-                    sample1 = get_bits(s1)
-                    if sample1 <= 2:
-                        sp64 = sample1 + 1
-                        off = offsets_tree
-                        while isinstance(off, tuple):
-                            off = off[0 if get_bits(1) == 0 else 1]
-                        sample2 = get_bits(off)
-                        value = sample2 * 4 + sp64 - 8
-                    else:
-                        # dma.c: copy_src = out_ptr - value * 4 - sp64 + 8
-                        # with sp64 == 0, i.e. distance = value * 4 - 8.
-                        value = sample1 * 4 - 8
-                    copy_src = len(out) - value
-                else:
-                    node = offsets_tree
-                    while isinstance(node, tuple):
-                        node = node[0 if get_bits(1) == 0 else 1]
-                    value = get_bits(node)
-                    copy_src = len(out) - value
-
-                node = lengths_tree
-                while isinstance(node, tuple):
-                    node = node[0 if get_bits(1) == 0 else 1]
-                length = get_bits(node)
-
-                if copy_src < 0 or copy_src >= len(out):
-                    return None
-                for _ in range(length):
-                    out.append(out[copy_src])
-                    copy_src += 1
-            if len(out) > out_size:
-                return None
-    except (ValueError, IndexError):
-        return None
-    if header_size != len(out):
-        return None
-    return bytes(out[:out_size])
 
 
 def inventory(rom_path: str | Path, out: str | Path | None = None) -> dict:

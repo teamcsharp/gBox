@@ -37,6 +37,7 @@ import sys
 import zlib
 from pathlib import Path
 
+from .formats.texture import morton as _morton, twiddled_index  # noqa: F401  (shared PowerVR twiddle; was here)
 from .mkgold_inventory import KEY, SPRITE, exe_tables, geo_records, img_pages
 
 STRIP = VERTEX = NODE = 32
@@ -152,21 +153,6 @@ def png_bytes(w: int, h: int, rgba: bytes) -> bytes:
     chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
-
-
-def _morton(x: int, y: int) -> int:
-    r = 0
-    for i in range(11):
-        r |= ((x >> i) & 1) << (2 * i + 1) | ((y >> i) & 1) << (2 * i)
-    return r
-
-
-def twiddled_index(x: int, y: int, w: int, h: int) -> int:
-    """PVR twiddled address: square Morton blocks (y in the low bit) laid out along the longer side."""
-    s = min(w, h)
-    if w >= h:
-        return (x // s) * s * s + _morton(x % s, y)
-    return (y // s) * s * s + _morton(x, y % s)
 
 
 def texel_layout(data: bytes, page: int = 0, step: int = 3) -> dict:

@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from . import re4gc_models as R
+from .formats.rig import role_of_joint as _role_of_joint  # noqa: F401  (shared, moved to gbox.formats)
 
 GANADO_ROLES = {"pelvis": 17, "hip": 1, "chest": 2, "neck": 3, "head": 4,
                 "r_clav": 5, "r_upper": 7, "r_fore": 8, "r_hand": 9, "r_hand_end": 10,
@@ -94,18 +95,6 @@ def _rot_between(a, b):
         return 2 * np.outer(ax, ax) - np.eye(3)
     vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + vx + vx @ vx / (1 + c)
-
-
-def _role_of_joint(rig: dict) -> list[str]:
-    """Each source joint -> the body role of its nearest ancestor that has one (default: hip)."""
-    roles = {j: r for r, j in rig["roles"].items()}
-    out = []
-    for j in range(len(rig["parent"])):
-        k = j
-        while k >= 0 and k not in roles:
-            k = rig["parent"][k]
-        out.append(roles.get(k, "hip"))
-    return out
 
 
 def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: float = 1.8,

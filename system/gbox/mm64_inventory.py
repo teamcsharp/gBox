@@ -39,6 +39,7 @@ import zipfile
 
 from . import n64_rom
 from .mkmyth_inventory import header_crc, ipl3_cic, parse_header
+from .formats.lz import lzss_decompress  # noqa: F401  (shared codec, moved to gbox.formats)
 
 GAME_ID = "7815f5fed884d651"
 TITLE = "Mega Man 64 (USA)"
@@ -76,45 +77,6 @@ def _sext16(v: int) -> int:
 
 # --------------------------------------------------------------------------- codec
 
-def lzss_decompress(src: bytes, pos: int = 0, out_size: int | None = None,
-                    end: int | None = None) -> tuple[bytes, int]:
-    """Decode one LZSS stream starting at ``src[pos]``.
-
-    Returns ``(data, consumed)``.  Decoding stops at ``out_size`` bytes or at
-    ``end`` (exclusive input bound), whichever comes first.
-    """
-    ring = bytearray(0x1000)
-    r = 0xFEE
-    out = bytearray()
-    i = pos
-    n = len(src) if end is None else min(end, len(src))
-    while i < n and (out_size is None or len(out) < out_size):
-        flags = src[i]
-        i += 1
-        for bit in range(8):
-            if (out_size is not None and len(out) >= out_size) or i >= n:
-                break
-            if flags >> bit & 1:
-                c = src[i]
-                i += 1
-                out.append(c)
-                ring[r] = c
-                r = (r + 1) & 0xFFF
-            else:
-                if i + 1 >= n:
-                    i = n
-                    break
-                b0, b1 = src[i], src[i + 1]
-                i += 2
-                o = b0 | ((b1 & 0xF0) << 4)
-                for k in range((b1 & 0x0F) + 3):
-                    c = ring[(o + k) & 0xFFF]
-                    out.append(c)
-                    ring[r] = c
-                    r = (r + 1) & 0xFFF
-    if out_size is not None:
-        del out[out_size:]
-    return bytes(out), i - pos
 
 
 def unpack_entry(rom: bytes, base: int, off: int, size: int) -> tuple[bytes | None, dict]:
