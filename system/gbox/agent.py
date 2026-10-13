@@ -51,6 +51,15 @@ How to work:
 - CPU-level work: debugger(op="break", kind="write", address=<HP/lives address>) then resume and wait for the hit to find the code
   that changes a value; debugger(op="info") shows registers, op="disasm" the code. Always resume the CPU when you're done.
 - Reverse engineering: ghidra_scripts to find a script, analyze_binary / ghidra_script to run Ghidra on an executable.
+  For interactive questions about one executable ("what does 0x... do", "who calls X", "which code uses this string"):
+  ghidra_bridge op=open binary_path=<ELF/EXE> once, then decompile / xrefs_to / xrefs_from / strings / functions on the
+  same worker (the program stays open; op=stop when done). To reconstruct a function as C/C++: re_agent op=pick
+  (strategy high-impact | easiest-first | dependency-order) then op=reverse target=<address>; or write it yourself and
+  re_agent op=check. Reconstructions are hypotheses: record them with re_dossier.
+- GTA live state (PS2 GTA III, Liberty City Stories, Vice City, Vice City Stories): gta_live op=player | pools | vehicles |
+  weather value=<sunny|cloudy|rainy|foggy|release> | time hours minutes | wanted level=0-6 | teleport x y z | spawn model.
+  Its result lists each address's source and live_checked; a field that is not mapped says how to map it. Vice City
+  windows_native 1fd42f50b10252e6 is the Definitive Edition (Unreal Engine 4) and has no table: say so.
 - "Put me on <stage/world/level>", "play as <character>", "skip to <boss>": DO IT, don't explain how the operator could.
   Playbook, in order, until it works: (0) recall + re_dossier op=read (addresses gBox already verified) and the game's own
   tool when it has the warp (zelda_oot op=goto / skip_deku_tree, stage_warp op=warp, re_mods, gta_mods, pso autoplay);
@@ -523,6 +532,36 @@ def tool_specs() -> list[dict]:
             "button": {"type": "string", "enum": ["l3", "r3"]}, "max_height": {"type": "number"},
             "count": {"type": "integer", "description": "ped_rain: how many peds, 1-100"}, "behaviour": {"type": "string", "description": "0 = rain .. 1 = splash, or rain | splash"},
             "height": {"type": "number"}, "radius": {"type": "number"}, "model": i, "explosion": s}, ["session_id", "op"]),
+        fn("gta_live", "Live GTA state on a running PS2 GTA III / Liberty City Stories / Vice City / Vice City Stories "
+           "session (the in-game controls of the Ariane map editor). op=player (position, health, vehicle, wanted), "
+           "pools (ped/vehicle/object pool usage), vehicles (cars in the pool: model, position), weather (value=sunny|"
+           "cloudy|rainy|foggy|...; release gives it back to the game), time (hours, minutes), wanted (level 0-6), "
+           "teleport (x, y, z; moves the car when in one), spawn (model = vehicle id, GTA III), resolve (elf_path = the "
+           "game's ELF from re_study: fills clock/weather/pools/wanted addresses from its symbol table), games. Writes "
+           "are read back and return the previous bytes; each address reports source and live_checked.",
+           {"session_id": s, "op": {"type": "string", "enum": ["player", "pools", "vehicles", "weather", "time", "wanted",
+                                                              "teleport", "spawn", "resolve", "games"]},
+            "game": s, "value": s, "hours": i, "minutes": i, "level": i, "x": {"type": "number"}, "y": {"type": "number"},
+            "z": {"type": "number"}, "model": i, "elf_path": s}, ["session_id", "op"]),
+        fn("ghidra_bridge", "The operator's Ghidra as functions (Dryxio/ghidra-bridge). op=open binary_path (ELF/EXE; "
+           "processor = Ghidra language id when not detected) or project_dir+project_name+program_name (an existing "
+           "Ghidra project), then on the same worker: decompile target=<0x address|name>, xrefs_to / xrefs_from target, "
+           "functions query, strings pattern (with the code that references each), containing address, run_script "
+           "script=<adapters/ghidra script> args, export export_dir; status; stop when done. export_dir alone queries an "
+           "existing ghidra-bridge export without Ghidra. Results are JSON.",
+           {"op": {"type": "string", "enum": ["status", "start", "open", "info", "functions", "decompile", "xrefs_to",
+                                              "xrefs_from", "containing", "strings", "run_script", "export", "close", "stop"]},
+            "binary_path": s, "project_dir": s, "project_name": s, "program_name": s, "processor": s, "target": s,
+            "address": s, "query": s, "pattern": s, "limit": i, "script": s, "args": {"type": "array", "items": s},
+            "export_dir": s, "worker_id": s}, ["op"]),
+        fn("re_agent", "ReAgent's function reconstruction loop over the open ghidra_bridge program. op=strategies; "
+           "op=pick query=<name filter> strategy=high-impact|easiest-first|dependency-order (which functions to do next); "
+           "op=reverse target=<0x address|name> (reverser model with Ghidra evidence requests -> independent checker -> "
+           "structural verifier -> bounded fix rounds; returns C/C++ + verdicts); op=check target code=<your C/C++> "
+           "(checker + verifier on a candidate you wrote); op=verify (verifier only, no model). A PASS is a hypothesis "
+           "until validated in game; record it with re_dossier.",
+           {"op": {"type": "string", "enum": ["strategies", "pick", "reverse", "check", "verify"]}, "target": s, "query": s,
+            "strategy": s, "code": s, "limit": i, "max_rounds": i, "endpoint": s, "export_dir": s, "worker_id": s}, ["op"]),
         fn("zelda_oot", "Zelda: Ocarina of Time on the live session. op=skip_deku_tree ('get me past the Deku Tree'), "
            "goto with place ('end of the shadow temple', 'final battle', 'gohma', 'forest temple', 'kakariko'... gives the gear "
            "that place needs and warps; adult places make Link adult), give with item (+c_button 1-3 to equip: 'equip the "
@@ -1100,6 +1139,26 @@ class Agent:
         j = self._job("gta_mods", {k: v for k, v in inp.items() if v is not None}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def gta_live(self, session_id, op="player", **kw):
+        inp = {"session_id": session_id, "op": op, **{k: v for k, v in kw.items() if v not in (None, "")}}
+        j = self._job("gta_live", inp, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def _ghidra_job(self, tool, inp, worker_id=None):
+        """Ghidra Bridge and re_agent keep the program open on one worker: pin every call to it."""
+        worker = worker_id or getattr(self, "ghidra_worker", None)
+        j = self._job(tool, {k: v for k, v in inp.items() if v not in (None, "", [])}, worker=worker, limit=3600)
+        if j.get("worker_id"):
+            self.ghidra_worker = j["worker_id"]
+        out = j.get("output") or {}
+        return {"state": j.get("state"), "error": j.get("error"), "worker_id": j.get("worker_id"), **out}
+
+    def ghidra_bridge(self, op="status", worker_id=None, **kw):
+        return self._ghidra_job("ghidra_bridge", {"op": op, **kw}, worker_id)
+
+    def re_agent(self, op="strategies", worker_id=None, **kw):
+        return self._ghidra_job("re_agent", {"op": op, **kw}, worker_id)
+
     def ac_mods(self, session_id, op="build", part="", slot="", parts=None, value=0, query="", goal="", force=False):
         j = self._job("ac_mods", {"session_id": session_id, "op": op, "part": part, "slot": slot, "parts": parts or [], "value": value,
                                   "query": query, "goal": goal, "force": force}, worker=session_id.rsplit("-", 1)[0])
@@ -1637,6 +1696,10 @@ WORKER_TOOLS = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "ze
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
 MODIFIES = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
+
+
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
@@ -1646,6 +1709,10 @@ def _modifies_game(name: str, args: dict) -> bool:
     op = str(args.get("op") or "").lower()
     if name == "mod":
         return op == "apply"     # list/verify are reads; save/delete edit files, not the running game
+    if name == "gta_live":       # weather/time/wanted without a new value are reads
+        return op in ("teleport", "spawn") or op == "weather" and args.get("value") not in (None, "") or \
+            op == "time" and (args.get("hours") is not None or args.get("minutes") is not None) or \
+            op == "wanted" and args.get("level") is not None
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
                       "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games"}
 

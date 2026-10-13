@@ -366,6 +366,76 @@ PLAYBOOKS = [
                       "ResolvePrecisionAim + StrangleholdPawn.ServerResolveDamage (@01e1 branch, @02a6 DamageScale=1000)",
                       "ref": "profiles/stranglehold-ps3-us.json"}],
     },
+    {
+        # ReAgent (Dryxio/reagent, MIT) ported onto gBox's Ghidra Bridge: docs/re_tool_integrations.md
+        "id": "reconstruct-function", "seed_version": 1,
+        "title": "Reconstruct a game function as C/C++ (ReAgent loop on the Ghidra Bridge)",
+        "goal": "Turn one decompiled function into reviewed C/C++ that matches the binary, as a hypothesis with evidence: "
+                "to understand a mechanic, document a struct or prepare a patch.",
+        "when": ["reconstruct", "rewrite in c", "c++", "source code", "what does this function do", "decompile",
+                 "reverse this function", "reagent", "clean up the decompilation", "port the function"],
+        "platforms": ["any"], "tags": ["ghidra", "decompile", "reconstruction", "llm", "reagent"],
+        "steps": [
+            {"do": "Know the title first (executable, processor, known addresses).", "tool": "re_dossier", "args": {"op": "read"}},
+            {"do": "Open the executable in the operator's Ghidra once; later calls stay on the same worker.",
+             "tool": "ghidra_bridge", "args": {"op": "open", "binary_path": "<ELF from re_study>", "processor": "<if needed>"},
+             "expect": "program info (language, image base, function count) and a worker_id"},
+            {"do": "Choose what to reconstruct. high-impact = most callers first (shared helpers), easiest-first = "
+                   "fewest callers (leaf functions, quick wins), dependency-order = callees before callers (each "
+                   "function's helpers are done before it).", "tool": "re_agent",
+             "args": {"op": "pick", "query": "<class or name filter>", "strategy": "dependency-order"}},
+            {"do": "Gather evidence the decompilation alone lacks: callers, callees, referenced strings.",
+             "tool": "ghidra_bridge", "args": {"op": "xrefs_to", "target": "<0x address>"}},
+            {"do": "Run the loop: reverser (may request decompile/xrefs/strings itself) -> independent checker -> "
+                   "structural verifier -> fix rounds, stopping on PASS, the call budget or a repeated failure.",
+             "tool": "re_agent", "args": {"op": "reverse", "target": "<0x address>", "max_rounds": 4},
+             "expect": "code + checker verdict + objective verdict per round"},
+            {"do": "Or write the candidate yourself from ghidra_bridge op=decompile and have it judged.",
+             "tool": "re_agent", "args": {"op": "check", "target": "<0x address>", "code": "<your C/C++>"}},
+            {"do": "Record the function (name, role) as a hypothesis; promote it only with runtime evidence "
+                   "(debugger breakpoint hit, value change).", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "function", "address": "<0x address>", "name": "<Class::Name>",
+                      "role": "<what it does>", "status": "hypothesis"}},
+        ],
+        "pitfalls": [
+            "A PASS means the checker and the structural verifier found no mismatch, not that the code is equivalent.",
+            "Use an independent checker model when you can (checker_endpoint): one model grading itself is weak.",
+            "The structural verifier only fails on strong mismatches (missing calls/branches, wrong constant return).",
+            "Ghidra Bridge keeps the program open on ONE worker: pass the returned worker_id to later calls.",
+            "Floating-point expression order and integer widths matter; keep Ghidra's order unless evidence says otherwise.",
+        ],
+        "verify": ["re_agent result success=true with checker PASS and objective not FAIL",
+                   "for gameplay code: a debugger exec breakpoint at the address fires on the in-game event"],
+        "record": ["re_dossier op=record kind=function status=hypothesis", "re_playbook op=learn with what helped"],
+        "examples": [],
+    },
+    {
+        "id": "gta-live-state", "seed_version": 1,
+        "title": "GTA live state: player, pools, vehicles, weather, time, wanted level, teleport, spawn",
+        "goal": "Read or change a running PS2 GTA's world state (the in-game controls of the Ariane map editor).",
+        "when": ["gta", "grand theft auto", "weather", "time of day", "wanted level", "stars", "teleport", "spawn a car",
+                 "vehicle pool", "ped pool", "liberty city", "vice city"],
+        "platforms": ["ps2"], "tags": ["gta", "memory", "ariane"],
+        "steps": [
+            {"do": "See what is mapped for this game and where each address comes from.", "tool": "gta_live",
+             "args": {"session_id": "<session_id>", "op": "games"}},
+            {"do": "If clock/weather/wanted are not mapped, resolve them from the game's own ELF symbol table.",
+             "tool": "gta_live", "args": {"session_id": "<session_id>", "op": "resolve", "elf_path": "<ELF from re_study>"}},
+            {"do": "Read the state first.", "tool": "gta_live", "args": {"session_id": "<session_id>", "op": "player"}},
+            {"do": "Change it (each write is read back; the previous bytes are returned for undo).", "tool": "gta_live",
+             "args": {"session_id": "<session_id>", "op": "weather", "value": "rainy"}},
+            {"do": "Verify on screen once.", "tool": "look_at_screen", "args": {"session_id": "<session_id>"}},
+        ],
+        "pitfalls": [
+            "Every gta_live address is live_checked=false until someone confirms it; say 'written, read back' not 'verified'.",
+            "Vice City windows_native 1fd42f50b10252e6 is the Definitive Edition (UE4): no RenderWare addresses apply.",
+            "Liberty City Stories and Vice City Stories have no symbol table: unmapped fields need memory_search.",
+            "Wanted level follows the chaos value every frame: freeze_memory the chaos word to hold it.",
+        ],
+        "verify": ["the op's read-back value equals the request", "look_at_screen shows the weather/time/stars"],
+        "record": ["re_dossier op=record kind=global with the address once confirmed live"],
+        "examples": [],
+    },
 ]
 
 
