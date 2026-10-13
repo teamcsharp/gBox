@@ -1014,7 +1014,6 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
             share[o] = share.get(o, 0) + 1
     plan = OC.growth_plan(rom, caps, cutscenes=strict_cutscenes)
     allow = plan["allow"]
-    grown: dict[int, int] = {}
     built = []
     for k, (slot, meta) in enumerate(pairs):
         if slot not in specs:
@@ -1040,7 +1039,6 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
                         f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props)
                         return f, write_link(rom, age, f["parts"], f["mats"], regions)
                     f, w, g = _fit_into(rom, [o], allow.get(o, 0) // share.get(o, 1), rec, attempt)
-                    grown[o] = grown.get(o, 0) + g[o]
                     row[age] = {"triangles": f["report"]["triangles"], "grew": g[o], "code_entries": w["code_entries"]}
                 row["mode"] = "retarget (Link's roles)"
             else:
@@ -1053,8 +1051,6 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
                     f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props)
                     return f, write_group(rom, sp["group"], f["parts"], f["mats"], sp["regions"])
                 f, w, g = _fit_into(rom, objs, room, rec, attempt)
-                for o in objs:
-                    grown[o] = grown.get(o, 0) + g[o]
                 row |= {"mode": tgt["mode"], "triangles": f["report"]["triangles"], "grew": max(g.values()),
                         "reused": rec, "pose": tgt.get("pose"), "textures": f["report"].get("textures"),
                         "branched_lists": len(sp["group"].get("branch_dls", []))}
@@ -1068,6 +1064,9 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
             per[slot] = {"status": "failed", "reason": str(e)[:500] or type(e).__name__}
     if not built:
         return {"mod": None, "slots": per, "detail": {"growth": plan}}
+    first = OW.Rom(rom.data)                              # what grew, measured on the final staged files (a slot
+    grown = {o: len(rom.object(o)) - len(first.object(o)) for o in caps    # rolled back half-way leaves nothing)
+             if rom.object_index(o) in rom.changed}
     over = OC.space_report(rom, grown)
     progress(80, "Rebuilding the ROM (DMA table, object table, CRC)")
     out = rom.build()
