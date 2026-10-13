@@ -121,10 +121,36 @@ def provider_failure(error):
     if any(word in text for word in ('insufficient_quota', 'usage limit', 'usage_limit',
                                     'quota exceeded', 'quota exhausted', 'quota limit',
                                     'insufficient credits', 'insufficient available credits', 'credit balance',
-                                    'add credits', 'limit_remaining', 'payment required')) or re.search(
+                                    'add credits', 'limit_remaining', 'payment required',
+                                    # Nous answers an empty account with HTTP 404, not 402.
+                                    'requires available credits', 'balance is too low', 'insufficient balance',
+                                    'exceeds your available credits')) or re.search(
             '(^|[^0-9a-z])402([^0-9]|$)', text) or re.search(
             r'["\'](?:error_code|code)["\']\s*:\s*["\']?(?:1113|1308|1310|131[6-9]|132[01])\b', text):
         return 'quota'
     if re.search(r'\b429\b', text) or any(word in text for word in ('rate limit', 'rate_limit', 'too many requests')):
         return 'rate_limit'
     return None
+
+
+# An exhausted account (no credit, or a plan's usage cap) does not come back in minutes the way a throttle does, so a
+# route seen exhausted waits hours, doubling while it stays exhausted. The first call after the wait is the probe: if
+# it fails the same way the wait doubles, if it works the route is back. OpenRouter's balance endpoint ends an
+# out-of-credit wait early (hermes_local.credit_recovered).
+EXHAUSTED_KINDS = ('out_of_credit', 'usage_limit')
+EXHAUSTED_SOURCE = 'provider_exhausted_backoff'
+
+
+def exhaustion_wait(kind, text, error_at, *, failures=1):
+    """{'until', 'source', 'quota_balance_known'} for a route whose latest call failed out of credit or at its usage
+    limit. Out of credit: 3 h, then 6 h, then every 12 h. A monthly or weekly usage limit: 6 h, 12 h, then every 24 h.
+    Another usage limit (hourly or daily windows): 1 h doubling to 6 h."""
+    t = str(text or '').lower()
+    if kind == 'out_of_credit':
+        base, cap = 3 * 3600, 12 * 3600
+    elif 'month' in t or 'week' in t:
+        base, cap = 6 * 3600, 24 * 3600
+    else:
+        base, cap = 3600, 6 * 3600
+    delay = min(base * 2 ** min(max(int(failures) - 1, 0), 6), cap)
+    return {'until': error_at + delay, 'source': EXHAUSTED_SOURCE, 'quota_balance_known': False}

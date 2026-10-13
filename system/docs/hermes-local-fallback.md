@@ -57,6 +57,31 @@ but they are weaker tool callers.
   only between agent runs: a running local run keeps its route. The supervisor also checks OpenRouter's credit
   endpoint while an OpenRouter route cools under a scheduler backoff. A positive balance observed after the failure
   ends that cooldown early (`_lift_recovered_credit`). A provider's measured reset time is never lifted.
+- **Exhausted accounts count as cooling** (`hermes_feedback.apply_exhaustion`). A run's final error names only
+  the last provider it tried. On 2026-10-13 Nous answered every call with HTTP 404 *"requires available credits ...
+  balance is too low"* and Ollama Cloud with HTTP 429 *"monthly usage limit"*. Hermes fell through its fallback
+  chain, so each run ended on EhmBird's HTTP 500 or kept running on llama.cpp. Neither provider was ever cooled,
+  so the supervisor kept routing to Nous and the local route never took over. Now every pass reads each provider's
+  latest model call in Hermes's agent log (`hermes_providers.provider_health`, the same reading as the Providers
+  view). When that call failed out of credit or at a usage limit and no call has worked since, every route of that
+  provider cools:
+
+  | Latest error | Wait (doubling while it stays exhausted) |
+  |---|---|
+  | Out of credit (402, *insufficient balance*, Nous's 404 *requires available credits*) | 3 h, 6 h, then every 12 h |
+  | Monthly or weekly usage limit (Ollama Cloud's 429) | 6 h, 12 h, then every 24 h |
+  | Other usage limit or quota window | 1 h doubling to 6 h |
+
+  When the wait ends, the route is eligible again and the next run on it is the probe. If the probe fails the same
+  way, the wait doubles. A successful call on that provider (for example an interactive chat after a top-up) ends
+  the wait at once. OpenRouter's balance endpoint also ends an out-of-credit wait (`_lift_recovered_credit`). A longer
+  measured wait is never shortened. `feedback.json` keeps the per-provider state in `exhausted`.
+- **A run past its deadline does not hold rotation.** Rotation waits for running agent runs, but a run older than
+  2 hours (`GBOX_HERMES_RUN_DEADLINE_S`) no longer counts. Three runs that fell through to the CPU llama.cpp model
+  kept the supervisor busy for hours, so it never left Nous and never rewrote the fallback chain. Such runs are
+  listed in `feedback.json`'s `overdue_runs` for the operator to stop; gBox never stops a Hermes run. While the
+  supervisor waits, its result lists `excluded_fallbacks`: llama.cpp or EhmBird entries still in Hermes's
+  `fallback_providers`, which its next write removes.
 - Failed paid runs are never resumed on the local route (`hermes_recovery.recover`). Emulation root-cause
   investigations are not dispatched in local mode (`hermes_task_mode.dispatch_request` refuses). Their reports stay
   in the queue for a paid route.
@@ -232,7 +257,8 @@ never_nodes = ["JAYBUILTFINALE"]
 
 | File | What it covers |
 |---|---|
-| `tests/test_hermes_local_route.py` | Route eligibility, rotation back, local only, credit recovery, the supervisor's Hermes config writes, `llamacpp` exclusion, recovery never using the local route, and the Providers view's local block |
+| `tests/test_hermes_local_route.py` | Route eligibility, rotation back, local only, credit recovery, the supervisor's Hermes config writes, `llamacpp` exclusion, overdue runs not holding the switch, recovery never using the local route, and the Providers view's local block |
+| `tests/test_hermes_exhausted_routes.py` | Out-of-credit 404 and monthly-limit 429 classification, the exhaustion waits, `choose()` going local when every paid route is out of credit without a run-level cooldown, the probe and its doubling, recovery on a successful call or OpenRouter credit, and `scan()` reading the agent log of a run that fell through |
 | `tests/test_llm_proxy.py` | Message fixes (including the EhmBird case against Qwen's template rule), context cap, tool calls both ways, streaming, concurrency 1, a full queue, the operator gate with model unload, and the endpoint with loopback and token auth |
 | `tests/test_spark_grunt.py` | The registry (one chore per tick, cooldowns, persistence, force, disable, give-way, errors), the build and operator gates, triage, draft PR tests, verification node rules, job cancel on give-way, fingerprints, manifests, and the `/api/grunt` endpoint |
 | `tests/test_hermes_local_dispatch.py` | The dispatch size policy, the local prompt, PR marking, and local-mode queue ticks |
