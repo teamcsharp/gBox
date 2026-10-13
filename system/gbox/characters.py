@@ -1089,10 +1089,14 @@ def _pso_run(ctx, game, e, work):
         return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.pso_enemy",
                 "source_files": [f"{e['file']}:{e['entry']}"], "roles": pso_enemy.export_roles(key),
                 "notes": "an enemy body on its own node tree; the game's motions (.njm in the same pack) aren't exported"}
-    glb = pso_player.export(str(_dc_gdi(ctx, game)), str(work), e["key"])
+    from .gdrom import GDRom
+    gdi = _dc_gdi(ctx, game)
+    glb = pso_player.export(str(gdi), str(work), e["key"])
     k = e["key"]
+    # every class body is the same 64-node tree: the role map, checked against this class's own PL<x>BDY00.NJ (#1485)
+    roles = pso_player.joint_roles(pso_player.body_roles(GDRom(str(gdi)).read(f"PSO/PL{k}BDY00.NJ"), k))
     return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.pso_player (head 0, colour 0)",
-            "source_files": [f"PSO/PL{k}BDY00.NJ", f"PSO/PL{k}HED00.NJ", f"PSO/PL{k}TEX.AFS"],
+            "source_files": [f"PSO/PL{k}BDY00.NJ", f"PSO/PL{k}HED00.NJ", f"PSO/PL{k}TEX.AFS"], "roles": roles,
             "notes": "" if k == "C" else "this class's texture layout isn't mapped yet (gbox.pso_player): colours may be wrong"}
 
 
@@ -1371,7 +1375,8 @@ def dedicated_entries(config, game, name, roster):
 
 
 # extractor -> body roles read from an entry's stored model, for entries collected before the reader reported roles
-ROLE_BACKFILL = {"sm64": sm64_mario_roles}
+ROLE_BACKFILL = {"sm64": sm64_mario_roles,
+                 "pso": lambda path: __import__("gbox.pso_player", fromlist=["x"]).model_roles(path)}
 
 
 def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
@@ -1435,14 +1440,49 @@ def collect(ctx, inp):
     chars = [r for r in results if r['kind'] == 'character']
     noun = 'characters' if len(chars) == len(entries) else 'models'
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
-    good = sum(r['verified'] for r in results)
-    mapped = sum(r['retargetable'] for r in chars)
     from . import char_coverage
-    return {'status': 'complete' if entries and good == len(entries) and mapped == len(chars) else 'partial',
-            'game_id': game['game_id'], 'extractor': name, 'collected': good, 'total': len(entries),
-            'retargetable': mapped, 'characters': len(chars), 'entries': results,
-            # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
-            'slots': char_coverage.cast_slots(game)}
+    return collection_status(results) | {
+        'game_id': game['game_id'], 'extractor': name,
+        # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
+        'slots': char_coverage.cast_slots(game)}
+
+
+def collection_status(results: list[dict]) -> dict:
+    """A roster's collection summary from its entry rows: complete when every entry is verified and every character
+    (kind 'character'; props, vehicles and sprite sets don't need a rig) is retargetable (verified + body roles)."""
+    chars = [r for r in results if r.get('kind', 'character') == 'character']
+    good = sum(bool(r.get('verified')) for r in results)
+    mapped = sum(bool(r.get('retargetable')) for r in chars)
+    return {'status': 'complete' if results and good == len(results) and mapped == len(chars) else 'partial',
+            'collected': good, 'total': len(results), 'retargetable': mapped, 'characters': len(chars),
+            'entries': results}
+
+
+def refresh_collection(root: Path, result: dict) -> dict:
+    """A stored partial collect() result re-checked against the collection as it is now: entries whose model was
+    verified but lacked body roles get them from the extractor's role backfill (backfill_roles: e.g. PSO classes
+    collected before extraction reported roles, #1485), so a fixed reader turns the status complete without
+    re-extracting or re-queueing the roster. Failed / missing entries stay as they were."""
+    if not result or result.get('status') != 'partial' or not result.get('entries'):
+        return result
+    rows = []
+    for r in result['entries']:
+        r = dict(r)
+        p = Path(root) / str(r.get('slug') or '') / 'meta.json'
+        if r.get('slug') and r.get('status') != 'failed' and p.is_file():
+            try:
+                meta = backfill_roles(root, result.get('extractor') or '', get(root, r['slug']))
+                checked = verify_entry(root, meta)
+            except (OSError, KeyError, ValueError):
+                rows.append(r)
+                continue
+            kind = meta.get('kind') or r.get('kind') or 'character'
+            ready = checked['ok'] and bool((meta.get('rig') or {}).get('roles'))
+            r.update(kind=kind, verified=checked['ok'], retargetable=ready)
+            if ready or (kind != 'character' and checked['ok']):
+                r['message'] = ''
+        rows.append(r)
+    return result | collection_status(rows)
 
 
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:

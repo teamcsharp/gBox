@@ -184,6 +184,9 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     if not marker.exists():
         raise ValueError(f"no built mod {name!r} for this game")
     meta = json.loads(marker.read_text())
+    if meta.get("launchable") is False:                # universal-modder staged files (um_mod): an overlay, not a game copy
+        raise ValueError(f"mod {name!r} is a staged file set ({meta.get('kind', 'files')}), not a launchable copy of the "
+                         "game: install its files with the game's mod loader (see its README)")
     if meta.get("image"):
         return _file_path(out, meta["image"])
     return out / Path(rom).relative_to(game_root(rom))
