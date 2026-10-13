@@ -485,3 +485,75 @@ def test_agent_prompt_and_schema_route_whole_cast_requests_to_cast_swap():
     assert "everyone in PSO with wrestlers" in src
     assert "characters op=cast_swap target_game=<game>" in src
     assert '"target_game": s, "source": s, "mapping": s' in src
+
+
+# ---------------------------------------------------------------- Sonic Adventure (DC) donors -> Crazy Taxi drivers
+
+SA1 = ("Sonic Adventure (USA)", "dreamcast")
+SA1_ROLES = {r: r for r in ("hip", "chest", "head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore", "r_hand",
+                            "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot")}
+SA1_CAST = [("sa1_sonic", "Sonic (Sonic Adventure)", 10.1), ("sa1_tails", "Tails", 8.7),
+            ("sa1_knuckles", "Knuckles", 11.0), ("sa1_amy", "Amy Rose", 9.2), ("sa1_big", "Big the Cat", 21.0),
+            ("sa1_e102", "E-102 Gamma", 21.3), ("sa1_super_sonic", "Super Sonic", 10.9), ("sa1_tikal", "Tikal", 9.3)]
+
+
+def sa1_donors(root=None):
+    """The eight sa1_chars entries (heights as the reader exports them), each with a tiny glTF whose POSITION bounds
+    give model_height its standing height when a root is given."""
+    out = []
+    for slug, name, h in SA1_CAST:
+        if root is not None:
+            (root / slug).mkdir(exist_ok=True)
+            (root / slug / f"{slug}.gltf").write_text(json.dumps({
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+                "accessors": [{"min": [-1, -h / 2, -1], "max": [1, h / 2, 1]}]}))
+        out.append(entry(slug, name, *SA1, roles=SA1_ROLES, gid="1a3f4cd416db9ffd", model=f"{slug}.gltf",
+                         extraction_tool="gbox.sa1_chars + gbox.ninja",
+                         **({"native_player": True} if slug == "sa1_sonic" else {})))
+    return out
+
+
+def test_sonic_adventure_sources_titles_alias_and_the_sonic_group():
+    chars = CHARS + sa1_donors()
+    sa1 = {s for s, _n, _h in SA1_CAST}
+    assert all(CS.extractor_of(m) == "sa1" for m in sa1_donors())
+    for spec in ("Sonic Adventure", "sa1", "SA1", "Sonic Adventure 1", "1a3f4cd416db9ffd"):
+        assert {m["slug"] for m in CS.resolve_source(spec, chars)["entries"]} == sa1, spec   # SA2's Sonic stays out
+    assert {m["slug"] for m in CS.resolve_source("SA2", chars)["entries"]} == {"sonic"}
+    assert {m["slug"] for m in CS.resolve_source("Sonic Adventure 2", chars)["entries"]} == {"sonic"}
+    both = CS.resolve_source("sonic", chars)
+    assert {m["slug"] for m in both["entries"]} == sa1 | {"sonic"} and "Sonic Adventure 1 + 2" in both["label"]
+    menu = {g["key"]: g for g in CS.source_groups(chars)}
+    assert menu["sonic"]["count"] == 9 and menu["sega"]["count"] == 9 + 2                    # + the two JGR skaters
+
+
+def test_sa1_donors_pass_the_gate_and_one_without_a_hip_is_refused():
+    bad = entry("sa1_broken", "Broken", *SA1, roles={"head": "node011"}, gid="1a3f4cd416db9ffd")
+    donors, refused, _ = CS.gate(sa1_donors() + [bad])
+    assert len(donors) == 8 and [r["slug"] for r in refused] == ["sa1_broken"]
+    assert "lack the hip" in refused[0]["reason"]
+
+
+def test_crazy_taxi_driver_slots_carry_sizes_and_axel_is_the_lead_slot():
+    rows = {r["slot"]: r for r in CS.filter_slots(CS.slot_rows(CT), "drivers")}
+    assert list(rows) == ["driver:axel", "driver:bd_joe", "driver:gena", "driver:gus"]
+    assert rows["driver:axel"].get("lead_slot") and not any(rows[s].get("lead_slot") for s in list(rows)[1:])
+    assert rows["driver:gus"]["size"] > rows["driver:axel"]["size"] >= rows["driver:gena"]["size"] > rows["driver:bd_joe"]["size"]
+
+
+def test_crazy_taxi_drivers_get_four_sonic_adventure_characters_by_height(tmp_path):
+    chars = CHARS + sa1_donors(tmp_path)
+    p = CS.plan(CT, chars, "Sonic Adventure", "by_role", "", slots="drivers", root=tmp_path)
+    assert p["status"] == "planned" and p["writer"] == "gbox.crazy_taxi_swap" and p["strategy"] == "chain"
+    got = {r["slot"]: r["character"] for r in p["assignments"]}
+    assert list(got) == ["driver:axel", "driver:bd_joe", "driver:gena", "driver:gus"]
+    assert set(got.values()) <= {s for s, _n, _h in SA1_CAST} and len(set(got.values())) == 4
+    assert got["driver:axel"] == "sa1_sonic"                     # SA1's lead on Crazy Taxi's own player
+    assert got["driver:gus"] == "sa1_e102" and got["driver:gena"] == "sa1_big"   # tallest donors, biggest drivers
+    assert got["driver:bd_joe"] in ("sa1_knuckles", "sa1_super_sonic")
+    why = {r["slot"]: r["why"] for r in p["assignments"]}
+    assert "lead character" in why["driver:axel"] and "body size" in why["driver:gus"]
+    assert not p["refused"] and len(p["donors"]) == 8 and p["mod"].startswith("cast_crazy_taxi_")
+    assert p == CS.plan(CT, chars, "Sonic Adventure", "by_role", "", slots="drivers", root=tmp_path)   # deterministic
+    again = CS.plan(CT, chars, "sa1", "auto", "", slots="drivers", root=tmp_path)
+    assert {r["slot"]: r["character"] for r in again["assignments"]} == got
