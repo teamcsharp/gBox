@@ -486,6 +486,17 @@ def test_display_name_reaches_mod_cards_launches_sessions_and_post_rename(tmp_pa
         assert not plain["input"].get("mod_title"), "an unnamed build launches under its folder name"
         s = {x["session_id"]: x for x in get(c, h, "/api/sessions")}
         assert s["w1-s1"]["mod_title"] == "Sonic Full Cast"
+        assert s["w1-s1"]["mod_build"] == "g1_patch" and not s["w1-s1"].get("mod_favorite")
+        # the session header (Sessions view) renames the build it runs; "★ Favorite this build" knows it is starred
+        assert c.put(f"/api/builds/{GID}/g1_patch/favorite", json={}, headers=h).status_code == 200
+        store.put("session", "w1-s2", {"session_id": "w1-s2", "game_id": GID, "title": "Game One", "state": "ended",
+                                       "mod": "g1_patch~cd", "started": 2.0})
+        store.put("session", "w1-s3", {"session_id": "w1-s3", "game_id": GID, "title": "Game One", "state": "ended",
+                                       "started": 3.0})
+        s = {x["session_id"]: x for x in get(c, h, "/api/sessions")}
+        assert s["w1-s1"]["mod_favorite"] is True
+        assert s["w1-s2"]["mod_build"] == "g1_patch" and s["w1-s2"]["mod_title"] == "Sonic Full Cast", "a staged copy"
+        assert not {"mod_build", "mod_title", "mod_favorite"} & set(s["w1-s3"]), "the stock game has no build"
     assert (cfg.cache / "mods" / GID / "g1_patch").is_dir() and not (cfg.cache / "mods" / GID / "Sonic Full Cast").exists()
 
 

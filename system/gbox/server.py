@@ -608,6 +608,10 @@ def create_app(config: Config) -> FastAPI:
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
 
+    # ghost runs (gbox/ghost_runs.py, #1098): recorded runs per game, the live player for the overlay, ghost picks
+    from . import ghost_runs
+    ghost_runs.register(app, auth, store)
+
     # Blender round trip (gbox/blender_roundtrip.py): a character out as one GLB with its rig role names / props,
     # copy to the clipboard (the picker's right-click), import back as a variant / new donor (a characters job)
     from . import blender_roundtrip
@@ -3071,14 +3075,21 @@ def create_app(config: Config) -> FastAPI:
         now = time.time()
         from . import built_mods
         names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
+        favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
         for s_ in store.all("session", reverse=True):
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
-            named = names.get(f"{s_.get('game_id')}/{s_.get('collection_mod') or s_.get('mod') or ''}")
-            if named:
-                row["mod_title"] = named
+            # the build folder it runs (a staged "<mod>~<build>" copy is still that build): the header renames it
+            build = str(s_.get("collection_mod") or s_.get("mod") or "").split(built_mods.STAGED_SEP)[0]
+            if build:
+                row["mod_build"] = build
+                named = names.get(f"{s_.get('game_id')}/{build}")
+                if named:
+                    row["mod_title"] = named
+                if f"{s_.get('game_id')}/{build}" in favs:
+                    row["mod_favorite"] = True
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
             if s_.get("state") == "running":         # Hermes / observers keep heavy work off the operator's game

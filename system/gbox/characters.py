@@ -676,7 +676,7 @@ class CharIn(BaseModel):
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes) | MGS VR Missions: player (Snake) | enemy:soldier (every Genome soldier) | enemy:ninja | model:<hash> | enemies | all | cast (+pairs [{slot, character}])
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes) | MGS VR Missions: player (Snake) | enemy:soldier (every Genome soldier) | enemy:ninja | model:<hash> | enemies | all | cast (+pairs [{slot, character}]) | Crazy Taxi 2 (DC): player (Slash) | driver:<axel|bd_joe|gena|gus|slash|iceman|cinnamon|hot_d> | drivers (all eight)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -737,16 +737,56 @@ def _api(ctx, method, path, **kw):
     return r.json() if "json" in r.headers.get("content-type", "") else r.content
 
 
-def _local_or_fetch(ctx, meta: dict, rel: str) -> Path:
-    """A library file on this node: the library itself on the control plane, else a node-local copy from the API."""
-    p = library_root(ctx.config) / meta["slug"] / rel
-    if p.is_file():
-        return p
-    p = Path(ctx.config.cache) / "characters_mirror" / meta["slug"] / rel
-    if not p.is_file():
+def _fresh_meta(ctx, slug: str) -> dict | None:
+    """The library entry as stored right now (local meta.json on the control plane, else the API); None if unreadable."""
+    try:
+        f = library_root(ctx.config) / slug / "meta.json"
+        if f.is_file():
+            return json.loads(f.read_text())
+        m = _api(ctx, "GET", f"/api/characters/{slug}")
+        return m if isinstance(m, dict) else None
+    except Exception:                                      # noqa: BLE001 - only a hint for the retry below
+        return None
+
+
+def _local_or_fetch(ctx, meta: dict, rel: str, retries: int = 4, wait: float = 20.0, sleep=time.sleep) -> Path:
+    """A library file on this node: the library itself on the control plane, else a node-local copy from the API.
+
+    A 404 means the entry changed under the caller (#1671: hucast was re-collected while an op=use job fitted it, so
+    pso_hucast_h0_c0.glb was briefly absent): re-read the entry, follow a renamed model, wait a bounded time for a
+    re-collect to land, then fail with an actionable error instead of a bare HTTP 404. Downloads are atomic so an
+    interrupted transfer never leaves a truncated mirror copy that later runs would trust."""
+    import httpx
+    slug = meta["slug"]
+    for attempt in range(retries + 1):
+        p = library_root(ctx.config) / slug / rel
+        if p.is_file():
+            return p
+        p = Path(ctx.config.cache) / "characters_mirror" / slug / rel
+        if p.is_file():
+            return p
+        try:
+            data = _api(ctx, "GET", f"/api/characters/{slug}/file/{rel}", timeout=300)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is None or exc.response.status_code != 404:
+                raise
+            fresh = _fresh_meta(ctx, slug) or {}
+            if rel == meta.get("model") and fresh.get("model") and fresh["model"] != rel:
+                rel = fresh["model"]                       # the entry was re-collected under a new model name
+                continue
+            if attempt >= retries:
+                raise FileNotFoundError(
+                    f"character library entry {slug!r} has no file {rel!r} (HTTP 404 after {retries} retries); "
+                    f"its model is {fresh.get('model')!r}. Re-collect it (characters op=collect) or re-extract "
+                    f"the donor, then retry this job.") from exc
+            sleep(wait)
+            continue
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(_api(ctx, "GET", f"/api/characters/{meta['slug']}/file/{rel}", timeout=300))
-    return p
+        tmp = p.with_name(p.name + ".part")
+        tmp.write_bytes(data)
+        tmp.replace(p)
+        return p
+    raise FileNotFoundError(f"character library entry {slug!r}: {rel!r} unavailable")
 
 
 def _blender(cfg) -> str | None:
@@ -1547,6 +1587,13 @@ DEDICATED = [
      lambda: __import__("gbox.pe2_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.pe2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
+    # Phantasy Star Online Episode I & II (Plus) (GC, GPOE8P): the 12 player classes (body + head / hair at the head
+    # mount, default textures named by PsoV3.dol's texture lists) and the enemies of the GSL area packs, as rigged,
+    # textured GLBs with body roles (gbox.pso_gc, docs/pso_gc.md); writer gbox.pso_gc_swap
+    ("pso_gc", lambda t, p: p == "gamecube" and (re.search(r"phantasy star online episode i ?& ?ii\b", t) is not None
+                                                 or t.startswith("return to ragol")),
+     lambda: __import__("gbox.pso_gc", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.pso_gc", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
      lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.jgr", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1591,6 +1638,11 @@ DEDICATED = [
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Crazy Taxi 2 (DC): the eight drivers from polPP??H.BIN / texPP??H.BIN (NAOMI-library rigid parts, PowerVR
+    # textures) on an 18-joint rest rig, parts named by 1ST_READ.BIN's slot tables (gbox.crazy_taxi2, docs/crazy_taxi2.md)
+    ("crazy_taxi2", lambda t, p: __import__("gbox.crazy_taxi2", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.crazy_taxi2", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.crazy_taxi2", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta3", lambda t, p: ("grand theft auto iii" in t or t.startswith("gta iii") or t == "gta 3") and p == "ps2",
      lambda: __import__("gbox.gta3_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1689,7 +1741,9 @@ def dedicated_entries(config, game, name, roster):
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
-                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader")}
+                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
+                   "pso_gc": ("gbox.pso_gc", "pso_gc_reader"),
+                   "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
@@ -2631,10 +2685,20 @@ def characters_tool(inp: CharIn, ctx):
         # Soul Calibur II GC: fighter:<key>[:<costume>] | all | cast (+pairs) | random (two sources alternate per
         # costume + the random costume select) -> sc2_<slot>_<plan hash> (human.olk costumes rewritten in place)
         return {"result": out | soulcalibur2_swap.use(ctx, meta, game, inp)}
+    from . import pso_gc_swap
+    if gid in pso_gc_swap.GAME_IDS and pso_gc_swap.is_slot(inp.slot):
+        # PSO Ep I&II GC: class:<name> (player = HUmar) | enemy:<key> -> psogc_<slug>_as_<slot> (body + BML + texture
+        # bank, or the enemy pack in every GSL area archive, in a disc-image copy); unverified in Dolphin
+        return {"result": out | pso_gc_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
         return {"result": out | crazy_taxi_swap.use(ctx, meta, game, inp)}
+    from . import crazy_taxi2_swap
+    if gid in crazy_taxi2_swap.GAME_IDS and crazy_taxi2_swap.is_slot(inp.slot):
+        # Crazy Taxi 2 DC: player (Slash) | driver:<name> | drivers -> ct2_<slug>_<slot> (pol/tex + 1ST_READ.BIN slot
+        # tables in a copied GD-ROM)
+        return {"result": out | crazy_taxi2_swap.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
