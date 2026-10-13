@@ -781,11 +781,12 @@ def _cluster(pos, nrm, tris, k: int):
     return npos, nnrm, T
 
 
-def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
+def encode_shape(template: bytes, pos, nrm, tris, name: str = "", chunks=None) -> bytes:
     """Rewrite one .shp's arrays + display lists, keeping the header, material records (the DL pointer pairs get
     the new packed offsets/sizes), texture names and tail. pos/nrm are in the template's local frame and are
     quantised with the template's own scale/frac, so the game animates the part exactly as before. Returns a blob
-    of the same size."""
+    of the same size. chunks: the triangles per material record (display-list order; gbox.crazy_taxi_swap deals
+    them by region); default: `tris` split evenly over the records."""
     if len(template) < 0x120 or struct.unpack_from(">f", template, 0)[0] != 1.0:
         raise ValueError(f"{name}: not a Crazy Taxi .shp")
     scale = struct.unpack_from(">3f", template, 0x2C)
@@ -838,7 +839,14 @@ def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
     if not pairs:
         raise ValueError(f"{name}: no per-material display-list pointers found")
     out[dl_base:tex_off] = b"\x00" * (tex_off - dl_base)
-    chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    if chunks is None:
+        chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    else:
+        chunks = [[tuple(map(int, t)) for t in c] for c in chunks]
+        if len(chunks) != len(pairs):
+            raise ValueError(f"{name}: {len(chunks)} triangle chunks for {len(pairs)} material records")
+        if any(i < 0 or i >= V for c in chunks for t in c for i in t):
+            raise ValueError(f"{name}: a chunk triangle indexes past {V} vertices")
     cur = dl_base
     for k in range(len(pairs)):
         block = _encode_dl(chunks[k] if k < len(chunks) else [], attrs, V)
