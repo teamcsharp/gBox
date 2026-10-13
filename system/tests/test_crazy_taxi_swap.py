@@ -18,8 +18,19 @@ from gbox import crazy_taxi as ct
 from gbox import crazy_taxi_swap as cs
 
 ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
+BANK_FILE = os.environ.get("GBOX_CT_BANK", "")          # or a loose copy of the disc's ct/polDC0.all
 LIB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gbox-cache/characters"))
 GID = "bc02bb68790ce2e7"
+
+
+def _exists(p) -> bool:
+    try:
+        return bool(p) and Path(p).is_file()
+    except OSError:                                      # an unreachable share is "not present"
+        return False
+
+
+OWNED = _exists(BANK_FILE) or _exists(ISO)
 
 BOX = [(x, y, z) for x in (0.0, 4.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)]       # bone-local: starts at the joint
 QUADS = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
@@ -312,16 +323,19 @@ def test_characters_tool_routes_crazy_taxi_slots_to_the_writer():
 # ------------------------------------------------------------------------------------------- owned disc
 
 def _owned_bank() -> bytes:
-    from gbox.gcdisc import GCDisc
-    disc = GCDisc(ISO)
-    assert disc.game_id == ct.DISC_ID
-    bank = disc.read(ct.BANK)
-    disc.f.close()
+    if _exists(BANK_FILE):
+        bank = Path(BANK_FILE).read_bytes()
+    else:
+        from gbox.gcdisc import GCDisc
+        disc = GCDisc(ISO)
+        assert disc.game_id == ct.DISC_ID
+        bank = disc.read(ct.BANK)
+        disc.f.close()
     assert hashlib.sha256(bank).hexdigest() == ct.BANK_SHA256
     return bank
 
 
-@pytest.mark.skipif(not ISO.exists(), reason="owned Crazy Taxi GC disc not present")
+@pytest.mark.skipif(not OWNED, reason="owned Crazy Taxi GC disc not present")
 def test_owned_disc_people_match_the_snapshot():
     bank = _owned_bank()
     live = cs.people(ct.read_bank(bank))
@@ -329,7 +343,7 @@ def test_owned_disc_people_match_the_snapshot():
         {g: tuple(v) for g, v in cs.PEOPLE.items()}
 
 
-@pytest.mark.skipif(not ISO.exists(), reason="owned Crazy Taxi GC disc not present")
+@pytest.mark.skipif(not OWNED, reason="owned Crazy Taxi GC disc not present")
 def test_owned_disc_every_driver_takes_a_synthetic_donor():
     bank = _owned_bank()
     old = ct.read_bank(bank)
@@ -349,7 +363,7 @@ def test_owned_disc_every_driver_takes_a_synthetic_donor():
                 assert len(ct.read_shape(new[o:o + s], n).tris) >= 1
 
 
-@pytest.mark.skipif(not (ISO.exists() and (LIB / "hucast" / "meta.json").is_file()),
+@pytest.mark.skipif(not (OWNED and _exists(LIB / "hucast" / "meta.json")),
                     reason="owned Crazy Taxi GC disc or the HUcast library entry not present")
 def test_owned_disc_hucast_as_gena(tmp_path):
     bank = _owned_bank()
