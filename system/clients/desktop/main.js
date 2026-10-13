@@ -155,7 +155,9 @@ async function api(p, body) {
   const r = await fetch(settings().apiUrl + p, {
     method: body ? "POST" : "GET", body: body && JSON.stringify(body),
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
-    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000 : 8000),
+    // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
+    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
+      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000),
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
