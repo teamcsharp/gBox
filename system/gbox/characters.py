@@ -49,34 +49,67 @@ def slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
-_LIST_CACHE: dict = {}            # str(root) -> (built_at, root_mtime, generation, [meta])
-_LIST_GEN = [0]                  # bumped by put_meta: a write through this module refreshes the list at once
-LIST_TTL_S = 90.0                # writes that bypass put_meta show up within this long
+_LIST_CACHE: dict = {}            # str(root) -> {"at": built_at, "entries": {slug: meta}, "refreshing": bool}
+LIST_TTL_S = 600.0               # full re-read at most this often, in the background (writes elsewhere show up then)
+import threading as _threading
+_LIST_LOCK = _threading.Lock()
 
 
-def _invalidate_list():
-    _LIST_GEN[0] += 1
+def _invalidate_list(root=None, meta=None):
+    """A write through put_meta updates the cached entry in place: no full re-read of the HDD library."""
+    with _LIST_LOCK:
+        for key, c in _LIST_CACHE.items():
+            if root is not None and key != str(root):
+                continue
+            if meta and meta.get("slug"):
+                c["entries"][meta["slug"]] = json.loads(json.dumps(meta))
+            else:
+                c["at"] = 0
+
+
+def _refresh_list(root):
+    key = str(root)
+    try:
+        entries = {m["slug"]: m for m in _list_all_uncached(root) if m.get("slug")}
+        with _LIST_LOCK:
+            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False}
+    except Exception:
+        with _LIST_LOCK:
+            if key in _LIST_CACHE:
+                _LIST_CACHE[key]["refreshing"] = False
 
 
 def list_all(root: Path, game_id: str = "") -> list[dict]:
     """Every character entry. Cached: the library lives on an NTFS HDD where reading 645 meta.json files takes
-    ~13 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13)."""
+    13-80 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13). Only the very first
+    call reads synchronously; afterwards a stale cache is served while a background thread refreshes it."""
     import copy
     import time as _t
     key = str(root)
-    try:
-        rmt = Path(root).stat().st_mtime
-    except OSError:
-        rmt = 0
-    hit = _LIST_CACHE.get(key)
-    if not (hit and hit[1] == rmt and hit[2] == _LIST_GEN[0] and _t.time() - hit[0] < LIST_TTL_S):
-        hit = (_t.time(), rmt, _LIST_GEN[0], _list_all_uncached(root))
-        _LIST_CACHE[key] = hit
-    out = copy.deepcopy(hit[3])
+    with _LIST_LOCK:
+        c = _LIST_CACHE.get(key)
+        stale = c is not None and _t.time() - c["at"] > LIST_TTL_S and not c.get("refreshing")
+        if stale:
+            c["refreshing"] = True
+    if c is None:
+        _refresh_list(root)
+        c = _LIST_CACHE[key]
+    elif stale:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+    with _LIST_LOCK:
+        out = copy.deepcopy(list(c["entries"].values()))
+    out = [m for m in out if isinstance(m, dict) and m.get("name")]
+    out.sort(key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
     if game_id:
         for m in out:
             m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
     return out
+
+
+def warm_list(root: Path) -> None:
+    """Fill the cache in the background at startup so the first menu doesn't pay the HDD read."""
+    if str(root) not in _LIST_CACHE:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
 
 
 def _list_all_uncached(root: Path) -> list[dict]:
@@ -127,7 +160,7 @@ def put_meta(root: Path, meta: dict) -> dict:
     tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
-    _invalidate_list()
+    _invalidate_list(root, meta)
     return meta
 
 
