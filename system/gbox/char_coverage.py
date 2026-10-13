@@ -29,6 +29,7 @@ WRITERS = [
                                                 "(gbox.aki_wcw); Revenge has no writer yet"),
     ("yukes_sd", ["<wrestler>"], "any wrestler, every costume (several per disc: op=match); SmackDown! 2 (PS1)"),
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
+    ("pe2_swap", ["player"], "PE2 Aya, every outfit file (STAGE0.CDF 10200..10600: model + page + CLUT); unverified in game"),
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player", "enemy:<name>", "enemies"],
@@ -50,7 +51,7 @@ DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("R
              ("Mario Kart 64", "n64"), ("Resident Evil The Mercenaries 3D", "3ds"), ("Super Smash Bros. Melee", "gamecube"),
              ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
-             ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
+             ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
              ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
 
 
