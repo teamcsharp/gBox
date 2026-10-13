@@ -53,11 +53,14 @@ _LIST_CACHE: dict = {}            # str(root) -> {"at": built_at, "entries": {sl
 LIST_TTL_S = 600.0               # full re-read at most this often, in the background (writes elsewhere show up then)
 import threading as _threading
 _LIST_LOCK = _threading.Lock()
+LIST_GENERATION = 0              # bumped by every library write in this process (the asset index watches it)
 
 
 def _invalidate_list(root=None, meta=None):
     """A write through put_meta updates the cached entry in place: no full re-read of the HDD library."""
+    global LIST_GENERATION
     with _LIST_LOCK:
+        LIST_GENERATION += 1
         for key, c in _LIST_CACHE.items():
             if root is not None and key != str(root):
                 continue
