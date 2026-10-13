@@ -2633,7 +2633,21 @@ def create_app(config: Config) -> FastAPI:
             'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
             'service_error': runtime.get('error'), 'interval_seconds': 30}
         view.setdefault('title', session.get('title'))
-        view['goals'] = _session_agent_goals(view, view.get('game_id') or session.get('game_id') or '')
+        gid = view.get('game_id') or session.get('game_id') or ''
+        if gid and isinstance(view.get('models'), dict):
+            # The stored snapshot freezes when the session ends (#1623: an ended Twin Snakes session kept saying
+            # "No native model reader registered" after the reader shipped and collected 17/17). Show the game's
+            # collection as it is now; keep the snapshot's repair request id and state for the history.
+            try:
+                snap = view['models']
+                live = auto_collection.status(gid)
+                if (live.get('state'), live.get('job_id')) != (snap.get('state'), snap.get('job_id')):
+                    view['models'] = live | {'request_id': snap.get('request_id'),
+                                             'snapshot': {'state': snap.get('state'), 'updated': snap.get('updated'),
+                                                          'message': snap.get('message')}}
+            except Exception:                # a status read never hides the observations themselves
+                pass
+        view['goals'] = _session_agent_goals(view, gid)
         return view
 
     def _session_agent_goals(view: dict, gid: str) -> dict:

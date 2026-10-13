@@ -484,7 +484,29 @@ class SessionObservers:
             status['request_id'] = self._gap(session, 'models',
                 status.get('error') or status.get('message') or
                 'Native collection is incomplete: ' + json.dumps(result)[:3000])
+        elif status['state'] == 'succeeded' and int(result.get('collected') or 0):
+            # A reader deployed after the gap was filed (#1623: Twin Snakes) now collects: close the stale repair
+            # with the evidence instead of leaving "No native model reader registered" open forever.
+            resolved = self._resolve_gap(session, 'models', status)
+            if resolved:
+                status['request_id'] = resolved
         self._put(sid, models=status, models_checked=self.clock())
+
+    def _resolve_gap(self, session, role, status):
+        """Mark this game's open repair for `role` done once the capability works; a regression reopens it (_gap)."""
+        gid, sid = session['game_id'], session['session_id']
+        marker = gid + ':' + role
+        with self.gap_lock:
+            old = next((r for r in self.store.all('request')
+                        if (r.get('context') or {}).get('session_observer_gap') == marker), None)
+            if not old or old.get('status') == 'done':
+                return old and old['id']
+            result = status.get('result') or {}
+            note = (f'Session observer: native {role} collection now works in {sid}: collected '
+                    f'{int(result.get("collected") or 0)} of {int(result.get("characters") or 0)}'
+                    + (f' (job {status["job_id"]})' if status.get('job_id') else '') + '.')
+            self.api('/api/requests/' + old['id'] + '/status', {'status': 'done', 'note': note})
+            return old['id']
 
     def _frame(self, session, record):
         sid = session['session_id']
