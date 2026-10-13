@@ -40,6 +40,8 @@ How to work:
 - Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
   already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re5, re6, gta_mods,
   ac_mods, mario_kart for Mario Kart 64 items);
+  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods,
+  mario_kart for Mario Kart 64 items, sonic_adventure_2 for Sonic Adventure 2 stage skips / ranks / emblems);
   (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
   memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
   surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
@@ -141,6 +143,12 @@ How to work:
   are asked for); op=infinite keeps whatever item the player picks up; op=give writes it once; player=1-4, split=3p4p on a 3-4
   player screen; on=false or op=release stops it. The result's verified field is the proof: report the item, the player and
   the undo (op=release). Other Mario Kart games: the cheats / memory_search playbook below.
+- Sonic Adventure 2 (Dreamcast USA, SA2 Battle GameCube USA) - "skip to the end of this level", "finish / beat / clear this
+  stage", "give me an S rank" / "A rank", "give me all the emblems": sonic_adventure_2 on the live session, nothing else
+  first (no cheat database, no web search). op=finish_level ends the stage now (the game's own level-clear: the results
+  screen grades and saves the mission being played); op=rank rank=A finishes it with an A ("S rank" = A: SA2's top
+  grade is A; say so); op=emblems gives all 180 (count=N for some); op=status reads stage, mission, score, time, rings,
+  emblems. finished / verified in the result are the proof; an error names why (paused, boss fight 60+, 2P, not in a stage).
 - "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (zelda op=noclip; PSO has no noclip op), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
@@ -168,7 +176,8 @@ How to work:
   edit: open_in_blender, then characters op=add from_clipboard=true.
 - ACT, DON'T SEARCH. A request to change the running game ("infinite red shells", "max money", "make cars fly") is a job to
   DO on the live session, not a question. Break it into steps and run them, in this order, stopping at the first that works:
-  (0) the game's own tool when it has the op (Mario Kart 64 "infinite red shells" = mario_kart op=always item="red shell");
+  (0) the game's own tool when it has the op (Mario Kart 64 "infinite red shells" = mario_kart op=always item="red shell";
+  Sonic Adventure 2 "skip to the end of this level" = sonic_adventure_2 op=finish_level);
   (1) recall / an existing recipe_*; (2) cheats op=list query=<1-2 key words, e.g. "shell", "item", "money"> on the session -
   the emulator's cheat database has thousands of codes; enable the match, or cheats op=add with a code built from what you
   learn (e.g. an "Item Select" code shows the item byte's address: hold it with cheats op=add "<addr> <value>");
@@ -587,6 +596,13 @@ def tool_specs() -> list[dict]:
            "shell, lightning, fake item box, star, boo, mushroom, double mushrooms, triple mushrooms, super mushroom. player=1-4; "
            "split=3p4p when 3-4 players share the screen (default 1p2p).",
            {"session_id": s, "op": s, "item": s, "player": i, "split": s, "on": b}, ["session_id", "op"]),
+        fn("sonic_adventure_2", "Sonic Adventure 2 (Dreamcast USA) / SA2 Battle (GameCube USA) on the live session, verified "
+           "by read-back. op=finish_level ends the current stage now ('skip to the end of this level', 'beat this level'): the "
+           "game's own level-clear, the real mission is graded and saved; op=rank rank=A finishes the stage with an A rank "
+           "('give me an S rank' = rank=A: SA2's top grade is A; finish=false only sets score/time); op=emblems gives every "
+           "missing emblem (count=0 = all 180, count=N some); op=status reads stage, character, mission, score, time, rings, "
+           "emblems and the grade the results screen would give; op=games lists mapped builds.",
+           {"session_id": s, "op": s, "rank": s, "count": i, "finish": b, "timeout_s": {"type": "number"}}, ["session_id", "op"]),
         fn("stage_warp", "Put the player on a named stage / level of the live game: 'put me on the final world', 'take me to "
            "the last stage', 'stage 3'. op=games (supported games) | stages (the live game's stages, or pass game='super mario "
            "world'/'tmnt') | warp stage=<name> ('final world', \"bowser's castle\", 'stage 5'; names are fuzzy). Super Mario World "
@@ -1198,6 +1214,12 @@ class Agent:
                                      "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def sonic_adventure_2(self, session_id, op="status", rank="A", count=0, finish=True, timeout_s=3.0):
+        j = self._job("sonic_adventure_2", {"session_id": session_id, "op": op, "rank": rank or "A", "count": int(count or 0),
+                                            "finish": bool(finish), "timeout_s": float(timeout_s or 3.0)},
+                      worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False, reach=True):
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
                                     "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
@@ -1764,6 +1786,10 @@ WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live"
 
 
 MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart", "sonic_adventure_2"}
+
+
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart", "sonic_adventure_2"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
