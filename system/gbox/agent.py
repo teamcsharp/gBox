@@ -32,8 +32,8 @@ How to work:
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
-  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods,
-  mario_kart for Mario Kart 64 items);
+  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re5, re6, gta_mods,
+  ac_mods, mario_kart for Mario Kart 64 items);
   (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
   memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
   surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
@@ -125,6 +125,14 @@ How to work:
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
 - After mercenaries_unlock the title menu rebuilds once the attract demo plays (~60 s idle) then Start; Up once from LOAD
   = THE MERCENARIES. Dolphin input takes pad names (a, b, start, up), not raw keys.
+- Resident Evil Mercenaries / unlock asks, by game (docs/mercenaries.md has the matrix): RE4 GameCube/Wii = re_mods, RE5
+  Gold PS3 = re5, RE6 X360 = re6. "Unlock all characters / costumes / stages / weapons" or "unlock all secret / hidden
+  content" -> re_mods op=unlock_all | re5 op=unlock_all | re6 op=unlock_all. "Triple / quadruple the combo (bonus) time"
+  -> re_mods op=combo_time multiplier=3|4 (the combo window) and, for clock time, op=merc_time_bonus multiplier=3|4.
+  "Grenades don't hurt me" -> re_mods op=grenade_safe on=true. "Punch enemies" -> re_mods op=punch and relay its
+  statement (RE4 has no free punch; offer explosive_melee / super_melee on the knife). "Change the weapons I start
+  Mercenaries with" -> re_mods op=merc_loadout character=<name|any> items=["name:amount", ...] on=true | re6 op=set_loadout.
+  RE5 / RE6 clock or combo time: no published address - say so (the tools refuse with the reason).
 - MODELS: extract -> collection -> use in any game. The collection (characters tool) holds characters, vehicles, objects
   and environments extracted from the operator's own games; never download models. "Extract / add X to my collection"
   (pick whip "Extract X's model ...") -> characters op=extract character=X kind=character|vehicle|object|environment
@@ -381,7 +389,12 @@ def tool_specs() -> list[dict]:
            "like a door does; story rooms; r3xx island rooms incl. the final battle r332 are only on disc 2; rooms with a pending "
            "first-visit event can crash - save first) | teleport items=[x,y,z] (move inside the room; status shows player_pos). "
            "No chapter select exists in the GC build. Weapons on non-Leon Merc characters use Leon's stats but keep their own "
-           "model; P.R.L. 412 does not exist in the GameCube version (say so).",
+           "model; P.R.L. 412 does not exist in the GameCube version (say so). GameCube also: combo_time multiplier=N "
+           "('triple / quadruple the combo bonus time' = 3 / 4: the Mercenaries combo window x N; RE4 gives no clock time "
+           "for melee, so pair it with merc_time_bonus for hourglasses) | grenade_safe on=true|false ('grenades don't hurt "
+           "me': your hand grenades' blast becomes player-owned) | punch (RE4 has no free punch: relay the statement and "
+           "offer explosive_melee / super_melee) | merc_loadout items accept 'name:amount' ('handgun ammo:200') | "
+           "merc_loadout_list | item_ids (the item id table) | addresses (this release's address table: source, live_checked).",
            {"session_id": s, "op": s, "item": s, "count": i, "target": s, "on": b, "seconds": i, "character": s,
             "items": {"type": "array", "items": s}, "fire_rate": s, "damage": {"type": "number"}, "reset": b,
             "multiplier": {"type": "number"}, "kind": s, "force": {"type": "number"}, "direction": s, "speed": {"type": "number"}},
@@ -414,6 +427,15 @@ def tool_specs() -> list[dict]:
            "campaign-only characters (Deborah, Simmons...) as playable Mercenaries characters, faster movement for a swapped character.",
            {"session_id": s, "op": s, "item": s, "amount": i, "slot": i, "items": {"type": "array", "items": {}}, "character": s,
             "replace": b, "on": b, "target": s, "costume": s}, ["op"]),
+        fn("re5", "Resident Evil 5 Gold Edition (PS3 in RPCS3; session_id = the running RE5 session, or empty for the "
+           "Windows node's RPCS3 with serial=BLUS30491|BLES00816). 'Unlock all secret / hidden content' / 'unlock "
+           "everything' = op=unlock_all: a save edit with the published Game Genie offsets (Apollo patch database) + the "
+           "save checksum: every Bonus Feature, File, cutscene, main-game figurine, chapter + Professional, BSAA emblem, "
+           "item/upgrade in Item Management (groups=[...] for a subset; 'points'/'money' only when asked). Original kept: "
+           "on=false or op=revert restores it. Takes effect when RE5 loads its save: tell the operator to restart RE5 "
+           "from gBox. Mercenaries characters/stages: not confirmed by the source (say so). op=status (checksum + what is "
+           "unlocked) | groups | addresses. merc_time / combo_time: refused - no published address for the PS3 build.",
+           {"session_id": s, "op": s, "on": b, "groups": {"type": "array", "items": s}, "serial": s}, ["op"]),
         fn("re_inventory", "ANY Resident Evil running live (RE4 GameCube, RE6 Xbox 360, classic REs whose slot layout gBox "
            "knows): the selected character's inventory. FIRST CHOICE for 'give me a rocket launcher', 'put a first aid spray in "
            "my inventory', 'remove the knife', 'change my shotgun to a magnum', 'set my handgun ammo to 99', 'what do I have'. "
@@ -1009,6 +1031,12 @@ class Agent:
             else self._job("re6", inp, node="windows", limit=1800)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def re5(self, op="status", session_id="", on=True, groups=None, serial=""):
+        inp = {"op": op, "session_id": session_id, "on": on, "groups": groups or [], "serial": serial or ""}
+        j = self._job("re5", inp, worker=session_id.rsplit("-", 1)[0]) if session_id \
+            else self._job("re5", inp, node="windows")
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def re4r(self, op="status", session_id="", **kw):
         inp = {"op": op, **{k: v for k, v in kw.items() if v not in (None, "", [])}}
         j = self._job("re4r", inp, node="windows", limit=3600)
@@ -1530,11 +1558,11 @@ def zelda_equip_card(result: dict, session_id: str) -> dict:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
+MODIFIES = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
