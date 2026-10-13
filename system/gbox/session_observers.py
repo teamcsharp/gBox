@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -786,6 +787,72 @@ class SessionObservers:
                        'analyzing': len(self.pending), 'interval_seconds': 30})
 
 
+# ---------------------------------------------------------------- running code vs. the code on disk (#1602)
+# A long-running observer keeps the modules it imported at start. In #1602 the service had run for 12 h behind the
+# share: fixes merged and synced since (#1455 timeout backoff, #1371 SessionGone, #1374 bare list fields) had never
+# loaded, so a timeout #1455 already handles filed this repair request. The loop now reports which code it runs and
+# exits for a systemd restart (Restart=on-failure) once the code on disk has changed, settled and compiles.
+CODE_MODULES = ('session_observers', 'background_testing', 'character_collection', 'store')
+CODE_SETTLE_SECONDS = 30      # a share sync may still be writing files; wait until they stop changing
+RESTART_EXIT_CODE = 75        # EX_TEMPFAIL: non-zero, so Restart=on-failure starts the new code
+
+
+def code_paths():
+    return [Path(__file__).with_name(name + '.py') for name in CODE_MODULES]
+
+
+class CodeWatch:
+    """Fingerprint of the observer's own source files at import time versus now."""
+
+    def __init__(self, paths, clock=time.time, settle=CODE_SETTLE_SECONDS):
+        self.paths, self.clock, self.settle = [Path(p) for p in paths], clock, settle
+        self.loaded = self.fingerprint()
+        self.started = clock()
+
+    def fingerprint(self):
+        digest = hashlib.sha256()
+        for path in self.paths:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                data = b''
+            digest.update(path.name.encode() + b'\0' + hashlib.sha256(data).digest())
+        return digest.hexdigest()
+
+    def _compile_error(self):
+        for path in self.paths:
+            try:
+                compile(path.read_bytes(), str(path), 'exec')
+            except (OSError, SyntaxError, ValueError) as exc:
+                return f'{path.name}: {exc}'[:300]
+        return None
+
+    def _newest_mtime(self):
+        times = []
+        for path in self.paths:
+            try:
+                times.append(path.stat().st_mtime)
+            except OSError:
+                pass
+        return max(times, default=0.0)
+
+    def status(self):
+        on_disk = self.fingerprint()
+        row = {'code': self.loaded[:16], 'code_on_disk': on_disk[:16], 'code_stale': on_disk != self.loaded,
+               'code_started': self.started}
+        if row['code_stale']:
+            row['code_error'] = self._compile_error()
+        return row
+
+    def should_restart(self, pending=0):
+        """True when changed code has settled, compiles and no frame is being analysed."""
+        if pending or self.fingerprint() == self.loaded:
+            return False
+        if self.clock() - self._newest_mtime() < self.settle:
+            return False
+        return self._compile_error() is None
+
+
 def main():
     import argparse
     from .config import load
@@ -806,15 +873,26 @@ def main():
         import signal
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: stop.set())
+        watch = CodeWatch(code_paths())
+        restart = False
         try:
             while not stop.is_set():
                 try:
                     observers.tick()
                 except Exception as exc:
                     store.put('setting', 'session_observers_runtime', {'heartbeat': time.time(), 'error': str(exc)[:600]})
+                runtime = {**(store.get('setting', 'session_observers_runtime') or {}), **watch.status()}
+                if watch.should_restart(len(observers.pending)):
+                    restart = True
+                    runtime['restarting'] = 'code on disk changed; exiting for a systemd restart'
+                store.put('setting', 'session_observers_runtime', runtime)
+                if restart:
+                    break
                 stop.wait(5)
         finally:
             observers.close()
+    if restart:
+        raise SystemExit(RESTART_EXIT_CODE)
 
 
 if __name__ == '__main__':
