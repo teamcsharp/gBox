@@ -1458,7 +1458,8 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            refresh = _doa2_needs_refresh(ctx, game, existing)
+            refresh = _doa2_needs_refresh(ctx, game, existing) or (
+                name == "jgr" and __import__("gbox.jgr", fromlist=["x"]).needs_refresh(existing))   # #1396
             if verify_entry(root, existing)['ok'] and not refresh:
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]

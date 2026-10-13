@@ -364,15 +364,70 @@ def play_model_roots(data: bytes, play_off: int, size: int | None = None) -> lis
     return roots
 
 
-def play_model(buf: bytes, root: int):
-    """Walk one PLAY model tree with the shared Ninja chunk parser (:class:`gbox.ninja.NJ`)."""
+FLAT_BASE = 0x10000   # play_model(materials=True): strip classes other than plain textured are keyed FLAT_BASE + i
+
+
+def play_model(buf: bytes, root: int, materials: bool = False):
+    """Walk one PLAY model tree with the shared Ninja chunk parser (:class:`gbox.ninja.NJ`).
+
+    materials=True files every strip chunk by what it is, read from the chunk itself: a lit textured strip stays under
+    its texture id; any other strip is keyed ``FLAT_BASE + i`` with ``.materials[i]`` = {"outline": the strip's
+    ignore-light flag (NJD_FST_IL, bit 0 of the strip chunk flags), "texture": its texture id or None (chunk 0x40/43/
+    46/49 carry no UVs), "colour": the (r, g, b, a) material diffuse}. On the cast's gameplay bodies the
+    ignore-light strips are the cel-shading outline: an inverted hull ~0.1 unit outside the body with reversed normals,
+    drawn black (or with the shared tiny GBIX 2 texture); an ordinary viewer draws it as a dark shell around the
+    character (#1396). The default keeps the shared parser's behaviour (one list per texture id)."""
     from .ninja import NJ
 
     class _PlayNJ(NJ):
         def __init__(self, d: bytes, start: int):
-            self.e, self.d = "<", d
+            self.e, self.d = "<", bytearray(d) if materials else d
             self.bones, self.vbuf, self.tris, self.tex, self.plcache = [], {}, {}, 0, {}
+            self.materials, self._diffuse = [], (255, 255, 255, 255)
             self._walk(start, None, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+            if materials:
+                self.d = bytes(self.d)
+
+        def _polys(self, o):
+            if not materials:
+                return super()._polys(o)
+            p = o
+            while True:
+                typ, fl = self.d[p], self.d[p + 1]
+                if typ == 0xFF:
+                    return
+                if typ in (4, 5):
+                    raise ValueError(f"cached polygon list chunk at +{p:#x}: not a JGR body strip list")
+                if typ < 8:
+                    p += 2
+                elif typ in (8, 9):
+                    self.tex = self.u("H", p + 2)[0] & 0x1FFF
+                    p += 4
+                elif 0x10 <= typ <= 0x3A:
+                    if typ <= 0x17 and typ & 1:                    # material with diffuse: BGRA bytes
+                        b, g, r, a = self.d[p + 4:p + 8]
+                        self._diffuse = (r, g, b, a)
+                    p += 4 + self.u("H", p + 2)[0] * 2
+                elif 0x40 <= typ <= 0x4B:
+                    end = p + 4 + self.u("H", p + 2)[0] * 2
+                    textured = typ not in (0x40, 0x43, 0x46, 0x49)
+                    key = self.tex
+                    if fl & 1 or not textured:
+                        mat = {"outline": bool(fl & 1), "texture": self.tex if textured else None,
+                               "colour": self._diffuse}
+                        if mat not in self.materials:
+                            self.materials.append(mat)
+                        key = FLAT_BASE + self.materials.index(mat)
+                    # decode this one strip chunk with the shared parser: end the list right after it for the call
+                    saved, self.tex, tail = self.tex, key, bytes(self.d[end:end + 2])
+                    self.d[end:end + 2] = b"\xff\x00"
+                    try:
+                        super()._polys(p)
+                    finally:
+                        self.d[end:end + 2], self.tex = tail, saved
+                    p = end
+                else:
+                    return                                         # unknown chunk: stop, as the shared parser does
 
     if not 0 <= root <= len(buf) - 0x34:
         raise ValueError(f"root +{root:#x} outside the PLAY chunk")
@@ -420,9 +475,196 @@ def export_play_glb(data: bytes, play_off: int, root: int, out_dir: str, name: s
     return str(glb)
 
 
+# ---------------------------------------------------------------- draw groups and their texture lists (#1396)
+# PLAY+8 points at the character's binding record: int32 native ID, then one 16-byte slot per draw group (the group's
+# root object, repeated four times). PTEX+8 points at a record of the same shape whose slots are NJS_TEXLIST pointers
+# ({NJS_TEXNAME *names (count x 12 zero bytes, filled at load), u32 count}, followed by `count` pointers to GBIX+PVRT
+# data in the PTEX), ended by -1. A strip's texture id indexes ITS group's texlist, not the PTEX file order: Yo-Yo's
+# spray-can body binds id 0 to the shared can texture (GBIX 760) and id 1 to the body atlas, and Gum's body atlas is
+# PTEX texture 1. The six groups have the same roles on all 16 USA characters (checked on the owned disc):
+GROUP_ROLES = ("body",            # 0: gameplay body, high detail (what the player sees while skating)
+               "body_lod",        # 1: the same body, low detail
+               "body_spray",      # 2: high-detail body with the spray can in the right hand (shared texture GBIX 760)
+               "body_spray_lod",  # 3: low-detail body with the can
+               "shadow",          # 4: shadow volume: 20 nodes, vertices only, no strips
+               "head")            # 5: separate 4-node head (face-expression sheet); a single empty node on Goji/Pots
+GROUP_COUNT = len(GROUP_ROLES)
+CHARACTER_GROUP = 0
+
+
+def _record_slots(chunk: bytes, what: str, variant: int = 0) -> tuple[int, list[int]]:
+    """(native ID, slot `variant` of each of the GROUP_COUNT draw groups) from a PLAY/PTEX binding record. Each group
+    has four slots; they are equal except on the rival leaders' PTEX, whose slots 1-3 name alternate colour atlases
+    (GBIX 355000 / 455000 ...). Slot 0 is the default look."""
+    if len(chunk) < 12:
+        raise ValueError(f"{what}: truncated chunk")
+    rec = struct.unpack_from("<I", chunk, 8)[0]
+    if rec % 4 or rec < 12 or rec + 4 + 16 * GROUP_COUNT > len(chunk):
+        raise ValueError(f"{what}: binding record offset {rec:#x} is outside the chunk")
+    nid = struct.unpack_from("<i", chunk, rec)[0]
+    return nid, [struct.unpack_from("<4I", chunk, rec + 4 + 16 * k)[variant] for k in range(GROUP_COUNT)]
+
+
+def play_groups(data: bytes, play_off: int) -> list[int | None]:
+    """Root object of each draw group (GROUP_ROLES order) from the PLAY binding record; None for an empty slot."""
+    buf = play_bytes(data, play_off)
+    _, roots = _record_slots(buf, f"PLAY +{play_off:#x}")
+    out = []
+    for k, r in enumerate(roots):
+        if r and not _is_object(buf, r):
+            raise ValueError(f"PLAY +{play_off:#x}: draw group {k} root +{r:#x} is not an object")
+        out.append(r or None)
+    return out
+
+
+def ptex_texlists(data: bytes, ptex_off: int) -> list[list[int]]:
+    """Per draw group (GROUP_ROLES order): the PTEX texture index (``ptex_textures`` order) of each Ninja texture id."""
+    size = entry_size(data, ptex_off)
+    chunk = bytes(data[ptex_off:ptex_off + size])
+    if chunk[:4] != PTEX_MAGIC:
+        raise ValueError(f"+{ptex_off:#x} is not a PTEX chunk")
+    _, lists = _record_slots(chunk, f"PTEX +{ptex_off:#x}")
+    index = {t["offset"]: i for i, t in enumerate(ptex_textures(data, ptex_off, size))}
+    out = []
+    for k, p in enumerate(lists):
+        if not p:
+            out.append([])
+            continue
+        if p % 4 or p + 8 > len(chunk):
+            raise ValueError(f"PTEX +{ptex_off:#x}: texlist {k} at {p:#x} is outside the chunk")
+        _names, count = struct.unpack_from("<II", chunk, p)
+        if count > 64 or p + 8 + 4 * count > len(chunk):
+            raise ValueError(f"PTEX +{ptex_off:#x}: texlist {k} has an implausible count {count}")
+        ptrs = struct.unpack_from(f"<{count}I", chunk, p + 8)
+        if any(q not in index for q in ptrs):
+            raise ValueError(f"PTEX +{ptex_off:#x}: texlist {k} points outside its GBIX/PVRT textures")
+        out.append([index[q] for q in ptrs])
+    return out
+
+
+def atlas_texture(data: bytes, ptex_off: int, texlists: list[list[int]] | None = None) -> int:
+    """PTEX index of the gameplay body's atlas: the largest texture in group 0's texlist (Gum's is PTEX 1, the
+    Poison Jam leaders' PTEX 1; texture 0 is an 8x8 / face sheet there)."""
+    texlists = ptex_texlists(data, ptex_off) if texlists is None else texlists
+    texs = ptex_textures(data, ptex_off)
+    if not texlists or not texlists[CHARACTER_GROUP]:
+        raise ValueError(f"PTEX +{ptex_off:#x}: the body group has no texture list")
+    return max(texlists[CHARACTER_GROUP], key=lambda i: (texs[i]["width"] * texs[i]["height"], -i))
+
+
+def group_manifest(data: bytes, play_off: int, root: int, texlist: list[int], name: str,
+                   texture_files: list[str] | None, source: dict, outline: bool | None = False):
+    """uap manifest of one draw group: texture ids bound through the group's own texlist (``texture_files`` in PTEX
+    order), untextured strips as flat diffuse-colour materials, skinned to the group's node skeleton.
+
+    outline: False = without the cel-shading outline strips (play_model's ignore-light class), True = those alone,
+    None = everything. Returns (manifest, model, triangle count)."""
+    from types import SimpleNamespace
+    from .ninja import to_manifest
+    nj = play_model(play_bytes(data, play_off), root, materials=True)
+
+    def keep(key):
+        if outline is None:
+            return True
+        is_outline = key >= FLAT_BASE and nj.materials[key - FLAT_BASE]["outline"]
+        return is_outline == outline
+    tris = {k: v for k, v in nj.tris.items() if keep(k)}
+    files = None
+    if texture_files is not None:
+        files = [texture_files[i] if 0 <= i < len(texture_files) else None for i in texlist]
+    flat_files = {}
+    for k in tris:
+        if k >= FLAT_BASE:
+            t = nj.materials[k - FLAT_BASE]["texture"]
+            flat_files[k] = files[t] if files is not None and t is not None and t < len(texlist) else None
+    m = to_manifest(SimpleNamespace(tris=tris, vbuf=nj.vbuf, bones=nj.bones), name, source, None)
+    for mat, mesh in zip(m.materials, m.meshes):
+        tid = mat.source.get("ninja_texture_id", -1)
+        if tid >= FLAT_BASE:
+            info = nj.materials[tid - FLAT_BASE]
+            r, g, b, a = info["colour"]
+            kind = "outline" if info["outline"] else "flat"
+            mat.name = mesh.name = f"{name}_{kind}{tid - FLAT_BASE}"
+            mat.texture = flat_files.get(tid)
+            mat.base_color = [1, 1, 1, 1] if mat.texture else [round(r / 255, 4), round(g / 255, 4),
+                                                                round(b / 255, 4), round(a / 255, 4)]
+            mat.source = {"strip_class": kind, "ninja_texture_id": info["texture"],
+                          "ptex_index": texlist[info["texture"]] if info["texture"] is not None
+                          and info["texture"] < len(texlist) else None,
+                          "diffuse": f"#{r:02x}{g:02x}{b:02x}{a:02x}"}
+        else:
+            known = 0 <= tid < len(texlist)
+            mat.texture = files[tid] if files is not None and known else None
+            mat.source = {"strip_class": "textured", "ninja_texture_id": tid, "ptex_index": texlist[tid] if known else None}
+    return m, nj, sum(len(t) for t in tris.values())
+
+
+def export_character(data: bytes, index: int, out_dir: str, name: str) -> dict:
+    """Write character *index* as its gameplay body alone, with everything else as separate parts (#1396).
+
+    ``<name>.glb`` (+ manifest.json, textures/) is draw group 0, the body the game draws while skating, textured
+    through its own PTEX texlist and without its cel-shading outline hull. ``parts/`` gets the outline hull
+    (``<name>_outline.glb``) and every other draw group that draws anything: the spray-can bodies, the low-detail
+    bodies and the separate head (``<name>_<role>.glb``, complete with their own outlines). The shadow volume has no
+    strips and is listed only. Returns {glb, root, triangles, parts: [{role, draw_group, root, triangles, file?}],
+    texlists}."""
+    from . import uap
+    from .ninja import png
+    out = Path(out_dir)
+    play, ptex = character_pair(data, index)
+    groups, texlists = play_groups(data, play), ptex_texlists(data, ptex)
+    (out / "textures").mkdir(parents=True, exist_ok=True)
+    files = []
+    for i, tex in enumerate(ptex_textures(data, ptex)):
+        w, h, rgba = decode_texture(tex)
+        rel = f"textures/{name}_tex{i:02d}_gbix{tex['gbix']}.png"
+        (out / rel).write_bytes(png(w, h, rgba))
+        files.append(rel)
+    base = {"game": GAME_IDS["4187aeab4d67638c"], "files": [PLAYER_AFS], "play_offset": play, "ptex_offset": ptex,
+            "extraction_method": "gbox.jgr (draw groups + PTEX texlists)"}
+    root = groups[CHARACTER_GROUP]
+    if root is None:
+        raise ValueError(f"PLAY {index:02d} has no gameplay body group")
+    body_list = texlists[CHARACTER_GROUP] if texlists else []
+    m, _nj, tris = group_manifest(data, play, root, body_list, name, files,
+                                  base | {"root": root, "draw_group": CHARACTER_GROUP, "role": GROUP_ROLES[CHARACTER_GROUP]})
+    if not m.meshes:
+        raise ValueError(f"PLAY {index:02d}: the gameplay body draws nothing besides its outline")
+    (out / "manifest.json").write_text(m.model_dump_json())
+    glb = out / f"{name}.glb"
+    glb.write_bytes(uap.to_glb(m, out))
+    parts = []
+
+    def part(role, k, r, texlist, which):
+        row = {"role": role, "draw_group": k, "root": None if r is None else f"{r:#x}", "triangles": 0}
+        if r is not None:
+            pm, pnj, n = group_manifest(data, play, r, texlist, f"{name}_{role}", files,
+                                        base | {"root": r, "draw_group": k, "role": role}, which)
+            row["nodes"], row["triangles"] = len(pnj.bones), n
+            if pm.meshes:
+                (out / "parts").mkdir(exist_ok=True)
+                path = out / "parts" / f"{name}_{role}.glb"
+                path.write_bytes(uap.to_glb(pm, out))
+                row["file"] = f"parts/{path.name}"
+        parts.append(row)
+    part("outline", CHARACTER_GROUP, root, body_list, True)
+    for k, (role, r) in enumerate(zip(GROUP_ROLES, groups)):
+        if k != CHARACTER_GROUP:
+            part(role, k, r, texlists[k] if k < len(texlists) else [], None)
+    return {"glb": str(glb), "root": root, "triangles": tris, "parts": parts, "texlists": texlists}
+
+
 # ---------------------------------------------------------------- native collection (gbox.characters)
 PLAYER_AFS = "JETRADIO/PLAYER.AFS"
 CHARACTER_COUNT = 16
+# 2: draw group 0 alone through its PTEX texlist, extras as parts/ (#1396). Collection entries of an older reader
+# (largest-triangle spray-can body, texture ids bound to PTEX file order) are re-extracted by characters.collect.
+READER_VERSION = 2
+
+
+def needs_refresh(meta: dict) -> bool:
+    """A collection entry this reader made before READER_VERSION (characters.extract_dedicated re-extracts it)."""
+    return "gbox.jgr" in (meta.get("extraction_tool") or "") and meta.get("jgr_reader", 1) < READER_VERSION
 
 
 # Verified USA PLAYER.AFS directory order and 1ST_READ debug labels at 0x8c10df40.
@@ -553,15 +795,24 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
     work = Path(work)
     data = GDRom(str(_dc_gdi(ctx, game))).read(PLAYER_AFS)
     play, ptex = character_pair(data, int(e["key"]))
-    root = body_root(data, play)
-    ctx.progress(50, f"Decoding PLAY +{play:#x} body root +{root:#x}")
-    glb = export_play_glb(data, play, root, str(work), e["slug"], ptex)
-    out = {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.jgr + gbox.ninja",
+    ctx.progress(50, f"Decoding PLAY +{play:#x} draw groups")
+    x = export_character(data, int(e["key"]), str(work), e["slug"])
+    root = x["root"]
+    files = [x["glb"], work / "textures", work / "manifest.json"]
+    if (work / "parts").is_dir():
+        files.append(work / "parts")
+    extras = [p for p in x["parts"] if p.get("file")]
+    out = {"files": files, "tool": "gbox.jgr + gbox.ninja",
            "source_files": [f"{PLAYER_AFS} PLAY #{int(e['key'])} (+{play:#x}, root +{root:#x})",
                             f"{PLAYER_AFS} PTEX #{int(e['key'])} (+{ptex:#x})"],
-           "notes": "Bind-pose body selected by largest-triangle heuristic; native drawn group is unverified. "
-                    "Texture ids bind to PTEX order (ids 0-2 verified on character 00 only). "
-                    "Offline experimental writer available; visible native replacement remains unverified."}
+           "extra": {"jgr_reader": READER_VERSION, "draw_group": GROUP_ROLES[CHARACTER_GROUP],
+                     "parts": [{k: p[k] for k in ("role", "draw_group", "root", "triangles", "file") if k in p}
+                               for p in x["parts"]]},
+           "notes": "The gameplay body (draw group 0 of the PLAY binding record) alone, textured through its own "
+                    "PTEX texture list; untextured strips keep their flat material colour. "
+                    f"{len(extras)} other draw groups (spray-can and low-detail bodies, separate head) are separate "
+                    "files under parts/; the shadow volume has no strips. Offline experimental writer available; "
+                    "visible native replacement remains unverified."}
     try:
         out["roles"] = body_roles(glb)
     except Exception as exc:                               # noqa: BLE001 - report instead of inventing roles
