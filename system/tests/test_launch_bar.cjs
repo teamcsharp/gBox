@@ -109,6 +109,15 @@ test('only launches show: launch_game and session_swap, queued or running', () =
   assert.equal(v.lines.at(-1), 'Fetching mod doa2_roster_59d8ed0e from the collection: 960/1272 MB');
 });
 
+test('#1656: a renamed build shows under the operator\'s name (the server puts mod_title on the launch / swap)', () => {
+  const m = LB.createModel();
+  m.remote([launch({ input: { game: { game_id: 'doa2', title: 'Dead or Alive 2' }, mod: 'doa2_roster_59d8ed0e', mod_title: 'Sonic Full Cast' } })]);
+  assert.equal(m.view().title, 'Launching Dead or Alive 2 · Sonic Full Cast');
+  const s = LB.createModel();
+  s.remote([{ id: 'S', tool: 'session_swap', state: 'running', created: 300, input: { game_id: 'doa2', mod: 'roster', mod_title: 'Favourite roster' } }]);
+  assert.equal(s.view().title, 'Swapping doa2 · Favourite roster');
+});
+
 test('a queued launch with no progress yet is indeterminate and says it is waiting', () => {
   const m = LB.createModel();
   m.remote([launch({ state: 'queued' })]);

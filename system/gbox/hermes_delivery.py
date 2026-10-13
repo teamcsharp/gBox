@@ -90,6 +90,32 @@ def _read_pull(root, number, branch, commit):
     return _verify_pull(pull, branch, commit)
 
 
+def _local_run(request_id) -> bool:
+    try:
+        from . import hermes_local
+        return hermes_local.run_was_local(request_id)
+    except Exception:  # noqa: BLE001 - labelling is best effort; publication never depends on it
+        return False
+
+
+def _mark_local(root, number, existed) -> dict:
+    """A local-model PR stays a draft and carries the "local model" label (best effort: never fails a publish)."""
+    from . import hermes_local
+    label = hermes_local.settings().pr_label
+    done = {'label': label}
+    steps = [('labelled', ['gh', 'api', f'repos/{REPOSITORY}/issues/{number}/labels', '--method', 'POST',
+                           '-f', f'labels[]={label}'])]
+    if existed:
+        steps.append(('draft', ['gh', 'pr', 'ready', str(number), '--repo', REPOSITORY, '--undo']))
+    for name, args in steps:
+        try:
+            result = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=45)
+            done[name] = result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            done[name] = False
+    return done
+
+
 def prepare(request_id: str, number: int) -> dict:
     record = _record_path(request_id)
     repo = repository()
@@ -162,7 +188,13 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             raise RuntimeError('No task commit exists; no GitHub progress was claimed')
         _run(['git', 'push', '-u', 'origin', workspace['branch']], root, timeout=90)
         commit = _run(['git', 'rev-parse', 'HEAD'], root)
-        body = (f"gBox request #{workspace['number']} ({request_id}).\n\n"
+        local = _local_run(request_id)
+        note = ''
+        if local:
+            from . import hermes_local
+            head, summary = hermes_local.pr_note(checks)
+            note = f"> **Local model.** {head}\n> {summary}\n\n"
+        body = (note + f"gBox request #{workspace['number']} ({request_id}).\n\n"
                 f"{title}\n\nValidation:\n```text\n" + '\n'.join(checks) +
                 "\n```\n\nPublished for review. This PR does not by itself verify live emulation or close the inbox ticket.\n")
         body_path = state_dir() / (request_id + '-pr.md')
@@ -184,6 +216,8 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                 raise RuntimeError('GitHub creation was not confirmed; preserve the workspace and inspect open PRs before retrying')
             number = int(match[1])
         confirmed = _read_pull(root, number, workspace['branch'], commit)
+        if local:
+            workspace['local_model'] = _mark_local(root, number, existing is not None)
         workspace.update(commit=commit, url=confirmed['url'], pr_number=number, pr_state=confirmed['state'],
                          base_head=_run(['git', 'rev-parse', 'origin/main'], root),
                          checks=checks, files=files, published_at=time.time())
