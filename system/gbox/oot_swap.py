@@ -994,7 +994,8 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
     if rom_data is None:
         rom, rom_file = rom_of(cfg, game)
     else:
-        rom, rom_file = OW.Rom(rom_data), Path(f"{game.get('title') or 'oot'}.z64")
+        safe = re.sub(r"[^\w .,()'-]+", " ", game.get("title") or "oot").strip()    # no ':' (an NTFS stream)
+        rom, rom_file = OW.Rom(rom_data), Path(f"{safe}.z64")
     root = Path(root) if root is not None else C.library_root(cfg)
     blender = C._blender(cfg)
     per: dict[str, dict] = {}
