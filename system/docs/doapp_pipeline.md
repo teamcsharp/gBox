@@ -11,8 +11,8 @@ ISO9660; everything lives in the 0x2800000-byte `bankedroms` region the CPU sees
 | --- | --- | --- |
 | Inventory (identity, files, fighter index) | done, verified against the owned ROMs | `gbox/doapp_inventory.py`, `gbox/zn_tps_boot.py` |
 | Format analysis | file table, model container, mesh sections, renderer located | this document |
-| Reader (rigged GLB) | see "Status" | `gbox/doapp_models.py` |
-| Writer | see "Status" | — |
+| Reader (rigged GLB) | blocked on the skeleton (see Status); format-level parsers done | `gbox/doapp_models.py` |
+| Writer | not started (constraints in Status) | — |
 
 ## Owned source
 
@@ -91,6 +91,55 @@ Renderer: 0x800ab828 (overlay) sets the bone matrix (32-byte matrices, bone inde
 calls 0x800abe94(section, count, first) which RTPT-transforms the vertex block into that buffer, then walks the chunk
 list dispatching on the chunk kind.
 
+### Vertex batches and bones (`gbox/doapp_models.py`)
+
+Sections 1 and 2 hold 13 u16 counts / first-vertex indices per mesh slot (slot k = section 3 + k). The renderer
+transforms batch p of slot k with bone matrix `BONE_SLOTS[k][p]` (the 13-byte tables at overlay 0x80103ed0; the
+body uses 0x80103f2c when it has 10 groups) into the shared transformed-vertex buffer at the batch's own first index,
+so primitives can join vertices of different bones (rigid one-bone-per-vertex skinning, seams included). Checked on
+all 44 costume models: the batches cover every vertex of every mesh exactly, and the mesh group count equals the
+batch count (one more in slots 0, 1 and 3 when those carry an extra group). Bones 0-14 are the main skeleton (15 matrices, post-processed by 0x800ad810), 15-26 are
+costume accessory chains (hair, ribbons; mesh slot 7, matrices from the chain solver 0x800aa1c0 driven by the
+per-fighter/costume table at 0x80103ab8). Batch extents give the local frames: bones 3/9 feet, 4/10 and 8/14 the two
+arm segments, 5/11 hands (three alternative hand shapes in slots 2 and 4, one drawn per frame), 6/12 and 7/13 the two
+leg segments, 0/1/2 torso / head / pelvis (labels from geometry, not from code).
+
 ## Status
 
-See the bottom of this file for the reader / writer state; this section is updated as stages land.
+* **Inventory: done.** `python -m gbox.doapp_inventory <roms dir> [--decode] [--extract DIR]`. Tests:
+  `tests/test_doapp_inventory.py`, `tests/test_zn_tps_boot.py` (the owned-ROM checks run when `GBOX_DOAPP_ROMS`
+  points at the directory with `doapp.zip` + `coh1002m.zip`; they decode the program, ~40 s).
+* **Format: container, section expansion, meshes, batches, bones, TIMs done** (`gbox/doapp_models.py`,
+  `python -m gbox.doapp_models <roms dir> tina --expand`). The expansion runs the game's own 0x8006c718 on the
+  interpreter rather than a port; the per-kind chunk layouts are not decoded yet (kind 0x801b was seen to hold 0x3c GT4
+  packets, then four vertex-buffer pointers and four 4.12 normals per quad).
+* **Reader (rigged GLB): blocked on the skeleton.** Each bone's batch is in its own local frame and those frames are
+  not aligned (thigh geometry runs along -z, shin along +z), so assembling the body needs the rest rotations and
+  joint offsets. They come from the motion evaluator: motion banks (files 27-37) are four 0x404-byte curve tables
+  then 265 motions of 8 bit-packed per-frame tracks, relocated by the loader at +0x1010/+0x1020; the code that turns
+  a frame into the 15 bone matrices at 0x8011ca60 + 0x340 * player was not found (the functions that touch those
+  matrices are the camera transform 0x800a4798, the head-look 0x800a76a0 / 0x800a791c / 0x800a6d30, the accessory
+  chains and post-processing). The per-fighter data file (`small_a`, relocated by 0x8006a754, 32 sub-tables) holds
+  hit spheres and move data, not bone lengths. Not registered in `characters.DEDICATED`: an unrigged or guessed pose
+  would be a substitute, which gBox refuses.
+* **Writer: not started.** Constraints found so far: files are packed back to back and the table that sizes them is
+  inside the encoded program, so a replacement model must fit the original file size (`file_room()`), keep the
+  14-section container, and expand within the player work buffer; the mod would be a rebuilt `doapp-1.217` /
+  `doapp-2.218` in a mod ROM set (MAME validates ROM CRCs per set, so it needs its own set name or `-skip_gameinfo`
+  with a renamed zip). Re-encoding the program is not needed for in-place replacement.
+
+Next step for whoever continues: locate the motion evaluator (start from the per-frame player update that calls
+0x800a4848 via 0x800a1510, or from readers of the motion list at character-data +0x58 / curve tables +0x5c), decode
+one frame of motion 0 into the 15 matrices, and check it by transforming the batches: the seams between batches must
+close. That gives the rest pose for a rigged GLB and the bone frames a writer retargets into.
+
+## Live check for the maintainer
+
+On the agent test PC, with the HyperSpin MAME roms reachable:
+
+```
+copy "\\10.89.1.125\HyperSpin Attraction\Arcade\collections\Mame\roms\doapp.zip" + coh1002m.zip  ->  %TEMP%\doapp\
+python -m gbox.doapp_inventory %TEMP%\doapp --decode          # derived.file_table_matches_snapshot: true
+python -m gbox.doapp_models %TEMP%\doapp tina --expand        # every mesh: covered == vertices
+set GBOX_DOAPP_ROMS=%TEMP%\doapp && python -m pytest tests/test_doapp_inventory.py tests/test_doapp_models.py -q
+```
