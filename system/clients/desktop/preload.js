@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("gbox", {
   miniOpen: (sid, title) => ipcRenderer.invoke("mini:open", sid, title),
   miniAspect: (w, h) => ipcRenderer.invoke("mini:aspect", w, h),
   miniRestore: () => ipcRenderer.invoke("mini:restore"),
+  onMiniClosed: fn => ipcRenderer.on("mini:closed", () => fn()),
   recStart: (ext, rect) => ipcRenderer.invoke("rec:start", ext, rect),
   recCrop: rect => ipcRenderer.invoke("rec:crop", rect),
   recAbort: () => ipcRenderer.invoke("rec:abort"),

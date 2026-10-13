@@ -32,8 +32,8 @@ def xinput_devices() -> list[int]:
     return []
 
 
-def xinput_snapshot() -> list[dict]:
-    """Live pad state for the desktop glyph, independent of Chromium focus."""
+def xinput_snapshot(slots=range(4)) -> list[dict]:
+    """Live pad state for the desktop app (controller glyph, and Player 1 of a streamed game), independent of Chromium focus."""
     if os.name != "nt":
         return []
     import ctypes
@@ -50,7 +50,7 @@ def xinput_snapshot() -> list[dict]:
         dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(State)]
         dll.XInputGetState.restype = ctypes.c_uint
         out = []
-        for slot in range(4):
+        for slot in slots:
             state = State()
             if dll.XInputGetState(slot, ctypes.byref(state)) == 0:
                 pad = state.gamepad
@@ -262,10 +262,42 @@ def emulator_environment(source: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _signature(pads: list[dict]) -> tuple:
+    """What counts as a change: every button exactly; triggers and sticks coarsely, so resting-stick jitter stays quiet."""
+    stick = lambda v: int(v / 1024)                          # toward zero: jitter around the centre is one bucket
+    return tuple((p["slot"], p["buttons"], p["lt"] >> 4, p["rt"] >> 4,
+                  stick(p["lx"]), stick(p["ly"]), stick(p["rx"]), stick(p["ry"])) for p in pads)
+
+
+def watch(emit, read=xinput_snapshot, sleep=time.sleep, clock=time.monotonic,
+          poll: float = 0.008, heartbeat: float = 0.25, rescan: float = 1.0, ticks: int | None = None) -> None:
+    """Stream XInput state to the desktop app: a line the moment anything changes (~8 ms polls), else a heartbeat.
+
+    The desktop view forwards this as Player 1 of a streamed game (#1532), so a change must not wait for a fixed 20 Hz
+    tick. Querying an empty XInput slot is slow, so only connected slots are polled; the others once a second.
+    """
+    last, sent_at, scanned_at, slots = None, float("-inf"), float("-inf"), []
+    while ticks is None or ticks > 0:
+        now = clock()
+        if now - scanned_at >= rescan:
+            pads, scanned_at = read(), now
+            slots = [p["slot"] for p in pads]
+        else:
+            pads = read(slots)
+            if len(pads) != len(slots):                      # one went away: look at every slot now
+                pads, scanned_at = read(), now
+                slots = [p["slot"] for p in pads]
+        sig = _signature(pads)
+        if sig != last or now - sent_at >= heartbeat:
+            emit(json.dumps(pads, separators=(",", ":")))
+            last, sent_at = sig, now
+        if ticks is not None:
+            ticks -= 1
+        sleep(poll)
+
+
 if __name__ == "__main__":
     if "--watch" in sys.argv:
-        while True:
-            print(json.dumps(xinput_snapshot(), separators=(",", ":")), flush=True)
-            time.sleep(0.05)
+        watch(lambda line: print(line, flush=True))
     else:
         print(json.dumps(xinput_devices()))

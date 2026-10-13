@@ -69,6 +69,9 @@ How to work:
 - Ripping a PC game's meshes when RenderDoc can't (characters op=extract / scene_capture first): ninja_ripper op=launch
   exe=<game.exe> (an agent test PC picked for you, never the operator's game) -> op=rip pid=<pid> worker=<its worker> ->
   op=import worker=<its worker> name=<name> (one GLB, stored in the collection) -> op=stop pid=<pid>.
+- Unreal Engine Steam game's actor / animation data: ue_steam op=status appid=<id> (anti-cheat games are refused: say
+  so) -> op=inventory (manifest of meshes, skeletons, animations, pawn blueprints) -> op=export paths=[<mesh path>]
+  (rigged GLB) or op=extract paths=[...] (raw assets). Encrypted paks: report that the game's AES key is needed.
 - "Put me on <stage/world/level>", "play as <character>", "skip to <boss>": DO IT, don't explain how the operator could.
   Playbook, in order, until it works: (0) recall + re_dossier op=read (addresses gBox already verified) and the game's own
   tool when it has the warp (zelda_oot op=goto / skip_deku_tree, stage_warp op=warp, re_mods, gta_mods, pso autoplay);
@@ -394,6 +397,8 @@ def tool_specs() -> list[dict]:
            "'make this item a Durandal', 'make my weapon rare'; for a Ctrl+clicked item, op=list first and match the name), "
            "multi_equip (target = slot | item code | weapon/armor/mag: equip it ON TOP of what's equipped, stats stack - the "
            "'multi-equip bug'; on=false target='' unequips all extras), "
+           "dupe (target = slot | item code | weapon/armor/mag: exact clone with stats, percentages, grind and stack count "
+           "- 'duplicate my weapon', 'dupe it x5'; count=N, equip=true also equips the first copy), "
            "status, unhook. give with equip=true also equips the first item ('equip me with a DB saber' = give code count=1 "
            "equip=true; add equip_any first if the class can't normally use it).",
            {"session_id": s, "op": s, "on": b, "value": i, "factor": i, "code": s, "count": i, "equip": b, "name": s,
@@ -648,12 +653,15 @@ def tool_specs() -> list[dict]:
            "guest_session_id and memory watch specs (trigger/win/lose). session_id is the running Stranglehold host.",
            {"op": s, "session_id": s, "verdict": s, "guest": s, "round": s, "guest_session_id": s, "guest_node": s,
             "style": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
-        fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
-           "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
-           "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
-           "extracted model; false opens a live Bevy window on the operator's PC.",
+        fn("bevy_scene", "The gBox Bevy viewer (Rust/Bevy, real-time 3D): render collection entries (items=[{character: slug} "
+           "or {environment: slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation "
+           "[x,y,z], scale, rotation_y_deg; camera={eye, target}. op=render + screenshot=true (default) returns a PNG shown "
+           "in the chat - use it to look at an extracted model or stage a scene. Reactive: op=open starts a live window on "
+           "the operator's PC; then react to what you see with op=snapshot (capture the live window to {name}.png), "
+           "op=set_camera (move it), op=add (more items), op=remove (drop item index), op=close (stop it); op=list shows "
+           "live sessions and saved scenes/renders.",
            {"name": s, "items": {"type": "array", "items": {"type": "object"}}, "camera": {"type": "object"},
-            "screenshot": {"type": "boolean"}}, ["items"]),
+            "screenshot": {"type": "boolean"}, "op": s, "index": {"type": "integer"}}, []),
         fn("mashup", "Cross-title mashup planner: turn a request like 'put Mario 64 in Ocarina of Time' into a resolved source "
            "character + target game, a feasibility check (native writer vs overlay-only) and an ordered plan. Explicit source "
            "(character name/slug) and target (game title/id) override the parsed request. auto_dispatch=true submits the "
@@ -714,6 +722,15 @@ def tool_specs() -> list[dict]:
            "later call. Never used on the operator's own game.",
            {"op": s, "exe": s, "args": {"type": "array", "items": s}, "session_id": s, "pid": i, "path": s, "hotkey": s,
             "wait_s": {"type": "number"}, "name": s, "kind": s, "worker": s, "mode": s}, ["op"]),
+        fn("ue_steam", "Unreal Engine 4/5 Steam games installed on the Windows PC, static only (never launches the game; "
+           "refuses any game shipping anti-cheat). op=status (appid: engine, anti-cheat check, pak count) | analyze (Ghidra "
+           "movement/animation symbols) | list_files (paths) | inventory (actor + animation manifest: SkeletalMesh, "
+           "Skeleton, AnimSequence/Montage/BlendSpace, AnimBlueprint, pawn Blueprints and the meshes they use) | extract "
+           "(paths: raw .uasset/.uexp/.ubulk to a work dir) | export (paths: UE 4.24-4.27 SkeletalMesh -> rigged GLB with "
+           "skin weights, Skeleton -> bone JSON). AES-encrypted paks need the game's key (unsupported, says so); IoStore "
+           ".utoc/.ucas are listed only. engine='4.27' overrides the detected engine.",
+           {"op": s, "appid": s, "title": s, "engine": s, "paths": {"type": "array", "items": s},
+            "extensions": {"type": "array", "items": s}, "max_files": i, "max_packages": i}, ["op", "appid"]),
         fn("characters", "collect (game): extract the supported native character roster without vision calls; returns verified models, mapped rig readiness and individual failures. gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
            "reusable in any game. use/live_use/overlay/place require a nonempty character copied from the operator's exact slug/name. "
            "Overlay/missing/pending results do not complete a native swap; keep the request pending until native verification. "
@@ -1300,12 +1317,27 @@ class Agent:
     def um_render3d(self, **args):
         return self._um("um_render3d", args)
 
-    def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
-        j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
+    def bevy_scene(self, items=None, name="scene", camera=None, screenshot=True, op=None, index=None):
+        inp = {"name": name, "items": items or [], "camera": camera or {}, "screenshot": bool(screenshot)}
+        if op:
+            inp["op"] = op
+        if index is not None:
+            inp["index"] = index
+        # A live window exists only in the worker process that opened it: later ops on that scene go to the same PC.
+        live = getattr(self, "_bevy_live", None)
+        if live is None:
+            live = self._bevy_live = {}
+        pinned = live.get(name) if op in ("snapshot", "set_camera", "add", "remove", "close") else None
+        j = self._job("bevy_scene", inp, None if pinned else "windows", 3600, worker=pinned)
+        if op == "open" and j.get("state") == "succeeded" and j.get("worker_id"):
+            live[name] = j["worker_id"]
+        elif op == "close":
+            live.pop(name, None)
         out = j.get("output") or {}
         if j["state"] != "succeeded":
             return {"state": j["state"], "error": j.get("error")}
-        res = {k: out.get(k) for k in ("scene", "screenshot", "pid")}
+        # every field the op returned (op=list: live / scenes / renders; add/remove/set_camera: items, camera)
+        res = {k: v for k, v in out.items() if v not in (None, [], "")}
         try:                                                   # the screenshot as an image in the chat sidebar
             arts = self.api.get(f"/api/receipts/{j['receipt_id']}").json().get("artifacts", [])
             res["artifact"] = next((a["sha256"] for a in arts if a["name"] == "bevy.png"), None)
@@ -1367,6 +1399,14 @@ class Agent:
                "target_asm": target_asm, "context": context, "source_code": source_code, "name": name}
         j = self._job("decomp_me", inp, limit=180)
         return j.get("output") or {"state": j.get("state"), "error": j.get("error")}
+
+    def ue_steam(self, op="status", appid="", title="", engine="", paths=None, extensions=None, max_files=200,
+                 max_packages=100000):
+        inp = {"op": op, "appid": str(appid), "title": title or f"Steam app {appid}", "engine": engine or "",
+               "paths": list(paths or []), "extensions": list(extensions or []), "max_files": int(max_files or 200),
+               "max_packages": int(max_packages or 100000)}
+        j = self._job("ue_steam", inp, node="windows", limit=7200)
+        return (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
 
     def ninja_ripper(self, op="status", exe="", args=None, session_id="", pid=0, path="", hotkey="", wait_s=30.0, name="",
                      kind="object", worker="", mode="auto"):

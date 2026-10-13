@@ -220,9 +220,9 @@ def test_old_tool_schema_defaults_remain_usable():
 def test_registered_worker_tool_advertises_callable_diagnostic_and_exact_inputs():
     from gbox.registry import REGISTRY
     info = REGISTRY['doa2_assets'].info()
-    assert info.version == '1.3'
+    assert info.version == '1.4'
     assert REGISTRY['doa2_assets'].fn is L.doa2_assets
     fields = info.input_schema['properties']
-    assert 'moment_context' in fields['op']['enum']
+    assert {'moment_context', 'motion_clips'} <= set(fields['op']['enum'])
     assert {'state_artifact', 'request_id', 'actor_index', 'source_chr_artifact', 'source_chr_name'} <= fields.keys()
     assert 'no state is saved, loaded or rewritten' in info.description

@@ -676,7 +676,7 @@ ipcMain.handle("mini:open", async (_e, sid, title) => {
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
   mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
-  mini.on("closed", () => { mini = null; if (win && !win.isDestroyed()) win.show(); });
+  mini.on("closed", () => { mini = null; if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
   win.hide();
   return true;
 });

@@ -5,6 +5,12 @@ import time
 from . import characters as C
 
 
+def registered(game):
+    """True when a dedicated native reader in characters.DEDICATED matches this catalog game."""
+    title = (game.get('title') or '').lower()
+    return any(test(title, game.get('platform')) for _, test, _, _ in C.DEDICATED)
+
+
 class AutoCollection:
     def __init__(self, store, config):
         self.store, self.config = store, config
@@ -29,10 +35,22 @@ class AutoCollection:
                         record['result'] = C.refresh_collection(root, result)
                     except Exception:                       # a status read never fails on a bad entry
                         pass
+        elif record.get('state') == 'unsupported' and self._reader_now_registered(gid):
+            # The stored verdict predates a reader deployed since then (#1369): report "not run yet",
+            # never the false "No native model reader registered", so favorites/launches re-queue it.
+            record = record | {'state': 'not_started', 'stale_unsupported_since': record.get('updated'),
+                               'message': 'A native model reader is registered now; collection has not run since it was deployed.'}
         capability = self.store.get('game_capability', gid)
         if capability:
             record = record | {'capabilities': capability, 'backlog': self.store.get('capability_backlog', gid) or []}
         return record
+
+    def _reader_now_registered(self, gid):
+        try:
+            game = self.store.catalog_get(gid) or {}
+        except Exception:
+            return False  # unknown catalog row: keep the stored verdict
+        return bool(game) and registered(game)
 
     def track(self, game, entries=None):
         """Persist scoped capability gaps without inventing completion or inbox jobs."""
@@ -80,7 +98,7 @@ class AutoCollection:
         with self.lock:
             previous = self.status(gid)
             # A favorite action explicitly retries failed work; launches never repeat expensive failures.
-            supported = any(test((game.get('title') or '').lower(), game.get('platform')) for _, test, _, _ in C.DEDICATED)
+            supported = registered(game)
             if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed'):
                 return
             if not supported:

@@ -14,6 +14,7 @@ Every tool is registered with `@tool(name, version, In, Out, ...)` in `gbox/tool
 | export_asset | read | UAP validator + glTF round trip | tested |
 | open_in_blender | read | vertex/bone counts vs UAP | written, unverified |
 | analyze_binary | read | artifact counts | written, unverified |
+| ue_steam | read, execute | schema; refuses anti-cheat games before opening paks | synthetic paks tested; live read-only check on owned UE 4.27 games (docs/ue_steam.md) |
 | llm_complete | network | non-empty; output is a hypothesis | smoke-tested with Ollama |
 
 ## Adding a tool
