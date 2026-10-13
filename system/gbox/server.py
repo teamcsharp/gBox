@@ -688,8 +688,8 @@ def create_app(config: Config) -> FastAPI:
     # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
     def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None, should_stop=None,
-                 on_cancel_deferred=None) -> dict:
-        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker), actor)
+                 on_cancel_deferred=None, agent_use: bool = False) -> dict:
+        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker, agent_use=agent_use), actor)
         t0 = time.time()
         deferred_launch = False
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
@@ -1030,6 +1030,162 @@ def create_app(config: Config) -> FastAPI:
                     'state': JobState.FAILED, 'finished': time.time(), 'error': 'capture session task could not start'})
             raise HTTPException(503, 'capture session task could not start') from exc
         return job
+
+    # --- PR evidence (gbox/evidence_capture.py, docs/pr-evidence.md): frames of a mod working, in agent test sessions ---
+    EVIDENCE_MOMENTS = "evidence_moments"          # setting: {game_id: {variant: {artifact, label, after_moment, ...}}}
+
+    def _evidence_recorded(gid: str, variant: str = "") -> dict | None:
+        return ((store.get("setting", EVIDENCE_MOMENTS) or {}).get(gid) or {}).get(variant or "")
+
+    def _evidence_mod_card(cid: str) -> dict | None:
+        card = store.get("mod", cid)
+        if card and card.get("session_id"):
+            sess = store.get("session", card["session_id"]) or {}
+            name = (sess.get("detail") or {}).get("worker_name")
+            if name:
+                card = card | {"worker": name}
+        return card
+
+    def _evidence_operator_active(w: dict) -> str | None:
+        """Someone started using the capture's node: a game the capture did not start, or fresh input on that PC."""
+        cur = next((x for x in workers() if x["id"] == w["id"]), None) or {}
+        idle = cur.get("idle_seconds")
+        if cur.get("os") == "windows" and idle is not None and idle < 30 and (w.get("idle_seconds") or 0) >= 30:
+            return f"someone is using {cur.get('name')} (input {int(idle)} s ago)"
+        labels = {x["session_id"]: x for x in store.all("slabel")}
+        for sess in store.all("session"):
+            sid = sess.get("session_id") or ""
+            if (sess.get("state") == "running" and _wid(sid.split("-")[0]) == w["id"]
+                    and not str((labels.get(sid) or {}).get("label", "")).startswith("Evidence capture")):
+                return f"a game was started on {cur.get('name') or w['id']} ({sess.get('title') or sid})"
+        return None
+
+    def evidence_job(inp: dict, actor: str) -> Job:
+        """evidence_capture as an in-server job (one at a time); output = EvidenceOut. Its test sessions are agent
+        jobs (agent_use: 2% volume on Windows), labelled owner=agent, and always stopped by the capture itself."""
+        from . import evidence_capture as EC
+        game = store.catalog_get(inp.get("game_id") or "")
+        if not game:
+            raise HTTPException(404, f"game {inp.get('game_id')} is not in the library")
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == EC.TOOL and existing.get('state') in ('queued', 'running')
+                        and existing.get('id') in _server_job_threads):
+                    raise HTTPException(409, f"an evidence capture is already running (job {existing['id']}); "
+                                             "they run one at a time")
+            job = Job(tool=EC.TOOL, input=inp, state=JobState.RUNNING, started=time.time(), agent_use=True)
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def end_session(nsid):
+            with store.lock:
+                s_ = store.get("session", nsid)
+                if s_ and s_.get("state") != "ended":
+                    store.put("session", nsid, s_ | {"state": "ended", "ended": time.time(),
+                                                     "exit": {"by": actor, "via": "evidence_capture"}})
+
+        def put_artifact(data, name, media, prov):
+            return store.put_artifact(data, name, media, prov | {"job": job.id}).sha256
+
+        def go():
+            try:
+                ei = EC.EvidenceIn.model_validate(inp)
+                out = EC.run(
+                    ei, game,
+                    run_job=lambda tool, i, w, wait, progress=None: _run_job(tool, i, actor, worker=w, wait=wait,
+                                                                             progress=progress, agent_use=True),
+                    workers=workers, live_sessions=lambda: store.all("session"),
+                    recorded=_evidence_recorded(ei.game_id, ei.recipe),
+                    label=lambda nsid, l: store.put("slabel", nsid, l | {"session_id": nsid, "ts": time.time()}),
+                    end_session=end_session, put_artifact=put_artifact, read_artifact=store.read_artifact,
+                    operator_active=_evidence_operator_active, mod_card=_evidence_mod_card,
+                    running_jobs=store.running_job_counts, say=prog,
+                    should_stop=lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                    worker_of=lambda s: _wid(s.split("-")[0]))
+                state, err = JobState.SUCCEEDED, None
+                store.put("evidence", job.id, {"id": job.id, "game_id": ei.game_id, "mod": ei.mod, "ts": time.time(),
+                                               "by": actor, "frames": out["frames"], "pairs": out["pairs"],
+                                               "worker": out["worker"], "recipe": out["recipe"]})
+            except EC.EvidenceError as e:
+                out, state, err = None, JobState.FAILED, f"Unsupported: {e}"
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(),
+                                                                     "output": out, "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "evidence.capture", inp.get("game_id", ""), {"job": job.id, "state": state, "error": err,
+                        "mod": inp.get("mod"), "frames": len((out or {}).get("frames") or [])})
+        try:
+            threading.Thread(target=go, daemon=True, name=f"evidence-{job.id}").start()
+        except Exception as exc:
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {
+                    'state': JobState.FAILED, 'finished': time.time(), 'error': 'evidence capture task could not start'})
+            raise HTTPException(503, 'evidence capture task could not start') from exc
+        return job
+
+    @app.get("/api/evidence/recipes")
+    def evidence_recipes(actor=Depends(auth)):
+        """Per-game capture recipes (gbox/evidence_recipes.json) with the moments the operator recorded."""
+        from . import evidence_capture as EC
+        rec = store.get("setting", EVIDENCE_MOMENTS) or {}
+        return {gid: r | {"recorded": rec.get(gid) or {}} for gid, r in EC.load_recipes().items()}
+
+    class EvidenceMomentIn(BaseModel):
+        game_id: str = ""                   # default: the session's game
+        session_id: str                     # the running session to export the moment from (it keeps running)
+        variant: str = ""                   # a recipe variant ("" = the game's default)
+        label: str = ""
+        after_moment: list[dict] | None = None   # None = keep the recipe's
+
+    @app.post("/api/evidence/moments")
+    def evidence_moment_put(m: EvidenceMomentIn, actor=Depends(auth)):
+        """Record the game's gameplay moment for evidence captures: a state export of a running session (the game is
+        not paused or stopped). Only on an explicit request that names the session."""
+        from . import evidence_capture as EC
+        sess = store.get("session", m.session_id) or _404()
+        if sess.get("state") != "running":
+            raise HTTPException(409, "That session has ended; open the game at the moment you want to record.")
+        gid = m.game_id or sess.get("game_id") or ""
+        if m.after_moment is not None:
+            for k, st in enumerate(m.after_moment):
+                try:
+                    s_ = EC.InputStep.model_validate(st)
+                except Exception as e:                         # noqa: BLE001
+                    raise HTTPException(422, f"after_moment[{k}]: {e}")
+                if s_.tool and (s_.tool not in EC.STEP_TOOLS or s_.input.get("op") not in EC.STEP_TOOLS[s_.tool]):
+                    raise HTTPException(422, f"after_moment[{k}]: tool {s_.tool} is not allowed")
+        out = _run_job("state_transfer", {"session_id": m.session_id, "op": "export"}, actor,
+                       worker=m.session_id.split("-")[0], wait=120)
+        art = (out.get("result") or {}).get("artifact")
+        if not art:
+            raise HTTPException(409, "the state export returned no artifact")
+        with store.lock:
+            allm = store.get("setting", EVIDENCE_MOMENTS) or {}
+            rec = {"artifact": art, "label": m.label or "recorded gameplay moment", "session_id": m.session_id,
+                   "adapter": sess.get("adapter"), "mod": sess.get("mod") or "", "by": actor, "ts": time.time()}
+            if m.after_moment is not None:
+                rec["after_moment"] = m.after_moment
+            allm.setdefault(gid, {})[m.variant or ""] = rec
+            store.put("setting", EVIDENCE_MOMENTS, allm)
+        store.audit(actor, "evidence.moment", gid, {"variant": m.variant, "artifact": art})
+        return rec | {"game_id": gid, "variant": m.variant}
+
+    @app.get("/api/evidence")
+    def evidence_list(game_id: str = "", mod: str = "", limit: int = 50, actor=Depends(auth)):
+        """Finished evidence captures (frames + before/after pairs), newest first."""
+        rows = [e for e in store.all("evidence") if (not game_id or e.get("game_id") == game_id)
+                and (not mod or e.get("mod") == mod)]
+        return sorted(rows, key=lambda e: -(e.get("ts") or 0))[:max(1, min(limit, 500))]
 
     # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
     class LessonIn(BaseModel):
@@ -1809,6 +1965,8 @@ def create_app(config: Config) -> FastAPI:
             inp = t.In.model_validate(req.input).model_dump(mode="json")
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
+        if t.name == "evidence_capture":              # PR evidence: an in-server job driving agent test sessions
+            return evidence_job(inp, actor)
         if t.name == "scene_capture":
             session = store.get("session", inp["session_id"])
             if not session or session.get("state") != "running":
