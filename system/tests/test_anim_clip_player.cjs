@@ -31,8 +31,7 @@ class Mixer {
 }
 const THREE = { AnimationMixer: Mixer, LoopRepeat: 2201 };
 function rootWith(objects = {}) {
-  const posed = [];
-  return { posed, getObjectByName: n => objects[n], traverse: fn => [{ skeleton: { pose: () => posed.push(1) } }, {}].forEach(fn) };
+  return { getObjectByName: n => objects[n] };
 }
 const walk = { name: 'walk', duration: 2, tracks: [] };
 
@@ -89,7 +88,7 @@ test('the AnimationMixer player loads, plays, loops, seeks, changes speed and st
   assert.ok(a.stopped); assert.deepEqual(plain(p.mixer.uncached), ['walk']);
   p.stop();
   assert.deepEqual(plain(p.state), { name: '', t: 0, duration: 0, playing: false, loop: false, speed: 1 });
-  assert.deepEqual(root.posed, [1]);                               // back to the bind pose
+  assert.ok(p.mixer.actions[1].stopped); assert.deepEqual(plain(p.mixer.uncached), ['walk', 'run']);   // three restores the rest pose
   assert.ok(seen.length > 8);
   p.dispose(); assert.ok(p.mixer.allStopped);
 });

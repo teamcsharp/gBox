@@ -83,11 +83,11 @@
       setLoop(on) { st.loop = !!on; onchange(st); return p; },
       setSpeed(x) { st.speed = SPEEDS.includes(+x) ? +x : 1; onchange(st); return p; },
       seek(t) { st.t = Math.min(Math.max(0, +t || 0), st.duration); apply(); onchange(st); return p; },
-      stop() {
+      stop() {                                   // stopping hands the bindings back: three restores each node's rest TRS
         if (action) { action.stop(); mixer.uncacheAction(clip); }
         action = clip = null; controls = []; rng = {};
         Object.assign(st, { name: '', t: 0, duration: 0, playing: false });
-        root.traverse?.(o => o.skeleton?.pose?.()); onchange(st); return p;
+        onchange(st); return p;
       },
       update(dt) {
         if (!clip || !st.playing) return false;
@@ -122,7 +122,7 @@
         + `<button class="act" data-c="loop" aria-pressed="true" title="Loop">⟲</button>`
         + `<select data-c="speed" title="Speed">${SPEEDS.map(s => `<option value="${s}"${s === 1 ? ' selected' : ''}>${s}×</option>`).join('')}</select>`
         + `<input type="range" data-c="scrub" min="0" max="1000" value="0" step="1" aria-label="Clip time"><output data-c="time">0.00 s</output>`
-        + `<button class="act" data-c="stop" title="Stop: back to the bind pose">■</button></div><canvas class="gbc-bars" hidden></canvas>`;
+        + `<button class="act" data-c="stop" title="Stop: back to the rest pose">■</button></div><canvas class="gbc-bars" hidden></canvas>`;
     return `<div class="gbc-h"><b>Animations</b><span class="mut">${rows.length} clip${rows.length === 1 ? '' : 's'}</span></div>`
       + (rows.length > 12 ? `<input class="gbc-q" type="search" placeholder="Filter clips…" aria-label="Filter clips">` : '')
       + `<div class="gbc-list">${items}</div>${ctl}<p class="gbc-note mut" hidden></p>`;
