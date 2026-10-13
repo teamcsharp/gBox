@@ -83,3 +83,21 @@ def test_owned_europe_rom_inventory():
     assert names[0] == '"MEAN" GENE OKERLUND' and names[-1] == "WRATH" and "GOLDBERG" in names and "STING" in names
     assert m["models"]["count"] == 176 and m["animations"]["count"] == 573
     assert {"ST", "GO", "WS"} <= set(m["models"]["wrestler_codes"])
+
+
+def test_truncated_inputs_raise_valueerror():
+    good = refpack.compress_literal(b"hello world, refpack")
+    for n in range(len(good)):
+        with pytest.raises(ValueError):
+            refpack.decompress(good[:n])
+    two = bytes([0x10, 0xFB, 0, 0, 10, 0xE0]) + b"abcd" + bytes([0x02, 0x05]) + b"ef" + bytes([0xFD]) + b"z"
+    for n in range(len(two)):
+        with pytest.raises(ValueError):
+            refpack.decompress(two[:n])
+    arc = _bigf([("a.bin", b"1234"), ("b.bin", b"56")])
+    for n in range(len(arc)):
+        with pytest.raises(ValueError):
+            M.parse_bigf(arc[:n])
+    for n in range(12):
+        with pytest.raises(ValueError):
+            M.roster(b"KCHR" + bytes(8)[:max(0, n - 4)])

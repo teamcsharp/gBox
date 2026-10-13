@@ -22,6 +22,8 @@ def header(b: bytes) -> tuple[int, int]:
         raise ValueError("not a RefPack stream")
     n = 4 if b[0] & 0x80 else 3
     p = 2 + (n if b[0] & 0x01 else 0)
+    if p + n > len(b):
+        raise ValueError("RefPack header truncated")
     return int.from_bytes(b[p:p + n], "big"), p + n
 
 
@@ -32,6 +34,9 @@ def decompress_ex(b: bytes) -> tuple[bytes, int]:
         if p >= len(b):
             raise ValueError("RefPack stream truncated")
         b0 = b[p]
+        need = 2 if b0 < 0x80 else 3 if b0 < 0xC0 else 4 if b0 < 0xE0 else 1
+        if p + need > len(b):
+            raise ValueError("RefPack command truncated")
         if b0 < 0x80:
             b1 = b[p + 1]; p += 2
             lit, ln, off = b0 & 3, ((b0 >> 2) & 7) + 3, ((b0 & 0x60) << 3) + b1 + 1
@@ -44,10 +49,14 @@ def decompress_ex(b: bytes) -> tuple[bytes, int]:
         else:
             p += 1
             lit = ((b0 & 0x1F) + 1) * 4 if b0 < 0xFC else b0 & 3
+            if p + lit > len(b):
+                raise ValueError("RefPack literal run truncated")
             out += b[p:p + lit]; p += lit
             if b0 >= 0xFC:
                 break
             continue
+        if p + lit > len(b):
+            raise ValueError("RefPack literal run truncated")
         out += b[p:p + lit]; p += lit
         if off > len(out):
             raise ValueError(f"RefPack back-reference {off} before start (out={len(out)})")

@@ -36,13 +36,17 @@ WRESTLER_MODEL = re.compile(r"^([A-Za-z]{2})_n64\.n3o$")
 
 def parse_bigf(buf: bytes, base: int = 0) -> list[tuple[str, int, int]]:
     """[(name, absolute offset, size)] for the BIGF archive at buf[base]."""
-    if buf[base:base + 4] != b"BIGF":
+    if base < 0 or buf[base:base + 4] != b"BIGF" or base + 16 > len(buf):
         raise ValueError(f"no BIGF at {base:#x}")
     total, count, hsize = struct.unpack_from(">III", buf, base + 4)
     p, out = base + 16, []
     for _ in range(count):
+        if p + 8 > len(buf):
+            raise ValueError("BIGF directory truncated")
         off, size = struct.unpack_from(">II", buf, p)
-        e = buf.index(b"\0", p + 8)
+        e = buf.find(b"\0", p + 8)
+        if e < 0:
+            raise ValueError("BIGF member name unterminated")
         name = buf[p + 8:e].decode("latin-1")
         p = e + 1
         if base + off + size > len(buf):
@@ -89,7 +93,7 @@ def member(rom: bytes, rows: list[dict], name: str, archive: str | None = None) 
 
 def roster(nch: bytes) -> list[dict]:
     """Wrestler name records of a KCHR wrestler.nch: (full name, ring name, costume label, 56 attribute bytes)."""
-    if nch[:4] != b"KCHR":
+    if nch[:4] != b"KCHR" or len(nch) < 12:
         raise ValueError("not a KCHR file")
     hsize, stride = struct.unpack_from(">II", nch, 4)
 
