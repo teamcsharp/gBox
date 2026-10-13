@@ -373,6 +373,8 @@ def create_app(config: Config) -> FastAPI:
         from . import characters
         return characters, characters.library_root(config)
 
+    _CHAR_STATS: dict = {}
+
     @app.get("/api/characters")
     def chars_list(game_id: str = "", actor=Depends(auth)):
         """Library characters (+ ready swap mods for game_id) with preview URLs."""
@@ -383,9 +385,18 @@ def create_app(config: Config) -> FastAPI:
             except OSError:
                 return 0
         tf = lambda slug: sorted("targets/" + f.name for f in (Path(root) / slug / "targets").glob("*") if f.is_file())             if (Path(root) / slug / "targets").is_dir() else []          # game-fitted models (Blender copy of a swap mod)
+        entries = K.list_all(root, game_id)
+        gen = (K._LIST_GEN[0], str(root))                 # file stats are cached with the list (thousands of HDD stats per call)
+        stats = _CHAR_STATS.get(gen) or {}
+        if len(_CHAR_STATS) > 4:
+            _CHAR_STATS.clear()
+        for m in entries:
+            if m["slug"] not in stats:
+                stats[m["slug"]] = (tf(m["slug"]), model_bytes(m))
+        _CHAR_STATS[gen] = stats
         return [m | {"preview_url": f"/api/characters/{m['slug']}/preview", "model_url": f"/api/characters/{m['slug']}/file/{m['model']}",
-                     "target_files": tf(m["slug"]), "model_bytes": model_bytes(m)}
-                for m in K.list_all(root, game_id)]
+                     "target_files": stats[m["slug"]][0], "model_bytes": stats[m["slug"]][1]}
+                for m in entries]
 
     @app.get("/api/characters/{slug}")
     def chars_get(slug: str, actor=Depends(auth)):
