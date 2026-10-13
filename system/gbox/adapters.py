@@ -35,6 +35,9 @@ FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
 # Keep rendered textures in emulated VRAM, so future states can include them.
 # Unthreaded rendering also keeps serialization size stable between query/write.
 FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+# Flycast save states are ~27 MB and stall the game while they serialize: gBox's checkpoint ring takes one at most every
+# 20 s there (#1489, 2 fps in PSO with a checkpoint every 2 s); the ring's frame-rate budget can stretch it further.
+FLYCAST_CHECKPOINT_MIN_S = 20.0
 # Windows N64 (docked, resizable window) uses parallel_n64's software angrylion RDP, whose output scales with the window.
 # angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
 # angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
@@ -735,6 +738,7 @@ class RetroArchAdapter(CommandAdapter):
         self.addr, self.display, self.stream, self.log_path = (host, port), None, None, None
         self._state_lock = threading.RLock()
         self.rewind_on = (platform or "") not in NO_REWIND
+        self.checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S if (platform or "") in FLYCAST_PLATFORMS else 0.0
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
         if HOST_OS == "windows":

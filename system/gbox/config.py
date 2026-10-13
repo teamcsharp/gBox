@@ -51,6 +51,7 @@ class RewindConfig(BaseModel):
     depth: int = 60                   # checkpoints kept per session (about two minutes at the default interval)
     max_mb: int = 2048                # disk cap per session's ring; the oldest checkpoints go first
     repeat_s: float = 0.6             # holding Select+L2: one older checkpoint per repeat
+    max_duty: float = 0.05            # frame-rate budget: checkpoints slow down so saving takes at most 5% of play time
 
 
 class AudioCppConfig(BaseModel):
@@ -212,6 +213,7 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # interval_s = 2.0                # seconds between checkpoints
 # depth = 60                      # checkpoints kept per session
 # max_mb = 2048                   # disk cap per session
+# max_duty = 0.05                 # frame-rate budget: a slow save state stretches the interval (1 s save -> every 20 s)
 
 # [voice]                         # speech assistants (docs/audio_cpp.md)
 # default_assistant = "audio_cpp" # "director" (Pine Box Voice Director + Wyoming whisper, the default) or "audio_cpp"
