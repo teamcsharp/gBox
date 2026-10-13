@@ -1542,6 +1542,12 @@ DEDICATED = [
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
      _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
+    # Super Mario 64 DS (USA): the playable four (head models attached), Peach, Bowser, bosses and notable enemies
+    # from the game's own BMD models (NitroFS + NARC + LZ77, GX display lists, DS texel formats) as rigged, textured
+    # GLBs with body roles (gbox.sm64ds_chars, docs/sm64ds.md)
+    ("sm64ds", lambda t, p: "super mario 64 ds" in t and p == "nds",
+     lambda: __import__("gbox.sm64ds_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sm64ds_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("tetris_ds", lambda t, p: t.startswith("tetris ds") and p == "nds",
      lambda: __import__("gbox.tetris_ds", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1656,7 +1662,7 @@ def dedicated_entries(config, game, name, roster):
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
-                   "twin_snakes": ("gbox.twin_snakes", "tts_reader")}
+                   "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
