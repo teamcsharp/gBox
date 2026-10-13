@@ -71,7 +71,8 @@
       const m = f.models[k], st = m.stages || {};
       const names = STAGES.filter(s => st[s]).concat(Object.keys(st).filter(s => !STAGES.includes(s)));
       return { key: k, label: m.label || k, state: m.state || "pending", current: m.current || null, snapshot: m.snapshot || null,
-        snapshotStage: m.snapshot_stage || null, updated: m.updated || 0,
+        snapshotStage: m.snapshot_stage || null, updated: m.updated || 0, preview: m.preview || null,
+        previewStage: m.preview_stage || null, previewTs: m.preview_ts || 0, snapshotTs: m.snapshot_ts || 0,
         stages: names.map(s => ({ name: s, state: st[s].state || "running", text: stageNumbers(s, st[s].data) })) };
     });
   }
@@ -87,6 +88,13 @@
     if (now) return now.snapshot;
     const any = rows.filter(r => r.snapshot).sort((a, b) => b.updated - a.updated)[0];
     return any ? any.snapshot : null;
+  }
+  // a sprite writer's preview image (donor frames, fitted frames, the read-back sheet): shown over the 3D view when
+  // the model being fitted has one newer than its mesh snapshot
+  function previewOf(job) {
+    const rows = fittingRows(job), cur = (job.fitting || {}).current;
+    const r = rows.find(x => x.key === cur) || rows.filter(x => x.preview).sort((a, b) => b.updated - a.updated)[0];
+    return r && r.preview && (!r.snapshot || r.previewTs >= r.snapshotTs) ? r.preview : null;
   }
   const n2 = v => (typeof v === "number" ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString("en-US") : String(+v.toFixed(2))) : "");
   function stageNumbers(stage, d) {                                         // the stage's numbers, short
@@ -206,7 +214,7 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, picEl = null, picSrc = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
       lastMsgs = [], dead = false, polling = null;
 
@@ -258,7 +266,10 @@
       stage = doc.createElement("div"); stage.className = "pp-stage";
       overlay = doc.createElement("canvas"); overlay.width = 390; overlay.height = 250;
       opEl = doc.createElement("div"); opEl.className = "pp-op";
-      stage.append(overlay, opEl);
+      picEl = doc.createElement("img"); picEl.className = "pp-pic"; picSrc = null;   // a sprite writer's preview image
+      picEl.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;"
+        + "background:rgba(8,10,16,.92);display:none";
+      stage.append(overlay, picEl, opEl);
       ctx2d = overlay.getContext && overlay.getContext("2d");
       const meta = doc.createElement("div"); meta.className = "pp-meta";
       barEl = doc.createElement("div"); barEl.className = "pp-bar";
@@ -342,6 +353,12 @@
       }
       const fitting = fittingSummary(job);
       if (fitEl) { const html = fittingHTML(job); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
+      const pic = previewOf(job);
+      if (picEl && pic !== picSrc) {
+        picSrc = pic;
+        if (pic) picEl.src = assetUrl(pic);
+        picEl.style.display = pic ? "" : "none";
+      }
       if (opEl && fitting.current && fitting.current.current) {             // the model being fitted and its stage
         const lbl = `${fitting.current.current} · ${fitting.done + (fitting.current.state === "done" ? 0 : 1)}/${fitting.total}`;
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
@@ -632,5 +649,5 @@
   }
 
   return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS,
-    fittingRows, fittingSummary, fittingHTML, snapshotOf, stageNumbers, STAGES };
+    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, STAGES };
 });

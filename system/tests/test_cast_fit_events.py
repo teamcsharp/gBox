@@ -485,3 +485,29 @@ def test_doapp_build_reports_each_costume_from_the_donor_to_the_encoded_file(tmp
         assert dec["from"] > dec["triangles"] > 0 and int(dec["caps"]["0"]) <= 60
         enc = last(evs, k, "encode")["data"]
         assert enc["bytes"] == r["reports"][idx]["bytes"] <= enc["budget"] and enc["relocated"] is False
+
+
+# ---------------------------------------------------------------- Clay Fighter: Sculptor's Cut (sprites)
+
+def test_clayfighter_sprites_show_the_donor_frames_then_the_fitted_ones(tmp_path):
+    import numpy as np
+    from PIL import Image
+    from gbox import clayfighter_swap as S
+    TC = importlib.import_module("test_clayfighter_swap")
+    rom = TC.synthetic_rom()
+    rng = np.random.default_rng(3)
+    donor = [np.dstack([rng.integers(0, 256, (90, 60, 3)), np.full((90, 60), 255)]).astype(np.uint8)]
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        FE.model("fighter:taffy", "Donor -> Taffy")
+        _new, rep = S.write_fighters(rom, [{"index": 2, "frames": donor}])
+    evs = events(lines)
+    assert order(evs, "fighter:taffy") == FULL[:-1]
+    sc = last(evs, "fighter:taffy", "scale")
+    assert sc["data"]["donor_height"] == 90 and sc["data"]["donor_frames"] == 1 and sc["data"]["scale"] > 0
+    for st in ("scale", "retarget"):                      # sprites: preview images instead of mesh snapshots
+        assert Image.open(last(evs, "fighter:taffy", st)["preview"]).size[0] > 0
+    assert [last(evs, "fighter:taffy", s)["state"] for s in ("proportion", "weights", "decimate")] == ["skipped"] * 3
+    enc = last(evs, "fighter:taffy", "encode")["data"]
+    assert enc["relocated"] is True and rep[0]["relocated"] and enc["bitmap_bytes"] == rep[0]["bitmap_bytes"]
+    assert "was 0x" in enc["where"]

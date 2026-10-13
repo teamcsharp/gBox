@@ -326,6 +326,23 @@ def weights(prims, jmap: dict | None = None, mode: str = "rigid per bone (one bo
                            "vertices": int(sum(counts.values())), "per_limb": counts, **extra})
 
 
+def image(name: str, rgba) -> str | None:
+    """A preview image (RGBA / RGB array) saved next to the job's snapshots, for stage(preview=...) - what a sprite
+    writer shows instead of a mesh. None without a sink or when it can't be written."""
+    sk = _sink.get()
+    if sk is None:
+        return None
+    try:
+        from PIL import Image
+        p = Path(sk["dir"]) / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', str(name))[:60]}-{sk['n']}.png"
+        sk["n"] += 1
+        p.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.asarray(rgba, np.uint8)).save(p)
+        return str(p)
+    except Exception:                                        # noqa: BLE001 - a preview never fails a build
+        return None
+
+
 def compact(P, F, max_tris: int = SNAPSHOT_TRIS) -> dict:
     """A snapshot-sized copy of a mesh ({pos, tris}, at most max_tris triangles, unused vertices dropped): what a
     writer's worker process hands back so the parent can show it (the sink lives in the parent only)."""
