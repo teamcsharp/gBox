@@ -1,7 +1,7 @@
 // gBox desktop manager (Electron main process).
 // Manages: the Spark control plane (over SSH: install/update, start/stop, logs), the local Windows worker,
 // dependency setup on both nodes, and hosts the gBox web UI with the API token injected.
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
 // The shell and its guest are one dark app, including native controls and first paint.
@@ -155,7 +155,9 @@ async function api(p, body) {
   const r = await fetch(settings().apiUrl + p, {
     method: body ? "POST" : "GET", body: body && JSON.stringify(body),
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
-    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000 : 8000),
+    // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
+    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
+      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000),
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -357,6 +359,18 @@ function startPadWatcher() {
 }
 
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
+// a finished build (the embedded view's bell tray, gbox/build_notify.py): an OS notification while gBox is not in front;
+// a click brings the window back with the tray open. Kept referenced until closed (a collected one loses its click).
+const OS_NOTES = new Set();
+ipcMain.handle("notify:os", (_e, n = {}) => {
+  if (!Notification.isSupported() || (win && win.isVisible() && win.isFocused() && !win.isMinimized())) return false;
+  const note = new Notification({ title: String(n.title || "gBox").slice(0, 120), body: String(n.body || "").slice(0, 240) });
+  OS_NOTES.add(note);
+  note.on("click", () => { OS_NOTES.delete(note); if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); win.webContents.send("notify:click", n.id || ""); } });
+  note.on("close", () => OS_NOTES.delete(note));
+  note.show();
+  return true;
+});
 
 ipcMain.handle("report:clipboard-files", async () => {
   if (process.platform !== "win32") return [];
