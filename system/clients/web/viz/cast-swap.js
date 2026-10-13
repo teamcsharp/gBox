@@ -21,11 +21,14 @@
       (games.length ? `<optgroup label="Games">${games.map(opt).join("")}</optgroup>` : "");
   }
 
-  function formHTML(title, sources) {
+  // sets: the target's own slot groups from /api/cast_swap/sources (slot_sets: AUF's campaign, bots, bosses ...),
+  // else the generic three
+  function formHTML(title, sources, sets) {
+    const slotSets = sets && sets.length ? sets : SLOT_SETS;
     return `<h4 style="margin:0 0 6px">Replace the entire cast of ${ESC(title)}</h4>
       <label style="display:flex;gap:6px;align-items:center;margin:4px 0">With <select data-cs="source" style="flex:1;min-width:0">${sourceOptions(sources)}</select></label>
       <label style="display:flex;gap:6px;align-items:center;margin:4px 0">Mapping <select data-cs="mapping" style="flex:1;min-width:0">${MAPPINGS.map(([v, l]) => `<option value="${v}">${ESC(l)}</option>`).join("")}</select></label>
-      <label style="display:flex;gap:6px;align-items:center;margin:4px 0">Slots <select data-cs="slots" style="flex:1;min-width:0">${SLOT_SETS.map(([v, l]) => `<option value="${v}">${ESC(l)}</option>`).join("")}</select>
+      <label style="display:flex;gap:6px;align-items:center;margin:4px 0">Slots <select data-cs="slots" style="flex:1;min-width:0">${slotSets.map(([v, l]) => `<option value="${v}">${ESC(l)}</option>`).join("")}</select>
         Seed <input data-cs="seed" size="6" placeholder="any"></label>
       <div style="display:flex;gap:6px;margin:6px 0"><button class="act" data-cs-go="plan" type="button">Plan the cast</button>
         <button class="act pri" data-cs-go="build" type="button" disabled>Build one mod</button>
@@ -117,7 +120,7 @@
     async function sources() {
       io.status("Loading the collection…");
       const r = await io.api(`/api/cast_swap/sources?game_id=${encodeURIComponent(game.gid)}`);
-      io.render("form", formHTML(game.title, r.sources || []));
+      io.render("form", formHTML(game.title, r.sources || [], r.slot_sets));
       io.status(r.sources?.length ? `${(r.slots || []).length || "The"} replaceable slots; pick who replaces them.`
         : "Nothing in the collection to cast yet: extract a game's characters first.");
       return r;

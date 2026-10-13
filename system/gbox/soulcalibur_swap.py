@@ -110,7 +110,7 @@ def _rgb(img) -> np.ndarray:
 
 def _resize(a: np.ndarray, w: int, h: int) -> np.ndarray:
     from PIL import Image
-    return np.asarray(Image.fromarray(a).resize((w, h), Image.LANCZOS))
+    return np.asarray(Image.fromarray(a).resize((w, h), Image.BOX))      # area average / replication: no ringing
 
 
 def atlas(prims: list[dict], pages: int) -> dict:

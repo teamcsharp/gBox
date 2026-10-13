@@ -3726,6 +3726,12 @@ async function pttUp() {
 }
 gbox.onPtt?.(down => down ? pttDown() : pttUp());
 const CARDDRAG = { c: null, t: 0, end: 0 };
+// the game view's Sessions header renamed (or starred) the build it runs (web/viz/session-build.js): the launch bar names
+// it at once, the Mods page reads it again (its cards, the ★ order)
+function buildRenamedMsg(m) {
+  if (m.ev === "buildrenamed") globalThis.GBOX_LAUNCH_BAR?.rename?.(String(m.game_id || ""), String(m.name || ""), String(m.label || m.name || ""));
+  MODSG.ctl?.load?.(0)?.catch?.(() => {});
+}
 function cardDragMsg(m) {                                    // from the webview console: GBOX:{ev, slug, name}
   if (m.ev === "carddrag") Object.assign(CARDDRAG, { c: { slug: m.slug, name: m.name }, t: Date.now(), end: 0 });
   else if (m.ev === "carddragend") CARDDRAG.end = Date.now();
@@ -3767,6 +3773,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
     else if (m.ev === "buildnote") buildNoteMsg(m);                                                                // a finished build
+    else if (m.ev === "buildrenamed" || m.ev === "buildfavorite") buildRenamedMsg(m);                              // the Sessions header
     else if (m.ev === "openrequest") modsGalleryRequest({ id: m.id });                                            // tray: Open request
     else if (m.ev === "pickfolder") deskFolderPick(wv, m);                                                        // Export…: a folder
     else if (m.ev === "showinfolder") gbox.showInFolder?.(String(m.path || ""));                                  // Show in folder
