@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct,collections
 import numpy as np
 from gbox import doa2_geometry as G,doa2_swap as SW,doa2_materials as M,doa2_pvr as P
-from .doa2_sup_plan import plan_seams,fit_native_skin
+from .doa2_sup_plan import plan_seams,fit_native_skin,reversed_pairs
 from .doa2_sup_writer import groups_for_model,encode_sup
 from .doa2_sup_payload import symmetric_seam,bind_payload
 from .doa2_strip_encode import encode_model
@@ -22,7 +22,10 @@ def encode_weighted(chr_data,bin_data,primitives,profile,coefficients,*,chr_budg
     target=SW.validate_profile(profile,archive)
     # Donor skins the native SUP cannot draw (transparent three-joint faces, blended corners without a common
     # owner, more than fourteen descriptors) are fitted first; the report lists every corner that changed.
-    primitives,skin_fit=fit_native_skin(primitives)
+    # profile['native_seam_direction'] opts in to child-owned pairs only (bone_b == parent[bone_a]), the sole
+    # orientation in the owned disc's SUPs; the report always lists the pairs that break it (#1638).
+    parents=profile.get('parent')
+    primitives,skin_fit=fit_native_skin(primitives,parents=parents if profile.get('native_seam_direction') else None)
     plan=plan_seams(primitives,allowed=skin_fit['allowed'],single=skin_fit['single'])
     body=set(target['body_models']);world=target['W']
     spare=sorted(body-set(target['emit_models'].values()))
@@ -104,6 +107,8 @@ def encode_weighted(chr_data,bin_data,primitives,profile,coefficients,*,chr_budg
             'sup_bytes':len(sup),'sup_budget':sup_budget,'materials':materials['report'],
             'model_draw_bones':{str(m):a for m,a in draw_bones.items()},
             'seam_model_ids':sorted(seam_models),'provenance':provenance,
+            'native_seam_direction':bool(profile.get('native_seam_direction')),
+            'reversed_native_pairs':[list(e) for e in reversed_pairs(plan,parents)] if parents else None,
             'unmodified_model_ids':sorted(set(range(len(decoded['models'])))-body),
             'gameplay_verified':False}
     return {'chr_data':rebuilt,'bin_data':materials['bin_data'],'sup_data':sup,'report':report}
