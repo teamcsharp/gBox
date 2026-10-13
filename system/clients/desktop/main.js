@@ -95,6 +95,7 @@ app.on("web-contents-created", (_e, wc) => {
   });
   wc.on("render-process-gone", (_e, details) => {
     logPush(`${wc.getType()}:error`, `render-process-gone: reason=${details?.reason} exitCode=${details?.exitCode}`);
+    if (wc.getType() === "window" && win && !win.isDestroyed() && wc === win.webContents) pickHoldReleaseAll("window crashed");
   });
 });
 ipcMain.handle("console:tail", (_e, n = 200000) => CONSOLE.slice(-n));
@@ -149,11 +150,12 @@ async function token() {
 
 // GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
 const ETAGS = new Map();                              // path -> { etag, data }
-async function api(p, body) {
+async function api(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
   const t = await token();
-  const known = !body && ETAGS.get(p);
+  method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(String(method || "").toUpperCase()) ? String(method).toUpperCase() : (body ? "POST" : "GET");
+  const known = method === "GET" && !body && ETAGS.get(p);
   const r = await fetch(settings().apiUrl + p, {
-    method: body ? "POST" : "GET", body: body && JSON.stringify(body),
+    method, body: body && method !== "GET" ? JSON.stringify(body) : undefined,
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
     signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
@@ -161,7 +163,7 @@ async function api(p, body) {
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  const data = await r.json(), etag = !body && r.headers.get("etag");
+  const data = await r.json(), etag = method === "GET" && r.headers.get("etag");
   if (etag) ETAGS.set(p, { etag, data }); else ETAGS.delete(p);
   return data;
 }
@@ -223,7 +225,24 @@ ipcMain.handle("settings:get", () => settings());
 ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); settingsStamp = null; cachedToken = null; return settings(); });
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
-ipcMain.handle("api", async (_e, p, body) => { try { return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
+// Pick whip pause hold (gbox/pickwhip.py): the renderer pauses the game through POST /api/pickwhip/{sid}/hold. Main
+// remembers every hold it forwarded, so a crashed or closed window resumes the game at once instead of waiting for the
+// server's lease watchdog (which still covers main itself dying).
+const PICK_HOLDS = new Map();                         // sid -> holder
+function pickHoldTrack(p, body) {
+  const m = /^\/api\/pickwhip\/([^/?]+)\/hold$/.exec(p || ""); if (!m || !body) return;
+  const sid = decodeURIComponent(m[1]);
+  if (body.op === "pause") PICK_HOLDS.set(sid, body.holder || "app");
+  else if (body.op === "release") PICK_HOLDS.delete(sid);
+}
+function pickHoldReleaseAll(why) {
+  for (const [sid, holder] of PICK_HOLDS) {
+    logPush("main:log", `pick whip: resuming ${sid} (${why})`);
+    api(`/api/pickwhip/${encodeURIComponent(sid)}/hold`, { op: "release", holder }).catch(() => {});
+  }
+  PICK_HOLDS.clear();
+}
+ipcMain.handle("api", async (_e, p, body, method) => { try { pickHoldTrack(p, body); return { ok: true, data: await api(p, body, method) }; } catch (e) { return { ok: false, error: e.message }; } });
 // a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
 ipcMain.handle("api:tagged", async (_e, p, have) => {
   try {
@@ -885,6 +904,8 @@ app.whenReady().then(() => {
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
   win.loadFile(path.join(__dirname, "index.html"));
+  win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) pickHoldReleaseAll("window reloaded"); });
+  win.on("closed", () => pickHoldReleaseAll("window closed"));
   startPadWatcher();
   win.on("focus", () => { win.webContents.send("app-focus"); if (hotkeys.docked) checkFront(); });   // coming back to gBox: the renderer decides whether the game gets focus
   // Another app took the foreground / gBox minimized: release the game hotkeys at once, then confirm with the helper (a
@@ -906,6 +927,7 @@ app.whenReady().then(() => {
 });
 let sessionsShutDown = false;
 function shutdownSessions() {
+  pickHoldReleaseAll("gBox quitting");
   if (sessionsShutDown) return;
   sessionsShutDown = true;
   quitting = true;

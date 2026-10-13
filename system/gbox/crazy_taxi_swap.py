@@ -28,7 +28,11 @@ cabs' TAXI sign only lands on the roof with its centre added, gbox.crazy_taxi). 
 centre-included cloud and stored centre-subtracted. The s16 range at the part's own scale/frac covers exactly its
 bounding radius, so a fit that pokes out is shrunk about the cloud's mean to fit (`fit_blob`).
 
-Materials: the material records carry display-list pointers and indices into game-side tables (e.g. plyrA_atama's
+Driver slots now go through the v2 look writer (`swap_files` -> gbox.crazy_taxi_look.write_driver): the donor's own
+textures in a per-driver atlas, every donor triangle, per-part frames; it rewrites ct/texDC0.all too and lets blobs
+grow. What follows describes the v1 in-place writer, still used for pedestrians and fares (their textures are shared).
+
+Materials (v1): the material records carry display-list pointers and indices into game-side tables (e.g. plyrA_atama's
 records index 0xc/0xd/0xe, 0x15/0x16/0x17 ...) through which the game binds each material's texture (Axel's shirt
 pattern on the select screen), although every part names only white.tex; the donor's own colours and textures cannot
 be written. Each material gets one UV, the centre of the largest triangle it drew in the stock part
@@ -622,13 +626,50 @@ def swap_bank(bank: bytes, glb, joint_roles: dict, slot: Slot, progress=None,
     return new_bank, report | {"parts": stats}
 
 
+TEXBANK = "ct/texDC0.all"
+
+
+def swap_files(files: dict, glb, joint_roles: dict, slot: Slot, progress=None,
+               profile: dict | None = None) -> tuple[dict, dict]:
+    """One slot on the staged disc files {path: bytes}. Driver slots use the v2 look writer
+    (gbox.crazy_taxi_look.write_driver: the donor's textures in the driver's atlas, every part at full detail, the
+    right frame per part), which rewrites ct/polDC0.all *and* ct/texDC0.all and lets blobs grow; it needs both files.
+    Pedestrian and fare slots (whose textures are shared) keep the v1 in-place writer (`swap_bank`).
+    Returns (changed files, report)."""
+    from . import crazy_taxi_look as look
+    progress = progress or (lambda p, m: None)
+    if slot.kind in ("driver", "drivers") and TEXBANK in files:
+        bank, tex = files[BANK], files[TEXBANK]
+        reports = {}
+        for i, g in enumerate(slot.groups):
+            letter = g[-1]
+            bank, tex, rep = look.write_driver(
+                bank, tex, glb, joint_roles, letter,
+                progress=lambda p, m, i=i: progress(5 + (90 * i + 0.9 * p) / len(slot.groups), m))
+            rep.pop("blob_stats", None)
+            reports[g] = rep
+        first = next(iter(reports.values()))
+        report = {"slot": slot.slot, "groups": list(slot.groups), "writer": "gbox.crazy_taxi_look",
+                  "blobs": sum(r["blobs"] for r in reports.values()),
+                  "hidden": sum(r["hidden"] for r in reports.values()),
+                  "fitted": sum(r["blobs"] - r["hidden"] for r in reports.values()),
+                  "triangles": sum(r["triangles"] for r in reports.values()),
+                  "atlas": first["atlas"], "drivers": reports,
+                  "source_bank": hashlib.sha256(files[BANK]).hexdigest()[:16]}
+        return {BANK: bank, TEXBANK: tex}, report
+    new_bank, report = swap_bank(files[BANK], glb, joint_roles, slot, progress, profile=profile)
+    return {BANK: new_bank}, report
+
+
 # ----------------------------------------------------------------------------------------------- mod + tool
 
 def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, slot: Slot, report: dict, slug: str = "",
-              progress=None) -> dict:
-    """A Crazy Taxi file mod (cache/mods/<game>/<name>): a copy of the disc image with ct/polDC0.all replaced in its
-    own slot (same size); the marker keeps the slot and the fit report. The source image is never written."""
-    b = ct.build_mod(cfg, game, iso, bank, name, f"Crazy Taxi {name}.iso", progress=progress)
+              progress=None, extra: dict | None = None) -> dict:
+    """A Crazy Taxi file mod (cache/mods/<game>/<name>): a copy of the disc image with ct/polDC0.all (and, for the v2
+    driver writer, ct/texDC0.all in `extra`) replaced; the marker keeps the slot and the fit report. The source image
+    is never written."""
+    b = ct.build_mod(cfg, game, iso, bank, name, f"Crazy Taxi {name}.iso", progress=progress,
+                     **({"extra": extra} if extra else {}))
     marker = Path(b["dir"]) / ".gbox-mod.json"
     try:
         m = json.loads(marker.read_text())
@@ -659,12 +700,15 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             disc = GCDisc(iso)
             if disc.game_id != ct.DISC_ID:
                 raise ValueError(f"expected {ct.DISC_ID}, got {disc.game_id}")
-            bank = disc.read(BANK)
+            files = {BANK: disc.read(BANK)}
+            if TEXBANK in getattr(disc, "files", {}):              # the v2 driver writer also rewrites the textures
+                files[TEXBANK] = disc.read(TEXBANK)
             disc.f.close()
             from .retarget_profile import profile_of
-            new_bank, report = swap_bank(bank, glb, joint_roles, slot, ctx.progress,
-                                         profile=profile_of((meta.get("rig") or {}).get("scale")))
-            built = build_mod(ctx.config, game, iso, new_bank, name, slot, report, meta["slug"], ctx.progress)
+            new, report = swap_files(files, glb, joint_roles, slot, ctx.progress,
+                                     profile=profile_of((meta.get("rig") or {}).get("scale")))
+            built = build_mod(ctx.config, game, iso, new[BANK], name, slot, report, meta["slug"], ctx.progress,
+                              extra={TEXBANK: new[TEXBANK]} if TEXBANK in new else None)
             C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                    json={"game_id": gid, "slot": slot.slot, "mod": name, "nodes": [C.HOST_OS],
                          "notes": f"replaces {slot.describe()}; {report['fitted']} parts fitted, {report['hidden']} "
@@ -705,7 +749,8 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
 
 def main(argv=None):
     """python -m gbox.crazy_taxi_swap <iso|polDC0.all> <character dir (meta.json + model)> <slot> <out dir>: writes the
-    swapped polDC0.all and report.json (no disc image); for checking a fit without the control plane."""
+    swapped polDC0.all (and texDC0.all for driver slots: from the ISO, or a texDC0.all beside a loose bank) and
+    report.json (no disc image); for checking a fit without the control plane."""
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("source", help="the GameCube ISO, or a loose ct/polDC0.all")
@@ -716,16 +761,20 @@ def main(argv=None):
     src = Path(a.source)
     if src.suffix.lower() in (".iso", ".gcm"):
         from .gcdisc import GCDisc
-        bank = GCDisc(src).read(BANK)
+        disc = GCDisc(src)
+        files = {BANK: disc.read(BANK), TEXBANK: disc.read(TEXBANK)}
     else:
-        bank = src.read_bytes()
+        files = {BANK: src.read_bytes()}
+        if (src.parent / "texDC0.all").exists():
+            files[TEXBANK] = (src.parent / "texDC0.all").read_bytes()
     meta = json.loads((Path(a.character) / "meta.json").read_text())
-    slot = parse_slot(a.slot, groups=people(ct.read_bank(bank)))
+    slot = parse_slot(a.slot, groups=people(ct.read_bank(files[BANK])))
     t0 = time.time()
-    new_bank, report = swap_bank(bank, Path(a.character) / meta["model"], meta["rig"]["roles"], slot,
-                                 lambda p, m: print(f"{p:3.0f}% {m}"))
+    new, report = swap_files(files, Path(a.character) / meta["model"], meta["rig"]["roles"], slot,
+                             lambda p, m: print(f"{p:3.0f}% {m}"))
     a.out.mkdir(parents=True, exist_ok=True)
-    (a.out / "polDC0.all").write_bytes(new_bank)
+    for path, data in new.items():
+        (a.out / Path(path).name).write_bytes(data)
     (a.out / "report.json").write_text(json.dumps(report | {"seconds": round(time.time() - t0, 1)}, indent=1))
     print(json.dumps({k: v for k, v in report.items() if k not in ("parts", "segments")}, indent=1),
           f"\n{round(time.time() - t0, 1)} s")

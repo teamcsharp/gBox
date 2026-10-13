@@ -5,16 +5,19 @@ Evidence (requests #608/#459/#1369; owned hyperspin ISO `Crazy Taxi (USA).iso`, 
 `GCDisc.dol()` = 2190496 bytes; the earlier "c6447c2d..." DOL prefix did not reproduce):
 
 * `ct/polDC0.all` is the common shape bank (1586 shapes: cars, pedestrians, passengers and the four drivers).
-  Layout: u32le count, u32le 0x00410020, u32le 0, u32le 0, then `count` records of name[64] + u32le size, 8 bytes
-  of padding, then the shape blobs back to back in record order (sizes are multiples of 0x20; the last blob ends
-  exactly at EOF).
+  Layout: u32le count, u32le 0x00410020, u32le 0, u32le 0, then `count` records of name[64] + u32le size, zero
+  padding to the next 32-byte boundary (8 bytes for this count), then the shape blobs back to back in record order
+  (sizes are multiples of 0x20; the last blob ends exactly at EOF). main.dol's archive loader (0x800066e0) mallocs the
+  file's length and registers every entry by name, so blobs may change size (gbox.crazy_taxi_look); texDc0.all has
+  the same layout.
 * The drivers are `MP_YH_plyrA..D_*` (Axel, B.D. Joe, Gena, Gus in select order), one rigid `.shp` per body part
   (atama head, mune chest, koshi hips, kata/ude/te upper arm/forearm/hand, momo/sune/kakato thigh/shin/foot, with
   hand-pose variants `_ok/_ch/_gu` and `sl_` low-detail twins). Pedestrians (`MP_YH_Man_*`) use the same part set.
 * A `.shp` is big-endian. Header: f32 1.0, f32 bounding radius, ..., vec3 centre @0x20, vec3 quantisation scale
   @0x2c, per-attribute format words @0x60, GX attribute array offsets @0xc8 (POS @0xcc, NRM @0xd0, CLR0 @0xd4,
   TEX0 @0xdc), material table offset @0x110, first array offset @0x114, display-list base @0x118, texture name
-  table @0x11c (64-byte names, e.g. `white.tex`).
+  table @0x11c (header word 0x10 entries of 0x2c bytes: name[0x28] + a pointer the loader fills; driver parts name
+  their own textures, e.g. white.tex + TY_plyrA_face1.tex; gbox.crazy_taxi_look has the material records).
   Positions are s16x3 and normals s16x3 (1.14); colours RGBA8; UVs s16x2. Each material record (0x24 bytes) holds
   a display-list offset and size. Display lists are GX: 0x90|vat = triangles, 0x98|vat = strip, 0xa0|vat = fan,
   u16 vertex count, then one u16 index per present attribute, in POS, NRM, CLR0, TEX0 order.
@@ -93,7 +96,7 @@ def read_bank(data: bytes) -> list[tuple[str, int, int]]:
     table_end = 0x10 + count * 0x44
     if count <= 0 or table_end > len(data):
         raise ValueError(f"bad shape count {count}")
-    out, off = [], table_end + 8
+    out, off = [], (table_end + 0x1F) & ~0x1F             # main.dol 0x8000682c: blobs start 32-byte aligned
     for i in range(count):
         p = 0x10 + i * 0x44
         name = data[p:p + 64].split(b"\0")[0].decode("latin-1")
@@ -113,7 +116,7 @@ def write_bank(entries: list[tuple[str, bytes]], word1: int = 0x00410020) -> byt
         if len(nm) >= 64:
             raise ValueError(f"name too long: {name}")
         hdr += nm.ljust(64, b"\0") + struct.pack("<I", len(blob))
-    hdr += b"\0" * 8
+    hdr += b"\0" * (((len(hdr) + 0x1F) & ~0x1F) - len(hdr))
     return bytes(hdr) + b"".join(b for _, b in entries)
 
 
@@ -1133,21 +1136,26 @@ def swap_driver(bank: bytes, glb, part_roles: dict, joint_roles: dict, letter: s
     return bytes(out), stats
 
 
-def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: str, progress=None) -> dict:
-    """A Crazy Taxi file mod: a copy of the disc image with ct/polDC0.all replaced in place (same size)."""
+def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: str, progress=None,
+              extra: dict | None = None) -> dict:
+    """A Crazy Taxi file mod: a copy of the disc image with ct/polDC0.all replaced (in its slot when it fits, else moved
+    past the last file with its FST entry rewritten - main.dol mallocs the archive by its file length), plus `extra`
+    {disc path: bytes} (the v2 driver writer's ct/texDC0.all)."""
     import shutil
     import types
     from . import filemods
     work = Path(cfg.cache) / "characters_build" / "crazy_taxi" / name
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
-    bankfile = work / "polDC0.all"
-    bankfile.write_bytes(bank)
+    changes = {}
+    for path, data in {BANK: bank, **(extra or {})}.items():
+        f = work / Path(path).name
+        f.write_bytes(data)
+        changes[path] = {"from": str(f)}
     progress = progress or (lambda p, m: None)
     progress(90, f"Writing the disc image {image_name}")
-    b = filemods.build_image(types.SimpleNamespace(cache=Path(cfg.cache)), game["game_id"], iso, name,
-                             {BANK: {"from": str(bankfile)}})
-    return b | {"files": [BANK]}
+    b = filemods.build_image(types.SimpleNamespace(cache=Path(cfg.cache)), game["game_id"], iso, name, changes)
+    return b | {"files": list(changes)}
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
