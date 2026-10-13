@@ -169,6 +169,26 @@
    ],
    "shots": [{"label": "castle grounds", "at_s": 3}],
    "todo": "Replay once (language select may appear first on the EU file select; add a press if so)."
+  },
+  "c747331797369f74": {
+   "title": "SoulCalibur (USA) (Dreamcast)",
+   "platform": "dreamcast",
+   "adapter": "retroarch (flycast)",
+   "status": "ready",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 10,
+   "shows": "Arcade mode, player 1 (Kilik, where the cursor starts) against the CPU: the versus screen shows the stock 2D portraits, the fight from about 9 s shows both replaced fighters. VS BATTLE needs a 2P start, which the player-1 network pad cannot give. Menu presses through the network pad register twice (the main menu drum moves two items per press), so the recipe only uses Start and A.",
+   "steps": [
+    {"wait_s": 12.0, "label": "boot"},
+    {"press": ["start"], "wait_s": 4.0, "label": "title -> main menu (ARCADE)"},
+    {"press": ["start"], "wait_s": 5.0, "label": "arcade", "shot": "character select"},
+    {"press": ["a"], "wait_s": 3.0, "label": "pick"},
+    {"press": ["a"], "wait_s": 3.0, "label": "weapon"},
+    {"press": ["a"], "wait_s": 6.0, "label": "costume"},
+    {"wait_s": 5.0, "label": "versus"}
+   ],
+   "shots": [{"label": "fight", "at_s": 4}, {"label": "fight +7", "at_s": 7}, {"label": "fight +15", "at_s": 15}],
+   "todo": "Verified 2026-10-13 on i9-NUC (jobs d49302d4b6f74f09, c17cc69454534f1a). VS BATTLE would need a step that sends player-2 Start."
   }
  }
 }
