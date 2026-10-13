@@ -21,11 +21,17 @@ def test_gl_session_of_vulkan_core_relaunches_under_vulkan(core):
     assert 'video_driver=vulkan' in row['reason'] and 'keeps running' in row['reason']
 
 
-@pytest.mark.parametrize('core', ['parallel_n64', 'mupen64plus_next'])
-def test_n64_capture_session_uses_hle_on_glcore(core):
-    row = ss.support('retroarch', core, 'gl', host_os='windows')
+def test_n64_capture_session_uses_hle_on_glcore():
+    row = ss.support('retroarch', 'mupen64plus_next', 'gl', host_os='windows')
     assert (row['status'], row['driver'], row['attach'], row['relay']) == (ss.RELAUNCH, 'glcore', 'inject', True)
     assert 'compute' in row['reason']
+
+
+@pytest.mark.parametrize('driver', ['gl', 'vulkan'])
+def test_parallel_n64_has_no_capturable_scene(driver):
+    row = ss.support('retroarch', 'parallel_n64', driver, hooked=True, host_os='windows')
+    assert (row['status'], row['fallback']) == (ss.UNSUPPORTED, 'frame_2d')
+    assert 'no draw calls' in row['reason'] and 'compatibility context' in row['reason']
 
 
 @pytest.mark.parametrize('driver', ['d3d11', 'd3d12', 'vulkan'])
@@ -36,7 +42,7 @@ def test_capturable_retroarch_driver_is_supported(driver):
 
 def test_capturable_driver_without_renderdoc_relays_to_a_capture_session():
     row = ss.support('retroarch', 'pcsx2', 'd3d11', hooked=False, host_os='windows')
-    assert (row['status'], row['driver'], row['relay']) == (ss.RELAUNCH, 'vulkan', True)
+    assert (row['status'], row['driver'], row['attach'], row['relay']) == (ss.RELAUNCH, 'd3d11', 'inject', True)
     assert 'without RenderDoc inside' in row['reason']
     other = ss.support('retroarch', 'some_d3d_core', 'd3d11', hooked=False, host_os='windows')
     assert (other['driver'], other['attach']) == ('d3d11', 'inject')

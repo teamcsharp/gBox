@@ -28,12 +28,17 @@ SUPPORTED, RELAUNCH, UNSUPPORTED = "supported", "relaunch_under_capture", "unsup
 CAPTURE_DRIVERS = ("d3d11", "d3d12", "vulkan")          # RenderDoc injection keeps the RetroArch window working
 
 # libretro cores with a hardware Vulkan renderer: run the capture session with video_driver=vulkan (no GL window).
-VULKAN_CORES = {"flycast", "mednafen_psx_hw", "beetle_psx_hw", "pcsx2", "lrps2",
-                "dolphin", "citra", "swanstation", "ppsspp", "duckstation", "panda3ds"}
+VULKAN_CORES = {"flycast", "mednafen_psx_hw", "beetle_psx_hw", "dolphin", "citra", "swanstation", "ppsspp",
+                "duckstation", "panda3ds"}
+# PS2 (pcsx2_libretro = LRPS2): its Vulkan renderer aborts on the test PC; capture sessions use D3D11 + injection.
+D3D_CORES = {"pcsx2", "lrps2"}
 # hardware 3D cores with only an OpenGL renderer: core-profile GL (glcore) is the second choice, not live-checked yet.
 GL_ONLY_CORES = {"kronos", "yabasanshiro", "melonds", "play", "mame2016_gl", "reicast_gl", "citra_canary_gl"}
-# N64: the Vulkan RDP (ParaLLEl-RDP) has no vertex draw calls; captures use an HLE GL renderer on glcore.
-N64_HLE_CORES = {"parallel_n64", "mupen64plus_next"}
+# N64: the Vulkan RDP (ParaLLEl-RDP) has no vertex draw calls; captures need an HLE renderer on core-profile GL.
+# Mupen64Plus-Next's GLideN64 asks for a core context (glcore); ParaLLEl N64's HLE plugins ask for a compatibility
+# context, which stalls under glcore and which RenderDoc can't capture (test PC, 2026-10-13): 2D frame only.
+N64_HLE_CORES = {"mupen64plus_next"}
+N64_NO_SCENE = {"parallel_n64"}
 # software renderers: the frame is one 2D blit, a draw-call capture has no scene in it.
 SOFTWARE_CORES = {"snes9x", "snes9x2010", "bsnes", "bsnes_hd_beta", "mesen", "mesen-s", "fceumm", "nestopia",
                   "genesis_plus_gx", "picodrive", "mgba", "gambatte", "sameboy", "gearboy", "vba_next", "vbam",
@@ -43,7 +48,7 @@ SOFTWARE_CORES = {"snes9x", "snes9x2010", "bsnes", "bsnes_hd_beta", "mesen", "me
                   "pcsx_rearmed", "neocd", "opera", "4do", "virtualjaguar", "desmume", "desmume2015", "bluemsx",
                   "fmsx", "puae", "vice_x64", "dosbox_pure", "quasi88", "np2kai", "pokemini", "o2em", "freechaf",
                   "gearsystem", "smsplus", "potator", "atari800", "cap32", "tgbdual", "gpsp", "meteor"}
-LIVE_CHECKED = {("retroarch", "flycast")}   # (adapter, core) captured end to end on the test PC
+LIVE_CHECKED = {("retroarch", "flycast"), ("retroarch", "ppsspp")}   # capture session run end to end on the test PC
 
 _WIN_ONLY = "3D draw-call capture runs on a Windows node (RenderDoc)."
 _RELAY = (" Capture again saves your moment, captures it in a separate agent-owned capture session (test PC first, "
@@ -91,13 +96,24 @@ def support(adapter: str, core: str | None = None, driver: str | None = None, *,
         if c in SOFTWARE_CORES:
             return _out(UNSUPPORTED, f"The {c} core renders in software: the frame is a 2D image with no 3D scene "
                         "to capture (2D frame only).", None, adapter, c)
+        if c in N64_NO_SCENE:
+            return _out(UNSUPPORTED, f"The {c} core has no capturable 3D path: its Vulkan renderer (ParaLLEl-RDP) "
+                        "rasterizes in compute shaders with no draw calls, its angrylion renderer is software, and its "
+                        "OpenGL plugins need a compatibility context RenderDoc can't capture (2D frame only; "
+                        "Mupen64Plus-Next with GLideN64 is the N64 core with a capture path).", None, adapter, c)
         if drv in CAPTURE_DRIVERS:
             if hooked is False:
-                cap = "vulkan" if c in VULKAN_CORES else "glcore" if c in N64_HLE_CORES else drv
+                cap = ("vulkan" if c in VULKAN_CORES else "glcore" if c in N64_HLE_CORES else
+                       "d3d11" if c in D3D_CORES else drv)
                 return _out(RELAUNCH, f"This session was started without RenderDoc inside (Examine 3D was off at "
                             f"launch).{_RELAY} The capture session renders with {cap}.", cap, adapter, c,
                             attach="layer" if cap == "vulkan" else "inject", relay=True)
             return _out(SUPPORTED, f"RetroArch {drv} renderer: RenderDoc captures it.", None, adapter, c)
+        if c in D3D_CORES:
+            return _out(RELAUNCH, f"This RetroArch session renders with {drv or 'OpenGL'}, which RenderDoc can't open "
+                        f"a window for.{_RELAY} The capture session renders the {c} core with Direct3D 11 and "
+                        "RenderDoc injected (its Vulkan renderer fails on the test PC).", "d3d11", adapter, c,
+                        attach="inject", relay=True)
         if c in GL_ONLY_CORES or c in N64_HLE_CORES:
             why = (f"The {c} core only renders with OpenGL" if c in GL_ONLY_CORES else
                    f"The {c} core's Vulkan renderer (ParaLLEl-RDP) rasterizes in compute shaders with no draw calls")
@@ -163,12 +179,14 @@ MATRIX_DOC = """\
 |---|---|---|---|---|
 | RetroArch, D3D11/D3D12/Vulkan session with Examine 3D on | supported | (current) | injected at launch | |
 | RetroArch, D3D/Vulkan session started without Examine 3D | relaunch_under_capture (relay) | vulkan for Vulkan-capable cores, else the same driver | layer / injected | game keeps running |
-| RetroArch, GL session of a Vulkan-capable core (Flycast, Beetle PSX HW, PCSX2/LRPS2, Dolphin, Citra, SwanStation, DuckStation, PPSSPP) | relaunch_under_capture (relay) | vulkan | Vulkan layer | Flycast live-checked |
+| RetroArch, GL session of a Vulkan-capable core (Flycast, Beetle PSX HW, Dolphin, Citra, SwanStation, DuckStation, PPSSPP) | relaunch_under_capture (relay) | vulkan | Vulkan layer | Flycast + PPSSPP live-checked |
+| RetroArch PS2 (pcsx2 / LRPS2) | supported with Examine 3D on (D3D11); relay otherwise | d3d11 | injected | Vulkan aborts; D3D11 capture held no GS draws on the test PC |
 | RetroArch, GL-only 3D core (Kronos, YabaSanshiro, melonDS, Play!) | relaunch_under_capture (relay) | glcore | injected | not live-checked |
-| RetroArch N64 (ParaLLEl N64, Mupen64Plus-Next) | relaunch_under_capture (relay) | glcore + HLE renderer (Glide64 / GLideN64) | injected | ParaLLEl-RDP has no draw calls; not live-checked |
+| RetroArch N64, Mupen64Plus-Next | relaunch_under_capture (relay) | glcore + GLideN64 | injected | not live-checked |
+| RetroArch N64, ParaLLEl N64 | unsupported | - | - | no draw calls (ParaLLEl-RDP) / compat GL; 2D frame only |
 | RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | - | 2D frame only |
 | Dolphin (Windows, D3D12) with Examine 3D on | supported | (current) | injected at launch | |
-| Dolphin started without Examine 3D | relaunch_under_capture (relay) | vulkan (-C Dolphin.Core.GFXBackend=Vulkan) | Vulkan layer | test PC only |
+| Dolphin started without Examine 3D | relaunch_under_capture (relay) | vulkan (-C Dolphin.Core.GFXBackend=Vulkan) | Vulkan layer | test PC only; capture held 1 draw (open) |
 | Yuzu / RPCS3 on Vulkan with Examine 3D on | supported | (current) | Vulkan layer at launch | |
 | Yuzu / RPCS3 started without Examine 3D | relaunch_under_capture | relaunch the game | Vulkan layer | states can't be carried |
 | Yuzu / RPCS3 set to OpenGL | unsupported | - | - | switch the emulator to Vulkan |

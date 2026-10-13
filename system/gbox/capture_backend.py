@@ -29,8 +29,6 @@ VULKAN_CORE_OPTIONS = {
     "flycast": {},                                                       # follows the frontend's HW context
     "mednafen_psx_hw": {"beetle_psx_hw_renderer": "hardware_vk"},
     "beetle_psx_hw": {"beetle_psx_hw_renderer": "hardware_vk"},
-    "pcsx2": {"pcsx2_renderer": "Vulkan"},
-    "lrps2": {},                                                         # LRPS2 follows the frontend's HW context
     "dolphin": {"dolphin_renderer": "Hardware"},                         # the frontend's context = Vulkan
     "citra": {"citra_graphics_api": "Vulkan"},
     "swanstation": {"swanstation_GPU_Renderer": "Vulkan"},
@@ -41,11 +39,15 @@ VULKAN_CORE_OPTIONS = {
 # N64: ParaLLEl-RDP (the Vulkan path) rasterizes in compute shaders, so a capture has no vertex draw calls to rebuild.
 # N64 capture sessions use an HLE renderer that draws real triangles, on core-profile GL with RenderDoc injected.
 HLE_GL_CORE_OPTIONS = {
-    "parallel_n64": {"parallel-n64-gfxplugin": "glide64", "parallel-n64-rspplugin": "hle"},
     "mupen64plus_next": {"mupen64plus-rdp-plugin": "gliden64", "mupen64plus-rsp-plugin": "hle"},
 }
-# cores whose Vulkan capture was run end to end on the test PC (docs/examine_emulators.md, live checks)
-LIVE_CHECKED = {"flycast"}
+# PS2 (pcsx2_libretro = LRPS2 here): its Vulkan renderer aborts on the test PC's RTX 3070 with or without RenderDoc
+# ("Failed to allocate expansion index buffer", 0xC000041D), and its GL path presents black; operator sessions already
+# run D3D11, so the capture session does too, with RenderDoc injected. Live check 2026-10-13: the D3D11 capture held
+# only RetroArch's 3 present blits (the GS draws were not in it): PS2 scene capture is not working on the test PC yet.
+D3D_CORES = {"pcsx2": {}, "lrps2": {}}
+# cores whose capture was run end to end on the test PC (docs/examine_emulators.md, live checks)
+LIVE_CHECKED = {"flycast", "ppsspp"}
 
 # RetroArch settings for every capture session: no sound, no pad, no shader presets (GL .glslp), no rewind ring,
 # a normal (not minimized) window that gBox parks off-screen, and nothing written back on exit.
@@ -73,12 +75,16 @@ STANDALONE = {
 
 def plan(adapter: str, core: str | None = None) -> dict | None:
     """The capture-session backend for an emulator (None: no 3D capture path at all)."""
-    from .scene_support import GL_ONLY_CORES, SOFTWARE_CORES, VULKAN_CORES, core_name
+    from .scene_support import GL_ONLY_CORES, N64_NO_SCENE, SOFTWARE_CORES, VULKAN_CORES, core_name
     adapter = (adapter or "").lower()
     if adapter == "retroarch":
         c = core_name(core)
-        if c in SOFTWARE_CORES:
+        if c in SOFTWARE_CORES or c in N64_NO_SCENE:
             return None
+        if c in D3D_CORES:
+            return {"driver": "d3d11", "attach": "inject", "core_options": dict(D3D_CORES[c]),
+                    "ra_cfg": {"video_driver": "d3d11"}, "verified": c in LIVE_CHECKED,
+                    "note": "Direct3D 11 with RenderDoc injected (the core's Vulkan renderer fails on the test PC)"}
         if c in GL_ONLY_CORES or c in HLE_GL_CORE_OPTIONS:
             return {"driver": "glcore", "attach": "inject", "core_options": dict(HLE_GL_CORE_OPTIONS.get(c, {})),
                     "ra_cfg": {"video_driver": "glcore"}, "verified": False,

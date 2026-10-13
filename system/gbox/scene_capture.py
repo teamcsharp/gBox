@@ -1055,6 +1055,8 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
             ad.pause()
     times["capture_s"] = round(time.time() - t0, 2)
     try:
+        if getattr(ad, "capture_backend", None) and not hasattr(ad, "_screenshot"):
+            raise RuntimeError("a capture session's window is parked off-screen: a desktop grab would be black")
         frame = ad.get_frame()
         (out_dir / "frame.png").write_bytes(frame)
     except Exception:

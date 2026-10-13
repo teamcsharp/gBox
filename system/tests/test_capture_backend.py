@@ -35,14 +35,14 @@ def fake_rd(tmp_path):
 @pytest.mark.parametrize("adapter,core,driver,attach,options", [
     ("retroarch", "flycast_libretro.dll", "vulkan", "layer", {}),
     ("retroarch", "mednafen_psx_hw", "vulkan", "layer", {"beetle_psx_hw_renderer": "hardware_vk"}),
-    ("retroarch", "pcsx2", "vulkan", "layer", {"pcsx2_renderer": "Vulkan"}),
-    ("retroarch", "lrps2", "vulkan", "layer", {}),
+    ("retroarch", "pcsx2", "d3d11", "inject", {}),
+    ("retroarch", "lrps2", "d3d11", "inject", {}),
     ("retroarch", "dolphin", "vulkan", "layer", {"dolphin_renderer": "Hardware"}),
     ("retroarch", "citra", "vulkan", "layer", {"citra_graphics_api": "Vulkan"}),
     ("retroarch", "swanstation", "vulkan", "layer", {"swanstation_GPU_Renderer": "Vulkan"}),
     ("retroarch", "ppsspp", "vulkan", "layer", {"ppsspp_backend": "vulkan"}),
-    ("retroarch", "parallel_n64", "glcore", "inject", {"parallel-n64-gfxplugin": "glide64",
-                                                      "parallel-n64-rspplugin": "hle"}),
+    ("retroarch", "mupen64plus_next", "glcore", "inject", {"mupen64plus-rdp-plugin": "gliden64",
+                                                          "mupen64plus-rsp-plugin": "hle"}),
     ("retroarch", "kronos", "glcore", "inject", {}),
     ("retroarch", "some_new_core", "vulkan", "layer", {}),
     ("dolphin", None, "vulkan", "layer", {}),
@@ -56,7 +56,8 @@ def test_backend_per_emulator(adapter, core, driver, attach, options):
         assert p["ra_cfg"] == {"video_driver": driver}
 
 
-@pytest.mark.parametrize("adapter,core", [("retroarch", "snes9x"), ("retroarch", "genesis_plus_gx"), ("xenia", None),
+@pytest.mark.parametrize("adapter,core", [("retroarch", "snes9x"), ("retroarch", "genesis_plus_gx"),
+                                          ("retroarch", "parallel_n64"), ("xenia", None),
                                           ("steam", None), ("mame", None)])
 def test_no_capture_backend_without_a_3d_path(adapter, core):
     assert cb.plan(adapter, core) is None
