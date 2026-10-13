@@ -138,9 +138,10 @@ test('the screenshot panel slides in and out and the thumbnails follow the shown
   G.state.images = []; G.showImage(); assert.equal(nodes['#rg-shot-img'].hidden, true); assert.equal(nodes['#rg-shot-empty'].hidden, false);
 });
 
-test('Detailed report opens the graph for that request; screenshots still open the flat evidence; the game steps aside', () => {
+test('the story view\'s Tool graph opens the graph for that request; screenshots still open the flat evidence; the game steps aside', () => {
   assert.match(desktop, /<script src="report-graph\.js"><\/script>/);
-  assert.match(desktop, /if \(e\.target\.closest\("\[data-report-detail\]"\)\) \{ e\.stopPropagation\(\); reportGraphOpen\(id\); return; \}/);
+  // Detailed report now opens the resolution story (test_report_story.cjs); its "Tool graph" button opens this graph
+  assert.match(desktop, /graph: rid => reportGraphOpen\(rid\)/);
   assert.match(desktop, /if \(e\.target\.closest\("img\.shot, img\.att-img"\)\) \{/);
   assert.match(desktop, /function reportGraphOpen\(id\) \{\r?\n\s*return GBoxReportGraph\.open\(id, \{ \$, esc, api: p => gbox\.api\(p\), token: \(\) => gbox\.token\(\), apiUrl: \(\) => S\.apiUrl, loadThree: flowLoadThree,/);
   assert.match(desktop, /evidence: \(rid, sha\) => evRequest\(rid, sha\), children: rid => inboxSolverRequests\.filter\(x => x\.parent_request_id === rid\)/);

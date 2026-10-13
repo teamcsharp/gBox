@@ -632,6 +632,24 @@ def stop(sid: str) -> SessionRewind | None:
     return sr
 
 
+def detach(sid: str) -> SessionRewind | None:
+    """The session is being stopped: its ring takes no new checkpoint from now on (its threads see they are no longer
+    ACTIVE), without waiting for one in flight. The caller closes the returned rewind afterwards (#1504)."""
+    return ACTIVE.pop(sid, None)
+
+
+def reattach(sid: str, sr: SessionRewind | None, alive=None) -> None:
+    """A stop that did not end the emulator: the session keeps its rewind."""
+    if sr is None or sid in ACTIVE:
+        return
+    old = list(sr.threads)
+    for t in old:                                       # the detached loops notice within a frame / a checkpoint
+        t.join(1.0)
+    ACTIVE[sid] = sr
+    if old:
+        sr.run(alive or (lambda: sid in ACTIVE))
+
+
 def feed(sid: str, events) -> None:
     sr = ACTIVE.get(sid)
     if sr is not None:

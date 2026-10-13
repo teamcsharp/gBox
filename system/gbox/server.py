@@ -83,6 +83,10 @@ def _checkpoint_slot(result: dict, adapter: str) -> int:
     return actual
 
 
+def _is_stop_job(job: dict) -> bool:
+    return job.get("tool") == "session_op" and (job.get("input") or {}).get("op") == "stop_game"
+
+
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
     token = config.token()
@@ -90,6 +94,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.store = store
     from .character_collection import AutoCollection
     auto_collection = AutoCollection(store, config)
+    stopping: dict[str, str] = {}                  # session id -> its pending stop job (GET /api/sessions "stopping")
 
     @app.on_event("startup")
     async def _more_threads():
@@ -112,6 +117,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import asset_library
     asset_library.routes(app, store, config, auth)
+    from . import built_mods                      # built mod folders in the cache, joined with their mod cards
+    built_mods.routes(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")
@@ -282,8 +289,11 @@ def create_app(config: Config) -> FastAPI:
                 except Exception:
                     pass                                     # no picture is fine; the card offers 📷
             threading.Thread(target=_shoot, daemon=True).start()
+        from . import built_mods
+        doc = built_mods.supersede(store, doc)          # a writer's own card replaces the gallery's stand-in for its build
         store.put("mod", mid, doc)
         store.audit(actor, "mod.save", m.title, {"game": gid, "calls": len(doc["calls"])})
+        app.state.built_mods_invalidate()
         return doc
 
     def _session_png(sid: str) -> bytes:
@@ -319,10 +329,12 @@ def create_app(config: Config) -> FastAPI:
         return m
 
     @app.post("/api/mods/{mid}/thumb")
-    async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, actor=Depends(auth)):
-        """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one."""
+    async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, append: bool = False,
+                        actor=Depends(auth)):
+        """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one.
+        append=true adds the picture to the card's in-game shots (the Mods gallery); it becomes the thumb only if none."""
         m = _mod_picture(store.get("mod", mid) or _404())
-        if m.get("thumb") and not force:
+        if m.get("thumb") and not force and not append:
             return m
         body = await request.body()
         if not (body.startswith(b"\x89PNG") or body.startswith(b"\xff\xd8\xff")):
@@ -333,9 +345,14 @@ def create_app(config: Config) -> FastAPI:
             body = await asyncio.to_thread(_session_png, session_id)
         kind = "image/png" if body[:4] == b"\x89PNG" else "image/jpeg"
         ref = store.put_artifact(body, f"mod-{mid}.{kind[6:]}", kind, {"mod": mid, "session": session_id})
-        m["thumb"] = ref.sha256
+        if append:
+            m["shots"] = [ref.sha256, *[x for x in m.get("shots") or [] if x != ref.sha256]][:24]
+            m["thumb"] = m["thumb"] if m.get("thumb") and not force else ref.sha256
+        else:
+            m["thumb"] = ref.sha256
         store.put("mod", mid, m)
-        store.audit(actor, "mod.thumb", mid, {"artifact": ref.sha256})
+        store.audit(actor, "mod.thumb", mid, {"artifact": ref.sha256, "append": append})
+        app.state.built_mods_invalidate()
         return m
 
     @app.get("/api/mods")
@@ -348,6 +365,7 @@ def create_app(config: Config) -> FastAPI:
     def mod_del(mid: str, actor=Depends(auth)):
         store.delete("mod", mid)
         store.audit(actor, "mod.delete", mid, {})
+        app.state.built_mods_invalidate()
         return {"deleted": mid}
 
     # --- character library (gbox/characters.py): models extracted from the operator's games, reusable in any game ---
@@ -921,6 +939,74 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(503, reason) from exc
         return job
 
+    def relay_job(inp: dict, actor: str) -> Job:
+        """Examine 3D Capture again through a capture session (gbox/scene_relay.py), as an in-server job polled like
+        scene_capture (output: glb, summary, paused=False). One relay per session at a time."""
+        from . import scene_relay
+        sid = inp["session_id"]
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == scene_relay.TOOL and existing.get('state') in ('queued', 'running')
+                        and (existing.get('input') or {}).get('session_id') == sid):
+                    return Job.model_validate(existing)
+            job = Job(tool=scene_relay.TOOL, input=inp | {"relay": True}, state=JobState.RUNNING, started=time.time(),
+                      agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def end_session(nsid):
+            with store.lock:
+                s_ = store.get("session", nsid)
+                if s_ and s_.get("state") != "ended":
+                    store.put("session", nsid, s_ | {"state": "ended", "ended": time.time(),
+                                                     "exit": {"by": actor, "via": "examine_capture_session"}})
+
+        def go():
+            sess = store.get("session", sid) or {}
+            try:
+                game = store.catalog_get(sess.get("game_id") or "") or {}
+                if not game:
+                    raise scene_relay.RelayError("This game is no longer in the library, so no capture session can "
+                                                 "start it. Your game keeps running.")
+                out = scene_relay.relay(
+                    sid, sess, game,
+                    run_job=lambda tool, i, w, wait, progress=None: _run_job(tool, i, actor, worker=w, wait=wait,
+                                                                             progress=progress),
+                    workers=workers, live_sessions=lambda: store.all("session"),
+                    label=lambda nsid, l: store.put("slabel", nsid, l | {"session_id": nsid, "ts": time.time()}),
+                    end_session=end_session, preferred=config.examine_capture_worker,
+                    frames=max(1, min(int(inp.get("frames") or 2), 4)), fovy=inp.get("fovy") or 0,
+                    aspect=inp.get("aspect") or 0, say=prog,
+                    should_stop=lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                    worker_of=lambda s: _wid(s.split("-")[0]))
+                state, err = JobState.SUCCEEDED, None
+            except scene_relay.RelayError as e:
+                out, state, err = None, JobState.FAILED, f"Unsupported: {e}"
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(),
+                                                                     "output": out, "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "examine.capture_session", sid, {"job": job.id, "state": state, "error": err,
+                        "capture_session": (out or {}).get("capture_session")})
+        try:
+            threading.Thread(target=go, daemon=True, name=f"scene-relay-{job.id}").start()
+        except Exception as exc:
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {
+                    'state': JobState.FAILED, 'finished': time.time(), 'error': 'capture session task could not start'})
+            raise HTTPException(503, 'capture session task could not start') from exc
+        return job
+
     # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
     class LessonIn(BaseModel):
         lesson: str
@@ -1165,6 +1251,12 @@ def create_app(config: Config) -> FastAPI:
         if root not in f.parents or not f.is_file():
             raise HTTPException(404, "not found")
         return FileResponse(f, headers={"cache-control": "no-cache"})
+
+    @app.get("/live-poll.js")
+    def live_poll_js():
+        """The shared cached polling helper (clients/desktop/live-poll.js, #712) for the web client: static, no secrets."""
+        return FileResponse(WEB.parent.parent / "desktop" / "live-poll.js", media_type="text/javascript",
+                            headers={"cache-control": "no-cache"})
 
     @app.get("/brand/{name}")
     def brand(name: str):
@@ -1420,7 +1512,8 @@ def create_app(config: Config) -> FastAPI:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
-            for j in store.queued_jobs():
+            # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
+            for j in sorted(store.queued_jobs(), key=lambda j: not _is_stop_job(j)):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
@@ -1694,6 +1787,9 @@ def create_app(config: Config) -> FastAPI:
             session = store.get("session", inp["session_id"])
             if not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
+            from . import scene_relay
+            if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
+                return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes"))
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
@@ -1725,6 +1821,8 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
+            stopping[inp["session_id"]] = job.id
         if job.state == JobState.REJECTED and not job.parent_request_id and (
                 (t.name == "characters" and inp.get("op") in ("use", "live_use", "swap"))
                 or (t.name == "mod" and inp.get("op") == "apply")
@@ -2271,16 +2369,63 @@ def create_app(config: Config) -> FastAPI:
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
-            out.append(s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None})
+            row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
+            if s_.get("state") == "running" and _stopping(s_["session_id"]):
+                row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
+            out.append(row)
         return out
+
+    def _stopping(sid: str) -> bool:
+        """A stop job for this session is queued or running (the record turns 'ended' when the worker confirms)."""
+        jid = stopping.get(sid)
+        if not jid:
+            return False
+        if (store.get("job", jid) or {}).get("state") in (JobState.QUEUED, JobState.RUNNING):
+            return True
+        stopping.pop(sid, None)
+        return False
 
     @app.get("/api/sessions/{sid}/observers")
     def session_observers(sid: str, actor=Depends(auth)):
-        store.get('session', sid) or _404()
+        session = store.get('session', sid) or _404()
         runtime = store.get('setting', 'session_observers_runtime') or {}
-        return (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
+        view = (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
             'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
             'service_error': runtime.get('error'), 'interval_seconds': 30}
+        view.setdefault('title', session.get('title'))
+        view['goals'] = _session_agent_goals(view, view.get('game_id') or session.get('game_id') or '')
+        return view
+
+    def _session_agent_goals(view: dict, gid: str) -> dict:
+        """What each session agent is trying to do, from the observer state, the game's Hermes work-queue stage and
+        the inbox requests / jobs targeting the game (session_observers.agent_goals). Never fails the panel."""
+        from .session_observers import agent_goals
+        queue = None
+        try:
+            from . import hermes_work_queue
+            queue = next(iter(hermes_work_queue.snapshot(gid).get('games') or []), None) if gid else None
+        except Exception:
+            queue = None                     # no queue file on this host (or unreadable): no stage to explain
+        requests = store.game_requests(gid) if gid else []
+        jobs = [j for j in store.jobs(states=('queued', 'running')) if gid and gid in (
+            (j.get('input') or {}).get('game_id'), ((j.get('input') or {}).get('game') or {}).get('game_id'))]
+        try:
+            return agent_goals(view, queue=queue, requests=requests, jobs=jobs)
+        except Exception as exc:             # an odd stored row must not hide the observations themselves
+            return {'agents': [], 'ask': None, 'error': f'{type(exc).__name__}: {exc}'[:300]}
+
+    @app.post("/api/sessions/{sid}/observers/look")
+    def session_observers_look(sid: str, actor=Depends(auth)):
+        """"Done, look now": the operator set up what an agent is seeking. The observer samples this session on its
+        next tick (within 5 s) with a fresh frame even if the screen looks unchanged, and re-checks model
+        collection. It reads one frame; it never sends input, pauses or relaunches."""
+        store.get('session', sid) or _404()
+        with store.lock:
+            row = store.get('session_observer', sid) or {'session_id': sid}
+            store.put('session_observer', sid, row | {'look_requested': time.time(), 'next_sample': 0,
+                                                      'frame_digest': None, 'models_checked': 0})
+        store.audit(actor, 'session.observers.look', sid, {})
+        return session_observers(sid, actor)
 
     class ObserverIn(BaseModel):
         enabled: StrictBool
@@ -3679,6 +3824,14 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/requests/{rid}")
     def req_get(rid: str, actor=Depends(auth)):
         return _clean(_req(rid))
+
+    @app.get("/api/requests/{rid}/story")
+    def req_story(rid: str, actor=Depends(auth)):
+        """The request's resolution story in order, for the Detailed report: triage, identification (tool calls), each
+        run with its recorded tokens and an estimated cost, jobs, the linked PRs with files and +/- lines (local git),
+        replies and the resolution. Unrecorded values are null and listed in `missing` (gbox/request_story.py)."""
+        from . import request_story
+        return _clean(request_story.assemble(store, config, _req(rid)))
 
     class ParentIn(BaseModel):
         parent_request_id: str

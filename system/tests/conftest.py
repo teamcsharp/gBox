@@ -17,6 +17,16 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+@pytest.fixture(autouse=True)
+def _private_character_library(monkeypatch):
+    """Tests never write the real character library. On the Spark GBOX_CHARACTERS is exported for the tests that
+    read real HUcast / Snake models (module-level paths, read at import); while it stayed set,
+    characters.library_root(cfg) ignored each test's temporary cache and test_parallel_builds_preserve_all_
+    character_targets wrote its 'shared' slug + targets folder into ~/gbox-cache/characters, which made
+    /api/characters return 500 (2026-10-13). A test that wants a library sets GBOX_CHARACTERS itself."""
+    monkeypatch.delenv("GBOX_CHARACTERS", raising=False)
+
+
 @pytest.fixture
 def cfg(tmp_path):
     return Config(data_dir=tmp_path / "data", cache_dir=tmp_path / "cache", api_port=free_port())
