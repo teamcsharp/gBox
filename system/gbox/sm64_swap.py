@@ -220,6 +220,8 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
     top of the automatic head fit, about the head's base (the neck stays where it is). jmap: {role: target joint} for
     another skeleton (default Mario's; gbox.oot_swap passes Link's or an NPC's limbs)."""
     from .re4gc_enemies import _role_of_joint
+    from .retarget_profile import move_joints, profile_of
+    rig, moved = move_joints(rig, profile_of(scale))       # the Retarget editor's joint moves: pivots + segments
     MARIO = jmap or globals()["MARIO"]
     hipj, chestj = MARIO["hip"], MARIO.get("chest", MARIO["hip"])
     B = facing(rig)
@@ -322,6 +324,8 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
            "shoulder_widen": round(sx, 2), "head_scale": round(head_k, 2), "head_scale_user": float((scale or {}).get("head", 1.0)),
            "limb_stretch": stretch,
            "roles_used": sorted(ri), "facing": B.astype(int).tolist()}
+    if moved["moved"]:
+        rep["joints_moved"] = moved
     return _profiled(rig, tgt, out, rep, scale, T, MARIO)
 
 
@@ -337,9 +341,18 @@ def _profiled(rig, tgt, out, rep, scale, T, jmap):
         FE.stage("scale", data=FE.fit_numbers(rep) | FE.donor_numbers(rig, basis, fitted_height=FE.height(out),
                                                                        target_height=th),
                  prims=FE.donor(rig, basis))
+        B = np.asarray(basis if basis is not None else np.eye(3), float)
+        S = np.asarray(rig["joints"], float) @ B.T          # the donor's joints (moved ones included), upright
+        allp = np.concatenate([np.asarray(p["pos"], float).reshape(-1, 3) for p in rig["prims"]]) @ B.T
+        Tn = np.asarray(T, float)
+        goal = RP.goals({r: S[j] for r, j in rig["roles"].items()},
+                        {r: Tn[j] for r, j in jmap.items() if isinstance(j, (int, np.integer)) and 0 <= j < len(Tn)},
+                        float(allp[:, 1].min()) if len(allp) else None, tgt.get("ground"))
         FE.stage("retarget", data={"limb_stretch": rep.get("limb_stretch"), "roles": len(rep.get("roles_used") or []),
                                    "vertices": int(sum(len(p["pos"]) for p in out)),
-                                   "triangles": int(sum(len(p["tris"]) for p in out))}, prims=out)
+                                   "triangles": int(sum(len(p["tris"]) for p in out)),
+                                   **({"joints_moved": len(rep["joints_moved"]["moved"])}
+                                      if rep.get("joints_moved") else {})}, prims=out, goals=goal)
     if prof is not None:
         out, rep["profile"] = RP.apply_jmap(out, T, jmap, prof, tgt.get("ground"))
         FE.stage("proportion", data=rep["profile"], prims=out)

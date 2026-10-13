@@ -1,7 +1,9 @@
 /* Background 3D task popup (#1175): while a Blender / GLB / model-prep job runs on a worker,
    a small always-on-top window opens with an orbiting (360°) view of the model being processed,
    a live stage ticker, and a VCR static-and-signal-loss exit when the task ends.
-   Shared verbatim by the web shell (/viz/process-popup.js) and the desktop app (../web/viz/…). */
+   Shared verbatim by the web shell (/viz/process-popup.js) and the desktop app (../web/viz/…).
+   "R" (bottom-right of the 3D view, and on each fitting row): the Retarget editor's Goals view on that model's donor,
+   target game and slot (mount({retarget(o)}): the shell's opener); follow(jobId) shows a rebuild the editor queued. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory;
   else root.GBoxProcessPopup = factory(root);
@@ -124,6 +126,27 @@
     if (stage === "preview") return d.roles ? `${d.roles} roles` : (d.kind || "");
     return "";
   }
+  // ---- the Retarget editor ("R"): a row's donor, target game and slot (fit events: donor / game / slot) ----------------
+  const GID = /^[0-9a-f]{16}$/;
+  function retargetOf(job, key) {
+    const f = (job && job.fitting) || {}, k = key || f.current, m = k && (f.models || {})[k];
+    if (!m || isCollect(job)) return null;
+    const i = job.input || {};
+    const slug = m.donor || (i.op === "use" && i.character) || "";
+    const gid = m.game || [i.target_game, i.game_id].find(g => GID.test(String(g || ""))) || "";
+    if (!slug || !gid) return null;
+    const slot = m.slot || (k !== slug && !/ #\d+$/.test(k) ? k : "") || (i.op === "use" && i.slot) || "player";
+    const name = String(m.label || "").split(/\s*(?:→|->)\s*/)[0] || slug;
+    return { slug, gid, slot, name, view: "goals", key: k, job: job.id || null,
+      recipe: ["cast_swap", "use"].includes(i.op) ? { tool: job.tool || "characters", input: i } : null };
+  }
+  // the row whose model the 3D view shows (snapshotOf's choice)
+  function shownKey(job) {
+    const rows = fittingRows(job), snap = snapshotOf(job), cur = ((job && job.fitting) || {}).current;
+    const r = (snap && rows.find(x => x.snapshot === snap && x.key === cur)) || (snap && rows.find(x => x.snapshot === snap))
+      || rows.find(x => x.key === cur);
+    return r ? r.key : null;
+  }
   // ---- calibration play-by-play (#1385): the current model's reported fit numbers as a "before -> fitted" tween ----
   // The writer's scale / proportion stages say how the donor was resized for the title (overall size, height or torso
   // stretch, torso width or shoulder widening, head). The viewer eases the fitted snapshot from those inverse factors
@@ -165,16 +188,17 @@
     return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
   }
   const nowS = () => ((env.performance && env.performance.now) ? env.performance.now() : Date.now()) / 1000;
-  function fittingHTML(job) {
+  function fittingHTML(job, opts) {
     const rows = fittingRows(job);
     if (!rows.length) return "";
     const s = fittingSummary(job), collect = isCollect(job), chips = collect ? COLLECT_STAGES : STAGES;
+    const withR = !opts || opts.retarget !== false;
     const head = `<div class="pp-fh"><b>${collect ? "Collecting" : "Fitting"}</b> ${s.done}/${s.total} ${collect ? "characters" : "models"}${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
     return head + rows.map(r => `<div class="pp-fr ${ESC(r.state)}${s.current && s.current.key === r.key ? " cur" : ""}" title="${ESC(r.key)}">
       <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${chips.map(name => {
         const st = r.stages.find(x => x.name === name);
         return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name] || name)}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
-      }).join("")}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span></div>`).join("");
+      }).join("")}${withR && retargetOf(job, r.key) ? `<button type="button" class="pp-rr" data-pp-r="${ESC(r.key)}" title="Retarget goals: ${ESC(r.label)} - fix how its joints match the target">R</button>` : ""}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span></div>`).join("");
   }
 
   // ---- what the current stage is doing to the mesh (drives the live mesh-change view) -----
@@ -260,9 +284,15 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null, rBtn = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
-      lastMsgs = [], dead = false, polling = null;
+      lastMsgs = [], dead = false, polling = null, preferred = null;
+    // "R": the Retarget editor (opts.retarget(o), the shell's opener) on a row's donor / game / slot
+    function openRetarget(key) {
+      const o = current && retargetOf(current, key || shownKey(current));
+      if (o && typeof opts.retarget === "function") opts.retarget(o);
+      return o;
+    }
 
     const style = doc.createElement("style");
     style.textContent = [
@@ -296,6 +326,10 @@
       ".gbox-pp .pp-fs i.done{background:#1d3a26;color:#8fe6a8}.gbox-pp .pp-fs i.skipped{background:#1a1f29;color:#6f7988}",
       ".gbox-pp .pp-fs i.failed{background:#3a1d1d;color:#ff8b8b}",
       ".gbox-pp .pp-fn{grid-column:1/3;color:#6f7988;font:10px/1.4 ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".gbox-pp .pp-rr{font:700 9px/14px ui-monospace,monospace;width:16px;height:14px;padding:0;margin-left:3px;border:1px solid #4f8cff88;",
+      "border-radius:3px;background:#16233a;color:#9fc2ff;cursor:pointer}.gbox-pp .pp-rr:hover,.gbox-pp .pp-rbtn:hover{background:#4f8cff;color:#fff}",
+      ".gbox-pp .pp-rbtn{position:absolute;right:8px;bottom:8px;z-index:3;width:26px;height:26px;border-radius:50%;border:1px solid #4f8cff;",
+      "background:#101318e6;color:#9fc2ff;font:700 13px/24px ui-monospace,monospace;text-align:center;padding:0;cursor:pointer}",
     ].join("");
     doc.head.append(style);
 
@@ -317,7 +351,11 @@
       picEl = doc.createElement("img"); picEl.className = "pp-pic"; picSrc = null;   // a sprite writer's preview image
       picEl.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;"
         + "background:rgba(8,10,16,.92);display:none";
-      stage.append(overlay, picEl, opEl);
+      rBtn = doc.createElement("button"); rBtn.className = "pp-rbtn"; rBtn.textContent = "R";      // the shown model's goals
+      rBtn.title = "Retarget goals: is this model deformed wrongly? Adjust where its joints are and how they match the target";
+      rBtn.style.display = "none";
+      rBtn.onclick = e => { if (e && e.stopPropagation) e.stopPropagation(); openRetarget(null); };
+      stage.append(overlay, picEl, opEl, rBtn);
       ctx2d = overlay.getContext && overlay.getContext("2d");
       const meta = doc.createElement("div"); meta.className = "pp-meta";
       barEl = doc.createElement("div"); barEl.className = "pp-bar";
@@ -326,6 +364,10 @@
       meta.append(barEl, msgEl);
       logEl = doc.createElement("div"); logEl.className = "pp-log";
       fitEl = doc.createElement("div"); fitEl.className = "pp-fit";                // per-model fitting stages
+      fitEl.onclick = e => {                                                        // a row's own R
+        const b = e && e.target && e.target.closest && e.target.closest("[data-pp-r]");
+        if (b) openRetarget(b.dataset ? b.dataset.ppR : b.getAttribute("data-pp-r"));
+      };
       calEl = doc.createElement("div"); calEl.className = "pp-cal";                // the calibration play-by-play caption
       stage.append(calEl);
       footEl = doc.createElement("div"); footEl.className = "pp-f";
@@ -402,7 +444,12 @@
         logEl.textContent = lastMsgs.join("\n");
       }
       const fitting = fittingSummary(job);
-      if (fitEl) { const html = fittingHTML(job); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
+      if (fitEl) { const html = fittingHTML(job, { retarget: typeof opts.retarget === "function" }); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
+      if (rBtn) {
+        const o = typeof opts.retarget === "function" ? retargetOf(job, shownKey(job)) : null, show = o ? "" : "none";
+        if (rBtn.style.display !== show) rBtn.style.display = show;
+        if (o) rBtn.title = `Retarget goals for ${o.name} → ${o.slot}: adjust where its joints are and how they match the target`;
+      }
       const pic = previewOf(job);
       if (picEl && pic !== picSrc) {
         picSrc = pic;
@@ -671,7 +718,9 @@
       if (dead || !Array.isArray(jobs)) return;
       const live = jobs.filter(j => classify(j) && !suppressed.has(j.id));
       if (!live.length) { if (root && !closing) teardown(false); return; }
-      const { job, others } = pick(live);
+      let { job, others } = pick(live);
+      const wanted = preferred && live.find(j => j.id === preferred);         // a rebuild the editor queued: follow it
+      if (wanted) job = wanted;
       if (closing && root) {
         if (job.id !== (current && current.id) && !vcr.step().done) return;  // a different 3D task took over mid-effect: let the effect finish first
         closing = false; root.classList.remove("pp-closing");
@@ -696,6 +745,8 @@
 
     return {
       sync,
+      follow(id) { preferred = id || null; if (id) suppressed.delete(id); },  // show this job once it is live
+      openRetarget,
       viewer() { return three && three.state ? three.state : null; },      // live mesh-view state (diagnostics/tests)
       dispose() {
         dead = true;
@@ -706,5 +757,5 @@
   }
 
   return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS,
-    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, calibration, calibrationPhase, STAGES };
+    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, calibration, calibrationPhase, STAGES, retargetOf, shownKey };
 });

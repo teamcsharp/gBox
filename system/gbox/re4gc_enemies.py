@@ -109,6 +109,8 @@ def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: fl
     hip->feet below it (skirts reach the feet). Head/neck ride the target neck. Limbs: source segment rotated onto
     the target segment and stretched along it (clamped), hands/feet keep the forearm/shin rotation, sit on the wrist
     / ankle. Every vertex follows the rule of its owner joint's nearest ancestor with a role."""
+    from .retarget_profile import move_joints, profile_of
+    rig, _moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
     S = np.asarray(rig["joints"], float)
     rr = rig["roles"]
     bw = tmpl.bone_world()
@@ -212,8 +214,14 @@ def _profiled(rig, out, scale, T, joint_role, s, sy_up, sy_dn):
         FE.auto_model(rig.get("source"))
         FE.stage("scale", data={"scale": float(s), "torso_up": float(sy_up / s), "torso_down": float(sy_dn / s)}
                  | FE.donor_numbers(rig, fitted_height=FE.height(out)), prims=FE.donor(rig))   # the donor as loaded
+        S = np.asarray(rig["joints"], float)               # the rig is already upright (left +X, up +Y, front +Z)
+        allp = np.concatenate([np.asarray(p["pos"], float).reshape(-1, 3) for p in rig["prims"]])
+        feet = [T[r][1] for r in ("l_foot", "r_foot") if r in T]
         FE.stage("retarget", data={"roles": len(rig["roles"]), "vertices": int(sum(len(p["pos"]) for p in out))},
-                 prims=out)
+                 prims=out, goals=RP.goals({r: S[j] for r, j in rig["roles"].items()},
+                                           {r: v for r, v in T.items() if r in RP.ROLES},
+                                           float(allp[:, 1].min()) if len(allp) else None,
+                                           min(feet) if feet else None))
     prof = RP.profile_of(scale)
     if prof is None:
         FE.stage("proportion", "skipped", {"profile": "none"})
