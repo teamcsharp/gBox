@@ -885,9 +885,13 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     rigged = write_rigged(prims, tgt, work / "sd2_rigged.gltf", name)
     src = rigged
     tris_src = sum(len(p["tris"]) for p in rig["prims"])
+    from . import fit_events as FE
     if tris_src > 8000 and blender:
+        FE.stage("decimate", "running", {"from": tris_src, "to": 8000})
         src = decimate(rigged, work / "sd2_dec.glb", 8000.0, blender)
     rp = read_rigged(src)
+    FE.stage("decimate", "done" if src is not rigged else "skipped",
+             {"from": tris_src, "triangles": int(sum(len(p["tris"]) for p in rp))}, prims=rp if src is not rigged else None)
     progress(30, "Cutting the model into the wrestler's part meshes")
     mats, mkey = [], {}
     allP, allN, allUV, allJ, F, FM = [], [], [], [], [], []
@@ -936,6 +940,7 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     report["triangles"] = sum(v["faces"] for k, v in report.items() if k.startswith("slot_"))
     report["retarget"] = rep
     report["source_triangles"] = tris_src
+    FE.stage("encode", data={"triangles": report["triangles"], "files": len(out), "source_triangles": tris_src})
     return {"files": out, "rigged": rigged, "report": report}
 
 

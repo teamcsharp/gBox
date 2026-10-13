@@ -27,7 +27,7 @@ def writer_fingerprint() -> str:
     names = ('doa2_swap', 'doa2_geometry', 'doa2_materials', 'doa2_textures',
              'doa2_pvr', 'doa2_atlas', 'doa2_rig', 'doa2_axes', 'doa2_rest',
              'doa2_bindings', 'doa2_morphs', 'doa2_acs', 'doa2_seams',
-             'doa2_weighted_retarget', 'doa2_sup_payload', 'doa2_sup_plan',
+             'doa2_weighted_retarget', 'retarget_profile', 'doa2_sup_payload', 'doa2_sup_plan',
              'doa2_sup_writer', 'doa2_weighted_encode', 'doa2_strip_encode', 'gdrom', 'gdrom_slack', 'sm64_swap', 'melee_models')
     for name in names:
         digest.update(name.encode('ascii'))
@@ -216,9 +216,12 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
                             allow_downscale=allow_downscale,
                             synthesize_headers=bool(profile.get('synthesize_material_headers')),
                             retype_argb4444=bool(profile.get('retype_argb4444')))
+    from . import fit_events as FE
     def finish(result, reduced):
         result['report'].update(source_triangles=source_triangles, lod_attempts=attempts,
                                 geometry_reduced=reduced, atlas=atlas_report)
+        FE.stage('decimate', 'done' if reduced else 'skipped',
+                 {'from': source_triangles, 'triangles': result['report'].get('triangles'), 'attempts': len(attempts)})
         return result
     try:
         result=encode(prims)
@@ -259,7 +262,9 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
             else:
                 geometry=S.read_rigged(model)
                 for primitive in geometry: primitive['J']=np.asarray(primitive['jid'])[:,None]
-            return geometry, sum(len(p['tris']) for p in geometry)
+            count=sum(len(p['tris']) for p in geometry)
+            FE.stage('decimate', 'running', {'from': source_triangles, 'to': budget, 'triangles': count}, prims=geometry)
+            return geometry, count
         for budget in sorted({max(128,int(source_triangles*.8**k)) for k in range(1,11)},reverse=True):
             progress(35,f'Native allocation: reducing donor to {budget} triangles')
             geometry,count=reduced_geometry(budget)
@@ -355,6 +360,10 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
         raise RigUnavailable("Rig model mapping does not match the executable's native draw script")
     directory = Path(character_dir)
     meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
+    from . import fit_events as FE, retarget_profile as RP
+    meta = RP.apply_to_meta(meta, GAME_IDS, f"fighter:{family}")     # the operator's Retarget editor profile
+    FE.model(f"fighter:{family}", f"{meta.get('name', directory.name)} → {family} (costume {costume})",
+             meta.get("slug") or directory.name)
     roles = (meta.get("rig") or {}).get("roles") or {}
     if not {"hip", "head"} <= roles.keys():
         raise ValueError("Donor needs hip and head body roles for retargeting")
@@ -367,6 +376,9 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
     if fit.get("max_influences", 0) > 2:                       # native SUP holds two influences per vertex
         prims, fit["influence_reduction"] = limit_influences(prims, 2)
         progress(20, f"Reduced {fit['influence_reduction']['vertices_reduced']} vertices to two bone influences")
+        FE.stage("weights", data={"max_influences_before": fit["max_influences"], **fit["influence_reduction"]})
+    else:
+        FE.stage("weights", "skipped", {"max_influences": fit.get("max_influences"), "native_limit": 2})
     lba, original_bytes = disc.files[stem + ".CHR"]
     next_lba = min((l for l, _ in disc.files.values() if l > lba), default=lba+(original_bytes+2047)//2048)
     sup_lba, sup_bytes = disc.files[stem + '.SUP']
@@ -374,9 +386,17 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
                    default=sup_lba+(sup_bytes+2047)//2048)
     from .doa2_seams import native_coefficients
     progress(30, "Encoding native joint-local geometry and texture allocations")
-    result = encode_budgeted(chr_data, bin_data, prims, profile, target, (next_lba-lba)*2048,
-                             coefficients=native_coefficients(executable),
-                             allow_downscale=allow_downscale, progress=progress)
+    FE.stage("encode", "running", {"budget_bytes": (next_lba-lba)*2048})
+    try:
+        result = encode_budgeted(chr_data, bin_data, prims, profile, target, (next_lba-lba)*2048,
+                                 coefficients=native_coefficients(executable),
+                                 allow_downscale=allow_downscale, progress=progress)
+    except Exception as e:
+        FE.stage("encode", "failed", {"error": str(e)[:150]})
+        raise
+    FE.stage("encode", data={"chr_bytes": len(result["chr_data"]), "bin_bytes": len(result["bin_data"]),
+                             "sup_bytes": len(result["sup_data"]), "budget_bytes": (next_lba-lba)*2048,
+                             "reduced": bool((result.get("report") or {}).get("geometry_reduced"))})
     changes = {stem + ".CHR": result["chr_data"], stem + ".BIN": result["bin_data"],
                stem + '.SUP': result['sup_data']}
     supplements = []
@@ -400,6 +420,7 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
                                     track_end=start + track.stat().st_size // sector_bytes,
                                     reserved_ranges=disc.metadata_ranges)
     report = result['report'] | {'fit': fit, 'fighter': family, 'costume': costume,
+                               'retarget_profile_digest': meta.get('retarget_profile_digest', ''),
                                'native_sup_original_budget': (sup_next-sup_lba)*2048,
                                'disc_allocation': allocation,
                                'supplements': supplements,
@@ -420,8 +441,20 @@ def write_mod(gdi, out_dir, name, slug, changes, reports, progress):
     Path(out_dir, 'build-report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     Path(out_dir, '.gbox-mod.json').write_text(json.dumps({'name':name, 'game_id':next(iter(GAME_IDS)),
                   'image':image.name, 'character':slug, 'files':list(changes), 'report':report,
-                  'writer_sha256':writer_fingerprint(), 'gameplay_verified':False}),encoding='utf-8')
+                  'writer_sha256':writer_fingerprint(), 'profile_digest': profiles_digest(reports),
+                  'gameplay_verified':False}),encoding='utf-8')
+    from . import fit_events as FE
+    FE.stage('write', data={'image': image.name, 'files': len(changes)})
     return {'mod':name, 'image':str(image), 'report':report, 'status':'built_unverified'}
+
+
+def profiles_digest(reports=(), metas=()) -> str:
+    """The retarget profiles a build used (from its costume reports) or will use ([(family, meta)]): a changed
+    profile in the Retarget editor rebuilds the mod."""
+    from . import retarget_profile as RP
+    found = {r.get('retarget_profile_digest', '') for r in reports if isinstance(r, dict)}
+    found |= {RP.digest(RP.resolve(meta, GAME_IDS, f'fighter:{family}')) for family, meta in metas}
+    return ','.join(sorted(found - {''}))
 
 
 def build(gdi, character_dir, out_dir, fighter, costume, profile, *, allow_downscale=False, progress=lambda p,m:None):
@@ -619,7 +652,10 @@ def use_roster(ctx, meta, game, inp):
     except (OSError, ValueError):
         cached = {}
     result = None
-    if inp.rebuild or cached.get('writer_sha256') != writer_fingerprint():
+    want = profiles_digest(metas=[(family, json.loads((donors[slug] / 'meta.json').read_text(encoding='utf-8')))
+                                  for family, slug in plan])
+    if (inp.rebuild or cached.get('writer_sha256') != writer_fingerprint()
+            or cached.get('profile_digest', '') != want):
         gdi = C._dc_gdi(ctx, game)
         result = build_roster(gdi, donors, output, plan, progress=ctx.progress)
         for family, slug in plan:
@@ -647,7 +683,8 @@ def use(ctx, meta, game, inp):
         cached = json.loads(marker.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         cached = {}
-    if inp.rebuild or cached.get('writer_sha256') != writer_fingerprint():
+    if (inp.rebuild or cached.get('writer_sha256') != writer_fingerprint()
+            or cached.get('profile_digest', '') != profiles_digest(metas=[(family, meta)])):
         gdi = C._dc_gdi(ctx, game)
         result = build_fighter(gdi, C.library_root(ctx.config) / meta['slug'], output, family, costume, progress=ctx.progress)
         C._api(ctx, 'POST', f"/api/characters/{meta['slug']}/targets",
