@@ -1586,6 +1586,11 @@ DEDICATED = [
     ("soulcalibur2", lambda t, p: re.search(r"soul ?calibur (ii|2)\b", t) is not None and p == "gamecube",
      lambda: __import__("gbox.soulcalibur2", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.soulcalibur2", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # John Woo Presents Stranglehold (PS3): Tequila, the gang enemies and the named cast from the UE3 char_*.xxx
+    # packages (SPU-segment SkeletalMeshes; gbox.stranglehold_models, docs/stranglehold.md, #1410)
+    ("stranglehold", lambda t, p: "stranglehold" in t and p == "ps3",
+     lambda: __import__("gbox.stranglehold_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.stranglehold_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1687,7 +1692,8 @@ def dedicated_entries(config, game, name, roster):
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
-                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader")}
+                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
+                   "stranglehold": ("gbox.stranglehold_models", "stranglehold_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
