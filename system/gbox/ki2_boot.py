@@ -110,6 +110,8 @@ class BitReader:
     def get(self, n: int) -> int:
         if n == 0:
             return 0
+        if self.bit < 0 or self.bit + n > len(self.data) * 8:
+            raise BootFormatError("bit stream truncated at bit %d" % self.bit)
         byte, sh = self.bit >> 3, self.bit & 7
         chunk = int.from_bytes(self.data[byte:byte + 8], "little")
         self.bit += n
@@ -130,6 +132,8 @@ class BitReader:
         d = self.data
         p = tree
         while True:
+            if p < 0 or p + 1 >= len(d):
+                raise BootFormatError("prefix tree walk left the data at byte %#x" % p)
             b = d[p]
             p += 1
             if b == 0:
@@ -144,6 +148,8 @@ class BitReader:
 
 
 def _table(rom: bytes, addr: int, count: int) -> list[int]:
+    if addr < ROM_BASE or addr - ROM_BASE + 2 * count > len(rom):
+        raise BootFormatError("flag table at %#x outside the ROM" % addr)
     return list(struct.unpack_from("<%dH" % count, rom, addr - ROM_BASE))
 
 

@@ -121,3 +121,23 @@ def test_owned_boot_overlay_read_is_pointer_table():
     # self-relative 256-byte record table located at the RAM destination
     assert first[0] == b["dest"] + 0x100
     assert all(first[i + 1] - first[i] == 0x100 for i in range(7))
+
+
+def test_truncated_inputs_raise_valueerror():
+    br = kb.BitReader(bytes([0xFF, 0xFF]), 1)
+    assert br.get(8) == 0xFF
+    with pytest.raises(ValueError):
+        br.get(1)
+    tree = bytes([2, 0, 0x41, 2, 0, 0x42, 0, 0x43])
+    with pytest.raises(ValueError):
+        kb.BitReader(tree[:5] + bytes([0]), 5).symbol(0)   # walks off the truncated tree
+    with pytest.raises(ValueError):
+        kb.BitReader(tree, len(tree)).symbol(0)            # no bits left to choose a branch
+    with pytest.raises(ValueError):
+        kb._table(bytes(0x100), kb.ROM_BASE + 0xF0, 64)
+    words = [0] * 0x400
+    words[0x10], words[0x11] = 0x3C05BFC0, 0x24A50FF0
+    for i, imm in zip((0x40, 0x50, 0x60, 0x70), (0x0F00, 0x0E00, 0x0E80, 0x0EC0)):
+        words[i], words[i + 1] = 0x3C14BFC0, 0x26940000 | imm
+    with pytest.raises(ValueError):  # loader found, but the stream runs past the ROM
+        kb.decompress(struct.pack("<%dI" % len(words), *words))
