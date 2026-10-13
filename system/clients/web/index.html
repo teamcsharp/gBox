@@ -106,7 +106,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
   .game-model-card img { width:62px; height:62px; object-fit:contain; background:#26282f; border-radius:6px; }
   .game-model-preview { height:min(55vh,540px); min-height:280px; background:#16181d; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
   @media(max-width:800px) { .game-models { grid-template-columns:1fr; } .game-model-list { max-height:220px; } }
-  #traypop { position:fixed; top:48px; right:12px; width:320px; max-height:60vh; overflow:auto; display:none; z-index:80; background:var(--bg);
+  #traypop { position:fixed; top:48px; right:12px; width:320px; max-width:calc(100vw - 16px); max-height:60vh; overflow:auto; overscroll-behavior:contain; display:none; z-index:80; background:var(--bg);
     border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 40px #000a; } #traypop.on { display:block; }
   .tnote { display:grid; gap:2px; padding:8px 10px; border-bottom:1px solid var(--line); cursor:pointer; font-size:12.5px; } .tnote:hover { background:var(--card); }
   .tnote.unread b::before { content:"● "; color:var(--acc); } .tmenu { display:flex; flex-direction:column; padding:4px; } .tmenu button { text-align:left; padding:8px 10px; border:0; background:none;
@@ -278,6 +278,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
 <script src="/viz/builds.js"></script>
+<script src="/viz/toast-stack.js"></script>
 <script src="/viz/build-notes.js"></script>
 <script src="/viz/launch-mods.js"></script>
 <script src="/viz/retarget-handles.js"></script>
@@ -435,11 +436,14 @@ const SESSIONBUILD = { ctl: null, session: null };            // the Sessions he
 document.head.insertAdjacentHTML("beforeend", `<style>${GBoxBuildNotes.CSS}</style>`);
 const bnUrl = u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`;
 const bnEmbedded = () => new URLSearchParams(location.search).has("embedded");
-function bnToastHide(id) { const t = $("#bntoast"); if (t && (!id || t.dataset.id === id)) { clearTimeout(bnToastHide.t); t.remove(); } }
+// Every toast of this page is a card in one stack (viz/toast-stack.js): top-right, right under the header as measured
+// (in the desktop app's narrower view the header wraps to two rows; a fixed 52 px top put the toast over it and cut its
+// title), newest first, capped to the room left in the window (it scrolls inside), laid out again on resize. The desktop
+// app cuts #gbox-toasts out of a docked game window (EMB_GUEST_MENUS).
+const TOASTS = GBoxToastStack.mount(document, { header: "header", zIndex: 85 });
+function bnToastHide(id) { if (id) TOASTS.remove("bn:" + id); }
 function bnAnnounce(n) {                                       // a new build entry: a toast with Play + an OS notification
-  bnToastHide();
-  document.body.insertAdjacentHTML("beforeend", GBoxBuildNotes.toastHTML(n, { url: bnUrl }).replace('class="bn-toast"', 'id="bntoast" class="bn-toast"'));
-  bnToastHide.t = setTimeout(() => bnToastHide(n.id), GBoxBuildNotes.TOAST_MS);
+  TOASTS.push({ id: "bn:" + n.id, html: GBoxBuildNotes.toastHTML(n, { url: bnUrl }), ms: GBoxBuildNotes.TOAST_MS });
   const os = GBoxBuildNotes.osNote(n);
   if (bnEmbedded()) console.log("GBOX:" + JSON.stringify(os));     // the desktop shell shows it when its window is not in front
   else try { if (window.Notification && Notification.permission === "granted" && document.hidden) new Notification(os.title, { body: os.body, tag: os.id }); } catch {}
@@ -475,7 +479,7 @@ async function trayTick() {
     TRAY.notes = notes;
     if (SESSIONBUILD.ctl) SESSIONBUILD.ctl.sync(ss.find(x => x.session_id === SESSIONBUILD.ctl.sid));   // renamed in Mods / Builds / the app
     if (TRAY.seen === null) TRAY.seen = GBoxBuildNotes.seenOf(notes);       // opening the page announces nothing old
-    else GBoxBuildNotes.fresh(notes, TRAY.seen).slice(0, 1).forEach(bnAnnounce);
+    else GBoxBuildNotes.fresh(notes, TRAY.seen).slice(0, 4).reverse().forEach(bnAnnounce);   // stacked: the newest ends on top
     const unread = GBoxBuildNotes.unread(notes), cur = (window.active || {}).sid;
     const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent";
       return `<button class="tchip${agent ? " agent" : ""}${x.session_id === cur ? " cur" : ""}" data-sid="${esc(x.session_id)}"
@@ -512,8 +516,13 @@ async function trayTick() {
 function trayPop() {
   const el = $("#traypop");
   el.innerHTML = GBoxBuildNotes.trayHTML(TRAY.notes, { url: bnUrl, state: TRAY.bn, here: window.GBOX_LOCAL?.worker || "" });
-  el.classList.add("on");
+  if (!el.querySelector(".tmenu")) { el.style.left = ""; el.style.right = ""; }   // the bell's tray: back to the right edge
+  el.classList.add("on"); trayFit();
 }
+// the tray / a session icon's menu: right under the header as measured (it wraps to two rows in the desktop app), inside
+// the window, scrolling inside itself when the list is longer than the room left
+function trayFit() { const el = $("#traypop"); if (el.classList.contains("on")) GBoxToastStack.fit(el, { header: "header", margin: 4, pinTop: true, maxHeight: innerHeight * 0.7 }); }
+addEventListener("resize", trayFit);
 // click a mod thumbnail or any texture (img.tpable): view it in a pop-up (#186) — wheel / + - zoom at the cursor, drag to pan,
 // double-click = fit, ‹ › through its siblings, brightness / contrast, alpha checkerboard, Save; Esc / backdrop = close
 document.body.insertAdjacentHTML("beforeend", `<div id="lbox" style="display:none;position:fixed;inset:0;z-index:120;background:#000d;overflow:hidden;cursor:grab">
@@ -620,7 +629,7 @@ document.addEventListener("contextmenu", e => {
       ${moves.map(t => `<button data-a="move" data-to="${esc(t.to)}" data-label="${esc(t.label)}">${esc(t.label)} <span class="mut">(${esc(t.hint)})</span></button>`).join("")}
       <button data-a="${agent ? "mine" : "agent"}">${agent ? "Mark as mine" : "Mark as an agent's test"}</button>
       <button data-a="stop" style="color:var(--bad)">Stop</button><div class="mut tmst"></div></div>`;
-  el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true;
+  el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true; trayFit();
 });
 document.addEventListener("click", async e => {
   const mb = e.target.closest(".tmenu button");
@@ -649,7 +658,7 @@ trayTick(); setInterval(trayTick, 5000);
 // "Reload the game you had up" (viz/last-played.js over /api/last_played): after the operator's game ends - window
 // closed, Stop, a crash, a failed relaunch, the app or worker restarting - and again on the next start until something
 // is launched; Reload (same game, mod, PC) or Reload with your last moment. The desktop app shows this shell too.
-const LASTPLAYED = GBoxLastPlayed.mount({ api, host: document.body,
+const LASTPLAYED = GBoxLastPlayed.mount({ api, host: document.body, top: () => GBoxToastStack.limits(document, { header: "header", margin: 0 }).top,
   url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
   onReloaded: nsid => { if (nsid) show("Sessions", nsid); }, openReport: id => window.open(`/api/requests/${encodeURIComponent(id)}?${tq()}`, "_blank") });
 $("#tok").onchange = e => { tok = e.target.value; try { localStorage.setItem("gbox_tok", tok); } catch {} show(cur); };
@@ -1091,14 +1100,8 @@ function deskFolders() {
            showInFolder: p => say({ ev: "showinfolder", path: p }), openPath: p => say({ ev: "openpath", path: p }) };
 }
 // the Mods / Builds views' short notices (a download finished, an export failed...): bottom right, gone after 7 s
-function blToast(t) {
-  let el = $("#bltoast");
-  if (!el) {
-    document.body.insertAdjacentHTML("beforeend", '<div id="bltoast" role="status" style="position:fixed;right:16px;bottom:16px;z-index:2147483001;max-width:min(460px,calc(100vw - 32px));background:#16161aee;color:#e8e8ee;border:1px solid #444;border-radius:8px;padding:8px 12px;font-size:13px;box-shadow:0 8px 24px #000a"></div>');
-    el = $("#bltoast");
-  }
-  el.textContent = t; el.hidden = false;
-  clearTimeout(blToast.t); blToast.t = setTimeout(() => { el.hidden = true; }, 7000);
+function blToast(t) {                                       // Builds / Mods: a card in the toast stack (wraps, never off screen)
+  TOASTS.push({ id: "bl", text: String(t), kind: /^\s*(⚠|✗)/.test(String(t)) ? "bad" : "", ms: 7000 });
 }
 function modsView() { MODSG.ctl?.stop(); MODSG.ctl = null; return `<div id="modsgallery"></div>`; }
 modsView.after = () => {
@@ -1884,12 +1887,14 @@ function examineInfo(c) {
   $("#ex_blall").disabled = false;
   const dl = $("#ex_dl"); dl.href = `/api/artifacts/${c.glb}?${tq()}`; dl.style.display = "";
   const row = (k, v) => v == null ? "" : `<b>${k}</b><span>${esc(String(v))}</span>`;
-  el.className = "kv"; el.innerHTML = row("Draw calls", `${s.draws_exported} of ${s.draws_total} (${s.scene_draws} 3D · ${s.hud_draws} HUD)`)
+  el.className = "kv"; el.innerHTML = row("3D scene", s.fallback === "frame_2d" ? `none (2D-only): ${s.note || "this frame has no 3D draw calls"}` : null)
+    + row("Draw calls", `${s.draws_exported} of ${s.draws_total} (${s.scene_draws} 3D · ${s.hud_draws} HUD)`)
     + row("Triangles", s.triangles?.toLocaleString()) + row("Vertices", s.vertices?.toLocaleString()) + row("Textures", s.textures)
     + row("Graphics API", `${s.api} · ${s.mode}`) + row("Field of view", s.fovy_deg && `${s.fovy_deg.toFixed(1)}° (${s.projection_source})`)
     + row("Depth range", s.near != null && `${(+s.near).toPrecision(3)} – ${(+s.far).toPrecision(3)}`)
     + row("Took", s.timings && `${s.timings.capture_s}s capture + ${s.timings.extract_s}s rebuild`)
-    + row("Captured in", c.capture && `capture session on ${c.capture.worker} (${c.capture.where}) · ${c.capture.driver} · your game kept running`);
+    + row("Captured in", c.capture && `capture session on ${c.capture.worker} (${c.capture.where}) · ${c.capture.driver} · your game kept running`)
+    + row("Captures", (s.capture_attempts || []).length > 1 ? s.capture_attempts.map(a => a.error ? `${a.frames} frames (${a.how}): failed` : `${a.frames} frames (${a.how}): ${a.draws_total} draws, ${a.scene_draws} 3D`).join(" · ") : null);
 }
 function examinePicked(info) {
   EXAM.picked = info ? info.name : null;
@@ -2248,9 +2253,11 @@ function observerGoalsHtml(r) {
     `#${esc(q.number ?? q.id)} ${esc(q.title)}${q.goal ? ` (${esc(q.goal)})` : ''}`).join('; ')}</p>` : '';
   const stage = a => a.stage ? ` <span class="mut">stage: ${esc(a.stage)}${(a.stages_verified || []).length ? ` · verified: ${a.stages_verified.map(esc).join(', ')}` : ''}</span>` : '';
   const last = r.last_look?.answered ? `<small class="mut">Last look on request: ${new Date(r.last_look.answered * 1000).toLocaleTimeString()}</small>` : '';
-  return `<div class="obs-goals">${g.ask ? `<p class="obs-ask"><b>You can help the ${esc(g.ask.name)}:</b> ${esc(g.ask.text)}</p>` : ''}
+  const ask = g.ask ? `<p class="obs-ask"><b>You can help the ${esc(g.ask.name)}:</b> ${esc(g.ask.text)}${g.ask.if_unavailable ? `<br><small><b>Can't?</b> ${esc(g.ask.if_unavailable)}</small>` : ''}</p>` : '';
+  const cannot = g.cannot_help ? `<p class="obs-ask obs-blocked" data-cannot-help><b>Not something you can set up:</b> ${esc(g.cannot_help.text)}</p>` : '';
+  return `<div class="obs-goals">${cannot}${ask}
     ${agents.map(a => `<div class="obs-agent" data-agent="${esc(a.agent)}"><p><b>${esc(a.name)}</b> <span class="mut">${esc(a.state || '')}</span>${stage(a)}</p>
-      ${line('Goal:', a.goal)}${line('Now:', a.doing)}${line('Looking for:', a.seeking)}${line('You can help:', a.you_can_help)}${line('Blocked by:', a.blocked_by, 'obs-blocked')}${reqs(a)}</div>`).join('')}${last}</div>`;
+      ${line('Goal:', a.goal)}${line('Now:', a.doing)}${line('Looking for:', a.seeking)}${line('You can help:', a.you_can_help)}${line("If you can't:", a.if_unavailable)}${line('Blocked by:', a.blocked_by, 'obs-blocked')}${reqs(a)}</div>`).join('')}${last}</div>`;
 }
 function sessionObserverWatch(sid) {
   clearTimeout(observerWatch.timer);
@@ -3871,6 +3878,7 @@ if (!new URLSearchParams(location.search).has('embedded')) {
     fetchJobs: () => api('/api/jobs?state=queued,running&limit=100'),
     assetUrl: p => p + (p.includes('?') ? '&' : '?') + tq(),
     retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
+    fit: el => GBoxToastStack.fit(el, { header: 'header' }),  // inside the window, below the header; scrolls when taller
   });
   window.addEventListener('pagehide', () => window.GBOX_PROCESS_POPUP.dispose(), { once: true });
 }
@@ -3880,7 +3888,7 @@ if (!new URLSearchParams(location.search).has('embedded')) {
 // Hover outlines + labels the character; the menu replaces it (pick_replace live -> build), copies it, sends it to
 // Blender, opens the retarget editor, identifies it (pick_identify), shows it in Assets. The game pauses while it is open.
 window.PWW = GBoxPickWhip.mountOverlay(document, {
-  api, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y),
+  api, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y), fit: el => GBoxToastStack.fit(el, { header: "header" }),   // the mini console
   sid: () => active?.sid || "", gid: () => document.querySelector("#wb[data-gid]")?.dataset.gid || "",
   toast: t => { const el = $("#sopres"); if (el) el.textContent = t; },
   img: c => `${c.preview_url || `/api/characters/${encodeURIComponent(c.slug)}/preview`}?${tq()}`,

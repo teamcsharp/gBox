@@ -263,6 +263,13 @@
 #launchbar .lb-count { flex:none; background:rgba(0,0,0,.6); border-radius:8px; padding:0 6px; line-height:14px; }
 #launchbar .lb-x { flex:none; background:none; border:0; color:#fff; cursor:pointer; font:16px/16px sans-serif; padding:0 6px; text-shadow:${OUTLINE}; }
 #launchbar.err { background:#7f1d1d; } #launchbar.err .lb-fill { width:100% !important; background:#b91c1c !important; box-shadow:none !important; }
+/* the failure line wraps instead of cutting the title and the reason: the bar grows upward from its bottom edge, a few
+   lines at most (it scrolls inside itself past that), so it never reaches the header */
+#launchbar.err { height:auto; min-height:18px; max-height:min(30vh, 76px); overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
+#launchbar.err .lb-row { position:relative; inset:auto; min-height:18px; align-items:flex-start; }
+#launchbar.err .lb-title { max-width:45%; white-space:normal; overflow:visible; overflow-wrap:anywhere; }
+#launchbar.err .lb-view { height:auto; overflow:visible; }
+#launchbar.err .lb-static { white-space:normal; overflow:visible; overflow-wrap:anywhere; }
 #launchbar .lb-rep { flex:none; display:none; background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.35); border-radius:9px; color:#fff;
   font:600 11px/14px "Segoe UI", system-ui, sans-serif; padding:0 8px; cursor:pointer; text-shadow:none; white-space:nowrap; }
 #launchbar .lb-rep.ok { background:#14532d; border-color:#22c55e; } #launchbar.err .lb-rep.on { display:inline-block; }

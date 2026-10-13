@@ -130,3 +130,50 @@ glcore cores, Citra/SwanStation/Beetle PSX HW.
 4. 2D fallback for software cores, Xenia and ParaLLEl N64: the panel labels these rows 2D-only and shows the live
    frame. Frame dump / free-look integration is **not started**.
 5. Open: PS2 (LRPS2) GS draws missing from the D3D11 capture; Dolphin Vulkan capture holding only the XFB present.
+   Both now come back labelled 2D-only with the reason instead of as an empty 3D scene (see *Empty frames* below),
+   and every capture attempt is listed in `summary.capture_attempts`, so the next live check shows whether the
+   running-game retry reaches the game's draws.
+
+## Empty frames: retry, then 2D-only
+
+A rebuilt frame with no 3D draw and at most `EMPTY_SCENE_MAX_DRAWS` (6) draw calls is the emulator's own present,
+not the game: the cached frame a paused RetroArch re-presents without running the core, a 30 fps game's duplicate
+frame, Dolphin's XFB-only frames (movies, logos, attract), or a renderer drawing outside the device RenderDoc
+captures (LRPS2 on D3D11 so far). `scene_capture` then captures `RETRY_FRAMES` (4) more frames once with the game
+running (after `RETRY_SETTLE_S` = 1 s), keeps the busier rebuild and pauses the game again. In a relay this runs in
+the capture session, so the operator's game is still untouched; on a session captured directly it moves that game
+on by about a second, and only when the first frame was empty.
+
+If the kept frame still has no 3D draw, the result carries `fallback: "frame_2d"`, `scene_empty` (true: present
+blits only; false: a real 2D screen with HUD draws) and a `note` with the reason (plus the known PS2 / Dolphin gap).
+The Examine panel shows a "3D scene: none (2D-only)" row with that note and, after a retry, the draw counts of each
+attempt. Tests: `tests/test_scene_capture_empty.py`.
+
+## Vulkan layer after boot; replay needs free video memory (Yuzu / RPCS3)
+
+The live Yuzu check on JAYBUILTFINALE (Animal Crossing NH, Vulkan, Examine 3D on) found two gaps, fixed here:
+
+1. **Stale "started without the layer" row.** The Vulkan loader maps `renderdoc.dll` only when the emulator creates
+   its Vulkan device. Yuzu does that after the game has booted from the share, later than the launch check (10 s;
+   RPCS3 15 s). The session was stored as `relaunch_under_capture` "Examine 3D was off at launch" while captures
+   worked. Now `scene_support.layer_state` re-checks a live layer-started process whenever the row is rated:
+   - inside `LAYER_PENDING_MAX_S` (5 min) of its start: `supported`, `layer: "pending"`, "loads once the game has
+     booted";
+   - layer loaded: `supported`;
+   - past the window without the layer: `relaunch_under_capture`, `layer: "missed"`, "never loaded" (not "off").
+   The worker's session watch (`tools._refresh_scene_row`, every 3 s) posts the settled row (`scene_capture`,
+   `examine`) to `/api/sessions/<sid>/detail`, so the Examine 3D panel and `scene_relay.wants_relay` read the current
+   row. Examine 3D on a pending session waits up to `LAYER_WAIT_S` (20 s) for the layer, then explains, instead of
+   the generic "started without Examine 3D".
+2. **Replay out of video memory.** Replaying a standalone Vulkan emulator's capture on the same PC needs about as
+   much video memory as the emulator, and the paused emulator still holds it (`VK_ERROR_OUT_OF_DEVICE_MEMORY` on the
+   RTX 3070). `extract` raises `ReplayOutOfMemory` for that (log or qrenderdoc error), and the capture is kept in
+   `runtime/scene_capture/<sid>/rebuild/*.rdc` + `rebuild.json` (fovy, aspect, emulator, game). The job fails with
+   that reason and the game's pause state is restored. Once the game is closed, `scene_capture` with
+   `rebuild: true` for that session replays the kept capture and returns the GLB as usual (`rebuilt_from_kept`).
+   The server lets a rebuild through for an ended session; it runs on the session's worker.
+
+Live checks after deploy (JAYBUILTFINALE, never the operator PC): launch Animal Crossing NH (0c77e1500e467772) with
+`examine: true`; the session row reads `layer: "pending"` and turns `supported` within a few seconds of the game
+booting. Examine 3D then captures; if the replay still runs out of memory, stop the session and run `scene_capture`
+`rebuild: true` for it, expecting a GLB with `rebuilt_from_kept: true`. Tests: `tests/test_scene_layer_pending.py`.

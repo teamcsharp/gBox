@@ -396,7 +396,22 @@ class _Skin:
         return _plan(self.skinned()[0], enforce=False, allowed=allowed, single=single)
 
 
-def fit_native_skin(primitives, *, maximum_seams=MAX_SEAMS):
+def native_edges(parents):
+    """Directed (owner, bone_b) SUP pairs the owned disc uses: a joint owns its seam and blends toward its parent.
+
+    All 898 body seams in the 80 DOA2 LE SUP files (#1638 audit) have ``bone_b == parent[bone_a]``; none blends a
+    parent-owned model toward a child joint."""
+    return frozenset((int(j), int(p)) for j, p in enumerate(parents) if int(p) >= 0)
+
+
+def reversed_pairs(plan_or_models, parents):
+    """Directed pairs of a plan (or its ``models``) that no native SUP uses (owner is not the child)."""
+    models = plan_or_models['models'] if isinstance(plan_or_models, dict) else plan_or_models
+    edges = native_edges(parents)
+    return sorted({(int(m['bone_a']), int(b)) for m in models for b in m['bone_bs']} - edges)
+
+
+def fit_native_skin(primitives, *, maximum_seams=MAX_SEAMS, parents=None):
     """Return (primitives, report) whose skins ``plan_seams`` accepts, moving as little weight as possible.
 
     1. A transparent triangle spanning more than one joint pair keeps a single pair: the cheapest corner influences
@@ -411,7 +426,14 @@ def fit_native_skin(primitives, *, maximum_seams=MAX_SEAMS):
     limit = min(MAX_SEAMS, int(maximum_seams))
     skin = _Skin(primitives).drawable()
     allowed = single = None
-    plan = skin.plan()
+    if parents is not None:
+        # Opt-in native direction: every seam is owned by the child joint and blends toward its parent, the only
+        # orientation the owned disc's SUP consumer is ever fed (#1638: a parent-owned thigh->shin seam drew a
+        # stretched strip from Sonic's shoe along the floor).
+        allowed = native_edges(parents)
+        if skin.constrain(allowed, None, 'native_direction') is None:
+            raise ValueError('donor skin cannot be fitted to child-owned native SUP pairs')
+    plan = skin.plan(allowed, single)
     count = before = plan['report']['native_descriptors']
     steps = []
     for _ in range(64):

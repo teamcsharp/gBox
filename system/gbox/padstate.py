@@ -144,30 +144,19 @@ def player_active(sid: str, within: float = 0.6) -> bool:
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     """Windows worker: stream the operator's own controller (pad 0) to the controller glyph while the session lives.
     The game reads the pad itself; this only mirrors it (XInput works whatever window has focus)."""
-    import ctypes
     import httpx
-    try:
-        xi = ctypes.windll.xinput1_4
-    except OSError:
-        try:
-            xi = ctypes.windll.xinput9_1_0
-        except OSError:
-            return
-
-    class GP(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-
-    class ST(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gp", GP)]
-    st, held, last_pkt, last_stick = ST(), set(), -1, (0.0, 0.0, 0.0, 0.0)
+    from . import xinput
+    get_state = xinput.load()      # the shared binding: a private ST class here died on an argtypes clash (#1638)
+    if get_state is None:
+        return
+    st, held, last_pkt, last_stick = xinput.XInputState(), set(), -1, (0.0, 0.0, 0.0, 0.0)
     ax = lambda v: 0.0 if abs(v) < 7849 else round(max(-1.0, v / 32767), 2)      # XInput's recommended deadzone
     with httpx.Client(base_url=server, headers=headers, timeout=3) as c:
         while alive():
             time.sleep(1 / 30)
-            if xi.XInputGetState(0, ctypes.byref(st)) != 0 or st.packet == last_pkt:
-                continue
-            last_pkt, g = st.packet, st.gp
+            if xinput.read(get_state, 0, st) is None or st.packet == last_pkt:
+                continue                                    # empty slot or a failed call: keep mirroring
+            last_pkt, g = st.packet, st.gamepad
             now = {name for bit, name in _XI.items() if g.buttons & bit} | ({"l2"} if g.lt > 30 else set()) | ({"r2"} if g.rt > 30 else set())
             stick = (ax(g.lx), -ax(g.ly), ax(g.rx), -ax(g.ry))
             ev = [{"key": k, "down": True} for k in now - held] + [{"key": k, "down": False} for k in held - now]

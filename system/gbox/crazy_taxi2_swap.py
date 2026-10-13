@@ -533,7 +533,7 @@ def write_driver(files: dict, glb, joint_roles: dict, key: str, progress=None) -
         names = c2.part_names(objs, tables["slots"])
         slot = atlas_slot(tables["textures"])
         t = tables["textures"][slot]
-        progress(10 if high else 55, f"{c2.DRIVERS[key]} ({'high' if high else 'race'} detail): retargeting")
+        progress(10 if high else 55, f"retargeting onto {c2.DRIVERS[key]} ({'high' if high else 'race'} detail)")
         geo, atlas, info = retarget(glb, joint_roles, objs, names, (max(64, t["w"]), max(64, t["h"])), progress)
         FE.stage("weights", data={"mode": "rigid per part (each part rides its own joint)", "parts": len(geo)})
         new_pol, slots, rep = write_pol(pol, tables, geo, slot, tables["alloc"], progress)

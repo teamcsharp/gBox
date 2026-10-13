@@ -1681,6 +1681,9 @@ DEDICATED = [
     ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("nightfire", lambda t, p: "007" in t and "nightfire" in t and p == "gamecube",
+     lambda: __import__("gbox.nightfire_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.nightfire_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta PS2 (SLUS_206.39 v1.00): the 58 data.bin WRS wrestlers, BODY + FACE + hands on one rigged
     # skeleton with body roles and the fighter's texture page (#1305; formats in docs/defjam_pipeline.md)
     ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
