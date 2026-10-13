@@ -201,6 +201,21 @@ ipcMain.handle("audio:volume", (_e, value) => {
   return { volume: volumePercent(settings().volume), available: process.platform === "win32" && !!audioVolumeHelper };
 });
 app.on("before-quit", () => shutdownSessions());
+// Last played (gbox/last_played.py): before this PC's games close with the app (quit, update & relaunch), save each
+// one's moment so the web shell's pop-up can offer "Reload with your last moment". Best effort, 7 s at most in all.
+let momentsKept = false;
+async function keepMoments(limitMs = 7000) {
+  if (momentsKept || !FIRST) return;
+  momentsKept = true;
+  const work = (async () => {
+    const s = settings(), auth = { authorization: `Bearer ${await token()}` };
+    const r = await fetch(`${s.apiUrl}/api/sessions?include_ended=false`, { headers: auth, signal: AbortSignal.timeout(2500) });
+    const mine = (await r.json() || []).filter(x => x.state === "running" && x.detail?.worker_name === s.workerName);
+    await Promise.all(mine.map(x => fetch(`${s.apiUrl}/api/sessions/${encodeURIComponent(x.session_id)}/moment?wait=5`,
+      { method: "POST", headers: auth, signal: AbortSignal.timeout(limitMs - 500) }).catch(() => null)));
+  })().catch(() => {});
+  await Promise.race([work, new Promise(r => setTimeout(r, limitMs))]);
+}
 app.on("will-quit", () => { hotkeys.release(); try { globalShortcut.unregisterAll(); } catch {} });   // no key stays taken
 
 // ---------------- IPC ----------------
@@ -759,6 +774,8 @@ ipcMain.handle("app:relaunch", async () => {
   } else {
     log("! no SSH to the Spark from this PC: skipped the Spark rebuild (the app still relaunches)\n");
   }
+  log("keeping the moment of this PC's running games (Reload with your last moment)…\n");
+  await keepMoments();                                          // before the worker (and its games) go
   if (worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); worker = null; }
   log("relaunching…\n");
   setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 800);
@@ -876,6 +893,11 @@ app.whenReady().then(() => {
   win.on("minimize", () => hotkeys.setFront(false));
   win.on("hide", () => hotkeys.setFront(false));
   win.on("restore", () => { if (hotkeys.docked) checkFront(); });
+  win.on("close", e => {                                      // the docked game dies with this window: keep its moment first
+    if (momentsKept || !FIRST) return;
+    e.preventDefault();
+    keepMoments().finally(() => { if (win && !win.isDestroyed()) win.close(); });
+  });
   cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
     if (settings().autoStartWorker) startWorker();

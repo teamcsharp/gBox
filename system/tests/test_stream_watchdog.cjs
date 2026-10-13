@@ -116,6 +116,9 @@ test('hard reset needs a second Ctrl+click within 5 s and sends an explicit inte
   assert.equal(ctx.arm('w-other', btn, 2000), false);   // another game: re-armed, not fired
   assert.equal(ctx.arm('w-other', btn, 9000), false);   // too late
   assert.equal(ctx.arm('w-other', btn, 10000), true);   // deliberate double Ctrl+click
-  assert.match(html, /keep_state: false, intent: "hard_reset"/);
-  assert.match(html, /keep_state: false, intent: "reset_model"/);
+  // the hard reset goes through POST /api/sessions/{sid}/reset with intent hard_reset (reset-keeps-game); a reset of a
+  // hot-swapped model is relaunched server-side; any keep_state=false swap left in the page still names its intent
+  assert.match(html, /\/reset`, \{ mode, intent: mode === "hard" \? "hard_reset" : mode \}/);
+  assert.match(html, /await resetJob\(sid, "hard", btn\)/);
+  for (const m of html.matchAll(/keep_state: false[^}]*\}/g)) assert.match(m[0], /intent: "(hard_reset|reset_model)"/);
 });

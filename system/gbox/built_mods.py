@@ -519,6 +519,14 @@ def tickets_of(meta: dict, card: dict | None) -> list[int]:
     return sorted(out)
 
 
+def session_build(s: dict) -> str:
+    """The build a session shows now: a model hot-swapped into memory (live_mod), else the collection build it booted.
+    A staged copy (<mod>~<build>, launched while an older copy was held open) is that same build. "" = the original game.
+    The clients' twin: clients/web/viz/build-shot.js sessionBuild."""
+    mod = s.get("live_mod") or s.get("collection_mod") or s.get("mod") or ""
+    return str(mod).split(STAGED_SEP)[0]
+
+
 def card_mod(card: dict) -> str:
     """The file mod a card boots (its @launch call), if any."""
     for c in card.get("calls") or []:

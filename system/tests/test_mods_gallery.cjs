@@ -251,7 +251,97 @@ test('Screenshot after launch: a frame of the running mod is attached to the car
     await h.fire('click', target({ key: VR.key, mg: 'shot' }));
     const order = env.calls.map(c => c[0]);
     assert.ok(order.indexOf('/api/jobs') >= 0 && order.indexOf('/api/jobs') < order.findIndex(p => p.includes('/thumb')));
-    assert.deepEqual(env.calls.find(c => c[0] === '/api/jobs')[1].input, { game_id: 'mgsvr', mod: 'mgsvr_hucast', node: 'MYPC' });
+    // nothing of the game runs: launched with swap off, so a game started meanwhile is never swapped silently
+    assert.deepEqual(env.calls.find(c => c[0] === '/api/jobs')[1].input, { game_id: 'mgsvr', mod: 'mgsvr_hucast', node: 'MYPC', swap: false });
+  } finally { ctl.stop(); }
+});
+
+// 2026-10-13: Screenshot on "Sonic as Snake" while "Sonic full cast" (same Twin Snakes disc) ran queued a session_swap
+// of the operator's game. Another build running = the card asks; nothing changes until a second, explicit click.
+const TS_SNAKE = { ...VR, key: 'ts/tts_sonic_as_snake', name: 'tts_sonic_as_snake', game_id: 'ts', title: 'MGS: The Twin Snakes',
+  mod_title: 'Sonic as Snake', card_id: 'c-snake', shots: [], state_slot: null, tickets: [], last_launch: null };
+const TS_CAST = { ...TS_SNAKE, key: 'ts/tts_sonic_full_cast', name: 'tts_sonic_full_cast', mod_title: 'Sonic full cast', card_id: 'c-cast' };
+function tsEnv(sessions, extra = {}) {
+  const env = fakeEnv([TS_SNAKE, TS_CAST], { sessions, ...extra });
+  const base = env.api;
+  env.api = async (p, b) => {
+    if (/^\/api\/sessions\/[^/?]+\/swap$/.test(p)) { env.calls.push([p, b]); return { id: 'swapjob', state: 'running' }; }
+    if (p === '/api/jobs/swapjob') { env.calls.push([p, b]); env.setSessions([{ session_id: 'w1-new', state: 'running', game_id: 'ts', mod: 'tts_sonic_as_snake', started: 20 }]);
+      return { id: 'swapjob', state: 'succeeded', output: { session_id: 'w1-new' } }; }
+    return base(p, b);
+  };
+  return env;
+}
+const tsRunning = [{ session_id: 'w1-op', state: 'running', game_id: 'ts', mod: 'tts_sonic_full_cast', title: 'MGS: The Twin Snakes', started: 10 }];
+const shotCalls = env => env.calls.filter(c => /\/thumb|\/swap$|^\/api\/jobs$/.test(c[0]));
+
+test('Screenshot with another build of the game running: no launch, no swap; the card offers the two choices', async () => {
+  const h = fakeHost(), env = tsEnv(tsRunning);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    const t = target({ key: TS_SNAKE.key, mg: 'shot' });
+    await h.fire('click', t);
+    assert.deepEqual(shotCalls(env), [], 'nothing launched, swapped or captured on the first click');
+    assert.match(t.msg.textContent, /Another build of this game is running: choose below/);
+    const card = h.grid().slice(h.grid().indexOf('data-key="ts/tts_sonic_as_snake"'));
+    assert.match(card, /is running <b>Sonic full cast<\/b>, not this build\. Nothing was changed\./);
+    assert.match(card, /data-mg="shot-running"[^>]*>Capture from the running build instead \(adds to that build's card\)</);
+    assert.match(card, /data-mg="shot-switch"[^>]*>Switch to this build</);
+    assert.equal(ctl.st.choice.get(TS_SNAKE.key).session_id, 'w1-op');
+    // second click: the frame goes to the running build's card, the running game is untouched
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot-running' }));
+    assert.deepEqual(shotCalls(env).map(c => c[0]), ['/api/mods/c-cast/thumb?append=true&session_id=w1-op']);
+    assert.ok(!ctl.st.choice.has(TS_SNAKE.key), 'the choice closes once done');
+    assert.match(env.toasts.join(), /Sonic full cast: in-game picture added/);
+  } finally { ctl.stop(); }
+});
+
+test('Screenshot choice "Switch to this build": a state-keeping swap of that session, then a frame of this build', async () => {
+  const h = fakeHost(), env = tsEnv(tsRunning);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot-switch' }));
+    const calls = shotCalls(env);
+    assert.deepEqual(calls.map(c => c[0]), ['/api/sessions/w1-op/swap', '/api/mods/c-snake/thumb?append=true&session_id=w1-new']);
+    assert.deepEqual(calls[0][1], { mod: 'tts_sonic_as_snake', keep_state: true });
+  } finally { ctl.stop(); }
+});
+
+test('Screenshot choice: Cancel changes nothing; a choice made after the game changed is offered again', async () => {
+  const h = fakeHost(), env = tsEnv(tsRunning);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot-cancel' }));
+    assert.ok(!ctl.st.choice.has(TS_SNAKE.key) && !h.grid().includes('shot-switch'));
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    env.setSessions([{ ...tsRunning[0], session_id: 'w1-other', started: 30 }]);       // the operator relaunched meanwhile
+    const t = target({ key: TS_SNAKE.key, mg: 'shot-switch' });
+    await h.fire('click', t);
+    assert.deepEqual(shotCalls(env), [], 'a stale choice never swaps');
+    assert.match(t.msg.textContent, /running game changed: choose again/);
+    assert.equal(ctl.st.choice.get(TS_SNAKE.key).session_id, 'w1-other');
+  } finally { ctl.stop(); }
+});
+
+test('Screenshot of the build that runs (staged copy, collection_mod or hot-swapped live model) = a frame now', async () => {
+  for (const s of [{ mod: 'tts_sonic_as_snake~3f9a01' }, { mod: 'tts_sonic_as_snake~3f9a01', collection_mod: 'tts_sonic_as_snake' },
+                   { mod: 'tts_sonic_full_cast', live_mod: 'tts_sonic_as_snake' }]) {
+    const h = fakeHost(), env = tsEnv([{ session_id: 'w1-op', state: 'running', game_id: 'ts', started: 10, ...s }]);
+    const ctl = MG.mount(h.host, env); await ctl.ready;
+    try {
+      await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+      assert.deepEqual(shotCalls(env).map(c => c[0]), ['/api/mods/c-snake/thumb?append=true&session_id=w1-op'], JSON.stringify(s));
+    } finally { ctl.stop(); }
+  }
+  // the original game running: no card to capture into, so that choice is shown disabled; Switch stays offered
+  const h = fakeHost(), env = tsEnv([{ session_id: 'w1-op', state: 'running', game_id: 'ts', mod: '', started: 10 }]);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: TS_SNAKE.key, mg: 'shot' }));
+    assert.match(h.grid(), /data-mg="shot-running" disabled[^>]*>Capture from the running build instead \(no card for the original game\)/);
+    assert.match(h.grid(), /data-mg="shot-switch"/);
   } finally { ctl.stop(); }
 });
 

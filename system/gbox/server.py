@@ -31,6 +31,9 @@ from .worker_results import result_digest
 WORKER_TTL = 30.0
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
+# adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
+# the running copy first there (launch_game saves it before closing, and refuses if it can't)
+RELAUNCH_BESIDE_UNSAFE = {"mgba"}
 
 
 class ArtifactUpload(BaseModel):
@@ -132,6 +135,7 @@ def create_app(config: Config) -> FastAPI:
     asset_library.routes(app, store, config, auth)
     from . import built_mods                      # built mod folders in the cache, joined with their mod cards
     built_mods.routes(app, store, config, auth)
+    BM = built_mods
     cache_tiers.routes(app, config, auth)         # GET /api/cache/tiers, POST /api/cache/tiers/pin
     from . import build_notify                    # every finished build / collect / failed build -> the bell tray
     build_notes = build_notify.Notifier(store, config, index=lambda: getattr(app.state, "built_mods", None),
@@ -794,7 +798,9 @@ def create_app(config: Config) -> FastAPI:
     SWAP_LAUNCH_QUEUE_S = 180.0      # the target worker must start the replacement launch within this (or nothing changes)
 
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
-                     should_stop=None, parent_job: str = "") -> dict:
+                     should_stop=None, keep_old: bool = False, parent_job: str = "") -> dict:
+        """keep_old: on the same worker, the replacement starts beside the running copy (launch_game keep_session), which
+        closes only once the replacement runs (a reset's relaunch: never stop a game before its replacement is up)."""
         say = progress or (lambda pct, msg: None)
         origin = {"via": "session_swap", "parent_job": parent_job} if parent_job else {"via": "session_swap"}
         stop = should_stop or (lambda: False)
@@ -848,10 +854,11 @@ def create_app(config: Config) -> FastAPI:
         if stop():
             raise HTTPException(409, "cancelled by the operator before the replacement started; your current game was kept running")
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
+        beside = keep_old and running and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
         try:
-            new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900,
-                           should_stop=stop, on_cancel_deferred=defer_cancel, queue_wait=SWAP_LAUNCH_QUEUE_S,
-                           origin=origin)
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
+                           actor, worker=tw["id"], wait=900, should_stop=stop, on_cancel_deferred=defer_cancel,
+                           queue_wait=SWAP_LAUNCH_QUEUE_S, origin=origin)
         except HTTPException as e:
             if str(e.detail).startswith('cancelled by the operator before the replacement started'):
                 raise                            # the child never claimed a native launch; no recovery is needed
@@ -926,7 +933,8 @@ def create_app(config: Config) -> FastAPI:
                 pass                                           # already closed by the modded launch
             s_ = store.get("session", sid) or {}
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
-                                            "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid}})
+                                            "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid},
+                                            **({"checkpoint": art, "moment_ts": time.time()} if art else {})})   # last played
         if loaded and (old_luma is None or old_luma > 3):
             # A dark restored frame can be a loading screen. Never reset away the operator's saved moment.
             say(92, "Checking the picture")
@@ -1024,6 +1032,170 @@ def create_app(config: Config) -> FastAPI:
                 store.put('job', job.id, store.get('job', job.id) | {
                     'state': JobState.FAILED, 'finished': time.time(), 'error': reason})
                 store.audit(actor, 'job.failed', job.id, {'reason': reason, 'server_thread_start_failed': True})
+            raise HTTPException(503, reason) from exc
+        return job
+
+    # ---- Reset / Restart (2026-10-13: Reset on a Dolphin game stopped it and nothing came back) ----------------------
+    # One server operation per click: the emulator's own reset where it has one, else the same game and build relaunched
+    # on the same PC beside the running copy, which closes only once the new one runs. A failed relaunch leaves the game
+    # exactly as it was and says so; nothing here stops a game before its replacement is up.
+
+    def _live_session(sid: str) -> tuple[str, dict]:
+        sess = store.get("session", sid) or _404()
+        seen = set()
+        while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
+            seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
+        return sid, sess
+
+    def session_relaunch(sid: str, actor: str, original: bool = False, progress=None, should_stop=None) -> dict:
+        """The running game from boot again: the exact build folder it booted (a staged <mod>~<build> copy included: no
+        rebuild, no staging), or the original game (original=True, the hard reset), same worker, launched beside it."""
+        say = progress or (lambda pct, msg: None)
+        sid, sess = _live_session(sid)
+        if sess.get("state") != "running":
+            raise HTTPException(409, "This game has already ended, so there is nothing to restart: use Play again.")
+        game = store.catalog_get(sess.get("game_id") or "") or _404()
+        old_w = sid.split("-")[0]
+        tw = _swap_target(old_w, "")
+        launch_mod = "" if original else (sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or "")
+        build = "" if original else BM.session_build(sess)
+        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
+        what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
+        try:                                              # last played: the moment before the restart (best effort)
+            say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
+            moment = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=25,
+                              should_stop=should_stop)["result"]["artifact"]
+            store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
+        except HTTPException as e:
+            if str(e.detail).startswith("cancelled by the operator"):
+                raise
+        except (KeyError, TypeError):
+            pass
+        say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
+        try:
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
+                           actor, worker=tw["id"], wait=900, should_stop=should_stop,
+                           progress=lambda pct, msg: say(20 + pct * .6, msg))
+        except HTTPException as e:
+            alive = (store.get("session", sid) or {}).get("state") == "running"
+            if not alive:                                 # the game is gone and its relaunch failed: last played says so
+                s_ = store.get("session", sid) or {}
+                store.put("session", sid, s_ | {"exit": {"via": "relaunch_failed", "error": str(e.detail)[:300],
+                                                         "before": s_.get("exit")}})
+            raise HTTPException(409, f"{what} could not be relaunched ({e.detail}). "
+                                     + ("Your game is still running as it was." if alive else
+                                        "The previous copy is no longer running: use Play again."))
+        nsid = new["session_id"]
+        if not original and store.get("session", nsid):
+            keep = {k: sess[k] for k in ("mod", "collection_mod", "staged_mod", "launch_mod") if sess.get(k)}
+            with store.lock:
+                store.put("session", nsid, store.get("session", nsid) | keep)
+        notes = []
+        if nsid != sid:
+            say(85, "Closing the previous copy")
+            try:
+                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
+            except HTTPException as e:
+                notes.append(f"The previous copy did not confirm it closed ({e.detail}); close it from Sessions.")
+            s_ = store.get("session", sid) or {}
+            store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
+                                            "exit": s_.get("exit") or {"by": actor, "via": "relaunch", "to": nsid}})
+        store.audit(actor, "session.relaunch", sid, {"new": nsid, "mod": launch_mod, "original": original, "beside": beside})
+        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": build, "launch_mod": launch_mod,
+                "notes": notes}
+
+    RESET_MODES = {"reset": "reset", "restart": "restart", "hard": "hard_reset"}   # mode -> the intent it needs
+
+    def session_reset(sid: str, actor: str, mode: str = "reset", progress=None, should_stop=None, parent_job: str = "") -> dict:
+        """reset: the console's reset switch (the emulator's own reset), else a relaunch of the same game + build.
+        restart: always relaunch (settings applied at launch). hard: the original game from boot (mods off)."""
+        say = progress or (lambda pct, msg: None)
+        stop = should_stop or (lambda: False)
+        sid, sess = _live_session(sid)
+        if sess.get("state") != "running":
+            raise HTTPException(409, "This game has already ended, so there is nothing to reset: use Play again.")
+        notes = []
+        boot_build = (sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
+        live = bool(sess.get("live_mod")) and sess["live_mod"] != boot_build    # a hot-swapped model in memory (#Blender)
+        if mode == "reset" and not live:
+            say(5, "Pressing the console's reset")
+            try:
+                r = _run_job("session_op", {"session_id": sid, "op": "reset"}, actor, worker=sid.split("-")[0], wait=40,
+                             should_stop=stop)
+                return {"session_id": sid, "from": sid, "mode": "native", "result": r.get("result"), "notes": notes}
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                notes.append(f"No console reset reached the game ({e.detail}); it was relaunched instead.")
+        if stop():
+            raise HTTPException(409, "cancelled by the operator before the relaunch started; your current game was kept running")
+        if live and mode != "hard":                    # the model in memory is the build to restart (a reset would boot
+            say(10, f"Relaunching with {sess['live_mod']}")   # the disc's original model)
+            out = session_swap(sid, sess["live_mod"], "", actor, keep_state=False, progress=say, should_stop=stop,
+                               keep_old=True, parent_job=parent_job)
+        else:
+            out = session_relaunch(sid, actor, original=mode == "hard", progress=say, should_stop=stop)
+        return out | {"mode": "hard" if mode == "hard" else "relaunch", "notes": notes + (out.get("notes") or [])}
+
+    def reset_job(sid: str, mode: str, actor: str, origin=None) -> Job:
+        """session_reset in the background as a job record (polled like a swap; output.session_id = the game now)."""
+        sid, sess = _live_session(sid)
+        if _automated(actor, origin) and sess.get('state') == 'running':
+            from .background_testing import agent_owned
+            if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
+                # like a swap (docs/stream-stability.md): a reset / relaunch restarts the emulator, and background
+                # agents never do that to the operator's live game; the in-app chat agent is exempt
+                raise HTTPException(409, "That game is the operator's live session; automated tasks can't reset or "
+                                         "restart it. Use an agent-owned test session (launch_game node=idle).")
+        with store.lock:
+            for existing in store.all('job'):
+                inp = existing.get('input') or {}
+                if (existing.get('tool') in ('session_swap', 'session_reset') and existing.get('state') in ('queued', 'running')
+                        and inp.get('game_id') == sess.get('game_id')
+                        and _wid(inp.get('session_id', '').split('-')[0]) == _wid(sid.split('-')[0])):
+                    if existing.get('tool') == 'session_reset' and inp.get('mode') == mode:
+                        return Job.model_validate(existing)
+                    raise HTTPException(409, 'This game is already being reset or swapped. Wait for that to finish.')
+            if sess.get('state') != 'running':
+                raise HTTPException(409, 'This game has already ended, so there is nothing to reset: use Play again.')
+            job = Job(tool="session_reset", input={"session_id": sid, "game_id": sess.get("game_id"), "mode": mode},
+                      state=JobState.RUNNING, started=time.time(), actor=actor,
+                      agent_use=operator_guard.is_agent(actor),
+                      origin={"via": "reset_job", **({k: v for k, v in origin.items() if k != "via"}
+                                                     if isinstance(origin, dict) else {})})
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def go():
+            try:
+                out, state, err = session_reset(sid, actor, mode, prog,
+                                                lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                                                parent_job=job.id), JobState.SUCCEEDED, None
+            except HTTPException as e:
+                out, state, err = None, JobState.FAILED, str(e.detail)
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
+                                                                     "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "session.reset", sid, {"mode": mode, "state": str(state), "error": err,
+                                                      "new": (out or {}).get("session_id")})
+        try:
+            threading.Thread(target=go, daemon=True).start()
+        except Exception as exc:
+            reason = f'Reset background task could not start ({type(exc).__name__}); the game was not touched.'
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {'state': JobState.FAILED, 'finished': time.time(),
+                                                                     'error': reason})
             raise HTTPException(503, reason) from exc
         return job
 
@@ -1414,6 +1586,134 @@ def create_app(config: Config) -> FastAPI:
             store.audit(actor, "session.swap.request", jid, {"session_id": sid, "mod": s.mod, "to": s.to,
                         "keep_state": s.keep_state, "intent": s.intent, "origin": origin})
         return job
+
+    class ResetIn(BaseModel):
+        mode: Literal["reset", "restart", "hard"] = "reset"
+        intent: str = ""                    # hard: "hard_reset" (an explicit operator action: the moment and mods go)
+
+    @app.post("/api/sessions/{sid}/reset")
+    def session_reset_api(sid: str, r: ResetIn, actor=Depends(auth), origin=Depends(request_origin)):
+        """Reset / restart a running game as one server operation (job; output.session_id = the game afterwards).
+        reset: the emulator's own reset where it has one, else the same game + build relaunched on the same PC;
+        restart: always that relaunch; hard: the original game from boot. A relaunch starts beside the running copy,
+        which closes only once the new one runs: a failed relaunch leaves the game as it was (the job says so)."""
+        if r.mode == "hard" and r.intent != RESET_MODES["hard"]:
+            raise HTTPException(422, "a hard reset restarts the ORIGINAL game from boot (mods off, moment lost): it needs "
+                                     "intent 'hard_reset' from an explicit operator action")
+        job = reset_job(sid, r.mode, actor, origin=origin)
+        store.audit(actor, "session.reset.request", getattr(job, "id", None),
+                    {"session_id": sid, "mode": r.mode, "intent": r.intent, "origin": origin})
+        return job
+
+    # ---- Last played (gbox/last_played.py, clients/web/viz/last-played.js): after the operator's game ends, offer
+    # to reload it (same game, mod, PC) or reload it with the moment saved just before the end ---------------------------
+    from . import last_played as LP
+
+    @app.get("/api/last_played")
+    def last_played_get(actor=Depends(auth)):
+        return {"entry": LP.entry(store, workers(), _wid)}
+
+    class LastPlayedDismissIn(BaseModel):
+        session_id: str
+        never_for_game: bool = False          # "Don't ask again for this game"
+
+    @app.post("/api/last_played/dismiss")
+    def last_played_dismiss(d: LastPlayedDismissIn, actor=Depends(auth)):
+        s_ = store.get("session", d.session_id) or _404()
+        store.put(LP.DISMISS_KIND, d.session_id, {"session_id": d.session_id, "ts": time.time(), "by": actor})
+        if d.never_for_game and s_.get("game_id"):
+            store.put(LP.MUTE_KIND, s_["game_id"], {"game_id": s_["game_id"], "ts": time.time(), "by": actor})
+        return {"ok": True}
+
+    class LastPlayedReloadIn(BaseModel):
+        session_id: str                       # the session that ended
+        moment: bool = False                  # load the moment saved before the end
+
+    def session_reload(sid: str, actor: str, moment: bool, progress=None) -> dict:
+        """Launch the ended game again (same game, mod and PC); with moment, load the state saved before it ended. Refuses
+        a PC that is playing another game rather than closing it."""
+        say = progress or (lambda pct, msg: None)
+        sess = store.get("session", sid) or _404()
+        game = store.catalog_get(sess.get("game_id") or "") or _404()
+        wid = _wid(sid.split("-")[0])
+        w = next((x for x in workers() if x["id"] == wid and x["online"]), None)
+        if not w:
+            raise HTTPException(409, "The PC that ran this game is offline: start gBox there, then Reload.")
+        busy = [s_ for s_ in store.all("session") if s_.get("state") == "running" and _wid(s_["session_id"].split("-")[0]) == wid
+                and not LP.is_agent_session(store, s_)]
+        if busy:
+            raise HTTPException(409, f"{busy[0].get('title') or 'Another game'} is running on {w['name']}; it was not "
+                                     "stopped. Stop it first, then Reload.")
+        art = (LP.moment_of(store, sess) or {}).get("artifact") if moment else None
+        if moment and not art:
+            raise HTTPException(409, "No saved moment was found for that game; Reload starts it from boot.")
+        mod = str(sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
+        say(5, f"Starting {game['title']}" + (f" ({mod})" if mod else "") + f" on {w['name']}")
+        new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=wid, wait=900,
+                       progress=lambda pct, msg: say(5 + pct * .7, msg))
+        nsid = new["session_id"]
+        store.put(LP.DISMISS_KIND, sid, {"session_id": sid, "ts": time.time(), "by": actor, "reloaded": nsid})
+        out = {"session_id": nsid, "from": sid, "worker": w["name"], "mod": mod, "moment_loaded": False}
+        if art:
+            say(80, "Loading your last moment")
+            time.sleep(6)                                         # let the game boot before loading a state
+            try:
+                r = (_run_job("state_transfer", {"session_id": nsid, "op": "import", "artifact": art}, actor, worker=wid,
+                              wait=120) or {}).get("result") or {}
+                out |= {"moment_loaded": r.get("loaded") is True, "load_verified": r.get("load_verified")}
+            except HTTPException as e:
+                out["notes"] = [f"The game is running, but your moment could not be loaded ({e.detail}). It is kept: {art}."]
+        store.audit(actor, "last_played.reload", sid, {"new": nsid, "moment": bool(art)})
+        return out
+
+    @app.post("/api/last_played/reload")
+    def last_played_reload(r: LastPlayedReloadIn, actor=Depends(auth)):
+        """Reload the ended game as an in-server job (output.session_id = the new session)."""
+        store.get("session", r.session_id) or _404()
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == 'session_reload' and existing.get('state') in ('queued', 'running')
+                        and (existing.get('input') or {}).get('session_id') == r.session_id):
+                    return Job.model_validate(existing)
+            job = Job(tool="session_reload", input={"session_id": r.session_id, "moment": r.moment},
+                      state=JobState.RUNNING, started=time.time())
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                store.put("job", job.id, j)
+
+        def go():
+            try:
+                out, state, err = session_reload(r.session_id, actor, r.moment, prog), JobState.SUCCEEDED, None
+            except HTTPException as e:
+                out, state, err = None, JobState.FAILED, str(e.detail)
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
+                                                                     "error": err})
+                _server_job_threads.discard(job.id)
+        threading.Thread(target=go, daemon=True).start()
+        return job
+
+    @app.post("/api/sessions/{sid}/moment")
+    def session_moment(sid: str, wait: float = 6.0, actor=Depends(auth)):
+        """Save the running game's moment now and keep it as the session's last-played checkpoint (the desktop app calls
+        this for its games just before it quits; best effort within `wait` seconds)."""
+        s_ = store.get("session", sid) or _404()
+        if s_.get("state") != "running":
+            return {"saved": False, "reason": "not running"}
+        try:
+            art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=sid.split("-")[0],
+                           wait=max(1.0, min(float(wait), 30.0)))["result"]["artifact"]
+        except (HTTPException, KeyError, TypeError) as e:
+            return {"saved": False, "reason": str(getattr(e, "detail", e))[:300]}
+        store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": art, "moment_ts": time.time()})
+        return {"saved": True, "artifact": art}
 
     class MoveIn(BaseModel):
         to: str = "windows"                 # a worker name (this PC) | windows | linux (the Spark)

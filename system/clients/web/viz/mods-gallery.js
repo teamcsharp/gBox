@@ -3,7 +3,8 @@
 // pictures (in-game shots, the writer's previews, the donors' collection previews) as a carousel - a click opens the
 // texture pop-up to zoom - what changed (donor -> slot, the per-slot report of a cast swap), verified / unverified,
 // and Play (this PC or a chosen PC, the mod cards' @launch path), Play from saved moment, Open request and Screenshot
-// after launch (get_frame of the running game -> the mod card's in-game shots).
+// after launch (get_frame of the running game -> the mod card's in-game shots; the rules for a game already running are
+// clients/web/viz/build-shot.js: this exact build = capture now, another build = ask, nothing = launch then capture).
 // The server answers from its index of the build folders: while it is still indexing (`indexing`) or walking folder
 // sizes (`sizing`: folders left, size null on those cards) the view says so and polls faster through the shared cached
 // read, so sizes appear as they arrive; Refresh asks for an incremental pass (POST /api/mods/built/refresh).
@@ -12,6 +13,7 @@
 (function (root) {
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+  const BS = root.GBoxBuildShot || (typeof require === "function" ? require("./build-shot.js") : null);
   const PAGE = 24;
   const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
@@ -86,7 +88,7 @@
       title="${ESC("Open request #" + r.number + (why ? ": " + why : ""))}">${r.verified ? "✓" : "⚠"} ${ESC(said)}</button></div>`;
   }
 
-  function cardHTML(m, { url = u => u, idx = 0, now } = {}) {
+  function cardHTML(m, { url = u => u, idx = 0, now, choice = null } = {}) {
     const imgs = imagesOf(m, url), i = imgs.length ? ((idx % imgs.length) + imgs.length) % imgs.length : 0, cur = imgs[i];
     const lfr = m.launch_report && m.launch_report.number ? m.launch_report : null;
     const tickets = (m.tickets || []).filter(t => !lfr || String(t.number) !== String(lfr.number));
@@ -107,8 +109,8 @@
         ${tickets.length ? `<div class="mg-tk">${tickets.map(t => `<button class="act mg-req" type="button" data-mg="request" data-n="${t.number}" title="${ESC(t.title || "Open request #" + t.number)}">Open request #${t.number}${t.status ? " · " + ESC(t.status.replace("_", " ")) : ""}</button>`).join("")}</div>` : ""}
         <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
           ${m.state_slot != null && m.card_id ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
-          <button class="act" type="button" data-mg="shot" title="Once the mod is running, capture a frame and add it to this mod's pictures"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
-          <span class="mg-msg mut"></span></div></div></article>`;
+          <button class="act" type="button" data-mg="shot" title="This build running now: capture a frame of it. Another build of the game running: you choose. Nothing running: launch it, then capture. The frame joins this mod's pictures (its thumbnail when it has none)"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
+          <span class="mg-msg mut"></span></div>${choice && BS ? BS.choiceHTML(choice, "data-mg") : ""}</div></article>`;
   }
 
   // a request's thread (GET /api/requests/{id}) shown under the card when the client has no inbox view of its own
@@ -146,7 +148,8 @@
     .mg-st.mg-built{background:#1f6f3f}.mg-st.mg-failed{background:#7a2b2b}.mg-st.mg-partial,.mg-st.mg-skipped{background:#6f5a1f}
     .mg-rq{border-top:1px solid var(--line,#333);padding-top:5px;font-size:12px;max-height:220px;overflow:auto}.mg-rqm{margin:4px 0;white-space:pre-wrap}
     .mg-meta{font-size:11.5px}.mg-sizing{font-style:italic}.mg-bad{color:#e66}.mg-btns,.mg-tk{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.mg-msg{font-size:11.5px}
-    .mg-lfr{display:flex}.mg-lfr .mg-lf{font-size:12px;font-weight:600;border-radius:9px;padding:2px 9px;color:#fff}.mg-lfr .mg-lf.mg-lf-bad{background:#7a2b2b;border-color:#c0504d}.mg-lfr .mg-lf.mg-lf-ok{background:#1f6f3f;border-color:#2f9a5a}`;
+    .mg-lfr{display:flex}.mg-lfr .mg-lf{font-size:12px;font-weight:600;border-radius:9px;padding:2px 9px;color:#fff}.mg-lfr .mg-lf.mg-lf-bad{background:#7a2b2b;border-color:#c0504d}.mg-lfr .mg-lf.mg-lf-ok{background:#1f6f3f;border-color:#2f9a5a}
+    ${BS ? BS.CSS : ""}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -154,7 +157,8 @@
   //   openImages(list, i, [x, y]), poll (GBoxLivePoll), here (this PC's worker name), visible() -> bool,
   //   play?(mod, {node, moment}), openRequest?(ticket), toast?(text), wait?(ms) }
   function mount(host, env) {
-    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "" };
+    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "",
+                 choice: new Map() };                        // card key -> the screenshot choice it offers (another build runs)
     const poll = env.poll || root.GBoxLivePoll;
     const read = poll ? poll.cachedRead(() => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), { ttl: 15000 })
       : { get: () => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), invalidate() {} };
@@ -172,7 +176,7 @@
       if (!built) shell();
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
-      if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0 })).join("")
+      if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0, choice: st.choice.get(m.key) })).join("")
         || `<p class="mut">${st.data ? (st.data.items.length ? "No built mod matches these filters." : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
       if (sum) sum.textContent = summaryText(list.length, st.data);
       if (moreEl) moreEl.innerHTML = more > 0 ? `<button class="act" type="button" data-mg="more" style="width:100%;margin:10px 0">Show ${Math.min(more, PAGE)} more (${more} not shown)</button>` : "";
@@ -214,27 +218,28 @@
       }
       return sid;
     }
-    async function runningSession(m) {
-      const ss = await env.api("/api/sessions?include_ended=false").catch(() => []);
-      return (ss || []).filter(s => s.state === "running" && s.game_id === m.game_id && (s.collection_mod || s.mod) === m.name)
-        .sort((a, b) => (b.started || 0) - (a.started || 0))[0] || null;
-    }
-    async function screenshot(m, card) {
+    // Screenshot after launch (build-shot.js): this build running = capture now; another build of the game running =
+    // the card asks (capture from that build / switch to this one); nothing running = launch (never a swap), capture.
+    // -> the session the frame came from, or null while the card waits for the operator's choice
+    async function screenshot(m, card, choice = "") {
       if (!m.card_id) throw new Error("this build has no mod card yet: refresh");
-      let s = await runningSession(m);
-      if (!s) {
-        msg(card, "Launching the mod…");
-        await play(m, { node: nodeOf(), moment: false });
-        for (let i = 0; i < 90 && !(s = await runningSession(m)); i++) await wait(2000);
-        if (!s) throw new Error("the mod did not start a game session");
-        msg(card, "Running: waiting for the picture to settle…");
-        await wait(12000);
+      const offered = st.choice.get(m.key);
+      const r = await BS.run({ api: env.api, wait, msg: t => msg(card, t), items: () => st.data?.items || [],
+        // nothing of this game runs: start it with swap off, so a game started meanwhile is never swapped silently
+        launch: async b => jobDone(await env.api("/api/jobs", { tool: "@launch", input: { game_id: b.game_id, mod: b.name, node: nodeOf(), swap: false } }),
+          "launch") }, m, { choice, expect: offered?.session_id });
+      if (r.choice) {
+        st.choice.set(m.key, r.choice); draw();
+        msg(host.querySelector?.(`.mg-card[data-key="${String(m.key).replace(/"/g, '\\"')}"]`) || card,
+          r.stale ? "The running game changed: choose again" : "Another build of this game is running: choose below");
+        return null;
       }
-      msg(card, "Capturing a frame…");
-      await env.api(`/api/mods/${encodeURIComponent(m.card_id)}/thumb?append=true&session_id=${encodeURIComponent(s.session_id)}`, {});
+      st.choice.delete(m.key);
       read.invalidate(); await env.api("/api/mods/built?fresh=true").catch(() => null);
       st.sig = ""; await load(0);
-      return s.session_id;
+      if (!st.sig) draw();
+      toast(`${r.into}: in-game picture added`);
+      return r.session_id;
     }
     async function openRequest(n, m, card) {
       const t = (m.tickets || []).find(x => String(x.number) === String(n)) || { number: +n };
@@ -276,7 +281,11 @@
         } else if (act === "shot") {
           if (btn) btn.disabled = true;
           await screenshot(m, card);
-          toast(`${m.mod_title}: in-game picture added`);
+        } else if (act === "shot-running" || act === "shot-switch") {     // the second, explicit click of a choice
+          if (btn) btn.disabled = true;
+          await screenshot(m, card, act === "shot-running" ? "running" : "switch");
+        } else if (act === "shot-cancel") {
+          st.choice.delete(m.key); draw(); msg(host.querySelector?.(`.mg-card[data-key="${String(m.key).replace(/"/g, '\\"')}"]`) || card, "Nothing changed");
         } else if (act === "request") {
           await openRequest(t.closest("[data-n]").dataset.n, m, card);
         } else if (act === "reqclose") {
