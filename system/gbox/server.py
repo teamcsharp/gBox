@@ -1648,7 +1648,10 @@ def create_app(config: Config) -> FastAPI:
         meta, data = store.get("artifact", digest), store.read_artifact(digest)
         if not meta or data is None:
             _404()
-        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"])})
+        # content-addressed (the URL is the SHA-256), so a client may keep it: the desktop inbox re-renders screenshots
+        # and attachments every few seconds and re-downloaded each one without this (#712)
+        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"]),
+                                                                      "cache-control": "private, max-age=31536000, immutable"})
 
     @app.post("/api/artifacts")
     async def upload_artifact(request: Request, name: str, media_type: str = "application/octet-stream",

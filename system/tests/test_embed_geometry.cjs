@@ -47,3 +47,46 @@ test('session layout refits after wrapping headers, resizing and changing views'
   context.innerHeight=600; events.get('resize')(); assert.equal(layout.style.height,'394px');
   current=null; context.watchSessionLayout(); assert.equal(layout.style.height,'394px');
 });
+
+// #1081: which DOM changes must re-cut the docked native game window (fake DOM: each node lists the selectors it matches)
+function fakeDom() {
+  const make = (id, sels = [], parent = null) => {
+    const n = { nodeType: 1, id, sels: new Set(sels), parentElement: parent, kids: [],
+      matches(sel) { return sel.split(',').some(s => this.sels.has(s.trim())); },
+      closest(sel) { for (let x = this; x; x = x.parentElement) if (x.matches(sel)) return x; return null; },
+      querySelector(sel) { for (const k of this.kids) { if (k.matches(sel)) return k; const d = k.querySelector(sel); if (d) return d; } return null; } };
+    if (parent) parent.kids.push(n);
+    return n;
+  };
+  return { make, body: make('body') };
+}
+const attr = target => ({ type: 'attributes', target });
+const list = (target, added = [], removed = []) => ({ type: 'childList', target, addedNodes: added, removedNodes: removed });
+test('pop-up mutations: body pop-ups, cut-out panels opening and closing, never the sync\'s own game bar', () => {
+  const { make, body } = fakeDom();
+  const opts = { body, holes: '#chatpanel.on, #pipmenu, #chatbar .sugg', ignore: '#piph, .piprz' };
+  const menu = make('recmenu', [], body), chat = make('chatpanel', [], body), bar = make('chatbar', [], body);
+  const deep = make('msg', [], make('log', [], make('main', [], body)));
+  const piph = make('piph', ['#piph'], body), grip = make('', ['.piprz'], body);
+  assert.equal(G.popupMutation([list(body, [menu])], opts), true, 'a floating menu appended to body');
+  assert.equal(G.popupMutation([list(body, [], [menu])], opts), true, 'and removed again');
+  assert.equal(G.popupMutation([attr(menu)], opts), true, 'a body pop-up shown or moved by style');
+  assert.equal(G.popupMutation([attr(chat)], opts), true, 'chat panel closing (its .on class gone) still counts by id');
+  assert.equal(G.popupMutation([list(bar, [make('', ['#chatbar .sugg'])])], opts), true, 'a suggestion list added inside the chat bar');
+  assert.equal(G.popupMutation([attr(deep), list(deep.parentElement, [make('x')])], opts), false, 'page content updates elsewhere do not resync');
+  assert.equal(G.popupMutation([attr(piph), attr(grip)], opts), false, 'the game bar and grips placed by the sync itself cannot loop');
+  assert.equal(G.popupMutation([list(body, [{ nodeType: 3 }])], opts), false, 'text nodes are ignored');
+});
+test('embedded-view menus: only the listed menus count, so a busy session page does not resync the game', () => {
+  const { make, body } = fakeDom();
+  const page = make('page', [], body), gmenu = make('gmenu', [], page), role = make('', ['[role=menu]']), stats = make('stats', [], page);
+  const opts = { body, holes: '#gmenu, [role=menu]', bodyChildren: false };
+  assert.equal(G.popupMutation([attr(page)], opts), false);
+  assert.equal(G.popupMutation([attr(stats)], opts), false);
+  assert.equal(G.popupMutation([attr(gmenu)], opts), true);
+  assert.equal(G.popupMutation([list(page, [role])], opts), true);
+  const src = String(G.popupMutation);                          // injected into the embedded view as source text
+  assert.ok(!/GBoxEmbedGeometry|require\(/.test(src));
+  const again = new Function('return ' + src)();
+  assert.equal(again([attr(gmenu)], opts), true);
+});

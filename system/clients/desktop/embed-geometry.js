@@ -32,7 +32,20 @@
     return { op: "move", ...window, holes: holes.map(h => intersect(h, local)).filter(Boolean)
       .map(h => { const r = pixels(h); return [r.x, r.y, r.w, r.h]; }) };
   }
-  const api = { intersect, guestRect, nativePlacement };
+  // Do these DOM mutation records open, close or move something cut out of a docked native game window (#1081)?
+  // holes: selector of panels/menus that are cut out; ids named in it count even after their ".on" class is removed
+  // (closing). bodyChildren: every direct child of body is a potential pop-up (the shell's popups()). ignore: elements
+  // the sync places itself (game bar, corner grips), so following them cannot loop. Self-contained: it is also injected
+  // into the embedded gBox view as source text.
+  function popupMutation(records, { body, holes = "", ignore = "", bodyChildren = true } = {}) {
+    const ids = new Set((holes.match(/#[\w-]+/g) || []).map(s => s.slice(1)));
+    const relevant = node => !!node && node.nodeType === 1 && !(ignore && node.closest(ignore)) &&
+      ((bodyChildren && node.parentElement === body) || ids.has(node.id) ||
+       (!!holes && (node.matches(holes) || !!node.closest(holes) || !!node.querySelector(holes))));
+    return records.some(r => r.type === "attributes" ? relevant(r.target)
+      : [...r.addedNodes, ...r.removedNodes].some(n => relevant(n) || (bodyChildren && r.target === body && n.nodeType === 1)));
+  }
+  const api = { intersect, guestRect, nativePlacement, popupMutation };
   root.GBoxEmbedGeometry = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(globalThis);

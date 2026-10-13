@@ -413,7 +413,8 @@ const sessionIsLocal = s => !!window.GBOX_LOCAL?.worker && sessionWorkerName(s) 
 async function trayTick() {
   if (!tok) return;
   try {
-    const [ss, labels, notes, ws] = await Promise.all([api("/api/sessions"), api("/api/session_labels").catch(() => ({})), api("/api/notify").catch(() => []),
+    // running sessions only (#712): the full list is every session ever played (~950 KB) and the tray shows live ones
+    const [ss, labels, notes, ws] = await Promise.all([api("/api/sessions?include_ended=false"), api("/api/session_labels").catch(() => ({})), api("/api/notify").catch(() => []),
                                                        api("/api/workers").catch(() => [])]);
     TRAY.ws = ws; TRAY.os = Object.fromEntries((ws || []).map(w => [w.id, w.os]));
     TRAY.names = Object.fromEntries((ws || []).map(w => [w.id, w.name])); TRAY.labels = labels;
@@ -1896,7 +1897,9 @@ function followSession(from, to) {                         // keep showing / con
 }
 setInterval(async () => {                                  // a session replaced elsewhere (chat agent, character swap): follow it
   const sid = playing || active?.sid; if (!sid) return;   // not document.hidden: a docked game window makes Chromium call the page hidden
-  const ss = await api("/api/sessions").catch(() => null); if (!ss) return;
+  // #712: while the game runs, the few-KB running list answers; the whole history only once it has ended or been replaced
+  let ss = await api("/api/sessions?include_ended=false").catch(() => null); if (!ss) return;
+  if (!ss.some(x => x.session_id === sid)) { ss = await api("/api/sessions").catch(() => null); if (!ss) return; }
   const s = ss.find(x => x.session_id === sid);
   if (s?.state === "ended" && s.replaced_by) followSession(sid, s.replaced_by);
   else if (cur === "Sessions" && sessionMode === "examine" && s?.state !== "running") {
