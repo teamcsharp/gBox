@@ -474,6 +474,13 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     for s in chosen:
         if s.get("status") == "not_working":
             s["skip"] = "the game doesn't draw this writer's output yet (status not_working); left as it is"
+    if strategy(w["writer"])[0] == "single":               # one slot per mod: the player (or the first slot) only
+        first = next((s for s in chosen if not s.get("skip") and s["kind"] == "player"),
+                     next((s for s in chosen if not s.get("skip")), None))
+        for s in chosen:
+            if s is not first and not s.get("skip"):
+                s["skip"] = (f"{w['writer']} has no multi-slot path (pairs API or chained step) yet: one mod holds "
+                             f"one slot; build it alone with characters op=use slot={s['slot']}")
     src = resolve_source(source, chars, kind)
     entries, costumes = dedupe(src["entries"])
     donors, refused, refreshed = gate(entries, root, kind, refresh)
