@@ -279,7 +279,9 @@ def tool_specs() -> list[dict]:
            "Ghidra summary, every known function/global/table/hook with its status (validated / documented / hypothesis) and "
            "open questions. op=read before working on a title; op=record after you find something: kind function|global|table|"
            "hook|format|struct|note, address, name, role (what it does), status hypothesis (default) or validated with evidence "
-           "= artifact sha256s that prove it; or question = an open question.",
+           "= artifact sha256s that prove it; or question = an open question. op=transfer (after re_study) names this title's "
+           "functions whose masked bodies match functions other titles already named (Katana/Dolphin SDK, PsyQ, "
+           "libultra, shared engines) in seconds; op=teach adds this title's named functions to that library.",
            {"op": s, "game": s, "kind": s, "address": s, "name": s, "role": s, "status": s, "evidence": {"type": "array", "items": s},
             "question": s}, ["op"]),
         fn("assimilate", "Step one before reverse engineering a title or writing a reader: fingerprint its owned files and "
@@ -1008,7 +1010,20 @@ class Agent:
         if op == "record":
             return self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": kind, "address": str(address or ""), "name": name,
                                  "role": role, "status": status, "evidence": evidence or [], "question": question}).json()
-        return {"error": "op: read | record"}
+        if op in ("transfer", "teach"):
+            ex = (self.api.get(f"/api/re/dossier/{gid}").json().get("executable") or {})
+            if not ex.get("processor") or not (ex.get("sha256") or ex.get("rel")):
+                return {"error": "no studied executable yet", "next": "re_study, then re_dossier op=transfer"}
+            body = {"exe_artifact": ex.get("sha256") or "", "exe_rel": ex.get("rel") or "",
+                    "processor": ex["processor"], "base": ex.get("base") or 0}
+            r = self.api.post(f"/api/re/dossier/{gid}/signatures/{'transfer' if op == 'transfer' else 'learn'}",
+                              json=body).json()
+            if op == "transfer" and isinstance(r, dict) and "recorded" in r:
+                r = {k: r.get(k) for k in ("arch", "library", "named", "confirmed", "conflicts", "duplicates", "seconds")} | {
+                    "recorded": len(r["recorded"]), "sample": r["recorded"][:25],
+                    "next": "names are hypotheses from other titles' identical bodies: decompile one caller to confirm"}
+            return r
+        return {"error": "op: read | record | transfer | teach"}
 
     def assimilate(self, op="fingerprint", game=""):
         if op in ("known", "evaluate"):
