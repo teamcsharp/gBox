@@ -766,9 +766,10 @@ window.assetView = async (box, glbUrl) => {
   g.scene.position.sub(c); cam.position.set(sz * 0.55, sz * 0.35, sz * 0.75); cam.near = sz / 500; cam.far = sz * 20; cam.updateProjectionMatrix();
   ctl.target.set(0, 0, 0); ctl.update();
   let vis = true; new IntersectionObserver(e => vis = e[0].isIntersecting).observe(box);
-  const v = { box, stop: false }; live.add(v);
+  const v = { box, stop: false, player: null }, clock = new T.Clock(); live.add(v);
   const frame = () => {
-    if (v.stop || !box.isConnected) { r.dispose(); live.delete(v); return; }
+    if (v.stop || !box.isConnected) { v.player?.dispose(); v.clips?.remove(); r.dispose(); live.delete(v); return; }
+    const dt = clock.getDelta(); v.player?.update(dt);
     if (vis) { const w = cv.clientWidth, h = cv.clientHeight;
       if (cv.width !== Math.round(w * r.getPixelRatio())) { r.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
       ctl.update(); r.render(scene, cam); }
@@ -776,7 +777,14 @@ window.assetView = async (box, glbUrl) => {
   };
   frame();
   const tris = g.scene.children.reduce((n, o) => { o.traverse(m => { if (m.geometry?.index) n += m.geometry.index.count / 3; }); return n; }, 0);
-  return { triangles: tris };
+  // #1384: a GLB that carries clips gets the clip list + play / pause / loop / speed / scrubber under its view
+  if (g.animations.length && window.GBoxClips) {
+    let ui = null; v.clips = document.createElement("div"); box.after(v.clips);
+    v.player = GBoxClips.player(T, g.scene, st => ui?.render(st));
+    ui = GBoxClips.mount(v.clips, GBoxClips.list(null, g.animations.map(a => ({ name: a.name, duration: a.duration }))),
+      { url: x => x, load: async row => ({ player: v.player, clip: g.animations.find(a => a.name === row.name) }) });
+  }
+  return { triangles: tris, clips: g.animations.length };
 };
 // Live task map. Stable positions make new work join the mainline while finished work peels away.
 window.taskVisualGraphCreate = (canvas, labels, onPick) => {
@@ -6004,6 +6012,7 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
 </script>
 <script src="issue-report.js"></script>
 <script src="../web/viz/asset-sidebar.js"></script>
+<script src="../web/viz/clip-player.js"></script>
 <script>
 (async () => {
   const settings = await gbox.settings(), token = await gbox.token(), host = document.querySelector('.app');

@@ -13,11 +13,11 @@ from .registry import tool
 
 
 class Doa2In(BaseModel):
-    op: Literal["inspect", "decompose", "build", "motions", "native_cache", "environments", "moment_context"] = "inspect"
+    op: Literal["inspect", "decompose", "build", "motions", "motion_clips", "native_cache", "environments", "moment_context"] = "inspect"
     game_id: str = "1de2e7634f3161ff"
     fighter: str = "Kasumi"               # fighter name/family; decompose also supports all
     costume: str = "00"                  # decompose also supports all
-    character: str = ""                  # build: donor library slug/name
+    character: str = ""                  # build: donor library slug/name; motion_clips: the collection entry (default: the fighter's)
     profile: str = ""                    # optional override relative to analysis/doa2/<game_id>/rigs
     allow_downscale: bool = False
     complete_source: bool = True          # decompose: include verified accessories/chains/cloth
@@ -240,7 +240,44 @@ def moment_context(inp, ctx, disc, executable):
                        "A complete container and identified RAM do not prove the core can load this state."]}
 
 
-@tool("doa2_assets", "1.3", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
+def fighter_family(fighter: str) -> str:
+    """A selectable fighter's family key from its key, name or alias (Kasumi, KAS, DOA2 Kasumi)."""
+    from . import doa2_chars
+    want = fighter.casefold()
+    for key, name, aliases in doa2_chars.FIGHTERS:
+        if want in (key.casefold(), name.casefold(), *(a.casefold() for a in aliases)):
+            return key
+    raise ValueError("motion_clips requires an explicit fighter name or family key, e.g. Kasumi or KAS")
+
+
+def motion_clips(inp, ctx, disc) -> dict:
+    """The fighter's MOT bank as glTF control clips in its collection entry (<slug>.anims.glb, meta.animations)."""
+    from . import anim_clips, characters as C, doa2_chars
+    family = fighter_family(inp.fighter)
+    if family not in doa2_chars.MOT_FILES:
+        raise ValueError(f"The motion bank name of {family} is unconfirmed; no clips exported")
+    root = C.library_root(ctx.config)
+    chars = C.list_all(root)
+    if inp.character:
+        meta = C.find(chars, inp.character)
+    else:
+        meta = next((m for m in chars if m["slug"].startswith(f"doa2_{family.lower()}")
+                     and (m.get("source") or {}).get("game_id") == inp.game_id), None)
+    if not meta:
+        raise ValueError(f"{family} is not in the collection yet: run characters op=extract first")
+    name = f"DOA2/{doa2_chars.MOT_FILES[family]}.MOT"
+    if name not in disc.files:
+        raise ValueError(f"{name} is absent from the owned disc")
+    ctx.progress(20, f"Decoding {name}")
+    nodes, clips, report = anim_clips.doa2_clips(disc.read(name), name)
+    ctx.progress(70, f"Writing {len(clips)} clips into {meta['slug']}")
+    meta = anim_clips.attach(root, meta["slug"], nodes, clips, name, "controls",
+                             extras={"fps_assumed": report["fps_assumed"], "note": report["note"]})
+    return {"op": "motion_clips", "game_id": inp.game_id, "fighter": family, "slug": meta["slug"],
+            "file": meta["anims_file"], "clips": len(clips), "report": report}
+
+
+@tool("doa2_assets", "1.4", Doa2In, Doa2Out, capabilities=["analysis", "asset", "modding"],
       permissions=[P.READ, P.STAGE, P.EXECUTE], timeout_s=3600,
       side_effects=["writes decomposed assets and modified disc copies into the cache/analysis folders"],
       artifacts=["doa2-report.json", "doa2-details.json"], validation="native archive validation and operation report match",
@@ -254,6 +291,8 @@ def doa2_assets(inp: Doa2In, ctx):
     Environments inspects/decomposes environment=all or an explicit STAGE## archive using
     environment_action=inspect/decompose. Exports editable, unassembled parts plus native CHR/BIN
     and full PVR mip chains. Stage placement, animation, collision and native reimport remain unverified.
+    Motion_clips writes the fighter's MOT clips as glTF control clips into its collection entry (<slug>.anims.glb,
+    listed in meta.animations; the model view plays them); they drive native IK/control channels, not bones.
     Moment_context requires actor_index=0/1 and an existing state_artifact SHA or request_id with
     context.state_artifact. It maps native actor/cache/resource identity and verifies CHR structure/UVs
     against the owned disc. For a modified source, supply source_chr_artifact and source_chr_name explicitly.
@@ -274,7 +313,7 @@ def doa2_assets(inp: Doa2In, ctx):
     executable_sha = hashlib.sha256(executable).hexdigest()
     if executable_sha != S.EXECUTABLE_SHA256:
         raise ValueError("Unsupported executable identity")
-    selected = [] if inp.op in ("motions", "native_cache", "environments", "moment_context") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
+    selected = [] if inp.op in ("motions", "motion_clips", "native_cache", "environments", "moment_context") else selected_costumes(disc.files, inp.fighter, inp.costume, executable)
     analysis = Path(ctx.config.data_dir) / "analysis" / "doa2" / inp.game_id
     cache = cache_directory(analysis, inp.native_cache)
     if inp.op == 'moment_context':
@@ -327,6 +366,8 @@ def doa2_assets(inp: Doa2In, ctx):
         result={'op':'motions','game_id':inp.game_id,'motions':motions,
                 'native_compact_polynomials_decoded': any((m.get('motion') or {}).get('native_compact_polynomials_decoded') for m in motions),
                 'runtime_interpolation_verified': False, 'native_animation_policy':'preserve original MOT bytes'}
+    elif inp.op == "motion_clips":
+        result = motion_clips(inp, ctx, disc)
     elif inp.op == "build":
         if inp.fighter.casefold() == "all":
             raise ValueError("Build requires an explicit fighter")
