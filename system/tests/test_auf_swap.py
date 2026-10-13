@@ -98,6 +98,16 @@ def _faces(m):
     return P[np.asarray([f[:3] for f in m["faces"]])]
 
 
+def _drawn_area(gcm) -> float:
+    """Total area of what a model draws (0 for a head stub)."""
+    m = N.mesh(gcm)
+    P = np.asarray(m["positions"], float)
+    if not m["faces"]:
+        return 0.0
+    F = np.asarray([f[:3] for f in m["faces"]])
+    return float(np.linalg.norm(np.cross(P[F[:, 1]] - P[F[:, 0]], P[F[:, 2]] - P[F[:, 0]]), axis=1).sum() / 2)
+
+
 def _match(src, dst, tol):
     """every dst triangle equals some src triangle, same winding (rotations only)"""
     for t in dst:
@@ -123,6 +133,13 @@ def test_synthetic_round_trip_reader_writer_reader():
     gcm, rep = G.encode_gcm(tpl, P, Nn, UV, J, Wt, F, np.zeros(len(F), int), ["body_mat"])
     info = N.gcm_info(gcm)
     assert N.tile_check(info) == [] and rep["triangles"] == len(F) and rep["palette"] <= 40
+    assert G.decode_check(gcm)["problems"] == []
+    # a section whose faces are all degenerate is left out (no empty section reaches the do-while draw loops)
+    g2, r2 = G.encode_gcm(tpl, P, Nn, UV, J, Wt, np.vstack([F, [[0, 0, 0]]]), np.r_[np.zeros(len(F), int), 1],
+                          ["body_mat", "unused_mat"])
+    assert G.section_names(g2) == ["body_mat"] and r2["sections"] == 1
+    with pytest.raises(ValueError):
+        G.encode_gcm(tpl, P, Nn, UV, J, Wt, [[0, 0, 0]], [0], ["body_mat"])
     assert G.section_names(gcm) == ["body_mat"]
     secs = N._array(gcm, info, 9, ">IIHHI")
     assert secs[0][1] == W.hash_string("body_mat")
@@ -178,7 +195,8 @@ def test_stripify_keeps_every_triangle_and_its_winding():
 
 def test_empty_model_draws_nothing_and_keeps_the_skeleton():
     gcm = G.empty_gcm(template())
-    assert N.mesh(gcm)["faces"] == [] and len(N.skeleton(gcm)) == len(BONES)
+    assert _drawn_area(gcm) == 0.0 and len(N.mesh(gcm)["faces"]) == 1 and len(N.skeleton(gcm)) == len(BONES)
+    assert G.decode_check(gcm)["problems"] == []          # one section, group and strip: the draw loops are do-while
     assert struct.unpack_from(">H", gcm, 0x10 + 0x54)[0] == 1 and G.section_names(gcm) == ["body_mat"]
 
 
@@ -323,7 +341,7 @@ def test_level_rebuild_offsets_textures_and_models(donor):
     m = N.mesh(body)
     pages = rep["textures"]["synthetic_wrestler"]
     assert len(m["faces"]) > 50 and G.section_names(body) == [p["shader"] for p in pages]
-    assert len(N.mesh(q.read("models/actors/actorheads/head_l.gcm"))["faces"]) == 0      # head stub
+    assert _drawn_area(q.read("models/actors/actorheads/head_l.gcm")) == 0.0              # head stub
     assert rep["stub_heads"] == ["models/actors/actorheads/head_l.gcm"]
     assert q.read("models/actors/other/other_l.gcm") == N.NgcPackage(data).read("models/actors/other/other_l.gcm")
     # texture chunk: the donor's page written over a texture only the replaced models used, in place (same record,
@@ -494,7 +512,7 @@ def test_build_mod_end_to_end_on_a_synthetic_disc(tmp_path, donor):
     try:
         for lv in ("dm1", "dm2"):
             q = N.NgcPackage(d.read(f"maps/{lv}.ngc"))
-            assert len(N.mesh(q.read("models/actors/actorheads/head_l.gcm"))["faces"]) == 0
+            assert _drawn_area(q.read("models/actors/actorheads/head_l.gcm")) == 0.0
             assert len(N.mesh(q.read("models/actors/test/body_l.gcm"))["faces"]) > 50
         assert d.read("maps/dm1.ngc") == d.read("maps/dm2.ngc")              # deterministic across processes
         assert d.read("maps/dm3.ngc") == level                                # untouched level

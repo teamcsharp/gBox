@@ -142,18 +142,45 @@ python -m gbox.auf_swap build <source.gcz|.iso> <library> <cache dir> --slot pla
 
 ## 6. Evidence (offline)
 
-* `tests/test_auf_swap.py`: 18 synthetic tests and 2 owned-disc tests. The synthetic tests build a skeleton, a
-  `.gcm`, a whole level package (`.men` scripts, script dictionary, textures, shaders, BSP, restable) and a tiny
-  GameCube image. They cover the encoder round trip, palette limits, strips and winding, CMPR, the level rebuild
-  with chunk/file/texture offsets, a static donor, disc layout (in place and moved) and an end-to-end
-  `build_mod`, plus slots, the cast plan and routing. The owned-disc tests cover the dm1/m6_1/alp2_2 cast against
-  the snapshot and the dm1 player slot with a donor. With `tests/test_auf_ngc*.py` that is 46 passed against the
-  owned GCZ.
-* dm1, `player` ← `sd2_al_snow` (SmackDown 2, rigged): bond_combat_l 783 triangles (budget 783), bond_tux_l 606,
-  palette 16 of 63/60, bond_head_l stubbed. The atlas went into `bond_graysuit_coat` (texture 30440a52, 256×128 →
-  256×256). The level went from 6,682,688 to 6,610,400 bytes and took 21 s.
-* dm1, `player` ← `djv_s100a` (Def Jam Vendetta GC, static): 2,052 → 782 triangles, palette 32. A reader export
-  rendered in T-pose shows the textured wrestler on Bond's skeleton.
+* `tests/test_auf_swap.py`: 22 synthetic tests and 2 owned-disc tests.
+  * The synthetic tests build a skeleton, a `.gcm`, a whole level package (`.men` scripts, script dictionary,
+    textures, shaders, BSP, restable) and a tiny GameCube image.
+  * They cover the encoder round trip, palette limits, strips and winding, CMPR, in-place texture pages, the level
+    rebuild (chunk, file and texture offsets), static and rigged donors, and disc layout (in place and moved).
+  * They also cover a parallel end-to-end `build_mod`, the `characters op=use` path, slots, the cast plan, the
+    entity-to-slot link and routing.
+  * The owned-disc tests check the dm1/m6_1/alp2_2 cast against the snapshot and run the dm1 player slot with a
+    donor.
+  * Together with `tests/test_auf_ngc*.py`, 46 tests passed against the owned GCZ. The 337 character-routing tests
+    still pass.
+* **dm1, `player` ← `sd2_al_snow`** (SmackDown 2, rigged):
+  * bond_combat_l has 782 triangles (budget 783) and bond_tux_l has 606. Each uses 16 palette records, against
+    limits of 65 and 60.
+  * bond_head_l becomes a stub.
+  * The restable grows by 9,440 bytes in memory. The texture chunk does not grow at all, because the pages were
+    written over Bond's own textures.
+* **dm1, `player` ← `djv_s100a`** (Def Jam Vendetta GC, static T-pose):
+  * The mesh goes from 2,052 to 782 triangles with 32 palette records. The restable grows by 18,592 bytes.
+  * A reader export rendered in T-pose shows the textured wrestler on Bond's skeleton.
+* **Full disc, `player` ← `sd2_al_snow`:**
+  * All 37 levels with people were rebuilt and every one stayed in its own FST slot (0 moved).
+  * The map files shrank by 3.56 MB in total. The image is 1,459,978,240 bytes, game id GW7E69, 351 files, read
+    back by `GCDisc`.
+  * The build took 1,020 s sequentially.
+* **Full disc, whole cast** (`slot=cast seed=wwf`, 9 wrestlers):
+  * The donors were 3 Def Jam GC (static), 3 SmackDown 2 and 3 No Mercy. Bond (`player=djv_s100a`) was fixed and
+    the other donors were dealt.
+  * All 45 bodies were replaced: 372 (level, body) pairs and 416 LOD files. 73 heads became stubs, among them
+    15 in dm1 and 12 in alp2_2.
+  * Every level stayed in its slot, and the maps shrank by 6.09 MB in total.
+  * The build took 388 s with 6 worker processes.
+  * Reader exports of henchmen_vest_h (m6_1), g8us_body_h (alp2_2), zoe_body_l (dm1, female skeleton),
+    superthug_body_m (uwb_2a), thug_orchid_l (dm1) and bond_graysuit_h (m6_1) render as textured wrestlers on
+    those skeletons.
+* **Known cosmetic limits:**
+  * A donor's own head pose is kept. Some SmackDown 2 wrestlers look slightly up.
+  * Decimation keeps each corner's UV, so heavily reduced faces smear a little.
+  * The No Mercy entries in the collection are untextured skin tone, as they are in their own previews.
 
 ## 7. Live check (test PC, Dolphin) - to do
 

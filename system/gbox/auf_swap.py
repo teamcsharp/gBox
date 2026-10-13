@@ -964,7 +964,8 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
         getattr(src, "close", lambda: None)()
     progress(5, f"Rebuilding {len(levels)} level(s) with {workers} worker(s)")
     if workers > 1 and len(jobs) > 1:
-        with ProcessPoolExecutor(max_workers=workers) as ex:
+        import multiprocessing                            # spawn: the worker process may hold threads
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as ex:
             results = []
             for i, r in enumerate(ex.map(_swap_job, jobs)):
                 results.append(r)

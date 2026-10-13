@@ -332,9 +332,13 @@ def encode_gcm(template: bytes, P, N, UV, J, W, faces, face_section, section_nam
         raise ValueError("more than 65535 vertices")
 
     u16, u8, strips, mmap, groups, sections = [], [], [], [], [], []
+    used_names = []
     for s in range(len(section_names)):
         fsel = [tuple(vkey[i] for i in f) for f, fs in zip(faces.tolist(), face_section.tolist()) if fs == s]
         fsel = [f for f in fsel if len(set(f)) == 3]
+        if not fsel:            # R_DrawGeomSection walks groups and strips do-while: no empty section, group or strip
+            continue
+        used_names.append(section_names[s])
         g0 = len(groups)
         tris = sv = 0
         # greedy groups of <= 10 palette records
@@ -369,6 +373,9 @@ def encode_gcm(template: bytes, P, N, UV, J, W, faces, face_section, section_nam
                 sv += len(vs)
             groups.append((m0, len(mmap) - m0, s0, len(strips) - s0))
         sections.append((0, hash_string(section_names[s]), g0, len(groups) - g0, min(tris, 0xFFFF), min(sv, 0xFFFF)))
+    if not sections:
+        raise ValueError("no drawable triangle (every face is degenerate)")
+    section_names = used_names
     if len(u16) > 0xFFFF or len(u8) > 0xFFFF or len(strips) > 0xFFFF:
         raise ValueError("geometry exceeds the u16 strip/list indices")
     if any(r >= 256 for r, _s in mmap):
@@ -455,8 +462,10 @@ def empty_gcm(template: bytes, section_name: str | None = None) -> bytes:
         nb = struct.unpack_from(">I", template, HDR + BLOCK_NAMES)[0]
         section_name = template[ngc._body(template, nb):][:64].split(b"\0")[0].decode("latin-1") if nb else "none"
     p = np.asarray(bones[0]["world_pos"], float)
-    data, _rep = encode_gcm(template, [p, p, p], [[0, 0, 1.0]] * 3, [[0, 0]] * 3, [[0, -1]] * 3, [1.0] * 3,
-                            [[0, 1, 2]], [0], [section_name], max_palette=1)
+    # one zero-area triangle: three corners at the same point, told apart by their texture coordinates, because the
+    # draw loop needs at least one section, group and strip
+    data, _rep = encode_gcm(template, [p, p, p], [[0, 0, 1.0]] * 3, [[0, 0], [0.01, 0], [0, 0.01]], [[0, -1]] * 3,
+                            [1.0] * 3, [[0, 1, 2]], [0], [section_name], max_palette=1)
     return data
 
 
@@ -464,6 +473,20 @@ def decode_check(gcm: bytes) -> dict:
     """Re-read an encoded model with the reader: arrays tile, every strip's matrix slot is loaded, mesh decodes."""
     info = ngc.gcm_info(gcm)
     probs = ngc.tile_check(info)
+    secs = ngc._array(gcm, info, 9, ">IIHHI")
+    groups = ngc._array(gcm, info, 8, ">HHHH")
+    strips = ngc._array(gcm, info, 6, ">HHHBB")
+    if not secs:
+        probs.append("no section")
+    for i, (_m, _s, gs, gc, _x) in enumerate(secs):      # R_DrawGeomSection: groups and strips are do-while loops
+        if gc == 0 or gs + gc > len(groups):
+            probs.append("section %d has no / out-of-range groups" % i)
+            continue
+        for ms, mc, ss, sc in groups[gs:gs + gc]:
+            if sc == 0 or ss + sc > len(strips) or mc > len(GX_SLOTS):
+                probs.append("section %d: a group with no strips or more than 10 matrices" % i)
+            elif any(s[1] < 3 for s in strips[ss:ss + sc]):
+                probs.append("section %d: a strip shorter than 3 vertices" % i)
     m = ngc.mesh(gcm)
     return {"problems": probs, "triangles": len(m["faces"]), "vertices": len(m["positions"]), "mesh": m}
 
