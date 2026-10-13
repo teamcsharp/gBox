@@ -487,3 +487,45 @@ test('the web shell (and so the desktop app, which embeds it) has the Builds tab
   const desktop = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   assert.match(desktop, /url\.searchParams\.set\("embedded", "1"\)/, 'the desktop app shows the web shell (top bar included)');
 });
+
+// 📷 Screenshot in the Builds tab follows the Mods gallery's rules (clients/web/viz/build-shot.js): another build of the
+// same game running = the row asks, and nothing is launched, swapped or captured before the operator's second click.
+test('📷 Screenshot: this build running = a frame now; another build running = a choice, never a silent swap', async () => {
+  const CARDED = { ...CAST, card_id: 'c-cast' }, OTHER = { ...PATCH, card_id: 'c-patch' };
+  let sessions = [{ session_id: 'w1-op', state: 'running', game_id: 'g1', mod: 'g1_patch~a1b2', collection_mod: 'g1_patch', started: 5 }];
+  const env = fakeEnv({ wait: async () => {}, routes: {
+    'GET /api/builds': () => ({ items: [CARDED, OTHER, HACK], indexing: false, sizing: 0 }),
+    'GET /api/sessions': () => sessions,
+    'POST /api/mods/c-patch/thumb': () => ({ id: 'c-patch' }), 'POST /api/mods/c-cast/thumb': () => ({ id: 'c-cast' }) } });
+  const h = host(), ctl = BV.mount(h, env); await ctl.ready;
+  const list = () => h.querySelector('[data-bv-list]').innerHTML;
+  const acted = () => env.calls.filter(c => /\/thumb|\/swap$|^\/api\/jobs$/.test(c[1])).map(c => c[1]);
+  try {
+    assert.match(list(), /data-bv="shot" [^>]*aria-label="Screenshot">📷/);
+    assert.match(BV.rowHTML(HACK, {}, {}), /data-bv="shot" disabled/, 'no mod card: nothing to add a picture to');
+    await ctl.onClick({ target: target({ bv: 'shot', key: 'g1/cast_g1' }) });
+    assert.deepEqual(acted(), [], 'first click: nothing launched, swapped or captured');
+    assert.match(list(), /class="bv-shot" data-bv-key="g1\/cast_g1"[\s\S]*is running <b>Patch<\/b>, not this build/);
+    assert.match(list(), /data-bv="shot-running"[^>]*>Capture from the running build instead \(adds to that build's card\)/);
+    assert.match(list(), /data-bv="shot-switch"[^>]*>Switch to this build/);
+    await ctl.onClick({ target: target({ bv: 'shot-running', key: 'g1/cast_g1' }) });
+    assert.deepEqual(acted(), ['/api/mods/c-patch/thumb?append=true&session_id=w1-op']);
+    assert.doesNotMatch(list(), /bv-shot"/);
+    // the build that runs (a staged copy of it) is captured at once
+    sessions = [{ session_id: 'w1-op', state: 'running', game_id: 'g1', mod: 'cast_g1~ff00', started: 6 }];
+    await ctl.onClick({ target: target({ bv: 'shot', key: 'g1/cast_g1' }) });
+    assert.deepEqual(acted().slice(1), ['/api/mods/c-cast/thumb?append=true&session_id=w1-op']);
+  } finally { ctl.stop(); }
+});
+
+test('build-shot.js plan: exact build (staged / collection / live model), another build, nothing; ended sessions ignored', () => {
+  const BS = require('../clients/web/viz/build-shot.js');
+  const b = { game_id: 'g', name: 'm' };
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'm~x', session_id: 'a' }]).kind, 'exact');
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'z', live_mod: 'm', session_id: 'a' }]).kind, 'exact');
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'm', live_mod: 'z', session_id: 'a' }]).kind, 'other');
+  assert.equal(BS.plan(b, [{ state: 'ended', game_id: 'g', mod: 'm' }, { state: 'running', game_id: 'h', mod: 'm' }]).kind, 'none');
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'm', stopping: true }]).kind, 'none');
+  const p = BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'old', started: 1, session_id: 'o' }, { state: 'running', game_id: 'g', mod: 'new', started: 2, session_id: 'n' }]);
+  assert.deepEqual([p.kind, p.session.session_id, p.build], ['other', 'n', 'new'], 'the newest session of the game');
+});

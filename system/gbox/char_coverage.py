@@ -17,6 +17,10 @@ import time
 # read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
 WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
+    ("soulcalibur_swap", ["fighter:<name>[:<costume>]", "roster"],
+     "SoulCalibur DC (USA): any of the 19 fighters, every costume rebuilt natively on the fighter's own skeleton "
+     "(motions, weapons, cloth and face bones kept; donor textures in the YUV422 pages); slot=roster builds the Sonic "
+     "vs Mario cast with the random costume hook; unverified in game"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),

@@ -105,6 +105,18 @@ def test_local_route_waits_while_the_operator_plays(monkeypatch, tmp_path):
     assert out['status'] == 'waiting_for_operator' and 'Soulcalibur' in out['reason'] and calls == []
 
 
+def test_local_policy_and_the_stream_stability_gate_both_apply(monkeypatch, tmp_path):
+    reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
+            {'id': 'd' * 16, 'number': 6, 'title': 'Fix the typo in the inbox tooltip', 'status': 'open', 'created': 2}]
+    calls = _env(monkeypatch, tmp_path, reqs, [])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [{'title': 'Soulcalibur', 'session_id': 's'}])
+    monkeypatch.setattr(q, 'throttle_sandboxes', lambda playing: {'reniced': 2})
+    out = q.tick(now=1000)
+    assert out['capacity'] == 1 and out['operator_playing']['games'] == ['Soulcalibur']
+    prompt = calls[0][2]
+    assert prompt.startswith('LOCAL MODEL RUN') and 'Do not start an emulator' in prompt
+
+
 def test_triage_priority_ranks_after_the_operator_list(monkeypatch, tmp_path):
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
     q._save({'version': 1, 'items': {}, 'priority': ['g1']})

@@ -4,6 +4,12 @@
 // donor fitted over it, live; drag the circles to stretch a limb, size the head, widen the shoulders, raise the
 // figure or lift it off the ground (Shift-drag any joint moves that part). Save keeps it on the server per donor,
 // game and slot; the next build of that slot (one swap or the whole cast) fits with it.
+// Goals view (the default; the Fitting pop-up's R buttons open it): the donor and the target slot's own skeleton side by
+// side, both laid out in a T-pose front view, a numbered translucent circle on every joint - the same number and colour
+// on both sides is the same body role. Drag a donor circle to move that joint's pivot on the donor mesh (profile
+// "joints"; the build moves the rig joint and re-derives the limb segments before fitting); click it to pick which
+// donor bone it is. The target side shows the fitted donor live. "Save and rebuild this slot" saves, then queues the
+// same characters call for this slot only (gbox/special_builds.py recipes), whose progress shows in the pop-up.
 // Shared by the web shell and the desktop app (../web/viz/retarget-editor.js); the controller renders HTML strings
 // so node tests drive it without a DOM (tests/test_retarget_editor.cjs).
 (function (root) {
@@ -18,6 +24,7 @@
     l_upper: "#6ea8ff", l_fore: "#4f8cff", l_hand: "#3a6fd8", r_upper: "#8fe6a8", r_fore: "#5fd18a", r_hand: "#3fae6a",
     l_thigh: "#c49bff", l_shin: "#a77bff", l_foot: "#8a5cf0", r_thigh: "#ff9be0", r_shin: "#f07bc8", r_foot: "#d85cae" };
 
+  const NUM = Object.fromEntries(H.GOALS.map((r, i) => [r, i + 1]));
   // ---- HTML (strings) --------------------------------------------------------------------
   function slider(path, label, lo, hi, step, value, unit = "×") {
     const v = Number(value);
@@ -53,6 +60,39 @@
         <em class="rt-from">${ESC(from)}</em></div>`;
     }).join("");
   }
+  function boneOptions(state, role) {
+    const bones = state.bones || [], bone = (state.roles || {})[role] || "";
+    const opts = ['<option value="">(none)</option>'].concat(bones.map(b => `<option value="${ESC(b)}"${b === bone ? " selected" : ""}>${ESC(b)}</option>`));
+    if (bone && !bones.includes(bone)) opts.push(`<option value="${ESC(bone)}" selected>${ESC(bone)} (not in model)</option>`);
+    return opts.join("");
+  }
+  // the view switch over the two stages
+  function tabsHTML(state) {
+    return `<button type="button" class="act${state.mode === "goals" ? " pri" : ""}" data-rt-mode="goals" title="Both figures in a T-pose, a circle on every joint">Goals</button>
+      <button type="button" class="act${state.mode === "fit" ? " pri" : ""}" data-rt-mode="fit" title="Bones, proportions and the fit over the stock model">Fit &amp; proportions</button>
+      <label class="rt-tp"><input type="checkbox" data-rt-tpose${state.tpose ? " checked" : ""}> T-pose</label>`;
+  }
+  // the selected circle: which donor bone it is (a list of every bone) and where its pivot moved
+  function jointHTML(state) {
+    const role = state.joint;
+    if (!role) return '<div class="mut rt-hint">Click a circle to pick which donor bone it is; drag a circle on the donor to move that joint (the elbow guessed too high: drag it down to the real elbow).</div>';
+    const j = H.jointOf(H.normalize(state.profile), role);
+    return `<div class="rt-joint" data-rt-joint="${ESC(role)}"><b><i style="background:${COLORS[role]}"></i>${NUM[role] || ""} ${ESC(H.JOINT_LABELS[role] || role)}</b>
+      <label class="rt-jb"><span>Donor bone</span><select data-rt-bone="${ESC(role)}">${boneOptions(state, role)}</select></label>
+      ${[0, 1, 2].map(i => slider(`joints.${role}.${i}`, `Move ${"XYZ"[i]}`, -H.JOINT_RANGE, H.JOINT_RANGE, 0.001, j[i], "%")).join("")}
+      <button type="button" class="act" data-rt-go="joint-reset" data-role="${ESC(role)}">Put this joint back</button></div>`;
+  }
+  // the numbered list of goals: donor bone -> target joint, moved joints marked
+  function legendHTML(state) {
+    const p = H.normalize(state.profile), tgt = ((state.goals || {}).target) || null;
+    return H.GOALS.map(role => {
+      const bone = (state.roles || {})[role] || "", moved = p.joints[role] ? " · moved" : "";
+      const there = tgt ? (tgt[role] ? "" : " · not in the slot") : "";
+      return `<div class="rt-goal${state.joint === role ? " sel" : ""}${bone ? "" : " miss"}" data-rt-joint-pick="${role}">
+        <i style="background:${COLORS[role]}">${NUM[role]}</i><span>${ESC(H.JOINT_LABELS[role])}</span>
+        <em>${ESC(bone || "unassigned")}${moved}${there}</em></div>`;
+    }).join("");
+  }
   function headerHTML(state) {
     const slots = state.slots || [];
     const pick = slots.length ? `<select data-rt="slot">${slots.map(s => `<option value="${ESC(s.slot)}"${s.slot === state.slot ? " selected" : ""}>${ESC(s.name || s.slot)}</option>`).join("")}</select>`
@@ -64,10 +104,13 @@
     return `<div class="rt-h" data-rt-part-slot="header"></div>
       <div class="rt-body">
         <div class="rt-views">
-          <div class="rt-view"><div class="rt-cap">Donor · bones <span class="mut">(arm a role, click its bone)</span></div><div class="rt-stage" data-rt-stage="donor"></div></div>
-          <div class="rt-view"><div class="rt-cap">In the game · <span data-rt="target-name">target</span> <span class="mut">(drag the circles; Shift-drag moves a part)</span></div><div class="rt-stage" data-rt-stage="target"></div></div>
+          <div class="rt-modes" data-rt-part-slot="tabs"></div>
+          <div class="rt-view"><div class="rt-cap"><span data-rt="donor-cap">Donor</span> <span class="mut" data-rt="donor-hint"></span></div><div class="rt-stage" data-rt-stage="donor"></div></div>
+          <div class="rt-view"><div class="rt-cap"><span data-rt="target-cap">Target</span> · <span data-rt="target-name">target</span> <span class="mut" data-rt="target-hint"></span></div><div class="rt-stage" data-rt-stage="target"></div></div>
         </div>
         <div class="rt-side scroll">
+          <div class="rt-sec rt-goals-only" data-rt-part-slot="joint"></div>
+          <div class="rt-sec rt-goals-only"><b>Goals</b> <span class="mut">donor bone → target joint</span><div data-rt-part-slot="legend"></div></div>
           <div class="rt-sec"><b>Proportions</b><div data-rt-part-slot="globals"></div></div>
           <div class="rt-sec" data-rt-part-slot="part"></div>
           <div class="rt-sec"><b>What is what</b> <button type="button" class="act" data-rt-go="guess" title="Fill empty roles from bone names">Guess from names</button><div data-rt-part-slot="roles"></div></div>
@@ -77,29 +120,38 @@
         <button type="button" class="act" data-rt-go="reset">Reset</button>
         <button type="button" class="act" data-rt-go="save-all" title="Every slot of this game without its own profile">Save for the whole game</button>
         <button type="button" class="act pri" data-rt-go="save">Save for this slot</button>
+        <button type="button" class="act" data-rt-go="save-rebuild" title="Save, then build this slot again (only this slot; nothing is launched); the progress shows in the Fitting pop-up">Save and rebuild this slot</button>
         <button type="button" class="act" data-rt-go="close">Close</button></div>`;
   }
+  const CAPTIONS = {
+    goals: { donor: ["Source · donor", "(drag a circle to move that joint; click it to pick its bone)"],
+      target: ["Target · goals", "(the fitted donor, live)"] },
+    fit: { donor: ["Donor · bones", "(arm a role, click its bone)"], target: ["In the game", "(drag the circles; Shift-drag moves a part)"] } };
 
   // ---- the controller (no DOM) ------------------------------------------------------------
   // io: api(path, body?) -> data (throws), render(part, html), status(text), onChange(state)
   function controller(io, opts) {
     const st = { slug: opts.slug, name: opts.name || "", gid: opts.gid, title: opts.title || "", slot: opts.slot || "player",
       slots: [], view: null, reference: null, baseRoles: {}, roles: {}, guessed: {}, profile: H.normalize({}), bones: [],
-      armed: null, part: null, dirty: false, savedNote: "" };
+      armed: null, part: null, dirty: false, savedNote: "", mode: opts.view === "fit" ? "fit" : "goals", tpose: true,
+      joint: null, goals: null, rebuild: null };
     const q = () => `game_id=${encodeURIComponent(st.gid)}&slot=${encodeURIComponent(st.slot)}`;
     const changed = () => { io.onChange && io.onChange(st); };
     function renderAll() {
       io.render("header", headerHTML(st)); io.render("globals", globalsHTML(st.profile));
       io.render("part", partHTML(st.profile, st.part)); io.render("roles", rolesHTML(st));
+      io.render("tabs", tabsHTML(st)); io.render("joint", jointHTML(st)); io.render("legend", legendHTML(st));
     }
     async function load() {
       io.status("Loading the profile…");
-      const [v, ref, src, game] = await Promise.all([
+      const [v, ref, src, game, goals] = await Promise.all([
         io.api(`/api/characters/${encodeURIComponent(st.slug)}/retarget_profile?${q()}`),
         io.api(`/api/retarget/reference?${q()}`).catch(() => null),
         st.slots.length ? Promise.resolve(null) : io.api(`/api/cast_swap/sources?game_id=${encodeURIComponent(st.gid)}`).catch(() => null),
-        st.title ? Promise.resolve(null) : io.api(`/api/catalog/${encodeURIComponent(st.gid)}`).catch(() => null)]);
+        st.title ? Promise.resolve(null) : io.api(`/api/catalog/${encodeURIComponent(st.gid)}`).catch(() => null),
+        io.api(`/api/retarget/goals?${q()}`).catch(() => null)]);
       st.view = v; st.name = v.name || st.name; st.reference = ref && ref.reference;
+      st.goals = goals && goals.goals && goals.goals.target ? goals.goals : null;
       if (game && game.title) st.title = game.title;
       if (src && Array.isArray(src.slots) && src.slots.length) {
         st.slots = src.slots.map(s => ({ slot: s.slot, name: s.name }));
@@ -110,9 +162,25 @@
       st.roles = H.applyOverrides(st.baseRoles, p.roles); st.profile = p; st.dirty = false;
       st.savedNote = v.profile ? "saved for this slot" : v.game_wide ? "using the game-wide profile" : "automatic fit (nothing saved)";
       renderAll();
-      io.status(H.issues(st.roles).ok ? "Drag the circles on the right; the fit updates live." : `Assign ${H.issues(st.roles).missing.join(" and ")} first: the fit needs them.`);
+      io.status(!H.issues(st.roles).ok ? `Assign ${H.issues(st.roles).missing.join(" and ")} first: the fit needs them.`
+        : st.mode === "goals" ? "Drag the circles on the donor to where its joints really are; the fit on the right updates live."
+          : "Drag the circles on the right; the fit updates live.");
       changed();
       return st;
+    }
+    function setMode(mode) { st.mode = mode === "fit" ? "fit" : "goals"; io.render("tabs", tabsHTML(st)); changed(); }
+    function setTpose(on) { st.tpose = !!on; io.render("tabs", tabsHTML(st)); changed(); }
+    function selectJoint(role) {                              // a circle clicked: its bone list and its move
+      st.joint = H.GOALS.includes(role) ? role : null;
+      io.render("joint", jointHTML(st)); io.render("legend", legendHTML(st)); changed();
+    }
+    function dragJoint(circle, from, to, height, startJoint) { // a donor circle dragged in the Goals view
+      st.profile = H.dragJoint(st.profile, circle, from, to, height, startJoint); st.dirty = true; st.joint = circle.role;
+      changed();
+    }
+    function resetJoint(role) {
+      st.profile = H.resetJoint(st.profile, role); st.dirty = true;
+      io.render("joint", jointHTML(st)); io.render("legend", legendHTML(st)); changed();
     }
     function setBones(names) {                                // the donor model's bone names, once it has loaded
       st.bones = names.slice();
@@ -128,16 +196,21 @@
     function arm(role) { st.armed = st.armed === role ? null : role; st.part = role; renderAll(); }
     function setRoleBone(role, bone) {
       st.roles = H.assign(st.roles, role, bone); st.dirty = true; st.armed = null;
-      io.render("roles", rolesHTML(st)); changed();
+      io.render("roles", rolesHTML(st)); io.render("legend", legendHTML(st));
+      if (st.joint) io.render("joint", jointHTML(st));
+      changed();
     }
     function clickBone(bone) {                                // a bone dot clicked in the donor view
       if (!st.armed) { const r = Object.entries(st.roles).find(([, b]) => b === bone); if (r) selectPart(r[0]); return null; }
       const role = st.armed; setRoleBone(role, bone); io.status(`${H.LABELS[role]} = ${bone}`); return role;
     }
     function selectPart(role) { st.part = role; io.render("part", partHTML(st.profile, role)); io.render("roles", rolesHTML(st)); }
-    function setValue(path, value) {                          // "height" | "adjust.l_fore.length" | "adjust.head.offset.1"
+    function setValue(path, value) {                          // "height" | "adjust.l_fore.length" | "adjust.head.offset.1" | "joints.l_fore.1"
       const parts = path.split("."), v = Number(value);
-      if (parts[0] === "adjust") {
+      if (parts[0] === "joints") {
+        const j = H.jointOf(H.normalize(st.profile), parts[1]); j[+parts[2]] = v;
+        st.profile = H.setJoint(st.profile, parts[1], j);
+      } else if (parts[0] === "adjust") {
         const [, role, key, i] = parts, a = H.adjustOf(st.profile, role);
         if (i !== undefined) { a[key] = a[key].slice(); a[key][+i] = v; } else a[key] = v;
         st.profile = H.setAdjust(st.profile, role, { [key]: a[key] });
@@ -153,7 +226,10 @@
       if (handle.role && handle.kind !== "width") st.part = handle.role;
       changed();
     }
-    function settle() { io.render("globals", globalsHTML(st.profile)); io.render("part", partHTML(st.profile, st.part)); }
+    function settle() {
+      io.render("globals", globalsHTML(st.profile)); io.render("part", partHTML(st.profile, st.part));
+      io.render("joint", jointHTML(st)); io.render("legend", legendHTML(st));
+    }
     function payload(scope) {
       const prof = H.normalize(st.profile);
       prof.roles = H.roleOverrides(st.baseRoles, st.roles);
@@ -176,8 +252,42 @@
       return load();
     }
     async function setSlot(slot) { st.slot = slot || "player"; return load(); }
+    // the characters call that builds this slot again, alone: the call that made the build (the pop-up's job, else the
+    // game's special-builds recipe that holds this donor in this slot) narrowed to this slot; launch=false, rebuild=true
+    async function rebuildRecipe() {
+      const who = [{ slot: st.slot, character: st.slug }], rec = opts.recipe || null;
+      let base = rec && rec.input && ["cast_swap", "use"].includes(rec.input.op) ? rec.input : null;
+      if (!base) {
+        try {
+          const sb = await io.api(`/api/games/${encodeURIComponent(st.gid)}/special_builds`);
+          for (const g of (sb && sb.groups) || []) for (const b of g.builds || []) {
+            const i = b.rebuild_recipe && b.rebuild_recipe.input;
+            if (!base && i && i.op === "cast_swap" && (i.assignments || []).some(a => a.slot === st.slot && a.character === st.slug)) base = i;
+          }
+        } catch (err) { /* no special builds: a recipe from the donor's own source below */ }
+      }
+      if (base && base.op === "use")
+        return { tool: "characters", input: { op: "use", character: st.slug, game_id: st.gid, slot: st.slot, launch: false, rebuild: true } };
+      const source = (base && base.source) || ((st.view || {}).source || {}).game_id || st.slug;
+      return { tool: "characters", input: Object.assign({ op: "cast_swap", target_game: st.gid, source, mapping: (base && base.mapping) || "auto",
+        seed: (base && base.seed) || "", slots: st.slot, assignments: who, launch: false, rebuild: true },
+        base && base.strict_cutscenes ? { strict_cutscenes: true } : {}) };
+    }
+    async function saveAndRebuild() {
+      const v = await save("slot");
+      if (!v) return null;
+      const recipe = await rebuildRecipe();
+      io.status("Queuing the rebuild of " + st.slot + "…");
+      const r = await io.api(`/api/games/${encodeURIComponent(st.gid)}/special_builds/rebuild`, { recipes: [recipe] });
+      st.rebuild = Object.assign({ recipe }, r);
+      const id = (r && r.job_ids || [])[0];
+      io.status(id ? `✓ Saved; rebuilding ${st.slot} (job ${id}): the Fitting pop-up follows it.`
+        : `✓ Saved, but the rebuild was not queued: ${((r && r.skipped) || []).map(s => s.reason).join("; ") || "no job"}`);
+      if (id && io.onRebuild) io.onRebuild(st.rebuild, st);
+      return st.rebuild;
+    }
     return { state: st, load, setBones, guess, arm, setRoleBone, clickBone, selectPart, setValue, resetPart, dragTo, settle,
-      payload, save, reset, setSlot, renderAll };
+      payload, save, reset, setSlot, renderAll, setMode, setTpose, selectJoint, dragJoint, resetJoint, rebuildRecipe, saveAndRebuild };
   }
 
   // ---- the browser: dialog + two three.js views + circles -----------------------------------
@@ -198,7 +308,15 @@
     #rtedit .rt-role.miss .rt-rn,#rtedit .rt-role.miss em{color:#ff8b8b}#rtedit .rt-role em{font-size:10px;color:#7d8696}
     #rtedit .rt-role button{font-size:10.5px;padding:1px 4px}#rtedit .rt-f{display:flex;gap:6px;align-items:center;padding:6px 10px;border-top:1px solid var(--line,#2c3340)}
     #rtedit .rt-f [data-rt=status]{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    #rtedit .rt-part b{display:block;margin:2px 0}#rtedit .rt-hint{font-size:11px}`;
+    #rtedit .rt-part b{display:block;margin:2px 0}#rtedit .rt-hint{font-size:11px}
+    #rtedit .rt-views{flex-wrap:wrap}#rtedit .rt-modes{flex:1 0 100%;display:flex;gap:6px;align-items:center;font-size:11px}
+    #rtedit .rt-modes .rt-tp{margin-left:auto;display:flex;gap:4px;align-items:center}#rtedit .rt-view{min-height:0;height:calc(100% - 30px)}
+    #rtedit[data-mode=fit] .rt-goals-only{display:none}
+    #rtedit .rt-joint b{display:flex;gap:6px;align-items:center;margin:2px 0}#rtedit .rt-joint b i,#rtedit .rt-goal i{width:16px;height:16px;border-radius:50%;
+      display:inline-block;font:700 9px/16px ui-monospace,monospace;text-align:center;color:#101318;font-style:normal;flex:none}
+    #rtedit .rt-jb{display:grid;grid-template-columns:92px 1fr;gap:4px;align-items:center;font-size:11px;margin-bottom:3px}#rtedit .rt-jb select{min-width:0;font-size:11px}
+    #rtedit .rt-goal{display:grid;grid-template-columns:18px 104px 1fr;gap:4px;align-items:center;padding:1px 2px;border-radius:4px;cursor:pointer;font-size:11px}
+    #rtedit .rt-goal.sel{background:#ffffff14}#rtedit .rt-goal.miss em{color:#ff8b8b}#rtedit .rt-goal em{font-size:10px;color:#7d8696;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`;
 
   async function loadThree(io) {
     if (io.loadModules) return io.loadModules();
@@ -247,12 +365,15 @@
       onChange: () => schedule(),
     });
     const c = controller(ui, opts);
+    el.dataset.mode = c.state.mode;
     let raf = 0;
     function schedule() { if (!raf && !dead) raf = requestAnimationFrame(() => { raf = 0; redraw(); }); }
 
     // ---- scene data (filled once the models load) ----
-    let THREE = null, Loader = null, donor = null, target = null, R = null, donorPos = {}, fit = null, pivots = {}, tPos = {}, tGround = 0;
-    let previewMeshes = [], drag = null;
+    const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    let THREE = null, Loader = null, donor = null, target = null, R = null, donorRest = {}, donorPos = {}, fit = null, lfit = null,
+      pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
+    let previewMeshes = [], posedMeshes = [], drag = null;
     function rolePositions(model, roles, rot) {
       const out = {};
       for (const [role, bone] of Object.entries(roles || {})) {
@@ -260,25 +381,52 @@
       }
       return out;
     }
-    function refit() {                                        // roles changed: new pivots, new per-vertex roles
+    function refit() {                                        // roles changed: facing, rest joints, per-vertex roles
       if (!donor) return;
-      const raw = rolePositions(donor, c.state.roles, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
-      R = H.facing(raw);
-      donorPos = rolePositions(donor, c.state.roles, R);
-      const dGround = Math.min(...donor.meshes.flatMap(m => { const out = []; for (let i = 0; i < m.pos.length; i += 3 * 7) out.push(H.rotate(R, [m.pos[i], m.pos[i + 1], m.pos[i + 2]])[1]); return out; }), Infinity);
-      if (!donorPos.hip || !donorPos.head) { fit = null; return; }
-      fit = H.baseFit(donorPos, Number.isFinite(dGround) ? dGround : 0, tPos, tGround);
-      pivots = Object.fromEntries(Object.entries(donorPos).map(([r, p]) => [r, fit.apply(p)]));
+      R = H.facing(rolePositions(donor, c.state.roles, I));
+      donorRest = rolePositions(donor, c.state.roles, R);
+      let lo = Infinity, hi = -Infinity;                      // the donor's height: the unit of a joint move
+      for (const m of donor.meshes) for (let i = 0; i < m.pos.length; i += 3) {
+        const y = R[1][0] * m.pos[i] + R[1][1] * m.pos[i + 1] + R[1][2] * m.pos[i + 2]; if (y < lo) lo = y; if (y > hi) hi = y;
+      }
+      dGround = Number.isFinite(lo) ? lo : 0; Hd = Number.isFinite(hi - lo) && hi > lo ? hi - lo : 1;
       const names = donor.bones.map(b => b.name), parents = donor.bones.map(b => b.parent), br = H.boneRoles(names, parents, c.state.roles);
       for (const pm of previewMeshes) {
         const m = pm.src, n = m.pos.length / 3, k = m.skinIdx ? 4 : 1;
-        pm.base = new Float32Array(m.pos.length); pm.roleIdx = new Int16Array(n * k); pm.w = new Float32Array(n * k); pm.k = k;
+        pm.rest = new Float32Array(m.pos.length); pm.base = new Float32Array(m.pos.length); pm.k = k;
+        pm.roles0 = new Array(n * k); pm.w = new Float32Array(n * k); pm.roleIdx = new Int16Array(n * k);
         for (let i = 0; i < n; i++) {
-          const p = fit.apply(H.rotate(R, [m.pos[3 * i], m.pos[3 * i + 1], m.pos[3 * i + 2]]));
-          pm.base[3 * i] = p[0]; pm.base[3 * i + 1] = p[1]; pm.base[3 * i + 2] = p[2];
+          const p = H.rotate(R, [m.pos[3 * i], m.pos[3 * i + 1], m.pos[3 * i + 2]]);
+          pm.rest[3 * i] = p[0]; pm.rest[3 * i + 1] = p[1]; pm.rest[3 * i + 2] = p[2];
           if (m.skinIdx) for (let j = 0; j < 4; j++) {
-            const bi = m.skinBones[m.skinIdx[4 * i + j]]; pm.roleIdx[4 * i + j] = bi >= 0 ? H.ROLES.indexOf(br[bi]) : -1; pm.w[4 * i + j] = m.skinW[4 * i + j];
-          } else { pm.roleIdx[i] = m.owner >= 0 ? H.ROLES.indexOf(br[m.owner]) : 0; pm.w[i] = 1; }
+            const bi = m.skinBones[m.skinIdx[4 * i + j]]; pm.roles0[4 * i + j] = bi >= 0 ? br[bi] : null; pm.w[4 * i + j] = m.skinW[4 * i + j];
+          } else { pm.roles0[i] = m.owner >= 0 ? br[m.owner] : "hip"; pm.w[i] = 1; }
+        }
+      }
+      jointsKey = null;
+      rejoint();
+    }
+    // joint moves changed: the moved pivots, the limb segments they re-derive (retarget_profile.move_joints), the fits
+    function rejoint() {
+      jointsKey = JSON.stringify(H.normalize(c.state.profile).joints);
+      if (!donor || !donorRest.hip || !donorRest.head) { fit = lfit = null; return; }
+      donorPos = H.movedPositions(donorRest, c.state.profile, Hd);
+      fit = H.baseFit(donorPos, dGround, tPos, tGround);
+      pivots = Object.fromEntries(Object.entries(donorPos).map(([r, p]) => [r, fit.apply(p)]));
+      lfit = H.limbFit(donorPos, dGround, tPos, tGround);
+      for (const pm of previewMeshes) {
+        const n = pm.rest.length / 3, k = pm.k, own = new Array(n);
+        for (let i = 0; i < n; i++) {                         // the strongest influence's role decides the segment
+          let best = 0; for (let j = 1; j < k; j++) if (pm.w[i * k + j] > pm.w[i * k + best]) best = j;
+          own[i] = pm.roles0[i * k + best];
+          const p = fit.apply([pm.rest[3 * i], pm.rest[3 * i + 1], pm.rest[3 * i + 2]]);
+          pm.base[3 * i] = p[0]; pm.base[3 * i + 1] = p[1]; pm.base[3 * i + 2] = p[2];
+        }
+        const now = H.resegment(pm.rest, own, donorRest, donorPos);
+        for (let i = 0; i < n; i++) for (let j = 0; j < k; j++) {
+          let r = pm.roles0[i * k + j];
+          if (now[i] !== own[i] && (r === own[i] || r === now[i])) r = now[i];   // the swept influences follow
+          pm.roleIdx[i * k + j] = r ? H.ROLES.indexOf(r) : -1;
         }
       }
     }
@@ -287,10 +435,15 @@
       for (const p of pts) { mn[0] = Math.min(mn[0], p[0]); mn[1] = Math.min(mn[1], p[1]); mx[0] = Math.max(mx[0], p[0]); mx[1] = Math.max(mx[1], p[1]); }
       return Number.isFinite(mn[0]) ? { min: mn, max: mx } : { min: [-1, 0, 0], max: [1, 2, 0] };
     }
+    function samples(arr, max = 400) {                        // a few points of a flat xyz array (view framing)
+      const out = [], step = 3 * Math.max(1, Math.floor(arr.length / 3 / max));
+      for (let i = 0; i + 2 < arr.length; i += step) out.push([arr[i], arr[i + 1], arr[i + 2]]);
+      return out;
+    }
     function makeView(kind) {
       const stage = q(`[data-rt-stage="${kind}"]`);
       const ov = doc.createElement("canvas"); ov.className = "ov"; stage.append(ov);
-      const v = { stage, ov, ctx: ov.getContext("2d"), w: 1, h: 1, map: null, renderer: null, scene: null, camera: null, group: null };
+      const v = { stage, ov, ctx: ov.getContext("2d"), w: 1, h: 1, map: null, renderer: null, scene: null, camera: null, group: null, posed: null };
       if (THREE) {
         v.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); v.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
         stage.insertBefore(v.renderer.domElement, ov);
@@ -298,6 +451,7 @@
         const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(2, 4, 5); v.scene.add(sun);
         v.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 100); v.camera.position.set(0, 0, 10);
         v.group = new THREE.Group(); v.scene.add(v.group);
+        v.posed = new THREE.Group(); v.scene.add(v.posed);   // the Goals view's T-posed donor (editor frame)
       }
       return v;
     }
@@ -318,23 +472,54 @@
       ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
       if (label) { ctx.fillStyle = "#dfe4ec"; ctx.font = "10px system-ui"; ctx.fillText(label, x + rr + 3, y + 3); }
     }
+    function goalCircle(ctx, map, g, selected) {               // the references' translucent joint circle + centre dot
+      const [x, y] = map.toScreen(g.at), rr = Math.max(7, g.r * map.s), col = COLORS[g.role];
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.fillStyle = col + (selected ? "66" : "38"); ctx.fill();
+      ctx.lineWidth = selected ? 3 : 1.5; ctx.strokeStyle = selected ? "#ffffff" : col; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+      ctx.fillStyle = "#dfe4ec"; ctx.font = "700 10px ui-monospace,monospace"; ctx.fillText(String(g.n), x + rr + 2, y - rr + 8);
+    }
     function bonesLines(ctx, map, pos, color) {
       ctx.strokeStyle = color; ctx.lineWidth = 2;
       for (const [p, ch] of Object.entries(H.CHILD)) if (pos[p] && pos[ch]) {
         const a = map.toScreen(pos[p]), b = map.toScreen(pos[ch]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
       }
     }
+    function captions() {
+      const cap = CAPTIONS[c.state.mode], set = (k, t) => { const n = q(`[data-rt="${k}"]`); if (n && n.textContent !== t) n.textContent = t; };
+      set("donor-cap", cap.donor[0]); set("donor-hint", cap.donor[1]); set("target-cap", cap.target[0]); set("target-hint", cap.target[1]);
+      if (el.dataset.mode !== c.state.mode) el.dataset.mode = c.state.mode;
+    }
+    function updateMesh(pm, src, tr) {
+      H.applyPositions(src, pm.roleIdx || pm.src.roleIdx, pm.w || pm.src.w, pm.k || pm.src.k, tr, pm.attr.array);
+      pm.attr.needsUpdate = true; pm.geo.computeVertexNormals(); pm.geo.computeBoundingSphere();
+    }
     function redraw() {
       if (dead) return;
-      const st = c.state;
-      // donor view: the model, a dot on every bone, a coloured circle on every assigned one
+      const st = c.state, goals = st.mode === "goals";
+      captions();
+      if (donor && JSON.stringify(H.normalize(st.profile).joints) !== jointsKey) rejoint();
+      if (donorScene) donorScene.visible = !goals;
+      if (refHolder) refHolder.visible = !goals;
+      for (const pm of posedMeshes) pm.mesh.visible = goals;
       const dv = views.donor;
-      if (dv && donor) {
-        const rot = R || [[1, 0, 0], [0, 1, 0], [0, 0, 1]], pts = donor.bones.map(b => H.rotate(rot, b.pos));
+      if (dv && donor && goals && donorRest.hip) {
+        // Goals, source side: the donor T-posed about its rig's joints, a numbered circle on every joint (moved ones too)
+        const tp = H.tPose(donorRest, st.tpose), pts = [];
+        for (const pm of posedMeshes) { updateMesh(pm, pm.src.rest, tp); pts.push(...samples(pm.attr.array, 300)); }
+        const cs = H.goalCircles(donorPos, { rest: donorRest, tpose: st.tpose, ground: dGround });
+        frameView(dv, bounds(pts.concat(cs.map(g => g.at))));
+        if (dv.renderer) dv.renderer.render(dv.scene, dv.camera);
+        const ctx = dv.ctx; ctx.clearRect(0, 0, dv.w, dv.h);
+        bonesLines(ctx, dv.map, Object.fromEntries(cs.map(g => [g.role, g.at])), "#ffffff55");
+        for (const g of cs) goalCircle(ctx, dv.map, g, st.joint === g.role);
+        dv.circles = cs;
+      } else if (dv && donor) {
+        // donor view: the model, a dot on every bone, a coloured circle on every assigned one
+        const rot = R || I, pts = donor.bones.map(b => H.rotate(rot, b.pos));
         if (!donor.sample) {                                  // the mesh's extent frames the view (a head is above its bone)
           donor.sample = [];
-          for (const m of donor.meshes) for (let i = 0; i < m.pos.length; i += 3 * Math.max(1, Math.floor(m.pos.length / 3 / 400)))
-            donor.sample.push([m.pos[i], m.pos[i + 1], m.pos[i + 2]]);
+          for (const m of donor.meshes) donor.sample.push(...samples(m.pos, 400));
         }
         frameView(dv, bounds(pts.concat(donor.sample.map(p => H.rotate(rot, p)))));
         if (dv.renderer) dv.renderer.render(dv.scene, dv.camera);
@@ -346,16 +531,28 @@
           if (role) circle(ctx, dv.map, p, 0, COLORS[role], COLORS[role] + "55", H.LABELS[role]);
           else { const [x, y] = dv.map.toScreen(p); ctx.fillStyle = st.armed ? "#ffb46b" : "#8b93a3"; ctx.fillRect(x - 2, y - 2, 4, 4); }
         });
-        dv.points = pts;
+        dv.points = pts; dv.circles = null;
       }
-      // target view: stock model / skeleton + the fitted donor, live, with the circles
       const tv = views.target;
-      if (tv && fit) {
-        const tr = H.roleTransforms(pivots, st.profile, tGround);
-        for (const pm of previewMeshes) {
-          H.applyPositions(pm.base, pm.roleIdx, pm.w, pm.k, tr, pm.attr.array);
-          pm.attr.needsUpdate = true; pm.geo.computeVertexNormals(); pm.geo.computeBoundingSphere();
+      if (tv && goals) {
+        // Goals, target side: the slot's own skeleton T-posed with the same numbered circles, the fitted donor over it
+        const tp = H.tPose(tPos, st.tpose), pts = [];
+        if (lfit) {
+          const tr = H.compose(tp, H.compose(H.roleTransforms(lfit.pivots, st.profile, tGround), lfit));
+          for (const pm of previewMeshes) { updateMesh(pm, pm.rest, tr); pts.push(...samples(pm.attr.array, 300)); }
         }
+        const cs = H.goalCircles(tPos, { tpose: st.tpose, ground: tGround });
+        frameView(tv, bounds(pts.concat(cs.map(g => g.at))));
+        if (tv.renderer) tv.renderer.render(tv.scene, tv.camera);
+        const ctx = tv.ctx; ctx.clearRect(0, 0, tv.w, tv.h);
+        bonesLines(ctx, tv.map, tp.pos, "#ffffff55");
+        for (const g of cs) goalCircle(ctx, tv.map, g, st.joint === g.role);
+        if (!lfit) { ctx.fillStyle = "#ff8b8b"; ctx.font = "12px system-ui"; ctx.fillText(donor ? "Assign the hips and the head to see the fit" : "Loading the donor…", 12, 20); }
+        tv.circles = cs; tv.handles = null;
+      } else if (tv && fit) {
+        // target view: stock model / skeleton + the fitted donor, live, with the circles
+        const tr = H.roleTransforms(pivots, st.profile, tGround);
+        for (const pm of previewMeshes) updateMesh(pm, pm.base, tr);
         const hs = H.handles(pivots, st.profile, tGround);
         const pts = Object.values(tPos).concat(hs.map(h => h.at));
         frameView(tv, bounds(pts.concat([[0, tGround - 0.05 * H.frame(tPos, tGround).H, 0]])));
@@ -367,23 +564,38 @@
         for (const h of hs) {
           if (h.kind === "head") { const [x, y] = tv.map.toScreen(h.centre); ctx.strokeStyle = "#ff6b8b88"; ctx.beginPath(); ctx.arc(x, y, h.ring * tv.map.s, 0, Math.PI * 2); ctx.stroke(); }
           const col = h.role ? COLORS[h.role] : "#ffd36b";
-          circle(ctx, tv.map, h.at, h.r, col, drag && drag.h.id === h.id ? col + "aa" : col + "33",
+          circle(ctx, tv.map, h.at, h.r, col, drag && drag.h && drag.h.id === h.id ? col + "aa" : col + "33",
             { length: "", head: "head", width: "", height: "height", ground: "ground" }[h.kind]);
         }
-        tv.handles = hs;
+        tv.handles = hs; tv.circles = null;
       } else if (tv) {
         frameView(tv, bounds(Object.values(tPos)));
         if (tv.renderer) tv.renderer.render(tv.scene, tv.camera);
         tv.ctx.clearRect(0, 0, tv.w, tv.h); bonesLines(tv.ctx, tv.map, tPos, "#ffffff60");
         tv.ctx.fillStyle = "#ff8b8b"; tv.ctx.font = "12px system-ui";
         tv.ctx.fillText(donor ? "Assign the hips and the head to see the fit" : "Loading the donor…", 12, 20);
+        tv.handles = tv.circles = null;
       }
+    }
+    function nearest(list, p, tol) {                          // the goal circle under the pointer
+      let best = null, bd = Infinity;
+      for (const g of list || []) { const d = Math.hypot(g.at[0] - p[0], g.at[1] - p[1]); if (d <= g.r + tol && d < bd) { best = g; bd = d; } }
+      return best;
     }
     function pointer(kind) {
       const v = views[kind], at = e => { const r = v.ov.getBoundingClientRect(); return v.map.toModel([e.clientX - r.left, e.clientY - r.top]); };
       v.ov.addEventListener("pointerdown", e => {
         if (!v.map) return;
         const p = at(e), tol = 6 / v.map.s;
+        if (c.state.mode === "goals") {                      // Goals: drag a donor circle; click either side's to pick it
+          const g = nearest(v.circles, p, tol);
+          if (!g) return;
+          drag = { kind: "joint", side: kind, g, from: p, x0: e.clientX, y0: e.clientY, moved: false,
+            start: H.jointOf(H.normalize(c.state.profile), g.role) };
+          try { v.ov.setPointerCapture(e.pointerId); } catch (err) { /* optional */ }
+          e.preventDefault(); e.stopPropagation();
+          return;
+        }
         if (kind === "donor") {
           if (!donor || !v.points) return;
           let best = -1, bd = 10 / v.map.s;
@@ -402,11 +614,27 @@
         e.preventDefault(); e.stopPropagation();
       });
       v.ov.addEventListener("pointermove", e => {
-        if (!drag || kind !== "target") return;
+        if (!drag) return;
+        if (drag.kind === "joint") {
+          if (drag.side !== "donor" || kind !== "donor") return;
+          if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 3) return;
+          drag.moved = true;
+          c.dragJoint(drag.g, drag.from, at(e), Hd, drag.start);
+          return;
+        }
+        if (kind !== "target") return;
         c.state.profile = drag.start;
         c.dragTo(Object.assign({}, drag.h, { from: drag.from }), at(e), pivots, tGround);
       });
-      const end = () => { if (drag) { drag = null; c.settle(); schedule(); } };
+      const end = () => {
+        if (!drag) return;
+        const d = drag; drag = null;
+        if (d.kind === "joint") {                            // a click (or the end of a drag): that joint's bone list
+          c.selectJoint(d.g.role);
+          if (!d.moved) { const s = q(`[data-rt-joint] select`); if (s && s.focus) s.focus(); }
+        }
+        c.settle(); schedule();
+      };
       v.ov.addEventListener("pointerup", end); v.ov.addEventListener("pointercancel", end);
     }
 
@@ -415,14 +643,17 @@
       const s = e.target.closest("[data-rt-set]"); if (!s) return;
       c.setValue(s.dataset.rtSet, s.value);
       const out = s.parentElement.querySelector("output"), v = +s.value, path = s.dataset.rtSet;
-      if (out) out.textContent = /rotate/.test(path) ? v.toFixed(0) + "°" : /offset|ground/.test(path) ? (v * 100).toFixed(1) + "%" : v.toFixed(2) + "×";
+      if (out) out.textContent = /rotate/.test(path) ? v.toFixed(0) + "°" : /offset|ground|joints/.test(path) ? (v * 100).toFixed(1) + "%" : v.toFixed(2) + "×";
     });
     el.addEventListener("change", e => {
       const b = e.target.closest("[data-rt-bone]");
       if (b) { c.setRoleBone(b.dataset.rtBone, b.value); refit(); schedule(); return; }
+      if (e.target.matches("[data-rt-tpose]")) { c.setTpose(e.target.checked); return; }
       if (e.target.matches('[data-rt="slot"]')) c.setSlot(e.target.value).then(() => { refit(); schedule(); }).catch(err => ui.status("✗ " + err.message));
     });
     el.addEventListener("click", async e => {
+      const mode = e.target.closest("[data-rt-mode]"); if (mode) { c.setMode(mode.dataset.rtMode); return; }
+      const pick = e.target.closest("[data-rt-joint-pick]"); if (pick) { c.selectJoint(pick.dataset.rtJointPick); return; }
       const arm = e.target.closest("[data-rt-arm]"); if (arm) { c.arm(arm.dataset.rtArm); schedule(); return; }
       const part = e.target.closest("[data-rt-part]"); if (part) { c.selectPart(part.dataset.rtPart); return; }
       const go = e.target.closest("[data-rt-go]"); if (!go) return;
@@ -431,8 +662,10 @@
         if (what === "close") { if (c.state.dirty && io.confirm && !io.confirm("Close without saving the retarget changes?")) return; dispose(); return; }
         if (what === "guess") { c.guess(); refit(); schedule(); return; }
         if (what === "part-reset") { c.resetPart(go.dataset.role); schedule(); return; }
+        if (what === "joint-reset") { c.resetJoint(go.dataset.role); schedule(); return; }
         if (what === "save") await c.save("slot");
         if (what === "save-all") await c.save("game");
+        if (what === "save-rebuild") await c.saveAndRebuild();
         if (what === "reset") { await c.reset("slot"); refit(); schedule(); }
         if (io.onSaved && /save/.test(what)) io.onSaved(c.state);
       } catch (err) { ui.status("✗ " + String(err.message || err).slice(0, 300)); }
@@ -458,38 +691,54 @@
       const url = u => (io.url ? io.url(u) : u);
       const load = async u => { const r = await fetch(url(u)); if (!r.ok) throw new Error(`model download returned ${r.status}`);
         return new Loader().parseAsync(await r.arrayBuffer(), ""); };
-      // target: the slot's stock model when the collection has one, else a standard skeleton
-      const ref = c.state.reference;
-      q('[data-rt="target-name"]').textContent = ref ? ref.name : "standard skeleton";
+      // target: the slot's own skeleton as its last build loaded it (fit goals), else the slot's stock model in the
+      // collection, else a standard skeleton at the game's proportions
+      const ref = c.state.reference, goal = c.state.goals;
       tPos = H.standardSkeleton(1.7); tGround = 0;
+      let tname = ref ? ref.name : "standard skeleton";
+      if (goal && goal.target.hip && goal.target.head) {
+        const Rg = H.facing(goal.target);
+        tPos = Object.fromEntries(Object.entries(goal.target).map(([r, p]) => [r, H.rotate(Rg, p)]));
+        tGround = goal.target_ground != null && Rg[1][1] === 1 ? goal.target_ground : Math.min(...Object.values(tPos).map(p => p[1]));
+        tname = `${c.state.slot} skeleton (as the last build loaded it)`;
+      }
+      q('[data-rt="target-name"]').textContent = tname;
       if (THREE && ref && ref.model_url) {
         try {
           const g = await load(ref.model_url); if (dead) return;
           target = readModel(THREE, g);
-          const raw = rolePositions(target, ref.roles, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]), Rt = H.facing(raw);
+          const raw = rolePositions(target, ref.roles, I), Rt = H.facing(raw);
           const pos = rolePositions(target, ref.roles, Rt);
           if (pos.hip && pos.head) {
-            tPos = pos;
             let gmin = Infinity; for (const m of target.meshes) for (let i = 0; i < m.pos.length; i += 3) gmin = Math.min(gmin, H.rotate(Rt, [m.pos[i], m.pos[i + 1], m.pos[i + 2]])[1]);
-            tGround = Number.isFinite(gmin) ? gmin : 0;
-            const holder = new THREE.Group(); holder.add(g.scene);
-            holder.matrixAutoUpdate = false; holder.matrix.set(...Rt[0], 0, ...Rt[1], 0, ...Rt[2], 0, 0, 0, 0, 1); holder.matrixWorldNeedsUpdate = true;
+            gmin = Number.isFinite(gmin) ? gmin : 0;
+            let M = Rt.map(r => r.slice()), t = [0, 0, 0];
+            if (goal) {                                       // the stock model brought to the slot's own skeleton
+              const bf = H.baseFit(pos, gmin, tPos, tGround); M = M.map(r => r.map(x => x * bf.s)); t = bf.t;
+            } else { tPos = pos; tGround = gmin; }
+            refHolder = new THREE.Group(); refHolder.add(g.scene);
+            refHolder.matrixAutoUpdate = false; refHolder.matrix.set(...M[0], t[0], ...M[1], t[1], ...M[2], t[2], 0, 0, 0, 1); refHolder.matrixWorldNeedsUpdate = true;
             g.scene.traverse(o => { if (o.isMesh) { o.material = new THREE.MeshStandardMaterial({ color: 0x5b6472, transparent: true, opacity: 0.35, depthWrite: false }); } });
-            views.target.group.add(holder);
+            views.target.group.add(refHolder);
           }
-        } catch (err) { ui.status("Stock model unavailable (" + err.message + "); showing a standard skeleton"); }
+        } catch (err) { ui.status("Stock model unavailable (" + err.message + "); showing " + (goal ? "the slot's skeleton" : "a standard skeleton")); }
       }
       if (THREE && c.state.view && c.state.view.model_url) {
         try {
           const g = await load(c.state.view.model_url); if (dead) return;
           donor = readModel(THREE, g);
           c.setBones(donor.bones.map(b => b.name));
-          views.donor.group.add(g.scene);
+          donorScene = g.scene; views.donor.group.add(g.scene);
           for (const m of donor.meshes) {
             const geo = new THREE.BufferGeometry(), attr = new THREE.BufferAttribute(new Float32Array(m.pos.length), 3);
             geo.setAttribute("position", attr); if (m.index) geo.setIndex(Array.from(m.index));
             const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x8fe6a8, transparent: true, opacity: 0.8, side: THREE.DoubleSide }));
-            views.target.group.add(mesh); previewMeshes.push({ src: m, geo, attr, mesh });
+            views.target.group.add(mesh);
+            const pm = { src: m, geo, attr, mesh }; previewMeshes.push(pm);
+            const pgeo = new THREE.BufferGeometry(), pattr = new THREE.BufferAttribute(new Float32Array(m.pos.length), 3);
+            pgeo.setAttribute("position", pattr); if (m.index) pgeo.setIndex(Array.from(m.index));
+            const pmesh = new THREE.Mesh(pgeo, new THREE.MeshStandardMaterial({ color: 0xb8c2d2, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }));
+            views.donor.posed.add(pmesh); posedMeshes.push({ src: pm, geo: pgeo, attr: pattr, mesh: pmesh });
           }
           refit();
           if (R) { const d = views.donor.group; d.matrixAutoUpdate = false; d.matrix.set(...R[0], 0, ...R[1], 0, ...R[2], 0, 0, 0, 0, 1); d.matrixWorldNeedsUpdate = true; }
@@ -497,10 +746,11 @@
       }
       schedule();
     })().catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
-    return { el, controller: c, dispose };
+    return { el, controller: c, dispose, views };            // views: each stage's circles / mapping (diagnostics, tests)
   }
 
-  const api = { controller, open, rolesHTML, globalsHTML, partHTML, headerHTML, frameHTML, readModel, COLORS };
+  const api = { controller, open, rolesHTML, globalsHTML, partHTML, headerHTML, frameHTML, readModel, COLORS, tabsHTML, jointHTML,
+    legendHTML, CAPTIONS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxRetargetEditor = api;
 })(typeof window !== "undefined" ? window : globalThis);
