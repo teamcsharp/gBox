@@ -394,6 +394,50 @@ def test_link_tree_and_fixed_names(env):
     assert SS.mod_name_for({"title": "Jet Grind Radio (USA)", "game_id": gid(1)}) == "showcase_sonic_jet_grind_radio_usa"
 
 
+def test_cast_swap_build_with_a_fixed_name_reuses_by_plan_hash_and_adopts_self_named_builds(tmp_path, monkeypatch):
+    """The job side: cast_swap.build with mod_name= + showcase=true (the writer is a fake)."""
+    from gbox import characters as C
+    posted, calls = [], []
+    monkeypatch.setattr(C, "_api", lambda ctx, method, path, **kw: posted.append(path) or {})
+    cfg = SimpleNamespace(cache=tmp_path / "cache")
+    ctx = SimpleNamespace(config=cfg, progress=lambda p, m: None)
+    game = {"game_id": gid(1), "title": "Jet Grind Radio"}
+    chars = [{"slug": "sa1_sonic", "name": "Sonic"}, {"slug": "sa2_shadow", "name": "Shadow"}]
+
+    def plan(rows):
+        a = [{"slot": s, "slot_name": s, "character": c, "donor": c} for s, c in rows]
+        return {"mod": "showcase_sonic_jet_grind_radio", "assignments": a, "writer": "gbox.fake", "strategy": "pairs",
+                "source": "Sonic characters", "mapping": "auto", "seed": "showcase", "skipped": []}
+
+    def writer(ctx, game, pairs, name, inp, own=None):
+        calls.append(name)
+        d = Path(cfg.cache) / "mods" / game["game_id"] / (own or name)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "disc.gdi").write_text("tracks")
+        (d / ".gbox-mod.json").write_text(json.dumps({"name": own or name, "game_id": game["game_id"]}))
+        return {"mod": own or name, "slots": {s: {"status": "built"} for s, _m in pairs}}
+    monkeypatch.setitem(CS.BUILDERS, "gbox.fake", writer)
+    inp = SimpleNamespace(mod_name="showcase_sonic_jet_grind_radio", showcase=True, rebuild=False)
+    p1 = plan([("player", "sa1_sonic"), ("beat", "sa2_shadow")])
+    r = CS.build(ctx, game, p1, chars, tmp_path / "lib", inp)
+    assert r["status"] == "built" and r["mod"] == "showcase_sonic_jet_grind_radio" and not posted   # no Play-as targets
+    marker = json.loads((Path(cfg.cache) / "mods" / gid(1) / r["mod"] / ".gbox-mod.json").read_text())
+    assert marker["cast_plan"] == CS.plan_digest(p1["assignments"]) and marker["showcase"]["source"] == "Sonic characters"
+    assert CS.build(ctx, game, p1, chars, tmp_path / "lib", inp)["status"] == "ready" and len(calls) == 1
+    p2 = plan([("player", "sa2_shadow"), ("beat", "sa1_sonic")])
+    assert CS.build(ctx, game, p2, chars, tmp_path / "lib", inp)["status"] == "built" and len(calls) == 2
+    # a writer that names its own build: the fixed name is a hard-linked copy, the writer's folder stays
+    monkeypatch.setitem(CS.BUILDERS, "gbox.fake", lambda *a: writer(*a, own="doa2_roster_abcd"))
+    p3 = plan([("player", "sa1_sonic")])
+    r = CS.build(ctx, game, p3, chars, tmp_path / "lib", inp)
+    own, fixed = (Path(cfg.cache) / "mods" / gid(1) / n for n in ("doa2_roster_abcd", "showcase_sonic_jet_grind_radio"))
+    assert r["mod"] == fixed.name and own.is_dir()
+    assert os.stat(own / "disc.gdi").st_ino == os.stat(fixed / "disc.gdi").st_ino
+    marker = json.loads((fixed / ".gbox-mod.json").read_text())
+    assert marker["showcase"]["linked_from"] == {"mod": "doa2_roster_abcd", "made_by_this_build": True}
+    assert "showcase" not in json.loads((own / ".gbox-mod.json").read_text())
+
+
 # ------------------------------------------------------------------------------------------------- API + gallery
 
 def test_api_status_and_settings(tmp_path, monkeypatch):
