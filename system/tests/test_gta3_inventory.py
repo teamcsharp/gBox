@@ -146,3 +146,19 @@ def test_inventory_owned_disc_pinned_constants(tmp_path):
         assert m["container"]["player_entries"][n]["copies"] == 12
     assert m["container"]["animation"]["sha256"] == I.PED_IFP_SHA256
     assert "SLUS_200.62" in m["launch"]["boot"]
+
+
+def test_truncated_inputs_raise_valueerror(tmp_path):
+    sec = _dir_rec([("PLAYER.DFF;1", 7, 12, False)])
+    ln = sec[0]
+    for n in range(1, ln):
+        with pytest.raises(ValueError):
+            list(I.dir_records(sec[:n], ""))
+    with pytest.raises(ValueError):
+        I.dir_stats(b"\x01" * 40)
+    assert I.dir_stats(bytes(40))["count"] == 0
+    disc = tmp_path / "short.iso"
+    make_synthetic_iso(disc)
+    disc.write_bytes(disc.read_bytes()[:20 * SECTOR])
+    with pytest.raises(ValueError):
+        I.walk_tree(disc)

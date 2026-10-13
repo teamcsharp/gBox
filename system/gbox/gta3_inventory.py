@@ -90,6 +90,8 @@ def dir_records(buf: bytes, pre: str):
             continue
         if o >= SECTOR and not any(buf[o - o % SECTOR:]):
             break
+        if ln < 34 or o + ln > len(buf) or 33 + buf[o + 32] > ln:
+            raise ValueError(f"bad ISO9660 directory record at {pre or '/'}+{o:#x}")
         lba, size = struct.unpack_from("<I", buf, o + 2)[0], struct.unpack_from("<I", buf, o + 10)[0]
         nm = buf[o + 33:o + 33 + buf[o + 32]]
         if nm not in (b"\0", b"\1"):
@@ -153,7 +155,7 @@ def walk_tree(rom: Path):
         pos = end
     missing = [k for k in want if k not in got]
     if missing:
-        raise RuntimeError(f"tree walk missed: {missing}")
+        raise ValueError(f"image truncated, tree walk missed: {missing}")
     return files, (h.hexdigest(), pos)
 
 
@@ -179,7 +181,7 @@ def capture(rom: Path, want: dict[str, tuple[int, int]]):
             break
     missing = [k for k in bufs]
     if missing:
-        raise RuntimeError(f"capture missed: {missing}")
+        raise ValueError(f"image truncated, capture missed: {missing}")
     return got
 
 
@@ -188,6 +190,10 @@ def dir_stats(d: bytes) -> dict:
     """MODELS/GTA3.DIR: one <uint32 offset_sectors, uint32 size_sectors, char[24] name> per entry."""
     ents = []
     for i in range(0, len(d), 32):
+        if i + 32 > len(d):
+            if any(d[i:]):
+                raise ValueError(f"GTA3.DIR truncated: {len(d) - i} trailing bytes at {i:#x}")
+            break
         o, s = struct.unpack_from("<II", d, i)
         name = d[i + 8:i + 32].split(b"\0")[0].decode("ascii", "replace")
         if not name and not o and not s and not any(d[i + 32:]):
