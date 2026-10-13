@@ -178,6 +178,11 @@ def put_meta(root: Path, meta: dict) -> dict:
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
     _invalidate_list(root, meta)
+    try:                                                   # the replacement index recomputes this donor's rows
+        from . import replacement_readiness
+        replacement_readiness.invalidate(root, meta["slug"])
+    except Exception:                                      # noqa: BLE001 - bookkeeping never fails a write
+        pass
     return meta
 
 
@@ -243,7 +248,25 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
             meta["animations"] += kept
             if kept and not meta.get("anims_file") and prev.get("anims_file"):
                 meta["anims_file"] = prev["anims_file"]
-    return put_meta(root, meta)
+    return put_meta(root, post_collect(root, meta, model))
+
+
+def post_collect(root: Path, meta: dict, model: Path | None = None) -> dict:
+    """The step every collected entry goes through (add() runs it for every reader, capture, edited model, variant):
+    replacement readiness (gbox.replacement_readiness: normalized-model facts, the 18 body roles mapped or explicitly
+    absent, bind pose, proportions, textures, skin influences, default retarget hints; roles a reader didn't report
+    are derived when the skeleton allows). Returns the meta to store; never raises."""
+    from . import replacement_readiness
+    return replacement_readiness.post_collect(root, meta, model)
+
+
+def ensure_readiness(root: Path, meta: dict) -> dict:
+    """A stored entry's readiness, computed / refreshed (and written) when missing or stale; never raises."""
+    try:
+        from . import replacement_readiness
+        return replacement_readiness.ensure(root, meta)
+    except Exception:                                      # noqa: BLE001 - the entry itself is still usable
+        return meta
 
 
 def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
@@ -644,7 +667,7 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap | resolve_slot
+    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap | resolve_slot | readiness
     character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
@@ -1698,8 +1721,11 @@ def collect(ctx, inp):
             ready = checked['ok'] and bool(roles)
             kind = meta.get('kind', e.get('kind', 'character'))
             done = ready or (kind != 'character' and checked['ok'])
+            rd = meta.get('readiness') or {}
             results.append({'slug': meta['slug'], 'name': meta['name'], 'kind': kind, 'status': res['status'],
                             'verified': checked['ok'], 'retargetable': ready,
+                            'replacement': {'status': rd.get('status') or 'unchecked',
+                                            'missing': (rd.get('missing') or [])[:3], 'fixed': rd.get('fixed') or []},
                             'message': '' if done else ('Model needs verification.' if kind != 'character' else
                                                         'Model or mapped rig needs verification before retargeting.')})
         except Exception as exc:
@@ -1728,6 +1754,7 @@ def collection_status(results: list[dict]) -> dict:
     mapped = sum(bool(r.get('retargetable')) for r in chars)
     return {'status': 'complete' if results and good == len(results) and mapped == len(chars) else 'partial',
             'collected': good, 'total': len(results), 'retargetable': mapped, 'characters': len(chars),
+            'replacement_ready': sum(1 for r in results if (r.get('replacement') or {}).get('status') == 'ready'),
             'entries': results}
 
 
@@ -1751,7 +1778,10 @@ def refresh_collection(root: Path, result: dict) -> dict:
                 continue
             kind = meta.get('kind') or r.get('kind') or 'character'
             ready = checked['ok'] and bool((meta.get('rig') or {}).get('roles'))
-            r.update(kind=kind, verified=checked['ok'], retargetable=ready)
+            rd = meta.get('readiness') or {}
+            r.update(kind=kind, verified=checked['ok'], retargetable=ready,
+                     replacement={'status': rd.get('status') or 'unchecked', 'missing': (rd.get('missing') or [])[:3],
+                                  'fixed': rd.get('fixed') or []})
             if ready or (kind != 'character' and checked['ok']):
                 r['message'] = ''
         rows.append(r)
@@ -1813,7 +1843,8 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
             if verify_entry(root, existing)['ok'] and not refresh:
                 _collect_stages(Path(root) / e["slug"] / existing["model"], existing, "skipped",
                                 {"reason": "already in the collection"})
-                return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
+                return {"status": "in_collection", "extractor": name,
+                        "entry": ensure_readiness(root, backfill_roles(root, name, existing))}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
@@ -2320,6 +2351,29 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
+def readiness_op(ctx, inp: CharIn) -> dict:
+    """characters op=readiness [game_id] [character] [rebuild]: compute / refresh every entry's replacement readiness
+    where the library lives (fixing what can be derived: roles, stats), rebuild the donor x slot compatibility index
+    and return the per-game report. Elsewhere it reads the control plane's report (GET /api/replacement/report)."""
+    from . import replacement_readiness as RR
+    root = library_root(ctx.config)
+    gid = inp.game_id or ""
+    if not gid and inp.game:
+        gid = _game(ctx, inp)["game_id"]
+    if not Path(root).is_dir():
+        rep = _api(ctx, "GET", "/api/replacement/report", params={"game_id": gid} if gid else None)
+        return {"status": "remote", "message": "the collection lives on the control plane: run characters "
+                                               "op=readiness there to recompute; this is its current report",
+                "report": rep}
+    slugs = None
+    if inp.character:
+        hit = best_match(list_all(root), inp.character)
+        if not hit:
+            raise ValueError(f"no collection character matches {inp.character!r}")
+        slugs = [hit["slug"]]
+    return RR.backfill(root, force=inp.rebuild, game_id=gid, slugs=slugs, progress=ctx.progress)
+
+
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
@@ -2370,6 +2424,8 @@ def characters_tool(inp: CharIn, ctx):
     if inp.op == "environments":
         envs = _api(ctx, "GET", "/api/environments")
         return {"result": {"environments": [_brief(m, True) for m in envs]}}
+    if inp.op == "readiness":                                 # replacement readiness + compatibility index
+        return {"result": readiness_op(ctx, inp)}
     if inp.op == "coverage":                                  # rip / reimport matrix per studied game (gbox.char_coverage)
         from . import char_coverage
         return {"result": char_coverage.coverage(ctx, _api)}
