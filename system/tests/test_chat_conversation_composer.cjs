@@ -181,17 +181,42 @@ async function withPage(fn) {
   const exited = new Promise(resolve => proc.once('exit', resolve));
   let ws;
   try {
+    // Every step waits for its condition (up to 30 s) instead of a fixed number of polls: a loaded
+    // machine starts the browser slowly, the port file can exist before its port line is written, and
+    // /json/list can briefly have no page target.
+    const until = async (what, probe) => {
+      for (const end = Date.now() + 30000; ;) {
+        const value = await probe().catch(() => null);
+        if (value) return value;
+        if (Date.now() > end || proc.exitCode !== null) throw new Error(`headless browser: no ${what}`);
+        await new Promise(r => setTimeout(r, 50));
+      }
+    };
     const portFile = path.join(profile, 'DevToolsActivePort');
-    for (let i = 0; i < 200 && !fs.existsSync(portFile); i++) await new Promise(r => setTimeout(r, 50));
-    const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    ws = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
+    const port = await until('DevToolsActivePort', async () => {
+      const line = fs.readFileSync(portFile, 'utf8').split('\n')[0].trim();
+      return /^\d+$/.test(line) && line;
+    });
+    const page = await until('page target', async () =>
+      (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === 'page' && t.webSocketDebuggerUrl));
+    ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no; });
-    let seq = 0; const waiting = new Map();
-    ws.onmessage = e => { const m = JSON.parse(e.data); waiting.get(m.id)?.(m); waiting.delete(m.id); };
+    let seq = 0; const waiting = new Map(), events = [];
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.id === undefined) { events.push(m.method); return; }
+      waiting.get(m.id)?.(m); waiting.delete(m.id);
+    };
     const send = (method, params) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+    // The command-line about:blank may still be committing; a script evaluated before that loses its
+    // document mid-run. Navigate once ourselves and evaluate only after that load has fired.
+    await send('Page.enable', {});
+    events.length = 0;
+    await send('Page.navigate', { url: 'about:blank' });
+    await until('page load', async () => events.includes('Page.loadEventFired'));
     const evaluate = async expression => {
       const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      if (r.error) throw new Error('Runtime.evaluate: ' + JSON.stringify(r.error));
       if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
       return r.result.result.value;
     };
@@ -204,10 +229,12 @@ async function withPage(fn) {
       proc.kill('SIGKILL'); await Promise.race([exited, delay(3000)]);
     }
     ws?.close();
-    for (let i = 0; i < 80; i++) {
+    // Windows keeps profile handles open until the browser's child processes exit, which takes longer
+    // on a loaded machine: retry for up to 15 s.
+    for (let i = 0; i < 300; i++) {
       try { fs.rmSync(profile, { recursive: true, force: true }); break; }
       catch (error) {
-        if (i === 79 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
+        if (i === 299 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
@@ -243,15 +270,17 @@ test('the composer and the voice-mode mic work in a real browser', { skip: !find
       ${voice}
       ${composer}
       const r = {};
-      const tick = () => new Promise(ok => setTimeout(ok, 50));
+      // talkStart is async (it awaits the microphone): wait for its last step, not a fixed delay that a
+      // loaded machine can outlast. The checks below still read every condition themselves.
+      const settled = async done => { for (const end = Date.now() + 10000; !done() && Date.now() < end;) await new Promise(ok => setTimeout(ok, 20)); };
       r.composerBelowLog = $('#chatcomp').getBoundingClientRect().top >= $('#chatlog').getBoundingClientRect().top;
       r.mic = !!$('#chatvoice');
       $('#chatvoice').click();
-      await tick();
+      await settled(() => document.body.classList.contains('talking'));
       r.voiceOn = TALK.on && $('#live').classList.contains('on') && $('#talkbtn').classList.contains('on');
       r.bodyTalking = document.body.classList.contains('talking');
       $('#chatvoice').click();
-      await tick();
+      await settled(() => !document.body.classList.contains('talking'));
       r.voiceOff = !TALK.on && !$('#live').classList.contains('on') && released.length > 0;
       $('#chatvoice').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
       r.micMenu = Array.isArray(window.__micMenu) && window.__micMenu[0] === $('#chatvoice');
