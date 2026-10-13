@@ -380,6 +380,39 @@ def test_pso_build_cast_writes_one_gdi_with_every_assignment(tmp_path, monkeypat
     assert (lib / "kane" / "targets" / "pso_lappy_two.gltf").is_file()
 
 
+# ---------------------------------------------------------------- the menu's API
+
+def test_cast_swap_api_lists_sources_and_plans(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from gbox.config import Config
+    from gbox.server import create_app
+    import numpy as np
+    from PIL import Image
+    lib = tmp_path / "characters"
+    rng = np.random.default_rng(0)
+    for m in CHARS:
+        (lib / m["slug"]).mkdir(parents=True)
+        (lib / m["slug"] / "meta.json").write_text(json.dumps(m))
+        if m["slug"] in ("djv_ps2_dmx", "sd2_kane"):                    # two donors pass the collection check
+            (lib / m["slug"] / m["model"]).write_bytes(b"glTF" + bytes(64))
+            Image.fromarray(rng.integers(0, 255, (64, 64, 3), np.uint8)).save(lib / m["slug"] / "preview.png")
+    monkeypatch.setenv("GBOX_CHARACTERS", str(lib))
+    cfg = Config(data_dir=tmp_path / "data")
+    app = create_app(cfg)
+    app.state.store.upsert_catalog([PSO | {"source_paths": ["pso.gdi"], "format": "gdi", "profile_id": "dc"}])
+    with TestClient(app) as client:
+        client.headers["Authorization"] = f"Bearer {cfg.token()}"
+        r = client.get(f"/api/cast_swap/sources?game_id={PSO['game_id']}").json()
+        assert r["sources"][0]["key"] == "wrestlers" and "enemy:booma" in [s["slot"] for s in r["slots"]]
+        p = client.post("/api/cast_swap/plan", json={"game_id": PSO["game_id"], "source": "wrestlers", "seed": "1"}).json()
+        assert p["status"] == "planned" and p["assignments"][0]["preview_url"].startswith("/api/characters/")
+        assert {r["character"] for r in p["assignments"]} == {"djv_ps2_dmx", "sd2_kane"}
+        assert any("no model file" in x["reason"] for x in p["refused"])          # the library check runs server-side
+        bad = client.post("/api/cast_swap/plan", json={"game_id": PSO["game_id"], "source": "nothing like it"})
+        assert bad.status_code == 422 and "sources:" in bad.json()["detail"]
+        assert client.post("/api/cast_swap/plan", json={"game_id": "0" * 16, "source": "x"}).status_code == 404
+
+
 # ---------------------------------------------------------------- the tool, the agent, the mashup planner
 
 def test_characters_tool_routes_cast_swap_without_a_character(monkeypatch):
