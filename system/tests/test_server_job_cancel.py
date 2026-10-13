@@ -76,7 +76,7 @@ def test_live_swap_stops_while_its_prepare_step_waits(tmp_path):
     sid = "w1-s1"
     store.put("session", sid, {"id": sid, "game_id": "g1", "state": "running", "mod": ""})
     with TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"}) as client:
-        r = client.post(f"/api/sessions/{sid}/swap", json={"mod": "m1", "keep_state": False})
+        r = client.post(f"/api/sessions/{sid}/swap", json={"mod": "m1", "keep_state": False, "intent": "reset_model"})
         assert r.status_code == 200, r.text
         swap = r.json()["id"]
         deadline = time.time() + 5
@@ -136,7 +136,7 @@ def _finish(store, job, output):
 def test_cancel_queued_launch_prevents_claim_and_native_recovery(tmp_path):
     cfg, app, store = _launch_fixture(tmp_path)
     with TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'}) as client:
-        parent = client.post('/api/sessions/w1-s1/swap', json={'mod': '', 'keep_state': False}).json()['id']
+        parent = client.post('/api/sessions/w1-s1/swap', json={'mod': '', 'keep_state': False, 'intent': 'hard_reset'}).json()['id']
         child = _child(store, 'launch_game')
         assert client.post('/api/jobs/' + parent + '/cancel').json()['cancel_requested'] is True
         done = _wait(lambda: store.get('job', parent), lambda j: j['state'] != 'running')
@@ -204,7 +204,7 @@ def test_background_thread_failure_finishes_job_and_releases_registry(tmp_path, 
         client.get('/api/jobs?limit=1')
         with monkeypatch.context() as m:
             m.setattr(server.threading, 'Thread', BrokenThread)
-            response = client.post('/api/sessions/w1-s1/swap', json={'mod': '', 'keep_state': False})
+            response = client.post('/api/sessions/w1-s1/swap', json={'mod': '', 'keep_state': False, 'intent': 'hard_reset'})
         assert response.status_code == 503
         job = next(j for j in store.all('job') if j['tool'] == 'session_swap')
         assert job['state'] == 'failed' and job['finished']

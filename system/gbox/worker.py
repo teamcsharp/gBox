@@ -203,7 +203,7 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                     stream.close()
                     stream = None
                 if stream is not None:
-                    if stream.proc.poll() is not None:
+                    if stream.proc is not None and stream.proc.poll() is not None:   # None: its supervisor is restarting it
                         stream.close()
                         stream = None
                     elif stream.wait(seen, 1) and stream.latest:

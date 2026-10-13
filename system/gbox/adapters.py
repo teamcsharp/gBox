@@ -1,4 +1,5 @@
 """Runtime/emulator adapters behind one capability interface (plan §6). Unsupported ops raise Unsupported."""
+import collections
 import json
 import os
 import re
@@ -226,38 +227,133 @@ def grab_png(display: str | None, region: list[int] | None = None) -> bytes:
     return data
 
 
+def _wall(ts: float | None = None) -> str:
+    """Local wall-clock time with the UTC offset, so a stall line matches the operator's "it went black at 4:52"."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() if ts is None else ts))
+
+
 class MjpegStream:
     """Persistent ffmpeg grab -> MJPEG pipe; `latest` always holds the newest complete JPEG.
-    ponytail: MJPEG over HTTP (~60 fps on LAN, no audio); move to H.264/NVENC over WebRTC if bandwidth/latency bite."""
+    ponytail: MJPEG over HTTP (~60 fps on LAN, no audio); move to H.264/NVENC over WebRTC if bandwidth/latency bite.
+
+    The encoder is supervised (docs/stream-stability.md): x11grab/gdigrab grabs at a fixed rate whether or not the
+    picture changes, so a pipe that stays silent for STALL_S while ffmpeg is alive is a hung grab, and an exited
+    ffmpeg is a dead one. Either way only the encoder is restarted (with backoff); the emulator is never touched and
+    `latest` keeps the last good frame meanwhile. Gaps of SLOW_S or more are logged with wall-clock timestamps."""
+    STALL_S = 8.0          # generous: an overloaded host (load 30+, swap full) can starve ffmpeg for a few seconds
+    SLOW_S = 2.0           # a frame gap this long is logged (no action)
+    BACKOFF = (0.5, 10.0)  # restart delay: doubles per restart without a frame in between, capped
+    CHECK_S = 0.5
+
     def __init__(self, display: str | None, fps: int = 60, size: tuple[int, int] | None = None,
-                 max_width: int = 960, draw_mouse: bool = False):
+                 max_width: int = 960, draw_mouse: bool = False, *, label: str = "", popen=None, kill=None,
+                 clock=time.monotonic, supervise: bool = True, stall_s: float | None = None):
         if HOST_OS == "windows":
             src = ["-f", "gdigrab", "-draw_mouse", "1" if draw_mouse else "0", "-framerate", str(fps), "-i", "desktop"]
         else:
             src = ["-f", "x11grab", "-draw_mouse", "0", "-framerate", str(fps),
                    *(["-video_size", f"{size[0]}x{size[1]}"] if size else []), "-i", display or ":0"]
-        self.proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-fflags", "nobuffer", *src,
-                                      "-vf", f"scale='min({max_width},iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-pix_fmt", "yuvj420p",
-                                      "-q:v", "7", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.argv = ["ffmpeg", "-loglevel", "error", "-fflags", "nobuffer", *src,
+                     "-vf", f"scale='min({max_width},iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-pix_fmt", "yuvj420p",
+                     "-q:v", "7", "-"]
+        self.label, self.clock = label or (display or "desktop"), clock
+        self.stall_s = float(stall_s or self.STALL_S)
+        self._popen = popen or (lambda argv: subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL))
+        self._kill = kill or _kill_tree
         self.latest, self.seq, self.cond = None, 0, threading.Condition()
-        threading.Thread(target=self._read, daemon=True).start()
+        self.closed, self.restarts, self._fails, self._next_spawn = False, 0, 0, 0.0
+        self.events = collections.deque(maxlen=50)    # stalls / restarts, newest last (served by stats())
+        self.on_event = None                          # callable(dict): the worker forwards events to the control plane
+        self.last_frame = self.spawned = clock()
+        self.proc = None
+        self._spawn()
+        if supervise:
+            threading.Thread(target=self._supervise, daemon=True, name=f"mjpeg-supervisor-{self.label}").start()
 
     def wait(self, seen: int, timeout: float) -> bool:
         """Block until a frame newer than `seen` exists."""
         with self.cond:
             return self.cond.wait_for(lambda: self.seq != seen and self.latest is not None, timeout)
 
-    def _read(self):
+    def _spawn(self):
+        self.spawned = self.clock()
+        self.proc = proc = self._popen(self.argv)
+        threading.Thread(target=self._read, args=(proc,), daemon=True, name=f"mjpeg-reader-{self.label}").start()
+
+    def _event(self, kind: str, **detail):
+        ev = {"kind": kind, "at": _wall(), "stream": self.label, **detail}
+        self.events.append(ev)
+        print("gBox stream: " + " ".join(f"{k}={v}" for k, v in ev.items()), flush=True)
+        if self.on_event:
+            try:
+                self.on_event(ev)
+            except Exception:                         # noqa: BLE001 - reporting must never stop the video
+                pass
+
+    def _read(self, proc):
         buf = b""
-        while chunk := self.proc.stdout.read1(262144):
+        while chunk := proc.stdout.read1(262144):
             buf += chunk
             while (s := buf.find(b"\xff\xd8")) >= 0 and (e := buf.find(b"\xff\xd9", s + 2)) >= 0:
+                now = self.clock()
+                gap = now - self.last_frame
                 with self.cond:
+                    if proc is not self.proc or self.closed:  # a replaced encoder's late output is dropped
+                        return
                     self.latest, self.seq, buf = buf[s:e + 2], self.seq + 1, buf[e + 2:]
+                    self.last_frame, self._fails = now, 0
                     self.cond.notify_all()
+                if gap >= self.SLOW_S and self.seq > 1:
+                    self._event("slow_frames", gap_s=round(gap, 2))
+
+    def check(self, now: float | None = None) -> str | None:
+        """One supervision step (the supervisor thread calls it every CHECK_S): restart a dead or hung encoder."""
+        now = self.clock() if now is None else now
+        if self.closed:
+            return None
+        proc = self.proc
+        if proc is None:
+            if now >= self._next_spawn:
+                self.restarts += 1
+                self._event("encoder_restart", restart=self.restarts)
+                self._spawn()
+                return "restarted"
+            return None
+        silent = now - max(self.last_frame, self.spawned)
+        if proc.poll() is not None:
+            self._event("encoder_exit", returncode=proc.poll(), silent_s=round(now - self.last_frame, 2))
+        elif silent >= self.stall_s:
+            self._event("encoder_stall", silent_s=round(silent, 2))
+            try:
+                self._kill(proc)
+            except Exception:                         # noqa: BLE001 - an unkillable grab is replaced anyway
+                pass
+        else:
+            return None
+        with self.cond:
+            self.proc = None
+        first, cap = self.BACKOFF
+        self._next_spawn = now + min(cap, first * 2 ** min(self._fails, 6))
+        self._fails += 1
+        return "scheduled"
+
+    def _supervise(self):
+        while not self.closed:
+            time.sleep(self.CHECK_S)
+            try:
+                self.check()
+            except Exception as e:                    # noqa: BLE001 - keep supervising
+                print(f"gBox stream: supervisor error {type(e).__name__}: {e}", flush=True)
+
+    def stats(self) -> dict:
+        now = self.clock()
+        return {"seq": self.seq, "frame_age_s": round(now - self.last_frame, 2), "restarts": self.restarts,
+                "encoder_alive": bool(self.proc and self.proc.poll() is None), "events": list(self.events)[-10:]}
 
     def close(self):
-        _kill_tree(self.proc)
+        self.closed = True
+        proc, self.proc = self.proc, None
+        self._kill(proc)
 
 
 # RetroPad button -> X keysym per player. P1 = RetroArch defaults; P2 is bound in the session config (_write_cfg).

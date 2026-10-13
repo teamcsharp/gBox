@@ -65,6 +65,10 @@ class Job(BaseModel):
     output: dict | None = None
     error: str | None = None
     receipt_id: str | None = None
+    # Who asked (x-gbox-actor) and from where (client headers / parent job): an unexplained launch or swap of the
+    # operator's game can be traced to its submitter (docs/stream-stability.md).
+    actor: str | None = None
+    origin: dict[str, Any] = {}
 
 
 class ArtifactRef(BaseModel):
