@@ -68,7 +68,10 @@ def _fill(files: list[dict], read, head: int, max_files: int) -> None:
             f["head"] = b""
 
 
-def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limit: int = 64 << 20) -> Listing:
+def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limit: int = 64 << 20,
+            deep: int = 12, deep_bytes: int = 1 << 20) -> Listing:
+    """deep / deep_bytes: the first deep_bytes of the `deep` largest files are kept as f["sample"] (archives such as
+    AFS, DATA.BIN or .IMG show their inner formats only there)."""
     p = Path(path)
     suf = p.suffix.lower()
     if p.is_dir():
@@ -155,6 +158,11 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         else:
             raise ValueError(f"{p.name}: not a disc image, ROM, archive or folder gBox can list")
     _fill(L.files, read, head, max_files)
+    for f in sorted(L.files, key=lambda f: -f["size"])[:deep]:
+        try:
+            f["sample"] = read(f["path"], deep_bytes)
+        except Exception:                                 # noqa: BLE001
+            pass
     if len(L.files) > max_files:
         L.notes.append(f"{len(L.files) - max_files} files listed without their first bytes (max_files={max_files})")
     if not L.executable:
