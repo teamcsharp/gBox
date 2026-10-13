@@ -132,6 +132,19 @@ class Incident:
                               'type': 'image/png', 'size': ref['size']})
         return image, luma, covered
 
+    def press_start(self):
+        """Tap player one's Start once; False (with a failed step) when input can't reach the game."""
+        try:
+            self.op('send_input', events=[{'key': 'start', 'down': True}])
+            self.sleep(0.15)
+            self.op('send_input', events=[{'key': 'start', 'down': False}])
+        except Exception as exc:
+            self.step('press start at static prompt', f'Start press unavailable: {exc}', 'failed')
+            return False
+        self.step('press start at static prompt',
+                  'Screen was drawn but static after resume; pressed Start once in case the game is waiting at a prompt.')
+        return True
+
     def observe(self):
         previous, visible, covered_error = None, False, None
         previous_source = None
@@ -240,6 +253,16 @@ class Incident:
             result = self.observe()
             if result['motion']:
                 return result | {'session_id': self.sid, 'method': 'resume and reconnect display', 'moment_restored': True}
+            if self.action == 'auto' and result['visible']:
+                # A drawn but static screen is often the game waiting for Start (DOA2's mostly
+                # black VMU "press Start" prompt, a title or attract screen), not a hang (#1638).
+                # One Start press is the least invasive way to tell the two apart.
+                woke = self.press_start()
+                if woke:
+                    result = self.observe()
+                    if result['motion']:
+                        return result | {'session_id': self.sid, 'method': 'press Start at static prompt',
+                                         'moment_restored': True}
             if self.action == 'resume':
                 return result | {'session_id': self.sid, 'method': 'resume', 'moment_restored': False}
         if self.action == 'resume' and not running:
