@@ -41,19 +41,24 @@ GROUPS = {
                   "aliases": ["wrestlers", "wrestler", "wrestling", "wrestling games", "the wrestlers"]},
     "fighters": {"label": "Fighters (DOA2, DOA++, MvC2, Melee)", "extractors": ["doa2", "doapp", "mvc2", "melee"],
                  "aliases": ["fighters", "fighting games", "fighting game characters"]},
-    "sega": {"label": "Dreamcast Sega casts (JGR, SA2, PSO, Shenmue)", "extractors": ["jgr", "sa2", "pso", "shenmue"],
-             "aliases": ["sega", "dreamcast"]},
+    "sega": {"label": "Dreamcast Sega casts (JGR, SA1, SA2, PSO, Shenmue)",
+             "extractors": ["jgr", "sa1", "sa2", "pso", "shenmue"], "aliases": ["sega", "dreamcast"]},
+    "sonic": {"label": "Sonic characters (Sonic Adventure 1 + 2)", "extractors": ["sa1", "sa2"],
+              "aliases": ["sonic", "sonic characters", "sonic games", "sonic adventures", "sonic adventure 1 and 2",
+                          "sonic adventure 1 + 2", "sa1 + sa2", "sa1 and sa2"]},
 }
 # Short names the operator uses for games (target and source).
 ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr": "jet grind radio",
-          "jet set radio": "jet grind radio", "sa2": "sonic adventure 2", "doa2": "dead or alive 2",
+          "jet set radio": "jet grind radio", "sa2": "sonic adventure 2", "sa1": "sonic adventure",
+          "sonic adventure 1": "sonic adventure", "doa2": "dead or alive 2",
           "doa": "dead or alive 2", "sd2": "smackdown! 2", "smackdown 2": "smackdown! 2", "def jam": "def jam vendetta",
           "djv": "def jam vendetta", "no mercy": "wwf no mercy", "ct": "crazy taxi", "gta vc": "grand theft auto vice city",
           "vice city": "grand theft auto vice city", "mvc2": "marvel vs. capcom 2", "ff7": "final fantasy vii",
           "pe2": "parasite eve ii", "sm64": "super mario 64", "oot": "ocarina of time", "wcw": "wcw"}
 AGGREGATE = {"enemies", "enemy", "enemy:all", "drivers", "pedestrians", "passengers", "peds", "peds:all", "all",
              "roster", "cast", "fares"}
-MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver"}
+SEQUEL = re.compile(r"\d+|ii|iii|iv|vi|vii|viii|ix")
+MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver", "sage"}
 STOP = {"the", "a", "of", "in", "usa", "europe", "japan", "ver", "disc", "and", "with", "as", "game", "games"}
 
 
@@ -152,6 +157,11 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
                 best = max(titles.values(), default=0)
                 if want and best >= max(1, len(want) - 1):
                     keep = {t for t, s in titles.items() if s == best}
+                    # "Sonic Adventure" is not "Sonic Adventure 2": a title whose extra words carry a sequel number
+                    # loses to an equally matching one without, unless the request names a number itself
+                    sequel = {t for t in keep if any(SEQUEL.fullmatch(w) for w in _words(t) - want)}
+                    if keep - sequel:
+                        keep -= sequel
                     hits = [m for m in pool if m["source"]["game_title"] in keep]
                     labels.append(" / ".join(sorted(keep)))
         if not hits:
@@ -293,13 +303,17 @@ def slot_rows(game: dict, rows: list[dict] | None = None) -> list[dict]:
     """The target's replaceable slots: the writer's cast_slots(), aggregates and aliases dropped (each model once)."""
     from . import char_coverage as CC
     rows = CC.cast_slots(game) if rows is None else rows
+    lead = {str(r["alias_of"]) for r in rows if r.get("slot") == "player" and r.get("alias_of")}
     out, seen = [], set()
     for r in rows:
         s = str(r.get("slot") or "")
         if not s or s in seen or r.get("aggregate") or r.get("alias_of") or s.lower() in AGGREGATE:
             continue
         seen.add(s)
-        out.append(dict(r, kind=r.get("kind") or ("player" if s == "player" else "slot")))
+        row = dict(r, kind=r.get("kind") or ("player" if s == "player" else "slot"))
+        if s in lead:                                      # the slot the game's `player` alias names (Axel)
+            row["lead_slot"] = True
+        out.append(row)
     return out
 
 
@@ -312,7 +326,8 @@ def filter_slots(rows: list[dict], which: str = "all") -> list[dict]:
     if w == "main":
         return [r for r in rows if r["kind"] in MAIN_KINDS]
     kinds = {"enemies": "enemy", "npcs": "npc", "pedestrians": "pedestrian", "passengers": "passenger",
-             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character"}
+             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character",
+             "bosses": "boss", "sages": "sage"}
     if w in kinds or w in {r["kind"] for r in rows}:
         k = kinds.get(w, w)
         return [r for r in rows if r["kind"] == k]
@@ -352,8 +367,8 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
     leads = sorted([d for d in donors if d.get("lead")], key=lambda d: tie[d["slug"]])
     rest = sorted([d for d in donors if not d.get("lead")], key=lambda d: (-(d.get("size") or 1.0), tie[d["slug"]]))
     order = leads + rest
-    players = [s for s in todo if s["kind"] == "player"]
-    others = sorted([s for s in todo if s["kind"] != "player"],
+    players = [s for s in todo if s["kind"] == "player" or (s.get("lead_slot") and leads)]
+    others = sorted([s for s in todo if s not in players],
                     key=lambda s: (-float(s.get("size") or 1.0), todo.index(s)))
     out = []
     deck = list(order)
@@ -364,6 +379,8 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
         d = deck.pop(0)
         if s["kind"] == "player" and d.get("lead"):
             why = "lead character on the player slot"
+        elif s.get("lead_slot") and d.get("lead"):
+            why = "lead character on the game's own player (the slot its player alias names)"
         elif s.get("size") and d.get("size"):
             why = f"body size: slot x{float(s['size']):g}, donor x{d['size']:g} of its cast"
         else:
@@ -410,6 +427,8 @@ STRATEGIES = {
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
     "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
                                "(etm_swap.build_cast)"),
+    "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
+                               "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
 }
@@ -424,10 +443,12 @@ def chain(files: dict, steps: list[tuple[str, object]], progress=lambda p, m: No
     staged copy {path: bytes} (never the original image); steps: [(slot, step(files) -> {path: new bytes})]. A
     failing step leaves the files as they were and is reported; the next step continues from there.
     -> (final files, {slot: {status, reason?}})."""
+    from . import fit_events as FE
     state = dict(files)
     report: dict[str, dict] = {}
     for i, (slot, step) in enumerate(steps):
         progress(5 + 80 * i / max(1, len(steps)), f"{slot} ({i + 1}/{len(steps)})")
+        FE.model(slot)                                    # this step's fits belong to the slot's model
         try:
             new = step(dict(state)) or {}
             unknown = set(new) - set(state)
@@ -477,7 +498,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     chosen = filter_slots(all_slots, slots)
     for s in chosen:
         if s.get("status") == "not_working":
-            s["skip"] = "the game doesn't draw this writer's output yet (status not_working); left as it is"
+            s["skip"] = s.get("reason") or "the game doesn't draw this writer's output yet (status not_working); left as it is"
     if strategy(w["writer"])[0] == "single":               # one slot per mod: the player (or the first slot) only
         first = next((s for s in chosen if not s.get("skip") and s["kind"] == "player"),
                      next((s for s in chosen if not s.get("skip")), None))
@@ -621,15 +642,22 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             metas[r["character"]] = C.get(root, r["character"])
         except KeyError:
             pass
-    pairs = [(r["slot"], metas[r["character"]]) for r in p["assignments"]]
+    from . import fit_events as FE, retarget_profile as RP
+    # the operator's Retarget editor profiles (per donor, per slot) go into each donor's meta before any fit
+    pairs = [(r["slot"], RP.apply_to_meta(metas[r["character"]], gid, r["slot"])) for r in p["assignments"]]
+    profiles = ",".join(sorted({f"{s}={m.get('retarget_profile_digest')}" for s, m in pairs
+                                if m.get("retarget_profile_digest")}))
     have = filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json"
     if have.is_file() and not inp.rebuild:
         try:
             rec = json.loads(have.read_text())
             slots = rec.get("cast") or []
-            return _report(p, {s["slot"]: s for s in slots}, name, "ready", launch and _launch(ctx, gid, name))
+            if rec.get("retarget_profiles", "") == profiles:
+                return _report(p, {s["slot"]: s for s in slots}, name, "ready", launch and _launch(ctx, gid, name))
+            inp = _rebuild(inp)                           # a profile changed in the Retarget editor since the build
         except (OSError, ValueError):
             pass
+    FE.plan([(s, m["slug"], f"{m.get('name', m['slug'])} -> {_slot_name(p, s)}") for s, m in pairs])
     strat = p["strategy"]
     builder = BUILDERS.get(p["writer"])
     if builder is None:
@@ -645,6 +673,11 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     per = res.get("slots") or {}
     mod = res.get("mod")
     built = [s for s, r in per.items() if r.get("status") in ("built", "partial")]
+    for s, _m in pairs:                                   # every model's last stage in the Fitting pop-up
+        FE.model(s)
+        ok = s in built and mod
+        FE.stage("write", "done" if ok else "failed",
+                 {"mod": mod} if ok else {"reason": str((per.get(s) or {}).get("reason") or "not built")[:150]})
     if mod and built:
         d = filemods.mod_dir(ctx.config, gid, mod)
         rec_path = d / ".gbox-mod.json"
@@ -654,7 +687,8 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             rec = {"name": mod, "game_id": gid}
         rec |= {"cast": [{"slot": r["slot"], "character": r["character"], **per.get(r["slot"], {"status": "failed"})}
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
-                "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False}
+                "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
+                "retarget_profiles": profiles}
         if rec_path.parent.is_dir():
             rec_path.write_text(json.dumps(rec, default=str))
         for r in p["assignments"]:
@@ -695,6 +729,17 @@ def _report(p: dict, per: dict, mod, status: str, launch, detail=None) -> dict:
 
 
 # ---------------------------------------------------------------- per-writer multi-slot builders
+
+def _rebuild(inp):
+    """The same request with rebuild=True (pydantic CharIn or a SimpleNamespace)."""
+    if hasattr(inp, "model_copy"):
+        return inp.model_copy(update={"rebuild": True})
+    return SimpleNamespace(**{**vars(inp), "rebuild": True})
+
+
+def _slot_name(p: dict, slot: str) -> str:
+    return next((r.get("slot_name") or slot for r in p.get("assignments") or [] if r.get("slot") == slot), slot)
+
 
 def _shim(inp, **kw):
     """A CharIn-like copy for a writer's own use()/match() (never launches)."""
@@ -760,6 +805,10 @@ def _gta_vc(ctx, game, pairs, name, inp):
 def _etm(ctx, game, pairs, name, inp):
     from . import etm_swap
     return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _oot(ctx, game, pairs, name, inp):
+    from . import oot_swap
+    return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
+                               strict_cutscenes=bool(getattr(inp, "strict_cutscenes", False)))
 
 
 def _jgr(ctx, game, pairs, name, inp):
@@ -807,7 +856,9 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
         def run(files):
             sl = CTS.parse_slot(slot, "axel", groups)
             glb = C._local_or_fetch(ctx, meta, meta["model"])
-            new, _rep = CTS.swap_bank(files[CTS.BANK], glb, dict((meta.get("rig") or {}).get("roles") or {}), sl)
+            from .retarget_profile import profile_of
+            new, _rep = CTS.swap_bank(files[CTS.BANK], glb, dict((meta.get("rig") or {}).get("roles") or {}), sl,
+                                      profile=profile_of((meta.get("rig") or {}).get("scale")))
             return {CTS.BANK: new}
         return run
     files, per = chain({CTS.BANK: bank}, [(s, step(s, m)) for s, m in pairs], ctx.progress)
@@ -825,6 +876,7 @@ BUILDERS = {
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
     "gbox.etm_swap": _etm,
+    "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
 }

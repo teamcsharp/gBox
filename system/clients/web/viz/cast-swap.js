@@ -38,7 +38,8 @@
       <option value="">(leave as it is)</option></select>`;
     const rows = (plan.assignments || []).map(r => `<tr data-row="${ESC(r.slot)}"><td title="${ESC(r.slot)}">${ESC(r.slot_name || r.slot)}</td>
       <td>${r.preview_url ? `<img alt="" loading="lazy" src="${ESC(img(r.preview_url))}" style="width:34px;height:34px;object-fit:contain">` : ""}</td>
-      <td>${pick(r)}<div class="mut" style="font-size:10.5px">${ESC(r.why || "")}</div></td></tr>`).join("");
+      <td>${pick(r)}<div class="mut" style="font-size:10.5px">${ESC(r.why || "")}</div></td>
+      <td><button type="button" class="act" data-cs-rt="${ESC(r.slot)}" title="Retarget editor: how this donor is scaled and proportioned into this slot">✎</button></td></tr>`).join("");
     const skipped = (plan.skipped || []).map(s => `<li>${ESC(s.slot)}: ${ESC(s.reason)}</li>`).join("");
     const refused = (plan.refused || []).map(s => `<li>${ESC(s.name || s.slug)}: ${ESC(s.reason)}</li>`).join("");
     const fresh = (plan.refreshed || []).map(s => `<li>${ESC(s.name || s.slug)}: ${ESC(s.status)}</li>`).join("");
@@ -138,6 +139,14 @@
                           slots: q('[data-cs="slots"]').value, seed: q('[data-cs="seed"]').value.trim() });
     const picks = () => Object.fromEntries([...el.querySelectorAll("[data-cs-slot]")].map(s => [s.dataset.csSlot, s.value]));
     el.onclick = async e => {
+      const rt = e.target.closest("[data-cs-rt]");
+      if (rt && rt.dataset.csRt !== undefined) {             // ✎ on a plan row: the Retarget editor for that donor + slot
+        const slot = rt.dataset.csRt, slug = picks()[slot], d = (c.state.plan?.donors || []).find(x => x.slug === slug);
+        if (!slug) { ui.status("Pick a donor for this slot first."); return; }
+        const o = { slug, name: d?.name || slug, gid: game.gid, title: game.title, slot };
+        if (io.retarget) io.retarget(o); else if (root.GBoxRetargetEditor) root.GBoxRetargetEditor.open(doc, io, o);
+        return;
+      }
       const b = e.target.closest("[data-cs-go]"); if (!b) return;
       if (b.dataset.csGo === "close") { el.remove(); return; }
       try { if (b.dataset.csGo === "plan") await c.plan(form()); else await c.build(picks()); }

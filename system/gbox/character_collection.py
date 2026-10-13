@@ -37,6 +37,9 @@ class AutoCollection:
                         record['result'] = C.refresh_collection(root, result)
                     except Exception:                       # a status read never fails on a bad entry
                         pass
+            upgraded = self._reader_upgraded(record)
+            if upgraded:
+                record['stale_reader'] = upgraded
         elif record.get('state') == 'unsupported' and self._reader_now_registered(gid):
             # The stored verdict predates a reader deployed since then (#1369): report "not run yet",
             # never the false "No native model reader registered", so favorites/launches re-queue it.
@@ -55,6 +58,23 @@ class AutoCollection:
         job = self.store.get('job', record.get('job_id')) if record.get('job_id') else None
         last = (job or {}).get('finished') or record.get('updated') or 0
         return time.time() - last > RECOLLECT_PARTIAL_S
+
+    @staticmethod
+    def _reader_upgraded(record):
+        """A finished collection made by an older version of its (versioned) reader, e.g. the AUF roster that listed
+        writer slots only (reader v1, collected nothing): {extractor, collected_with, current}, else None. It is
+        collected again at the next launch instead of waiting for the daily partial re-collect."""
+        if record.get('state') != 'succeeded':
+            return None
+        result = record.get('result') or {}
+        try:
+            current = C.reader_version(result.get('extractor'))
+        except Exception:                                   # a reader that doesn't import never blocks the status
+            return None
+        have = int(result.get('reader_version') or 1)
+        if current is None or have >= current:
+            return None
+        return {'extractor': result.get('extractor'), 'collected_with': have, 'current': current}
 
     def _reader_now_registered(self, gid):
         try:
@@ -111,7 +131,7 @@ class AutoCollection:
             # A favorite action explicitly retries failed work; launches never repeat expensive failures.
             supported = registered(game)
             if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed') \
-                    and not (supported and self._partial_and_stale(previous)):
+                    and not (supported and (self._partial_and_stale(previous) or previous.get('stale_reader'))):
                 return
             if not supported:
                 self.store.put('character_collection', gid, {'state': 'unsupported', 'updated': time.time(),

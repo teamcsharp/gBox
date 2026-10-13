@@ -12,13 +12,16 @@ merged into a title's dossier the first time it is studied. They are not LLM cla
 
 PLAYBOOKS = [
     {
-        "id": "study-title", "seed_version": 1, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
+        "id": "study-title", "seed_version": 2, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
         "goal": "Have the title's executable in Ghidra with the right processor and registers, and know what gBox "
                 "already found, before working on any task in that game.",
         "when": ["ghidra", "reverse engineer", "analyze the executable", "decompile", "disassemble", "study this game",
                  "find the code", "how does the game"],
         "platforms": ["any"], "tags": ["setup", "ghidra", "executable", "dossier"],
         "steps": [
+            {"do": "Step one: fingerprint the title (formats, engine/middleware, nearest assimilated titles, the reader to "
+                   "start from). It lands in the dossier as a hypothesis.", "tool": "assimilate",
+             "args": {"op": "fingerprint"}, "expect": "engines, containers/codecs/models, nearest_titles, proposal"},
             {"do": "Read what gBox already knows about the title: executable, key addresses with evidence, formats, "
                    "mods, open questions.", "tool": "re_dossier", "args": {"op": "read"},
              "expect": "the dossier text; 'no executable yet' means continue with re_study"},
@@ -170,7 +173,7 @@ PLAYBOOKS = [
         ],
     },
     {
-        "id": "asset-loader-format", "seed_version": 1,
+        "id": "asset-loader-format", "seed_version": 2,
         "title": "Find the model/asset loader and reverse the file format",
         "goal": "Know where the game loads a model/texture/archive and the exact layout, so gBox can read (and later "
                 "write) the files.",
@@ -178,6 +181,10 @@ PLAYBOOKS = [
                  "extract the model", "no reader", "unknown format", "loader"],
         "platforms": ["any"], "tags": ["format", "loader", "models", "textures", "strings"],
         "steps": [
+            {"do": "Fingerprint first: magic bytes inside the archives, extensions, executable strings and symbols name "
+                   "the likely container/codec/model formats and the closest assimilated title; its reader and "
+                   "gbox.formats (codecs, ISO9660/FST, TIM/PVR/TPL, Ninja chunks) are where the new reader starts.",
+             "tool": "assimilate", "args": {"op": "fingerprint"}},
             {"do": "Make sure the executable is analysed (strings + functions).", "tool": "re_study",
              "args": {"analyze": True}},
             {"do": "Find the file extensions / resource type tags the loader uses.", "tool": "ghidra_run",
@@ -523,6 +530,169 @@ PLAYBOOKS = [
 ]
 
 
+# ------------------------------------------------------------------ assimilation techniques (docs/assimilation.md)
+# One playbook per technique that cracked a title. Examples come from gbox.assimilate_kb, so every title added there
+# shows up as a worked example of the techniques that cracked it.
+
+def _kb_examples(tech: str, limit: int = 6) -> list[dict]:
+    from .assimilate_kb import KNOWN_TITLES
+    return [{"game": t["title"], "note": f"reader {t['reader']}; " + "; ".join(
+        f"{k} {v}" for k, v in (t.get("formats") or {}).items() if k in ("container", "model", "codec"))[:260],
+        "ref": f"docs/assimilation.md ({t['effort']})"} for t in KNOWN_TITLES if tech in t.get("techniques", [])][:limit]
+
+
+_TECHNIQUES = [
+    {"id": "assimilate-title", "title": "Assimilate a new title: fingerprint -> nearest reader -> inventory -> round trip",
+     "goal": "Go from an unknown game to a tested native reader by reusing what gBox already learned from other titles.",
+     "when": ["assimilate", "new game", "fingerprint", "what engine", "which format", "readiness", "start a reader",
+              "no reader yet"],
+     "tags": ["assimilate", "fingerprint", "reader", "inventory"],
+     "steps": [
+         {"do": "Fingerprint the owned files and executable.", "tool": "assimilate", "args": {"op": "fingerprint"},
+          "expect": "engines, containers/codecs/models/textures/animations, nearest_titles, proposal.skeleton"},
+         {"do": "Read the nearest assimilated title's reader and its docs/assimilation.md section: which technique "
+                "cracked it, what was reusable.", "tool": "re_playbook", "args": {"op": "list", "query": "<technique>"}},
+         {"do": "Inventory with the shared pieces (gbox.formats.disc listing, iso9660/gcfst, lz codecs) and prove the "
+                "container: every file parses, offsets tile the archive."},
+         {"do": "Pick the technique that fits the evidence: symbols-first if the ELF keeps .symtab, string-xref-loader "
+                "for named files, instruction-pattern for per-build code, routine-oracle when the game's own "
+                "decompressor/expander can run, community-spec when a modding community documented the format."},
+         {"do": "Record the formats and the reader in the dossier, then add the title to gbox/assimilate_kb.py "
+                "(files, magics, strings, engines, reader, techniques) so the next fingerprint learns from it.",
+          "tool": "re_dossier", "args": {"op": "record", "kind": "format", "status": "hypothesis"}},
+     ],
+     "pitfalls": ["A fingerprint is a ranking of evidence, not a reader: verify every claim against the files.",
+                  "Generic extensions (.bin/.dat/.img/.pac) say little; magics inside archives say much more.",
+                  "Same engine family is not the same format version: check the version fields before reusing a parser."],
+     "verify": ["the reader parses every file of the exact build", "re-writing an unmodified file is byte-identical"],
+     "record": ["re_dossier op=record kind=format", "gbox/assimilate_kb.py entry", "docs/assimilation.md section"],
+     "tech": None},
+    {"id": "symbols-first", "title": "Use the executable's own symbol table before anything else",
+     "goal": "Name every loader/struct from shipped symbols (ELF .symtab, debug strings, RTTI) instead of guessing.",
+     "when": ["symbols", "symtab", "debug build", "elf symbols", "mangled names", "rtti", "vtable names"],
+     "tags": ["symbols", "elf", "ghidra"],
+     "steps": [{"do": "Fingerprint reports ELF symbol counts; list them.", "tool": "assimilate", "args": {"op": "fingerprint"}},
+               {"do": "Search the symbols for the loader/resource names (RSRC_Load, ReadChunkData, FindItem...).",
+                "tool": "ghidra_run", "args": {"op": "strings", "query": "Load|Read|Chunk|Model|Skin"}},
+               {"do": "Decompile the named loader; record each struct offset with the symbol that proves it.",
+                "tool": "ghidra_run", "args": {"op": "explain", "addresses": ["<symbol address>"]}}],
+     "pitfalls": ["CodeWarrior/GCC mangled names need demangling (Ghidra does it) to read class layouts.",
+                  "A debug ELF on the disc (base.elf/Bond.elf) may differ from main.dol: confirm addresses live."],
+     "verify": ["a symbol-named function's decompilation matches the file layout on real files"],
+     "record": ["re_dossier op=record kind=function with the symbol as name"], "tech": "symbols-first"},
+    {"id": "string-xref-loader", "title": "Find the loader from the file names / format strings it uses",
+     "goal": "From a file name or printf format in the executable to the loader and the file layout.",
+     "when": ["file name string", "format string", "%s", "xref", "who opens", "loader for"],
+     "tags": ["strings", "xrefs", "loader"],
+     "steps": [{"do": "Strings with the extensions / names the fingerprint listed.", "tool": "ghidra_run",
+                "args": {"op": "strings", "query": "<name or %s pattern>"}},
+               {"do": "References to the string (PowerPC lis/addi, MIPS lui/addiu pairs; gbox.formats.insn_pattern "
+                      "ppc_lis_addi finds them without Ghidra).", "tool": "ghidra_run", "args": {"op": "refs", "addresses": ["<string>"]}},
+               {"do": "Decompile the caller: open, read, decompress, parse."}],
+     "pitfalls": ["Hashed file names (Nightfire %s%8.8x.bin) need the hash routine first."],
+     "verify": ["the loader's header reads match real files"], "record": ["re_dossier op=record kind=function"],
+     "tech": "string-xref-loader"},
+    {"id": "instruction-pattern", "title": "Find code by instruction shape (per-stage overlays, other builds/regions)",
+     "goal": "Locate a known routine in every overlay or build where its address moves.",
+     "when": ["instruction pattern", "signature scan", "overlay", "other region", "pal version", "per stage"],
+     "tags": ["pattern", "overlay", "capstone"],
+     "steps": [{"do": "Write the routine's instructions as gbox.formats.insn_pattern Insn entries (fixed bits + "
+                      "register/immediate captures that must agree)."},
+               {"do": "search() every overlay/build; one hit each is the proof; the captures give the per-build "
+                      "addresses (hi_lo for lui/addiu pairs)."}],
+     "pitfalls": ["Too loose a mask matches compiler idioms; too tight misses register allocation changes.",
+                  "Delay slots: the routine may start one instruction earlier."],
+     "verify": ["exactly one match per overlay/build", "a breakpoint at the match fires on the event"],
+     "record": ["re_dossier op=record kind=function with the pattern in role"], "tech": "instruction-pattern"},
+    {"id": "routine-oracle", "title": "Run the game's own routine as the oracle (decoder, expander, skeleton build)",
+     "goal": "Prove a Python reader/writer against what the game itself computes, byte for byte.",
+     "when": ["oracle", "interpreter", "emulate the routine", "exact inverse", "packer", "decompressor matches"],
+     "tags": ["oracle", "interpreter", "round trip"],
+     "steps": [{"do": "Get the program image (decoded executable / RAM snapshot) and the routine address (Ghidra)."},
+               {"do": "MIPS: gbox.formats.oracle.RoutineOracle('mips_le', ram) .run(fn, inputs, args, read). SH-4/PPC: "
+                      "oracle_route() -> Ghidra EmulatorHelper via ghidra_bridge op=run_script."},
+               {"do": "check_reader(python_reader, oracle, files) on every file; check_inverse(encoder, oracle, "
+                      "samples) for a writer."}],
+     "pitfalls": ["The routine may touch hardware (GTE, DMA): attach the GTE model or stub the I/O it reads.",
+                  "Run limits: a wrong entry runs forever; keep limit= small and read the stop pc."],
+     "verify": ["0 mismatches on every file of the build (DOA++: 327/327 sections, 3045 motions)"],
+     "record": ["re_dossier op=record kind=function (routine) with the check counts"], "tech": "routine-oracle"},
+    {"id": "community-spec", "title": "Start from a community format spec, then prove it on the owned build",
+     "goal": "Reuse published layouts (decomps, modding wikis, tools) without trusting them blindly.",
+     "when": ["community", "wiki", "spec", "documented format", "modding tools", "reference implementation"],
+     "tags": ["docs", "spec"],
+     "steps": [{"do": "Find the spec (decomp project, modding wiki, open tool) and note its version/build."},
+               {"do": "Write the reader from the spec; run it on every file of the owned build; diff with the "
+                      "reference tool's output where one exists."}],
+     "pitfalls": ["Specs often describe another region/version; check header versions first.",
+                  "Read references as documentation only; never copy incompatible-licence code."],
+     "verify": ["the reader parses every owned file and matches the reference output"],
+     "record": ["cite the spec in the module docstring and the dossier"], "tech": "community-spec"},
+    {"id": "magic-census", "title": "Magic census: classify every file and archive member by its first bytes",
+     "goal": "Know the container/codec/model/texture mix of a build before reading any code.",
+     "when": ["census", "magic", "classify files", "what is in the archive", "inventory"],
+     "tags": ["magic", "inventory"],
+     "steps": [{"do": "assimilate op=fingerprint (heads + inner magics of the largest archives).", "tool": "assimilate",
+                "args": {"op": "fingerprint"}},
+               {"do": "Walk the top container exactly (entries tile the file, terminators counted) and repeat the census "
+                      "per member."}],
+     "pitfalls": ["Weak magics (one byte, zlib header) need a successful decode to count."],
+     "verify": ["the container walk consumes the archive exactly"], "record": ["re_dossier op=record kind=format"],
+     "tech": "magic-census"},
+    {"id": "ram-capture", "title": "Read the loaded object from RAM (entity probe, pick whip, save states)",
+     "goal": "When files are packed or built at run time, read the live structures instead.",
+     "when": ["ram capture", "entity probe", "live object", "pick whip", "save state", "loaded model in ram"],
+     "tags": ["ram", "entity", "live"],
+     "steps": [{"do": "Profile the entity table (playbook entity-table) and capture RAM + frame together."},
+               {"do": "Match the RAM object to the file it came from (sizes, pointers) to learn the file layout."}],
+     "pitfalls": ["Heap addresses move between rooms; capture frames byte-identical before and after the dump."],
+     "verify": ["the RAM-derived layout reads the files on disc"], "record": ["re_dossier op=record kind=struct"],
+     "tech": "ram-capture"},
+    {"id": "frame-capture", "title": "Use rendered frames as ground truth (identity, texture layout, outline hulls)",
+     "goal": "Confirm what a decoded model/texture is by comparing against what the game draws.",
+     "when": ["frame capture", "screenshot compare", "which character is this", "texture layout"],
+     "tags": ["frames", "visual"], "steps": [{"do": "Capture the moment (look_at_screen / scene_capture) and compare "
+                                                     "with the decoded asset rendered the same way."}],
+     "pitfalls": ["Lighting and PS1 half-intensity textures change colours (gbox.ps1_texture)."],
+     "verify": ["the decoded asset matches the frame"], "record": ["attach the frames as evidence"],
+     "tech": "frame-capture"},
+    {"id": "round-trip-proof", "title": "Prove the reader with a byte-identical round trip before writing",
+     "goal": "A writer starts only after reading + re-writing every unmodified file gives identical bytes.",
+     "when": ["round trip", "byte identical", "re-encode", "writer", "rebuild the file"],
+     "tags": ["round trip", "writer"],
+     "steps": [{"do": "Parse -> serialize every file of the build; compare bytes (gbox.formats encoders for codecs)."},
+               {"do": "Only then change one thing (a donor) and check sizes, pointers, alignment, budgets."}],
+     "pitfalls": ["Compression ratio matters when files are rewritten in place (AKI lzss_store packs tighter)."],
+     "verify": ["N/N files byte-identical"], "record": ["the counts in the module docstring and the dossier"],
+     "tech": "round-trip-proof"},
+    {"id": "welded-fit", "title": "Fit a donor into a fixed native mesh budget (welded chunks, per-vertex bones)",
+     "goal": "Make a donor fit the native slot's vertex/triangle/chunk budgets without open seams.",
+     "when": ["budget", "chunk limit", "seams", "welded", "fit the donor", "too many triangles"],
+     "tags": ["writer", "fit"],
+     "steps": [{"do": "Measure the slot budgets from the native file (exact room per chunk)."},
+               {"do": "One welded mesh per chunk with per-vertex bones (not per-bone shells); decimate until it fits; "
+                      "repeat the fit when the budget check fails."}],
+     "pitfalls": ["Per-bone shells leave open boundary edges (SD2: 270)."], "verify": ["no open edges; budgets met"],
+     "record": ["FIT_VERSION bump when the fit changes"], "tech": "welded-fit"},
+    {"id": "decomp-reference", "title": "Use a matching decompilation project as the map",
+     "goal": "For titles with public decomps (N64 especially), read layouts and addresses from the decomp.",
+     "when": ["decomp", "decompilation project", "n64decomp", "zeldaret", "baserom"],
+     "tags": ["decomp", "n64"],
+     "steps": [{"do": "Match the ROM hash to the decomp's baserom; use its symbol/segment tables as documentation."},
+               {"do": "Check every table against the owned ROM (DMA tables, CRCs)."}],
+     "pitfalls": ["Region/version differences (the 'USA' zip that is really PAL)."],
+     "verify": ["tables rebuilt from the decomp match the ROM"], "record": ["cite the decomp + commit"],
+     "tech": "decomp-reference"},
+]
+
+for _t in _TECHNIQUES:
+    PLAYBOOKS.append({"id": _t["id"], "seed_version": 1, "title": _t["title"], "goal": _t["goal"], "when": _t["when"],
+                      "platforms": ["any"], "tags": _t["tags"], "steps": _t["steps"], "pitfalls": _t["pitfalls"],
+                      "verify": _t["verify"], "record": _t["record"],
+                      "examples": _kb_examples(_t["tech"]) if _t["tech"] else _kb_examples("routine-oracle", 2)
+                      + _kb_examples("welded-fit", 1)})
+
+
 def _f(kind, address, name, role, ref):
     return {"kind": kind, "address": address, "name": name, "role": role, "ref": ref}
 
@@ -746,3 +916,26 @@ TITLE_FACTS = [
             "profiles/stranglehold-ps3-us.json"),
      ]},
 ]
+
+# Bump when TITLE_FACTS gain facts: dossiers seeded by an older version merge the new documented facts (re_lab.dossier).
+FACTS_VERSION = 2
+
+
+def _kb_title_facts() -> list[dict]:
+    """Per assimilated title (gbox.assimilate_kb): its formats, the reader to start from and the techniques that
+    cracked it, as documented facts. Merged with the hand-written entries above for the same title."""
+    from .assimilate_kb import KNOWN_TITLES
+    out = []
+    for t in KNOWN_TITLES:
+        if not t.get("title_has"):
+            continue
+        facts = [_f("format", "", f"{k} format", str(v), "docs/assimilation.md") for k, v in (t.get("formats") or {}).items()]
+        facts.append(_f("note", "", "gBox reader", f"start from {t['reader']}; engine family {', '.join(t['engines'])}; "
+                        f"cracked by {', '.join(t.get('techniques', []))} (playbooks of the same ids)",
+                        "docs/assimilation.md"))
+        out.append({"platform": t["platform"], "title_has": t["title_has"], "label": t["title"], "facts": facts,
+                    "kb": t["id"]})
+    return out
+
+
+TITLE_FACTS += _kb_title_facts()

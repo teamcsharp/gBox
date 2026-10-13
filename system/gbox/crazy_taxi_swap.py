@@ -77,6 +77,11 @@ DRIVERS = {
     "gena": ("C", "Gena", ("gena", "c", "plyrc")),
     "gus": ("D", "Gus", ("gus", "d", "plyrd")),
 }
+# Body size per driver for the cast planner's by_role mapping (tallest donors on the biggest drivers): the summed
+# longest axes of each driver's koshi, mune, atama and left-leg parts in the owned disc's ct/polDC0.all, relative to
+# the four drivers' median (Axel 25.6, B.D. Joe 24.8, Gena 25.4, Gus 29.3 units). The swap fits every donor part to
+# the target part's own extent, so this only orders the plan.
+DRIVER_SIZE = {"axel": 1.0, "bd_joe": 0.97, "gena": 1.0, "gus": 1.15}
 # The people groups of the owned disc's ct/polDC0.all (sha256 a5171e43...): group -> (kind, blob count, PARTS missing).
 # Measured with people(); the writer reads the live bank and uses this only to list slots without the disc.
 PEOPLE = {
@@ -306,8 +311,10 @@ def cast_slots() -> list[dict]:
     out = [{"slot": "player", "name": "the driver (the one this character was last built for, else Axel)",
             "kind": "player", "writer": "gbox.crazy_taxi_swap", "alias_of": "driver:axel"}]
     for r in roster():
+        size = DRIVER_SIZE.get(r["slot"].split(":", 1)[1]) if r["slot"].startswith("driver:") else None
         out.append({"slot": r["slot"], "name": r["name"], "kind": r["slot_kind"], "writer": r["writer"],
                     **({"aggregate": True} if r["slot"] in ("drivers", "pedestrians", "passengers") else {}),
+                    **({"size": size} if size else {}),
                     "aliases": r["aliases"], **({"blobs": r["blobs"]} if "blobs" in r else {})})
     return out
 
@@ -415,10 +422,39 @@ def fit_points(P, N, cloud, max_stretch: float = 2.0) -> tuple[np.ndarray, np.nd
     return place(P), nrm
 
 
-def fit_blob(template: bytes, seg, name: str = "") -> tuple[bytes, dict]:
+PART_ROLE = {"koshi": "hip", "mune": "chest", "atama": "head", "kata_l": "l_upper", "ude_l": "l_fore", "te_l": "l_hand",
+             "kata_r": "r_upper", "ude_r": "r_fore", "te_r": "r_hand", "momo_l": "l_thigh", "sune_l": "l_shin",
+             "kakato_l": "l_foot", "momo_r": "r_thigh", "sune_r": "r_shin", "kakato_r": "r_foot"}
+
+
+def profile_matrix(part: str | None, cloud, profile: dict | None) -> np.ndarray:
+    """The operator's retarget profile (gbox.retarget_profile) for one rigid Crazy Taxi part: parts are stored in
+    their own joint frame, so only the size adjustments apply - head size, a role's scale, its length along the part's
+    long axis and girth across it, torso width on the hips / chest, arm / leg length. Offsets, rotations, height and
+    ground need a shared skeleton frame and are left to the game's own pose. Identity without a profile."""
+    from . import retarget_profile as RP
+    prof = RP.profile_of({"profile": profile}) if profile else None
+    role = PART_ROLE.get(part or "")
+    if prof is None or role is None:
+        return np.eye(3)
+    a = prof["adjust"].get(role, RP.ADJUST_DEFAULT)
+    length = a["length"] * (prof["arm_length"] if role in RP.ARMS else prof["leg_length"] if role in RP.LEGS else 1.0)
+    _mu, axes = _axes(np.asarray(cloud, float))
+    d = axes[0] / max(float(np.linalg.norm(axes[0])), 1e-9)
+    M = a["girth"] * np.eye(3) + (length - a["girth"]) * np.outer(d, d)
+    M = M @ np.diag(a["scale"])
+    if role == "head":
+        M = M * prof["head"]
+    if role in ("hip", "chest"):
+        M = np.diag([prof["torso_width"], 1.0, 1.0]) @ M
+    return M
+
+
+def fit_blob(template: bytes, seg, name: str = "", profile: dict | None = None) -> tuple[bytes, dict]:
     """One donor segment (pos, nrm, tris in donor space) -> the part's blob (same size): principal-axis fit onto the
-    part's decoded cloud (`fit_points`), centre subtracted, shrunk into the s16 range if needed, vertex-clustered down
-    to the largest count whose actual encoding fits, triangles dealt to the materials by region."""
+    part's decoded cloud (`fit_points`), the retarget profile's size adjustments about the cloud's centroid
+    (`profile_matrix`), centre subtracted, shrunk into the s16 range if needed, vertex-clustered down to the largest
+    count whose actual encoding fits, triangles dealt to the materials by region."""
     shape = ct.read_shape(template, name)
     cloud = np.asarray(shape.positions(), float)
     P = np.asarray(seg[0], float)
@@ -428,6 +464,13 @@ def fit_blob(template: bytes, seg, name: str = "") -> tuple[bytes, dict]:
         raise ValueError(f"{name}: empty donor segment or target cloud")
     centre = np.asarray(shape.centre, float)
     fitted, nrm = fit_points(P, N, cloud)
+    c = classify(name) if name else None
+    M = profile_matrix(c["part"] if c else None, cloud, profile)
+    if not np.allclose(M, np.eye(3)):
+        mu = cloud.mean(0)
+        fitted = (fitted - mu) @ M.T + mu
+        nrm = nrm @ np.linalg.inv(M)
+        nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-9)
     local = fitted - centre
     over =float((np.abs(local).max(0) / (representable(template, shape.frac()) * 0.999)).max())
     if over > 1:
@@ -482,7 +525,8 @@ def hidden_blob(template: bytes, name: str = "") -> bytes:
                            chunks=[[tri] for _ in pairs])
 
 
-def swap_people(bank: bytes, segs: dict, groups, progress=None, hide_accessories: bool = True) -> tuple[bytes, dict]:
+def swap_people(bank: bytes, segs: dict, groups, progress=None, hide_accessories: bool = True,
+                profile: dict | None = None) -> tuple[bytes, dict]:
     """Every part blob of the bank groups `groups` -> the donor (main parts, sl_ twins and hand poses) or hidden
     (accessory sub-parts). The bank keeps every name, order and blob size. segs: gbox.crazy_taxi.donor_segments
     ({part: (pos, nrm, tris)}). Returns (new bank, {blob name: stats})."""
@@ -503,7 +547,7 @@ def swap_people(bank: bytes, segs: dict, groups, progress=None, hide_accessories
                 seg = segs.get(c["part"])
                 if seg is None:
                     raise ValueError(f"{n}: the donor has no segment for the {c['part']} part")
-                cache[key] = fit_blob(template, seg, n)
+                cache[key] = fit_blob(template, seg, n, profile)
         blob, st = cache[key]
         if len(blob) != s:
             raise ValueError(f"{n}: encoded {len(blob)} bytes for a {s}-byte blob")
@@ -519,17 +563,28 @@ def donor_segments(glb, joint_roles: dict) -> dict:
     return ct.donor_segments(Path(glb), ct.resolve_roles(joint_roles), dict(joint_roles))
 
 
-def swap_bank(bank: bytes, glb, joint_roles: dict, slot: Slot, progress=None) -> tuple[bytes, dict]:
-    """The whole thing for one slot: donor segments, every group of the slot swapped. Returns (bank, report)."""
+def swap_bank(bank: bytes, glb, joint_roles: dict, slot: Slot, progress=None,
+              profile: dict | None = None) -> tuple[bytes, dict]:
+    """The whole thing for one slot: donor segments, every group of the slot swapped. Returns (bank, report).
+    profile: the operator's retarget profile (size adjustments per part, gbox.retarget_profile)."""
+    from . import fit_events as FE
     progress = progress or (lambda p, m: None)
     progress(5, "Cutting the donor into body segments")
+    FE.auto_model(glb)
     segs = donor_segments(glb, joint_roles)
+    FE.stage("retarget", data={"segments": len(segs), "triangles": int(sum(len(v[2]) for v in segs.values())),
+                               "fit": "principal axes per part"})
     grp = people(ct.read_bank(bank))
     missing = [g for g in slot.groups if g not in grp]
     if missing:
         raise ValueError(f"{BANK} has no {', '.join(missing)} parts")
-    new_bank, stats = swap_people(bank, segs, slot.groups, progress)
+    FE.stage("proportion", "done" if profile else "skipped",
+             {"profile": "size adjustments per part" if profile else "none"})
+    new_bank, stats = swap_people(bank, segs, slot.groups, progress, profile=profile)
     fitted = [v for v in stats.values() if not v.get("hidden")]
+    FE.stage("encode", data={"blobs": len(stats), "fitted": len(fitted),
+                             "triangles": int(sum(v["tris"] for v in fitted)),
+                             "vertices": int(sum(v["verts"] for v in fitted))})
     report = {"slot": slot.slot, "groups": list(slot.groups), "blobs": len(stats), "fitted": len(fitted),
               "hidden": len(stats) - len(fitted), "triangles": sum(v["tris"] for v in fitted),
               "vertices": sum(v["verts"] for v in fitted),
@@ -577,7 +632,9 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                 raise ValueError(f"expected {ct.DISC_ID}, got {disc.game_id}")
             bank = disc.read(BANK)
             disc.f.close()
-            new_bank, report = swap_bank(bank, glb, joint_roles, slot, ctx.progress)
+            from .retarget_profile import profile_of
+            new_bank, report = swap_bank(bank, glb, joint_roles, slot, ctx.progress,
+                                         profile=profile_of((meta.get("rig") or {}).get("scale")))
             built = build_mod(ctx.config, game, iso, new_bank, name, slot, report, meta["slug"], ctx.progress)
             C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                    json={"game_id": gid, "slot": slot.slot, "mod": name, "nodes": [C.HOST_OS],

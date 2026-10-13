@@ -274,23 +274,13 @@ class GDRom:
         raise ValueError(f"LBA {lba} not in a data track")
 
     def _walk(self, lba, size, prefix):
-        self.metadata_ranges.append((lba, lba + (size + 2047) // 2048))
-        data = b"".join(self.sector(lba + i) for i in range((size + 2047) // 2048))
-        o = 0
-        while o < len(data):
-            n = data[o]
-            if n == 0:
-                o = (o // 2048 + 1) * 2048       # records never span sectors; skip padding
-                continue
-            ext, ln, flags, nl = struct.unpack_from("<I", data, o + 2)[0], struct.unpack_from("<I", data, o + 10)[0], data[o + 25], data[o + 32]
-            name = data[o + 33:o + 33 + nl].decode("latin-1").split(";")[0]
-            if name not in ("\x00", "\x01"):
-                if flags & 2:
-                    self._walk(ext, ln, f"{prefix}{name}/")
-                else:
-                    self.files[f"{prefix}{name}"] = (ext, ln)
-                    self.records[f"{prefix}{name}"] = (lba + o // 2048, o % 2048)
-            o += n
+        from .formats import iso9660                      # the shared ISO9660 walk (gbox.formats)
+        for parts, rec, dlba in iso9660.walk(iso9660.sector_reader(self.sector), lba, size,
+                                             on_dir=lambda a, n: self.metadata_ranges.append((a, a + (n + 2047) // 2048))):
+            if not rec.is_dir:
+                key = prefix + "".join(p + "/" for p in parts) + rec.name
+                self.files[key] = (rec.lba, rec.size)
+                self.records[key] = (dlba + rec.offset // 2048, rec.offset % 2048)
 
     def read(self, name: str) -> bytes:
         lba, size = self.files[name]

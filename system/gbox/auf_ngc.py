@@ -587,12 +587,14 @@ def to_obj(m: dict, path, name: str = "model") -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def to_glb(m: dict, path, name: str = "model"):
-    """Rigged GLB (glTF Y-up: x, z, -y) with the rest-pose skeleton as joints."""
+def to_glb(m: dict, path, name: str = "model", basis=None, names=None):
+    """Rigged GLB (glTF Y-up: x, z, -y) with the rest-pose skeleton as joints. ``basis`` (a 3x3 rotation) replaces
+    that frame change, e.g. auf_swap.A2R for the library frame (left +X, up +Y, facing +Z); ``names`` the joint names
+    (default ``bone<i>_<hash>``)."""
     import numpy as np
     from pathlib import Path
     from .gta_rw import write_skinned_glb
-    C = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], float)
+    C = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], float) if basis is None else np.asarray(basis, float)
     P = np.asarray(m["positions"], float) @ C.T
     N = np.asarray(m["normals"], float) @ C.T
     UV = np.asarray(m["uvs"], float)
@@ -608,7 +610,7 @@ def to_glb(m: dict, path, name: str = "model"):
         M[:3, :3] = C @ np.asarray(b["rot"]) @ C.T
         M[:3, 3] = C @ np.asarray(b["world_pos"])
         world.append(M)
-    names = ["bone%02d_%08x" % (i, b["hash"]) for i, b in enumerate(bones)]
+    names = list(names) if names else ["bone%02d_%08x" % (i, b["hash"]) for i, b in enumerate(bones)]
     parents = [b["parent"] if b["parent"] >= 0 else -1 for b in bones]
     return write_skinned_glb(Path(path), P, N, UV, J, tris, names, parents, world, name=name, weights=W)
 

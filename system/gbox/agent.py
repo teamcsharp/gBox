@@ -28,7 +28,8 @@ Keep related calls on the same worker. Preserve evidence/unknowns; check actual 
 How to work:
 - Understand the request in the operator's words. If it's about a specific game, use the session context or search_games.
 - Reverse engineering (Ghidra, "find the code that…", model/file formats, patch points, character swaps a game has no writer
-  for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
+  for): assimilate op=fingerprint first when the title has no reader yet (formats, engine, nearest assimilated titles,
+  the reader to start from), re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - PC game modding (universal-modder, the um_* tools): "what engine is this", "how do I mod X", "has anyone modded X" -> um_scan
@@ -277,6 +278,12 @@ def tool_specs() -> list[dict]:
            "= artifact sha256s that prove it; or question = an open question.",
            {"op": s, "game": s, "kind": s, "address": s, "name": s, "role": s, "status": s, "evidence": {"type": "array", "items": s},
             "question": s}, ["op"]),
+        fn("assimilate", "Step one before reverse engineering a title or writing a reader: fingerprint its owned files and "
+           "executable. Ranks containers, codecs, model/texture/animation formats and the engine/middleware (Ninja, "
+           "RenderWare, Unreal, EAGL, Eurocom, MT Framework, CRI, Tecmo, AKI, Yuke's, ...), names the nearest titles gBox "
+           "already assimilated and the reader to start from, with a reader skeleton. Recorded in the dossier as a "
+           "hypothesis. op=fingerprint (default) | known (assimilated titles) | evaluate (leave-one-out accuracy).",
+           {"op": s, "game": s}),
         fn("re_study", "Prepare a title for Ghidra: extract its main executable from the disc/ROM as an ELF at the right load "
            "address and processor (GameCube, Wii, Dreamcast, PS1, PS2, N64, GBA, Xbox 360), or source=ram + session_id to "
            "snapshot the running game's RAM; analyze=true also runs Ghidra auto-analysis. Results go into the title's dossier "
@@ -988,6 +995,21 @@ class Agent:
             return self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": kind, "address": str(address or ""), "name": name,
                                  "role": role, "status": status, "evidence": evidence or [], "question": question}).json()
         return {"error": "op: read | record"}
+
+    def assimilate(self, op="fingerprint", game=""):
+        if op in ("known", "evaluate"):
+            j = self._job("assimilate", {"op": op}, node="linux", limit=600)
+            return j["output"]["result"] if j.get("state") == "succeeded" else {"error": f"assimilate {j.get('state')}: {j.get('error')}"}
+        gid = self._re_gid(game)
+        j = self._job("assimilate", {"op": "fingerprint", "game_id": gid}, node="linux", limit=1800)
+        if j.get("state") != "succeeded":
+            return {"error": f"assimilate {j.get('state')}: {j.get('error')}", "next": "re_study, then playbook asset-loader-format"}
+        fp = j["output"]["result"]
+        self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": "note", "name": "assimilate fingerprint",
+                                                                "role": fp.get("summary", "")[:800], "status": "hypothesis"})
+        return {"game_id": gid, "summary": fp.get("summary"), "engines": fp.get("engines", [])[:3],
+                "nearest_titles": fp.get("nearest_titles"), "proposal": fp.get("proposal"),
+                "next": "re_playbook op=get id=assimilate-title; verify the fingerprint against the files before trusting it"}
 
     def re_study(self, game="", source="auto", session_id="", analyze=True):
         gid = self._re_gid(game)
