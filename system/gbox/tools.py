@@ -218,6 +218,7 @@ class LaunchIn(BaseModel):
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
+    keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -277,11 +278,12 @@ def _session_ended_on_server(ctx, sid) -> bool:
         return False
 
 
-def _close_previous_games(ctx):
-    """One emulator per worker. Preserve every current game before stopping any of them."""
-    previous = list(SESSIONS.items())
+def _close_previous_games(ctx, keep: str = ""):
+    """One emulator per worker, except the session named by `keep` stays up (game_link host + guest on one worker).
+    Preserve every current game before stopping any of them."""
+    previous = [(sid, ad, game) for sid, (ad, game) in SESSIONS.items() if sid != keep]
     checkpoints = []
-    for sid, (ad, game) in previous:
+    for sid, ad, game in previous:
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is not None:
             if getattr(ctx, 'server', None):
@@ -305,7 +307,7 @@ def _close_previous_games(ctx):
             raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
                               "(or close its emulator window) before starting another game.") from exc
         checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), **saved})
-    for sid, (ad, _) in previous:
+    for sid, ad, _ in previous:
         if sid not in SESSIONS:
             continue
         ad.stop_game()
@@ -342,10 +344,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     if g.launch.get("kind") == "steam":
-        checkpoints = _close_previous_games(ctx)
+        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         detail = ad.launch_game(g.launch["appid"], (g.source_paths or [None])[0])
     elif isinstance(ad, adapters.RocketLauncherAdapter):
-        checkpoints = _close_previous_games(ctx)
+        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
         src = rom_path(g, ctx.config)
@@ -393,7 +395,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             from . import rom_archives
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
-        checkpoints = _close_previous_games(ctx)
+        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         detail = ad.launch_game(str(src))
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")

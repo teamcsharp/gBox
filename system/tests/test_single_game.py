@@ -119,3 +119,29 @@ def test_live_session_save_failure_names_the_game(monkeypatch, tmp_path):
         tools._close_previous_games(ctx)
     assert 'old' in tools.SESSIONS
 
+
+def test_keep_session_leaves_link_host_running(monkeypatch, tmp_path):
+    events = []
+    sessions = {}
+    for sid in ('host', 'other'):
+        ad = SimpleNamespace(proc=None, stop_game=lambda sid=sid: events.append(('stop', sid)))
+        sessions[sid] = (ad, {'game_id': sid})
+    monkeypatch.setattr(tools, 'SESSIONS', sessions)
+    monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: events.append(('save', inp.session_id)) or {'result': {'artifact': inp.session_id}})
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    ctx = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    snapshots = tools._close_previous_games(ctx, keep='host')
+    assert events == [('save', 'other'), ('stop', 'other')]
+    assert [s['artifact'] for s in snapshots] == ['other']
+    assert 'host' in sessions and 'other' not in sessions
+
+
+def test_keep_unknown_session_still_closes_all(monkeypatch, tmp_path):
+    events = []
+    sessions = {'old': (SimpleNamespace(proc=None, stop_game=lambda: events.append('stop')), {'game_id': 'old'})}
+    monkeypatch.setattr(tools, 'SESSIONS', sessions)
+    monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: {'result': {'artifact': 'backup'}})
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    ctx = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    tools._close_previous_games(ctx, keep='ghost')
+    assert events == ['stop'] and not sessions

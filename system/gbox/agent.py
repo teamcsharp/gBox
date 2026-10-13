@@ -296,8 +296,10 @@ def tool_specs() -> list[dict]:
            {"query": s, "platform": s}, ["query"]),
         fn("launch_game", "Launch a game. where='local' runs natively on the operator's PC (default), 'spark' streams from the DGX Spark. "
            "debug=true runs it on the Spark in an emulator with a full CPU debugger (GameCube/Wii, GBA, PS1, arcade). "
-           "mod=<file mod name> boots a built model/file mod, e.g. RE4 'play as Mario' = mod re4_mario (see the MODELS rule).",
-           {"game_id": s, "where": s, "debug": b, "mod": s}, ["game_id"]),
+           "mod=<file mod name> boots a built model/file mod, e.g. RE4 'play as Mario' = mod re4_mario (see the MODELS rule). "
+           "keep_session=<session_id> launches alongside that live session on the same worker instead of saving and closing it "
+           "(required for a game_link host+guest pair, e.g. Stranglehold + Puyo Puyo Tetris).",
+           {"game_id": s, "where": s, "debug": b, "mod": s, "keep_session": s}, ["game_id"]),
         fn("list_sessions", "List running game sessions.", {}),
         fn("session_info", "Platform, core, ROM and runtime state of a running session.", {"session_id": s}, ["session_id"]),
         fn("read_memory", "Read live emulator memory (hex). Native addresses work (e.g. 0x8C000000 Dreamcast, 0x80000000 N64/GameCube).",
