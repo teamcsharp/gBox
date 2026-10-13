@@ -1366,8 +1366,9 @@ def _mgs_vr_run(ctx, game, entry, work):
 
 
 def _auf_run(ctx, game, e, work):
-    """AUF roster entries are writer slots (gbox.auf_swap), not extractable characters."""
-    raise ValueError(f"{e.get('name')} is a 007 Agent Under Fire writer slot: use characters op=use slot={e.get('slot')}")
+    """One AUF body (gbox.auf_chars): body + head of its representative level as a rigged, textured GLB with roles."""
+    from . import auf_chars
+    return auf_chars.extract_run(ctx, game, e, work)
 
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
@@ -1407,10 +1408,11 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
-    # 007 Agent Under Fire GC: the writer's slots (Bond, enemies, bosses, npcs, bots, every body model); kind "slot"
-    # entries are listed by op=collect and never extracted (gbox.auf_swap.roster)
+    # 007 Agent Under Fire GC: every body model of the cast (Bond's outfits, henchmen, bosses, npcs, the 16 multiplayer
+    # characters) as a rigged GLB from its representative level (gbox.auf_chars); the writer's slots stay in
+    # gbox.auf_swap (roster / cast_slots, characters op=use slot=...)
     ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
-     lambda: __import__("gbox.auf_swap", fromlist=["x"]).roster(), _auf_run),
+     lambda: __import__("gbox.auf_chars", fromlist=["x"]).roster(), _auf_run),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1488,7 +1490,18 @@ def dedicated_entries(config, game, name, roster):
 # extractor -> (module with READER_VERSION [and needs_refresh(meta)], the meta field its entries record the version in;
 # entries without the field were made by version 1). A newer reader re-extracts older entries (extract_dedicated,
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader")}
+# AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
+# stored collection made by an older reader is collected again at the next launch (character_collection).
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader")}
+
+
+def reader_version(extractor: str | None) -> int | None:
+    """The current READER_VERSION of a versioned DEDICATED reader, else None."""
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    return int(getattr(importlib.import_module(spec[0]), "READER_VERSION", 1))
 
 
 def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
@@ -1575,7 +1588,7 @@ def collect(ctx, inp):
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     from . import char_coverage
     return collection_status(results) | {
-        'game_id': game['game_id'], 'extractor': name,
+        'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
