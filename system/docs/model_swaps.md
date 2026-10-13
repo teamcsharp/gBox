@@ -149,6 +149,9 @@ table contents, struct layouts and enums.
   group, and the constant head list is branched to the new head.
 - Writing the object changes every actor that uses it (all Kokiri boys).
 
+**The whole cast** (`characters op=cast_swap target_game=<OoT>`): 85 catalogued slots (Link, NPCs, sages, enemies,
+bosses) rebuilt in one ROM, with object growth shared out per room. See `docs/oot_cast.md`.
+
 **Extract / swap / play as**
 - `op=extract` takes a picture point or a name (Link, Saria, a Kokiri girl, En_Sa, object_sa). It writes the
   object's skeleton, lists and textures as a glTF in the collection (`oot_link_adult` / `oot_link_child` / `oot_<object>`),

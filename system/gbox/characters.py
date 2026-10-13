@@ -575,7 +575,8 @@ class CharIn(BaseModel):
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
-    launch: bool = True                    # use: launch after building
+    strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
+    launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
