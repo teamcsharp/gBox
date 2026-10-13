@@ -427,6 +427,8 @@ STRATEGIES = {
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
     "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
                                "(etm_swap.build_cast)"),
+    "gbox.mgs2_swap": ("pairs", "Metal Gear Solid 2 PS2: every slot's kms models (every stage that carries them) "
+                                "rebuilt in one STAGE.DAT / STAGE2.DAT image (mgs2_swap.build_cast)"),
     "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
@@ -709,6 +711,12 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
                 "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
                 "retarget_profiles": profiles}
+        from . import build_record                       # who went where, by name (the Builds view's 360 pairs)
+        rec = build_record.stamp(
+            rec, kind="cast", slots=[{"slot": r["slot"], "slot_name": r.get("slot_name") or r["slot"],
+                                      "donor": r["character"], "donor_name": r.get("donor") or r["character"],
+                                      "source": r.get("source") or ""} for r in p["assignments"]],
+            **build_record.from_ctx(ctx))
         if rec_path.parent.is_dir():
             rec_path.write_text(json.dumps(rec, default=str))
         for r in p["assignments"]:
@@ -825,6 +833,11 @@ def _gta_vc(ctx, game, pairs, name, inp):
 def _etm(ctx, game, pairs, name, inp):
     from . import etm_swap
     return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _mgs2(ctx, game, pairs, name, inp):
+    from . import mgs2_swap
+    return mgs2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _oot(ctx, game, pairs, name, inp):
     from . import oot_swap
     return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
@@ -912,6 +925,7 @@ BUILDERS = {
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
     "gbox.etm_swap": _etm,
+    "gbox.mgs2_swap": _mgs2,
     "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,

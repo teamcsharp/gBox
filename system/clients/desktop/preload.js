@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld("gbox", {
   taskSnapshot: () => ipcRenderer.invoke("task:snapshot"),
   cancel: id => ipcRenderer.invoke("task:cancel", id),
   openExternal: url => ipcRenderer.invoke("open:external", url),
+  osNotify: n => ipcRenderer.invoke("notify:os", n),
+  onNotifyClick: fn => ipcRenderer.on("notify:click", (_e, id) => fn(id)),
   relaunch: () => ipcRenderer.invoke("app:relaunch"),
   capture: () => ipcRenderer.invoke("capture"),
   captureOS: () => ipcRenderer.invoke("capture:os"),
