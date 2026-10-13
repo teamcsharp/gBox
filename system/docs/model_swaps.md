@@ -622,6 +622,7 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 | GTA: Liberty City Stories | ps2 | gta_lcs | lcs_toni, toni_cipriani; not ripped: the other Toni outfits | **gbox.gta_stories_models**: player (every outfit) |
 | Sonic Adventure 2 | dreamcast | sa2 | sonic, sa2_shadow, sa2_tails, sa2_knuckles, sa2_rouge, sa2_dr_eggman, sa2_amy_rose, sa2_metal_sonic, sa2_tikal, sa2_chaos_0 | **gbox.sa2_chars**: player (Sonic; section 13) |
 | Clay Fighter: Sculptor's Cut (USA) | n64 | clayfighter (sprite sheets of the 16 fighters) | (op=collect) | **gbox.clayfighter_swap**: fighter:<name>, player (sprites donor re-draws every frame; docs/clayfighter_swap.md) |
+| Dead Or Alive ++ (Japan, arcade) | arcade | doapp (11 fighters x 4 costumes, rigged, roles) | (op=collect) | **gbox.doapp_swap**: <fighter>[:<costume>], player (all 44 costume models; rebuilt doapp set, read back through the game's skeleton build; MAME check pending, docs/doapp_pipeline.md) |
 | Phantasy Star Online Ver. 2 | dreamcast | pso | all 9 classes (hucast, pso_humar ... pso_fonewearl), each with body roles | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
 | Super Smash Bros. Melee | gamecube | melee | 27 fighters | overlay only |
 | Shenmue (Disc 1) | dreamcast | shenmue | ryo | overlay only |

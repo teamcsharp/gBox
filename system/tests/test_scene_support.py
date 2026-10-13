@@ -12,13 +12,26 @@ def test_matrix_is_exposed_from_scene_capture():
     assert scene.support is ss.support
 
 
-@pytest.mark.parametrize('core', ['flycast', 'C:\\gbox\\cores\\flycast_libretro.dll', 'parallel_n64_libretro.so'])
+@pytest.mark.parametrize('core', ['flycast', 'C:\\gbox\\cores\\flycast_libretro.dll', 'mednafen_psx_hw_libretro.so'])
 def test_gl_session_of_vulkan_core_relaunches_under_vulkan(core):
     row = ss.support('retroarch', core, 'gl', host_os='windows')
     assert row['status'] == ss.RELAUNCH
-    assert row['driver'] == 'vulkan'
+    assert (row['driver'], row['attach'], row['relay']) == ('vulkan', 'layer', True)
     assert row['fallback'] == 'frame_2d'
-    assert 'vulkan' in row['reason']
+    assert 'video_driver=vulkan' in row['reason'] and 'keeps running' in row['reason']
+
+
+def test_n64_capture_session_uses_hle_on_glcore():
+    row = ss.support('retroarch', 'mupen64plus_next', 'gl', host_os='windows')
+    assert (row['status'], row['driver'], row['attach'], row['relay']) == (ss.RELAUNCH, 'glcore', 'inject', True)
+    assert 'compute' in row['reason']
+
+
+@pytest.mark.parametrize('driver', ['gl', 'vulkan'])
+def test_parallel_n64_has_no_capturable_scene(driver):
+    row = ss.support('retroarch', 'parallel_n64', driver, hooked=True, host_os='windows')
+    assert (row['status'], row['fallback']) == (ss.UNSUPPORTED, 'frame_2d')
+    assert 'no draw calls' in row['reason'] and 'compatibility context' in row['reason']
 
 
 @pytest.mark.parametrize('driver', ['d3d11', 'd3d12', 'vulkan'])
@@ -27,15 +40,18 @@ def test_capturable_retroarch_driver_is_supported(driver):
     assert row == row | {'status': ss.SUPPORTED, 'driver': None, 'fallback': None, 'core': 'pcsx2'}
 
 
-def test_capturable_driver_without_renderdoc_needs_plain_relaunch():
+def test_capturable_driver_without_renderdoc_relays_to_a_capture_session():
     row = ss.support('retroarch', 'pcsx2', 'd3d11', hooked=False, host_os='windows')
-    assert row['status'] == ss.RELAUNCH and row['driver'] is None
-    assert 'without Examine 3D' in row['reason']
+    assert (row['status'], row['driver'], row['attach'], row['relay']) == (ss.RELAUNCH, 'd3d11', 'inject', True)
+    assert 'without RenderDoc inside' in row['reason']
+    other = ss.support('retroarch', 'some_d3d_core', 'd3d11', hooked=False, host_os='windows')
+    assert (other['driver'], other['attach']) == ('d3d11', 'inject')
 
 
 def test_gl_only_core_uses_glcore_second_choice():
     row = ss.support('retroarch', 'kronos', 'gl', host_os='windows')
-    assert (row['status'], row['driver']) == (ss.RELAUNCH, 'glcore')
+    assert (row['status'], row['driver'], row['attach'], row['relay']) == (ss.RELAUNCH, 'glcore', 'inject', True)
+    assert row['verified'] is False
 
 
 @pytest.mark.parametrize('core', ['snes9x', 'genesis_plus_gx_libretro.dll', 'mgba'])
@@ -45,8 +61,8 @@ def test_software_cores_are_2d_only(core):
     assert '2D frame only' in row['reason']
 
 
-@pytest.mark.parametrize('adapter,status', [('dolphin', ss.SUPPORTED), ('yuzu', ss.UNSUPPORTED),
-                                            ('rpcs3', ss.UNSUPPORTED), ('xenia', ss.UNSUPPORTED),
+@pytest.mark.parametrize('adapter,status', [('dolphin', ss.SUPPORTED), ('yuzu', ss.SUPPORTED),
+                                            ('rpcs3', ss.SUPPORTED), ('xenia', ss.UNSUPPORTED),
                                             ('steam', ss.UNSUPPORTED), ('rocketlauncher', ss.UNSUPPORTED),
                                             ('something_new', ss.UNSUPPORTED)])
 def test_standalone_emulators_have_a_row_with_reason(adapter, status):
@@ -54,9 +70,33 @@ def test_standalone_emulators_have_a_row_with_reason(adapter, status):
     assert row['status'] == status and row['reason']
 
 
-def test_yuzu_names_the_planned_vulkan_route():
-    row = ss.support('yuzu', host_os='windows')
-    assert row['driver'] == 'vulkan' and 'Yuzu' in row['reason']
+def test_yuzu_and_rpcs3_use_the_vulkan_layer():
+    for adapter in ('yuzu', 'rpcs3'):
+        row = ss.support(adapter, hooked=True, host_os='windows')
+        assert (row['status'], row['attach']) == (ss.SUPPORTED, 'layer')
+        late = ss.support(adapter, hooked=False, host_os='windows')
+        assert (late['status'], late['relay']) == (ss.RELAUNCH, False)     # their states can't be carried
+        assert "can't be carried" in late['reason']
+
+
+def test_yuzu_on_opengl_names_the_vulkan_route():
+    row = ss.support('yuzu', None, 'opengl', host_os='windows')
+    assert (row['status'], row['driver']) == (ss.UNSUPPORTED, 'vulkan')
+    assert 'Vulkan' in row['reason'] and 'opengl' in row['reason']
+
+
+def test_dolphin_without_renderdoc_relays_on_vulkan():
+    row = ss.support('dolphin', hooked=False, host_os='windows')
+    assert (row['status'], row['driver'], row['attach'], row['relay']) == (ss.RELAUNCH, 'vulkan', 'layer', True)
+    assert 'GFXBackend' in row['reason'] or 'Vulkan backend' in row['reason']
+
+
+def test_layer_session_that_never_loaded_renderdoc_is_not_hooked():
+    ad = SimpleNamespace(name='yuzu', cfg=None, video_driver='vulkan',
+                         proc=SimpleNamespace(renderdoc={'attach': 'layer', 'loaded': False}))
+    assert ss.session_support(ad, 'windows')['status'] == ss.RELAUNCH
+    ad.proc.renderdoc['loaded'] = True
+    assert ss.session_support(ad, 'windows')['status'] == ss.SUPPORTED
 
 
 def test_linux_sessions_are_unsupported_with_reason():
