@@ -186,6 +186,10 @@ def model(key: str, label: str | None = None, slug: str | None = None, explicit:
     if sk is None:
         return None
     key = str(key)
+    if sk.get("default") and sk["default"][0] == key:      # the job's own model, named by the writer: its label
+        label = label or sk["default"][1]
+        slug = slug or sk["default"][2]
+        sk.pop("default")
     label = label or sk.get("labels", {}).get(key) or key
     for q in sk["plan"].values():                            # a planned key started by name is no longer pending
         q[:] = [row for row in q if row[0] != key]
@@ -303,6 +307,34 @@ def donor_numbers(rig: dict, basis=None, **extra) -> dict:
             "donor_triangles": triangles(pr),
             "donor_joints": len(rig["parent"] if rig.get("parent") is not None else rig.get("joints", [])),
             "donor_roles": len(rig.get("roles") or {}), **extra}
+
+
+def weights(prims, jmap: dict | None = None, mode: str = "rigid per bone (one bone per vertex)",
+            skeleton: int | None = None, word: str = "bone", owner=None, names: dict | list | None = None, **extra):
+    """The weights stage: vertices per target bone / limb, named by the body role that maps to it ("head (bone 7)")
+    or by names[j]."""
+    if _sink.get() is None:
+        return
+    nm = dict(names) if isinstance(names, dict) else {i: n for i, n in enumerate(names or [])}
+    for r, j in (jmap or {}).items():
+        try:
+            nm[int(j)] = f"{r} ({word} {int(j)})"
+        except (TypeError, ValueError):
+            pass
+    counts = per_limb(prims, nm, owner)
+    stage("weights", data={"mode": mode, "limbs": len(counts), "skeleton_limbs": skeleton,
+                           "vertices": int(sum(counts.values())), "per_limb": counts, **extra})
+
+
+def mesh(parts, pos: str = "P", tris: str = "F") -> list[dict]:
+    """Writer parts ({P, F} dicts, or (P, N, ..., F) tuples) -> snapshot prims."""
+    out = []
+    for p in parts:
+        if isinstance(p, dict):
+            out.append({"pos": p[pos], "tris": p[tris]})
+        else:
+            out.append({"pos": p[0], "tris": p[-1]})
+    return out
 
 
 def per_limb(prims, names: dict | list | None = None, owner=None) -> dict:

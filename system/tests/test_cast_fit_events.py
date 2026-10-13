@@ -146,3 +146,160 @@ def test_doa2_roster_plans_every_fighter_and_writes_each_one(tmp_path, monkeypat
         wr = last(evs, f"fighter:{family}", "write")
         assert wr["state"] == "done" and wr["data"]["files"] == 2 and wr["data"]["bytes"] == 15
         assert wr["data"]["image"] == "doa2.gdi" and wr["data"]["costumes"] == 1
+
+
+# ---------------------------------------------------------------- the wrestling match writers (op=match)
+
+def _pso_donor(tmp_path, slug="donor"):
+    T = importlib.import_module("test_pso_enemy")
+    (tmp_path / "lib" / slug).mkdir(parents=True, exist_ok=True)
+    model = T.donor_gltf(tmp_path / "lib" / slug / "m.gltf")
+    meta = {"slug": slug, "name": slug.title(), "model": "m.gltf", "rig": {"roles": {n: n for n in T.DONOR_NAMES}}}
+    return T, model, meta
+
+
+def _skeleton(jmap, names, pos, units=30.0):
+    """A synthetic target skeleton: the donor's own joint layout (scaled) on the writer's bone numbers."""
+    import numpy as np
+    n = max(jmap.values()) + 1
+    T = np.zeros((n, 3))
+    for i, r in enumerate(names):
+        if r in jmap:
+            T[jmap[r]] = pos[i] * units
+    for k in range(n):
+        if not T[k].any():
+            T[k] = T[jmap["hip"]]
+    W = [np.eye(4) for _ in range(n)]
+    for k in range(n):
+        W[k][:3, 3] = T[k]
+    return {"T": T, "W": W, "parent": [-1] * n, "ground": 0.0, "head_h": 8.0, "joints": n}
+
+
+def test_defjam_fit_reports_every_stage_and_refits_until_the_entry_fits(tmp_path, monkeypatch):
+    from gbox import defjam_writer as DJ
+    T, model, meta = _pso_donor(tmp_path)
+    monkeypatch.setattr(DJ, "target", lambda base: _skeleton(DJ.JMAP, T.DONOR_NAMES, T.DONOR_POS))
+    sizes = iter([5000, 900])                             # the first budget overflows the entry, the second fits
+    monkeypatch.setattr(DJ, "encode_container", lambda base, fit: (b"x" * next(sizes), {}))
+    monkeypatch.setattr(DJ, "verify_container", lambda new, fit: {"ok": True})
+    jb = {"model": model, "roles": meta["rig"]["roles"], "name": "Donor"}
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        FE.model("Briggs", "Donor -> Briggs")
+        r = DJ.fit_fitting({198: b"base"}, {198: 1000}, jb, tmp_path / "work")
+    evs = events(lines)
+    assert order(evs, "Briggs") == FULL[:-1], order(evs, "Briggs")
+    assert_snapshots(evs, "Briggs")
+    w = last(evs, "Briggs", "weights")["data"]
+    assert w["per_limb"]["head (bone 7)"] > 0 and w["skeleton_limbs"] == 40 and w["vertices"] == 45
+    encs = [e for e in evs if e.get("stage") == "encode"]
+    assert [e["state"] for e in encs] == ["running", "done"] and encs[0]["data"]["bytes"] == 5000
+    assert encs[1]["data"] == {"bytes": 900, "budget": 1000, "containers": 1, "max_tris": DJ.BUDGETS[1],
+                               "triangles": r["fit"]["triangles"], "relocated": False}
+    assert last(evs, "Briggs", "scale")["data"]["donor_height"] == 1.75
+
+
+def test_defjam_match_plans_every_wrestler_and_build_mod_writes_each(tmp_path, monkeypatch):
+    from gbox import defjam_writer as DJ, defjam_inventory as inv, defjam_models as M
+    _T, _model, a = _pso_donor(tmp_path, "amy")
+    _T, _model, b = _pso_donor(tmp_path, "kane")
+    monkeypatch.setattr(C, "best_match", lambda chars, q: next(m for m in chars if m["slug"] == q))
+    monkeypatch.setattr(DJ, "find_wrestler", lambda q: [{"Briggs": 198, "DMX": 12}[q]])
+    seen = {}
+    monkeypatch.setattr(DJ, "use", lambda ctx, meta, game, inp, pairs, title: seen.setdefault("pairs", pairs))
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        DJ.match(None, [a, b], {}, None, [("amy", "Briggs"), ("kane", "DMX")])
+    assert events(lines)[0]["plan"] == [{"model": "Briggs", "label": "Amy -> Briggs"},
+                                        {"model": "DMX", "label": "Kane -> DMX"}]
+    monkeypatch.setattr(M, "_source_iso", lambda ctx, game: tmp_path / "djv.iso")
+    jobs = {}
+
+    def build_disc(iso, out, js, work, blender=None, progress=None):
+        jobs["keys"] = [j["fit_key"] for j in js]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return {"image": str(out), "reports": [{"entries": [{"wrestler": "BRIGGS", "index": 198, "bytes": 700}],
+                                                "preview_from": b""},
+                                               {"entries": [{"wrestler": "DMX", "index": 12, "bytes": 650}],
+                                                "preview_from": b""}]}
+    monkeypatch.setattr(DJ, "build_disc", build_disc)
+    monkeypatch.setattr(M, "assemble", lambda new: {})
+    monkeypatch.setattr(inv, "parse_wrs", lambda new: {"slots": {18: {"start": 0}}})
+    monkeypatch.setattr(M, "parse_texture", lambda d: {"rgba": None})
+    monkeypatch.setattr(M, "write_glb", lambda path, a, name, page: path)
+    monkeypatch.setattr("gbox.sm64_swap._blender", lambda cfg: None)
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        r = DJ.build_mod(SimpleNamespace(cache=tmp_path / "cache"), {"game_id": "deabd11481aa5a0c"}, seen["pairs"],
+                         root=tmp_path / "lib")
+    assert jobs["keys"] == ["Briggs", "DMX"]
+    evs = events(lines)
+    for slot, n in (("Briggs", 700), ("DMX", 650)):
+        wr = last(evs, slot, "write")
+        assert wr["data"]["mod"] == r["mod"] and wr["data"]["bytes"] == n and wr["data"]["entries"] == 1
+
+
+class _NMWriter:
+    def __init__(self, rom):
+        self.files = []
+
+    def add_file(self, data):
+        self.files.append(data)
+        return 0x2000 + len(self.files)
+
+    def add_template(self, keys, entries):
+        self.template = entries
+
+    def build(self, **kw):
+        return b"rom" * 10
+
+
+def test_no_mercy_rom_build_names_each_wrestler_and_reports_its_encode(tmp_path, monkeypatch):
+    from gbox import aki_wrestling as A
+    monkeypatch.setattr(A, "NMWriter", _NMWriter)
+    monkeypatch.setattr(A, "roster", lambda rom: [{"number": 1, "name": "The Rock", "body": [0], "face_tex": [1]},
+                                                  {"number": 2, "name": "Kane", "body": [0], "face_tex": [2]}])
+    monkeypatch.setattr(A, "set_ring_names", lambda wr, names: {})
+
+    def fit_character(rom, model, roles, body, work, name, *a, **k):
+        FE.stage("retarget", data={"vertices": 9})
+        return {"parts": {0x08: (b"m" * 40, "g", None), 0x20: (b"n" * 24, "g", None)}, "textures": {"g": b"t" * 64},
+                "palette": b"p" * 512, "rigged": tmp_path / "r.gltf", "report": {"triangles": 30}}
+    monkeypatch.setattr(A, "fit_character", fit_character)
+    jobs = [{"wrestler": 1, "model": "a", "roles": {}, "name": "Amy", "fit_key": "The Rock"},
+            {"wrestler": 2, "model": "b", "roles": {}, "name": "Sonic", "fit_key": "Kane"}]
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        A.build_rom(b"", jobs, tmp_path / "work")
+    evs = events(lines)
+    for slot in ("The Rock", "Kane"):
+        assert order(evs, slot) == ["retarget", "encode"]
+        enc = last(evs, slot, "encode")["data"]
+        assert enc["bytes"] == 40 + 24 + 64 + 512 and enc["parts"] == 2 and enc["files_added"] == 4
+        assert enc["relocated"] is True
+
+
+def test_no_mercy_and_smackdown_matches_plan_the_cast_and_key_each_wrestler(tmp_path, monkeypatch):
+    from gbox import aki_wrestling as A, yukes_sd as Y
+    _T, _model, a = _pso_donor(tmp_path, "amy")
+    monkeypatch.setattr(C, "best_match", lambda chars, q: a)
+    for mod, ros in ((A, [{"number": 1, "name": "The Rock"}, {"number": 2, "name": "Kane"}]),
+                     (Y, [{"id": 0, "name": "The Rock"}, {"id": 8, "name": "Kane"}])):
+        seen = {}
+        monkeypatch.setattr(mod, "use", lambda ctx, meta, game, inp, pairs, title, seen=seen: seen.update(p=pairs))
+        if mod is A:
+            monkeypatch.setattr(A, "rom_bytes", lambda p: b"")
+            monkeypatch.setattr("gbox.tools.rom_path", lambda e, c: "rom.z64")
+            monkeypatch.setattr("gbox.models.CatalogEntry", SimpleNamespace(model_validate=lambda g: g))
+            monkeypatch.setattr(A, "roster", lambda rom, ros=ros: ros)
+            monkeypatch.setattr(A, "find_wrestler", lambda rom, q, ros=ros: next(w for w in ros if w["name"] == q))
+        else:
+            monkeypatch.setattr(Y, "_roster_for", lambda ctx, game, ros=ros: ros)
+            monkeypatch.setattr(Y, "find_wrestler", lambda ros_, q: next(w for w in ros_ if w["name"] == q))
+        lines, sink = collect()
+        with FE.job(sink, tmp_path / "snaps"):
+            mod.match(SimpleNamespace(config=None), [a], {"game_id": "23a346e48b6368a6"}, None,
+                      [("amy", "Kane"), ("amy", "")])
+        assert events(lines)[0]["plan"] == [{"model": "Kane", "label": "Amy -> Kane"},
+                                            {"model": "The Rock", "label": "Amy -> The Rock"}], mod
+        assert [w["fit_key"] for _m, w in seen["p"]] == ["Kane", "The Rock"]
