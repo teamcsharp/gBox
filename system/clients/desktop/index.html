@@ -1136,6 +1136,7 @@ window.taskVizCreate = canvas => {
 <script src="live-poll.js"></script>
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
+<script src="../web/viz/report-story.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/process-popup.js"></script>
@@ -2801,13 +2802,14 @@ const inboxPoll = singleFlightPoll(async () => {
     const ms = modsFor(x.number);
     return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
       ${x.context?.auto_report ? '<span class="chip" style="float:right;margin:6px">Auto report</span>' : ""}
-      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="The task as a graph: its subtasks, the tools that did them, the screenshots sliding in and out">Detailed report</button>
+      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="The resolution story full size: triage, identification, runs, tokens, cost, time and the code changes, animated">Detailed report</button>
       ${x.status === "done" ? `<button class="act reportincomplete" style="float:right;margin:6px">Report incomplete</button>` : ""}
       ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - ${mm.state_slot == null ? "open the mod (no saved moment attached)" : "load the saved moment"}${mm.video ? " (right-click: video)" : ""}">
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}${mm.state_slot == null ? "play mod" : "load moment"}</figcaption></figure>`).join("")}</div>` : ""}
       <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span>${GBoxRequestSolvers.badge(x)}<span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
       <div class="m">${new Date(x.created * 1000).toLocaleString()} · took ${fmtDur(m.duration_s ?? (x.status === "done" ? null : (Date.now() / 1000 - (x.started || x.created))))}
         · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
+      ${GBoxReportStory.disclosureHtml(x.id)}
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" loading="lazy" decoding="async" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
@@ -2829,6 +2831,7 @@ const inboxPoll = singleFlightPoll(async () => {
   updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (shownRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older requests (${olderRoots} not shown)</button>` : "")
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.slice(0, INBOX_PAGE.limit).map(renderRequest).join("")}</details>` : ""), replyAtt);
+  GBoxReportStory.reattach(host);                             // the open Detailed report keeps running in its re-rendered row
 });
 $("#reqlist").addEventListener("change", async e => {
   if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
@@ -2961,7 +2964,16 @@ document.addEventListener("contextmenu", e => {
   const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
   setTimeout(() => document.addEventListener("mousedown", close), 0);
 });
-// Detailed report (#1011): the request as a three.js bubble graph (task -> subtasks -> tools), its screenshots sliding in and out
+// Detailed report: the request's resolution story (GET /api/requests/{id}/story) as a three.js scene; the button opens it
+// full size, each row's disclosure inline (../web/viz/report-story.js). "Tool graph" there opens the older bubble graph.
+function reportStoryDeps() {
+  return { esc, api: p => gbox.api(p), loadThree: flowLoadThree, evidence: rid => evRequest(rid), graph: rid => reportGraphOpen(rid),
+    onChange: () => { EMB.last = ""; } };
+}
+function reportStoryOpen(id) { return GBoxReportStory.openFull(id, reportStoryDeps()); }
+// each row's disclosure triangle: the scene is built on expand and disposed on collapse (one renderer at a time)
+GBoxReportStory.bind($("#reqlist"), () => reportStoryDeps());
+// Tool graph (#1011): the request as a three.js bubble graph (task -> subtasks -> tools), its screenshots sliding in and out
 function reportGraphOpen(id) {
   return GBoxReportGraph.open(id, { $, esc, api: p => gbox.api(p), token: () => gbox.token(), apiUrl: () => S.apiUrl, loadThree: flowLoadThree,
     evidence: (rid, sha) => evRequest(rid, sha), children: rid => inboxSolverRequests.filter(x => x.parent_request_id === rid),
@@ -2971,7 +2983,7 @@ document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
   if (e.target.closest(".reportincomplete")) { e.stopPropagation(); await evRequest(id); $("#ev-incomplete").click(); return; }
-  if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportGraphOpen(id); return; }
+  if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportStoryOpen(id); return; }
   if (e.target.closest("img.shot, img.att-img")) {
     const img = e.target.closest("img.shot, img.att-img");
     const sha = img?.src.match(/\/api\/artifacts\/([0-9a-f]{64})/)?.[1] || null;
@@ -3042,7 +3054,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on")
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on") || GBoxReportStory.isFullOpen()
       || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;

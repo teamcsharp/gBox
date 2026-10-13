@@ -3625,6 +3625,14 @@ def create_app(config: Config) -> FastAPI:
     def req_get(rid: str, actor=Depends(auth)):
         return _clean(_req(rid))
 
+    @app.get("/api/requests/{rid}/story")
+    def req_story(rid: str, actor=Depends(auth)):
+        """The request's resolution story in order, for the Detailed report: triage, identification (tool calls), each
+        run with its recorded tokens and an estimated cost, jobs, the linked PRs with files and +/- lines (local git),
+        replies and the resolution. Unrecorded values are null and listed in `missing` (gbox/request_story.py)."""
+        from . import request_story
+        return _clean(request_story.assemble(store, config, _req(rid)))
+
     class ParentIn(BaseModel):
         parent_request_id: str
 
