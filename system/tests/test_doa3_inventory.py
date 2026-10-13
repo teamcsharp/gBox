@@ -160,3 +160,8 @@ def test_fighter_families_from_layout(tmp_path):
     assert fams["zack"]["costumes"]["zac00"]["xpr_header"]["first_tag"] == "MDL"
     assert m["counts"] == {"families": 3, "families_with_costumes": 2, "costumes": 3,
                            "xpr_with_mdl": 4}
+
+
+def test_roster_has_no_duplicate_fighters():
+    assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 16
+    assert "Ein" in d3.ROSTER and "Lei Fang" not in d3.ROSTER

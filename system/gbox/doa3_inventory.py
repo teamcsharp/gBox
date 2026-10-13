@@ -40,10 +40,10 @@ XBE_KEYS = {"retail": (0xA8FC57AB, 0x5B6D40B6), "debug": (0x94859D4B, 0xEFB1F152
             "chihiro": (0x40B5C16E, 0x2290059D)}
 REGIONS = {0x1: "NA", 0x2: "JP", 0x4: "ROW", 0x80000000: "MFG"}
 
-# DOA3 select-screen roster (16 fighters incl. boss); codes are filled from the archive
-# names by ``fighter_groups`` and never assumed.
+# DOA3 roster (15 selectable fighters plus the boss Omega, Genra's transformed form); codes are
+# filled from the archive names by ``fighter_groups`` and never assumed.
 ROSTER = ["Kasumi", "Ayane", "Hitomi", "Leifang", "Tina", "Helena", "Christie", "Ryu Hayabusa",
-          "Jann Lee", "Zack", "Bass", "Gen Fu", "Brad Wong", "Bayman", "Lei Fang", "Omega"]
+          "Jann Lee", "Zack", "Bass", "Gen Fu", "Brad Wong", "Bayman", "Ein", "Omega"]
 
 
 def sha256_file(path: str | Path, chunk: int = 1 << 22) -> str:
