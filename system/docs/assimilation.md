@@ -479,6 +479,25 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
 - **WCW Mayhem** (`mayhem_inventory`): EA BIGF members with RefPack (`gbox.refpack`, facade in `gbox.formats.lz`).
   #1512, PR #218.
 
+## Nintendo DS
+
+### Super Mario 64 DS (USA)
+
+- **Not NSBMD.** The game predates the NITRO-System G3D formats. Its 450 models are the game's own `.bmd` (bones,
+  GX display lists, materials, textures, palettes) and its animations are `.bca`/`.btp`. Most files are an `LZ77` tag
+  followed by an LZ10 stream. The player models are in `ARCHIVE/arc0.narc`.
+- **Shared pieces it added (`gbox.formats.nitro`):** NitroFS (FNT with the directory table, FAT, ARM9 overlay table),
+  NARC, LZ77 tag + LZ10/LZ11, all seven DS texel formats (the 4x4 format's palette-index data, colour-0
+  transparency), and a GX display-list interpreter that records each vertex's matrix slot. An NSBMD `MDL0` draws
+  through the same lists and texel formats, so a later NSBMD reader only adds its container. `formats.disc.listing`
+  now lists `.nds` ROMs, which lets the fingerprinter read DS games.
+- **Skinning:** rigid. `MTX_RESTORE` slot -> the list's transform id -> the bone map. The scale shift multiplies
+  vertex coordinates only, not bone translations. Getting this wrong makes Bowser's limbs look like sticks.
+- **Technique:** `community-spec` (the BMD layout as the SM64DS editing community documents it), checked on all 26
+  characters against the owned ROM by rendering previews. The playable four attach their separate head model at
+  `face_1`, as the game does.
+- **Effort:** one session, 2026-10-13 (inbox #1652). Reader: `gbox.sm64ds_chars`, docs: `docs/sm64ds.md`.
+
 ## RE tools that landed alongside
 
 | Tool | What it does | When it landed |
@@ -524,6 +543,7 @@ The migrations were checked two ways:
 | `texture.tim_parse/tim_build` | `yukes_sd` | yukes_sd |
 | `rig.role_of_joint` | `re4gc_enemies._role_of_joint` | re4gc_enemies, doa2_weighted_retarget, sm64_swap |
 | `rig.check_role_map` | `pso_player.check_roles` body | pso_player |
+| `nitro` (NitroFS, NARC, LZ77/LZ11, DS texels, GX lists) | new (SM64DS) | sm64ds_chars, formats.disc |
 
 The new shared pieces are:
 

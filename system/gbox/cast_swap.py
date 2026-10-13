@@ -438,6 +438,8 @@ STRATEGIES = {
                                   "and its texture archive, native STAGE.DIR rewrite)"),
     "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
                                        "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
+    "gbox.soulcalibur2_swap": ("pairs", "Soul Calibur II GC: every fighter's costume packages rewritten in place in "
+                                        "human.olk, one disc image (soulcalibur2_swap.build_cast)"),
 }
 
 
@@ -916,8 +918,14 @@ def _twin_snakes(ctx, game, pairs, name, inp):
     return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
+def _soulcalibur2(ctx, game, pairs, name, inp):
+    from . import soulcalibur2_swap
+    return soulcalibur2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
     "gbox.twin_snakes_swap": _twin_snakes,
+    "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
