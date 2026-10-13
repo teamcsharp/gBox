@@ -134,6 +134,9 @@ class Config(BaseModel):
     retroarch_bios: dict[str, str] = {}   # os -> BIOS source dir (copied per core on demand)
     display: str = ":90"              # linux: Xvfb display used for headless emulator sessions
     llm_endpoints: list[LLMEndpoint] = []
+    # [token_prices] USD per million tokens for the Detailed report's cost estimates, over request_story.DEFAULT_PRICES:
+    # "provider/model" or "provider" = { in = 0.6, out = 2.2, cache_read = 0.11 }. Unknown providers get no cost.
+    token_prices: dict[str, dict[str, float]] = {}
     agent: dict = {"llm_url": "http://127.0.0.1:11434/v1", "model": "qwen3.6:35b", "searx_url": "http://127.0.0.1:8081",
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)

@@ -365,6 +365,21 @@ class Store:
                                    (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def request_jobs(self, rid: str, limit: int = 200) -> list[dict]:
+        """Jobs an inbox request started (parent_request_id or input.request_id), oldest first, for its story."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM (SELECT rowid,body FROM docs WHERE kind='job' AND "
+                                   "(json_extract(body,'$.parent_request_id')=? OR json_extract(body,'$.input.request_id')=?) "
+                                   "ORDER BY rowid DESC LIMIT ?) ORDER BY rowid", (rid, rid, limit)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def audit_for(self, subject: str, limit: int = 200) -> list[dict]:
+        """Audit entries about one subject (a request id), oldest first."""
+        with self.lock:
+            rows = self.db.execute("SELECT seq,ts,actor,action,data FROM audit WHERE subject=? ORDER BY seq LIMIT ?",
+                                   (subject, limit)).fetchall()
+        return [dict(seq=r[0], ts=r[1], actor=r[2], action=r[3], data=json.loads(r[4])) for r in rows]
+
     def running_job_counts(self) -> dict[str, int]:
         """Running jobs per claiming worker id, so a worker whose reported slots don't match is visible (#1294)."""
         with self.lock:
