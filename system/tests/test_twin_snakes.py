@@ -654,3 +654,39 @@ def test_owned_disc_reads_snake_and_the_soldiers(tmp_path):
     for key, tris in (("snake_def", 3028), ("out_cold", 2058), ("in_door", 1878), ("hev_grd", 2032)):
         r = TS.extract(Path(ISO), key, tmp_path / f"{key}.glb")
         assert r["triangles"] == tris and not r["missing_textures"] and len(r["roles"]) == 18
+
+
+# ----------------------------------------------------------------------------------------------- REL (Ghidra input)
+
+def test_rel_link_and_depair_for_ghidra():
+    """A tiny REL: text (lis/addi of a data address, a bl into main.dol, a psq_l) and data (a pointer to text)."""
+    from gbox import gcdisc
+    text = struct.pack(">5I", 0x3C600000, 0x38630000, 0x48000001, 0xE0230010, 0x10000000)   # lis, addi, bl, psq_l, ps
+    rel = bytearray(0x100)
+    struct.pack_into(">IIIII", rel, 0, 7, 0, 0, 3, 0x40)
+    struct.pack_into(">6I", rel, 0x40, 0, 0, 0x80 | 1, len(text), 0x98, 8)        # sections 0, 1 (text), 2 (data)
+    rel[0x80:0x80 + len(text)] = text
+    own = (struct.pack(">HBBI", 0, 202, 1, 0) +                   # section 1 (text)
+           struct.pack(">HBBI", 2, 6, 2, 4) +                     # +2: ADDR16_HA  data + 4
+           struct.pack(">HBBI", 4, 4, 2, 4) +                     # +6: ADDR16_LO  data + 4
+           struct.pack(">HBBI", 0, 202, 2, 0) +                   # section 2 (data)
+           struct.pack(">HBBI", 0, 1, 1, 8) +                     # data + 0: ADDR32 text + 8
+           struct.pack(">HBBI", 0, 203, 0, 0))
+    main = (struct.pack(">HBBI", 0, 202, 1, 0) + struct.pack(">HBBI", 8, 10, 0, 0x80003100) +    # bl 0x80003100
+            struct.pack(">HBBI", 0, 203, 0, 0))
+    rel[0xA0:0xA0 + len(own)] = own
+    m0 = 0xA0 + len(own)
+    rel[m0:m0 + len(main)] = main
+    imp = m0 + len(main)
+    rel = rel[:imp] + struct.pack(">IIII", 7, 0xA0, 0, m0)
+    struct.pack_into(">III", rel, 0x24, 0xA0, imp, 16)
+    img = gcdisc.rel_link(bytes(rel), 0x80300000)
+    text_a, data_a = 0x80300080, 0x80300098
+    hi, lo = struct.unpack_from(">H", img, 0x82)[0], struct.unpack_from(">H", img, 0x86)[0]
+    assert ((hi << 16) + (lo - 0x10000 if lo & 0x8000 else lo)) & 0xFFFFFFFF == data_a + 4
+    assert struct.unpack_from(">I", img, 0x98)[0] == text_a + 8
+    off = struct.unpack_from(">I", img, 0x88)[0] & 0x3FFFFFC
+    off = off - 0x4000000 if off & 0x2000000 else off
+    assert (text_a + 8 + off) & 0xFFFFFFFF == 0x80003100
+    dp = gcdisc.depair(img[0x80:0x80 + len(text)])
+    assert struct.unpack_from(">I", dp, 12)[0] >> 26 == 48 and struct.unpack_from(">I", dp, 16)[0] == 0x60000000

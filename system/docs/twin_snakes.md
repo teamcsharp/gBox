@@ -114,6 +114,18 @@ Other first-person / item models (`543505` Snake's first-person arms, set `b13aa
 (eyes `out_cold_blink_*`, slings `*_sling`, the bandana tails `sna_mugen_bdn*` / `26523a` / `265239`) are separate
 `.kms` props with no bone table.
 
+### Reproducing the code analysis
+
+The game code is `shared/mgso.rel`; `gcdisc.dol_rel_to_elf(main.dol, mgso.rel)` links the REL at 0x80300000 against
+main.dol (relocations applied, sections laid out as OSLink does) and, with `gekko=True`, rewrites the paired-single
+instructions so stock Ghidra PowerPC decodes every function (`psq_l` -> `lfs` ...). Then
+`analyzeHeadless <proj> tts -import tts.elf -postScript DecompileAll.java out.c reg:r13:80285dc0 reg:r2:802864a0`
+(SDA bases from main.dol's `__init_registers`). Functions used above: loaders 0x806b66b4 / 0x806b6be8 / 0x806b6860
+(kms), 0x806ae21c / 0x806aeb94 (tri), texture lookup 0x806ae880, model object 0x806a77bc / 0x806a7860, draw loop
+0x806a2a6c, resource key 0x806c0470, loader registration 0x806c0524, Snake's actor init 0x80364d78 (model
+`snake_def` through 0x8033a72c), the soldier actor's model switch near 0x803df590 (`out_cold`, `in_door`,
+`in_gus`, `out_cold2`, `in_gus_blue_def` by strcode).
+
 ## 2. Reader (`characters op=collect`, DEDICATED `twin_snakes`, reader v1)
 
 Per roster entry: the model from its stage, every part's colour texture from the stage's sets (own set first), the
