@@ -53,6 +53,26 @@ def presentation_state(error, frames_seen, session_id=None):
     return None
 
 
+# #1455: with the Spark saturated (load 27, GPU 94 percent during a drive transfer) the vision model never
+# answered and every sample failed with a timeout, so the observer filed a repair for a route that was fine.
+# A timeout is load, not a broken route: back off (doubling from TIMEOUT_BACKOFF[0] up to TIMEOUT_BACKOFF[1])
+# without counting toward a repair, and file one only when timeouts continue for a whole window.
+TIMEOUT_BACKOFF = (60, 600)
+TIMEOUT_GAP_WINDOW = 3600     # seconds of unbroken timeouts ...
+TIMEOUT_GAP_COUNT = 5         # ... and at least this many of them before a repair request is filed
+_TIMEOUT_NAMES = ('TimeoutError', 'TimeoutException', 'ReadTimeout', 'ConnectTimeout', 'WriteTimeout',
+                  'PoolTimeout')
+
+
+def is_timeout(error):
+    """A timeout from the vision model or the capture relay: raised here, or reported as a job error string
+    (the worker formats job errors as "TimeoutError: ...")."""
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+        return True
+    text = str(error)
+    return text.startswith(_TIMEOUT_NAMES) or 'timed out' in text.lower()
+
+
 OBSERVATION_LISTS = ('actors', 'changes', 'hud', 'mechanics_hypotheses', 'uncertainties')
 # Small vision models answer list fields in other shapes than the prompt's strings. In #1374 (Def Jam
 # Vendetta, qwen2.5vl:7b) "actors" came back as objects and three valid observations were discarded
@@ -286,7 +306,7 @@ class SessionObservers:
             self._put(sid, gameplay_state='watching', latest=observation, history=history,
                       samples=record.get('samples', 0) + 1, frame_digest=digest, failures=0,
                       error=None, next_sample=self.clock() + 30, last_checked=captured,
-                      window_failures=0, window_missing_since=None)
+                      window_failures=0, window_missing_since=None, timeouts=0, timeout_since=None)
         except WaitingForFrame as exc:
             self._put(sid, gameplay_state='waiting_for_frame', error=str(exc), next_sample=self.clock() + 5)
         except Exception as exc:
@@ -300,6 +320,9 @@ class SessionObservers:
                           window_missing_since=record.get('window_missing_since') or captured,
                           next_sample=self.clock() + min(300, 30 * misses))
                 return
+            if is_timeout(exc):
+                self._timed_out(session, record, exc, captured)
+                return
             failures = record.get('failures', 0) + 1
             self._put(sid, gameplay_state='blocked', failures=failures, error=str(exc)[:600],
                       next_sample=self.clock() + min(300, 15 * 2 ** min(failures, 5)))
@@ -309,6 +332,24 @@ class SessionObservers:
                     self._put(sid, observation_request_id=rid)
                 except Exception as gap_error:
                     self._put(sid, repair_error=str(gap_error)[:600])
+
+    def _timed_out(self, session, record, exc, captured):
+        """Retry later with a doubling delay; a repair is filed only after TIMEOUT_GAP_WINDOW seconds of
+        unbroken timeouts (at least TIMEOUT_GAP_COUNT of them). A successful observation ends the streak."""
+        sid = session['session_id']
+        timeouts = record.get('timeouts', 0) + 1
+        since = record.get('timeout_since') or captured
+        first, cap = TIMEOUT_BACKOFF
+        error = (str(exc) or type(exc).__name__)[:600]
+        self._put(sid, gameplay_state='backing_off', timeouts=timeouts, timeout_since=since, error=error,
+                  next_sample=self.clock() + min(cap, first * 2 ** min(timeouts - 1, 10)))
+        if timeouts >= TIMEOUT_GAP_COUNT and captured - since >= TIMEOUT_GAP_WINDOW:
+            try:
+                rid = self._gap(session, 'observation', f'{timeouts} timeouts over {int(captured - since)} s '
+                                '(vision model or capture relay not answering): ' + error)
+                self._put(sid, observation_request_id=rid)
+            except Exception as gap_error:
+                self._put(sid, repair_error=str(gap_error)[:600])
 
     def tick(self):
         now = self.clock()
