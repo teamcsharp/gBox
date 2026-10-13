@@ -64,6 +64,7 @@ class RecordingConfig(BaseModel):
     idle_s: float = 20.0              # capture runs while pad activity was seen within this long; stops after it
     segment_s: int = 5                # length of one ring segment (export granularity is finer: the range is trimmed)
     capture: str = "auto"             # auto (Windows: gdigrab of the game window's screen area; Linux: x11grab of the session display) | gdigrab | ddagrab (Windows, GPU zero-copy, NVENC only) | x11grab
+    priority: str = "low"             # low: ffmpeg below the emulator (Windows below-normal, Linux nice 10) | normal
     keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
 
 

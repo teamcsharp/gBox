@@ -50,7 +50,17 @@ _LOCK = threading.Lock()
 
 
 def ffmpeg_cmd() -> list[str]:
-    return [os.environ.get("GBOX_FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"]
+    return [_unshim(os.environ.get("GBOX_FFMPEG") or shutil.which("ffmpeg") or "ffmpeg")]
+
+
+def _unshim(path: str) -> str:
+    """Chocolatey's ffmpeg on PATH is a shim that starts the real ffmpeg as a child: 'q' and a kill would reach the
+    shim only (the capture would be orphaned). Use the real executable behind it."""
+    p = Path(path)
+    if p.parent.name.lower() == "bin" and p.parent.parent.name.lower() == "chocolatey":
+        for real in sorted((p.parent.parent / "lib").glob("ffmpeg*/tools/ffmpeg*/bin/ffmpeg.exe")):
+            return str(real)
+    return path
 
 
 # --- pad activity --------------------------------------------------------------------------------
@@ -275,10 +285,14 @@ def _window_title(hwnd) -> str:
         return ""
 
 
-def _low_priority() -> dict:
-    """Popen kwargs: ffmpeg yields to the emulator (below-normal class on Windows, nice 10 elsewhere)."""
+def _low_priority(level: str = "low") -> dict:
+    """Popen kwargs: ffmpeg yields to the emulator (below-normal class on Windows, nice 10 elsewhere); "normal" keeps
+    the default (a PC whose CPU is saturated by other work can starve a below-normal capture on Windows)."""
+    hidden = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if str(level).lower() == "normal":
+        return {"creationflags": hidden} if os.name == "nt" else {}
     if os.name == "nt":
-        return {"creationflags": 0x00004000 | getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+        return {"creationflags": 0x00004000 | hidden}
     return {"preexec_fn": lambda: os.nice(10)}
 
 
@@ -360,7 +374,8 @@ class SessionRing:
                 str(self.dir / f"{prefix}%03d.ts")]
         log = open(self.dir / f"r{no:03d}.log", "wb")
         try:
-            self.proc = self.popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log, **_low_priority())
+            self.proc = self.popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
+                                   **_low_priority(getattr(self.rc, "priority", "low")))
         except Exception as exc:                          # noqa: BLE001
             log.close()
             self.error, self.retry_at = f"ffmpeg did not start: {exc}", now + 30.0
@@ -383,8 +398,12 @@ class SessionRing:
             pass
         try:
             proc.wait(timeout=8)
-        except Exception:                                 # noqa: BLE001
-            proc.kill()
+        except Exception:                                 # noqa: BLE001 - deaf to 'q': the whole tree goes
+            pid = getattr(proc, "pid", None)
+            if os.name == "nt" and pid:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+            else:
+                proc.kill()
             try:
                 proc.wait(timeout=5)
             except Exception:                             # noqa: BLE001
@@ -446,12 +465,13 @@ class SessionRing:
                 st = path.stat()
             except OSError:
                 continue
+            # media time from ffmpeg's list; the wall clock (the file's last write) only orders the segments and ages
+            # them: a busy ffmpeg writes in bursts, so wall-clock gaps between segments are not their length
             dur = max(0.0, float(m["end"]) - float(m["start"]))
-            end = min(st.st_mtime, now)
-            prev_end = cur["last"]["end"] if cur["last"] else cur["t0"]
-            start = max(end - dur, prev_end - 0.05) if dur else end
-            if dur <= 0 or end - start <= 0:
+            if dur <= 0:
                 continue
+            end = min(st.st_mtime, now)
+            start = end - dur
             idx = int(re.search(r"(\d+)\.ts$", path.name)[1]) if re.search(r"(\d+)\.ts$", path.name) else 0
             nxt = self.dir / f"{cur['prefix']}{(idx + 1) % cur['wrap']:03d}.ts"
             # ffmpeg reopens the next file of the wrap right away: an older entry for that file is being overwritten
@@ -493,10 +513,12 @@ class SessionRing:
             st = path.stat()
         except OSError:
             return None
-        start = cur["last"]["end"] if cur["last"] else cur["t0"]
+        begun = cur["last"]["end"] if cur["last"] else cur["t0"]
         end = min(now, st.st_mtime)
-        if st.st_size < TS_PACKET * 8 or end - start < 0.5:
+        dur = min(self.segment_s, end - begun)               # media time of an unfinished segment: the wall estimate
+        if st.st_size < TS_PACKET * 8 or dur < 0.5:
             return None
+        start = end - dur
         return {"file": path, "start": start, "end": end, "bytes": st.st_size, "run": cur["no"], "idx": idx,
                 "size": cur["size"], "live": True}
 

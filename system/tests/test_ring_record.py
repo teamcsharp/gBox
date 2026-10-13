@@ -423,7 +423,7 @@ def test_export_falls_back_to_libx264_when_nvenc_fails(tmp_path, monkeypatch):
 
 def test_fake_ffmpeg_process_rotates_and_stops_on_q(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_TIME_SCALE", "0.04")                           # a 5 s segment every 0.2 s
-    monkeypatch.setattr(rr, "_low_priority", lambda: {})                     # a busy test PC starves a below-normal start
+    monkeypatch.setattr(rr, "_low_priority", lambda level="low": {})                   # a busy test PC starves a below-normal start
     rc = RecordingConfig(seconds=10, segment_s=5, idle_s=20, max_mb=64, bitrate_kbps=1000)
     touch = [time.time()]
     ring = rr.SessionRing("w-2", tmp_path / "ring", rc, source_fn=lambda e, f: {"kind": "x11grab", "size": [320, 240],
@@ -491,15 +491,16 @@ def test_recording_tool_status_export_and_validation(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.environ.get("GBOX_LIVE_FFMPEG") != "1" or not shutil.which("ffmpeg"), reason="GBOX_LIVE_FFMPEG=1 runs real ffmpeg")
 def test_live_ffmpeg_ring_and_export(tmp_path):
-    rc = RecordingConfig(seconds=10, segment_s=2, idle_s=20, max_mb=64, bitrate_kbps=4000)
+    rc = RecordingConfig(seconds=10, segment_s=2, idle_s=20, max_mb=64, bitrate_kbps=4000, priority="normal")
     touch = [time.time()]
     src = {"kind": "lavfi", "size": [640, 360], "note": "test picture",
            "args": ["-re", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30"]}
     ring = rr.SessionRing("live", tmp_path / "ring", rc, source_fn=lambda e, f: src, activity=lambda: touch[0])
     ring.tick()
     t0 = time.time()
-    while time.time() - t0 < 9:
+    while time.time() - t0 < 12:
         time.sleep(1)
+        touch[0] = time.time()                                               # the operator keeps playing
         ring.tick()
     st = ring.status()
     assert st["recording"] and st["span_s"] >= 5, st
