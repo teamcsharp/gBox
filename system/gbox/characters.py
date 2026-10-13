@@ -88,6 +88,11 @@ def find(chars: list[dict], query: str) -> dict | None:
 
 
 def put_meta(root: Path, meta: dict) -> dict:
+    """Write an entry's meta.json. Only a character (a slug AND a name) is written: a bookkeeping record (the
+    'shared' folder holding just slug + targets, 2026-10-13) is not a library entry and made /api/characters 500."""
+    if not isinstance(meta, dict) or not str(meta.get("slug") or "").strip() or not str(meta.get("name") or "").strip():
+        raise ValueError("not a character library entry (meta.json needs a slug and a name): "
+                         + json.dumps(meta, default=str)[:200])
     d = Path(root) / meta["slug"]
     d.mkdir(parents=True, exist_ok=True)
     import uuid
@@ -98,8 +103,11 @@ def put_meta(root: Path, meta: dict) -> dict:
 
 
 def set_target(root: Path, slug: str, game_id: str, entry: dict) -> dict:
-    """Record a built swap mod (or a retargeted rig) for a target game; merges by (slot, mod)."""
+    """Record a built swap mod (or a retargeted rig) for a target game; merges by (slot, mod). Only on an existing
+    character: a nameless folder is bookkeeping, not an entry (KeyError, the route answers 404)."""
     m = get(root, slug)
+    if not m.get("name"):
+        raise KeyError(slug)
     lst = m.setdefault("targets", {}).setdefault(game_id, [])
     for t in lst:
         if t.get("slot") == entry.get("slot") and (t.get("mod") == entry.get("mod") or not t.get("mod")):

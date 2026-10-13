@@ -188,15 +188,36 @@ def test_successful_launch_result_schedules_collection_on_control_plane(tmp_path
 def test_parallel_builds_preserve_all_character_targets(plane, cfg):
     import json
     root = C.library_root(cfg)
-    C.put_meta(root, {'slug': 'shared', 'targets': {}})
+    assert str(root).startswith(str(cfg.cache))        # the test's own library, never ~/gbox-cache/characters
+    C.put_meta(root, {'slug': 'donor', 'name': 'Donor', 'targets': {}})
     def save_target(i):
-        response = plane.post('/api/characters/shared/targets', json={
+        response = plane.post('/api/characters/donor/targets', json={
             'game_id': f'game-{i}', 'slot':'player', 'mod':f'mod-{i}', 'nodes':['linux']})
         assert response.status_code == 200, response.text
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(save_target, range(24)))
-    meta = json.loads((root / 'shared' / 'meta.json').read_text())
+    meta = json.loads((root / 'donor' / 'meta.json').read_text())
     assert len(meta['targets']) == 24
+
+
+def test_tests_never_see_the_real_library_env():
+    """conftest drops GBOX_CHARACTERS so library_root(cfg) is each test's temporary cache (the 'shared' leak)."""
+    import os
+    assert 'GBOX_CHARACTERS' not in os.environ
+
+
+def test_bookkeeping_never_lands_in_the_library_as_an_entry(tmp_path):
+    import json
+    import pytest
+    for meta in ({'slug': 'shared', 'targets': {'g': [{'mod': 'm'}]}}, {'slug': 'x', 'name': ' '}, {'name': 'No slug'}):
+        with pytest.raises(ValueError):
+            C.put_meta(tmp_path, meta)
+    assert not list(tmp_path.iterdir())
+    (tmp_path / 'shared').mkdir()
+    (tmp_path / 'shared' / 'meta.json').write_text(json.dumps({'slug': 'shared', 'targets': {}}))
+    with pytest.raises(KeyError):                       # a recorded mod target never revives a nameless folder
+        C.set_target(tmp_path, 'shared', 'game', {'slot': 'player', 'mod': 'm'})
+    assert json.loads((tmp_path / 'shared' / 'meta.json').read_text()) == {'slug': 'shared', 'targets': {}}
 
 
 def test_list_all_skips_entries_without_a_name(tmp_path):
