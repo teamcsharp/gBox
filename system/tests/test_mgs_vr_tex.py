@@ -166,7 +166,8 @@ def test_collection_character_is_fitted_with_its_own_textures(init_dars, slug):
 
 def test_slots_name_the_player_and_the_soldier():
     assert W.SLOTS["player"]["model"] == 39213 == _strcode("snake")
-    assert W.SLOTS["vr_soldier"]["model"] == 38582 and W.SLOTS["vr_soldier"]["writer"] is None
+    assert W.SLOTS["enemy:soldier"]["models"] == [38582, 55267] and W.SLOTS["enemy:soldier"]["writer"]
+    assert W.SLOTS["enemy:soldier"]["motion"] == _strcode("enemy")
 
 
 def _strcode(s):

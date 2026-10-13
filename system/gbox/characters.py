@@ -667,21 +667,23 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap | readiness
+    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap | resolve_slot | readiness
     character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes) | MGS VR Missions: player (Snake) | enemy:soldier (every Genome soldier) | enemy:ninja | model:<hash> | enemies | all | cast (+pairs [{slot, character}])
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
     strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
     launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
+    target: str = ""                       # use / live_use: what the pick whip identified there ("soldier", "Snake")
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
+    window_aspect: float = 0.0             # resolve_slot / live_use (VR Missions): width / height of the window x, y are in (0 = the 4:3 picture)
     from_clipboard: bool = False           # add: the model last sent to the gBox clipboard (Blender add-on "Send to gBox")
     artifact: str = ""                     # add: or an artifact sha256 (.glb / .gltf)
     path: str = ""                         # add: or a model file on the control-plane node
@@ -750,6 +752,23 @@ def _blender(cfg) -> str | None:
         except (OSError, subprocess.TimeoutExpired):
             pass
     return None
+
+
+def resolve_slot(ctx, inp) -> dict:
+    """characters op=resolve_slot session_id x y: which writer slot is drawn at that point of the running game (the pick
+    whip names it before anything is built: "Put Sonic in place of the Genome soldiers"). Games without a live
+    resolver answer unsupported; the whip then falls back to its generic choices."""
+    game = _game(ctx, inp)
+    from . import mgs_vr_swap
+    if game["game_id"] in mgs_vr_swap.GAME_IDS:
+        try:
+            r = mgs_vr_swap.resolve_slot(ctx, game, inp)
+        except LookupError as e:
+            return {"status": "nothing_there", "game_id": game["game_id"], "message": str(e)}
+        return r | {"status": "resolved", "game_id": game["game_id"], "writer": "gbox.mgs_vr_swap", "live": True,
+                    "message": f"{r['name']} ({r['slot']})"}
+    return {"status": "unsupported", "game_id": game["game_id"],
+            "message": f"{game.get('title')} has no live slot resolver; name the slot (characters op=use slot=...)"}
 
 
 def _game(ctx, inp) -> dict:
@@ -1528,6 +1547,11 @@ DEDICATED = [
     # gbox.auf_swap (roster / cast_slots, characters op=use slot=...)
     ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
      lambda: __import__("gbox.auf_chars", fromlist=["x"]).roster(), _auf_run),
+    # Metal Gear Solid: The Twin Snakes (GC, both discs): Snake, the Genome soldiers, bosses and NPCs as rigged,
+    # textured GLBs from stage.dat (gbox.twin_snakes; writer gbox.twin_snakes_swap, docs/twin_snakes.md)
+    ("twin_snakes", lambda t, p: "twin snakes" in t and p == "gamecube",
+     lambda: __import__("gbox.twin_snakes", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.twin_snakes", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1602,6 +1626,9 @@ def dedicated_entries(config, game, name, roster):
                          else f"{prefix}_{w['group']}_{w['member']}_{slugify(w['name'])}",
                  "name": w['name'], "aliases": [f"{game['title']} {w['name']}", f"{w['group']}-{w['member']}"],
                  "kind": "character"} for w in aki_wcw.roster(rom)]
+    if name == "twin_snakes":                             # each disc carries part of the cast (Liquid: disc 2)
+        from . import twin_snakes
+        roster = functools.partial(twin_snakes.roster, twin_snakes.disc_of(game))
     root = library_root(config)
     entries = []
     for entry in roster():
@@ -1617,7 +1644,8 @@ def dedicated_entries(config, game, name, roster):
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader")}
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
+                   "twin_snakes": ("gbox.twin_snakes", "tts_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
@@ -2364,7 +2392,12 @@ def characters_tool(inp: CharIn, ctx):
     enemy:boomas, the other BM_ENE packs); unsupported games return unsupported without capture or an LLM call. |
     live_use character=<name> session_id [x,y|slot]: bounded in-engine OoT NTSC 1.2 single-object NPC swap,
     preserving the session and pause state. Changes all loaded actors sharing that model until object reload.
-    Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay. |
+    Metal Gear Solid VR Missions: the slot under x,y (Snake = player, a soldier = enemy:soldier: every soldier) or
+    slot=, rebuilt natively (stacked on the session's current VR Missions mod) and applied through session_swap at
+    the same moment. Link, compound objects and other games return unsupported_live_swap; never relaunch or
+    substitute an overlay. | resolve_slot session_id x y: the writer slot drawn at that point (pick whip). |
+    Metal Gear Solid: The Twin Snakes (GC): [x,y | slot] picks Snake / the soldier / the cast member there, builds the
+    mod, moves the session onto it with the session swap (moment kept) and writes the body into the loaded stage. |
     extract character=<what> kind=character|vehicle|object|environment session_id (or game) [x, y = the thing's point
     on the picture, 0..1]: returns it if it's already in the collection, else runs the game's own extractor, else cuts it
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
@@ -2408,6 +2441,8 @@ def characters_tool(inp: CharIn, ctx):
     if inp.op == "coverage":                                  # rip / reimport matrix per studied game (gbox.char_coverage)
         from . import char_coverage
         return {"result": char_coverage.coverage(ctx, _api)}
+    if inp.op == "resolve_slot":                              # pick whip: the writer slot drawn at a picture point
+        return {"result": resolve_slot(ctx, inp)}
     q = {"game_id": inp.game_id} if inp.game_id else {}
     chars = _api(ctx, "GET", "/api/characters", params=q)
     if inp.op == "list":
@@ -2440,8 +2475,14 @@ def characters_tool(inp: CharIn, ctx):
     if not meta:
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
+        game = _game(ctx, inp)
+        from . import mgs_vr_swap, twin_snakes_swap
+        if game["game_id"] in mgs_vr_swap.GAME_IDS:          # VR Missions: rebuild + session_swap at the same moment
+            return {"result": mgs_vr_swap.live_use(ctx, meta, game, inp)}
+        if game["game_id"] in twin_snakes_swap.GAME_IDS:    # Twin Snakes GC: mod + session swap + loaded-stage write
+            return {"result": twin_snakes_swap.live_use(ctx, meta, game, inp)}
         from . import oot_hot_swap
-        return {"result": oot_hot_swap.use(ctx, meta, _game(ctx, inp), inp)}
+        return {"result": oot_hot_swap.use(ctx, meta, game, inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
         if not library_root(ctx.config).is_dir():
             cp = next((w["id"] for w in _api(ctx, "GET", "/api/workers") if w.get("os") == "linux" and w.get("online")), None)
@@ -2524,6 +2565,11 @@ def characters_tool(inp: CharIn, ctx):
         # 007 Agent Under Fire GC: player | enemies | bosses | npcs | bots | all | model:<body> | cast (+pairs
         # [{target, donor}]) -> auf_<slot>_<plan hash> (every level's .ngc rebuilt in a disc-image copy)
         return {"result": out | auf_swap.use(ctx, meta, game, inp)}
+    from . import twin_snakes_swap
+    if gid in twin_snakes_swap.GAME_IDS and (twin_snakes_swap.is_slot(inp.slot) or inp.x is not None or inp.slot):
+        # Metal Gear Solid: The Twin Snakes GC: player | model:<key> | enemies | bosses | npcs | all | cast | a pick
+        # point / words -> tts_<slot>_<plan hash> (stage.dat rebuilt in a disc-image copy; session swap on launch)
+        return {"result": out | twin_snakes_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
@@ -2558,7 +2604,9 @@ def characters_tool(inp: CharIn, ctx):
     if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
         return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
     from . import mgs_vr_swap
-    if gid in mgs_vr_swap.GAME_IDS and inp.slot == "player":
+    if gid in mgs_vr_swap.GAME_IDS and (mgs_vr_swap.is_slot(inp.slot) or inp.slot == "cast"):
+        # VR Missions: player (Snake) | enemy:soldier (every soldier) | enemy:ninja | model:<hash> | enemies | all |
+        # cast + pairs -> one native disc; with session_id it goes into the running game (session_swap)
         return {"result": out | mgs_vr_swap.use(ctx, meta, game, inp)}
     from . import mgs1_swap
     if gid in mgs1_swap.GAME_IDS and inp.slot == "player" and meta["slug"] == "hucast":
