@@ -179,7 +179,10 @@ How to work:
   "replace A / me with B", pick-whip swaps -> characters op=use character=B session_id (not in the collection: op=extract first;
   RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri). OoT pick whip
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
-  ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. use says "missing" (no writer for that game) or the operator wants it now ->
+  ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
+  everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
+  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role] [slots=all|main|enemies] (plan_only=true shows
+  the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
   Report the status as returned; "extracted" only with checked.ok. Unknown model
   format: Ghidra (analyze_binary / ghidra_script) on the game's executable to find the loader. View an entry: bevy_scene;
@@ -746,10 +749,13 @@ def tool_specs() -> list[dict]:
            "the player | unplace (OoT; session_id, optional character) | overlay (character, session_id, "
            "optional x/y = the target's point 0..1): any game, now: the model tracks and covers the player on screen in the "
            "desktop app (an overlay, not in-engine) | add (character = new name, from_clipboard=true): store a "
-           "model edited in Blender. game = title or catalog game_id (default: the chat's game); extract needs a running "
-           "session only when the thing has to be cut from the frame.",
+           "model edited in Blender | cast_swap (target_game, source = a game or a group like 'wrestlers', mapping = "
+           "auto|random|by_role, seed, slots = all|main|enemies, plan_only, launch): replace the ENTIRE cast of one game "
+           "with the cast of another in one mod ('replace everyone in PSO with wrestlers'). game = title or catalog "
+           "game_id (default: the chat's game); extract needs a running session only when the thing has to be cut from the frame.",
            {"op": s, "character": s, "kind": s, "session_id": s, "game": s, "x": {"type": "number"}, "y": {"type": "number"},
-            "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"}}, ["op"]),
+            "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"},
+            "target_game": s, "source": s, "mapping": s, "seed": s, "slots": s, "plan_only": b, "launch": b}, ["op"]),
         fn("scene_capture", "Capture the frame on screen of a live session (Windows PC emulators started with Examine 3D) as a "
            "real 3D scene: glTF with one node per draw call + textures, HUD separate. For extracting a model into the "
            "collection use characters op=extract (it does this and cuts the object out); this is for looking at the raw scene.",
@@ -1541,17 +1547,26 @@ class Agent:
         return [{k: x[k] for k in ("name", "category", "description")} for x in ss if q in (x["name"] + x["category"] + x["description"]).lower()][:25]
 
     def characters(self, op="list", character="", session_id="", game="", slot="player", kind="", x=None, y=None,
-                   from_clipboard=False, a="", b="", one_way=False, near="", size=0.0):
+                   from_clipboard=False, a="", b="", one_way=False, near="", size=0.0, target_game="", source="",
+                   mapping="auto", seed="", slots="all", plan_only=False, launch=None):
         require_character(op, character)
         if session_id and (bad := self._live_session(session_id)):
             return bad  # preserve the requested live target; never silently relaunch a different session
         if not session_id and not game and op in ("collect", "extract", "use", "add", "swap", "place", "unplace"):   # the chat's game
             game = getattr(self, "context_game", "") or ""
+        if op == "cast_swap" and not target_game and not game:
+            game = getattr(self, "context_game", "") or ""
         inp = {"op": op, "character": character, "session_id": session_id, "game": game, "slot": slot,
                "kind": kind or ("object" if op == "extract" else "character"), "x": x, "y": y, "from_clipboard": bool(from_clipboard),
                "a": str(a or ""), "b": str(b or ""), "one_way": bool(one_way), "near": near or "", "size": float(size or 0)}
+        if op == "cast_swap":                         # the whole cast of target_game as source's (gbox.cast_swap)
+            inp |= {"target_game": target_game or game, "source": source, "mapping": mapping or "auto", "seed": str(seed or ""),
+                    "slots": slots or "all", "plan_only": bool(plan_only)}
+            if launch is not None:
+                inp["launch"] = bool(launch)
         # extract / add / blender write the collection: they run where it lives (the Spark)
-        j = self._job("characters", inp, limit=14400 if op == "collect" else 3600, node=None if op == "use" and session_id else "linux")
+        j = self._job("characters", inp, limit=14400 if op in ("collect", "cast_swap") else 3600,
+                      node=None if op == "use" and session_id else "linux")
         result = (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
         if op in ("use", "live_use"):
             outcome = native_swap_result({"state": j.get("state"), "error": j.get("error"), "result": result})

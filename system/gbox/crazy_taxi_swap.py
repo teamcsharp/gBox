@@ -304,9 +304,10 @@ def cast_slots() -> list[dict]:
     """The slots this writer offers the cast menu (`characters op=collect` "slots", via
     gbox.char_coverage.cast_slots): `player` first, then every roster() slot. Nothing is extracted or read."""
     out = [{"slot": "player", "name": "the driver (the one this character was last built for, else Axel)",
-            "kind": "player", "writer": "gbox.crazy_taxi_swap"}]
+            "kind": "player", "writer": "gbox.crazy_taxi_swap", "alias_of": "driver:axel"}]
     for r in roster():
         out.append({"slot": r["slot"], "name": r["name"], "kind": r["slot_kind"], "writer": r["writer"],
+                    **({"aggregate": True} if r["slot"] in ("drivers", "pedestrians", "passengers") else {}),
                     "aliases": r["aliases"], **({"blobs": r["blobs"]} if "blobs" in r else {})})
     return out
 

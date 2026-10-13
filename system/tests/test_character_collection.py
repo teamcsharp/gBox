@@ -30,6 +30,35 @@ def test_launch_collection_deduplicates_and_keeps_operator_parent(tmp_path):
     assert len(submitted) == 1  # partial extraction never loops each launch
 
 
+def test_partial_roster_is_collected_again_at_a_launch_once_a_day(tmp_path):
+    """#1506: a game with a dedicated reader whose collection is incomplete gets it extracted again when it is played,
+    as a background job on the Spark (never a step of the launch), at most once a day."""
+    import time
+    store = Store(tmp_path)
+    automatic = AutoCollection(store, None)
+    game = {'game_id': 'pso', 'title': 'Phantasy Star Online Ver. 2 (USA)', 'platform': 'dreamcast'}
+    submitted = []
+    def submit(request):
+        job = {'id': f'job-{len(submitted)}', 'state': 'queued', **request}
+        submitted.append(job)
+        store.put('job', job['id'], job)
+        return job
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-1'}, submit)
+    store.put('job', 'job-0', {'id': 'job-0', 'state': 'succeeded', 'finished': time.time() - 2 * 86400,
+              'output': {'result': {'status': 'partial', 'collected': 9, 'total': 12}}})
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-2'}, submit)
+    assert [j['id'] for j in submitted] == ['job-0', 'job-1']
+    assert submitted[1]['require_os'] == 'linux' and submitted[1]['input'] == {'op': 'collect', 'game_id': 'pso'}
+    store.put('job', 'job-1', {'id': 'job-1', 'state': 'succeeded', 'finished': time.time(),
+              'output': {'result': {'status': 'partial', 'collected': 10, 'total': 12}}})
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-3'}, submit)
+    assert len(submitted) == 2                                # collected today: not again
+    store.put('job', 'job-1', {'id': 'job-1', 'state': 'succeeded', 'finished': time.time() - 2 * 86400,
+              'output': {'result': {'status': 'complete', 'collected': 12, 'total': 12}}})
+    automatic.after_launch({'input': {'game': game}}, {'session_id': 'w-4'}, submit)
+    assert len(submitted) == 2                                # complete: never again
+
+
 def test_disabled_and_unsupported_do_not_queue(tmp_path):
     store = Store(tmp_path)
     automatic = AutoCollection(store, None)

@@ -4,6 +4,8 @@ import time
 
 from . import characters as C
 
+RECOLLECT_PARTIAL_S = 24 * 3600     # a partial roster is re-collected at most once a day, at a launch
+
 
 def registered(game):
     """True when a dedicated native reader in characters.DEDICATED matches this catalog game."""
@@ -44,6 +46,15 @@ class AutoCollection:
         if capability:
             record = record | {'capabilities': capability, 'backlog': self.store.get('capability_backlog', gid) or []}
         return record
+
+    def _partial_and_stale(self, record):
+        """An incomplete roster (#1506: "extract everything while it loads") is collected again at a launch once a day:
+        readers improve between launches, and the job runs on the Spark, never on the PC the game plays on."""
+        if record.get('state') != 'succeeded' or (record.get('result') or {}).get('status') != 'partial':
+            return False
+        job = self.store.get('job', record.get('job_id')) if record.get('job_id') else None
+        last = (job or {}).get('finished') or record.get('updated') or 0
+        return time.time() - last > RECOLLECT_PARTIAL_S
 
     def _reader_now_registered(self, gid):
         try:
@@ -99,7 +110,8 @@ class AutoCollection:
             previous = self.status(gid)
             # A favorite action explicitly retries failed work; launches never repeat expensive failures.
             supported = registered(game)
-            if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed'):
+            if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed') \
+                    and not (supported and self._partial_and_stale(previous)):
                 return
             if not supported:
                 self.store.put('character_collection', gid, {'state': 'unsupported', 'updated': time.time(),

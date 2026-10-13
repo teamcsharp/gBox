@@ -1521,6 +1521,16 @@ def slug_of(name: str) -> str:
     return "nm_" + re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
+def cast_slots(game: dict | None = None) -> list[dict]:
+    """The cast menu / whole-cast swap: No Mercy's default wrestlers by name (op=match resolves them on the ROM);
+    `player` (player 1's wrestler) overlaps them. The WCW titles' tables come off their ROMs (gbox.aki_wcw)."""
+    out = [{"slot": "player", "name": "player 1's wrestler", "kind": "player", "aggregate": True,
+            "writer": "gbox.aki_wrestling"}]
+    if game is not None and game.get("game_id") not in NO_MERCY:
+        return out
+    return out + [{"slot": n, "name": n, "kind": "wrestler", "writer": "gbox.aki_wrestling"} for n in NM_ROSTER[:64]]
+
+
 def roster_entries(rom: bytes | None = None) -> list[dict]:
     """characters.DEDICATED roster (No Mercy default wrestlers)."""
     out = []

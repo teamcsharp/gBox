@@ -565,13 +565,13 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
+    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap
     character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -595,8 +595,16 @@ class CharIn(BaseModel):
     near: str = ""                         # place: next to this actor ("Saria", "Deku Tree")
     yaw: float | None = None               # place: facing, degrees (default: towards the player)
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
-    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
+    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest; use slot=cast (007 Agent Under Fire GC): [{target?, donor}] (target = a body, model:<body>, player/enemies/bosses/npcs/bots/all), untargeted donors dealt over every other body
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+    # cast_swap (gbox.cast_swap): the entire cast of target_game replaced by the cast of source, one mod
+    target_game: str = ""                  # cast_swap: the game whose cast is replaced (catalog id or title; default game/game_id)
+    source: str = ""                       # cast_swap: the donor cast: a game id / title / abbreviation (JGR, SA2) or a group (wrestlers, fighters), comma-joined
+    mapping: str = "auto"                  # cast_swap: auto | random | by_role (lead on the player, body size on the rest)
+    seed: str = ""                         # cast_swap: the same seed builds the same plan
+    slots: str = "all"                     # cast_swap: all | main | enemies | pedestrians | ... | a comma list of slot names
+    assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
+    plan_only: bool = False                # cast_swap: return the plan without building
 
     @model_validator(mode="after")
     def require_named_character(self):
@@ -1357,6 +1365,11 @@ def _mgs_vr_run(ctx, game, entry, work):
                      'the fixed KMD object map (characters.MGS_VR_SNAKE_OBJECTS), checked against the decoded tree.'}
 
 
+def _auf_run(ctx, game, e, work):
+    """AUF roster entries are writer slots (gbox.auf_swap), not extractable characters."""
+    raise ValueError(f"{e.get('name')} is a 007 Agent Under Fire writer slot: use characters op=use slot={e.get('slot')}")
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
@@ -1394,6 +1407,10 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
+    # 007 Agent Under Fire GC: the writer's slots (Bond, enemies, bosses, npcs, bots, every body model); kind "slot"
+    # entries are listed by op=collect and never extracted (gbox.auf_swap.roster)
+    ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
+     lambda: __import__("gbox.auf_swap", fromlist=["x"]).roster(), _auf_run),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1466,6 +1483,28 @@ def dedicated_entries(config, game, name, roster):
             entry['slug'] += '_' + game['game_id']
         entries.append(entry)
     return entries
+
+
+# extractor -> (module with READER_VERSION [and needs_refresh(meta)], the meta field its entries record the version in;
+# entries without the field were made by version 1). A newer reader re-extracts older entries (extract_dedicated,
+# the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader")}
+
+
+def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
+    """{extractor, entry, current, stale} for an entry whose DEDICATED reader is versioned, else None."""
+    if extractor is None:
+        s = meta.get("source") or {}
+        t, plat = (s.get("game_title") or "").lower(), s.get("platform") or ""
+        extractor = next((n for n, test, _r, _run in DEDICATED if test(t, plat)), None)
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    mod = importlib.import_module(spec[0])
+    current, have = int(getattr(mod, "READER_VERSION", 1)), int(meta.get(spec[1]) or 1)
+    stale = mod.needs_refresh(meta) if callable(getattr(mod, "needs_refresh", None)) else have < current
+    return {"extractor": extractor, "entry": have, "current": current, "stale": bool(stale)}
 
 
 # extractor -> body roles read from an entry's stored model, for entries collected before the reader reported roles
@@ -1592,8 +1631,8 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            refresh = _doa2_needs_refresh(ctx, game, existing) or (
-                name == "jgr" and __import__("gbox.jgr", fromlist=["x"]).needs_refresh(existing))   # #1396
+            refresh = _doa2_needs_refresh(ctx, game, existing) or bool(
+                (reader_status(existing, name) or {}).get("stale"))           # an older reader made it (JGR v1, #1396)
             if verify_entry(root, existing)['ok'] and not refresh:
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
@@ -2118,14 +2157,17 @@ def characters_tool(inp: CharIn, ctx):
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
     and files a request | use character=<name> session_id|game: launch/build the swap mod (RE4 GC replaces Leon, SM64 Mario, GTA LCS
     PS2 every Toni outfit, OoT Link both ages or [x, y | slot=<NPC name>] the NPC there, Parasite Eve Aya (all outfits),
-    FF7 Cloud (field + battle), Clay Fighter SC slot=fighter:<name> (a sprites entry re-draws that fighter)), else the overlay (when the game runs) + a gap report so the writer gets built |
+    FF7 Cloud (field + battle), Clay Fighter SC slot=fighter:<name> (a sprites entry re-draws that fighter), Dead Or Alive ++ (arcade) slot=<fighter>[:<costume 1-4>] | player (every fighter: a rebuilt doapp set)), else the overlay (when the game runs) + a gap report so the writer gets built |
     FF7 Cloud (field + battle), Jet Grind Radio slot=player (Beat unless active_id) | character:<name>), else the overlay (when the game runs) + a gap report so the writer gets built |
     coverage: per studied game, can gBox rip its characters and reimport any character into it (slots) | swap a=<who> b=<who> session_id (OoT; who = "link", an NPC name or a picture point
     "x,y"): A gets B's model and B gets A's (one_way=true: only A <- B, "play as B") | place character=<name>
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
-    add character=<new name> from_clipboard=true|artifact|path: store an edited model."""
+    add character=<new name> from_clipboard=true|artifact|path: store an edited model. |
+    cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role] [seed]
+    [slots=all|main|enemies] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
+    another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
     if inp.op == "mgs_vr_decode":                    # internal Windows handoff for the native reader
         from . import mgs_vr_swap
         game = _game(ctx, inp)
@@ -2139,6 +2181,9 @@ def characters_tool(inp: CharIn, ctx):
         return {"result": {"status": "decoded", "model": "Solid Snake (VR Missions)", "bytes": len(data)}}
     if inp.op == "collect":
         return {"result": collect(ctx, inp)}
+    if inp.op == "cast_swap":                                 # the whole cast of one game as another's (gbox.cast_swap)
+        from . import cast_swap
+        return {"result": cast_swap.run(ctx, inp)}
     if inp.op in ("extract", "add", "blender"):
         res = {"extract": extract, "add": add_model, "blender": to_blender}[inp.op](ctx, inp)
         return {"result": _finish(ctx, res) if inp.op != "blender" else res}
@@ -2246,6 +2291,11 @@ def characters_tool(inp: CharIn, ctx):
         # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>; enemy:<name> | enemies -> pso_<slug>_as_<name>
         # (gbox.pso_enemy: the character on the enemy's node tree and motions)
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
+    from . import auf_swap
+    if gid in auf_swap.GAME_IDS and auf_swap.is_slot(inp.slot):
+        # 007 Agent Under Fire GC: player | enemies | bosses | npcs | bots | all | model:<body> | cast (+pairs
+        # [{target, donor}]) -> auf_<slot>_<plan hash> (every level's .ngc rebuilt in a disc-image copy)
+        return {"result": out | auf_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
@@ -2259,6 +2309,10 @@ def characters_tool(inp: CharIn, ctx):
     from . import defjam_writer
     if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
         return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
+    from . import doapp_swap
+    if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
+        # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)
+        return {"result": out | doapp_swap.use(ctx, meta, game, inp)}
     from . import clayfighter_swap
     if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
         # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>
