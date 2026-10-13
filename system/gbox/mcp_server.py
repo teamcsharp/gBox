@@ -116,7 +116,7 @@ CONVENIENCE = {
     "launch_game": ("Launch a library game. node: idle | auto | windows | linux | <worker name>. idle chooses the other Windows PC; debug=true runs on the Spark "
                     "under a full-debugger emulator. Returns the launch job (its output has the session_id).",
                     obj({"game_id": S, "node": S, "debug": B}, ["game_id"])),
-    "get_session_observers": ("Read a session's passive gameplay observations, visible actors, changes, native model collection and repair request IDs. Hypotheses are not verified game mechanics.", obj({"session_id": S}, ["session_id"])),
+    "get_session_observers": ("Read a session's passive gameplay observations, visible actors, changes, native model collection and repair request IDs, plus goals: what each session agent is trying to do, the evidence it still needs, how the operator can help and what blocks it. Hypotheses are not verified game mechanics.", obj({"session_id": S}, ["session_id"])),
     "list_sessions": ("Game sessions (session_id, title, adapter, state, last_frame_age). Live ones only unless include_ended.",
                       obj({"include_ended": B})),
     "read_memory": ("Read live emulator memory of a running session (hex dump). Native addresses work "

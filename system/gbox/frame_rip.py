@@ -237,16 +237,13 @@ BEETLE_VK_OPTIONS = {
 
 def launch(content: str, work: Path, core: str = "mednafen_psx_hw", retroarch: str | None = None,
            cmd_port: int = 55433, pad_port: int = 55440, core_options: dict | None = None,
-           extra_cfg: dict | None = None, core_path: str | None = None) -> subprocess.Popen:
+           extra_cfg: dict | None = None) -> subprocess.Popen:
     """Start RetroArch (Vulkan) under renderdoccmd with its own config dir `work` (never the worker's session config).
-    `core_path` reuses a live session's core instead of provisioning `core` (Examine 3D capture sessions,
-    gbox/capture_relaunch.py); extra_cfg {"video_driver": "glcore"} runs a GL-only core on core-profile GL.
     Captures land in work/cap. PS1 CHD v4 images are not readable by Beetle's libchdr: convert to bin/cue first
     (psx_chd_to_bin)."""
     from . import provision
     cfg = _cfg()
-    core_path = core_path or (provision.ensure_platform(cfg, "psx", core)[0] if core == "mednafen_psx_hw"
-                              else provision.ensure_core(cfg, core))
+    core_path = provision.ensure_platform(cfg, "psx", core)[0] if core == "mednafen_psx_hw" else provision.ensure_core(cfg, core)
     ra = retroarch or provision._retroarch_windows_raw(cfg)
     work = Path(work)
     for d in ("saves", "states", "shots", "cap"):
@@ -269,21 +266,6 @@ def launch(content: str, work: Path, core: str = "mednafen_psx_hw", retroarch: s
             ra, "--config", str(work / "ra.cfg"), "-L", str(core_path), content]
     return subprocess.Popen(args, env={**os.environ, **renderdoc_env(rd)}, cwd=str(Path(ra).parent),
                             stdout=open(work / "launch.log", "w"), stderr=subprocess.STDOUT)
-
-
-def launch_yuzu(content: str, yuzu_exe: str, user_dir: Path, cap_dir: Path | None = None) -> subprocess.Popen:
-    """Start Yuzu under renderdoccmd with its own `user_dir` (never the operator's Yuzu user directory).
-    Forces the Vulkan renderer so RenderDoc's Vulkan layer captures the frame. Captures land in `cap_dir`."""
-    rd = renderdoc_dir()
-    user_dir = Path(user_dir)
-    (user_dir / "config").mkdir(parents=True, exist_ok=True)
-    (user_dir / "config" / "qt-config.ini").write_text("[Renderer]\nbackend=Vulkan\n")
-    cap_dir = Path(cap_dir or user_dir / "cap")
-    cap_dir.mkdir(parents=True, exist_ok=True)
-    args = [str(rd / "renderdoccmd.exe"), "capture", "-c", str(cap_dir / "frame"), str(yuzu_exe),
-            "--user-path", str(user_dir), "-g", str(content)]
-    return subprocess.Popen(args, env={**os.environ, **renderdoc_env(rd)}, cwd=str(Path(yuzu_exe).parent),
-                            stdout=open(user_dir / "launch.log", "w"), stderr=subprocess.STDOUT)
 
 
 def psx_chd_to_bin(chd: Path, out_bin: Path) -> Path:

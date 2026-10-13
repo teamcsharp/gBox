@@ -46,15 +46,30 @@ WRITERS = [
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
      "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
+    ("auf_swap", ["player", "model:<body>", "enemies", "bosses", "npcs", "bots", "all", "cast"],
+     "007 Agent Under Fire GC: Bond (every outfit), any of the 45 body models in every level, the mission enemies, "
+     "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "
+     "re-encoded .gcm on the slot's skeleton (native animations), donor atlas in the level's texture chunk, rebuilt "
+     "maps/*.ngc in a disc-image copy; unverified in game"),
     ("crazy_taxi_swap", ["player", "driver:<axel|bd_joe|gena|gus>", "drivers", "pedestrian:<group>", "pedestrians",
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("etm_swap", ["player", "<cast slot>"],
+     "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
+     "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "
+     "rebuilt as plain triangles on the shared 89-joint skeleton in WAD1.DFU, in place; read back from the image; "
+     "unverified in PCSX2"),
+    ("doapp_swap", ["<fighter>[:<costume>]", "player"],
+     "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
+     "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
+     "the game's fight init + skeleton build; unverified in MAME"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
-    ("oot", "oot_swap.tool(", ["player (Link, both ages)", "npc:<name> / x,y", "swap a<->b", "place (statue)"],
-     "Link or any NPC"),
+    ("oot", "oot_swap.tool(", ["player", "<cast slot: saria, mido, goron, stalfos... (gbox.oot_cast)>",
+                               "npc:<name> / x,y", "swap a<->b", "place <statue>"],
+     "Link (both ages) or any NPC / enemy; the whole cast in one ROM (characters op=cast_swap)"),
 ]
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
 DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
@@ -104,7 +119,9 @@ def cast_slots(game: dict) -> list[dict]:
     m = _mod(w["writer"].split(".")[-1])
     if m is not None and callable(getattr(m, "cast_slots", None)):
         try:
-            out += [dict(s, writer=s.get("writer", w["writer"])) for s in m.cast_slots()]
+            fn = m.cast_slots
+            rows = fn(game=game) if "game" in inspect.signature(fn).parameters else fn()   # per-title rosters (WCW)
+            out += [dict(s, writer=s.get("writer", w["writer"])) for s in rows]
         except Exception:                                  # noqa: BLE001 - a writer that can't list keeps its fixed slots
             pass
     for s in w["slots"]:

@@ -109,3 +109,42 @@ def test_observer_requeues_stale_unsupported_after_reader_deploy(tmp_path):
     assert [r['input'] for r in submitted] == [{'op': 'collect', 'game_id': CT['game_id']}]
     models = store.get('session_observer', session['session_id'])['models']
     assert models['state'] == 'queued' and 'request_id' not in models
+
+
+AUF = {'game_id': '65b7187589166b26', 'title': '007 - Agent Under Fire (USA)', 'platform': 'gamecube'}
+
+
+def _finished(store, job_id, result):
+    store.put('character_collection', AUF['game_id'], {'state': 'queued', 'job_id': job_id, 'updated': 2.0})
+    store.put('job', job_id, {'id': job_id, 'state': 'succeeded', 'finished': 9e18, 'output': {'result': result}})
+
+
+def test_collection_by_an_older_reader_version_is_collected_again_at_launch(tmp_path):
+    """AUF reader v1 listed writer slots only (0 of 0 collected); v2 extracts every body: re-queued at the next launch
+    (not after the daily partial re-collect), once."""
+    from gbox import auf_chars, characters as C
+    assert registered(AUF) and C.reader_version('auf') == auf_chars.READER_VERSION >= 2
+    store = Store(tmp_path)
+    _catalog(store, AUF)
+    _finished(store, 'auf-v1', {'status': 'partial', 'collected': 0, 'total': 0, 'extractor': 'auf', 'entries': []})
+    auto = AutoCollection(store, None)
+    assert auto.status(AUF['game_id'])['stale_reader'] == {'extractor': 'auf', 'collected_with': 1,
+                                                           'current': auf_chars.READER_VERSION}
+    submitted = []
+    for _ in range(3):
+        auto.after_launch({'input': {'game': AUF}}, {'session_id': 'w-1'}, _jobs(store, submitted))
+    assert [r['input'] for r in submitted] == [{'op': 'collect', 'game_id': AUF['game_id']}]
+    assert auto.status(AUF['game_id'])['state'] == 'queued'
+
+
+def test_collection_by_the_current_reader_is_not_requeued(tmp_path):
+    from gbox import auf_chars
+    store = Store(tmp_path)
+    _catalog(store, AUF)
+    _finished(store, 'auf-v2', {'status': 'complete', 'collected': 45, 'total': 45, 'extractor': 'auf',
+                                'reader_version': auf_chars.READER_VERSION, 'entries': []})
+    auto = AutoCollection(store, None)
+    assert 'stale_reader' not in auto.status(AUF['game_id'])
+    submitted = []
+    auto.after_launch({'input': {'game': AUF}}, {'session_id': 'w-1'}, _jobs(store, submitted))
+    assert submitted == [] and auto.status(AUF['game_id'])['state'] == 'succeeded'

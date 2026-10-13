@@ -234,6 +234,9 @@ class LaunchIn(BaseModel):
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
+    capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
+                                           # its own config files, RenderDoc inside, no rewind/recording, window off-screen
+    capture_for: str = ""                  # the operator session this capture session captures (scene_relay)
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -304,9 +307,9 @@ def _close_previous_games(ctx, keep: str = ""):
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
-            rewind.stop(sid)
-            ring_record.stop(sid)
+            sr = rewind.detach(sid)
             SESSIONS.pop(sid, None)
+            _teardown(sid, sr)
             continue
         if _session_ended_on_server(ctx, sid):
             # The control plane already ended this session (app relaunch, lost stop): nobody is playing it, so it is
@@ -325,19 +328,95 @@ def _close_previous_games(ctx, keep: str = ""):
     for sid, ad, _ in previous:
         if sid not in SESSIONS:
             continue
+        sr = rewind.detach(sid)                     # every game was saved above; the ring takes nothing more
         ad.stop_game()
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is None:
+            rewind.reattach(sid, sr, lambda sid=sid: sid in SESSIONS)
             raise RuntimeError('The previous emulator is still running; another game was not started')
         snapshot = next(s for s in checkpoints if s['session_id'] == sid)
         if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
-        rewind.stop(sid)
-        ring_record.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
+        _teardown(sid, sr)
     return checkpoints
+
+
+STOP_SAVE_CAP_S = 2.0          # Save & stop (only when the operator asks for it) waits at most this long for the save
+STOP_TEARDOWN_WAIT_S = 1.0     # rewind / gameplay-ring teardown awaited at most this long; the rest ends in the background
+
+
+def _within(fn, seconds: float, name: str):
+    """Run fn on a daemon thread and wait at most `seconds`: (finished, result, error)."""
+    box = {}
+
+    def run():
+        try:
+            box['result'] = fn()
+        except Exception as e:                       # noqa: BLE001 - reported to the caller
+            box['error'] = e
+    t = threading.Thread(target=run, daemon=True, name=name)
+    t.start()
+    t.join(max(0.0, seconds))
+    return not t.is_alive(), box.get('result'), box.get('error')
+
+
+def _teardown(sid: str, sr, wait: float = STOP_TEARDOWN_WAIT_S) -> bool:
+    """After the emulator is gone: close its rewind (gives the operator's save slot back, deletes the ring) and stop the
+    gameplay ring's ffmpeg. A checkpoint still waiting on the dead emulator, or ffmpeg finalising its last segment
+    (up to 8 + 5 s), went on the Stop button's clock before (#1504); now it finishes in the background."""
+    def work():
+        if sr is not None:
+            try:
+                sr.close()
+            except Exception as e:                   # noqa: BLE001
+                print(f'gBox: rewind teardown of {sid} failed: {e}', flush=True)
+        try:
+            ring_record.stop(sid)
+        except Exception as e:                       # noqa: BLE001
+            print(f'gBox: gameplay ring teardown of {sid} failed: {e}', flush=True)
+    return _within(work, wait, f'session-teardown-{sid}')[0]
+
+
+def _stop_session(sid: str, args: dict, ctx) -> dict:
+    """Stop = the emulator's process tree killed now (#1504). A save happens only when the operator asked for one
+    (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
+    ad, _ = SESSIONS[sid]
+    t0 = time.monotonic()
+    timings, saved = {}, None
+    if args.get('save'):
+        cap = float(args.get('save_cap_s') or STOP_SAVE_CAP_S)
+
+        def save():
+            with rewind.guard(sid, 'save_state'):
+                return ad.save_state()
+        done, res, err = _within(save, cap, f'stop-save-{sid}')
+        if done and err is None:
+            saved = res if isinstance(res, dict) else {'value': str(res)[:200]}
+        else:
+            saved = {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else f'the save took longer than {cap:g} s'}
+        timings['save_s'] = round(time.monotonic() - t0, 3)
+    sr = rewind.detach(sid)
+    t = time.monotonic()
+    res = ad.stop_game()
+    timings['kill_s'] = round(time.monotonic() - t, 3)
+    proc = getattr(ad, 'proc', None)
+    if proc is not None and proc.poll() is None:
+        rewind.reattach(sid, sr, lambda: sid in SESSIONS)
+        raise RuntimeError('Emulator process is still running; stop was not confirmed')
+    SESSIONS.pop(sid, None)
+    track_emulator(ctx.config, sid, None, add=False)
+    t = time.monotonic()
+    timings['teardown_done'] = _teardown(sid, sr)
+    timings['teardown_s'] = round(time.monotonic() - t, 3)
+    timings['total_s'] = round(time.monotonic() - t0, 3)
+    out = dict(res) if isinstance(res, dict) else {'value': str(res)[:200]}
+    out['timings'] = timings
+    if saved is not None:
+        out['save'] = saved
+    return {'result': out, 'session_id': sid, 'ended': True}
 
 
 @tool("launch_game", "1.2", LaunchIn, LaunchOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=900,
@@ -349,25 +428,58 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
         return _launch_game(inp, ctx)
 
 
+def _capture_plan(ad, g, want: str, ctx) -> dict:
+    """Backend of an agent-owned Examine 3D capture session (gbox/capture_backend.py): "auto" = the matrix's choice,
+    "vulkan" / "glcore" = that driver. RenderDoc is installed on this PC first if it has none (pinned portable build)."""
+    from . import capture_backend, scene_capture
+    if HOST_OS != "windows":
+        raise Unsupported("Examine 3D capture sessions run on a Windows worker (RenderDoc)")
+    core = getattr(getattr(ad, "cfg", None), "core", None) or g.core
+    plan = capture_backend.plan(ad.name, core)
+    if plan is None:
+        raise Unsupported(f"{ad.name}{' / ' + str(core) if core else ''} has no 3D capture path (2D frame only)")
+    if want in ("vulkan", "glcore") and want != plan["driver"] and ad.name == "retroarch":
+        plan = plan | {"driver": want, "attach": "layer" if want == "vulkan" else "inject",
+                       "ra_cfg": {"video_driver": want}, "core_options": {} if want == "glcore" else plan["core_options"]}
+    ctx.progress(4, f"Capture session: {plan['driver']} with RenderDoc ({'Vulkan layer' if plan['attach'] == 'layer' else 'injected'})")
+    rd = scene_capture.renderdoc_dir(provision=True)
+    return plan | {"renderdoc": str(rd)}
+
+
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
+    timings, staging = {}, None
+    t_start = mark = time.monotonic()
+
+    def lap(name):
+        nonlocal mark
+        now = time.monotonic()
+        timings[name] = round(timings.get(name, 0) + now - mark, 3)
+        mark = now
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
     ad.progress = ctx.progress
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
+    if inp.capture_backend:
+        ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
+        ad.examine = True
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
+    lap("runtime_s")
     if g.launch.get("kind") == "steam":
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        lap("close_previous_s")
         detail = ad.launch_game(g.launch["appid"], (g.source_paths or [None])[0])
     elif isinstance(ad, adapters.RocketLauncherAdapter):
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        lap("close_previous_s")
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
         src = rom_path(g, ctx.config)
         if not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
+        lap("rom_s")
         if isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
             eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
             if not eboot:
@@ -390,29 +502,40 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
             ctx.progress(28, f"Mod: {launch_mod}")
+        lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
         if g.platform not in ("ps3", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Switch XCI/NSP streams from the user's share; copying 15+ GB before play stalls launch
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
-            last = [0.0]
-            def copied(done, total):
-                if time.time() - last[0] > 0.5:
-                    last[0] = time.time()
-                    ctx.progress(30 + 40 * done / total, f"Staging {src.name}: {done / 2**20:,.0f} / {total / 2**20:,.0f} MB")
-            receipt = catalog.stage(src, g.game_id, ctx.config, copied)
-            staged_on = __import__("platform").node()
-            ctx.progress(70, f"Staged to cache ({'reused' if not receipt.get('copied', True) else 'copied'}) · evicted {len(receipt['evicted'])}")
-            ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
-            src = Path(receipt["dst"])
+            receipt = _stage_for_launch(src, g, ctx, must_wait=bool(emu and emu.stage_local))
+            staging = {k: receipt[k] for k in ("copied", "hashed", "seconds", "mb_s", "resumed_from", "background",
+                                                "eta_s", "size") if k in receipt}
+            if receipt.get("background"):
+                left = f"~{receipt['eta_s'] / 60:,.0f} min at {receipt['mb_s']} MB/s" if receipt.get("eta_s") else "share not answering yet"
+                ctx.progress(70, f"Playing {src.name} from the library share; the cache copy continues in the background "
+                                 f"({left}), so the next launch is local")
+            else:
+                staged_on = __import__("platform").node()
+                ctx.progress(70, f"Staged to cache ({'copied' if receipt.get('copied') else 'reused'}) · evicted {len(receipt['evicted'])}")
+                ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
+                src = Path(receipt["dst"])
+        lap("stage_s")
         if g.launch.get("archive_member") and not inp.mod:
             from . import rom_archives
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
+            lap("unpack_s")
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        lap("close_previous_s")
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         detail = ad.launch_game(str(src))
+    lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
+    timings["total_s"] = round(time.monotonic() - t_start, 3)
+    detail["timings"] = timings                               # #1506: where a launch's time went, per stage
+    if staging is not None:
+        detail["staging"] = staging
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
     sid = f"{ctx.worker}-{ctx.job_id}"
     gd = g.model_dump()
@@ -438,15 +561,21 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     detail['previous_checkpoints'] = checkpoints
     # Select+L2 rewind / Select+R2 fast-forward on the operator's own pad, in every game (#454, #1382): RetroArch's own
     # rewind where it is on, gBox's checkpoint ring elsewhere, the 2x/4x/16x ramp for R2 in both cases (gbox/rewind.py)
-    try:
-        detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
-    except Exception as e:                                     # noqa: BLE001 - never block the launch
-        detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
-    # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
-    try:
-        detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
-    except Exception as e:                                     # noqa: BLE001 - never block the launch
-        detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
+    if inp.capture_backend:                                    # Examine 3D capture session: no checkpoint ring, no recording
+        detail["capture_session"] = {k: v for k, v in ad.capture_backend.items() if k != "core_options"} | {
+            "capture_for": inp.capture_for, "core_options": ad.capture_backend.get("core_options") or {}}
+        detail["rewind"] = {"rewind": "unsupported", "reason": "Examine 3D capture session"}
+        detail["recording"] = {"state": "unsupported", "reason": "Examine 3D capture session"}
+    else:
+        try:
+            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
+        # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
+        try:
+            detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -515,6 +644,32 @@ def _ensure_ps3_load_hotkey():
             user32.UnregisterHotKey(None, HK)                            # F4 works normally again
     _PS3_HOTKEY["thread"] = threading.Thread(target=loop, daemon=True, name="ps3-load-hotkey")
     _PS3_HOTKEY["thread"].start()
+
+
+def _stage_for_launch(src: Path, g, ctx, must_wait: bool = False) -> dict:
+    """The cache copy of a big library file for this launch (#1506). A file already cached comes back at once (its
+    hashes remembered, not re-read). A copy that will finish within config.stage_wait_s is waited for; a longer one
+    (7.4 GB at ~10-20 MB/s over Wi-Fi = 6-13 min) goes on in the background, capped at stage_background_mb_s while a
+    game plays here, and the game starts from the library share now: {"background": True, ...}."""
+    job = catalog.stage_begin(src, g.game_id, ctx.config)
+    if isinstance(job, dict):
+        return job
+    budget = 0.0 if must_wait else float(ctx.config.stage_wait_s or 0)
+    t0, shown = time.monotonic(), 0.0
+    while not job.finished.wait(0.25):
+        done, total, rate = job.done, job.total, job.rate()
+        left_s = (total - done) / rate if rate else float("inf")
+        if time.monotonic() - shown > 0.5:
+            shown = time.monotonic()
+            eta = f" · {left_s:,.0f} s left" if rate else ""
+            ctx.progress(30 + 40 * done / max(total, 1), f"Staging {src.name}: {done / 2**20:,.0f} / {total / 2**20:,.0f} MB{eta}")
+        waited, measured = time.monotonic() - t0, time.monotonic() - job.t0 >= 3
+        if budget and (waited >= budget or (measured and waited + left_s > budget)):
+            cap = float(ctx.config.stage_background_mb_s or 0) * 2**20
+            job.limit = (lambda: cap if SESSIONS else None) if cap > 0 else None
+            return {"background": True, "src": str(src), "dst": None, "size": total, "copied": False, "done": done,
+                    "mb_s": round(rate / 2**20, 1), "eta_s": round(left_s) if rate else None, "evicted": []}
+    return job.result()
 
 
 def _stageable(src: Path) -> bool:
@@ -784,6 +939,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
         return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
+    if inp.op == "stop_game":
+        return _stop_session(inp.session_id, inp.args or {}, ctx)
     if inp.op == "send_input":                                       # controller glyph shows gBox's presses
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
@@ -807,16 +964,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
             res["frame"] = sha256(png)
         except Exception:
             pass
-    if inp.op == "stop_game":
-        proc = getattr(ad, 'proc', None)
-        if proc is not None and proc.poll() is None:
-            raise RuntimeError('Emulator process is still running; stop was not confirmed')
-        rewind.stop(inp.session_id)
-        ring_record.stop(inp.session_id)
-        SESSIONS.pop(inp.session_id, None)
-        track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
-            "ended": inp.op == "stop_game"}
+            "ended": False}
 
 
 # --- background gameplay ring (#1084) -------------------------------------------------------
@@ -3421,6 +3570,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "yukes_sd",   # yukes_sd: WWF SmackDown! 2 (PS1) reader + writer (via characters op=use|match|extract)
                               "aki_wcw",   # aki_wcw: WCW vs. nWo World Tour writer + extractor (via characters op=use|match|extract)
                               "re_lab_tool",   # re_lab_tool: re_executable (a title's executable -> ELF for Ghidra)
+                              "assimilate",    # assimilate: fingerprint a game (formats, engine, nearest assimilated titles)
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
@@ -3517,8 +3667,10 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         raise Unsupported('This session ended. Open the running game before transferring its state.')
     ad, g = session
     kind = getattr(ad, "name", "")
-    if kind == "retroarch":
-        states, pattern = ctx.config.runtime / "states", "*.state*"
+    if kind == "retroarch":                                    # a capture session keeps its states in its own folder
+        sd = getattr(ad, "state_dir", None)
+        states = Path(sd()) if callable(sd) and getattr(ad, "states_override", None) else ctx.config.runtime / "states"
+        pattern = "*.state*"
     elif kind == "dolphin":                                    # same Dolphin release on both machines (2609): states are compatible
         exe = getattr(ad, "_exe", None)
         states = (exe().parent / "User" / "StateSaves") if exe else (ctx.config.runtime / "dolphin-user" / "StateSaves")

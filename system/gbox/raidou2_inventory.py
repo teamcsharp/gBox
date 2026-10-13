@@ -70,35 +70,13 @@ def iso_files(f) -> dict[str, tuple[int, int]]:
     pvd = f.read(SECTOR)
     if pvd[1:6] != b"CD001" or len(pvd) < 190:
         raise ValueError("no ISO9660 primary volume descriptor at LBA 16")
-    out: dict[str, tuple[int, int]] = {}
-
-    def walk(lba: int, size: int, path: str, depth: int = 0) -> None:
-        if depth > 16:
-            raise ValueError("ISO directory tree too deep")
-        f.seek(lba * SECTOR)
-        d = f.read(size)
-        o = 0
-        while o < len(d):
-            n = d[o]
-            if n == 0:
-                o = (o // SECTOR + 1) * SECTOR
-                continue
-            if n < 34 or o + n > len(d) or 33 + d[o + 32] > n:
-                raise ValueError(f"bad ISO9660 directory record at {path or '/'}+{o:#x}")
-            e_lba, e_size = struct.unpack_from("<I", d, o + 2)[0], struct.unpack_from("<I", d, o + 10)[0]
-            flags, nl = d[o + 25], d[o + 32]
-            name = d[o + 33:o + 33 + nl]
-            if name not in (b"\0", b"\1"):
-                p = f"{path}/{name.decode('ascii', 'replace').split(';')[0]}"
-                if flags & 2:
-                    walk(e_lba, e_size, p, depth + 1)
-                else:
-                    out[p] = (e_lba, e_size)
-            o += n
-
+    from .formats import iso9660                          # the shared ISO9660 walk (gbox.formats)
     root = pvd[156:190]
-    walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
-    return out
+    return {"".join("/" + p for p in parts) + "/" + rec.name: (rec.lba, rec.size)
+            for parts, rec, _d in iso9660.walk(iso9660.file_reader(f, SECTOR), struct.unpack_from("<I", root, 2)[0],
+                                               struct.unpack_from("<I", root, 10)[0], strict=True, encoding="ascii",
+                                               max_depth=16, too_deep="raise")
+            if not rec.is_dir}
 
 
 def pvd_info(f) -> dict:

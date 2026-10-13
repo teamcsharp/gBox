@@ -43,34 +43,9 @@ CLOUD_BONES = {0: "root", 1: "pelvis", 2: "torso", 3: "head", 4: "l_shoulder_j",
 
 
 def lzs(d: bytes) -> bytes:
+    from .formats.lz import lzss_decompress          # shared Okumura LZSS (4 KiB ring at 0xFEE)
     n = struct.unpack_from("<I", d)[0]
-    src = d[4:4 + n]
-    out = bytearray()
-    ring = bytearray(4096)
-    r = 0xFEE
-    i = 0
-    while i < len(src):
-        f = src[i]
-        i += 1
-        for b in range(8):
-            if i >= len(src):
-                break
-            if f >> b & 1:
-                c = src[i]
-                i += 1
-                out.append(c)
-                ring[r] = c
-                r = (r + 1) & 0xFFF
-            else:
-                o = src[i] | ((src[i + 1] & 0xF0) << 4)
-                ln = (src[i + 1] & 0xF) + 3
-                i += 2
-                for k in range(ln):
-                    c = ring[(o + k) & 0xFFF]
-                    out.append(c)
-                    ring[r] = c
-                    r = (r + 1) & 0xFFF
-    return bytes(out)
+    return lzss_decompress(d[4:4 + n])[0]
 
 
 # ---------------------------------------------------------------- model

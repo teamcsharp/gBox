@@ -36,6 +36,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from .formats.texture import tim_build, tim_parse  # noqa: F401  (shared, moved to gbox.formats)
 
 GAME_IDS = {"276334ad218ffb46": "WWF SmackDown! 2 - Know Your Role (USA)"}
 SD1_IDS = {"4e59d0d55cc190cb": "WWF SmackDown! (USA)"}      # same containers (D/C/EH/EB/EL.PAC); reader only, see docs
@@ -245,36 +246,6 @@ def pac_build(items: list[tuple[int, bytes]]) -> bytes:
         head += struct.pack("<H", t) + len(body).to_bytes(3, "little") + len(d).to_bytes(3, "little")
         body += d
     return bytes(head + body)
-
-
-def tim_parse(t: bytes) -> dict:
-    _magic, flags = struct.unpack_from("<II", t, 0)
-    o, out = 8, {"bpp": flags & 3}
-    if flags & 8:
-        ln, cx, cy, cw, ch = struct.unpack_from("<IHHHH", t, o)
-        out["clut_xy"] = (cx, cy, cw, ch)
-        out["clut"] = np.frombuffer(t, "<u2", cw * ch, o + 12).copy()
-        o += ln
-    ln, px, py, pw, ph = struct.unpack_from("<IHHHH", t, o)
-    out["rect"] = (px, py, pw, ph)
-    out["pix"] = np.frombuffer(t, np.uint8, pw * 2 * ph, o + 12).reshape(ph, pw * 2).copy()
-    return out
-
-
-def tim_build(tim: dict) -> bytes:
-    """tim_parse's dict -> TIM bytes. CLUT-less TIMs (16-bpp pages, e.g. CAW group 0x111) have no "clut_xy"."""
-    px, py, pw, ph = tim["rect"]
-    pix = np.asarray(tim["pix"], np.uint8).tobytes()
-    flags, clut_block = tim.get("bpp", 1), b""
-    if tim.get("clut_xy") is not None:
-        cx, cy, cw, ch = tim["clut_xy"]
-        clut = np.asarray(tim["clut"], "<u2").tobytes()
-        if len(clut) != 2 * cw * ch:
-            raise ValueError("TIM CLUT size doesn't match the header")
-        flags, clut_block = flags | 8, struct.pack("<IHHHH", 12 + len(clut), cx, cy, cw, ch) + clut
-    if len(pix) != 2 * pw * ph:
-        raise ValueError("TIM pixel size doesn't match the header")
-    return struct.pack("<II", 0x10, flags) + clut_block + struct.pack("<IHHHH", 12 + len(pix), px, py, pw, ph) + pix
 
 
 def repaintable(tim: dict) -> bool:
@@ -880,14 +851,19 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     rig = load_rig(Path(model), roles, props)
     jm = {r: b for r, b in ROLE_BONE.items() if r != "neck"}
     prims, rep = retarget(rig, tgt, scale, jm)
+    from . import fit_events as FE
+    FE.weights(prims, ROLE_BONE, skeleton=len(bones))
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     rigged = write_rigged(prims, tgt, work / "sd2_rigged.gltf", name)
     src = rigged
     tris_src = sum(len(p["tris"]) for p in rig["prims"])
     if tris_src > 8000 and blender:
+        FE.stage("decimate", "running", {"from": tris_src, "to": 8000})
         src = decimate(rigged, work / "sd2_dec.glb", 8000.0, blender)
     rp = read_rigged(src)
+    FE.stage("decimate", "done" if src is not rigged else "skipped",
+             {"from": tris_src, "triangles": int(sum(len(p["tris"]) for p in rp))}, prims=rp if src is not rigged else None)
     progress(30, "Cutting the model into the wrestler's part meshes")
     mats, mkey = [], {}
     allP, allN, allUV, allJ, F, FM = [], [], [], [], [], []
@@ -936,6 +912,7 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     report["triangles"] = sum(v["faces"] for k, v in report.items() if k.startswith("slot_"))
     report["retarget"] = rep
     report["source_triangles"] = tris_src
+    FE.stage("encode", data={"triangles": report["triangles"], "files": len(out), "source_triangles": tris_src})
     return {"files": out, "rigged": rigged, "report": report}
 
 
@@ -1037,7 +1014,10 @@ def build_disc(base: Path, out_bin: Path, jobs: list[dict], work: Path, blender=
     files = read_files(base)
     newf = {f: bytearray(files[f]) for f in PART_FILES}
     reports = []
+    from . import fit_events as FE
     for k, jb in enumerate(jobs):
+        if jb.get("fit_key"):                             # the cast's model for this wrestler (the Fitting pop-up)
+            FE.model(jb["fit_key"])
         fit = fit_character(files, jb["group"], jb["model"], jb["roles"], Path(work) / f"g{jb['group']}", jb["name"],
                             jb.get("props", ()), jb.get("scale"), blender,
                             progress=lambda p, m, k=k: progress(5 + (k * 80 + p * 0.8) / max(1, len(jobs)), m))
@@ -1051,6 +1031,9 @@ def build_disc(base: Path, out_bin: Path, jobs: list[dict], work: Path, blender=
                     raise ValueError(f"{jb['name']}: {f} entry {eid:#x} needs {len(data)} bytes, has {room}")
                 newf[f][o:o + room] = data + bytes(room - len(data))
             sizes[f] = [len(data), min(u * 0x100 for _e, u, _o in ents)]
+        FE.stage("encode", data={"bytes": sum(s[0] for s in sizes.values()), "budget": sum(s[1] for s in sizes.values()),
+                                 "files": len(sizes), "triangles": fit["report"]["triangles"],
+                                 "relocated": False, "where": "every costume entry rewritten in place"})
         reports.append({"group": jb["group"], "character": jb["name"], "rigged": str(fit["rigged"]), "sizes": sizes,
                         **fit["report"]})
     progress(90, "Writing the disc image")
@@ -1091,6 +1074,11 @@ ROSTER_NAMES = [(0, "The Rock"), (1, "Stone Cold"), (2, "The Undertaker"), (3, "
                 (65, "Cactus Jack"), (66, "Steven Richards"), (67, "Debra")]
 
 
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per wrestler (every costume), the names op=match resolves."""
+    return [{"slot": n, "name": n, "kind": "wrestler", "group": i, "writer": "gbox.yukes_sd"} for i, n in ROSTER_NAMES]
+
+
 def extract_run(ctx, game, e, work):
     """characters.DEDICATED run: the wrestler's costume 0 (head + body + legs, standing pose, one rigid joint per
     vertex) with its own TIM textures."""
@@ -1125,7 +1113,8 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         if "hip" not in roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"group": w["id"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
-                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
+                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale"),
+                     "fit_key": w.get("fit_key")})
     name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / name
     shutil.rmtree(work, ignore_errors=True)
@@ -1151,6 +1140,12 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
           "triangles": [r["triangles"] for r in b["reports"]], "fit": FIT_VERSION}
     (d / ".gbox-mod.json").write_text(json.dumps(mj))
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE
+    for (_meta, w), r in zip(pairs, b["reports"]):       # every wrestler's entries, in the one disc image
+        if w.get("fit_key"):
+            FE.model(w["fit_key"])
+        FE.stage("write", data={"mod": name, "image": cue, "wrestler": w["name"], "files": len(r.get("sizes") or {}),
+                                "bytes": sum(s[0] for s in (r.get("sizes") or {}).values())})
     return {"mod": name, "image": cue, "previews": previews,
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
 
@@ -1232,7 +1227,9 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
         if w["id"] in used:
             raise ValueError(f"{w['name']} is already replaced in this match")
         used.add(w["id"])
-        pairs.append((meta, w))
+        pairs.append((meta, dict(w, fit_key=wq or w["name"])))   # the Fitting pop-up's model: the cast slot
+    from . import fit_events as FE                         # every wrestler of the match up front (Fitting k/N)
+    FE.plan([(w["fit_key"], m["slug"], f"{m['name']} -> {w['name']}") for m, w in pairs])
     return use(ctx, pairs[0][0], game, inp, pairs, title)
 
 
