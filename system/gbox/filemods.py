@@ -37,7 +37,7 @@ def mod_dir(cfg, game_id: str, name: str) -> Path:
             raise ValueError("game and mod names must be single cache-folder components")
     root = (Path(cfg.cache) / "mods").resolve()
     out = root / game_id / name
-    if not out.resolve().is_relative_to(root / game_id):
+    if not out.resolve().is_relative_to((root / game_id).resolve()):   # (root/game_id may link to the cold tier)
         raise ValueError("mod folder must stay inside its game cache")
     return out
 

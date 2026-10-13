@@ -7,7 +7,8 @@ never saved as a mod card (/api/mods), so the operator could not see or launch t
   * scans the control plane's own cache (config.cache, never a hardcoded path) for built folders,
   * normalizes each writer's marker into one shape: writer, donor -> slot rows (the per-slot report for cast swaps),
     built time, size, verified flag, last launch result, preview images, ticket numbers,
-  * joins the mod cards (thumbnail, in-game shots, saved moment) and the donors' collection previews,
+  * joins the mod cards (thumbnail, in-game shots, saved moment), the frames captured from sessions that ran the build
+    (get_frame, save-state pictures, observations, task evidence; covered captures skipped) and the donors' previews,
   * registers a mod card for any built folder that lacks one (idempotent), so every build launches the usual way
     (@launch mod=<name>).
 
@@ -171,6 +172,11 @@ def read_folder(folder: Path, st: os.stat_result | None = None) -> dict | None:
     return rec
 
 
+def _tier_link(path: str) -> bool:
+    from . import cache_tiers
+    return cache_tiers.is_tier_link(path)
+
+
 def _mod_dirs(root: Path):
     """(game_id, mod, path, marker stat) of every candidate build: two directory levels and one marker stat each."""
     try:
@@ -179,8 +185,8 @@ def _mod_dirs(root: Path):
         return
     for g in games:
         try:
-            if not _safe_component(g.name) or not g.is_dir(follow_symlinks=False):
-                continue
+            if not _safe_component(g.name) or not (g.is_dir(follow_symlinks=False) or _tier_link(g.path)):
+                continue                                             # (a game demoted to the cold tier is a symlink)
             mods = sorted(os.scandir(g.path), key=lambda e: e.name)
         except OSError:
             yield g.name, None, None, None                         # this game's folder could not be listed
@@ -583,8 +589,59 @@ def game_title_of(gid: str, meta: dict, card: dict | None, catalog: dict | None)
     return gid
 
 
+FRAME_LIMIT = 12                           # newest in-game frames joined per build
+
+
+def _source_of(name: str, prov: dict) -> str:
+    if prov.get("task_evidence"):
+        return "task evidence"
+    if "captured" in prov and str(name).startswith("observation"):
+        return "live observation"
+    if prov.get("slot") is not None or str(name).startswith("state"):
+        return f"save state {prov['slot']}" if prov.get("slot") is not None else "save state"
+    return str(prov.get("tool") or "frame")
+
+
+def session_frames(store, sessions: list[dict], limit: int = FRAME_LIMIT) -> dict:
+    """(game_id, mod) -> the newest real frames captured from sessions that ran that build: get_frame grabs, save-state
+    pictures, live observations and task evidence. A build launched and watched but never saved as a card still shows
+    what it looked like running. Captures with a window over the game (covered > 0) are skipped - they hold desktop
+    pixels, not the build."""
+    by_sid = {}
+    for s in sessions:
+        mod = s.get("collection_mod") or s.get("mod")
+        if s.get("session_id") and mod:
+            by_sid[s["session_id"]] = (s.get("game_id") or "", mod)
+    if not by_sid:
+        return {}
+    out: dict = {}
+    for a in reversed(_fields(store, "artifact", ("sha256", "name", "media_type", "provenance"))):   # newest first
+        prov = a.get("provenance")
+        if isinstance(prov, str):
+            try:
+                prov = json.loads(prov)
+            except ValueError:
+                continue
+        if not isinstance(prov, dict) or not str(a.get("media_type") or "").startswith("image/") or not a.get("sha256"):
+            continue
+        key = by_sid.get(prov.get("session") or prov.get("session_id"))
+        if not key:
+            continue
+        try:
+            if int(prov.get("covered") or 0) > 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        got = out.setdefault(key, [])
+        if len(got) < limit and all(f["sha256"] != a["sha256"] for f in got):
+            got.append({"sha256": a["sha256"], "url": f"/api/artifacts/{a['sha256']}",
+                        "session_id": prov.get("session") or prov.get("session_id"),
+                        "source": _source_of(a.get("name") or "", prov)})
+    return out
+
+
 def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | None, requests: dict, library,
-          display_name: str = "") -> dict:
+          frames: list[dict] | None = None, display_name: str = "") -> dict:
     meta, gid, name = rec.get("meta") or {}, rec["game_id"], rec["name"]
     changes = changes_of(meta)
     built = meta.get("built")
@@ -610,6 +667,7 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
         "images": [{"name": n, "url": base + n} for n in rec.get("images") or []],
         "donor_previews": rec["donor_previews"] if "donor_previews" in rec else donor_previews(changes, library),
         "shots": [{"sha256": s, "url": f"/api/artifacts/{s}"} for s in shots],
+        "frames": [f for f in frames or [] if f["sha256"] not in shots],
         "card_id": (card or {}).get("id") or "", "state_slot": (card or {}).get("state_slot"),
         "video": (card or {}).get("video") or "",
         "tickets": [{"number": n, **({k: requests[n].get(k) for k in ("id", "title", "status")} if n in requests else {})}
@@ -747,6 +805,10 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                 pass
     launches = launch_index(sessions, _failed_launches(store))
     names = display_names(store)
+    try:
+        frames = session_frames(store, sessions)
+    except Exception:                                            # noqa: BLE001 - frames are a convenience
+        frames = {}
     requests = {}
     for r in _fields(store, "request", ("id", "number", "title", "status")):
         if isinstance(r.get("number"), int):
@@ -757,7 +819,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
         gid = rec["game_id"]
         items.append(entry(rec, cards.get((gid, rec["name"])), launches.get((gid, rec["name"])),
                            catalog_of(store, gid, rec.get("meta") or {}, catalogs), requests, library,
-                           names.get(f"{gid}/{rec['name']}", "")))
+                           frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", "")))
     items.sort(key=lambda m: -(m["built"] or 0))
     return {"items": items, "registered": made, "cache_dir": str(root)}
 
@@ -791,7 +853,7 @@ def image_path(config, game_id: str, mod: str, name: str) -> Path:
         raise ValueError("bad mod")
     root = mods_root(config).resolve()
     folder = (root / game_id / mod)
-    if not folder.resolve().is_relative_to(root / game_id) or not (folder / MARKER).is_file() or (folder / STAGED_MARK).exists():
+    if not folder.resolve().is_relative_to((root / game_id).resolve()) or not (folder / MARKER).is_file() or (folder / STAGED_MARK).exists():
         raise ValueError("no such built mod")
     parts = name.split("/") if isinstance(name, str) else []
     if not parts or len(parts) > 2 or any(not _safe_component(p) for p in parts) or (len(parts) == 2 and parts[0] not in PREVIEW_DIRS):
