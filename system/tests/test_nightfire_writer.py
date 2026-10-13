@@ -52,7 +52,7 @@ def test_huffman_lengths_are_limited_and_complete():
     assert sorted(L for L in one if L) == [1, 1]
 
 
-@pytest.mark.parametrize("data", [b"", b"A", b"\0" * 70_000, _sample()])
+@pytest.mark.parametrize("data", [b"", b"A", b"\0" * 70_000, _sample()], ids=["empty", "one-byte", "zeros", "sample"])  # short ids: Windows caps env vars at 32 KiB
 def test_method1_roundtrip_through_reconstructed_decoder(data):
     edl = W.compress_method1(data, block_input=8192)
     h = E.header(edl)
