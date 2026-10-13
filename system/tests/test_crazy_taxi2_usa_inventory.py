@@ -20,9 +20,9 @@ def test_driver_set_pairs_models_textures_and_high_detail():
              "POLPP2D.BIN": 0, "POLPPL0.BIN": 0, "POLPPTST.BIN": 0}
     d = inv.driver_set(files)
     assert sorted(d) == ["1A", "2D"]
-    assert d["1A"] == {"driver": "Slash", "model": "POLPP1A.BIN", "texture": "TEXPP1A.BIN",
+    assert d["1A"] == {"driver": "Axel", "model": "POLPP1A.BIN", "texture": "TEXPP1A.BIN",
                        "high_model": "POLPP1AH.BIN", "high_texture": "TEXPP1AH.BIN"}
-    assert d["2D"] == {"driver": "Gus", "model": "POLPP2D.BIN", "texture": None}
+    assert d["2D"] == {"driver": "Hot-D", "model": "POLPP2D.BIN", "texture": None}
 
 
 def test_model_regex_covers_banks_but_not_other_bins():
