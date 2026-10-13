@@ -123,6 +123,12 @@ def create_app(config: Config) -> FastAPI:
     from . import built_mods                      # built mod folders in the cache, joined with their mod cards
     built_mods.routes(app, store, config, auth)
     cache_tiers.routes(app, config, auth)         # GET /api/cache/tiers, POST /api/cache/tiers/pin
+    from . import build_notify                    # every finished build / collect / failed build -> the bell tray
+    build_notes = build_notify.Notifier(store, config, index=lambda: getattr(app.state, "built_mods", None),
+                                        workers=lambda: workers(), library=lambda: built_mods.library_of(config))
+    app.state.build_notes = build_notes
+    build_notes.watch(app.state.built_mods)
+    build_notify.routes(app, store, auth, build_notes)
 
     # --- shell ---
     @app.get("/")
@@ -574,6 +580,11 @@ def create_app(config: Config) -> FastAPI:
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
 
+    # Blender round trip (gbox/blender_roundtrip.py): a character out as one GLB with its rig role names / props,
+    # copy to the clipboard (the picker's right-click), import back as a variant / new donor (a characters job)
+    from . import blender_roundtrip
+    blender_roundtrip.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
+
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:
         from . import characters
@@ -659,19 +670,31 @@ def create_app(config: Config) -> FastAPI:
         title: str
         text: str = ""
         session_id: str = ""                # click opens this session
-        kind: str = "info"                  # info | ready | done | error
+        kind: str = "info"                  # info | ready | done | error | build | collect
+        # a build (optional; the control plane posts its own build notifications, gbox/build_notify.py)
+        game_id: str = ""
+        mod: str = ""                       # the built mod (Play launches it through the mod launch path)
+        thumbnail: str = ""                 # an authenticated /api/... picture URL
+        launch: list[dict] = []             # launch options (gbox.special_builds.launch_options shape)
+        job_id: str = ""
+        summary: str = ""                   # "4/4 slots built · Sonic, Knuckles, Amy, Gamma"
 
     @app.post("/api/notify")
     def notify(n: NotifyIn, actor=Depends(auth)):
         """A notification for the operator's header tray (e.g. "Mario Mercenaries is ready")."""
         import uuid
         nid = uuid.uuid4().hex[:12]
-        store.put("notify", nid, n.model_dump() | {"id": nid, "ts": time.time(), "read": False, "by": actor})
+        body = n.model_dump()
+        if n.kind == "build" and n.mod and n.game_id and not n.launch:
+            body["launch"] = build_notes.launch_for({"kind": "build", "game_id": n.game_id, "mod": n.mod})
+        store.put("notify", nid, body | {"id": nid, "ts": time.time(), "read": False, "by": actor})
         return {"id": nid}
 
     @app.get("/api/notify")
     def notify_list(limit: int = 30, actor=Depends(auth)):
-        return sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit]
+        """Newest first. Build entries (auto: "build") carry items with launch options for the PCs online now and a
+        thumbnail URL (GET /api/notify/{id}/thumb)."""
+        return build_notes.decorate(sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit])
 
     @app.post("/api/notify/{nid}/read")
     def notify_read(nid: str, actor=Depends(auth)):
@@ -1680,6 +1703,7 @@ def create_app(config: Config) -> FastAPI:
             if j["state"] == JobState.RUNNING and j["worker_id"] in old_ids:
                 j.update(state=JobState.FAILED, finished=time.time(), error=f"worker {w.name} restarted while running")
                 store.put("job", j["id"], j)
+                build_notes.job_ended(j)
                 store.audit(actor, "job.failed", j["id"], {"reason": "worker restarted"})
         for s_ in store.all("session"):             # ...and its emulator sessions died with it
             if s_.get("state") == "running" and s_["session_id"].split("-")[0] in old_ids:
@@ -1907,6 +1931,7 @@ def create_app(config: Config) -> FastAPI:
         return receipt, out, state, refs, problems
 
     def _result_followups(j, r, t, state, actor):
+        build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         mod_attempt = ((t.name == "characters" and op in ("use", "live_use", "swap"))
@@ -2017,6 +2042,8 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if job.state == JobState.REJECTED:
+            build_notes.job_ended(job.model_dump(mode="json"))
         if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
             stopping[inp["session_id"]] = job.id
         if job.state == JobState.REJECTED and not job.parent_request_id and (
@@ -2153,6 +2180,7 @@ def create_app(config: Config) -> FastAPI:
                     continue
                 job.update(state=JobState.FAILED, finished=now, error=reason)
                 store.put("job", job["id"], job)
+                build_notes.job_ended(job)
                 store.audit("scheduler", "job.failed", job["id"], {"reason": reason})
 
     @app.get("/api/jobs")
@@ -2558,6 +2586,26 @@ def create_app(config: Config) -> FastAPI:
                     "knowledge": [e for e in store.all("edge") if e["game_id"] == gid],
                     "runs": [r for r in store.all("run") if r["game_id"] == gid]}
 
+    @app.get("/api/profiles/{gid}/pick")
+    def profile_pick(gid: str, actor=Depends(auth)):
+        """What the pick whip learned about this game (gbox.pick_learn): struct offsets, model pointers, model
+        signatures, live-replace outcomes, Ghidra findings. {} until the first pick."""
+        return (store.get("profile", gid) or {}).get("pick") or {}
+
+    @app.post("/api/profiles/{gid}/pick")
+    def profile_pick_learn(gid: str, body: dict, actor=Depends(auth)):
+        """Merge a pick's findings into the game's learned data (dicts merge, values replace, null deletes)."""
+        from . import pick_learn
+        with store.lock:
+            p = store.get("profile", gid)
+            if not p:
+                e = store.catalog_get(gid) or _404()
+                p = {"game_id": gid, "title": e["title"], "platform": e["platform"], "created": time.time(), "notes": []}
+            p["pick"] = pick_learn.merge(p.get("pick") or {}, body) | {"updated": time.time()}
+            store.put("profile", gid, p)
+        store.audit(actor, "profile.pick", gid, {"keys": sorted(body)[:20]})
+        return p["pick"]
+
     # --- live sessions (frames up from the worker, input down from the UI) ---
     live: dict[str, dict] = {}
     live_lock = threading.Lock()
@@ -2665,6 +2713,18 @@ def create_app(config: Config) -> FastAPI:
         store.put("session", sid, session)
         store.audit(actor, "session.live_model", sid, {"mod": model.mod})
         return {"session_id": sid, "live_mod": model.mod}
+
+    @app.post("/api/sessions/{sid}/live-pick")
+    def live_pick(sid: str, pick: dict, actor=Depends(auth)):
+        """The pick whip's last saved pick for this session (gbox.pick_tool.compact_pick): what pick_identify found /
+        pick_replace put in. The Blender round trip (gbox.live_link) passes it back to pick_replace unchanged."""
+        session = store.get("session", sid) or _404()
+        if len(json.dumps(pick, default=str)) > 256 << 10:
+            raise HTTPException(413, "pick too large (save the compact pick)")
+        session["live_pick"] = pick | {"saved": time.time()}
+        store.put("session", sid, session)
+        store.audit(actor, "session.live_pick", sid, {"slot": pick.get("slot"), "status": pick.get("status")})
+        return {"session_id": sid, "slot": pick.get("slot")}
 
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
@@ -2837,17 +2897,23 @@ def create_app(config: Config) -> FastAPI:
         from starlette.concurrency import run_in_threadpool
         await run_in_threadpool(cache_tiers.ensure_hot, gid)   # new writes land on the hot tier
         d = _mod_root(gid, name)
+        import uuid
         from . import filemods
         try:
             f = filemods._file_path(d, path)
-            tmp = filemods._file_path(d, path + ".part")
+            # one .part per upload: a worker pushing the same build at startup (push_missing) can race an operator
+            # upload; a shared .part made the second os.replace fail with FileNotFoundError (500) after a full transfer
+            tmp = filemods._file_path(d, f"{path}.{uuid.uuid4().hex[:12]}.part")
         except ValueError as error:
             raise HTTPException(400, "bad path") from error
         f.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "wb") as fh:
-            async for chunk in request.stream():
-                fh.write(chunk)
-        os.replace(tmp, f)
+        try:
+            with open(tmp, "wb") as fh:
+                async for chunk in request.stream():
+                    fh.write(chunk)
+            os.replace(tmp, f)
+        finally:
+            tmp.unlink(missing_ok=True)                  # an aborted upload leaves nothing behind
         return {"stored": path, "size": f.stat().st_size}
 
     # --- Export ROM hack (gbox/romexport.py): bootable modded image of the operator's own game + shareable patch ---
@@ -2954,10 +3020,20 @@ def create_app(config: Config) -> FastAPI:
 
     def hermes_runs(limit: int) -> list[dict]:
         """Recent Hermes runs, each naming the inbox tickets it confirmed work on."""
-        from . import hermes_tasks
+        from . import hermes_providers, hermes_tasks
         runs = hermes_tasks.list_runs(limit)
+        # The provider that served the run's last successful model call, from Hermes's agent log; the
+        # session's billing provider is only where the run started before falling through its routes.
+        try:
+            served = hermes_providers.session_providers()
+        except Exception:  # the Providers view is optional; never break the run list
+            served = {}
         titles: dict[str, dict | None] = {}
         for run in runs:
+            if (who := served.get(run.get("session_id") or "")):
+                run["billing_provider"] = run.get("provider")
+                run.update(provider=who["provider"], model=who["model"] or run.get("model"),
+                           provider_attribution=who["attribution"])
             tickets = []
             for rid in run.get("request_ids") or []:
                 if rid not in titles:
@@ -3033,6 +3109,18 @@ def create_app(config: Config) -> FastAPI:
         return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)),
                 "recent": recent, "hermes": hermes_runs(max(1, min(hermes_limit, 100))),
                 "resolutions": resolutions}
+
+    @app.get("/api/hermes/providers")
+    def hermes_providers_view(window: Literal["today", "7d"] = "today", actor=Depends(auth)):
+        """Which Hermes provider did the work and which can still do it, for the Tasks window.
+
+        One row per route (feedback.json routes plus any other route that served calls in the
+        window) and per provider: status now, last error, runs served to completion, model calls,
+        tokens, wall time, OpenRouter credit (cached 5 min; the key never leaves the server) and a
+        one-line recommendation.
+        """
+        from . import hermes_providers
+        return hermes_providers.summary(window)
 
     @app.get("/api/tasks/resolutions/{rid}")
     def tasks_resolution(rid: str, actor=Depends(auth)):
@@ -3134,6 +3222,14 @@ def create_app(config: Config) -> FastAPI:
                     d["library"] = {"slug": hit.get("slug"), "name": hit.get("name")}
             except Exception:
                 pass
+            if "metal gear solid 2" in (w.game or "").lower():   # MGS2: the cast slot the whipped thing belongs to
+                try:
+                    from . import mgs2_swap
+                    slot = mgs2_swap.slot_for_name(d.get("name") or "", None, d.get("kind"))
+                    if slot:
+                        d["slot"] = slot
+                except Exception:
+                    pass
             return d
 
         with concurrent.futures.ThreadPoolExecutor(2) as ex:
