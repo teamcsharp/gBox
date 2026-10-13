@@ -227,6 +227,22 @@ def test_seed_recipes_load_and_cover_the_requested_games():
         EC.recipe_for("afd2fc507bb69843", "nope", r)
 
 
+def test_auf_recipe_reaches_the_first_mission_cut_scene_and_the_bots():
+    """007 Agent Under Fire (#1776 cast builds): the boot path ends on Start Mission, every cut scene shot is timed
+    after it (a press during the cut scene would skip it), and the bots variant starts a Combat Training match."""
+    r = EC.load_recipes()
+    auf = EC.recipe_for("65b7187589166b26", "", r)
+    assert auf["status"] in ("ready", "unverified") and auf["adapter"] == "dolphin" and auf["boot_s"] == 25
+    assert auf.get("moment") is None and auf["steps"][-1]["label"].startswith("start mission")
+    assert [s["press"] for s in auf["steps"]][-4:] == [["a"]] * 4             # select mission, briefing, setup, start
+    cut = [s for s in auf["shots"] if s["label"].startswith("cut scene")]
+    assert len(cut) >= 5 and all(s.get("at_s") is not None for s in auf["shots"])
+    assert any("guard" in s["label"] for s in cut) and any("Bond" in s["label"] for s in cut)
+    bots = EC.recipe_for("65b7187589166b26", "bots", r)
+    labels = [s.get("label", "") for s in bots["steps"]]
+    assert "to Multiplayer" in labels and "start game" in labels and labels.index("to Bots") < labels.index("start game")
+    assert bots["shots"] and "variants" not in bots
+
 def test_recipe_checks_and_recorded_moments(tmp_path):
     bad = {"games": {"x": {"status": "ready", "moment": {"kind": "artifact", "artifact": "short"},
                            "steps": [{"tool": "poke", "input": {"op": "x"}}], "shots": [{"at_s": 1}]}}}
