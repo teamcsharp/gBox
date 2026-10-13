@@ -144,10 +144,29 @@ body roles. Verified = parsed to the last byte, the shared skeleton checksum, ro
   Office) and an Agent / SWAT fight: the in-game check of the plain-triangle mesh (the C block the game itself draws
   for its LOD and low-poly models) with the render flags 64, and of the memory budget.
 
+## Path of Neo reader, geometry stage (`gbox/pon_models.py`, #1559)
+
+* `.dcn_11` (verified on the owned disc): `u32 sections end - 0x40, u32, u32, u32 texture start` + 0x30 bytes, then
+  tagged sections `char tag[8], u32 size, u32 version`: `_HEADER_`, `PATCHOBJ` (name char[16] at +0x14, part count
+  at +0x58, part record offsets at +0x60, 0x40-byte records named `head` / `handL` / `handR` / `legs` / `Jacket_l`
+  ...), `SKINMESH`, `A_DMAPAK`, `REFS____`; offsets are relative to 0x40.
+* `A_DMAPAK` = PS2 DMA chains of `ref` tags whose VIF code is `UNPACK V4-32` of the same size. A vertex batch is a
+  header qw `{n, 3, 0, GIF NLOOP | EOP}` + n x 2 qw: A = `s32 x, y, z` 16.16 fixed point (+Y up, feet at 0, the
+  cast ~2,900 units tall) + `f32 matrix address * 4096`; B = `f32 u, v, weight0, weight1` whose low 16 bits are VU
+  addresses: u -> output strip slot (12 + 3 k), v -> a second slot (0 = none), weights -> joint matrices. Output is
+  one triangle strip of NLOOP vertices; triangles touching an unwritten slot or repeating a vertex are skipped.
+* Survey (`python -m gbox.pon_models <chd> <out>`, all 57 levels): **233 distinct models, 0 failures**, 421,088
+  triangles; 189 human-sized (Neo 3,525 triangles in 106 batches, Agent Smith LP 649 in 22). Flat-shaded renders of
+  Neo, Trinity, Smith, Morpheus, Niobe, Seraph and the Merovingian read as complete A-pose figures (head, hands,
+  feet); coat hems / lower legs show overlapping layers, consistent with patch-drawn parts not decoded yet.
+* Tests: `tests/test_pon_models.py` (12 synthetic + 1 owned: the b1_lobby_dream cast decodes; Neo / Smith LP counts).
+* Not yet: skeleton, joint indices, textures, collection registration and the writer (no PoN `op=use` yet).
+
 ## Open items
 
 * In game (PCSX2): the replaced models' drawing, lighting and the per-file memory; record `runtime` with a capture.
 * GameCube discs (favourite): open the GCZ, check whether the same WAD1.DFU / .dcn (big endian?) apply.
-* Path of Neo: decode `.dcn_11` (sections `_HEADER_`, `PATCHOBJ`...) and write replacements into every level package
-  that carries the model (in place per chunk), then the same cast slots.
+* Path of Neo: the skeleton (PATCHOBJ / SKINMESH part records, joint matrices), skin weights -> joint indices and
+  the textures after the sections; then a DEDICATED reader with roles, and a writer that rewrites every level
+  package carrying the model (in place per chunk), with the same cast slots as ETM.
 * `.asb` animations / skeleton (would allow importing the game's poses into the GLB).
