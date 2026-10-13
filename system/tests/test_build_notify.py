@@ -314,3 +314,23 @@ def test_notify_in_stays_backward_compatible(tmp_path):
         assert n["launch"][0]["call"]["path"] == f"/api/games/{GID}/launch?node=auto&mod=m1"
         assert c.post("/api/notify/read_all", headers=h).json()["marked"] == 2
         assert all(x["read"] for x in c.get("/api/notify", headers=h).json())
+
+
+def test_a_renamed_build_shows_its_official_name_in_the_tray(tmp_path):
+    """#1656: the operator's display name (PATCH /api/builds/...) wins in the bell tray, older entries too; the stored
+    entry keeps the writer's title, so clearing the name restores it."""
+    cfg, app, store, h = plane(tmp_path, [(GID, "cast_g1_sonic", {"built": time.time(), "cast": CAST_ROWS,
+                                                                  "title": "Sonic Adventure: cast as Sonic Heroes"}, [])])
+    with TestClient(app) as c:
+        assert app.state.built_mods.wait(10)
+        worker(c, h)
+        run(c, h, "characters", {"op": "cast_swap", "target_game": GID, "source": "heroes", "launch": False},
+            {"result": {"status": "built", "mod": "cast_g1_sonic", "game_id": GID, "report": CAST_ROWS}})
+        assert notes(c, h)[0]["title"] == "Sonic Adventure: cast as Sonic Heroes is ready"
+        assert c.patch(f"/api/builds/{GID}/cast_g1_sonic", headers=h, json={"display_name": "TTS Sonic Full Cast"}).status_code == 200
+        n = notes(c, h)[0]
+        assert n["title"] == "TTS Sonic Full Cast is ready" and n["mod_title"] == "TTS Sonic Full Cast"
+        assert n["items"][0]["mod_title"] == "TTS Sonic Full Cast"
+        assert store.get("notify", n["id"])["items"][0]["mod_title"] == "Sonic Adventure: cast as Sonic Heroes"
+        c.patch(f"/api/builds/{GID}/cast_g1_sonic", headers=h, json={"display_name": ""})
+        assert notes(c, h)[0]["title"] == "Sonic Adventure: cast as Sonic Heroes is ready"

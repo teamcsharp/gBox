@@ -168,6 +168,29 @@ def test_offline_sessions_do_not_queue_capture_or_models(observer):
     assert not o.pending and not o.store.all('request') and not o.store.all('job')
 
 
+def test_stalled_stream_waits_instead_of_starting_another_capture(observer):
+    # docs/stream-stability.md: a stale stream means the machine is struggling; one more ffmpeg grab job makes it worse.
+    o = observer
+    o.session['last_frame_age'] = 42
+    o.sample(o.session)
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'waiting_for_frame' and 'stalled' in row['error']
+    assert not o.store.all('job') and not o.store.all('request')
+
+
+def test_collection_waits_while_the_operator_plays_on_the_linux_node(observer):
+    o = observer
+    original = o.api
+    o.api = lambda path, *args, **kwargs: ([{'id': 'worker', 'online': True, 'os': 'linux'}] if path == '/api/workers'
+                                           else original(path, *args, **kwargs))
+    o.tick()
+    for f in list(o.pending.values()):
+        f.result()
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['models']['state'] == 'not_started'           # reported, not scheduled
+    assert not o.store.get('character_collection', 'testgame')
+
+
 def test_bounded_admission_attaches_all_sessions(observer):
     o = observer
     o.pool.shutdown()

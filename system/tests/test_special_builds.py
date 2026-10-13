@@ -231,3 +231,27 @@ def test_the_shared_build_path_records_the_recipe_in_the_marker(tmp_path, monkey
                                         ("Sonic Adventure / Sonic Adventure DX", "Sonic Adventure")])
 def test_cast_source_labels_map_back_to_a_source_spec(label, spec):
     assert S.source_spec(label) == spec
+
+
+def test_favorites_head_the_menu_and_still_rebuild_with_their_group(tmp_path):
+    """#1656: a ★ build moves to a Favorites group at the top (only when there is one); `home` keeps its own group, so
+    "Rebuild all confirmation builds" still rebuilds a favorited confirmation build."""
+    cfg, app, store, h = fixture(tmp_path)
+    with TestClient(app) as c:
+        assert app.state.built_mods.wait(10)
+        assert c.put(f"/api/builds/{GID}/g1_hucast/favorite", json={"favorite": True}, headers=h).status_code == 200
+        r = special(c, h)
+        assert [g["label"] for g in r["groups"]] == ["Favorites", "Confirmation builds", "Cast swaps", "Character swaps",
+                                                    "Other"]
+        g = by_key(r["groups"])
+        fav = g["favorites"]["builds"]
+        assert [b["name"] for b in fav] == ["g1_hucast"] and fav[0]["favorite"] and fav[0]["home"] == "confirmation"
+        assert [b["name"] for b in g["confirmation"]["builds"]] == ["g1_kane_req"], "listed once, in Favorites"
+        assert r["total"] == 5
+        q = c.post(f"/api/games/{GID}/special_builds/rebuild", json={"recipes": "all"}, headers=h).json()
+        assert sorted(j["key"] for j in q["jobs"]) == ["g1/g1_hucast", "g1/g1_kane_req"]
+        # un-starred: back in its own group, no Favorites group
+        assert c.delete(f"/api/builds/{GID}/g1_hucast/favorite", headers=h).json() == {"key": "g1/g1_hucast",
+                                                                                     "favorite": False}
+        g = by_key(special(c, h)["groups"])
+        assert "favorites" not in g and [b["name"] for b in g["confirmation"]["builds"]] == ["g1_kane_req", "g1_hucast"]
