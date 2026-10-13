@@ -96,6 +96,30 @@ def test_launch_ingestion_closes_old_session_and_retains_checkpoint():
     assert records['new']['state'] == 'running'
 
 
+def test_orphan_session_ended_on_server_is_closed_without_saving(monkeypatch, tmp_path):
+    """A leftover emulator the server already ended must not block every launch (operator report 2026-10-13)."""
+    events = []
+    ad = SimpleNamespace(proc=None, stop_game=lambda: events.append('stop'))
+    monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g', 'title': 'Crazy Taxi'})})
+    monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: (_ for _ in ()).throw(RuntimeError("gBox isn't the active window")))
+    monkeypatch.setattr(tools, '_session_ended_on_server', lambda ctx, sid: True)
+    monkeypatch.setattr(tools.httpx, 'post', lambda *a, **k: events.append('post'))
+    ctx = SimpleNamespace(server='http://x', headers={}, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    tools._close_previous_games(ctx)
+    assert events == ['stop'] and 'old' not in tools.SESSIONS
+
+
+def test_live_session_save_failure_names_the_game(monkeypatch, tmp_path):
+    ad = SimpleNamespace(proc=None, stop_game=lambda: None)
+    monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g', 'title': 'Crazy Taxi'})})
+    monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: (_ for _ in ()).throw(RuntimeError("gBox isn't the active window")))
+    monkeypatch.setattr(tools, '_session_ended_on_server', lambda ctx, sid: False)
+    ctx = SimpleNamespace(server=None, headers={}, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    with pytest.raises(Unsupported, match='Crazy Taxi'):
+        tools._close_previous_games(ctx)
+    assert 'old' in tools.SESSIONS
+
+
 def test_keep_session_leaves_link_host_running(monkeypatch, tmp_path):
     events = []
     sessions = {}
