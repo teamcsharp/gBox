@@ -272,6 +272,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/game-menu.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
+<script src="/viz/build-notes.js"></script>
 <script src="/viz/retarget-handles.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -418,7 +419,34 @@ $("#tok").value = tok;
 if (!tok) $("#tok").style.display = "";                    // only a plain browser without a token needs the box
 
 // ---- header tray: every running session as a clickable icon (yours bright, agents' dimmed) + a bell for notifications ----
-const TRAY = { open: false, notes: [] };
+const TRAY = { open: false, notes: [], bn: {}, seen: null };
+// build notifications (viz/build-notes.js over gbox/build_notify.py): thumbnail, summary, Play (this PC, the game menu's
+// launch path: the mod is staged / fetched there), ▾ other launch options, Open in Mods; errors: Open request / Retry build
+document.head.insertAdjacentHTML("beforeend", `<style>${GBoxBuildNotes.CSS}</style>`);
+const bnUrl = u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`;
+const bnEmbedded = () => new URLSearchParams(location.search).has("embedded");
+function bnToastHide(id) { const t = $("#bntoast"); if (t && (!id || t.dataset.id === id)) { clearTimeout(bnToastHide.t); t.remove(); } }
+function bnAnnounce(n) {                                       // a new build entry: a toast with Play + an OS notification
+  bnToastHide();
+  document.body.insertAdjacentHTML("beforeend", GBoxBuildNotes.toastHTML(n, { url: bnUrl }).replace('class="bn-toast"', 'id="bntoast" class="bn-toast"'));
+  bnToastHide.t = setTimeout(() => bnToastHide(n.id), GBoxBuildNotes.TOAST_MS);
+  const os = GBoxBuildNotes.osNote(n);
+  if (bnEmbedded()) console.log("GBOX:" + JSON.stringify(os));     // the desktop shell shows it when its window is not in front
+  else try { if (window.Notification && Notification.permission === "granted" && document.hidden) new Notification(os.title, { body: os.body, tag: os.id }); } catch {}
+}
+window.gboxBuildNoteOpen = () => { TRAY.open = true; trayPop(); };   // the desktop shell: its OS notification was clicked
+const buildNoteIO = () => ({ api, notes: () => TRAY.notes, state: TRAY.bn, here: window.GBOX_LOCAL?.worker || "",
+  launch: (gid, x) => gameMenuIO().launch(gid, x),
+  openMods: (gid, mod) => { MODSG.focus = { q: mod || "", game: gid || "" }; show("Mods"); },
+  openRequest: async r => {
+    if (bnEmbedded()) { console.log("GBOX:" + JSON.stringify({ ev: "openrequest", id: r.id })); return; }   // the desktop's Requests view
+    const x = await api(`/api/requests/${encodeURIComponent(r.id)}`).catch(() => null);
+    MODSG.focus = { q: x?.number ? "#" + x.number : "", game: "" }; show("Mods");
+  },
+  openModels: (gid, title) => show("GameModels", gid, title),
+  repaint: refetch => refetch ? trayTick() : (TRAY.open && trayPop()),
+  close: () => { TRAY.open = false; $("#traypop").classList.remove("on"); },
+  showTray: () => { TRAY.open = true; trayPop(); }, dismiss: id => bnToastHide(id) });
 // where a session runs relative to this desktop, including the other Windows PC
 const ICON_LOCAL = '<svg class="where" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><title>Local: running on this PC</title><rect x="2" y="4" width="20" height="13" rx="1"/><path d="M8 21h8M12 17v4"/></svg>';
 const ICON_REMOTE = '<svg class="where" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><title>Remote: running on another computer</title><path d="M17.5 19H8a5 5 0 1 1 .9-9.9A6 6 0 0 1 20 11a4 4 0 0 1-2.5 8z"/></svg>';
@@ -435,7 +463,9 @@ async function trayTick() {
     const online = new Set((ws || []).filter(w => w.online).map(w => w.id));
     const run = ss.filter(x => x.state === "running" && (!ws?.length || online.has(x.session_id.split("-")[0])));   // stale ones (worker restarted) are gone
     TRAY.notes = notes;
-    const unread = notes.filter(n => !n.read).length, cur = (window.active || {}).sid;
+    if (TRAY.seen === null) TRAY.seen = GBoxBuildNotes.seenOf(notes);       // opening the page announces nothing old
+    else GBoxBuildNotes.fresh(notes, TRAY.seen).slice(0, 1).forEach(bnAnnounce);
+    const unread = GBoxBuildNotes.unread(notes), cur = (window.active || {}).sid;
     const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent";
       return `<button class="tchip${agent ? " agent" : ""}${x.session_id === cur ? " cur" : ""}" data-sid="${esc(x.session_id)}"
         title="${esc((l.label ? l.label + " · " : "") + (x.title || "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + " · " + x.session_id)}">
@@ -463,15 +493,14 @@ async function trayTick() {
       });
     }
     const bell = $("#tbell"), badge = bell.querySelector("b");
-    bell.classList.toggle("new", unread > 0); badge.hidden = !unread; badge.textContent = unread || "";
+    bell.classList.toggle("new", unread > 0); badge.hidden = !unread; badge.textContent = unread > 99 ? "99+" : unread || "";
+    bell.title = unread ? `Notifications: ${unread} unread` : "Notifications";
     if (TRAY.open && !$("#traypop .tmenu")) trayPop();
   } catch {}
 }
 function trayPop() {
   const el = $("#traypop");
-  el.innerHTML = TRAY.notes.length ? TRAY.notes.slice(0, 20).map(n => `<div class="tnote${n.read ? "" : " unread"}" data-id="${esc(n.id)}" data-sid="${esc(n.session_id || "")}">
-      <b>${esc(n.title)}</b><span>${esc(n.text || "")}</span><time>${new Date(n.ts * 1000).toLocaleTimeString()}</time></div>`).join("")
-    : '<p class="mut" style="padding:10px">No notifications yet.</p>';
+  el.innerHTML = GBoxBuildNotes.trayHTML(TRAY.notes, { url: bnUrl, state: TRAY.bn, here: window.GBOX_LOCAL?.worker || "" });
   el.classList.add("on");
 }
 // click a mod thumbnail or any texture (img.tpable): view it in a pop-up (#186) — wheel / + - zoom at the cursor, drag to pan,
@@ -594,8 +623,13 @@ document.addEventListener("click", async e => {
     TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = ""; trayTick(); return;
   }
   const c = e.target.closest(".tchip"); if (c) { show("Sessions", c.dataset.sid); return; }
-  if (e.target.closest("#tbell")) { TRAY.open = !TRAY.open; TRAY.open ? trayPop() : $("#traypop").classList.remove("on"); return; }
+  if (e.target.closest("#tbell")) { TRAY.open = !TRAY.open; TRAY.open ? trayPop() : $("#traypop").classList.remove("on");
+    if (!bnEmbedded()) try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch {}
+    return; }
+  if (e.target.closest("[data-bn]") && GBoxBuildNotes.click(e.target, buildNoteIO()) !== false) return;
   const n = e.target.closest(".tnote");
+  if (n && n.dataset.auto) { if (!e.target.closest("button")) { api(`/api/notify/${n.dataset.id}/read`, {}).catch(() => {});   // a build entry: read, the tray stays
+    n.classList.remove("unread"); const x = TRAY.notes.find(y => y.id === n.dataset.id); if (x) x.read = true; } return; }
   if (n) { api(`/api/notify/${n.dataset.id}/read`, {}).catch(() => {}); TRAY.open = false; $("#traypop").classList.remove("on");
            if (n.dataset.sid) show("Sessions", n.dataset.sid); trayTick(); return; }
   if (TRAY.open && !e.target.closest("#traypop")) { TRAY.open = false; $("#traypop").classList.remove("on"); }

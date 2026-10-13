@@ -119,6 +119,12 @@ def create_app(config: Config) -> FastAPI:
     asset_library.routes(app, store, config, auth)
     from . import built_mods                      # built mod folders in the cache, joined with their mod cards
     built_mods.routes(app, store, config, auth)
+    from . import build_notify                    # every finished build / collect / failed build -> the bell tray
+    build_notes = build_notify.Notifier(store, config, index=lambda: getattr(app.state, "built_mods", None),
+                                        workers=lambda: workers(), library=lambda: built_mods.library_of(config))
+    app.state.build_notes = build_notes
+    build_notes.watch(app.state.built_mods)
+    build_notify.routes(app, store, auth, build_notes)
 
     # --- shell ---
     @app.get("/")
@@ -643,19 +649,31 @@ def create_app(config: Config) -> FastAPI:
         title: str
         text: str = ""
         session_id: str = ""                # click opens this session
-        kind: str = "info"                  # info | ready | done | error
+        kind: str = "info"                  # info | ready | done | error | build | collect
+        # a build (optional; the control plane posts its own build notifications, gbox/build_notify.py)
+        game_id: str = ""
+        mod: str = ""                       # the built mod (Play launches it through the mod launch path)
+        thumbnail: str = ""                 # an authenticated /api/... picture URL
+        launch: list[dict] = []             # launch options (gbox.special_builds.launch_options shape)
+        job_id: str = ""
+        summary: str = ""                   # "4/4 slots built · Sonic, Knuckles, Amy, Gamma"
 
     @app.post("/api/notify")
     def notify(n: NotifyIn, actor=Depends(auth)):
         """A notification for the operator's header tray (e.g. "Mario Mercenaries is ready")."""
         import uuid
         nid = uuid.uuid4().hex[:12]
-        store.put("notify", nid, n.model_dump() | {"id": nid, "ts": time.time(), "read": False, "by": actor})
+        body = n.model_dump()
+        if n.kind == "build" and n.mod and n.game_id and not n.launch:
+            body["launch"] = build_notes.launch_for({"kind": "build", "game_id": n.game_id, "mod": n.mod})
+        store.put("notify", nid, body | {"id": nid, "ts": time.time(), "read": False, "by": actor})
         return {"id": nid}
 
     @app.get("/api/notify")
     def notify_list(limit: int = 30, actor=Depends(auth)):
-        return sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit]
+        """Newest first. Build entries (auto: "build") carry items with launch options for the PCs online now and a
+        thumbnail URL (GET /api/notify/{id}/thumb)."""
+        return build_notes.decorate(sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit])
 
     @app.post("/api/notify/{nid}/read")
     def notify_read(nid: str, actor=Depends(auth)):
@@ -1503,6 +1521,7 @@ def create_app(config: Config) -> FastAPI:
             if j["state"] == JobState.RUNNING and j["worker_id"] in old_ids:
                 j.update(state=JobState.FAILED, finished=time.time(), error=f"worker {w.name} restarted while running")
                 store.put("job", j["id"], j)
+                build_notes.job_ended(j)
                 store.audit(actor, "job.failed", j["id"], {"reason": "worker restarted"})
         for s_ in store.all("session"):             # ...and its emulator sessions died with it
             if s_.get("state") == "running" and s_["session_id"].split("-")[0] in old_ids:
@@ -1730,6 +1749,7 @@ def create_app(config: Config) -> FastAPI:
         return receipt, out, state, refs, problems
 
     def _result_followups(j, r, t, state, actor):
+        build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         mod_attempt = ((t.name == "characters" and op in ("use", "live_use", "swap"))
@@ -1838,6 +1858,8 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if job.state == JobState.REJECTED:
+            build_notes.job_ended(job.model_dump(mode="json"))
         if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
             stopping[inp["session_id"]] = job.id
         if job.state == JobState.REJECTED and not job.parent_request_id and (
@@ -1972,6 +1994,7 @@ def create_app(config: Config) -> FastAPI:
                     continue
                 job.update(state=JobState.FAILED, finished=now, error=reason)
                 store.put("job", job["id"], job)
+                build_notes.job_ended(job)
                 store.audit("scheduler", "job.failed", job["id"], {"reason": reason})
 
     @app.get("/api/jobs")
