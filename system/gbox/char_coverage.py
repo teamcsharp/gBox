@@ -66,6 +66,10 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("crazy_taxi2_swap", ["player", "driver:<axel|bd_joe|gena|gus|slash|iceman|cinnamon|hot_d>", "drivers"],
+     "Crazy Taxi 2 DC: any of the eight drivers, both detail levels (polPP??/H + texPP??/H rebuilt: one atlas mesh per "
+     "part in the driver's largest texture slot, gesture hands carry the donor hand, accessories hidden; slot tables "
+     "in 1ST_READ.BIN; IK rig and motions stay) in a copied GD-ROM; PowerVR safety-checked; unverified in game"),
     ("twin_snakes_swap", ["player", "model:<key>", "enemies", "soldiers", "bosses", "npcs", "all", "cast"],
      "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
      "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "
