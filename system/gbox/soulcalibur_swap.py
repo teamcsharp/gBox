@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 from pathlib import Path
 
@@ -263,16 +264,35 @@ def _weight_words(inf: dict[int, float], store_bone: int, slot: int) -> dict[int
     return out
 
 
+def with_back_faces(prims: list[dict]) -> list[dict]:
+    """Every double-sided prim (the donor game draws its back faces: SM64DS POLYGON_ATTR 0x40, glTF doubleSided) is
+    followed by its back copy: the same positions, reversed winding, flipped normals, `_side` 1. The engine culls by
+    winding, so a single-sided open shell (Peach's dress and body) is invisible from behind without it."""
+    out = []
+    for p in prims:
+        out.append(p)
+        if not p.get("double_sided") or p.get("_side"):
+            continue
+        tris = np.asarray(p["tris"], int).reshape(-1, 3)
+        back = {**p, "tris": tris[:, [0, 2, 1]].copy(), "_side": 1,
+                "nrm": None if p.get("nrm") is None else -np.asarray(p["nrm"], float)}
+        if "_uv" in p:
+            back["_uv"] = [np.asarray(uv)[[0, 2, 1]] for uv in p["_uv"]]
+        out.append(back)
+    return out
+
+
 def corner_normals(prims: list[dict], *, agree: float = 0.5) -> list[np.ndarray]:
     """Per-corner unit normals for the donor (library frame, outward): the smooth geometric normal of the fitted
     surface (area-weighted face normals of every prim, the counter-clockwise glTF winding taken as outward, welded by
     position so seams stay smooth), replaced by the donor's own normal where that one agrees with it (keeps authored
     creases). Some library donors carry normals unrelated to their faces (the SM64DS ones agree with their own
     triangles about half the time), which lit them in dark, blotchy patches in game."""
-    def key(v):
-        return tuple(np.round(v, 4))
+    def key(v, side=0):
+        return tuple(np.round(v, 4)) + (side,)        # a back face (with_back_faces) smooths with its own side only
     acc: dict = {}
     for p in prims:
+        side = int(p.get("_side", 0))
         pos = np.asarray(p["pos"], float)
         t = np.asarray(p["tris"], int).reshape(-1, 3)
         if not len(t):
@@ -280,12 +300,13 @@ def corner_normals(prims: list[dict], *, agree: float = 0.5) -> list[np.ndarray]
         f = np.cross(pos[t[:, 1]] - pos[t[:, 0]], pos[t[:, 2]] - pos[t[:, 0]])     # length = 2 x area
         for c in range(3):
             for v, n in zip(t[:, c], f):
-                k = key(pos[v])
+                k = key(pos[v], side)
                 acc[k] = acc.get(k, 0.0) + n
     out = []
     for p in prims:
         pos = np.asarray(p["pos"], float).reshape(-1, 3)
-        g = np.array([acc.get(key(v), np.zeros(3)) for v in pos], float).reshape(-1, 3)
+        side = int(p.get("_side", 0))
+        g = np.array([acc.get(key(v, side), np.zeros(3)) for v in pos], float).reshape(-1, 3)
         gl = np.linalg.norm(g, axis=1, keepdims=True)
         g = np.where(gl > 1e-12, g / np.maximum(gl, 1e-12), 0.0)
         d = np.asarray(p["nrm"], float).reshape(-1, 3) if p.get("nrm") is not None else np.zeros_like(pos)
@@ -302,6 +323,7 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
     """Retargeted donor prims (library frame, J = native bone, W) -> a new model with the stock bone records.
 
     page_map: the costume's page indices the donor may use (atlas page i -> material page page_map[i])."""
+    prims = with_back_faces(prims)
     model = D.parse_model(stock)
     bones = model["bones"]
     nb = len(bones)
@@ -329,7 +351,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
                 inf = {int(J[v, order[0]]): 1.0}
             tot = sum(inf.values()) or 1.0
             inf = {j: w / tot for j, w in inf.items()}
-            key = (tuple(np.round(pos[v], 5)), tuple(sorted((j, round(w, 3)) for j, w in inf.items())))
+            key = (tuple(np.round(pos[v], 5)), tuple(sorted((j, round(w, 3)) for j, w in inf.items())),
+                   int(p.get("_side", 0)))                # a back face has its own slot: its normal points the other way
             s = pos_key.get(key)
             if s is None:
                 s = pos_key[key] = len(P)
@@ -498,7 +521,21 @@ def _decimated(prims: list[dict], tgt: dict, budget: int, work: Path) -> list[di
     rig_t = {"T": tgt["T"], "parent": tgt["parent"], "joints": tgt["joints"]}
     src = S.write_rigged(prims, rig_t, work / "fitted.gltf", "donor")
     out = decimate(src, work / f"lod{budget}.glb", float(budget))
-    return read_rigged(out, tgt["jmap"])
+    return carry_double_sided(prims, read_rigged(out, tgt["jmap"]))
+
+
+def _base_material(name) -> str:
+    return re.sub(r"\.\d{3}$", "", str(name or ""))      # Blender suffixes a clashing material name with .001
+
+
+def carry_double_sided(fitted: list[dict], lod: list[dict]) -> list[dict]:
+    """The double-sided flag through the Blender LOD, by material name: the fitted intermediate names each prim's
+    material (retarget's m<k> / prop names) and Blender keeps those names, while glTF doubleSided alone cannot be
+    trusted on the way back (exporters differ on what they write for it)."""
+    sided = {_base_material(p.get("name")): bool(p.get("double_sided")) for p in fitted if p.get("name")}
+    for p in lod:
+        p["double_sided"] = sided.get(_base_material(p.get("material_name")), False)
+    return lod
 
 
 def build_costume(entry: bytes, prims: list[dict], *, progress=lambda p, m: None) -> tuple[bytes, dict]:

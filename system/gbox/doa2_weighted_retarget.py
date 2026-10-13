@@ -60,6 +60,22 @@ def _merge(joints, weights):
     return out_j, out_w
 
 
+POLY_BACK = 0x40          # Nintendo DS POLYGON_ATTR bit 6: draw back surfaces
+
+
+def double_sided(material: dict) -> bool:
+    """Does the donor draw this material's back faces? The source game's own flag when the material carries it (SM64DS
+    POLYGON_ATTR bit 0x40 in the glTF source extras), else glTF doubleSided. Writers that cull (SoulCalibur's strips)
+    must emit a back copy of these triangles or the open shells (Peach's dress and body) vanish from behind."""
+    source = (material.get('extras') or {}).get('source') or {}
+    if isinstance(source, dict) and 'polygon_attr' in source:
+        try:
+            return bool(int(str(source['polygon_attr']), 0) & POLY_BACK)
+        except ValueError:
+            pass
+    return bool(material.get('doubleSided', False))
+
+
 def load_rig(path: Path, roles: dict, props=()):
     """Load all glTF JOINTS/WEIGHTS sets and evaluate their complete bind pose."""
     from gbox.re4gc_models import _gltf_load, _node_world
@@ -141,6 +157,7 @@ def load_rig(path: Path, roles: dict, props=()):
             tris = acc(primitive['indices']).reshape(-1, 3).astype(int) if 'indices' in primitive else np.arange(len(p) // 3 * 3).reshape(-1, 3)
             texture, color, wrap = None, (255, 255, 255, 255), (10497, 10497)
             material_id = primitive.get('material')
+            gl_material = gl['materials'][material_id] if material_id is not None else {}
             # an attachment: its own unskinned node, or (a fitted intermediate) a prop-named material
             prop_node = node.get('name') if skin is None and node.get('name') in props else \
                 attachments.node_of_material(gl['materials'][material_id].get('name') if material_id is not None else None)
@@ -157,6 +174,8 @@ def load_rig(path: Path, roles: dict, props=()):
                     wrap = (settings.get('wrapS', 10497), settings.get('wrapT', 10497))
             primitives.append({'pos': p, 'nrm': n, 'uv': uv, 'tris': tris, 'J': joints, 'W': weights,
                                'owner': joints[:, 0], 'tex': texture, 'color': color, 'wrap': wrap,
+                               'double_sided': double_sided(gl_material),
+                               'material_name': gl_material.get('name'),
                                'prop': prop_node is not None, 'source_mesh_node': node_id,
                                'source_primitive': primitive_id, **({'prop_node': prop_node} if prop_node else {})})
     if not primitives:

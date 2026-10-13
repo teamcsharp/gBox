@@ -443,3 +443,13 @@ def test_owned_rom_no_character_draws_a_screen_door_texture():
         model = S.build(rom, key)[0]
         for name, mat in model.materials.items():
             assert "screen_door" not in mat["source"], (key, name)
+
+
+def test_back_surface_materials_export_double_sided():
+    """#1765: POLYGON_ATTR bit 6 (0x40) draws back surfaces on the DS; Peach's body and skirt (0x001f00c1) are open
+    shells, her face (0x001f0081) is front-only. The GLB carries that as doubleSided."""
+    assert S.double_sided({"polygon_attr": "0x001f00c1"}) and not S.double_sided({"polygon_attr": "0x001f0081"})
+    assert not S.double_sided({}) and not S.double_sided({"polygon_attr": "junk"})
+    m = uap.Manifest(name="t", source={}, materials=[uap.Material(name="skirt", double_sided=True), uap.Material(name="face")])
+    mats = uap.to_gltf(m)["materials"]
+    assert mats[0].get("doubleSided") is True and "doubleSided" not in mats[1]

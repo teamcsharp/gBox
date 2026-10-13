@@ -159,5 +159,56 @@ class WeightedTests(unittest.TestCase):
         np.testing.assert_allclose(vertex['pos'], source['prims'][0]['pos'], atol=3e-7)
 
 
+    def test_write_gltf_writes_exactly_four_skin_columns(self):
+        """DOA2 HD crash: an 8-column prim (two influence sets merged) written as VEC4 sheared the skin buffer."""
+        source = rig()
+        primitive = source['prims'][0]
+        n = len(primitive['pos'])
+        primitive['J'] = np.tile([4, 5, 0, 2, 6, 7, 1, 3], (n, 1))
+        primitive['W'] = np.tile([.3, .2, .05, .1, .15, .2, 0, 0], (n, 1))
+        joints = []
+        for parent, position in zip(PARENTS, POSITIONS):
+            world = np.eye(4); world[:3, 3] = position
+            joints.append({'parent': parent, 'world': world})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'wide.gltf'
+            write_gltf(path, joints, [primitive], joint_names=NAMES)
+            gl = json.loads(path.read_text())
+            attributes = gl['meshes'][0]['primitives'][0]['attributes']
+            for key in ('JOINTS_0', 'WEIGHTS_0'):
+                accessor = gl['accessors'][attributes[key]]
+                view = gl['bufferViews'][accessor['bufferView']]
+                self.assertEqual((accessor['type'], accessor['count']), ('VEC4', n))
+                self.assertEqual(view['byteLength'], n * 4 * (2 if key == 'JOINTS_0' else 4))
+            loaded = load_rig(path, {name: name for name in NAMES})
+        vertex = loaded['prims'][0]
+        actual = {int(j): float(w) for j, w in zip(vertex['J'][0], vertex['W'][0]) if w > 0}
+        self.assertEqual(set(actual), {4, 5, 7, 6})                    # the four heaviest
+        self.assertAlmostEqual(sum(actual.values()), 1.0, places=6)
+        self.assertAlmostEqual(actual[4], .3 / .85, places=6)
+
+    def test_double_sided_from_source_polygon_attr_or_gltf(self):
+        from gbox.doa2_weighted_retarget import double_sided
+        self.assertTrue(double_sided({'extras': {'source': {'polygon_attr': '0x001f00c1'}}}))
+        self.assertFalse(double_sided({'extras': {'source': {'polygon_attr': '0x001f0081'}}, 'doubleSided': True}))
+        self.assertTrue(double_sided({'doubleSided': True}))
+        self.assertFalse(double_sided({}))
+        source = rig()
+        source['prims'][0]['double_sided'] = False
+        joints = []
+        for parent, position in zip(PARENTS, POSITIONS):
+            world = np.eye(4); world[:3, 3] = position
+            joints.append({'parent': parent, 'world': world})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'one_sided.gltf'
+            write_gltf(path, joints, source['prims'], joint_names=NAMES)
+            self.assertFalse(load_rig(path, {name: name for name in NAMES})['prims'][0]['double_sided'])
+            source['prims'][0]['double_sided'] = True
+            write_gltf(path, joints, source['prims'], joint_names=NAMES)
+            loaded = load_rig(path, {name: name for name in NAMES})['prims'][0]
+        self.assertTrue(loaded['double_sided'])
+        self.assertEqual(loaded['material_name'], 'mat0')
+
+
 if __name__ == '__main__':
     unittest.main()

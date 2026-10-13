@@ -213,6 +213,59 @@ def test_encode_model_round_trip_and_tail():
     assert enc["bones_used"] == [1, 11]
 
 
+def test_double_sided_prims_get_a_back_copy():
+    """#1765: SM64DS materials with POLYGON_ATTR 0x40 are drawn from both sides on the DS; the game culls by winding,
+    so the writer emits each such triangle twice, the copy reversed with its own (flipped) normal slots."""
+    stock = synthetic_model()
+    built = {}
+    for sided in (False, True):
+        prims = _donor_prims(stock)
+        at = W.atlas(prims, 1)
+        for p in prims:
+            p["double_sided"] = sided
+            p["_page"] = 1
+            p["_uv"] = [W.map_uv(p["uv"][t], at["slots"][p["_texkey"]]) for t in p["tris"]]
+        built[sided] = enc = W.encode_model(stock, prims, [1])
+        m1 = D.parse_model(enc["model"])
+        sk = D.skin(m1)
+        strips = [s for sec in m1["sections"] for s in sec]
+        tris = [(s["pos"][a], s["pos"][b], s["pos"][c], s["nrm"][a]) for s in strips
+                for a, b, c in D.strip_triangles(len(s["pos"]))]
+        out_game = D.FRAME @ np.array([0, 0, 1.0])
+        faces = [np.cross(sk["positions"][b] - sk["positions"][a], sk["positions"][c] - sk["positions"][a]) @ out_game
+                 for a, b, c, _n in tris]
+        if not sided:
+            assert len(tris) == 2 and all(f > 0 for f in faces)
+            continue
+        assert len(tris) == 4
+        assert sum(f > 0 for f in faces) == 2 and sum(f < 0 for f in faces) == 2     # one front, one back each
+        for (a, b, c, n), f in zip(tris, faces):                                    # back normals point back
+            assert (sk["normals"][n] @ out_game < 0) == (f > 0)                    # (stored inward, like stock)
+    assert built[True]["positions"] == 2 * built[False]["positions"]               # a back slot per front slot
+
+
+def test_back_faces_reverse_winding_uvs_and_normals():
+    prim = {"pos": np.eye(3), "nrm": np.tile([0, 0, 1.0], (3, 1)), "tris": np.array([[0, 1, 2]]),
+            "double_sided": True, "_uv": [np.array([[0, 0], [1, 0], [0, 1.0]])]}
+    single = dict(prim, double_sided=False)
+    out = W.with_back_faces([prim, single])
+    assert len(out) == 3 and out[0] is prim and out[2] is single
+    back = out[1]
+    assert back["_side"] == 1 and back["tris"].tolist() == [[0, 2, 1]]
+    assert np.allclose(back["nrm"], -prim["nrm"]) and np.allclose(back["_uv"][0], [[0, 0], [0, 1], [1, 0]])
+    front_n, back_n, _ = W.corner_normals(out)
+    assert np.allclose(front_n @ np.cross(np.eye(3)[1] - np.eye(3)[0], np.eye(3)[2] - np.eye(3)[0]) > 0, True)
+    assert np.allclose(back_n, -front_n)                       # each side smooths with its own faces only
+
+
+def test_double_sided_flag_survives_the_lod_by_material_name():
+    fitted = [{"name": "m0", "double_sided": True}, {"name": "m1", "double_sided": False},
+              {"name": "m2", "double_sided": True}]
+    lod = [{"material_name": "m0", "double_sided": True}, {"material_name": "m1", "double_sided": True},
+           {"material_name": "m2.001"}, {"material_name": None}]
+    assert [p["double_sided"] for p in W.carry_double_sided(fitted, lod)] == [True, False, True, False]
+
+
 # ---------------------------------------------------------------- the engine's skinning maths (0x8c03cea0)
 
 def _wrow(p, wbits):
