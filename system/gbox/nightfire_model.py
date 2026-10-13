@@ -10,25 +10,43 @@ HT_Skin (pack type 3, LE): a skeleton, not a mesh.
   then attachment records: att x 36 B (u32 id, u32 bone, f32 pos[3], f32 quat[4]), zero padding to 16
   Bondcombat 0x05000007: 73 bones, 60 attachments (4320 B); the 2144 B skins are the same 73-bone rig, 0 att.
 
-Character models are 0x01 objects of pack type 2 (BE): header 00000000 1400000e <hash>, texture table,
-`60000017` texture chunks (name + GX data), then one node chunk per mesh, tag `b000000c 0000000f name[]`
-followed by u32 fields: [0] ?, [1] index-stream u16 count, [2] vertex count, [3] second vertex set count,
-[4] matrix groups (22 on humans), [5] 239, [6] 0x8a0 ... and pointer fields at [22..34]. The pointers are
-NOT file offsets; their per-object base differs. Within one object the deltas are exact, e.g. pointer[25]
-(vertex array) -> pointer[27] spans n_verts*12 + 0x20 B.
-
-Vertex arrays live in the level's `GC EXTRA STATIC` entry (pack type 13): blocks separated by 0xFA runs,
-12 B per vertex = s16 pos[3] + s16 normal[3] (normal / 16384 is unit length). `vertex_block` finds the
-object's block as the unique 0xFA-delimited block of exactly n_verts*12 B (verified unique for the Bond model
-0x01000075 'bond_generic_head_g' 1278 verts, 0x0100007a 1220, 0x01000092 1037). Position scale is not yet
-proven (s16/8192 gives a 1.92 m figure). Face/strip streams (u16, value < n_verts) sit in `GC EXTRA DISCARD`
-(type 14); the strip-length table and the bone-weight blocks are the open reader work.
+Character models are 0x01 objects of pack type 2 (BE): header 00000000 1400000e <hash>, u32 texture
+count at +0x14 + 12-B records from +0x1C (u16 key, u16 w-1, u16 h-1, u16 flags, runtime ptr 0xFFFFFFFF),
+the texture chunks (Bond: 7 local CMPR), then one node chunk per mesh, tag `b000000c 0000000f name[]`
+followed by 40 u32 fields: [0] material groups, [1] index-stream u16 count, [2] vertex count,
+[3] degenerate (strip-restart) triangle count, [4] 22 on humans, ... and 13 runtime pointers at [22..34].
+The pointers are not file offsets: `_map_pointers` recovers the per-object runtime base from the vertex
+array, which is the unique 0xFA-delimited block of exactly n_verts*12 B in `GC EXTRA STATIC` (type 13).
+Pointer slots (indices into fields[22:35]) decoded by `node_tables` and validated on Bond 0x01000075:
+  0  material groups, 20 B each: u16 flags<<12|strips, u16 triangle slots, u16 materials
+     (1-2 texture ids, 0xFFFF-terminated; flag 0x2000 = two-texture group, e.g. grunt)        (DISCARD)
+  1  u16 triangle count per strip; a strip of n triangles consumes n+2 stream entries      (DISCARD)
+  2  u16 position index stream, fields[1] entries; GX strips are clockwise                 (DISCARD)
+  3  vertices: s16 pos[3] (/8192) + s16 normal[3] (/16384)                                 (STATIC)
+  4  u16 texcoord index stream, parallel to slot 2 (GX indexed TEX0)                       (DISCARD)
+  5  s16 uv[2] table (/32768), max(texcoord index) + 1 entries                             (STATIC)
+  8  u16 weight pair per vertex (/16384)                                                   (STATIC)
+  9/10 (u16 bone, u16 count) influence runs over the vertex array in order; both tables carry the same
+     counts; bone_b 255 = rigid run (weights exactly 16384/0)                              (STATIC)
+  11 sparse s16 deltas (facial morph data, not decoded), 12 u16 list (not decoded).
+Bond: 7 groups / 127 strips use all 3392 entries -> 2449 triangles + 689 degenerate (= fields[3]);
+96 runs = 61 blended (415 verts) + 35 rigid (863 verts); 1141 UVs. The HT_Skin bind records are INVERSE
+bind transforms (world -> bone, all 73 Bondcombat rotations identity): bone origins (-t) span the mesh
+extents and rigid runs sit on their own bone, so `export_glb` writes a skinned glTF with 2-bone weights.
+Textures: chunks `<u16 flags> 0017 <0 | 'DT' u16 id> name[16] 78015d02 ...` follow the table in order
+(`object_textures`); local chunks carry the GX mip chain at +0x48 from the magic, engine format +0x20
+1/3/8 = CMPR/RGB5A3/RGBA8. 'DT' chunks are header-only references to shared level textures (grunt's
+eyeball_brown/Suit_black_open/Blackshoe1); their texels are not in the level or the 0x07E0000x packs.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import struct
+from pathlib import Path
+
+from .nightfire_inventory import pack_index
 
 NODE_TAG = b"\xb0\x00\x00\x0c"
 FA_RUN = re.compile(rb"\xfa{8,}")
@@ -111,8 +129,463 @@ def normal_stats(verts: list[tuple]) -> dict:
     return {"min": min(lens), "max": max(lens), "mean": sum(lens) / len(lens)}
 
 
+def _map_pointers(node: dict, static_entry: dict, level_data: bytes) -> tuple[int, list[int]]:
+    """Turn the 13 runtime pointers in a mesh node into file offsets in the level data.
+
+    The vertex-array pointer (local index 3 = fields[25]) points into the GC EXTRA STATIC
+    region.  Using the unique 0xFA-delimited vertex block for n_verts we recover the runtime
+    base, then every pointer p maps to file offset p + K where K = static.offset - base.
+    """
+    static = level_data[static_entry["offset"]:static_entry["offset"] + static_entry["size"]]
+    voff = vertex_block(static, node["n_verts"])
+    ptrs = node["pointers"]
+    base = ptrs[3] - voff
+    K = static_entry["offset"] - base
+    return K, [(p + K if p else 0) for p in ptrs]
+
+
+POS_SCALE = 1 / 8192.0    # s16 positions (GX frac 13), validated against the HT_Skin bind extents
+NRM_SCALE = 1 / 16384.0   # s16 normals (frac 14), unit length
+UV_SCALE = 1 / 32768.0    # s16 texcoords (frac 15); the table peaks at 32767
+WEIGHT_ONE = 16384        # u16 blend weights; pairs sum to 16383..16384
+NO_BONE = 255             # second-bone slot of a rigid influence run
+SLOT_GROUPS, SLOT_STRIPS, SLOT_POS_IDX, SLOT_VERTS, SLOT_UV_IDX, SLOT_UVS = 0, 1, 2, 3, 4, 5
+SLOT_WEIGHTS, SLOT_BONE_A, SLOT_BONE_B = 8, 9, 10
+
+
+def run_weights(runs: list[tuple], raw_w, name: str = "node") -> tuple[list, list]:
+    """Per-vertex (bone_a, bone_b) joints and normalised weights from the influence runs (in order)."""
+    joints, weights, v = [], [], 0
+    for a, b, c in runs:
+        for _ in range(c):
+            wa, wb = raw_w[2 * v], raw_w[2 * v + 1]
+            if b == NO_BONE:
+                if (wa, wb) != (WEIGHT_ONE, 0):
+                    raise ValueError(f"{name}: rigid vertex {v} carries blend weights {wa}/{wb}")
+                joints.append((a, 0))
+                weights.append((1.0, 0.0))
+            else:
+                if abs(wa + wb - WEIGHT_ONE) > 2:
+                    raise ValueError(f"{name}: vertex {v} weights sum to {wa + wb}")
+                joints.append((a, b))
+                weights.append((wa / (wa + wb), wb / (wa + wb)))
+            v += 1
+    return joints, weights
+
+
+def strip_triangles(groups: list[dict], strip_tris: list[int], pos_idx) -> tuple[list, int]:
+    """(group, c0, c1, c2) stream-corner triangles, counter-clockwise, and the degenerate count.
+
+    A strip of n triangles consumes n+2 stream entries; GX front faces are clockwise.
+    """
+    tris, degenerate, o, k = [], 0, 0, 0
+    for gi, g in enumerate(groups):
+        for _ in range(g["strips"]):
+            n = strip_tris[k]
+            k += 1
+            for t in range(n):
+                i0 = o + t
+                if len({pos_idx[i0], pos_idx[i0 + 1], pos_idx[i0 + 2]}) < 3:
+                    degenerate += 1
+                    continue
+                tris.append((gi, i0, i0 + 2, i0 + 1) if t % 2 == 0 else (gi, i0, i0 + 1, i0 + 2))
+            o += n + 2
+    return tris, degenerate
+
+
+def node_tables(level_data: bytes, node: dict, static_e: dict) -> dict:
+    """Decode the GX tables of one skinned mesh node (layout in the module docstring); raises on misfit."""
+    _, P = _map_pointers(node, static_e, level_data)
+    f = node["fields"]
+    name = node["name"]
+    n_groups, n_index, n_verts = f[0], f[1], f[2]
+    for slot in (SLOT_GROUPS, SLOT_STRIPS, SLOT_POS_IDX, SLOT_VERTS, SLOT_UV_IDX, SLOT_UVS,
+                 SLOT_WEIGHTS, SLOT_BONE_A, SLOT_BONE_B):
+        if not P[slot]:
+            raise ValueError(f"{name}: pointer slot {slot} is null")
+    groups = []
+    for g in range(n_groups):
+        rec = struct.unpack_from(">10H", level_data, P[SLOT_GROUPS] + 20 * g)
+        mats = []
+        for m in rec[2:]:
+            if m == 0xFFFF:
+                break
+            mats.append(m)
+        if not mats:
+            raise ValueError(f"{name}: material group {g} lists no material")
+        # high nibble of the strip count = flags (0x2000 two-texture material, 0x1000 seen with it)
+        groups.append({"strips": rec[0] & 0x0FFF, "flags": rec[0] >> 12, "tri_slots": rec[1],
+                       "material": mats[0], "materials": mats})
+    n_strips = sum(g["strips"] for g in groups)
+    strip_tris = list(struct.unpack_from(f">{n_strips}H", level_data, P[SLOT_STRIPS]))
+    k = 0
+    for g in groups:
+        if sum(strip_tris[k:k + g["strips"]]) != g["tri_slots"]:
+            raise ValueError(f"{name}: strip triangle counts do not match the group total")
+        k += g["strips"]
+    if sum(strip_tris) + 2 * n_strips != n_index:
+        raise ValueError(f"{name}: strips use {sum(strip_tris) + 2 * n_strips} of {n_index} indices")
+    pos_idx = struct.unpack_from(f">{n_index}H", level_data, P[SLOT_POS_IDX])
+    uv_idx = struct.unpack_from(f">{n_index}H", level_data, P[SLOT_UV_IDX])
+    if max(pos_idx) >= n_verts:
+        raise ValueError(f"{name}: position index out of range")
+    n_uv = max(uv_idx) + 1
+    raw_uv = struct.unpack_from(f">{2 * n_uv}h", level_data, P[SLOT_UVS])
+    raw_w = struct.unpack_from(f">{2 * n_verts}H", level_data, P[SLOT_WEIGHTS])
+    runs, total, o = [], 0, 0
+    while total < n_verts:
+        a, ca = struct.unpack_from(">2H", level_data, P[SLOT_BONE_A] + o)
+        b, cb = struct.unpack_from(">2H", level_data, P[SLOT_BONE_B] + o)
+        if ca != cb or not ca:
+            raise ValueError(f"{name}: influence run {len(runs)} counts differ ({ca}/{cb})")
+        runs.append((a, b, ca))
+        total += ca
+        o += 4
+    if total != n_verts:
+        raise ValueError(f"{name}: influence runs cover {total} of {n_verts} vertices")
+    joints, weights = run_weights(runs, raw_w, name)
+    tris, degenerate = strip_triangles(groups, strip_tris, pos_idx)
+    return {"groups": groups, "strip_tris": strip_tris, "pos_idx": pos_idx, "uv_idx": uv_idx,
+            "uvs": [(raw_uv[2 * i] * UV_SCALE, raw_uv[2 * i + 1] * UV_SCALE) for i in range(n_uv)],
+            "verts": vertices(level_data, P[SLOT_VERTS], n_verts), "runs": runs,
+            "joints": joints, "weights": weights, "tris": tris, "degenerate": degenerate,
+            "degenerate_header": f[3], "mapped_pointers": P}
+
+
+def object_mesh(level_data: bytes, object_name: str = "01000075", node_index: int = 0) -> dict:
+    """Decode one 0x01 object mesh node: vertices, CCW triangles, UVs and 2-bone skin weights."""
+    entries = pack_index(level_data)["entries"]
+    by = {e["name"].lower(): e for e in entries}
+    obj = by[object_name.lower()]
+    nodes = object_nodes(level_data[obj["offset"]:obj["offset"] + obj["size"]])
+    if len(nodes) <= node_index:
+        raise ValueError(f"{object_name}: no mesh node {node_index}")
+    node = nodes[node_index]
+    static_e = next(e for e in entries if e["type"] == 13)
+    static = level_data[static_e["offset"]:static_e["offset"] + static_e["size"]]
+    voff = vertex_block(static, node["n_verts"])
+    tab = node_tables(level_data, node, static_e)
+    pi = tab["pos_idx"]
+    return {
+        "object": obj, "node": node, "tables": tab,
+        "positions": tab["verts"], "scale": POS_SCALE,
+        "faces": [(pi[a], pi[b], pi[c]) for _, a, b, c in tab["tris"]],
+        "vertex_block_offset": voff,
+        "runtime_base": node["pointers"][3] - voff,
+        "mapped_pointers": tab["mapped_pointers"],
+    }
+
+
+def _quat_matrix(q):
+    import numpy as np
+    x, y, z, w = q
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def _matrix_quat(m) -> list[float]:
+    """Rotation matrix -> glTF quaternion [x, y, z, w] with w >= 0."""
+    t = m[0][0] + m[1][1] + m[2][2]
+    if t > 0:
+        s = math.sqrt(t + 1.0) * 2
+        q = [(m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s, 0.25 * s]
+    elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+        s = math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2
+        q = [0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s, (m[2][1] - m[1][2]) / s]
+    elif m[1][1] > m[2][2]:
+        s = math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2
+        q = [(m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s, (m[0][2] - m[2][0]) / s]
+    else:
+        s = math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2
+        q = [(m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s]
+    if q[3] < 0:
+        q = [-c for c in q]
+    return [float(c) for c in q]
+
+
+def skeleton_matrices(skin: dict):
+    """(inverse bind, world bind, local) 4x4 matrices per bone.
+
+    HT_Skin bind records are inverse bind transforms (world -> bone, p' = R(q) p + t): on Bondcombat
+    every rotation is identity and the origins -t span the mesh, with each rigid run on its own bone.
+    """
+    import numpy as np
+    ibm = []
+    for b in skin["bind"]:
+        m = np.eye(4)
+        m[:3, :3] = _quat_matrix(b["quat"])
+        m[:3, 3] = b["pos"]
+        ibm.append(m)
+    world = [np.linalg.inv(m) for m in ibm]
+    local = [world[i] if par < 0 else ibm[par] @ world[i] for i, par in enumerate(skin["parents"])]
+    return ibm, world, local
+
+
+def rig_report(mesh: dict, skin: dict) -> dict:
+    """Checks that the decoded skin binds the mesh: run/bone proximity, edge lengths, winding."""
+    import numpy as np
+    tab = mesh["tables"]
+    V = np.array(tab["verts"], dtype=np.float64)
+    P, N = V[:, :3] * POS_SCALE, V[:, 3:] * NRM_SCALE
+    _, world, _ = skeleton_matrices(skin)
+    origins = np.array([w[:3, 3] for w in world])
+    near, start, dist = [], 0, []
+    for a, b, c in tab["runs"]:
+        if b == NO_BONE:
+            d = np.linalg.norm(origins - P[start:start + c].mean(0), axis=1)
+            near.append(int((d < d[a]).sum()))
+            dist.append(float(d[a]))
+        start += c
+    F = np.array(mesh["faces"])
+    e = np.concatenate([np.linalg.norm(P[F[:, i]] - P[F[:, (i + 1) % 3]], axis=1) for i in range(3)])
+    fn = np.cross(P[F[:, 1]] - P[F[:, 0]], P[F[:, 2]] - P[F[:, 0]])
+    agree = float(((fn * N[F].sum(1)).sum(1) > 0).mean())
+    used = sorted({j for a, b, _ in tab["runs"] for j in (a, b) if j != NO_BONE})
+    return {"faces": len(F), "degenerate": tab["degenerate"], "degenerate_header": tab["degenerate_header"],
+            "vertices": len(P), "uvs": len(tab["uvs"]), "groups": len(tab["groups"]),
+            "runs": len(tab["runs"]), "rigid_runs": len(near),
+            "blended_vertices": sum(c for _, b, c in tab["runs"] if b != NO_BONE),
+            "bones_used": used, "max_bone": max(used), "skin_bones": skin["bones"],
+            "rigid_run_own_bone_nearest": sum(1 for n in near if n == 0) / max(1, len(near)),
+            "rigid_run_own_bone_top4": sum(1 for n in near if n <= 3) / max(1, len(near)),
+            "rigid_run_median_dist_m": float(np.median(dist)) if dist else None,
+            "edge_median_m": float(np.median(e)), "edge_max_m": float(e.max()),
+            "winding_agrees_with_normals": agree,
+            "bone_origin_bbox": [origins.min(0).tolist(), origins.max(0).tolist()],
+            "mesh_bbox": [P.min(0).tolist(), P.max(0).tolist()]}
+
+
+def export_glb(level_data: bytes, out_path: str, object_name: str = "01000075",
+               skin_name: str = "05000007") -> Path:
+    """Export a Nightfire object node + its HT_Skin as a skinned glTF 2.0 .glb.
+
+    One primitive per material group, vertices split per (position, texcoord) corner, JOINTS_0/WEIGHTS_0
+    from the influence runs and inverse bind matrices from the HT_Skin records.  Each material group's
+    first texture-table index selects the object's texture; inline GX textures (CMPR/RGB5A3/RGBA8,
+    level 0) are embedded as PNG baseColor maps, shared 'DT' references keep a flat colour.
+    """
+    import numpy as np
+
+    mesh = object_mesh(level_data, object_name)
+    tab = mesh["tables"]
+    entries = pack_index(level_data)["entries"]
+    skin_e = next(e for e in entries if e["name"].lower() == skin_name.lower())
+    skin = skin_skeleton(level_data[skin_e["offset"]:skin_e["offset"] + skin_e["size"]])
+    n_bones = skin["bones"]
+    if max(j for jj in tab["joints"] for j in jj) >= n_bones:
+        raise ValueError(f"{object_name}: influence bone outside the {n_bones}-bone skin {skin_name}")
+    ibm, world, local = skeleton_matrices(skin)
+
+    corner_of, corners = {}, []
+    prim_idx = [[] for _ in tab["groups"]]
+    for gi, *cs in tab["tris"]:
+        for c in cs:
+            key = (tab["pos_idx"][c], tab["uv_idx"][c])
+            if key not in corner_of:
+                corner_of[key] = len(corners)
+                corners.append(key)
+            prim_idx[gi].append(corner_of[key])
+    V = np.array(tab["verts"], dtype=np.float64)
+    pi = np.array([c[0] for c in corners])
+    pos = (V[pi, :3] * POS_SCALE).astype(np.float32)
+    nrm = V[pi, 3:] * NRM_SCALE
+    nrm = (nrm / np.linalg.norm(nrm, axis=1, keepdims=True)).astype(np.float32)
+    uv = np.array([tab["uvs"][c[1]] for c in corners], dtype=np.float32)
+    jnt = np.zeros((len(corners), 4), dtype=np.uint8)
+    wgt = np.zeros((len(corners), 4), dtype=np.float32)
+    jnt[:, :2] = np.array(tab["joints"])[pi]
+    wgt[:, :2] = np.array(tab["weights"])[pi]
+    itype, ict = (np.uint16, 5123) if len(corners) < 65536 else (np.uint32, 5125)
+
+    blob, views, accs = bytearray(), [], []
+
+    def add(arr, comp, typ, target=None, minmax=False):
+        while len(blob) % 4:
+            blob.append(0)
+        b = np.ascontiguousarray(arr).tobytes()
+        view = {"buffer": 0, "byteOffset": len(blob), "byteLength": len(b)}
+        if target:
+            view["target"] = target
+        views.append(view)
+        blob.extend(b)
+        acc = {"bufferView": len(views) - 1, "componentType": comp,
+               "count": int(arr.shape[0]), "type": typ}
+        if minmax:
+            acc["max"], acc["min"] = arr.max(axis=0).tolist(), arr.min(axis=0).tolist()
+        accs.append(acc)
+        return len(accs) - 1
+
+    attrs = {"POSITION": add(pos, 5126, "VEC3", 34962, True), "NORMAL": add(nrm, 5126, "VEC3", 34962),
+             "TEXCOORD_0": add(uv, 5126, "VEC2", 34962), "JOINTS_0": add(jnt, 5121, "VEC4", 34962),
+             "WEIGHTS_0": add(wgt, 5126, "VEC4", 34962)}
+    ibm_acc = add(np.array([m.T for m in ibm], dtype=np.float32).reshape(n_bones, 16), 5126, "MAT4")
+    obj_payload = level_data[mesh["object"]["offset"]:mesh["object"]["offset"] + mesh["object"]["size"]]
+    texs = object_textures(obj_payload)
+    images, textures, tex_of = [], [], {}
+    for ti, t in enumerate(texs):
+        rgba = texture_rgba(obj_payload, t)
+        if rgba is None:
+            continue
+        png = _png(rgba)
+        while len(blob) % 4:
+            blob.append(0)
+        views.append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(png)})
+        blob.extend(png)
+        images.append({"name": t["name"], "mimeType": "image/png", "bufferView": len(views) - 1})
+        textures.append({"source": len(images) - 1, "sampler": 0})
+        tex_of[ti] = (len(textures) - 1, bool((rgba[..., 3] < 128).any()))
+    prims, materials = [], []
+    for gi, g in enumerate(tab["groups"]):
+        if not prim_idx[gi]:
+            continue
+        if g["material"] >= len(texs):
+            raise ValueError(f"{object_name}: group {gi} uses texture {g['material']} of {len(texs)}")
+        t = texs[g["material"]]
+        mat = {"name": f"{object_name}_mat{g['material']}_{t['name']}", "pbrMetallicRoughness": {
+            "metallicFactor": 0.0, "roughnessFactor": 0.85}}
+        if g["material"] in tex_of:
+            ti, cutout = tex_of[g["material"]]
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": ti}
+            if cutout:
+                mat["alphaMode"], mat["alphaCutoff"] = "MASK", 0.5
+        else:
+            hue = (g["material"] * 0.618) % 1.0
+            mat["pbrMetallicRoughness"]["baseColorFactor"] = [0.55 + 0.4 * hue, 0.5, 0.95 - 0.4 * hue, 1.0]
+            mat["extras"] = {"shared_dt_texture": t["dt_id"]}
+        materials.append(mat)
+        prims.append({"attributes": attrs, "indices": add(np.array(prim_idx[gi], dtype=itype), ict,
+                                                          "SCALAR", 34963),
+                      "mode": 4, "material": len(materials) - 1})
+
+    nodes = []
+    for i in range(n_bones):
+        nodes.append({"name": f"bone_{i:02d}", "translation": [float(x) for x in local[i][:3, 3]],
+                      "rotation": _matrix_quat(local[i][:3, :3])})
+    roots = []
+    for i, par in enumerate(skin["parents"]):
+        if par >= 0:
+            nodes[par].setdefault("children", []).append(i)
+        else:
+            roots.append(i)
+    nodes.append({"name": mesh["node"]["name"], "mesh": 0, "skin": 0})
+    nodes.append({"name": f"Nightfire_{object_name}", "children": roots + [n_bones]})
+    gltf = {
+        "asset": {"version": "2.0", "generator": "gbox.nightfire_model",
+                  "extras": {"object": object_name, "skin": skin_name, "node": mesh["node"]["name"],
+                             "triangles": len(tab["tris"]), "native_vertices": len(V),
+                             "uvs": len(tab["uvs"]),
+                             "textures": [{"name": t["name"], "size": [t["width"], t["height"]],
+                                           "gx_format": t["gx_format"], "dt_id": t["dt_id"],
+                                           "embedded": i in tex_of} for i, t in enumerate(texs)]}},
+        "scene": 0, "scenes": [{"nodes": [n_bones + 1]}],
+        "nodes": nodes, "meshes": [{"name": mesh["node"]["name"], "primitives": prims}],
+        "skins": [{"joints": list(range(n_bones)), "inverseBindMatrices": ibm_acc, "skeleton": roots[0]}],
+        "materials": materials, "accessors": accs, "bufferViews": views,
+        "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}],
+        "images": images, "textures": textures,
+        "buffers": [{"byteLength": 0}],
+    }
+    while len(blob) % 4:
+        blob.append(0)
+    gltf["buffers"][0]["byteLength"] = len(blob)
+    js = json.dumps(gltf, separators=(",", ":")).encode()
+    js += b" " * (-len(js) % 4)
+    out = struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(blob)) \
+        + struct.pack("<II", len(js), 0x4E4F534A) + js \
+        + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_bytes(out)
+    return Path(out_path)
+
+
+TEX_TAG = b"\x00\x17"            # u16 chunk type in the 8-byte texture prefix
+TEX_MAGIC = b"\x78\x01\x5d\x02"  # first word after the 16-byte texture name
+TEX_HEADER = 0x48                # magic .. first texel
+ENGINE_GX = {1: 14, 3: 5, 8: 6}  # header +0x20 -> GX CMPR / RGB5A3 / RGBA8
+_GX_BLOCK = {14: (4, 8, 8), 5: (16, 4, 4), 6: (32, 4, 4)}
+
+
+def mip_bytes(gx: int, w: int, h: int, mips: int) -> int:
+    """Bytes of a GX mip chain (each level padded to whole tiles)."""
+    bpp, bw, bh = _GX_BLOCK[gx]
+    total = 0
+    for _ in range(mips):
+        total += ((w + bw - 1) // bw * bw) * ((h + bh - 1) // bh * bh) * bpp // 8
+        w, h = max(1, w // 2), max(1, h // 2)
+    return total
+
+
+def object_texture_table(payload: bytes) -> list[dict]:
+    """The 0x01 object texture table: BE u32 count at +0x14, 12-B records from +0x1C."""
+    n = struct.unpack_from(">I", payload, 0x14)[0]
+    if 0x1C + 12 * n > len(payload) or n > 1024:
+        raise ValueError(f"texture table of {n} records does not fit the object")
+    out = []
+    for i in range(n):
+        key, wm1, hm1, flags, ptr = struct.unpack_from(">4HI", payload, 0x1C + 12 * i)
+        out.append({"key": key, "width": wm1 + 1, "height": hm1 + 1, "flags": flags, "runtime_ptr": ptr})
+    return out
+
+
+def object_textures(payload: bytes) -> list[dict]:
+    """Texture chunks of a 0x01 object, matched in order to its texture table (raises on misfit).
+
+    Chunk: u16 flags, u16 0x0017, u32 0 (local) or 'DT'+u16 id (shared level texture, header only),
+    char name[16], then from the magic 78015d02: +4 u32 mip-chain bytes, +8 u16 w, u16 h, +0xC class,
+    +0x20 engine format (ENGINE_GX), +0x24 mip count, +0x48 texels (GX tiled, level 0 first).
+    """
+    table = object_texture_table(payload)
+    hits = [m.start() for m in re.finditer(re.escape(TEX_MAGIC), payload)
+            if m.start() >= 24 and payload[m.start() - 22:m.start() - 20] == TEX_TAG]
+    out = []
+    for k, h in enumerate(hits):
+        size, w, hh = struct.unpack_from(">IHH", payload, h + 4)
+        fmt, mips = struct.unpack_from(">2I", payload, h + 0x20)
+        name = payload[h - 16:h].split(b"\0")[0].decode("latin-1")
+        if fmt not in ENGINE_GX or not 1 <= mips <= 12:
+            raise ValueError(f"texture {name}: unknown engine format {fmt} / {mips} mips")
+        gx = ENGINE_GX[fmt]
+        if size != mip_bytes(gx, w, hh, mips):
+            raise ValueError(f"texture {name}: {size} B is not a {w}x{hh} gx{gx} chain of {mips}")
+        ref = payload[h - 20:h - 16]
+        dt_id = struct.unpack(">H", ref[2:])[0] if ref[:2] == b"DT" else None
+        limit = hits[k + 1] - 24 if k + 1 < len(hits) else len(payload)
+        inline = limit - (h + TEX_HEADER) >= size
+        if dt_id is None and not inline:
+            raise ValueError(f"local texture {name} has no texel data")
+        out.append({"name": name, "width": w, "height": hh, "mips": mips, "engine_format": fmt,
+                    "gx_format": gx, "size": size, "dt_id": dt_id, "chunk": h - 24,
+                    "data_offset": h + TEX_HEADER if inline else None})
+    if len(out) != len(table):
+        raise ValueError(f"{len(out)} texture chunks for {len(table)} table records")
+    for t, r in zip(out, table):
+        if (t["width"], t["height"]) != (r["width"], r["height"]):
+            raise ValueError(f"texture {t['name']} is {t['width']}x{t['height']}, table says "
+                             f"{r['width']}x{r['height']}")
+        t["record"] = r
+    return out
+
+
+def texture_rgba(payload: bytes, tex: dict):
+    """Level-0 RGBA (h, w, 4) uint8 of an inline texture; None for a shared 'DT' reference."""
+    if tex["data_offset"] is None:
+        return None
+    from .melee_models import decode_texture
+    o = tex["data_offset"]
+    return decode_texture(payload[o:o + tex["size"]], tex["gx_format"], tex["width"], tex["height"])
+
+
+def _png(rgba) -> bytes:
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.fromarray(rgba, "RGBA").save(buf, "PNG")
+    return buf.getvalue()
+
+
 def write_obj(path, verts: list[tuple], scale: float = 1 / 8192.0) -> None:
-    """Point cloud + normals OBJ preview (no faces yet -- the strip stream is not decoded)."""
+    """Point cloud + normals OBJ preview."""
     with open(path, "w") as fh:
         for v in verts:
             fh.write(f"v {v[0] * scale:.5f} {v[1] * scale:.5f} {v[2] * scale:.5f}\n")
