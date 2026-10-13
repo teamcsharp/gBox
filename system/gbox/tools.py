@@ -3038,6 +3038,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
+                              "decomp_tools",  # decomp_tools: decomp.me REST, IDA Pro headless/MCP, N64Recomp source build
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
                               "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
                               "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
