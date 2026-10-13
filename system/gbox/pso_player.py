@@ -144,21 +144,26 @@ def bml_files(data: bytes) -> list[dict]:
     return out
 
 
-def bml_build(data: bytes, replace: dict[str, bytes]) -> bytes:
-    """The BML with entries {lower-case name: new decompressed file} recompressed (PRS); the rest kept as is."""
+def bml_build(data: bytes, replace: dict[str, bytes], textures: dict[str, bytes] | None = None) -> bytes:
+    """The BML with entries {lower-case name: new decompressed file} recompressed (PRS); the rest kept as is.
+    textures: {lower-case entry name: new decompressed texture archive} for entries that carry one (enemy packs)."""
     ents = bml_files(data)
     head = bytearray(data[:0x800])
     body = bytearray()
+    textures = textures or {}
     for i, e in enumerate(ents):
         nm = e["name"].split(b"\0")[0].decode("latin-1").lower()
-        raw, f = e["raw"], list(e["fields"])
+        raw, f, tex = e["raw"], list(e["fields"]), e["tex"]
         if nm in replace:
             raw = ninja.prs_compress(replace[nm])
             f[0], f[2] = len(raw), len(replace[nm])
+        if nm in textures and tex is not None:
+            tex = ninja.prs_compress(textures[nm])
+            f[3], f[4] = len(tex), len(textures[nm])
         struct.pack_into("<5I", head, 0x40 + 0x40 * i + 0x20, *f)
         body += raw + bytes((-len(raw)) % 0x20)
-        if e["tex"] is not None:
-            body += e["tex"] + bytes((-len(e["tex"])) % 0x20)
+        if tex is not None:
+            body += tex + bytes((-len(tex)) % 0x20)
     return bytes(head + body)
 
 
@@ -276,6 +281,20 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     return {"files": files, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
 
+def is_enemy_slot(slot: str | None) -> bool:
+    """characters op=use slot values the enemy writer (gbox.pso_enemy) takes: enemies | enemy:<name>."""
+    s = (slot or "").strip().lower()
+    return s in ("enemies", "enemy") or s.startswith("enemy:")
+
+
+def cast_slots() -> list[dict]:
+    """The slots this writer offers the cast menu (characters op=collect "slots"): the player classes it can build
+    for, then every enemy slot of gbox.pso_enemy."""
+    from . import pso_enemy
+    return [{"slot": "player", "name": "the player (HUmar; slot=hucast: HUcast)", "kind": "player",
+             "writer": "gbox.pso_player", "status": "not_working"}] + pso_enemy.slots()
+
+
 def build_mod(cfg, meta: dict, game: dict, gdi: Path, cls: str = "A", progress=lambda p, m: None,
               root: Path | None = None, name: str | None = None) -> dict:
     import json
@@ -310,8 +329,13 @@ def build_mod(cfg, meta: dict, game: dict, gdi: Path, cls: str = "A", progress=l
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
     """characters op=use for PSO Ver.2 (DC): the character replaces the body of the operator's class (HUmar: their
-    character GBOX; slot=hucast for HUcast), offline play only; built on the control plane (pso_<slug>), launched."""
+    character GBOX; slot=hucast for HUcast), offline play only; built on the control plane (pso_<slug>), launched.
+    slot=enemy:<name> | enemies: an enemy's body on its own motions instead (gbox.pso_enemy: booma, gobooma,
+    gigobooma, boomas, any BM_ENE pack)."""
     from . import characters as C, filemods
+    if is_enemy_slot(inp.slot):
+        from . import pso_enemy
+        return pso_enemy.use(ctx, meta, game, inp)
     if not getattr(inp, "rebuild", False) or (inp.slot or "") != "experimental":
         return {"status": "not_working", "mod": None,
                 "message": "The PSO Ver.2 writer (gbox.pso_player.build_swap) builds the files, but the game doesn't draw "
