@@ -199,7 +199,9 @@ def decode(platform: str, code: str) -> tuple[list[tuple], list[str]]:
                 bad.append(p)
         elif platform in ("dreamcast", "naomi"):             # CodeBreaker / Xploder raw (decrypted): 0=8, 1=16, 2=32-bit
             addr = 0x8C000000 | (a & 0x00FFFFFF)
-            kind = (a >> 28) & 0xF
+            # published lists put the type in the second nibble ("0TAAAAAA": SA2 USA "Max Score" 020DB294 05F5E0FF is a
+            # 32-bit write, "Unlimited Lives" 010DB26C 00000004 a 16-bit one); a code with a non-zero first nibble keeps it there
+            kind = t & 0xF if t < 0x10 else (a >> 28) & 0xF
             if kind in (0, 1, 2):
                 ops.append(("w", addr, v.to_bytes(4, "little")[:(1, 2, 4)[kind]]))
             else:

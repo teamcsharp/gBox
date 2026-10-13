@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -94,6 +95,12 @@ def create_app(config: Config) -> FastAPI:
         # every live stream viewer and worker input long-poll holds a worker thread
         import anyio.to_thread
         anyio.to_thread.current_default_thread_limiter().total_tokens = 256
+
+    @app.on_event("startup")
+    async def _audio_cpp_autostart():
+        # audio.cpp runs beside the control plane when its binary is on this machine (docs/audio_cpp.md); absent = no-op
+        from . import audio_cpp
+        threading.Thread(target=audio_cpp.autostart, args=(config,), name="audio_cpp-autostart", daemon=True).start()
 
     def auth(request: Request) -> str:
         # ?token= is accepted so <img>/<video> tags can load frames and artwork
@@ -2620,13 +2627,21 @@ def create_app(config: Config) -> FastAPI:
         items.sort(key=lambda x: (score(x["text"]) if ql else 0, {"mod": 0, "history": 1}.get(x["kind"], 2)))
         return items[:max(1, min(limit, 30))]
 
+    def voice_default() -> str:
+        """[voice] default_assistant, unless the operator picked another one at runtime (PUT /api/voice/default)."""
+        return (store.get("setting", "voice") or {}).get("default_assistant") or config.voice.default_assistant
+
     @app.get("/api/voice/voices")
     def voice_list(actor=Depends(auth)):
-        from . import speech
-        return {"engine": agent_cfg.get("tts_engine", "xtts"),
-                "groups": [{"label": "XTTS v2 · cloned voices (Pine Box library)",
-                            "voices": [{"id": f"xtts:{v['id']}", "name": v["name"]} for v in speech.voices(agent_cfg.get("voice_library", ""))]},
-                           {"label": "Kokoro · fast", "voices": [{"id": f"kokoro:{vid}", "name": n} for vid, n in speech.KOKORO_VOICES]}]}
+        from . import audio_cpp, speech
+        groups = [{"label": "XTTS v2 · cloned voices (Pine Box library)",
+                   "voices": [{"id": f"xtts:{v['id']}", "name": v["name"]} for v in speech.voices(agent_cfg.get("voice_library", ""))]},
+                  {"label": "Kokoro · fast", "voices": [{"id": f"kokoro:{vid}", "name": n} for vid, n in speech.KOKORO_VOICES]}]
+        if audio_cpp.available(config) is None:     # audio.cpp on this machine: its voices, always served by audio.cpp
+            ids = audio_cpp.voices(config) or ([v for v, _ in speech.KOKORO_VOICES] if config.audio_cpp.tts_family == "kokoro_tts" else [])
+            names = dict(speech.KOKORO_VOICES)
+            groups.append({"label": "audio.cpp · local", "voices": [{"id": f"audio_cpp:{v}", "name": names.get(v, v)} for v in ids]})
+        return {"engine": agent_cfg.get("tts_engine", "xtts"), "default_assistant": voice_default(), "groups": groups}
 
     class TtsIn(BaseModel):
         text: str
@@ -2635,25 +2650,61 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/tts")
     async def text_to_speech(t: TtsIn, actor=Depends(auth)):
-        """Speak a reply: Pine Box Voice Director (XTTS v2 voice clones) with Piper as the fallback."""
+        """Speak a reply: the default speech assistant (Voice Director or audio.cpp), the other one when it is busy, Piper last."""
         from . import speech
-        wav, used = await asyncio.to_thread(speech.tts, t.text, agent_cfg.get("voice_director", "http://127.0.0.1:8090"),
-                                            t.engine or agent_cfg.get("tts_engine", "xtts"), t.voice)
+        wav, used = await asyncio.to_thread(speech.route_tts, config, t.text, t.engine, t.voice, voice_default())
         return Response(wav, media_type="audio/wav", headers={"x-gbox-tts-engine": used})
 
     @app.post("/api/stt")
     async def speech_to_text(request: Request, language: str = "en", actor=Depends(auth)):
-        """Dictation: browser audio -> Spark faster-whisper (Wyoming :10300) -> text."""
+        """Dictation: browser audio -> the default assistant (Spark faster-whisper over Wyoming, or audio.cpp) -> text."""
         from . import speech
         audio = await request.body()
         if not audio:
             raise HTTPException(422, "no audio")
         try:
-            text = await asyncio.to_thread(speech.transcribe, audio, agent_cfg.get("stt_host", "127.0.0.1"),
-                                           int(agent_cfg.get("stt_port", 10300)), language or None)
+            text, used = await asyncio.to_thread(speech.route_stt, config, audio, language or None, voice_default())
         except Exception as e:
             raise HTTPException(502, f"speech service: {e}")
-        return {"text": text}
+        return {"text": text, "assistant": used}
+
+    @app.get("/api/voice/assistants")
+    def voice_assistants(actor=Depends(auth)):
+        """Both speech assistants, which one is the default, and how requests were routed (docs/audio_cpp.md)."""
+        from . import speech
+        return speech.assistants(config, voice_default())
+
+    class VoiceDefaultIn(BaseModel):
+        assistant: Literal["director", "audio_cpp"] | None = None   # None = back to gbox.toml [voice] default_assistant
+
+    @app.put("/api/voice/default")
+    def voice_set_default(v: VoiceDefaultIn, actor=Depends(auth)):
+        """Make audio.cpp (or the Voice Director) the default speech assistant without editing gbox.toml."""
+        from . import audio_cpp
+        if v.assistant == "audio_cpp" and (why := audio_cpp.available(config)):
+            raise HTTPException(409, f"audio.cpp can't be the default here: {why}")
+        store.put("setting", "voice", (store.get("setting", "voice") or {}) | {"default_assistant": v.assistant, "by": actor,
+                                                                                "ts": time.time()})
+        return {"default_assistant": voice_default()}
+
+    @app.get("/api/audio_cpp/status")
+    def audio_cpp_status(actor=Depends(auth)):
+        from . import audio_cpp
+        return audio_cpp.service(config).status()
+
+    @app.post("/api/audio_cpp/{op}")
+    async def audio_cpp_control(op: Literal["start", "stop"], actor=Depends(auth)):
+        """Start (and keep alive) or stop the control plane's own audiocpp_server."""
+        from . import audio_cpp
+        svc = audio_cpp.service(config)
+        if op == "stop":
+            return await asyncio.to_thread(svc.stop)
+        try:
+            st = await asyncio.to_thread(svc.start, True)
+        except audio_cpp.Down as e:
+            raise HTTPException(409, str(e))
+        svc.keep_alive()
+        return st
 
     @app.get("/api/llm/models")
     def llm_models(actor=Depends(auth)):
@@ -2795,6 +2846,13 @@ def create_app(config: Config) -> FastAPI:
     def _attach(rid: str, items: list[dict]) -> list[dict]:
         out = []
         for a in items[:20]:
+            if a.get("sha256") and not a.get("b64"):        # an artifact gBox already holds (a replay clip, #1084)
+                meta = store.get("artifact", str(a["sha256"]))
+                if not meta:
+                    raise HTTPException(422, f"unknown artifact {str(a['sha256'])[:12]}")
+                out.append({"sha256": meta["sha256"], "name": a.get("name") or meta.get("name"),
+                            "type": a.get("type") or meta.get("media_type"), "size": meta.get("size")})
+                continue
             name = a.get("name") or "image.png"
             mt = a.get("type") or ("image/png" if name.lower().endswith(".png") else "application/octet-stream")
             ref = store.put_artifact(base64.b64decode(a["b64"]), name, mt, {"request": rid, "attachment": True})
