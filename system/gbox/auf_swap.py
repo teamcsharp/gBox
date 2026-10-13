@@ -18,15 +18,16 @@ How a donor goes in (per level, per body model):
   * target skeleton = the body model's own bones and rest pose; body roles from its topology (auf_gcm.auto_roles,
     127/127 shipped actor models give all 18 roles);
   * the donor (a rigged collection character, meta rig.roles) is fitted with gbox.doa2_weighted_retarget (skin
-    weights kept), reduced to the 2-bone blends the format has, decimated to the slot's triangle budget, and its
-    textures are packed into one 256x256 atlas;
+    weights kept) and reduced to the 2-bone blends the format has; a static T-pose donor without a skeleton (the
+    Def Jam Vendetta GC wrestlers) is rigged to the slot by ``fit_static``; quadric decimation to the slot's budget;
   * the whole donor, head included, is encoded into the body model (auf_gcm.encode_gcm: the body's skeleton, hit
     boxes and animation bindings stay, so every native animation still drives it) and each head model only those
     bodies use becomes an invisible stub; a head that a body outside the build also wears is kept and the donor's
     own head is left out instead;
-  * the atlas goes into the level's texture chunk by re-pointing a texture only the replaced models use (no new
-    texture records: the game's texture table is fixed at 512 entries) and the donor's section uses that texture's
-    shader name.
+  * the donor's textures are packed into the textures only the replaced models used (one group / one pass CMPR
+    shaders nobody else draws with), written over their own bytes at their own size and mip count: no texture record
+    is added (the game's table is fixed at 512 entries) and the level's texture memory does not change; the donor's
+    sections use those textures' shader names.
 The rebuilt levels go into a copy of the disc image (gbox.filemods.build_image: in its FST slot when it fits, else
 moved after the last file), so the owned image is never written.
 
@@ -59,7 +60,6 @@ from . import auf_ngc_writer as NW
 GAME_ID = "65b7187589166b26"
 GAME_IDS = {GAME_ID: "007 - Agent Under Fire (USA)"}
 DISC_ID = "GW7E"
-ATLAS = 256
 BUDGET_FACTOR = 1.2           # donor triangles <= 1.2 x (body + stubbed heads) of the slot's own LOD
 MIN_BUDGET = 300
 A2R = np.array([[0.0, 1, 0], [0, 0, 1], [1, 0, 0]])   # AUF (x front, y left, z up) -> retarget frame (left, up, front)
@@ -318,8 +318,7 @@ class Donor:
     glb: Path
     roles: dict
     rig: dict = None
-    atlas: np.ndarray = None
-    tiles: dict = None
+    mats: list = None                              # [(material key, rgb image or None, colour, texel area)]
     fits: dict = field(default_factory=dict)
 
 
@@ -336,7 +335,7 @@ def load_donor(slug: str, glb, roles: dict, name: str = "", static_ok: bool = Tr
         d.rig = load_static(Path(glb))
     else:
         raise ValueError(f"{slug}: the collection entry has no hip/head rig roles (not retargetable)")
-    d.atlas, d.tiles = build_atlas(d.rig["prims"])
+    d.mats = donor_materials(d.rig["prims"])
     return d
 
 
@@ -384,49 +383,73 @@ def _material_key(p):
             tuple(int(c) for c in p.get("color", (255, 255, 255, 255))[:3]))
 
 
-def build_atlas(prims, size: int = ATLAS) -> tuple[np.ndarray, dict]:
-    """Every donor material (texture x colour factor, or a plain colour) in one grid of square tiles.
-    -> (RGBA image, {material key: (x0, y0, tile)})."""
-    from PIL import Image
-    mats = []
+def donor_materials(prims) -> list:
+    """The donor's distinct materials: (key, opaque RGB image or None, colour factor, texel area for packing).
+    Cut-out texels take the opaque texels' mean colour (AUF draws characters opaque)."""
+    out, seen = [], set()
     for p in prims:
         k = _material_key(p)
-        if k not in [m[0] for m in mats]:
-            mats.append((k, p.get("tex"), p.get("color", (255, 255, 255, 255))))
-    cols = max(1, int(np.ceil(np.sqrt(len(mats)))))
-    tile = size // cols
-    img = np.zeros((size, size, 4), np.uint8)
-    img[..., 3] = 255
-    tiles = {}
-    for i, (k, tex, color) in enumerate(mats):
-        x0, y0 = (i % cols) * tile, (i // cols) * tile
-        col = np.asarray(color[:3], float) / 255
-        if tex is None:
-            img[y0:y0 + tile, x0:x0 + tile, :3] = (col * 255).astype(np.uint8)
-        else:
+        if k in seen:
+            continue
+        seen.add(k)
+        tex = p.get("tex")
+        if tex is not None:
             t = np.asarray(tex, np.uint8)
             if t.ndim == 2:
                 t = np.stack([t] * 3 + [np.full_like(t, 255)], -1)
             if t.shape[2] == 3:
                 t = np.concatenate([t, np.full(t.shape[:2] + (1,), 255, np.uint8)], -1)
-            a = t[..., 3] >= 128                          # AUF draws characters opaque: fill cut-out texels
+            a = t[..., 3] >= 128
             if a.any() and not a.all():
                 t = t.copy()
                 t[~a, :3] = t[a, :3].mean(0).astype(np.uint8)
-            r = np.asarray(Image.fromarray(t[..., :3]).resize((tile, tile), Image.BILINEAR), float)
-            img[y0:y0 + tile, x0:x0 + tile, :3] = np.clip(r * col, 0, 255).astype(np.uint8)
-        tiles[k] = (x0, y0, tile)
-    return img, tiles
+            tex = t[..., :3]
+        area = int(tex.shape[0] * tex.shape[1]) if tex is not None else 64
+        out.append((k, tex, tuple(p.get("color", (255, 255, 255, 255))[:3]), area))
+    return out
 
 
-def atlas_uvs(uv_tri: np.ndarray, tile: tuple, size: int = ATLAS) -> np.ndarray:
-    """(3, 2) material UVs of one triangle -> atlas UVs: shifted by whole repeats into [0, 1] (clamped when the
+def build_pages(mats: list, sizes: list[tuple[int, int]]) -> tuple[list, dict]:
+    """Pack the donor's materials into texture pages of the given (w, h) sizes (the slot textures they will be written
+    over, largest first): materials are dealt by texel area so every page carries a similar share of its own area,
+    then laid out on a grid of tiles in each page.  -> ([RGBA page], {material key: (page, (x0, y0, tw, th), (w, h))})."""
+    from PIL import Image
+    pages = [[] for _ in sizes]
+    load = [0.0] * len(sizes)
+    for m in sorted(mats, key=lambda m: -m[3]):
+        i = min(range(len(sizes)), key=lambda j: (load[j] + m[3]) / (sizes[j][0] * sizes[j][1]))
+        pages[i].append(m)
+        load[i] += m[3]
+    images, layout = [], {}
+    for pi, ((w, h), ms) in enumerate(zip(sizes, pages)):
+        img = np.zeros((h, w, 4), np.uint8)
+        img[..., 3] = 255
+        if ms:
+            cols = max(1, int(np.ceil(np.sqrt(len(ms) * w / h))))
+            rows = int(np.ceil(len(ms) / cols))
+            tw, th = w // cols, h // rows
+            for i, (k, tex, color, _a) in enumerate(ms):
+                x0, y0 = (i % cols) * tw, (i // cols) * th
+                col = np.asarray(color, float) / 255
+                if tex is None:
+                    img[y0:y0 + th, x0:x0 + tw, :3] = (col * 255).astype(np.uint8)
+                else:
+                    r = np.asarray(Image.fromarray(np.ascontiguousarray(tex)).resize((tw, th), Image.BILINEAR), float)
+                    img[y0:y0 + th, x0:x0 + tw, :3] = np.clip(r * col, 0, 255).astype(np.uint8)
+                layout[k] = (pi, (x0, y0, tw, th), (w, h))
+        images.append(img)
+    return images, layout
+
+
+def atlas_uvs(uv_tri: np.ndarray, tile: tuple, page: tuple) -> np.ndarray:
+    """(3, 2) material UVs of one triangle -> page UVs: shifted by whole repeats into [0, 1] (clamped when the
     triangle itself spans more than one repeat) and mapped half a texel inside the material's tile."""
-    x0, y0, t = tile
+    x0, y0, tw, th = tile
+    w, h = page
     u = np.asarray(uv_tri, float)
     u = u - np.floor(u.min(0))
     u = np.clip(u, 0.0, 1.0)
-    return np.stack([(x0 + 0.5 + u[:, 0] * (t - 1)) / size, (y0 + 0.5 + u[:, 1] * (t - 1)) / size], 1)
+    return np.stack([(x0 + 0.5 + u[:, 0] * (tw - 1)) / w, (y0 + 0.5 + u[:, 1] * (th - 1)) / h], 1)
 
 
 def target_of(body: bytes, head: bytes | None = None) -> dict:
@@ -454,7 +477,7 @@ def skeleton_signature(body: bytes) -> str:
 
 def fit_donor(donor: Donor, body: bytes, head: bytes | None) -> dict:
     """The donor on a body model's skeleton (cached per skeleton): AUF-frame positions/normals, 2-bone skin, material
-    UVs and the atlas tile of every triangle."""
+    UVs and the material of every triangle."""
     from . import doa2_weighted_retarget as WR
     sig = skeleton_signature(body)
     if sig in donor.fits:
@@ -464,7 +487,7 @@ def fit_donor(donor: Donor, body: bytes, head: bytes | None) -> dict:
         return donor.fits[sig]
     tgt = target_of(body, head)
     prims, rep = WR.retarget(donor.rig, tgt, jmap=tgt["jmap"])
-    Ps, Ns, UVs, Js, Ws, Fs, tiles = [], [], [], [], [], [], []
+    Ps, Ns, UVs, Js, Ws, Fs, mkeys = [], [], [], [], [], [], []
     base = 0
     for src, p in zip(donor.rig["prims"], prims):
         n = len(p["pos"])
@@ -485,12 +508,12 @@ def fit_donor(donor: Donor, body: bytes, head: bytes | None) -> dict:
         Ws.append(np.where(j1 >= 0, w0 / np.maximum(w0 + w1, 1e-9), 1.0))
         tris = np.asarray(p["tris"], int).reshape(-1, 3)
         Fs.append(tris + base)
-        tiles += [donor.tiles[_material_key(src)]] * len(tris)
+        mkeys += [_material_key(src)] * len(tris)
         base += n
     fit = {"P": np.concatenate(Ps), "N": np.concatenate(Ns), "UV": np.concatenate(UVs), "J": np.concatenate(Js),
-           "W": np.concatenate(Ws), "F": np.concatenate(Fs), "tiles": tiles, "roles": tgt["jmap"],
-           "report": {k: rep[k] for k in ("scale", "torso_up", "torso_down", "shoulder_widen", "head_scale",
-                                          "normals_flipped") if k in rep}}
+           "W": np.concatenate(Ws), "F": np.concatenate(Fs), "mkeys": mkeys, "roles": tgt["jmap"],
+           "report": {k: round(float(rep[k]), 4) for k in ("scale", "torso_up", "torso_down", "shoulder_widen",
+                                                           "head_scale", "normals_flipped") if k in rep}}
     donor.fits[sig] = fit
     return fit
 
@@ -594,14 +617,14 @@ def fit_static(donor: Donor, body: bytes, head: bytes | None) -> dict:
         J[sel, 1] = np.where(blend, par, -1)
         Wt[sel] = np.where(blend, 0.5, 1.0)
     Ns = Nn / np.maximum(np.linalg.norm(Nn, axis=1, keepdims=True), 1e-9)
-    Fs, tiles, base = [], [], 0
+    Fs, mkeys, base = [], [], 0
     for p in donor.rig["prims"]:
         tris = np.asarray(p["tris"], int).reshape(-1, 3)
         Fs.append(tris + base)
-        tiles += [donor.tiles[_material_key(p)]] * len(tris)
+        mkeys += [_material_key(p)] * len(tris)
         base += len(p["pos"])
     return {"P": X, "N": Ns, "UV": np.concatenate([p["uv"] for p in donor.rig["prims"]]), "J": J, "W": Wt,
-            "F": np.concatenate(Fs), "tiles": tiles, "roles": roles,
+            "F": np.concatenate(Fs), "mkeys": mkeys, "roles": roles,
             "report": {"static": True, "height_scale": round(H_t / H_d, 4), "reach": [round(reach_d, 3), round(reach_t, 3)],
                        "landmarks_t": [round(v, 2) for v in (g_t, hip_t, sh_t, top_t)]}}
 
@@ -722,24 +745,27 @@ def decimate(P: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np.
     return out, F[np.array(alive, bool)]
 
 
-def slot_mesh(fit: dict, budget: int, drop_head: bool, bones: list) -> dict:
+def slot_mesh(fit: dict, budget: int, drop_head: bool, bones: list, layout: dict) -> dict:
     """Corner mesh for one body LOD: optional head removal (the slot keeps its own head), decimation to the budget,
-    atlas UVs per triangle.  -> {P, N, UV, J, W, F}."""
+    page UVs and section (= texture page) per triangle.  -> {P, N, UV, J, W, F, S}."""
     F = fit["F"]
-    tiles = list(fit["tiles"])
+    mk = list(fit["mkeys"])
     if drop_head:
-        hb = fit["roles"]["head"]
-        k = G._kids(bones)
-        heads = set(G._subtree(k, hb))
+        heads = set(G._subtree(G._kids(bones), fit["roles"]["head"]))
         keep = ~np.all(np.isin(fit["J"][F, 0], list(heads)), axis=1)
         F = F[keep]
-        tiles = [t for t, kp in zip(tiles, keep) if kp]
-    tmap = {tuple(f): t for f, t in zip(F.tolist(), tiles)}
+        mk = [t for t, kp in zip(mk, keep) if kp]
+    kmap = {tuple(f): t for f, t in zip(F.tolist(), mk)}
     P, F2 = decimate(fit["P"], F, budget)
     idx = F2.reshape(-1)
-    uv = np.concatenate([atlas_uvs(fit["UV"][f], tmap[tuple(f)]) for f in F2.tolist()]) if len(F2) else np.zeros((0, 2))
-    return {"P": P[idx], "N": fit["N"][idx], "UV": uv, "J": fit["J"][idx], "W": fit["W"][idx],
-            "F": np.arange(len(idx)).reshape(-1, 3)}
+    uv, sec = [], []
+    for f in F2.tolist():
+        page, tile, size = layout[kmap[tuple(f)]]
+        uv.append(atlas_uvs(fit["UV"][f], tile, size))
+        sec.append(page)
+    return {"P": P[idx], "N": fit["N"][idx], "UV": np.concatenate(uv) if uv else np.zeros((0, 2)),
+            "J": fit["J"][idx], "W": fit["W"][idx], "F": np.arange(len(idx)).reshape(-1, 3),
+            "S": np.asarray(sec, int)}
 
 
 # --------------------------------------------------------------------------------------------- one level
@@ -773,36 +799,58 @@ def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=
     for n in sorted(replaced):
         for s in G.section_names(pkg.read(n)):
             names[NW.hash_string(s)] = s
-    free = [f for f in free if f["id"] in names]
+    free = [f for f in free if f["id"] in names and f["fmt"] == ngc.GX_CMPR]
     donors = sorted({d.slug: d for d in assign.values()}.values(), key=lambda d: d.slug)
     if len(free) < len(donors):
         raise ValueError(f"{level}: {len(donors)} donor(s) need a texture each, but only {len(free)} textures are used "
                          f"by the replaced models alone ({sorted(replaced)[:6]})")
-    # a donor prefers a texture of its own bodies
-    pick, taken = {}, set()
+    # every donor first takes one texture of its own models, then the rest go to the donor whose models used them
+    mine = {d.slug: {b for k, dd in assign.items() if dd is d for b in bodies[k]} |
+            {h for c in cast if assign.get(c.key) is d for h in c.heads if h in stub_heads} for d in donors}
+    alloc, taken = {d.slug: [] for d in donors}, set()
+
+    def owners(f):
+        return [d for d in donors if users.get(f["id"], set()) & mine[d.slug]]
     for d in donors:
-        mine = {b for k, dd in assign.items() if dd is d for b in bodies[k]}
-        cand = [f for f in free if f["id"] not in taken and users.get(f["id"], set()) & mine] or \
-               [f for f in free if f["id"] not in taken]
-        pick[d.slug] = cand[0]
+        cand = [f for f in free if f["id"] not in taken and d in owners(f)] or [f for f in free if f["id"] not in taken]
+        alloc[d.slug].append(cand[0])
         taken.add(cand[0]["id"])
-    repl, report = {}, {"level": level, "replaced": [], "stub_heads": stub_heads, "textures": {}}
+    for f in free:
+        if f["id"] in taken:
+            continue
+        d = min(owners(f) or donors, key=lambda d: sum(x["size"][0] * x["size"][1] for x in alloc[d.slug]))
+        if len(alloc[d.slug]) < len(d.mats):
+            alloc[d.slug].append(f)
+            taken.add(f["id"])
+    pages, images = {}, {}
+    report = {"level": level, "replaced": [], "stub_heads": stub_heads, "textures": {}}
+    for d in donors:
+        fl = sorted(alloc[d.slug], key=lambda f: -f["size"][0] * f["size"][1])
+        imgs, layout = build_pages(d.mats, [tuple(f["size"]) for f in fl])
+        used = sorted({v[0] for v in layout.values()})
+        layout = {k: (used.index(v[0]),) + v[1:] for k, v in layout.items()}
+        pages[d.slug] = (layout, [names[fl[i]["id"]] for i in used])
+        for i in used:
+            images[fl[i]["texture"]] = imgs[i]
+        report["textures"][d.slug] = [{"texture": "%08x" % fl[i]["texture"], "shader": names[fl[i]["id"]],
+                                       "size": fl[i]["size"]} for i in used]
+    repl = {}
     for i, (k, d) in enumerate(sorted(assign.items())):
         progress(100 * i / max(1, len(assign)), f"{level}: {d.name} as {NAMES.get(k, (k,))[0]}")
-        shader = names[pick[d.slug]["id"]]
-        head0 = next((pkg.read(h) for c in cast if c.key == k for h in c.heads), None)
+        layout, shader_names = pages[d.slug]
+        heads_k = {h for c in cast if c.key == k for h in c.heads}
+        head0 = next((pkg.read(h) for h in sorted(heads_k)), None)
         own_head_stubbed = not kept_heads[k]
+        stub_tris = sum(_tris(pkg.read(h)) for h in heads_k & set(stub_heads))
+        stub_pal = sum(struct.unpack_from(">H", pkg.read(h), G.HDR + 0x54)[0] - 1 for h in heads_k & set(stub_heads))
         for b in bodies[k]:
             body = pkg.read(b)
-            stub_tris = sum(_tris(pkg.read(h)) for h in {h for c in cast if c.key == k for h in c.heads} & set(stub_heads))
-            stub_pal = sum(struct.unpack_from(">H", pkg.read(h), G.HDR + 0x54)[0] - 1
-                           for h in {h for c in cast if c.key == k for h in c.heads} & set(stub_heads))
             budget = max(MIN_BUDGET, int((_tris(body) + (stub_tris if own_head_stubbed else 0)) * BUDGET_FACTOR))
             fit = fit_donor(d, body, head0)
-            m = slot_mesh(fit, budget, drop_head=not own_head_stubbed, bones=ngc.skeleton(body))
+            m = slot_mesh(fit, budget, not own_head_stubbed, ngc.skeleton(body), layout)
             pal = struct.unpack_from(">H", body, G.HDR + 0x54)[0] + (max(0, stub_pal) if own_head_stubbed else 0)
-            gcm, rep = G.encode_gcm(body, m["P"], m["N"], m["UV"], m["J"], m["W"], m["F"], np.zeros(len(m["F"]), int),
-                                    [shader], max_palette=min(255, pal))
+            gcm, rep = G.encode_gcm(body, m["P"], m["N"], m["UV"], m["J"], m["W"], m["F"], m["S"], shader_names,
+                                    max_palette=min(255, pal))
             chk = G.decode_check(gcm)
             if chk["problems"] or chk["triangles"] < 0.95 * rep["triangles"]:
                 raise ValueError(f"{level}/{b}: re-read check failed {chk['problems'][:3]}")
@@ -810,29 +858,27 @@ def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=
             report["replaced"].append({"body": b, "key": k, "donor": d.slug, "triangles": rep["triangles"],
                                        "budget": budget, "palette": rep["palette"], "palette_limit": rep["palette_limit"],
                                        "weight_step": rep["weight_step"], "bytes": len(gcm), "source_bytes": len(body),
-                                       "shader": shader, "head": "stubbed" if own_head_stubbed else "kept",
+                                       "sections": shader_names, "head": "stubbed" if own_head_stubbed else "kept",
                                        "fit": fit["report"]})
     for h in stub_heads:
         repl[h] = G.empty_gcm(pkg.read(h))
-    images = {}
-    for d in donors:
-        f = pick[d.slug]
-        images[f["texture"]] = d.atlas
-        report["textures"][d.slug] = {"texture": "%08x" % f["texture"], "shader": names[f["id"]],
-                                      "was": f["size"], "now": [ATLAS, ATLAS]}
     progress(90, f"{level}: re-encoding the texture and file-system chunks")
-    new_tx = G.repoint_textures(pkg.payload("restxtrs"), images)
+    new_tx = pkg.payload("restxtrs")
+    for tid, img in images.items():
+        new_tx = G.write_texture_in_place(new_tx, tid, img)
     entries = NW.restable_entries(pkg.table)
     low = {k.lower(): v for k, v in repl.items()}
     entries = [(n, low.get(n.lower(), b)) for n, b in entries]
     out = NW.write_package(pkg, {"restable": NW.build_restable(entries), "restxtrs": new_tx})
     chk = NW.check_package(out, {n: hashlib.sha256(b).hexdigest() for n, b in repl.items()})
     q = ngc.NgcPackage(out)
-    tq = ngc.textures(q)
-    for d in donors:
-        t = tq[pick[d.slug]["texture"]]
-        if (t.width, t.height) != (ATLAS, ATLAS):
-            chk["problems"].append(f"texture {t.id:08x} not re-pointed")
+    tq, t0 = ngc.textures(q), tex
+    if len(q.payload("restxtrs")) != len(pkg.payload("restxtrs")):
+        chk["problems"].append("texture chunk changed size")
+    for tid in tq:
+        a_, b_ = t0[tid], tq[tid]
+        if (a_.fmt, a_.width, a_.height, a_.offset, a_.size) != (b_.fmt, b_.width, b_.height, b_.offset, b_.size):
+            chk["problems"].append(f"texture record {tid:08x} changed")
     chk["problems"] += [p for p in ngc.texture_check(q)]
     if chk["problems"]:
         raise ValueError(f"{level}: rebuilt package failed its check: {chk['problems'][:5]}")

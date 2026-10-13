@@ -321,20 +321,21 @@ def test_level_rebuild_offsets_textures_and_models(donor):
     assert W.check_package(out)["problems"] == []
     body = q.read("models/actors/test/body_l.gcm")
     m = N.mesh(body)
-    assert len(m["faces"]) > 50 and G.section_names(body) == [rep["textures"]["synthetic_wrestler"]["shader"]]
+    pages = rep["textures"]["synthetic_wrestler"]
+    assert len(m["faces"]) > 50 and G.section_names(body) == [p["shader"] for p in pages]
     assert len(N.mesh(q.read("models/actors/actorheads/head_l.gcm"))["faces"]) == 0      # head stub
     assert rep["stub_heads"] == ["models/actors/actorheads/head_l.gcm"]
     assert q.read("models/actors/other/other_l.gcm") == N.NgcPackage(data).read("models/actors/other/other_l.gcm")
-    # texture chunk: the donor's texture re-pointed to appended 32-aligned data, the others untouched
-    t0, t1 = N.textures(N.NgcPackage(data)), N.textures(q)
-    tid = int(rep["textures"]["synthetic_wrestler"]["texture"], 16)
-    assert tid in (0xA1, 0xA2) and (t1[tid].width, t1[tid].height) == (S.ATLAS, S.ATLAS)
-    assert t1[tid].offset % 32 == 0 and t1[tid].offset >= len(q.payload("restxtrs")) - t1[tid].size - 4096 * 8
-    for k in (0xA3, 0xA4):
-        assert t1[k] == t0[k]
+    # texture chunk: the donor's page written over a texture only the replaced models used, in place (same record,
+    # size, offset, chunk length); the shared hand texture and the other model's texture untouched
+    p0 = N.NgcPackage(data)
+    t0, t1 = N.textures(p0), N.textures(q)
+    tid = int(pages[0]["texture"], 16)
+    assert tid == 0xA1 and t1 == t0 and len(q.payload("restxtrs")) == len(p0.payload("restxtrs"))
+    assert N.texture_rgba(q, t1[tid]) != N.texture_rgba(p0, t0[tid])
     assert N.texture_check(q) == []
-    for i in (0xA3, 0xA4):
-        assert N.texture_rgba(q, t1[i]) == N.texture_rgba(N.NgcPackage(data), t0[i])
+    for i in (0xA2, 0xA3, 0xA4):
+        assert N.texture_rgba(q, t1[i]) == N.texture_rgba(p0, t0[i])
     secs = N.section_textures(q, m)
     assert all(t is not None and t.id == tid for t in secs)
     # the donor stands on the slot's skeleton: feet near the ground, head near the head bone
@@ -353,7 +354,7 @@ def test_static_t_pose_donor_is_rigged_to_the_slot(tmp_path):
     glb = tmp_path / "static.glb"
     N.to_glb(m | {"positions": P.tolist()}, glb, "static")
     d = S.load_donor("static_wrestler", glb, {})
-    assert d.rig.get("static") and d.atlas.shape == (S.ATLAS, S.ATLAS, 4)
+    assert d.rig.get("static") and len(d.mats) == 1
     fit = S.fit_static(d, body, None)
     X = fit["P"]
     src = np.asarray(m["positions"])
@@ -378,8 +379,41 @@ def test_decimate_reaches_the_budget_without_flips():
 
 
 def test_atlas_uvs_shift_repeats_into_the_tile():
-    uv = S.atlas_uvs(np.array([[1.25, 2.5], [1.75, 2.5], [1.5, 3.0]]), (128, 0, 128), 256)
+    uv = S.atlas_uvs(np.array([[1.25, 2.5], [1.75, 2.5], [1.5, 3.0]]), (128, 0, 128, 64), (256, 128))
     assert np.all((uv[:, 0] >= 0.5) & (uv[:, 0] <= 1.0) & (uv[:, 1] >= 0) & (uv[:, 1] <= 0.5))
+
+
+def test_pages_pack_materials_by_area():
+    red = np.zeros((64, 64, 3), np.uint8)
+    red[..., 0] = 255
+    mats = [(("a", (255, 255, 255)), red, (255, 255, 255), 4096), (("b", (0, 0, 255)), None, (0, 0, 255), 64),
+            (("c", (255, 255, 255)), red, (128, 128, 128), 4096)]
+    imgs, layout = S.build_pages(mats, [(128, 128), (64, 32)])
+    assert [i.shape for i in imgs] == [(128, 128, 4), (32, 64, 4)]
+    assert {v[0] for v in layout.values()} == {0, 1} and set(layout) == {m[0] for m in mats}
+    page, (x0, y0, tw, th), size = layout[("b", (0, 0, 255))]
+    assert tuple(imgs[page][y0 + th // 2, x0 + tw // 2, :3]) == (0, 0, 255)
+    page, (x0, y0, tw, th), size = layout[("c", (255, 255, 255))]
+    assert tuple(imgs[page][y0 + th // 2, x0 + tw // 2, :3]) == (128, 0, 0)          # colour factor applied
+
+
+def test_texture_written_in_place_keeps_the_chunk_layout():
+    tx = _restxtrs([(0xA1, 64, 64, (10, 200, 10), False), (0xA2, 32, 32, (200, 10, 10), True)])
+    img = np.zeros((64, 64, 4), np.uint8)
+    img[..., 2] = 250
+    out = G.write_texture_in_place(tx, 0xA1, img)
+    assert len(out) == len(tx)
+    n, ido, reco = G.texture_records(out)
+    assert out[reco:reco + 0x44 * n] == tx[reco:reco + 0x44 * n]
+    off, size = struct.unpack_from(">II", out, reco + 0x10)
+    back = np.frombuffer(N.decode_gx(N.GX_CMPR, 64, 64, out[off:off + size]), np.uint8).reshape(64, 64, 4)
+    assert abs(int(back[..., 2].mean()) - 250) < 8
+    off2, size2 = struct.unpack_from(">II", out, reco + 0x44 + 0x10)
+    assert out[off2:off2 + size2] == tx[off2:off2 + size2]
+    with pytest.raises(ValueError):
+        G.write_texture_in_place(tx, 0xA1, np.zeros((32, 32, 4), np.uint8))
+    with pytest.raises(KeyError):
+        G.write_texture_in_place(tx, 0xBB, img)
 
 
 # ----------------------------------------------------------------------------------------------- the disc

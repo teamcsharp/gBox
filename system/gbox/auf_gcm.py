@@ -581,6 +581,31 @@ def repoint_textures(payload: bytes, images: dict) -> bytes:
     return bytes(out)
 
 
+def write_texture_in_place(payload: bytes, tid: int, rgba: np.ndarray) -> bytes:
+    """restxtrs payload with texture ``tid``'s pixels replaced by ``rgba`` (resized by the caller to the record's own
+    width x height), re-encoded as the record's CMPR mip chain over its own bytes: same size, same offsets, the
+    record and any second plane untouched, so the level's memory does not change."""
+    n, ido, reco = texture_records(payload)
+    ids = {struct.unpack_from(">I", payload, ido + 4 * i)[0]: i for i in range(n)}
+    if tid not in ids:
+        raise KeyError("texture %08x is not in this level" % tid)
+    r = reco + ids[tid] * 0x44
+    fmt, w, h = struct.unpack_from(">IHH", payload, r)
+    off, size = struct.unpack_from(">II", payload, r + 0x10)
+    if fmt != ngc.GX_CMPR:
+        raise ValueError("texture %08x is GX format %d, not CMPR" % (tid, fmt))
+    if tuple(rgba.shape[:2]) != (h, w):
+        raise ValueError("texture %08x is %dx%d, image is %dx%d" % (tid, w, h, rgba.shape[1], rgba.shape[0]))
+    mip = payload[r + 0x3A]
+    levels = int(struct.unpack_from(">f", payload, r + 0x30)[0]) + 1 if mip else 1
+    data = encode_texture(rgba, levels)
+    if len(data) != size:
+        raise ValueError("texture %08x: %d bytes encoded for a %d-byte chain" % (tid, len(data), size))
+    out = bytearray(payload)
+    out[off:off + size] = data
+    return bytes(out)
+
+
 def section_names(gcm: bytes) -> list[str]:
     nb = struct.unpack_from(">I", gcm, HDR + BLOCK_NAMES)[0]
     if not nb:
