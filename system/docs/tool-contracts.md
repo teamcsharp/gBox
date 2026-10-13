@@ -16,6 +16,10 @@ Every tool is registered with `@tool(name, version, In, Out, ...)` in `gbox/tool
 | analyze_binary | read | artifact counts | written, unverified |
 | ue_steam | read, execute | schema; refuses anti-cheat games before opening paks | synthetic paks tested; live read-only check on owned UE 4.27 games (docs/ue_steam.md) |
 | llm_complete | network | non-empty; output is a hypothesis | smoke-tested with Ollama |
+| pick_identify | read | schema | synthetic RAM + fake sessions tested (docs/live-inject.md); live emulator untested |
+| pick_replace | execute, memory_write | schema; live writes re-read, read back, rolled back on mismatch | synthetic RAM + fake sessions tested; live emulator untested |
+| pick_prepare | execute | schema | the routed writer (characters op=use launch=false) + live patch; tested through pick_replace |
+| pick_ghidra | read | schema | FindRefs / ExplainAddresses parsing tested with a fake analyzeHeadless |
 
 ## Adding a tool
 
