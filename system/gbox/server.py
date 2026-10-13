@@ -1370,7 +1370,9 @@ def create_app(config: Config) -> FastAPI:
         # running_jobs is the Spark's own count. A worker reporting busy slots with none running here
         # has leaked them and will never claim the queued launch (#1294); the loader says so.
         running = store.running_job_counts()
-        return [w | {"running_jobs": running.get(w["id"], 0)} for w in workers()]
+        # local_builds (a PC's own build list, for GET /api/builds) stays out of this often-polled answer
+        return [{k: v for k, v in w.items() if k != "local_builds"} | {"running_jobs": running.get(w["id"], 0)}
+                for w in workers()]
 
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
@@ -1873,6 +1875,8 @@ def create_app(config: Config) -> FastAPI:
     special_builds.routes(app, store, config, auth, workers=workers,
                           submit=lambda tool, inp, require_os, actor: submit(
                               JobRequest(tool=tool, input=inp, require_os=require_os), actor))
+    from . import builds                          # top bar "Builds": every custom build, details, scheduled build jobs
+    builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor))
 
     class Progress(BaseModel):
         pct: float

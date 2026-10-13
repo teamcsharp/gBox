@@ -641,7 +641,7 @@ def session_frames(store, sessions: list[dict], limit: int = FRAME_LIMIT) -> dic
 
 
 def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | None, requests: dict, library,
-          frames: list[dict] | None = None) -> dict:
+          frames: list[dict] | None = None, display_name: str = "") -> dict:
     meta, gid, name = rec.get("meta") or {}, rec["game_id"], rec["name"]
     changes = changes_of(meta)
     built = meta.get("built")
@@ -652,10 +652,12 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
         shots.insert(0, card["thumb"])
     tickets = tickets_of(meta, card)
     title = game_title_of(gid, meta, card, catalog)
+    original = meta.get("title") or (card or {}).get("title") or name
     return {
         "key": f"{gid}/{name}", "name": name, "game_id": gid, "title": title, "game_title": title,
         "platform": (catalog or {}).get("platform") or "",
-        "mod_title": meta.get("title") or (card or {}).get("title") or name,
+        # the operator's own name for the build (Builds view, double-click) wins everywhere a build is listed
+        "mod_title": display_name or original, "display_name": display_name, "original_title": original,
         "writer": writer_of(meta, name), "changes": changes, "cast": isinstance(meta.get("cast"), list),
         "report": meta.get("cast") if isinstance(meta.get("cast"), list) else None,
         "cast_source": meta.get("cast_source") or "",
@@ -771,6 +773,19 @@ def catalog_of(store, gid: str, meta: dict, seen: dict) -> dict | None:
     return None
 
 
+NAME_KIND = "build_name"                   # store kind: "game_id/mod" -> {key, display_name, by, ts} (gbox.builds)
+
+
+def display_names(store) -> dict:
+    """"game_id/mod" -> the operator's display name for that build (folders are never renamed)."""
+    try:
+        rows = _fields(store, NAME_KIND, ("key", "display_name"))
+    except Exception:                                            # noqa: BLE001
+        return {}
+    return {r["key"]: r["display_name"].strip() for r in rows if r.get("key") and isinstance(r.get("display_name"), str)
+            and r["display_name"].strip()}
+
+
 def gallery(store, config, records: list[dict] | None = None, *, register: bool = True) -> dict:
     """The whole gallery, newest build first: the index's records (or a marker scan) joined with the store. Touches
     no mod folder when records are given."""
@@ -789,6 +804,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
             except ValueError:
                 pass
     launches = launch_index(sessions, _failed_launches(store))
+    names = display_names(store)
     try:
         frames = session_frames(store, sessions)
     except Exception:                                            # noqa: BLE001 - frames are a convenience
@@ -803,7 +819,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
         gid = rec["game_id"]
         items.append(entry(rec, cards.get((gid, rec["name"])), launches.get((gid, rec["name"])),
                            catalog_of(store, gid, rec.get("meta") or {}, catalogs), requests, library,
-                           frames.get((gid, rec["name"]))))
+                           frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", "")))
     items.sort(key=lambda m: -(m["built"] or 0))
     return {"items": items, "registered": made, "cache_dir": str(root)}
 
@@ -812,7 +828,7 @@ def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "") 
     words = [w for w in q.lower().split() if w]
 
     def hay(m):
-        return " ".join([m["name"], m["game_id"], m["title"], m["mod_title"], m["writer"],
+        return " ".join([m["name"], m["game_id"], m["title"], m["mod_title"], m.get("original_title") or "", m["writer"],
                          *(f"{r.get('donor')} {r.get('slot')}" for r in m["changes"]),
                          *(f"#{t['number']}" for t in m["tickets"])]).lower()
     return [m for m in items if (not game_id or m["game_id"] == game_id) and (not writer or m["writer"] == writer)
