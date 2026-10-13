@@ -2991,6 +2991,75 @@ def file_mod(inp: FileModIn, ctx: Ctx):
     raise ValueError(f"unknown op {inp.op}")
 
 
+class BuildLocalIn(BaseModel):
+    op: str = "download"                   # download | locate | export
+    game_id: str
+    name: str                              # the build (its collection folder name)
+    dest: str = ""                         # export: an existing folder on this PC (absolute path)
+    format: str = "same"                   # export: same (the original's container) | plain | patch | zip
+    label: str = ""                        # export: the build's display name (names the export folder)
+
+class BuildLocalOut(BaseModel):
+    result: dict
+
+
+@tool("build_local", "1.0", BuildLocalIn, BuildLocalOut, capabilities=["mod"], timeout_s=7200, permissions=[P.EXECUTE],
+      side_effects=["copies a build from the central collection into this PC's cache (never launches it)",
+                    "export: writes the build into the chosen folder on this PC"])
+def build_local(inp: BuildLocalIn, ctx: Ctx):
+    """A build on this PC (#1639, the download icon on the Mods cards and Builds rows). download: pull the build from
+    the central collection into this PC's cache (filemods.stage: the pinned manifest, resumable, a running game's copy
+    is never touched) so it plays at once, offline; nothing is launched. locate: this PC's folder of the build. export:
+    download if needed, then write it to `dest` (gbox.build_export: the same format as the original game file by
+    default, or plain / patch / zip)."""
+    from . import build_export as BX
+    from . import filemods
+    if inp.op not in ("download", "locate", "export"):
+        raise ValueError(f"unknown op {inp.op}")
+    filemods.mod_dir(ctx.config, inp.game_id, inp.name)            # names must be single cache-folder components
+    if inp.op == "locate":
+        d = BX.locate(ctx.config, inp.game_id, inp.name)
+        return {"result": {"here": bool(d), **(BX.summary(d) if d else {})}}
+    if inp.op == "export":
+        dest = Path(inp.dest or "")
+        if not inp.dest or not dest.is_absolute():
+            raise ValueError("choose a folder on this PC to export to (an absolute path)")
+        if not dest.is_dir():
+            raise ValueError(f"{dest} is not a folder on this PC")
+        if inp.format not in BX.FORMATS:
+            raise ValueError(f"format: one of {', '.join(BX.FORMATS)}")
+    share = .4 if inp.op == "export" else 1.0                       # an export spends the rest of its bar writing
+
+    def fetching(pct, msg):                                         # stage: 20 = checking, 20..28 = the download
+        ctx.progress(round(share * (2 if pct <= 20 else min(99, 4 + 95 * (pct - 20) / 8)), 1), msg)
+    have = BX.locate(ctx.config, inp.game_id, inp.name)
+    if ctx.server:
+        alias = filemods.stage(ctx.config, ctx.server, ctx.headers, inp.game_id, inp.name, fetching)
+        folder = filemods.mod_dir(ctx.config, inp.game_id, alias)
+    else:
+        folder = have
+    if folder is None or not (folder / ".gbox-mod.json").is_file():
+        raise ValueError(f"build {inp.name} is neither on this PC nor in the central collection")
+    filemods._LOCAL_CACHE.clear()                                   # the next heartbeat lists it as on this PC
+    info = BX.summary(folder)
+    if inp.op == "download":
+        ctx.progress(100, f"{inp.name} is on this PC ({info['size'] >> 20} MB): it plays offline")
+        return {"result": {"here": True, "already": bool(have and have == folder), **info}}
+    r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
+    r.raise_for_status()
+    g = CatalogEntry.model_validate(r.json())
+    try:
+        rom = rom_path(g, ctx.config)
+    except ToolUnavailable:
+        rom = None
+    game = g.model_dump(mode="json") | {"source_name": Path(g.rel_path or (g.launch or {}).get("path") or "").name}
+    meta = json.loads((folder / ".gbox-mod.json").read_text(encoding="utf-8"))
+    res = BX.export(ctx.config, game=game, rom=rom if rom and Path(rom).exists() else None, folder=folder, meta=meta,
+                    dest=Path(inp.dest), fmt=inp.format, label=inp.label or inp.name,
+                    progress=lambda f, m: ctx.progress(round(40 + 60 * min(1.0, f), 1), m))
+    return {"result": {"build": inp.name, "game_id": inp.game_id, **res}}
+
+
 class RomExportIn(BaseModel):
     op: str = "export"                     # export | plan (what can be baked, no build) | list | remove
     mod_id: str = ""                       # a saved mod (/api/mods): its file mod + code patches + cheat codes
