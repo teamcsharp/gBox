@@ -314,6 +314,13 @@ def export_body(pkg: Package, e: Export, uasset: bytes, uexp: bytes | None) -> b
 def classify(pkg: Package) -> list[dict]:
     """Inventory rows for the interesting exports of one package."""
     rows = []
+    # Assets this package references (an actor blueprint's mesh and anim blueprint, an animation's skeleton).
+    uses: dict[str, list[str]] = {}
+    for i, imp in enumerate(pkg.imports):
+        key = ("skeletal_mesh" if imp.class_name in MESH_CLASSES else "skeleton" if imp.class_name in SKELETON_CLASSES
+               else "anim_blueprint" if imp.class_name in ANIM_BP_CLASSES else None)
+        if key:
+            uses.setdefault(key, []).append(pkg.path_of(-(i + 1)))
     for i, e in enumerate(pkg.exports):
         c = e.class_name
         kind = ("skeletal_mesh" if c in MESH_CLASSES else "skeleton" if c in SKELETON_CLASSES
@@ -325,5 +332,7 @@ def classify(pkg: Package) -> list[dict]:
         if kind in ("blueprint_class", "anim_blueprint"):
             row["super"] = e.super_name
             row["super_path"] = pkg.path_of(e.super_index)
+        if uses:
+            row["uses"] = uses
         rows.append(row)
     return rows
