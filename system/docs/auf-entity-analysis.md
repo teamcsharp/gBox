@@ -235,3 +235,21 @@ while a cutscene cuts can disagree with the frame, so a pick should read the cam
 (or pause first); the box is a world AABB, so occluded or crouched actors get a centre that can land on scenery;
 bots in a deathmatch frame are still unchecked on screen (the Spark attract shows the SP cutscene).
 Box frames: artifacts 6fc915ad... (m2), bbdc3ac6... (m4), 586568403... (m6), e23d40d2... (m3), sheet 92fc5c4c....
+
+
+## 8. Camera cut detection (2026-10-13)
+
+The m3 miss in section 7 came from a shot change between the RAM read and the frame. `entity_probe.camera_delta`
+compares two camera reads. A change counts as a cut when the scripted/view source flips, the fov changes by more than
+0.5, the eye moves more than `camera.cut_eye` world units (default 64) or an angle turns more than `camera.cut_angle`
+degrees (default 15). `Probe.scan` reads the camera before and after its own entity walk, walks again once on a cut,
+and reports `camera_check`; `camera_before=` covers entity lists that were read earlier. `Probe.recheck(scan)` re-reads
+the camera after the frame. The `pick` tool runs the recheck and returns `camera_check`, plus a "click again" warning
+when the shot changed. For drop-point acceptance, capture MEM1 dump A, then the frame, then dump B, and keep a moment
+only when `Probe(B).recheck(Probe(A).scan())` is stable.
+
+Live (Spark, launch job a1771e15fcd041a0, session 5bd0b3bc99c9434f-a1771e15fcd041a0): the boot spent at least 9 min
+in the pre-rendered intro FMV. All 10 A/frame/B moments had `g_entities` (0x804E38B0) and the client pointer null,
+so the probe reported no camera. The first build of the check called this a cut. It is now "no camera, no cut", and
+a camera that appears or vanishes between the reads still counts as a cut. Read times on the Spark: about 3-7 s for each
+24 MB MEM1 dump and 0.7-2.4 s for each frame.
