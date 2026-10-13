@@ -304,6 +304,16 @@ class Store:
             row = self.db.execute("SELECT body FROM docs WHERE kind=? AND id=?", (kind, id)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def digest(self, kind: str) -> str:
+        """A validator for all documents of a kind: it changes whenever one is added, changed or removed (any writer of
+        this database, including scripts). Hashing the stored text is ~50x cheaper than decoding it (#712)."""
+        h = hashlib.sha1()
+        with self.lock:
+            for (body,) in self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid", (kind,)):
+                h.update(body.encode("utf-8", "surrogatepass"))
+                h.update(b"\0")
+        return h.hexdigest()
+
     def all(self, kind: str, *, reverse: bool = False) -> list[dict]:
         with self.lock:
             rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "

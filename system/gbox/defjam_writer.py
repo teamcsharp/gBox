@@ -388,6 +388,22 @@ def build_disc(iso: Path, out_iso: Path, jobs: list[dict], work: Path, blender=N
     return {"image": str(out_iso), "reports": reports}
 
 
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per wrestler (find_wrestler takes every costume of the name); the
+    `player` slot (the four story heroes) overlaps Briggs / Tank / Proof / Spider, so it is an aggregate."""
+    out = [{"slot": "player", "name": "the story heroes (Briggs, Tank, Proof, Spider)", "kind": "player",
+            "aggregate": True, "writer": "gbox.defjam_writer"}]
+    seen = set()
+    for i in sorted(M.NAMES):
+        n = M.NAMES[i]
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append({"slot": M._title(n), "name": M._title(n), "kind": "wrestler",
+                    "costumes": sum(1 for v in M.NAMES.values() if v == n), "writer": "gbox.defjam_writer"})
+    return out
+
+
 # --- characters op=use / op=match ---------------------------------------------------------------------------------------
 def mod_name(pairs: list[tuple[dict, str]], title: str | None = None) -> str:
     if title and len(pairs) > 1:

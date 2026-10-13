@@ -226,3 +226,13 @@ def test_parallel_builds_preserve_all_character_targets(plane, cfg):
         list(pool.map(save_target, range(24)))
     meta = json.loads((root / 'shared' / 'meta.json').read_text())
     assert len(meta['targets']) == 24
+
+
+def test_list_all_skips_entries_without_a_name(tmp_path):
+    """A 'shared' folder holding only slug + targets made every /api/characters call 500 (2026-10-13)."""
+    import json
+    from gbox import characters as C
+    (tmp_path / "shared").mkdir(); (tmp_path / "shared" / "meta.json").write_text(json.dumps({"slug": "shared", "targets": {}}))
+    (tmp_path / "sonic").mkdir(); (tmp_path / "sonic" / "meta.json").write_text(json.dumps({"slug": "sonic", "name": "Sonic"}))
+    assert [m["slug"] for m in C.list_all(tmp_path)] == ["sonic"]
+

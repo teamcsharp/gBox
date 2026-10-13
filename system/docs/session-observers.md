@@ -18,6 +18,10 @@ visible actors, HUD values, changes, uncertain mechanics hypotheses, a timestamp
 and a stored screenshot. Identical images skip inference. All observations persist
 in `session_observation`; the session keeps its latest 40 for display. Capture/model
 errors back off, and repeated errors create an actionable repair request.
+Timeouts (the vision model or capture relay not answering, as on a saturated
+Spark in #1455) are load, not a broken route: they back off from 60 s doubling to
+10 minutes and file a repair only after an hour of unbroken timeouts (at least
+five). One successful observation ends the streak.
 
 Only `get_frame` and native `characters collect` jobs are dispatched by this
 service. It cannot issue controls, pause, relaunch, write memory or use the GPU
