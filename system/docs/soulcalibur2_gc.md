@@ -195,8 +195,10 @@ Per costume:
   subf r3, r0, r27`: the costume index is the time base modulo the fighter's costume count, drawn each time a
   fighter's body is loaded for a match (so a rematch / Continue draws again). The selected costume still picks the
   weapon and the 2P colour. The bytes are checked before patching (`random_patch_site` refuses an unknown DOL).
-  DOA2 (#1652) has no shared random-select code on origin yet (`docs/doa2_mixed_random.md` is not pushed); this
-  patch is SC2-specific.
+  The approach is the one #1652 took for DOA2 (`origin/doa2-sm64ds-mixed-random`: `gbox.doa2_mixed` per-costume
+  pools alternating the two franchises, `gbox.doa2_random_select` an SH-4 hook on the select screen's confirm that
+  draws the costume from the game's rand()); the machine code cannot be shared (SH-4 vs Gekko), so SC2 draws at the
+  body load from the PowerPC time base instead, needing no code cave.
 * Built 2026-10-13 on the Windows PC from the owned GCZ and the local collection mirror
   (`D:\gBox\cache\characters_mirror`): 73 / 73 costume slots built, 116 packages rewritten, read back OK
   (hashes, decode, 18 roles, engine_check), random select present; about 4 minutes.
