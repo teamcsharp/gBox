@@ -180,13 +180,14 @@ def test_details_cast_characters_with_fitted_donor_and_the_original(tmp_path):
                                "output": {"result": {"mod": "cast_g1_wrestlers", "game_id": GID}},
                                "fitting": {"order": ["agent:smith"], "models": {"agent:smith": {
                                    "label": "Rock", "snapshot": "/api/jobs/jcast/fitting/files/smith.glb",
-                                   "snapshot_stage": "write"}}}})
+                                   "snapshot_stage": "write", "preview": "/api/jobs/jcast/fitting/files/smith-2.png"}}}})
     store.put("receipt", "rc1", {"id": "rc1", "job_id": "jcast", "tool": "characters", "validation_ok": True,
                                  "validation_problems": [], "finished": 3000,
                                  "artifacts": [{"sha256": "a" * 64, "name": "preview.png", "size": 4, "media_type": "image/png"}]})
     snap = cfg.cache / "fitting-jobs" / "jcast"
     snap.mkdir(parents=True)
     (snap / "smith.glb").write_bytes(b"glTF")
+    (snap / "smith-2.png").write_bytes(b"PNG")
     with TestClient(app) as c:
         assert app.state.built_mods.wait(10)
         d = get(c, h, f"/api/builds/{GID}/cast_g1_wrestlers/details")
@@ -199,6 +200,7 @@ def test_details_cast_characters_with_fitted_donor_and_the_original(tmp_path):
     assert smith["slot_name"] == "Agent Smith" and smith["reason"] == "too many bones"
     assert smith["fitted_url"] == "/api/jobs/jcast/fitting/files/smith.glb" and "fitting snapshot of job jcast" in smith["fitted_from"]
     assert smith["original"]["name"] == "Agent Smith"
+    assert smith["fit_preview"] == "/api/jobs/jcast/fitting/files/smith-2.png" and neo["fit_preview"] == ""
     assert d["cast"] == {"source": "Wrestlers", "mapping": "by_role", "seed": ""}
     assert d["recipe"]["input"]["op"] == "cast_swap" and d["recipe_recorded"] is True
     assert [j["id"] for j in d["jobs"]] == ["jcast"] and d["receipts"][0]["artifacts"][0]["url"] == "/api/artifacts/" + "a" * 64
@@ -416,3 +418,84 @@ def test_kinds_and_original_matching_helpers():
     assert B.job_category("characters", {"op": "cast_swap", "mod_name": "showcase_sonic_x"}) == "showcase"
     assert B.job_category("characters", {"op": "live_use"}) is None
     assert B.job_category("n64recomp", {"op": "run"}) == "compile"
+
+
+def test_favorites_first_filter_and_endpoints(tmp_path):
+    """#1656: ☆/★ per build (store kind build_favorite, the folder untouched): listed first in Builds and on the Mods
+    page, ?favorite=true filters, PUT / POST {favorite} and DELETE, unknown builds 404, bad values 422, audited."""
+    from gbox import built_mods as BM
+    cfg, app, store, h = fixture(tmp_path)
+    marker = cfg.cache / "mods" / GID / "g1_hack" / ".gbox-mod.json"
+    before = marker.read_bytes()
+    with TestClient(app) as c:
+        assert app.state.built_mods.wait(10)
+        r = c.put(f"/api/builds/{GID}/g1_hack/favorite", json={"favorite": True}, headers=h)
+        assert r.status_code == 200 and r.json() == {"key": "g1/g1_hack", "favorite": True}
+        # the desktop app's IPC api() posts every body: POST does the same; a PC-only build can be starred too
+        assert c.post(f"/api/builds/{GID}/g1_local_only/favorite", json={"favorite": True}, headers=h).status_code == 200
+        lst = get(c, h, "/api/builds")
+        names = [x["name"] for x in lst["items"]]
+        assert names[:2] == ["g1_local_only", "g1_hack"], "favorites first, newest first among them"
+        assert names[2:] == ["showcase_sonic_g1", "cast_g1_wrestlers", "g1_patch", "g2_hucast"]
+        assert lst["favorites"] == 2 and by_name(lst["items"])["g1_hack"]["favorite"] is True
+        assert by_name(lst["items"])["g1_patch"]["favorite"] is False
+        assert [x["name"] for x in get(c, h, "/api/builds?favorite=true")["items"]] == ["g1_local_only", "g1_hack"]
+        assert [x["name"] for x in get(c, h, "/api/builds?favorite=true&game_id=g2")["items"]] == []
+        mods = get(c, h, "/api/mods/built")
+        assert by_name(mods["items"])["g1_hack"]["favorite"] is True
+        assert [x["name"] for x in get(c, h, "/api/mods/built?favorite=true")["items"]] == ["g1_hack"]
+        assert get(c, h, f"/api/builds/{GID}/g1_hack/details")["favorite"] is True
+        # protected from any disk budget (the Sonic showcase's LRU eviction asks built_mods.protected)
+        assert BM.protected(store, GID, "g1_hack") == "the operator favorited it"
+        assert BM.protected(store, GID, "g1_patch") == ""
+        assert BM.favorites(store) == {"g1/g1_hack", "g1/g1_local_only"}
+        # un-star: DELETE, or PUT {favorite: false}
+        assert c.delete(f"/api/builds/{GID}/g1_hack/favorite", headers=h).json()["favorite"] is False
+        assert c.put(f"/api/builds/{GID}/g1_local_only/favorite", json={"favorite": False}, headers=h).status_code == 200
+        assert get(c, h, "/api/builds")["favorites"] == 0
+        assert [x["name"] for x in get(c, h, "/api/builds")["items"]][0] == "g1_local_only", "newest first again"
+        assert c.put(f"/api/builds/{GID}/nope/favorite", json={}, headers=h).status_code == 404
+        assert c.put(f"/api/builds/{GID}/g1_hack/favorite", json={"favorite": "yes"}, headers=h).status_code == 422
+        assert c.put(f"/api/builds/{GID}/g1_hack/favorite", json={}).status_code == 401
+    assert marker.read_bytes() == before, "a favorite never touches the build's marker"
+    acts = [a["action"] for a in store.audit_log(0, 500)]
+    assert "build.favorite" in acts and "build.unfavorite" in acts
+
+
+def test_display_name_reaches_mod_cards_launches_sessions_and_post_rename(tmp_path):
+    """#1656 official names: a renamed build keeps its folder; the name shows on the mod cards (display_name next to
+    the card's own title), on the launch job (mod_title: the launch bar) and on sessions (the Mini window title).
+    POST renames too (the desktop app's IPC api)."""
+    cfg, app, store, h = fixture(tmp_path)
+    store.upsert_catalog([{"game_id": GID, "title": "Game One", "platform": "ps1", "source_paths": ["g1.cue"],
+                           "format": "cue", "profile_id": GID, "core": "pcsx_rearmed",
+                           "launch": {"kind": "retroarch", "path": "g1.cue"}}])
+    store.put("session", "w1-s1", {"session_id": "w1-s1", "game_id": GID, "title": "Game One", "state": "ended",
+                                   "mod": "g1_patch~ab", "collection_mod": "g1_patch", "started": 1.0})
+    with TestClient(app) as c:
+        assert app.state.built_mods.wait(10)
+        r = c.post(f"/api/builds/{GID}/g1_patch", json={"display_name": "Sonic Full Cast"}, headers=h)
+        assert r.status_code == 200 and r.json()["label"] == "Sonic Full Cast"
+        cards = {m["id"]: m for m in get(c, h, f"/api/mods?game_id={GID}")}
+        assert cards["card1"]["display_name"] == "Sonic Full Cast" and cards["card1"]["title"] == "Patch card"
+        assert store.get("mod", "card1")["title"] == "Patch card", "the saved card is never rewritten"
+        j = c.post(f"/api/games/{GID}/launch?node=windows&mod=g1_patch", headers=h)
+        assert j.status_code == 200, j.text
+        assert j.json()["input"]["mod"] == "g1_patch" and j.json()["input"]["mod_title"] == "Sonic Full Cast"
+        plain = c.post(f"/api/games/{GID}/launch?node=windows&mod=g1_hack", headers=h).json()
+        assert not plain["input"].get("mod_title"), "an unnamed build launches under its folder name"
+        s = {x["session_id"]: x for x in get(c, h, "/api/sessions")}
+        assert s["w1-s1"]["mod_title"] == "Sonic Full Cast"
+    assert (cfg.cache / "mods" / GID / "g1_patch").is_dir() and not (cfg.cache / "mods" / GID / "Sonic Full Cast").exists()
+
+
+def test_cache_eviction_never_touches_built_mods(tmp_path):
+    """Favorited or not, a built mod is never a cache copy: catalog.evict skips mods/ (EVICT_KEEP)."""
+    from gbox import catalog
+    cache = tmp_path / "cache"
+    mod = mk(cache, GID, "g1_fav", {"built": 1.0}, {"game.iso": b"m" * 4096})
+    (cache / "g1").mkdir()
+    (cache / "g1" / "copy.iso").write_bytes(b"c" * 4096)
+    evicted = catalog.evict(cache, 0)
+    assert evicted == [str(cache / "g1" / "copy.iso")]
+    assert (mod / "game.iso").is_file() and (mod / ".gbox-mod.json").is_file()

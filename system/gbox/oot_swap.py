@@ -83,6 +83,9 @@ GROWTH = {"link": 0xA000, "npc": 0x9000}              # bytes an object may GROW
                                                         # Kokiri Forest as child has ~130 KB free with vanilla objects)
 TEX_STEPS = (2048, 1024, 512, 256, 64)
 OBJ_FA, OBJ_OS_ANIME = 0x13D, 0xC5                     # object_fa (Fado's head), object_os_anime (Kokiri animations)
+OBJ_AOB, OBJ_BOB, OBJ_BOJ, OBJ_AHG = 0x105, 0x115, 0x111, 0x107  # En_Hy's townsfolk objects (object_table.h)
+OBJ_BBA, OBJ_CNE, OBJ_BJI, OBJ_COB = 0x10D, 0x108, 0x10C, 0x18C
+EN_HY_OBJECTS = (OBJ_AOB, OBJ_BOB, OBJ_BOJ, OBJ_AHG, OBJ_BBA, OBJ_CNE, OBJ_BJI, OBJ_COB)
 NAMES = json.loads((Path(__file__).with_name("oot_names.json")).read_text())
 # limb numbers here are 0-based (the game's limb callbacks count from 1: En_Ko's "limbIndex == 15" is limb 14)
 # compound NPCs: actors that draw one skeleton from several objects (segment 6 switched per limb) -> every object of the
@@ -95,6 +98,19 @@ GROUPS = {
     ("En_Ko", 0xFD): {"objects": [0xFD, OBJ_FA], "skels": [(0xFD, 0xF0)], "head_limb": 14,
                       "head_dls": [(0xFD, 0x2C10), (OBJ_FA, 0x2940)], "anim_objects": [OBJ_OS_ANIME],
                       "note": "every Kokiri girl (and Fado) shares object_kw1, so all of them change"},
+    # En_Hy (z_en_hy.c sSkeletonInfo / sHeadInfo / sModelInfo): every townsperson type takes its legs (limbs 1-7) from
+    # one object, torso and arms from another (segment 6 switched after ENHY_LIMB_RIGHT_FOOT) and its head list from
+    # a third -> a compound group: the same new data at the same offset in all eight objects, all eight 16-limb
+    # skeletons pointed at it, and all sixteen head lists branched to the new head (limb 14 = ENHY_LIMB_HEAD)
+    ("En_Hy", OBJ_AOB): {"compound": True, "objects": list(EN_HY_OBJECTS),
+                         "skels": [(o, 0x21F8 if o == OBJ_COB else 0xF0) for o in EN_HY_OBJECTS], "head_limb": 14,
+                         "head_dls": [(OBJ_AOB, 0x3C88), (OBJ_BOB, 0x3B78), (OBJ_BOJ, 0x26F0), (OBJ_BOJ, 0x52E0),
+                                      (OBJ_BOJ, 0x5528), (OBJ_BOJ, 0x5738), (OBJ_BOJ, 0x59B0), (OBJ_AHG, 0x30F0),
+                                      (OBJ_AHG, 0x5508), (OBJ_AHG, 0x5728), (OBJ_BBA, 0x2948), (OBJ_CNE, 0x1300),
+                                      (OBJ_CNE, 0x2860), (OBJ_BJI, 0x2560), (OBJ_BJI, 0x3F68), (OBJ_COB, 0x1300)],
+                         "anim_objects": [OBJ_OS_ANIME],
+                         "note": "every Market / Kakariko townsperson (En_Hy, 21 types) shares these eight objects, so "
+                                 "all of them change; the bald man's shoulder bag (object_boj 0x5BC8) stays"},
 }
 
 
@@ -1139,7 +1155,7 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
     for slot in built:
         sp = specs[slot]
         for o, off in ([(LINK[a]["obj"], LINK[a]["skel"]) for a in sp["ages"]] if sp["kind"] == "link"
-                       else [sp["group"]["skel"]]):
+                       else sp["group"].get("skels") or [sp["group"]["skel"]]):
             sk = OW.skeleton(check.object(o), off)
             assert sk["count"] == OW.skeleton(orig.object(o), off)["count"], f"{slot}: skeleton changed"
             bad = OC.check_object(check.object(o), off, {4: check.object(OW.OBJECT_GAMEPLAY_KEEP)})

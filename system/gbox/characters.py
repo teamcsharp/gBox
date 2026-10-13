@@ -695,6 +695,8 @@ class CharIn(BaseModel):
     props: list[dict] = []                 # add base=...: [{object, bone}] the Blender add-on bound
     rig_roles: dict[str, str] = {}         # add: semantic body role -> joint node name in the imported model
     scale: dict = {}                       # add base=...: {"head": k} head-bone scale
+    auto_rig: bool = True                  # add (from Blender): a model without a skeleton gets the humanoid auto rig
+    derived_ok: bool = False               # add: bones changed vs the base -> a new character derived from it (else blocked)
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
     b: str = ""                            # swap: whose looks: a name ("Saria", "kokiri boy") | "x,y" picture point
@@ -713,6 +715,8 @@ class CharIn(BaseModel):
     slots: str = "all"                     # cast_swap: all | main | enemies | pedestrians | ... | a comma list of slot names
     assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
     plan_only: bool = False                # cast_swap: return the plan without building
+    mod_name: str = ""                     # cast_swap: a fixed mod folder name (the Sonic showcase's showcase_sonic_<title>); the plan hash in its marker decides a rebuild
+    showcase: bool = False                 # cast_swap: a Sonic showcase test build (gbox.sonic_showcase): marked in its record, no Play-as targets
 
     @model_validator(mode="after")
     def require_named_character(self):
@@ -731,16 +735,56 @@ def _api(ctx, method, path, **kw):
     return r.json() if "json" in r.headers.get("content-type", "") else r.content
 
 
-def _local_or_fetch(ctx, meta: dict, rel: str) -> Path:
-    """A library file on this node: the library itself on the control plane, else a node-local copy from the API."""
-    p = library_root(ctx.config) / meta["slug"] / rel
-    if p.is_file():
-        return p
-    p = Path(ctx.config.cache) / "characters_mirror" / meta["slug"] / rel
-    if not p.is_file():
+def _fresh_meta(ctx, slug: str) -> dict | None:
+    """The library entry as stored right now (local meta.json on the control plane, else the API); None if unreadable."""
+    try:
+        f = library_root(ctx.config) / slug / "meta.json"
+        if f.is_file():
+            return json.loads(f.read_text())
+        m = _api(ctx, "GET", f"/api/characters/{slug}")
+        return m if isinstance(m, dict) else None
+    except Exception:                                      # noqa: BLE001 - only a hint for the retry below
+        return None
+
+
+def _local_or_fetch(ctx, meta: dict, rel: str, retries: int = 4, wait: float = 20.0, sleep=time.sleep) -> Path:
+    """A library file on this node: the library itself on the control plane, else a node-local copy from the API.
+
+    A 404 means the entry changed under the caller (#1671: hucast was re-collected while an op=use job fitted it, so
+    pso_hucast_h0_c0.glb was briefly absent): re-read the entry, follow a renamed model, wait a bounded time for a
+    re-collect to land, then fail with an actionable error instead of a bare HTTP 404. Downloads are atomic so an
+    interrupted transfer never leaves a truncated mirror copy that later runs would trust."""
+    import httpx
+    slug = meta["slug"]
+    for attempt in range(retries + 1):
+        p = library_root(ctx.config) / slug / rel
+        if p.is_file():
+            return p
+        p = Path(ctx.config.cache) / "characters_mirror" / slug / rel
+        if p.is_file():
+            return p
+        try:
+            data = _api(ctx, "GET", f"/api/characters/{slug}/file/{rel}", timeout=300)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is None or exc.response.status_code != 404:
+                raise
+            fresh = _fresh_meta(ctx, slug) or {}
+            if rel == meta.get("model") and fresh.get("model") and fresh["model"] != rel:
+                rel = fresh["model"]                       # the entry was re-collected under a new model name
+                continue
+            if attempt >= retries:
+                raise FileNotFoundError(
+                    f"character library entry {slug!r} has no file {rel!r} (HTTP 404 after {retries} retries); "
+                    f"its model is {fresh.get('model')!r}. Re-collect it (characters op=collect) or re-extract "
+                    f"the donor, then retry this job.") from exc
+            sleep(wait)
+            continue
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(_api(ctx, "GET", f"/api/characters/{meta['slug']}/file/{rel}", timeout=300))
-    return p
+        tmp = p.with_name(p.name + ".part")
+        tmp.write_bytes(data)
+        tmp.replace(p)
+        return p
+    raise FileNotFoundError(f"character library entry {slug!r}: {rel!r} unavailable")
 
 
 def _blender(cfg) -> str | None:
@@ -1023,7 +1067,16 @@ def _dc_gdi(ctx, game) -> Path:
         shutil.rmtree(d, ignore_errors=True)
         tmp.rename(d)
         return d / "disc.gdi"
-    if rom.suffix.lower() != ".chd" or not shutil.which("chdman"):
+    if rom.suffix.lower() == ".chd" and not shutil.which("chdman"):
+        from . import chd                                # no chdman here: gbox.chd unpacks v4 / v5 GD-ROM CHDs
+        ctx.progress(5, f"Unpacking the GD-ROM {rom.name} (gbox.chd, once per game)")
+        tmp = d.with_name(d.name + ".part")
+        shutil.rmtree(tmp, ignore_errors=True)
+        chd.write_gdi(rom, tmp)
+        shutil.rmtree(d, ignore_errors=True)
+        tmp.rename(d)
+        return d / "disc.gdi"
+    if rom.suffix.lower() != ".chd":
         raise ValueError(f"{rom.name}: reading a Dreamcast disc needs a GDI, or a CHD plus chdman on this node")
     tmp = d.with_name(d.name + ".part")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -1540,6 +1593,19 @@ DEDICATED = [
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
      _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
+    # Super Mario 64 DS (USA): the playable four (head models attached), Peach, Bowser, bosses and notable enemies
+    # from the game's own BMD models (NitroFS + NARC + LZ77, GX display lists, DS texel formats) as rigged, textured
+    # GLBs with body roles (gbox.sm64ds_chars, docs/sm64ds.md)
+    ("sm64ds", lambda t, p: "super mario 64 ds" in t and p == "nds",
+     lambda: __import__("gbox.sm64ds_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sm64ds_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # SoulCalibur (DC, T-1401N): the 19 fighters from HUMAN.DAT (olnk + Namco LZ, accumulation-skinned models, YUV422
+    # pages), each with its weapon attached at the hands and the 18 body roles (gbox.soulcalibur_dc,
+    # docs/soulcalibur_dc.md); writer gbox.soulcalibur_swap
+    ("soulcalibur", lambda t, p: re.match(r"soul ?calibur(?! ?(ii|iii|iv|v|vi|2|3|4|5|6)\b)\b", t) is not None
+     and p == "dreamcast",
+     lambda: __import__("gbox.soulcalibur_dc", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.soulcalibur_dc", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("tetris_ds", lambda t, p: t.startswith("tetris ds") and p == "nds",
      lambda: __import__("gbox.tetris_ds", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1555,6 +1621,11 @@ DEDICATED = [
     ("twin_snakes", lambda t, p: "twin snakes" in t and p == "gamecube",
      lambda: __import__("gbox.twin_snakes", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.twin_snakes", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Soul Calibur II (GameCube, GRSEAF): the 24 fighters (Link included) from root.olk / human.olk, costume 1 with the
+    # default weapon on the hands (gbox.soulcalibur2; writer gbox.soulcalibur2_swap, docs/soulcalibur2_gc.md)
+    ("soulcalibur2", lambda t, p: re.search(r"soul ?calibur (ii|2)\b", t) is not None and p == "gamecube",
+     lambda: __import__("gbox.soulcalibur2", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.soulcalibur2", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1608,6 +1679,12 @@ DEDICATED = [
     ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
      lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Metal Gear Solid 2: Substance (USA): the catalog's cb7aae71edb10cd3 (filed windows_native by HyperSpin's "Microsoft
+    # XBOX" list) is the PS2 DVD-9 SLUS-20554 (CHD, both layers read in place): stage kms models + texture packs
+    # (encrypted, zlib pages) -> rigged GLBs; Snake, Raiden, the soldier variants and main cast (docs/mgs2.md)
+    ("mgs2", lambda t, p: "metal gear solid 2" in t and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.mgs2_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mgs2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
@@ -1648,7 +1725,9 @@ def dedicated_entries(config, game, name, roster):
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
-                   "twin_snakes": ("gbox.twin_snakes", "tts_reader")}
+                   "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
+                   "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
+                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
@@ -2275,6 +2354,13 @@ def add_model(ctx, inp: CharIn) -> dict:
     if not name:
         raise ValueError("add needs character=<name for the new entry>")
     data, _src = _model_bytes(ctx, inp)
+    if inp.kind in ("", "character"):
+        # the Blender round trip (gbox.blender_roundtrip): a variant when the model names a collection character (base=, or
+        # the gBox extras of an exported GLB) with the same skeleton, else a new character: detected / auto-rigged body
+        # roles, attachments as props
+        from . import blender_roundtrip
+        game = _game(ctx, inp) if (inp.session_id or inp.game_id or inp.game) else None
+        return blender_roundtrip.import_model(ctx, inp, data, name, game)
     if inp.base:                                           # a variant (Blender Live Link): base rig, props, scale
         from . import variants
         root = library_root(ctx.config)
@@ -2320,20 +2406,15 @@ def to_blender(ctx, inp: CharIn) -> dict:
     if not m:
         raise ValueError(f"nothing in the collection matches {inp.character!r}")
     base = next(r for x, r in pool if x is m)
-    f = base / m["slug"] / m["model"]
-    data = f.read_bytes()
-    if f.suffix == ".gltf":                                # one self-contained file: external buffers/images inlined
-        gl = json.loads(data)
-        for coll, mt in (("buffers", "application/octet-stream"), ("images", "image/png")):
-            for it in gl.get(coll, []):
-                if it.get("uri") and not it["uri"].startswith("data:"):
-                    it["uri"] = f"data:{mt};base64," + base64.b64encode((f.parent / it["uri"]).read_bytes()).decode()
-        data = json.dumps(gl).encode()
+    from . import blender_roundtrip                        # one self-contained GLB + rig role names / props as extras
+    data = blender_roundtrip.export_glb(base, m["slug"])
     item = _api(ctx, "POST", "/api/clipboard", json={"kind": "gltf", "name": m["slug"], "b64": base64.b64encode(data).decode(),
-                                                     "meta": {"character": m["slug"], "model": m["model"]}}, timeout=300)
+                                                     "meta": {"character": m["slug"], "model": m["model"], "roundtrip": 1,
+                                                              "base": m.get("variant_of") or m["slug"]}}, timeout=300)
     return {"status": "on_clipboard", "entry": _brief(m), "clipboard_seq": item.get("seq"),
-            "message": f"{m['name']} is on the gBox clipboard: in Blender press Ctrl+Shift+V (gBox add-on). After editing, "
-                       "use the gBox panel's 'Send to gBox', then characters op=add from_clipboard=true character=<new name>."}
+            "message": f"{m['name']} is on the gBox clipboard: in Blender press Ctrl+Shift+V (gBox add-on; the bones keep "
+                       "their role names). After editing, the gBox panel's 'Send to gBox' stores it back as a variant of "
+                       f"{m['name']} (attachments bound to bones included)."}
 
 
 def _finish(ctx, res: dict) -> dict:
@@ -2413,7 +2494,10 @@ def characters_tool(inp: CharIn, ctx):
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
-    add character=<new name> from_clipboard=true|artifact|path: store an edited model. |
+    add character=<new name> from_clipboard=true|artifact|path: store a model from Blender (gbox.blender_roundtrip): a
+    variant of the collection character it came from (base=, or the GLB's gBox extras; skeleton unchanged), else a new
+    character (derived_ok=true when bones changed) with its rig recognised (Mixamo, Rigify, VRM, UE, biped) or
+    auto-rigged (auto_rig); objects parented to bones become attachments every writer carries. |
     cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role] [seed]
     [slots=all|main|enemies] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
     another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
@@ -2454,13 +2538,14 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, mgs2_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
         mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
+        mod = mgs2_swap if g["game_id"] in mgs2_swap.GAME_IDS else mod           # Metal Gear Solid 2 (PS2 DVD)
         from . import retarget_profile as _RP                # game-wide Retarget editor profiles
         chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
@@ -2479,11 +2564,13 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
         game = _game(ctx, inp)
-        from . import mgs_vr_swap, twin_snakes_swap
+        from . import mgs2_swap, mgs_vr_swap, twin_snakes_swap
         if game["game_id"] in mgs_vr_swap.GAME_IDS:          # VR Missions: rebuild + session_swap at the same moment
             return {"result": mgs_vr_swap.live_use(ctx, meta, game, inp)}
         if game["game_id"] in twin_snakes_swap.GAME_IDS:    # Twin Snakes GC: mod + session swap + loaded-stage write
             return {"result": twin_snakes_swap.live_use(ctx, meta, game, inp)}
+        if game["game_id"] in mgs2_swap.GAME_IDS:          # MGS2: build the slot the whip landed on, swap it in place
+            return {"result": mgs2_swap.use(ctx, meta, game, inp)}
         from . import oot_hot_swap
         return {"result": oot_hot_swap.use(ctx, meta, game, inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
@@ -2523,6 +2610,7 @@ def characters_tool(inp: CharIn, ctx):
                                    for t in (meta.get("targets") or {}).get(gid, [])):
             inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
         meta = profiled
+    _FE.target(gid)                                           # the Fitting row's Retarget editor game
     _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
                       meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
@@ -2531,6 +2619,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
+    from . import soulcalibur_swap
+    if gid in soulcalibur_swap.GAME_IDS:
+        return {"result": out | soulcalibur_swap.use(ctx, meta, game, inp)}
     from . import sm64_swap
     if gid in sm64_swap.GAME_IDS and inp.slot == "player":        # SM64: build sm64_<slug> if missing, launch it
         return {"result": out | sm64_swap.use(ctx, meta, game, inp)}
@@ -2573,6 +2664,11 @@ def characters_tool(inp: CharIn, ctx):
         # Metal Gear Solid: The Twin Snakes GC: player | model:<key> | enemies | bosses | npcs | all | cast | a pick
         # point / words -> tts_<slot>_<plan hash> (stage.dat rebuilt in a disc-image copy; session swap on launch)
         return {"result": out | twin_snakes_swap.use(ctx, meta, game, inp)}
+    from . import soulcalibur2_swap
+    if gid in soulcalibur2_swap.GAME_IDS and soulcalibur2_swap.is_slot(inp.slot):
+        # Soul Calibur II GC: fighter:<key>[:<costume>] | all | cast (+pairs) | random (two sources alternate per
+        # costume + the random costume select) -> sc2_<slot>_<plan hash> (human.olk costumes rewritten in place)
+        return {"result": out | soulcalibur2_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
@@ -2589,6 +2685,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import etm_swap
     if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
         return {"result": out | etm_swap.use(ctx, meta, game, inp)}
+    from . import mgs2_swap
+    if gid in mgs2_swap.GAME_IDS and (mgs2_swap.is_slot(inp.slot) or inp.session_id):
+        # Metal Gear Solid 2 Substance (PS2 DVD): snake | raiden | player | soldiers | soldier_* | olga ... -> a
+        # patched STAGE.DAT image; with a session id it replaces the running game through session_swap
+        return {"result": out | mgs2_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)
@@ -2652,8 +2753,15 @@ def characters_tool(inp: CharIn, ctx):
 @functools.wraps(characters_tool)
 def characters_recorded(inp: CharIn, ctx):
     """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
-    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
-    out = characters_tool(inp, ctx)
-    from . import special_builds
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer). The result carries
+    "attachments" when Blender props went through a writer: kept / simplified / dropped for the game's budget."""
+    from . import attachments, special_builds
+    with attachments.ledger() as led:
+        out = characters_tool(inp, ctx)
+    rep = attachments.summary(led)
+    if rep and isinstance(out, dict) and isinstance(out.get("result"), dict):
+        out["result"]["attachments"] = rep
+        if rep["dropped"] and isinstance(out["result"].get("message"), str):
+            out["result"]["message"] += f" Attachments dropped for the budget: {', '.join(rep['dropped'])}."
     special_builds.record_call(ctx, inp, out)
     return out

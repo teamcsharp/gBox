@@ -77,6 +77,8 @@ SIGNATURES = {
     "pakf": ("container", "PAKF texture pack (Shenmue)", b"PAKF", b"PAKF", []),
     "play": ("container", "PLAY character container (JGR)", b"PLAY", b"PLAY", []),
     "edl": ("container", "Eurocom EDL level database", b"EDL", b"EDL\x81", ["eurocom"]),
+    "olnk": ("container", "Namco olnk / OLK archive (count, 'olnk', header, size; SoulCalibur DC, Soul Calibur II)",
+             lambda h: h[4:8] == b"olnk", b"\x03\0\0\0olnk", ["namco_dc"]),
     "ngc_restable": ("container", "EAGL .ngc chunk file (byte-reversed ids)", b"elbatser", b"elbatser", ["eagl"]),
     "ldm": ("model", "Rockstar Stories relocatable model ('ldm')", b"ldm\0", b"ldm\0", ["rockstar_stories"]),
     "xet": ("texture", "Rockstar Stories texture chunk ('xet')", b"xet\0", b"xet\0", ["rockstar_stories"]),
@@ -91,6 +93,8 @@ SIGNATURES = {
     "zlib": ("codec", "zlib", _zlib, b"\x78\x9c", []),
     "gzip": ("codec", "gzip", b"\x1f\x8b", b"\x1f\x8b\x08", []),
     "bpe": ("codec", "BPE byte-pair packing", b"BPE ", b"BPE ", []),
+    "lz77": ("codec", "Nintendo LZ77 tag + LZ10/LZ11 stream", lambda h: h[:4] == b"LZ77" and h[4:5] in (b"\x10", b"\x11"),
+             b"LZ77\x10\x40\0\0", ["nintendo_ds"]),
     "lz10": ("codec", "Nintendo LZ10 (weak: one byte)", lambda h: h[:1] == b"\x10" and len(h) > 4 and h[1:4] != b"\0\0\0", b"\x10\x40\0\0", []),
     # models
     "njcm": ("model", "Ninja chunk model (NJCM)", b"NJCM", b"NJCM", ["ninja"]),

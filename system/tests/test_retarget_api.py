@@ -124,3 +124,46 @@ def test_worker_ctx_uploads_a_snapshot_and_rewrites_the_event(tmp_path, monkeypa
     assert sent[0][0] == "http://cp/api/jobs/j9/fitting/files/s.glb" and sent[0][1]["content"] == b"glb"
     _text, ev = FE.split(sent[1][1]["json"]["msg"])
     assert ev["snapshot"] == "/api/jobs/j9/fitting/files/s.glb"
+
+
+def test_fit_rows_name_their_donor_game_slot_and_the_slots_goals_are_kept(client):
+    """The Fitting pop-up's R buttons open the editor on a row's donor / game / slot; the retarget stage's goals (the
+    slot's own skeleton as the writer loaded it) are kept per (game, slot) for the editor's Goals view."""
+    client.store.put("job", "j2", {"id": "j2", "tool": "characters", "state": "running", "input": {"op": "cast_swap"}})
+    plan = "Fitting 1 models" + FE.encode({"plan": [{"model": "fighter:KAS", "label": "Amy → Kasumi", "donor": "amy",
+                                                     "slot": "fighter:KAS", "game": GID}]})
+    client.post("/api/jobs/j2/progress", json={"pct": 5, "msg": plan})
+    goals = {"donor": {"hip": [0, 1, 0], "l_fore": [0.5, 1.45, 0]},
+             "target": {"hip": [0, 0.9, 0], "head": [0, 1.6, 0], "l_fore": [0.45, 1.4, 0]}, "target_ground": 0}
+    client.post("/api/jobs/j2/progress", json={"pct": 20, "msg": "KAS: retarget" + FE.encode(
+        {"model": "fighter:KAS", "stage": "retarget", "state": "done", "goals": goals})})
+    m = client.get("/api/jobs/j2").json()["fitting"]["models"]["fighter:KAS"]
+    assert (m["donor"], m["game"], m["slot"]) == ("amy", GID, "fighter:KAS")
+    assert m["goals"]["target"]["l_fore"] == [0.45, 1.4, 0.0]
+    r = client.get(f"/api/retarget/goals?game_id={GID}&slot=fighter:KAS:all").json()
+    assert r["goals"]["target"]["head"] == [0.0, 1.6, 0.0] and r["goals"]["donor"]["l_fore"] == [0.5, 1.45, 0.0]
+    assert r["goals"]["job"] == "j2" and r["goals"]["donor_slug"] == "amy" and r["goals"]["slot"] == "fighter:KAS"
+    assert client.get(f"/api/retarget/goals?game_id={GID}&slot=fighter:RYU").json()["goals"] is None
+    assert client.get("/api/retarget/goals?game_id=nope&slot=x").status_code == 422
+
+
+def test_a_profile_with_joint_moves_saves_clamped(client):
+    put = client.put("/api/characters/amy/retarget_profile", json={"game_id": GID, "slot": "fighter:KAS",
+                                                                    "profile": {"joints": {"l_fore": [0, -0.9, 0.01]}}})
+    assert put.status_code == 200 and put.json()["resolved"]["joints"] == {"l_fore": [0.0, -0.25, 0.01]}
+    bad = client.put("/api/characters/amy/retarget_profile", json={"game_id": GID, "profile": {"joints": {"tail": [0, 1, 0]}}})
+    assert bad.status_code == 422
+
+
+def test_the_editors_rebuild_this_slot_recipe_queues_one_slot_and_never_launches(client):
+    """retarget-editor.js "Save and rebuild this slot": the job's cast call narrowed to the slot, queued through the
+    special-builds rebuild route (gbox/special_builds.py sanitize + queue) as a Spark job."""
+    recipe = {"tool": "characters", "input": {"op": "cast_swap", "target_game": GID, "source": "SA2", "mapping": "by_role",
+                                              "seed": "s1", "slots": "fighter:KAS",
+                                              "assignments": [{"slot": "fighter:KAS", "character": "amy"}],
+                                              "launch": False, "rebuild": True}}
+    r = client.post(f"/api/games/{GID}/special_builds/rebuild", json={"recipes": [recipe]}).json()
+    assert r["queued"] == 1 and r["skipped"] == []
+    j = client.store.get("job", r["job_ids"][0])
+    assert j["tool"] == "characters" and j["require_os"] == "linux"
+    assert {k: j["input"][k] for k in recipe["input"]} == recipe["input"]      # (+ the CharIn defaults)
