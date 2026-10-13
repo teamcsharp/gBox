@@ -1152,6 +1152,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/launch-bar.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
 <script src="../web/viz/game-menu.js"></script>
+<script src="../web/viz/build-shot.js"></script>
 <script src="../web/viz/mods-gallery.js"></script>
 <script src="../web/viz/retarget-handles.js"></script>
 <script src="../web/viz/retarget-editor.js"></script>
@@ -4492,8 +4493,9 @@ const TROUBLE = {
       { q: "Ask gBox", act: () => askAbout("My controller doesn't work in this game. Fix the mapping.") }] },
     { q: "Crashed / frozen / black", kids: [
       { q: "Load the last save state", act: () => gameAction("load") },
-      { q: "Restart the game", act: async () => { const g = EMB.game; await gameJob("session_op", { op: "stop_game", args: {} });
-          document.querySelector("#wv")?.executeJavaScript(`play(${JSON.stringify(g)})`); } },
+      // one server operation: the same game + mod relaunched on this PC; this copy closes only once the new one runs
+      { q: "Restart the game", act: () => EMB.sid && document.querySelector("#wv")?.executeJavaScript(
+          `restartGame(${JSON.stringify(EMB.sid)}).catch(() => {})`).catch(() => {}) },
       { q: "Ask gBox", act: () => askAbout("The game crashed or froze. Recover it.") }] },
     { q: "Stuck / too hard", kids: [
       { q: "Let gBox take control", act: () => gameAction("autoplay") },

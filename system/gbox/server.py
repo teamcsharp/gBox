@@ -30,6 +30,9 @@ from .worker_results import result_digest
 WORKER_TTL = 30.0
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
+# adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
+# the running copy first there (launch_game saves it before closing, and refuses if it can't)
+RELAUNCH_BESIDE_UNSAFE = {"mgba"}
 
 
 class ArtifactUpload(BaseModel):
@@ -122,6 +125,7 @@ def create_app(config: Config) -> FastAPI:
     asset_library.routes(app, store, config, auth)
     from . import built_mods                      # built mod folders in the cache, joined with their mod cards
     built_mods.routes(app, store, config, auth)
+    BM = built_mods
     cache_tiers.routes(app, config, auth)         # GET /api/cache/tiers, POST /api/cache/tiers/pin
 
     # --- shell ---
@@ -741,7 +745,9 @@ def create_app(config: Config) -> FastAPI:
         return hit
 
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
-                     should_stop=None) -> dict:
+                     should_stop=None, keep_old: bool = False) -> dict:
+        """keep_old: on the same worker, the replacement starts beside the running copy (launch_game keep_session), which
+        closes only once the replacement runs (a reset's relaunch: never stop a game before its replacement is up)."""
         say = progress or (lambda pct, msg: None)
         stop = should_stop or (lambda: False)
         cancel_deferred = False
@@ -794,9 +800,10 @@ def create_app(config: Config) -> FastAPI:
         if stop():
             raise HTTPException(409, "cancelled by the operator before the replacement started; your current game was kept running")
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
+        beside = keep_old and running and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
         try:
-            new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900,
-                           should_stop=stop, on_cancel_deferred=defer_cancel)
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
+                           actor, worker=tw["id"], wait=900, should_stop=stop, on_cancel_deferred=defer_cancel)
         except HTTPException as e:
             if str(e.detail).startswith('cancelled by the operator before the replacement started'):
                 raise                            # the child never claimed a native launch; no recovery is needed
@@ -960,6 +967,145 @@ def create_app(config: Config) -> FastAPI:
                 store.put('job', job.id, store.get('job', job.id) | {
                     'state': JobState.FAILED, 'finished': time.time(), 'error': reason})
                 store.audit(actor, 'job.failed', job.id, {'reason': reason, 'server_thread_start_failed': True})
+            raise HTTPException(503, reason) from exc
+        return job
+
+    # ---- Reset / Restart (2026-10-13: Reset on a Dolphin game stopped it and nothing came back) ----------------------
+    # One server operation per click: the emulator's own reset where it has one, else the same game and build relaunched
+    # on the same PC beside the running copy, which closes only once the new one runs. A failed relaunch leaves the game
+    # exactly as it was and says so; nothing here stops a game before its replacement is up.
+
+    def _live_session(sid: str) -> tuple[str, dict]:
+        sess = store.get("session", sid) or _404()
+        seen = set()
+        while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
+            seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
+        return sid, sess
+
+    def session_relaunch(sid: str, actor: str, original: bool = False, progress=None, should_stop=None) -> dict:
+        """The running game from boot again: the exact build folder it booted (a staged <mod>~<build> copy included: no
+        rebuild, no staging), or the original game (original=True, the hard reset), same worker, launched beside it."""
+        say = progress or (lambda pct, msg: None)
+        sid, sess = _live_session(sid)
+        if sess.get("state") != "running":
+            raise HTTPException(409, "This game has already ended, so there is nothing to restart: use Play again.")
+        game = store.catalog_get(sess.get("game_id") or "") or _404()
+        old_w = sid.split("-")[0]
+        tw = _swap_target(old_w, "")
+        launch_mod = "" if original else (sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or "")
+        build = "" if original else BM.session_build(sess)
+        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
+        what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
+        say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
+        try:
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
+                           actor, worker=tw["id"], wait=900, should_stop=should_stop,
+                           progress=lambda pct, msg: say(20 + pct * .6, msg))
+        except HTTPException as e:
+            alive = (store.get("session", sid) or {}).get("state") == "running"
+            raise HTTPException(409, f"{what} could not be relaunched ({e.detail}). "
+                                     + ("Your game is still running as it was." if alive else
+                                        "The previous copy is no longer running: use Play again."))
+        nsid = new["session_id"]
+        if not original and store.get("session", nsid):
+            keep = {k: sess[k] for k in ("mod", "collection_mod", "staged_mod", "launch_mod") if sess.get(k)}
+            with store.lock:
+                store.put("session", nsid, store.get("session", nsid) | keep)
+        notes = []
+        if nsid != sid:
+            say(85, "Closing the previous copy")
+            try:
+                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
+            except HTTPException as e:
+                notes.append(f"The previous copy did not confirm it closed ({e.detail}); close it from Sessions.")
+            s_ = store.get("session", sid) or {}
+            store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
+                                            "exit": s_.get("exit") or {"by": actor, "via": "relaunch", "to": nsid}})
+        store.audit(actor, "session.relaunch", sid, {"new": nsid, "mod": launch_mod, "original": original, "beside": beside})
+        return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": build, "launch_mod": launch_mod,
+                "notes": notes}
+
+    RESET_MODES = {"reset": "reset", "restart": "restart", "hard": "hard_reset"}   # mode -> the intent it needs
+
+    def session_reset(sid: str, actor: str, mode: str = "reset", progress=None, should_stop=None) -> dict:
+        """reset: the console's reset switch (the emulator's own reset), else a relaunch of the same game + build.
+        restart: always relaunch (settings applied at launch). hard: the original game from boot (mods off)."""
+        say = progress or (lambda pct, msg: None)
+        stop = should_stop or (lambda: False)
+        sid, sess = _live_session(sid)
+        if sess.get("state") != "running":
+            raise HTTPException(409, "This game has already ended, so there is nothing to reset: use Play again.")
+        notes = []
+        boot_build = (sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
+        live = bool(sess.get("live_mod")) and sess["live_mod"] != boot_build    # a hot-swapped model in memory (#Blender)
+        if mode == "reset" and not live:
+            say(5, "Pressing the console's reset")
+            try:
+                r = _run_job("session_op", {"session_id": sid, "op": "reset"}, actor, worker=sid.split("-")[0], wait=40,
+                             should_stop=stop)
+                return {"session_id": sid, "from": sid, "mode": "native", "result": r.get("result"), "notes": notes}
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                notes.append(f"No console reset reached the game ({e.detail}); it was relaunched instead.")
+        if stop():
+            raise HTTPException(409, "cancelled by the operator before the relaunch started; your current game was kept running")
+        if live and mode != "hard":                    # the model in memory is the build to restart (a reset would boot
+            say(10, f"Relaunching with {sess['live_mod']}")   # the disc's original model)
+            out = session_swap(sid, sess["live_mod"], "", actor, keep_state=False, progress=say, should_stop=stop,
+                               keep_old=True)
+        else:
+            out = session_relaunch(sid, actor, original=mode == "hard", progress=say, should_stop=stop)
+        return out | {"mode": "hard" if mode == "hard" else "relaunch", "notes": notes + (out.get("notes") or [])}
+
+    def reset_job(sid: str, mode: str, actor: str) -> Job:
+        """session_reset in the background as a job record (polled like a swap; output.session_id = the game now)."""
+        sid, sess = _live_session(sid)
+        with store.lock:
+            for existing in store.all('job'):
+                inp = existing.get('input') or {}
+                if (existing.get('tool') in ('session_swap', 'session_reset') and existing.get('state') in ('queued', 'running')
+                        and inp.get('game_id') == sess.get('game_id')
+                        and _wid(inp.get('session_id', '').split('-')[0]) == _wid(sid.split('-')[0])):
+                    if existing.get('tool') == 'session_reset' and inp.get('mode') == mode:
+                        return Job.model_validate(existing)
+                    raise HTTPException(409, 'This game is already being reset or swapped. Wait for that to finish.')
+            if sess.get('state') != 'running':
+                raise HTTPException(409, 'This game has already ended, so there is nothing to reset: use Play again.')
+            job = Job(tool="session_reset", input={"session_id": sid, "game_id": sess.get("game_id"), "mode": mode},
+                      state=JobState.RUNNING, started=time.time())
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def go():
+            try:
+                out, state, err = session_reset(sid, actor, mode, prog,
+                                                lambda: bool((store.get("job", job.id) or {}).get("cancel"))), JobState.SUCCEEDED, None
+            except HTTPException as e:
+                out, state, err = None, JobState.FAILED, str(e.detail)
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
+                                                                     "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "session.reset", sid, {"mode": mode, "state": str(state), "error": err,
+                                                      "new": (out or {}).get("session_id")})
+        try:
+            threading.Thread(target=go, daemon=True).start()
+        except Exception as exc:
+            reason = f'Reset background task could not start ({type(exc).__name__}); the game was not touched.'
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {'state': JobState.FAILED, 'finished': time.time(),
+                                                                     'error': reason})
             raise HTTPException(503, reason) from exc
         return job
 
@@ -1329,6 +1475,21 @@ def create_app(config: Config) -> FastAPI:
     def session_swap_api(sid: str, s: SwapIn, actor=Depends(auth)):
         """Turn a file/model mod on or off in a running game: same PC, same moment (job; output.session_id = new session)."""
         return swap_job(sid, s.mod, s.to, actor, s.keep_state)
+
+    class ResetIn(BaseModel):
+        mode: Literal["reset", "restart", "hard"] = "reset"
+        intent: str = ""                    # hard: "hard_reset" (an explicit operator action: the moment and mods go)
+
+    @app.post("/api/sessions/{sid}/reset")
+    def session_reset_api(sid: str, r: ResetIn, actor=Depends(auth)):
+        """Reset / restart a running game as one server operation (job; output.session_id = the game afterwards).
+        reset: the emulator's own reset where it has one, else the same game + build relaunched on the same PC;
+        restart: always that relaunch; hard: the original game from boot. A relaunch starts beside the running copy,
+        which closes only once the new one runs: a failed relaunch leaves the game as it was (the job says so)."""
+        if r.mode == "hard" and r.intent != RESET_MODES["hard"]:
+            raise HTTPException(422, "a hard reset restarts the ORIGINAL game from boot (mods off, moment lost): it needs "
+                                     "intent 'hard_reset' from an explicit operator action")
+        return reset_job(sid, r.mode, actor)
 
     class MoveIn(BaseModel):
         to: str = "windows"                 # a worker name (this PC) | windows | linux (the Spark)

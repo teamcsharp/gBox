@@ -270,6 +270,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-move.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/game-menu.js"></script>
+<script src="/viz/build-shot.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
 <script src="/viz/builds.js"></script>
@@ -1805,15 +1806,16 @@ function examineLeave() {                                   // back to Play (or 
 async function examineRelaunch(sid) {                       // save state -> restart the game (RenderDoc inside) -> load it
   const ss = await api("/api/sessions"), s = ss.find(x => x.session_id === sid) || {};
   if (s.state !== "running" || !s.game_id) throw new Error("This session has ended. Open the running game first.");
-  $("#ex_relaunch_msg").textContent = "Saving state…";
-  const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "save_state" } });
-  const slot = j.output?.result?.slot;
-  if (j.state !== "succeeded" || slot == null) throw new Error(j.error || "Save state was not confirmed; the game was kept running.");
-  if (EXAM.sid !== sid) return;
-  const stopped = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
-  if (stopped.state !== "succeeded") throw new Error(stopped.error || "Could not stop the old emulator.");
-  EXAM.sid = null;
-  return play(s.game_id, s.detail?.worker_name || window.GBOX_LOCAL?.worker, false, { ...bootGet(s.game_id), disc: s.mod || "", slot });
+  // one server operation (session_swap, same game + mod, state kept): save the moment, start the game again (RenderDoc
+  // inside), load the moment, and only then close the old copy; it never stops the game before the new one runs
+  const say = t => { if (EXAM.sid === sid) $("#ex_relaunch_msg").textContent = t; };
+  say("Saving your moment and starting the game again with 3D capture (your game keeps running meanwhile)…");
+  let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: (s.collection_mod || s.mod || "").split("~")[0], keep_state: true });
+  while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 700)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) say(j.progress.msg + "…"); }
+  if (j.state !== "succeeded") throw new Error((j.error || j.state) + " Your game was kept running.");
+  if (EXAM.sid === sid) EXAM.sid = null;
+  followSession(sid, j.output.session_id);
+  return j.output.session_id;
 }
 
 // ---------------- per-game graphics (resolution, MSAA, AF, FSR/sharpen, post-AA, vsync), applied at launch ----------------
@@ -1846,8 +1848,8 @@ async function gfxInit() {
     $("#gx_best").onclick = async () => { try { draw(await gfxJob(el, "best")); done("Best preset for this GPU saved. Restart the game to apply."); } catch (e) { done(e.message); } };
     $("#gx_save").onclick = async () => { try { await gfxJob(el, "set", prefs()); done("Saved. Applies the next time the game starts."); } catch (e) { done(e.message); } };
     $("#gx_apply").onclick = async () => {
-      try { await gfxJob(el, "set", prefs()); done("Saved. Restarting the game…");
-        await sop(el.dataset.sid, "stop_game"); play(el.dataset.gid); } catch (e) { done(e.message); }
+      try { await gfxJob(el, "set", prefs()); done("Saved. Restarting the game (it keeps running until the new copy is up)…");
+        await restartGame(el.dataset.sid); done("Restarted with the new settings ✓"); } catch (e) { done(e.message); }
     };
   };
   try { draw(await gfxJob(el, "get")); } catch (e) { el.innerHTML = `<h4>Graphics</h4><p class="mut">${esc(e.message)}</p>`; }
@@ -2024,17 +2026,44 @@ function modReapply() {                                   // after a console res
   (MODWATCH.mods || []).forEach(m => { m._applied = false; });
   setTimeout(() => MODWATCH.tick?.(), 3000);
 }
+// Reset / Restart / Hard reset = ONE server operation (POST /api/sessions/{sid}/reset, a job): the emulator's own reset
+// where it has one, else the same game + mod relaunched on the same PC beside the running copy, which closes only once
+// the new one runs. 2026-10-13: Reset on Dolphin stopped the game and the client's relaunch never came; the operator was
+// left with no game. A failed reset/relaunch now says so loudly and offers Play again; it never stops the game first.
+async function resetJob(sid, mode, btn) {
+  let j = await api(`/api/sessions/${encodeURIComponent(sid)}/reset`, { mode, intent: mode === "hard" ? "hard_reset" : mode });
+  while (/queued|running/.test(j.state)) {
+    await new Promise(z => setTimeout(z, 500)); j = await api("/api/jobs/" + j.id);
+    if (j.progress?.msg) { if (btn) btn.title = j.progress.msg; const el = $("#sopres"); if (el && playing === sid) el.textContent = j.progress.msg; }
+  }
+  if (j.state !== "succeeded") throw new Error(j.error || j.state);
+  const out = j.output || {};
+  if (out.session_id && out.session_id !== sid) followSession(sid, out.session_id);   // the relaunched copy, same view
+  return out;
+}
+function resetFailed(s, verb, message) {                     // loud: a banner over everything, with Play again
+  document.getElementById("resetfail")?.remove();
+  const gid = s?.game_id, mod = s?.collection_mod || s?.mod || "", node = s?.detail?.worker_name || s?.worker_name || "";
+  document.body.insertAdjacentHTML("beforeend", `<div id="resetfail" role="alert" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:9999;max-width:min(680px,92vw);background:var(--bad);color:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 6px 24px #0008;font-size:14px">
+    <b>${esc(verb)} failed.</b> <span>${esc(message)}</span>
+    <div style="display:flex;gap:8px;margin-top:8px">${gid ? `<button class="act" id="rf_play" style="background:#fff;color:#000">Play again</button>` : ""}<button class="act" id="rf_x" style="background:transparent;color:#fff;border-color:#fff">Dismiss</button></div></div>`);
+  $("#rf_x").onclick = () => $("#resetfail")?.remove();
+  if (gid) $("#rf_play").onclick = () => { $("#resetfail")?.remove(); play(gid, node || undefined, false, { disc: mod.split("~")[0], slot: "" }); };
+}
 async function hardReset(sid, btn) {                         // Ctrl+click reset: original game from boot, this game's mod setup cleared
   const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
   if (btn) btn.disabled = true;
   try {
+    await resetJob(sid, "hard", btn);
     if (s.game_id) { bootSet(s.game_id, { disc: "", slot: "" }); try { localStorage.removeItem("gbox_modkeep_" + s.game_id); } catch {} }
-    let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: "", keep_state: false });
-    while (/queued|running/.test(j.state)) { await new Promise(z => setTimeout(z, 700)); j = await api("/api/jobs/" + j.id); }
-    if (j.state !== "succeeded") throw new Error(j.error || j.state);
-    followSession(sid, j.output.session_id); if (btn) btn.title = "Hard reset ✓ original game, mods cleared";
-  } catch (e) { if (btn) btn.title = "Hard reset failed: " + e.message; }
+    if (btn) btn.title = "Hard reset ✓ original game, mods cleared";
+  } catch (e) { if (btn) btn.title = "Hard reset failed: " + e.message; resetFailed(s, "Hard reset", e.message); }
   finally { if (btn) btn.disabled = false; }
+}
+async function restartGame(sid, btn) {                      // relaunch the same game + mod (settings that apply at launch)
+  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
+  try { return await resetJob(sid, "restart", btn); }
+  catch (e) { resetFailed(s, "Restart", e.message); throw e; }
 }
 function modWatch(gid, sid, mods) {                       // re-apply kept patch mods when a reload wipes them (checked every 20 s)
   clearInterval(MODWATCH.t);
@@ -2621,31 +2650,23 @@ async function resetGame(sid, btn, hard) {
   const done = (ok, msg) => { if (!btn) return; svg?.getAnimations().forEach(a => a.cancel()); btn.disabled = false;
     btn.style.color = btn.style.borderColor = ok ? "var(--ok)" : "var(--bad)"; btn.title = msg;
     setTimeout(() => { btn.style.color = btn.style.borderColor = ""; }, 2500); };
+  let current = null;
   try {
-    const current = (await api("/api/sessions")).find(s => s.session_id === sid);
-    if (current?.live_mod && current.live_mod !== current.mod) {
-      // Reset the model currently in memory, including a Blender hot swap.
-      // The emulator's reset command would reload its original boot model.
-      let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: current.live_mod, keep_state: false });
-      while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 500)); j = await api("/api/jobs/" + j.id); }
-      if (j.state !== "succeeded") throw new Error(j.error || j.state);
-      followSession(sid, j.output.session_id);
-      return done(true, "Reset ✓ (mods and current character kept)");
+    current = (await api("/api/sessions")).find(s => s.session_id === sid) || null;
+    // a model hot-swapped into memory (Blender): the console's reset would boot the disc's original model, so the
+    // server relaunches the build in memory instead; otherwise the live channel's reset is instant where there is one
+    const hot = current?.live_mod && current.live_mod !== (current.collection_mod || current.mod || "").split("~")[0];
+    if (!hot) {
+      const fast = await fetch(`/api/sessions/${encodeURIComponent(sid)}/rpc`, { method: "POST",          // instant: the live channel
+        headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: JSON.stringify({ op: "reset", args: {} }) }).catch(() => null);
+      if (fast?.ok) { modReapply(); return done(true, "Reset ✓ (mods kept)"); }
     }
-    const fast = await fetch(`/api/sessions/${encodeURIComponent(sid)}/rpc`, { method: "POST",          // instant: the live channel
-      headers: { authorization: "Bearer " + tok, "content-type": "application/json" }, body: JSON.stringify({ op: "reset", args: {} }) }).catch(() => null);
-    if (fast?.ok) { modReapply(); return done(true, "Reset ✓ (mods kept)"); }
-    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "reset" }, require_worker: w });
-    if (j.state === "succeeded") return done(true, "Reset ✓");
-    const s = (await api("/api/sessions")).find(x => x.session_id === sid);
-    if (!s?.game_id) throw new Error(j.error || "can't reset this session");
-    if (active?.sid === sid) { active = null; pip(); }
-    await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game", args: {} }, require_worker: w }).catch(() => {});
-    let l = await api(`/api/games/${s.game_id}/launch?node=${encodeURIComponent(w)}${s.mod ? "&mod=" + encodeURIComponent(s.mod) : ""}`, {});
-    while (/queued|running/.test(l.state)) { await new Promise(r => setTimeout(r, 500)); l = await api("/api/jobs/" + l.id); }
-    if (l.state !== "succeeded") throw new Error(l.error || "relaunch failed");
-    show("Sessions", l.output.session_id);                   // the relaunched game (new session)
-  } catch (e) { done(false, "Reset failed: " + e.message); }
+    // no reset over the live channel: one server operation (the emulator's reset, else a relaunch of the same game +
+    // mod on this PC that keeps your game running until the new copy is up). The view follows the new copy.
+    const out = await resetJob(sid, "reset", btn);
+    if (out.mode === "native") { modReapply(); return done(true, "Reset ✓ (mods kept)"); }
+    done(true, hot ? "Reset ✓ (relaunched with the current character)" : "Reset ✓ (relaunched: same game and mod)");
+  } catch (e) { done(false, "Reset failed: " + e.message); resetFailed(current, "Reset", e.message); }
 }
 let sessionPause = null;
 function toggleSessionPause(sid) {
@@ -3380,10 +3401,19 @@ async function cpuRefresh(sid, withRegs) {
 }
 function cpuInit(sid) {
   const rl = $("#dbgrelaunch");
-  if (rl) rl.onclick = async () => {
+  if (rl) rl.onclick = async () => {                        // launch the debugger copy first; this one closes once it runs
     const s = (await api("/api/sessions")).find(x => x.session_id === sid);
-    await api("/api/jobs", { tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
-    if (s?.game_id) play(s.game_id, "linux", true);
+    if (!s?.game_id) return;
+    const mod = (s.collection_mod || s.mod || "").split("~")[0], label = rl.textContent;
+    rl.disabled = true; rl.textContent = "Starting the debugger copy on the Spark (this game keeps running until it is up)…";
+    try {
+      let j = await api(`/api/games/${s.game_id}/launch?node=linux&debug=true${mod ? "&mod=" + encodeURIComponent(mod) : ""}`, {});
+      while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 700)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) rl.textContent = j.progress.msg + "…"; }
+      if (j.state !== "succeeded" || !j.output?.session_id) throw new Error(j.error || j.state);
+      const nsid = j.output.session_id;
+      if (nsid !== sid) await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game", args: {} }, require_worker: sid.split("-")[0] }).catch(() => {});
+      followSession(sid, nsid); show("Sessions", nsid);
+    } catch (e) { rl.disabled = false; rl.textContent = label; resetFailed(s, "Relaunch with the debugger", e.message + " Your game is still running."); }
   };
   const act = async (op, args) => { $("#dmsg").textContent = ""; try { await rpc(sid, op, args); } catch (e) { $("#dmsg").textContent = e.message; } await cpuRefresh(sid, true); };
   $("#dhalt").onclick = () => act("debug_halt");
