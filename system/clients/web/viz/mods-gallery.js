@@ -136,7 +136,7 @@
   //   openImages(list, i, [x, y]), poll (GBoxLivePoll), here (this PC's worker name), visible() -> bool,
   //   play?(mod, {node, moment}), openRequest?(ticket), toast?(text), wait?(ms) }
   function mount(host, env) {
-    const st = { q: "", game: "", writer: "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "" };
+    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "" };
     const poll = env.poll || root.GBoxLivePoll;
     const read = poll ? poll.cachedRead(() => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), { ttl: 15000 })
       : { get: () => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), invalidate() {} };
@@ -287,7 +287,9 @@
     function busy() { return !!(st.data && (st.data.indexing || st.data.sizing)); }
     function tick() { if (!env.visible || env.visible()) return load(busy() ? TICK - 500 : 30000); }
     function stop() { clearInterval(timer); host.removeEventListener?.("click", onClick); host.removeEventListener?.("input", onInput); host.removeEventListener?.("change", onInput); }
-    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, tick, busy, ready: null };
+    // show one build / request: the game menu's "Open in Mods page" (search + game filter set, the toolbar redrawn)
+    function focus({ q, game } = {}) { if (q != null) st.q = String(q); if (game != null) st.game = String(game); st.page = 1; built = false; draw(); }
+    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, tick, busy, focus, ready: null };
     api.ready = start();
     return api;
   }
