@@ -1146,7 +1146,8 @@ class RetroArchAdapter(CommandAdapter):
         return {"returncode": self.proc.poll() if self.proc else None}
 
     def _exited(self) -> bool:
-        return bool(self.proc is not None and self.proc.poll() is not None)
+        proc = self.__dict__.get("proc")                 # __getattr__ answers op names only; no proc = not ours to judge
+        return bool(proc is not None and proc.poll() is not None)
 
     def cmd(self, text: str, reply: bool = False, timeout: float = 2.0) -> str | None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
