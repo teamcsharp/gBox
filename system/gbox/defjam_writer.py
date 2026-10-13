@@ -209,12 +209,14 @@ def fit_character(base: bytes, model: Path, roles: dict, work: Path, name: str, 
                   blender: str | None = None, max_tris: int = MAX_TRIS, progress=lambda p, m: None) -> dict:
     """Library model -> {parts (per joint, game units, page-pixel UVs), page (RGBA 512x512), report}; independent of
     which container it is encoded into (all 58 share the BODY tree)."""
+    from . import fit_events as FE
     from .aki_wrestling import _bake_parts, _decimate_parts
     from .sm64_swap import load_rig, retarget
     tgt = target(base)
     progress(15, f"Retargeting {name} onto the Def Jam skeleton")
     rig = load_rig(Path(model), roles, props)
     prims, rep = retarget(rig, tgt, scale, JMAP)
+    FE.weights(prims, JMAP, skeleton=tgt["joints"])
     mats, mkey = [], {}
     P, N, UV, JV, F, FM, n0 = [], [], [], [], [], [], 0
     for p in prims:
@@ -254,8 +256,12 @@ def fit_character(base: bytes, model: Path, roles: dict, work: Path, name: str, 
                         "F": np.array(faces, int)})
     rgba = img.copy()
     rgba[..., 3] = 255
+    tris = int(sum(len(p["F"]) for p in out))
+    FE.stage("decimate", "done" if tris < src_tris else "skipped",
+             {"from": int(src_tris), "triangles": tris, "max_tris": max_tris, "parts": len(out), "dropped": dropped},
+             prims=FE.mesh(out) if tris < src_tris else None)
     return {"parts": out, "page": rgba, "report": {"retarget": rep, "source_triangles": int(src_tris),
-                                                   "triangles": int(sum(len(p["F"]) for p in out)), "dropped": dropped}}
+                                                   "triangles": tris, "dropped": dropped}}
 
 
 def encode_container(base: bytes, fit: dict) -> tuple[bytes, dict]:
@@ -307,6 +313,7 @@ def fit_fitting(bases: dict[int, bytes], sizes: dict[int, int], jb: dict, work: 
     """Fit once, encode into every target container; lower the triangle budget until all of them fit their data.bin
     entries. -> {character, fit, max_tris, entries [{index, wrestler, bytes, budget, slots, sha256, data}],
     preview_from}"""
+    from . import fit_events as FE
     first = bases[next(iter(bases))]
     last = None
     for max_tris in BUDGETS:
@@ -324,10 +331,15 @@ def fit_fitting(bases: dict[int, bytes], sizes: dict[int, int], jb: dict, work: 
                                   f"{ {k: v for k, v in chk.items() if k != 'assembled'} }")
             rows.append({"index": i, "wrestler": M.NAMES.get(i), "bytes": len(new), "budget": sizes[i], "slots": enc,
                          "sha256": hashlib.sha256(new).hexdigest(), "data": new})
-        if not over:
+        if not over:                                       # every costume's container fits its data.bin entry in place
+            FE.stage("encode", data={"bytes": sum(r["bytes"] for r in rows), "budget": sum(r["budget"] for r in rows),
+                                     "containers": len(rows), "max_tris": max_tris,
+                                     "triangles": fit["report"]["triangles"], "relocated": False})
             return {"character": jb["name"], "fit": fit["report"], "max_tris": max_tris, "entries": rows,
                     "preview_from": rows[0]["data"]}
         last = over[0]
+        FE.stage("encode", "running", {"bytes": last[1], "budget": last[2], "max_tris": max_tris,
+                                       "result": "over the entry: refitting with fewer triangles"})
         progress(40, f"{jb['name']}: {last[1]} bytes over the {last[2]}-byte entry at {max_tris} triangles; retrying")
     raise FormatError(f"{jb['name']} does not fit entry {last[0]} even at {BUDGETS[-1]} triangles ({last[1]} > {last[2]})")
 
@@ -360,8 +372,11 @@ def build_disc(iso: Path, out_iso: Path, jobs: list[dict], work: Path, blender=N
         raise FormatError(f"{ident['serial']} v{ident['version']}: the writer is built on {inv.SERIAL} v{inv.VERSION} only")
     ents = inv.entries(disc)
     lba = disc.files[inv.DATA_NAME][0]
+    from . import fit_events as FE
     patches, reports = [], []
     for jb in jobs:
+        if jb.get("fit_key"):                             # the cast's model for this wrestler (the Fitting pop-up)
+            FE.model(jb["fit_key"])
         bases = {i: inv.read_entry(disc, ents[i]) for i in jb["indices"]}
         rep = fit_fitting(bases, {i: ents[i]["size"] for i in bases}, jb, Path(work) / re.sub(r"\W+", "_", jb["name"])[:40],
                           blender, progress)
@@ -388,6 +403,22 @@ def build_disc(iso: Path, out_iso: Path, jobs: list[dict], work: Path, blender=N
     return {"image": str(out_iso), "reports": reports}
 
 
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per wrestler (find_wrestler takes every costume of the name); the
+    `player` slot (the four story heroes) overlaps Briggs / Tank / Proof / Spider, so it is an aggregate."""
+    out = [{"slot": "player", "name": "the story heroes (Briggs, Tank, Proof, Spider)", "kind": "player",
+            "aggregate": True, "writer": "gbox.defjam_writer"}]
+    seen = set()
+    for i in sorted(M.NAMES):
+        n = M.NAMES[i]
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append({"slot": M._title(n), "name": M._title(n), "kind": "wrestler",
+                    "costumes": sum(1 for v in M.NAMES.values() if v == n), "writer": "gbox.defjam_writer"})
+    return out
+
+
 # --- characters op=use / op=match ---------------------------------------------------------------------------------------
 def mod_name(pairs: list[tuple[dict, str]], title: str | None = None) -> str:
     if title and len(pairs) > 1:
@@ -412,7 +443,7 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, str]], progress=lambda p,
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"indices": find_wrestler(slot), "model": root / meta["slug"] / meta["model"], "roles": roles,
                      "name": meta["name"], "props": [p["node"] for p in meta.get("props") or []],
-                     "scale": (meta.get("rig") or {}).get("scale")})
+                     "scale": (meta.get("rig") or {}).get("scale"), "fit_key": slot})
     name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / name
     shutil.rmtree(work, ignore_errors=True)
@@ -440,6 +471,12 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, str]], progress=lambda p,
           "entries": [e for r in b["reports"] for e in r["entries"]], "verified_in_game": False}
     (d / ".gbox-mod.json").write_text(json.dumps(mj))
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE
+    for (meta, slot), r in zip(pairs, b["reports"]):     # each wrestler's entries, patched in place in the disc copy
+        FE.model(slot)
+        FE.stage("write", data={"mod": name, "image": img.name, "entries": len(r["entries"]),
+                                "bytes": sum(e["bytes"] for e in r["entries"]),
+                                "replaces": ", ".join(f"{e['wrestler']} #{e['index']}" for e in r["entries"])[:150]})
     return {"mod": name, "image": img.name, "previews": previews, "reports": b["reports"]}
 
 
@@ -488,6 +525,8 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
             raise ValueError(f"{wq} is already replaced in this build")
         used |= set(idx)
         pairs.append((meta, wq or "player"))
+    from . import fit_events as FE                         # every wrestler of the match up front (Fitting k/N)
+    FE.plan([(w, m["slug"], f"{m['name']} -> {w}") for m, w in pairs])
     return use(ctx, pairs[0][0], game, inp, pairs, title)
 
 

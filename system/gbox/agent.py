@@ -28,7 +28,8 @@ Keep related calls on the same worker. Preserve evidence/unknowns; check actual 
 How to work:
 - Understand the request in the operator's words. If it's about a specific game, use the session context or search_games.
 - Reverse engineering (Ghidra, "find the code that…", model/file formats, patch points, character swaps a game has no writer
-  for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
+  for): assimilate op=fingerprint first when the title has no reader yet (formats, engine, nearest assimilated titles,
+  the reader to start from), re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - PC game modding (universal-modder, the um_* tools): "what engine is this", "how do I mod X", "has anyone modded X" -> um_scan
@@ -177,9 +178,15 @@ How to work:
   (pick whip "Extract X's model ...") -> characters op=extract character=X kind=character|vehicle|object|environment
   session_id, x/y = X's position on the frame as fractions ("45% across, 60% down" -> x=0.45 y=0.6). "Play as X",
   "replace A / me with B", pick-whip swaps -> characters op=use character=B session_id (not in the collection: op=extract first;
-  RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri). OoT pick whip
+  RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri; MGS VR
+  Missions: slot=player (Snake) | enemy:soldier (every soldier) | enemy:ninja | enemies | all, or op=live_use session_id
+  x/y: the figure there, swapped into the running game at the same moment); Twin Snakes
+  GC: slot=player (Snake) | enemies (the Genome soldiers) | bosses | model:<key> | x/y + target=<what is there>). OoT pick whip
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
-  ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. use says "missing" (no writer for that game) or the operator wants it now ->
+  ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
+  everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
+  source=<game | group: wrestlers, fighters> [mapping=auto|random|by_role] [slots=all|main|enemies] (plan_only=true shows
+  the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
   Report the status as returned; "extracted" only with checked.ok. Unknown model
   format: Ghidra (analyze_binary / ghidra_script) on the game's executable to find the loader. View an entry: bevy_scene;
@@ -274,6 +281,12 @@ def tool_specs() -> list[dict]:
            "= artifact sha256s that prove it; or question = an open question.",
            {"op": s, "game": s, "kind": s, "address": s, "name": s, "role": s, "status": s, "evidence": {"type": "array", "items": s},
             "question": s}, ["op"]),
+        fn("assimilate", "Step one before reverse engineering a title or writing a reader: fingerprint its owned files and "
+           "executable. Ranks containers, codecs, model/texture/animation formats and the engine/middleware (Ninja, "
+           "RenderWare, Unreal, EAGL, Eurocom, MT Framework, CRI, Tecmo, AKI, Yuke's, ...), names the nearest titles gBox "
+           "already assimilated and the reader to start from, with a reader skeleton. Recorded in the dossier as a "
+           "hypothesis. op=fingerprint (default) | known (assimilated titles) | evaluate (leave-one-out accuracy).",
+           {"op": s, "game": s}),
         fn("re_study", "Prepare a title for Ghidra: extract its main executable from the disc/ROM as an ELF at the right load "
            "address and processor (GameCube, Wii, Dreamcast, PS1, PS2, N64, GBA, Xbox 360), or source=ram + session_id to "
            "snapshot the running game's RAM; analyze=true also runs Ghidra auto-analysis. Results go into the title's dossier "
@@ -746,10 +759,15 @@ def tool_specs() -> list[dict]:
            "the player | unplace (OoT; session_id, optional character) | overlay (character, session_id, "
            "optional x/y = the target's point 0..1): any game, now: the model tracks and covers the player on screen in the "
            "desktop app (an overlay, not in-engine) | add (character = new name, from_clipboard=true): store a "
-           "model edited in Blender. game = title or catalog game_id (default: the chat's game); extract needs a running "
-           "session only when the thing has to be cut from the frame.",
+           "model edited in Blender | readiness (optional game_id / character, rebuild=true to recompute all): replacement "
+           "readiness of every collected character (roles, bind pose, proportions, budgets) and which game slots each can "
+           "replace; returns the per-game gap report | cast_swap (target_game, source = a game or a group like 'wrestlers', mapping = "
+           "auto|random|by_role, seed, slots = all|main|enemies, plan_only, launch): replace the ENTIRE cast of one game "
+           "with the cast of another in one mod ('replace everyone in PSO with wrestlers'). game = title or catalog "
+           "game_id (default: the chat's game); extract needs a running session only when the thing has to be cut from the frame.",
            {"op": s, "character": s, "kind": s, "session_id": s, "game": s, "x": {"type": "number"}, "y": {"type": "number"},
-            "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"}}, ["op"]),
+            "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"},
+            "target_game": s, "source": s, "mapping": s, "seed": s, "slots": s, "plan_only": b, "launch": b}, ["op"]),
         fn("scene_capture", "Capture the frame on screen of a live session (Windows PC emulators started with Examine 3D) as a "
            "real 3D scene: glTF with one node per draw call + textures, HUD separate. For extracting a model into the "
            "collection use characters op=extract (it does this and cuts the object out); this is for looking at the raw scene.",
@@ -982,6 +1000,21 @@ class Agent:
             return self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": kind, "address": str(address or ""), "name": name,
                                  "role": role, "status": status, "evidence": evidence or [], "question": question}).json()
         return {"error": "op: read | record"}
+
+    def assimilate(self, op="fingerprint", game=""):
+        if op in ("known", "evaluate"):
+            j = self._job("assimilate", {"op": op}, node="linux", limit=600)
+            return j["output"]["result"] if j.get("state") == "succeeded" else {"error": f"assimilate {j.get('state')}: {j.get('error')}"}
+        gid = self._re_gid(game)
+        j = self._job("assimilate", {"op": "fingerprint", "game_id": gid}, node="linux", limit=1800)
+        if j.get("state") != "succeeded":
+            return {"error": f"assimilate {j.get('state')}: {j.get('error')}", "next": "re_study, then playbook asset-loader-format"}
+        fp = j["output"]["result"]
+        self.api.post(f"/api/re/dossier/{gid}/findings", json={"kind": "note", "name": "assimilate fingerprint",
+                                                                "role": fp.get("summary", "")[:800], "status": "hypothesis"})
+        return {"game_id": gid, "summary": fp.get("summary"), "engines": fp.get("engines", [])[:3],
+                "nearest_titles": fp.get("nearest_titles"), "proposal": fp.get("proposal"),
+                "next": "re_playbook op=get id=assimilate-title; verify the fingerprint against the files before trusting it"}
 
     def re_study(self, game="", source="auto", session_id="", analyze=True):
         gid = self._re_gid(game)
@@ -1541,17 +1574,26 @@ class Agent:
         return [{k: x[k] for k in ("name", "category", "description")} for x in ss if q in (x["name"] + x["category"] + x["description"]).lower()][:25]
 
     def characters(self, op="list", character="", session_id="", game="", slot="player", kind="", x=None, y=None,
-                   from_clipboard=False, a="", b="", one_way=False, near="", size=0.0):
+                   from_clipboard=False, a="", b="", one_way=False, near="", size=0.0, target_game="", source="",
+                   mapping="auto", seed="", slots="all", plan_only=False, launch=None):
         require_character(op, character)
         if session_id and (bad := self._live_session(session_id)):
             return bad  # preserve the requested live target; never silently relaunch a different session
         if not session_id and not game and op in ("collect", "extract", "use", "add", "swap", "place", "unplace"):   # the chat's game
             game = getattr(self, "context_game", "") or ""
+        if op == "cast_swap" and not target_game and not game:
+            game = getattr(self, "context_game", "") or ""
         inp = {"op": op, "character": character, "session_id": session_id, "game": game, "slot": slot,
                "kind": kind or ("object" if op == "extract" else "character"), "x": x, "y": y, "from_clipboard": bool(from_clipboard),
                "a": str(a or ""), "b": str(b or ""), "one_way": bool(one_way), "near": near or "", "size": float(size or 0)}
+        if op == "cast_swap":                         # the whole cast of target_game as source's (gbox.cast_swap)
+            inp |= {"target_game": target_game or game, "source": source, "mapping": mapping or "auto", "seed": str(seed or ""),
+                    "slots": slots or "all", "plan_only": bool(plan_only)}
+            if launch is not None:
+                inp["launch"] = bool(launch)
         # extract / add / blender write the collection: they run where it lives (the Spark)
-        j = self._job("characters", inp, limit=14400 if op == "collect" else 3600, node=None if op == "use" and session_id else "linux")
+        j = self._job("characters", inp, limit=14400 if op in ("collect", "cast_swap") else 3600,
+                      node=None if op == "use" and session_id else "linux")
         result = (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
         if op in ("use", "live_use"):
             outcome = native_swap_result({"state": j.get("state"), "error": j.get("error"), "result": result})
@@ -1862,7 +1904,8 @@ def _modifies_game(name: str, args: dict) -> bool:
             op == "time" and (args.get("hours") is not None or args.get("minutes") is not None) or \
             op == "wanted" and args.get("level") is not None
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages",
+                      "readiness"}
 
 
 class ChatHub:
@@ -1939,7 +1982,7 @@ class ChatHub:
         errs = [e for e in turn if e.get("type") in ("tool_result", "error") and failed(e)]
         final = next((e.get("text") or "" for e in reversed(turn) if e.get("type") == "assistant"), "")
         if status != "blocked":
-            if final and not self.GAP_GAVE_UP.search(final):
+            if final and not self.GAP_GAVE_UP.search(re.sub(r"```.*?(```|$)", " ", final, flags=re.S)):   # returned data isn't a give-up
                 return                                # it recovered and delivered: errors on the way aren't a gap
             if not final and not errs:
                 return

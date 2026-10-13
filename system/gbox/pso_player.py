@@ -144,33 +144,11 @@ PSO_BUDGETS = (900, 750, 600, 480, 400)
 def check_roles(parents: list[int], world: list, roles: dict[str, int], drawn: dict[int, int] | None = None) -> list[str]:
     """What's wrong with a role map on a player body tree ([] = usable). parents: parent node per node (-1 = root);
     world: bind-pose position per node (model faces +Z, left at +X); drawn: {node: drawn vertices} when known."""
+    from .formats.rig import check_role_map               # the generic checks (shared with every writer)
     parents = [-1 if p is None else int(p) for p in parents]
     if parents != PLAYER_PARENTS:
         return [f"not the PSO player body tree ({len(parents)} nodes)"]
-    bad = [f"{r}: no node {j}" for r, j in roles.items() if not 0 <= j < len(parents)]
-    missing = sorted({r for ch in ROLE_CHAINS for r in ch} - set(roles))
-    if bad or missing:
-        return bad + [f"no {r}" for r in missing]
-
-    def below(a, b):                                       # is node b a descendant of node a?
-        k = parents[b]
-        while k >= 0 and k != a:
-            k = parents[k]
-        return k == a
-    for ch in ROLE_CHAINS:
-        for a, b in zip(ch, ch[1:]):
-            if not below(roles[a], roles[b]):
-                bad.append(f"{b} (node {roles[b]}) isn't below {a} (node {roles[a]})")
-    for r, j in roles.items():
-        x = float(world[j][0])
-        if r[:2] in ("l_", "r_") and (x > 0) != (r[0] == "l"):
-            bad.append(f"{r} (node {j}) is on the {'left' if x > 0 else 'right'} (x {x:.2f})")
-        if drawn is not None and not drawn.get(j):
-            bad.append(f"{r} (node {j}) draws no vertices")
-    y = {r: float(world[roles[r]][1]) for r in ("head", "chest", "hip", "l_foot", "r_foot")}
-    if not y["head"] > y["chest"] > y["hip"] > max(y["l_foot"], y["r_foot"]):
-        bad.append(f"heights out of order (head {y['head']:.2f}, chest {y['chest']:.2f}, hip {y['hip']:.2f})")
-    return bad
+    return check_role_map(parents, world, roles, drawn, chains=ROLE_CHAINS)
 
 
 def body_roles(body_file: bytes, cls: str) -> dict[str, int]:

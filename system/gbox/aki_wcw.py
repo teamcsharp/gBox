@@ -481,6 +481,8 @@ def fit_character(R: Rom, w: dict, model: Path, roles: dict, work: Path, name: s
     prims, rep = retarget(rig, tgt, scale, {k: v for k, v in jmap.items() if k in
                                            ("hip", "chest", "head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore",
                                             "r_hand", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot")})
+    from . import fit_events as FE
+    FE.weights(prims, names={i: f"{j} (bone {i})" for i, j in enumerate(JOINTS)}, skeleton=len(JOINTS))
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     rigged = write_rigged(prims, tgt, work / "wt_rigged.gltf", name)
@@ -555,6 +557,12 @@ def fit_character(R: Rom, w: dict, model: Path, roles: dict, work: Path, name: s
             report[WPARTS[k][0]] = {"verts": 3, "faces": 1, "placeholder": True}
         texb, palb = tex_encode(hdr, img, ncol)
         out[k] = {"model": mb, "tex": texb, "pal": palb}
+    faces = sum(v["faces"] for v in report.values() if not v.get("placeholder"))
+    FE.stage("decimate", "done" if faces < tris_src else "skipped",
+             {"from": tris_src, "triangles": faces, "parts": len(geo), "budget": "the game's own part sizes"},
+             prims=FE.mesh(geo.values()) if faces < tris_src else None)
+    FE.stage("encode", data={"bytes": sum(len(v["model"]) + len(v["tex"]) + len(v["pal"]) for v in out.values()),
+                             "parts": len(out), "triangles": faces})
     return {"parts": out, "rigged": rigged, "head": parts0.get("_head"), "costume": parts0["_costume"],
             "report": {"retarget": rep, "parts": report, "source_triangles": tris_src,
                        "triangles": sum(v["faces"] for v in report.values())}}
@@ -712,8 +720,11 @@ def build_rom(rom: bytes, jobs: list[dict], work: Path, blender=None, progress=l
     wr = Writer(rom)
     ros = roster(rom)
     reports = []
+    from . import fit_events as FE
     for k, jb in enumerate(jobs):
         w = next(x for x in ros if x["code"] == jb["code"])
+        if jb.get("fit_key"):                             # the cast's model for this wrestler (the Fitting pop-up)
+            FE.model(jb["fit_key"])
         fit = fit_character(wr.R, w, jb["model"], jb["roles"], Path(work) / f"w{w['code']:x}", jb["name"],
                             jb.get("props", ()), jb.get("scale"), blender,
                             progress=lambda p, m, k=k: progress(5 + (k * 80 + p * 0.8) / max(1, len(jobs)), m))
@@ -748,7 +759,8 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         if "hip" not in roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"code": w["code"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
-                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
+                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale"),
+                     "fit_key": w.get("fit_key")})
     name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / gid / name
     shutil.rmtree(work, ignore_errors=True)
@@ -774,6 +786,12 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         "files": ["@image: wrestler models (gbox.aki_wcw)"], "characters": [m["slug"] for m, _w in pairs],
         "replaces": [w["name"] for _m, w in pairs], "triangles": [r["triangles"] for r in b["reports"]]}))
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE
+    for (_meta, w), r in zip(pairs, b["reports"]):       # every wrestler's records, repointed in the one ROM
+        if w.get("fit_key"):
+            FE.model(w["fit_key"])
+        FE.stage("write", data={"mod": name, "image": img, "rom_bytes": len(b["rom"]), "wrestler": w["name"],
+                                "triangles": r.get("triangles"), "relocated": True})
     return {"mod": name, "image": img, "previews": previews,
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
 
@@ -879,5 +897,7 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
         if w["code"] in used:
             raise ValueError(f"{w['name']} is already replaced")
         used.add(w["code"])
-        pairs.append((meta, w))
+        pairs.append((meta, dict(w, fit_key=wq or w["name"])))   # the Fitting pop-up's model: the cast slot
+    from . import fit_events as FE                         # every wrestler of the match up front (Fitting k/N)
+    FE.plan([(w["fit_key"], m["slug"], f"{m['name']} -> {w['name']}") for m, w in pairs])
     return use(ctx, pairs[0][0], game, inp, pairs, title)

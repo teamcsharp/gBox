@@ -48,7 +48,7 @@ function setup(visible = false) {
     }, token: async () => { tokens++; return 'fixture-token'; } },
     requestFilter: 'all', inboxSolverRequests: [], openThreads: new Set(), replyAtt: {},
     S: { apiUrl: 'https://fixture.invalid' }, REG: { tools: {} }, MODS: { list: [] },
-    GBoxRequestSolvers: { badge: () => '' }, fmtDur: String, fmtTok: String,
+    GBoxRequestSolvers: { badge: () => '' }, GBoxReportStory: { disclosureHtml: () => '', reattach() {} }, fmtDur: String, fmtTok: String,
     updateInboxView(host, key, render) { renders++; host.innerHTML = render(); host.key = key; },
     AUD: { rows: [], after: 0 }, activity: { remote() {} }, processPopupSync() {},
     AU_ACTION: [], AU_ACTOR: [], auIcon: () => '*', auBadge: () => '',

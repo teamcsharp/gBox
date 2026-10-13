@@ -48,6 +48,12 @@
   label { display:grid; gap:4px; margin-bottom:10px; font-size:13px; color:var(--mut); }
   input[type=text], input[type=password] { font:inherit; padding:6px 8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:5px; }
   .mut { color:var(--mut); }
+  /* Settings: the Spark's two-tier game cache (GET /api/cache/tiers, docs/cache-tiers.md) */
+  #tiers { margin-top:18px; font-size:13px; } #tiers h2 { font-size:15px; margin:0 0 8px; }
+  #tiers .meter { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:6px 0 10px; }
+  #tiers .meter span { display:block; height:100%; background:var(--acc); } #tiers .meter span.over { background:var(--bad); }
+  #tiers table { width:100%; border-collapse:collapse; margin-top:8px; } #tiers td, #tiers th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); }
+  #tiers th { color:var(--mut); font-weight:normal; } #tiers .warn { color:var(--warn); } #tiers ul { margin:4px 0 0; padding-left:18px; }
 
   /* --- custom title bar --- */
   #titlebar { position:fixed; top:0; left:0; right:0; height:36px; display:flex; align-items:center; gap:10px; padding:0 10px;
@@ -246,6 +252,47 @@
   #taskpanel .tkv-stat { background:#ffffff0a; border:1px solid #ffffff1b; border-radius:9px; padding:9px 12px; }
   #taskpanel .tkv-stat strong { display:block; font-size:19px; line-height:1.2; font-variant-numeric:tabular-nums; }
   #taskpanel .tkv-stat span { color:#94a7ca; font-size:10px; text-transform:uppercase; letter-spacing:.09em; }
+  /* Providers: which Hermes route did the work and which is out of credit (cards in Visual, a table in Technical) */
+  #taskpanel .tkp { padding:0 20px 12px; }
+  #taskpanel .tkp-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+  #taskpanel .tkp-head > b { color:#94a7ca; font-size:10px; text-transform:uppercase; letter-spacing:.09em; }
+  #taskpanel .tkp-rec { flex:1 1 320px; min-width:0; color:#d7e3ff; font-size:12px; line-height:1.35; }
+  #taskpanel .tkp-window { display:inline-flex; gap:2px; padding:2px; border:1px solid #ffffff26; border-radius:6px; }
+  #taskpanel .tkp-window button { border:0; border-radius:4px; background:transparent; color:#a9bfdf; font:inherit; font-size:11px; padding:2px 8px; cursor:pointer; }
+  #taskpanel .tkp-window button[aria-pressed=true] { background:#5267ba; color:#fff; }
+  #taskpanel .tkp-cards { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; }
+  #taskpanel .tkp-card { flex:0 0 228px; min-width:0; background:#ffffff0a; border:1px solid #ffffff1b; border-radius:9px; padding:8px 11px; font-size:11px; color:#b8c9e6; }
+  #taskpanel .tkp-card.current { border-color:#57ddbb99; box-shadow:inset 0 0 0 1px #57ddbb33; }
+  #taskpanel .tkp-card header { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  #taskpanel .tkp-card header b { color:#e9f0ff; font-size:13px; }
+  #taskpanel .tkp-tag { border:1px solid #6b91d770; border-radius:10px; padding:0 6px; font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:#a9c0e8; }
+  #taskpanel .tkp-tag.current { border-color:#57ddbb; color:#57ddbb; } #taskpanel .tkp-tag.local { border-color:#c9a4ff99; color:#d4b8ff; }
+  #taskpanel .tkp-model { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#8fa4c8; margin:2px 0 4px; }
+  #taskpanel .tkp-status { color:#e9f0ff; font-weight:600; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #taskpanel .tkp-status i, #taskpanel .tkp-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; background:#8796b3; vertical-align:1px; }
+  #taskpanel .working .tkp-status i, #taskpanel .working .tkp-dot { background:#57ddbb; box-shadow:0 0 8px #57ddbb; }
+  #taskpanel .out_of_credit .tkp-status i, #taskpanel .usage_limit .tkp-status i, #taskpanel .out_of_credit .tkp-dot, #taskpanel .usage_limit .tkp-dot { background:#ff6b81; }
+  #taskpanel .cooling .tkp-status i, #taskpanel .rate_limited .tkp-status i, #taskpanel .cooling .tkp-dot, #taskpanel .rate_limited .tkp-dot { background:#ffc061; }
+  #taskpanel .failing .tkp-status i, #taskpanel .failing .tkp-dot { background:#ff8f5a; }
+  #taskpanel .tkp-card dl { display:grid; grid-template-columns:1fr 1fr; gap:3px 10px; margin:6px 0; }
+  #taskpanel .tkp-card dt { font-size:9px; text-transform:uppercase; letter-spacing:.07em; color:#8196bb; }
+  #taskpanel .tkp-card dd { margin:0; color:#e1ebff; font-variant-numeric:tabular-nums; } #taskpanel .tkp-card dd small { color:#ff9aa8; }
+  #taskpanel .tkp-balance { color:#9fe3cf; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #taskpanel .tkp-error { color:#ffa3ae; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }
+  #taskpanel .tkp-empty { color:#9eafd0; margin:0; }
+  #taskpanel .tkp-local { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 8px; padding:6px 10px; border-radius:8px;
+    border:1px solid #c9a4ff55; background:#c9a4ff12; font-size:12px; color:#d9ccf5; }
+  #taskpanel .tkp-local.active { border-color:#c9a4ffaa; background:#c9a4ff24; color:#f1e8ff; }
+  #taskpanel .tkp-local.standby { opacity:.8; }
+  #taskpanel .tkp-local b { color:inherit; } #taskpanel .tkp-local-why { flex:1 1 220px; min-width:0; }
+  #taskpanel .tkp-local-stats { color:#b9a8dc; font-variant-numeric:tabular-nums; }
+  #taskpanel .tkp-card.tkp-grunt { border-style:dashed; }
+  #taskpanel #tk-visual:has(.tkp-cards) .tkv-layout { height:calc(100% - 300px); }
+  #taskpanel .tkp-tech .tkp-rec { color:inherit; margin:4px 0 8px; }
+  #taskpanel .tkp-tech .tkp-window { border-color:var(--line); } #taskpanel .tkp-tech .tkp-window button { color:var(--mut); }
+  #taskpanel .tkp-tech .tkp-window button[aria-pressed=true] { color:#fff; }
+  #taskpanel .tkp-tech table { margin-bottom:8px; } #taskpanel .tkp-tech td { text-align:left; vertical-align:top; }
+  #taskpanel .tkp-tech .tkp-err { max-width:280px; overflow-wrap:anywhere; }
   #taskpanel .tkv-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(260px,32%); height:calc(100% - 139px); min-height:370px; border-top:1px solid #ffffff1b; }
   #taskpanel .tkv-stage { position:relative; overflow:hidden; background:radial-gradient(ellipse at center,#2336584a,transparent 68%); }
   #taskpanel .tkv-stage canvas { width:100%; height:100%; display:block; }
@@ -853,7 +900,7 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
       const label = document.createElement("button"); label.type = "button";
       label.className = "tkv-node-label" + (task.id === selected ? " selected" : "");
       label.setAttribute("aria-label", `${task.name}, ${task.state}`);
-      label.innerHTML = `<small>${task.kind.replace("_", " ")} · ${task.state}</small>${task.name.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]).slice(0, 28)}`;
+      label.innerHTML = `<small>${task.kind.replace("_", " ")} · ${task.state}${task.provider ? ` · ${task.provider.replace(/[&<>"']/g, "")}` : ""}</small>${task.name.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]).slice(0, 28)}`;
       label.onclick = () => onPick(task.parentId || task.id, task.eventIndex); labels.append(label);
       nodes.push({ task, mesh, halo, label, x, y, z, running, labelAbove:running ? i % 2 === 1 : pastRow === 0, phase:i * 1.7 });
     });
@@ -1033,6 +1080,7 @@ window.taskVizCreate = canvas => {
     <button id="navtog" title="Hide the sidebar (more room for the game)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M16 10l-2 2 2 2"/></svg></button>
     <h1 id="brand" title="Update & relaunch: pull the latest code, restart the Spark service and this PC's worker, reload the app"><img src="../../assets/brand/gbox-logo.svg" alt=""><span>gBox<small>click to update &amp; relaunch</small></span></h1>
     <button data-s="play" class="on">Play &amp; Library</button>
+    <button data-s="mods" title="Every modded build the Spark made: pictures, what changed, Play / saved moment / screenshot">Mods</button>
     <button data-s="control">Control</button>
     <button data-s="requests">Requests</button>
     <button data-s="settings">Settings</button>
@@ -1048,6 +1096,7 @@ window.taskVizCreate = canvas => {
   <main>
     <section id="play" class="on"><div id="playhost" role="status"><span id="playmessage">Connecting to the Spark…</span>
       <button id="playretry" class="act" hidden>Retry connection</button></div></section>
+    <section id="mods"><div class="pane" style="max-width:1600px"><div id="modsgallery"></div></div></section>
     <section id="control"><div class="pane">
       <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
@@ -1128,6 +1177,8 @@ window.taskVizCreate = canvas => {
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+      <div id="showcase" style="margin-top:22px;border:1px solid var(--line,#333);border-radius:8px;padding:10px 12px"></div>
+      <div class="card" id="tiers"><h2>Game cache drives</h2><span class="mut">Loading...</span></div>
     </div></section>
   </main>
 </div>
@@ -1136,9 +1187,20 @@ window.taskVizCreate = canvas => {
 <script src="live-poll.js"></script>
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
+<script src="../web/viz/report-story.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
+<script src="hermes-providers.js"></script>
 <script src="../web/viz/process-popup.js"></script>
+<script src="../web/viz/launch-bar.js"></script>
+<script src="../web/viz/cast-swap.js"></script>
+<script src="../web/viz/build-actions.js"></script>
+<script src="../web/viz/game-menu.js"></script>
+<script src="../web/viz/build-shot.js"></script>
+<script src="../web/viz/mods-gallery.js"></script>
+<script src="../web/viz/retarget-handles.js"></script>
+<script src="../web/viz/retarget-editor.js"></script>
+<script src="../web/viz/pick-whip.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
@@ -1147,12 +1209,13 @@ const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&
 
 // Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
 // when it would run past the bottom, clamp it to the edges, and let it scroll inside when it is taller than the window.
-// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously).
+// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously). A shown
+// menu is "has client rects": offsetParent is always null for position:fixed, which kept this re-fit from ever running (#1562).
 function fitMenu(el, x, y, pad = 8, minTop = pad) {
   if (!el) return;
   el._fitXY = [x, y, pad, minTop];
   if (!el._fitRO && window.ResizeObserver) {
-    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.offsetParent !== null) refitMenu(el); });
+    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.getClientRects().length) refitMenu(el); });
     el._fitRO.observe(el);
   }
   refitMenu(el);
@@ -1191,10 +1254,9 @@ function dragAnywhere(el) {
 function refitMenu(el) {
   const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
   el.style.maxHeight = ""; el.style.overflowY = "";
-  const w = el.offsetWidth; let h = el.offsetHeight;
-  if (h > vh - pad - minTop) { h = vh - pad - minTop; el.style.maxHeight = h + "px"; el.style.overflowY = "auto"; }
-  const top = y + h > vh - pad ? (y - h >= minTop ? y - h : vh - pad - h) : y;      // flip above the pointer, else clamp
-  el.style.left = Math.max(pad, Math.min(x, vw - w - pad)) + "px"; el.style.top = Math.max(minTop, top) + "px";
+  const f = GBoxGameMenu.fit(x, y, el.offsetWidth, el.offsetHeight, vw, vh, pad, minTop);   // flip above the pointer, else clamp
+  if (f.maxHeight != null) { el.style.maxHeight = f.maxHeight + "px"; el.style.overflowY = "auto"; }
+  el.style.left = f.left + "px"; el.style.top = f.top + "px";
 }
 const volumeSlider = $("#top-volume input"), volumeLabel = $("#top-volume output");
 let volumeTimer;
@@ -1217,6 +1279,8 @@ const LIVE_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions?incl
 const ALL_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions"), { ttl: 30000 });
 const WORKERS = GBoxLivePoll.cachedRead(() => gbox.api("/api/workers"), { ttl: 4000 });
 const liveSessions = maxAge => LIVE_SESSIONS.get(maxAge);
+// a session's window title: the game, plus the operator's name for the build it runs (Mods card ✎ / Builds rename)
+const sessionTitle = s => s ? (s.mod_title ? `${s.title || s.game_id || "game"} · ${s.mod_title}` : (s.title || "")) : "";
 async function sessionById(sid) {                            // a running session from the live list; an ended one from the cached history
   if (!sid) return null;
   const live = await liveSessions();
@@ -1230,6 +1294,8 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
   if (b.dataset.s === "control") refresh();
   if (b.dataset.s === "requests") refreshInbox();
+  if (b.dataset.s === "mods") modsGalleryOpen();
+  if (b.dataset.s === "settings") loadCacheTiers();
 });
 $("#chat-home").onclick = () => viewAction("library");
 // Keep the input's size independent of the microphone wrapper added after the Spark connects.
@@ -1378,11 +1444,12 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="t
     <div class="tkv-head"><div><div class="tkv-kicker">Live task network</div><h2>Work in motion</h2><p>Follow each run from active work to its result.</p></div>
       <span class="tkv-live"><i></i> Refreshes every 5 seconds</span></div>
     <div class="tkv-stats" id="tkv-stats"></div>
+    <div class="tkp" id="tkv-providers"></div>
     <div class="tkv-layout"><div class="tkv-stage"><canvas id="tkv-canvas" aria-label="Interactive 3D task graph"></canvas><div class="tkv-labels" id="tkv-labels"></div>
       <div class="tkv-caption"><span>Active mainline</span><span class="past">Completed branch</span><span class="failed">Failed branch</span><span>Click a bubble or label to inspect</span></div></div>
       <aside class="tkv-side" id="tkv-side"><div class="tkv-empty"><b>Choose a task</b><span>Inspect live metrics, attempts and evidence.</span></div></aside></div>
   </div>
-  <div id="tk-technical" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-technical-tab" hidden><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div></div>`);
+  <div id="tk-technical" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-technical-tab" hidden><div id="tk-providers"></div><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div></div>`);
 document.body.insertAdjacentHTML("beforeend", `<div id="tkv-media" role="dialog" aria-modal="true" aria-label="Task artifact">
   <header><b id="tkv-media-title">Task artifact</b><button class="act" id="tkv-media-close">Close</button></header>
   <div class="body"><div class="stage" id="tkv-media-stage"></div><aside id="tkv-media-side"></aside></div></div>`);
@@ -1569,7 +1636,8 @@ $("#rp-close").onclick = () => {
 const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
   focus: false, focusEvents: [], visualOpenSteps: new Set(), artifacts: [],
   expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map(),
-  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0, hermesLimit: 20 };
+  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0, hermesLimit: 20,
+  providers: null, providersBusy: false, providersWindow: (() => { try { return localStorage.getItem("gbox.tasks.providersWindow") === "7d" ? "7d" : "today"; } catch { return "today"; } })() };
 function tkView(view) {
   TK.view = view;
   $("#taskpanel").classList.toggle("visual-mode", view === "visual");
@@ -1586,7 +1654,7 @@ function tkView(view) {
 function tkVisualItems(d) {
   const items = [];
   for (const run of (d.hermes || []).slice(0, 9)) items.push({ id:`hermes:${run.id}`, kind:"hermes", name:run.name || "Hermes run", state:run.state,
-    active:["running","queued"].includes(run.state), data:run });
+    provider:run.provider || "", active:["running","queued"].includes(run.state), data:run });
   for (const run of (d.resolutions || []).slice(0, 6)) items.push({ id:`resolution:${run.id}`, kind:"resolution", name:`#${run.number} ${run.name}`,
     state:run.state, active:["running","queued","in_progress"].includes(run.state), data:run });
   for (const job of (d.jobs || [])) items.push({ id:`job:${job.id}`, kind:"job", name:job.tool || "Worker job", state:job.state,
@@ -1643,7 +1711,7 @@ async function tkVisualDetail() {
   box.querySelectorAll("#tkv-detail-events details[open]").forEach(el => TK.visualOpenSteps.add(el.id));
   const d = item.data, started = d.started || d.created;
   let html = `<span class="tkv-pill">${esc(item.kind)} · ${esc(item.state)}</span><h3>${esc(item.name)}</h3>
-    <p>${started ? `Started ${tkAge(started)} ago` : "Live process"}${d.model ? ` · ${esc(d.model)}` : ""}</p>`;
+    <p>${started ? `Started ${tkAge(started)} ago` : "Live process"}${item.kind === "hermes" && d.provider ? ` · ${esc(d.provider)}` : ""}${d.model ? ` · ${esc(d.model)}` : ""}</p>`;
   if (item.kind === "hermes") {
     const total = Number(d.tokens_in || 0) + Number(d.tokens_out || 0);
     html += tkVisualMeter("Input tokens", Number(d.tokens_in || 0), total, Number(d.tokens_in || 0).toLocaleString()) +
@@ -1736,6 +1804,32 @@ function tkVisualUpdate(d) {
   TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
   tkVisualDetail();
 }
+// Providers strip (Visual) and table (Technical): GET /api/hermes/providers, refreshed with the 5 s task poll.
+async function tkProvidersLoad() {
+  if (TK.providersBusy) return;
+  TK.providersBusy = true;
+  const want = TK.providersWindow;
+  let r;
+  try { r = await gbox.api(`/api/hermes/providers?window=${encodeURIComponent(want)}`); } finally { TK.providersBusy = false; }
+  if (!$("#taskpanel").classList.contains("on")) return;
+  if (want !== TK.providersWindow) { tkProvidersLoad(); return; }
+  TK.providers = r.ok ? r.data : { error: r.error || "request failed" };
+  tkProvidersRender();
+}
+function tkProvidersRender() {
+  const P = window.GBoxProviders; if (!P) return;
+  const box = $("#tkv-providers"), html = P.cards(TK.providers, { window: TK.providersWindow });
+  if (box.tkHtml !== html) { box.innerHTML = html; box.tkHtml = html; }
+  tkRender($("#tk-providers"), P.table(TK.providers, { window: TK.providersWindow }), $("#tk-technical"));
+}
+function tkProvidersWindow(e) {
+  const b = e.target.closest("[data-tkp-window]"); if (!b || b.dataset.tkpWindow === TK.providersWindow) return;
+  TK.providersWindow = b.dataset.tkpWindow;
+  try { localStorage.setItem("gbox.tasks.providersWindow", TK.providersWindow); } catch {}
+  tkProvidersRender(); tkProvidersLoad();
+}
+$("#tkv-providers").onclick = tkProvidersWindow;
+$("#tk-providers").onclick = tkProvidersWindow;
 $("#tk-visual-tab").onclick = () => tkView("visual");
 $("#tk-technical-tab").onclick = () => tkView("technical");
 $("#tkv-side").onclick = e => {
@@ -1964,10 +2058,11 @@ async function tasksLoad() {
   const d = r.data, kind = k => `<span class="kd ${k === "game" ? "game" : k === "agent test" ? "agent" : ""}">${esc(k)}</span>`;
   $("#tk-at").textContent = "updated " + new Date().toLocaleTimeString();
   tkVisualUpdate(d);
+  tkProvidersLoad();
   tkRender($("#tk-body"), `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> ${tkRunTickets(run)} <span class="mut">${esc(run.progress || "")}</span></summary>
-        <div class="meta">${esc(run.provider || "")} ${esc(run.model || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
+        <div class="meta">${esc(window.GBoxProviders?.runLabel(run) || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
         <button class="act" data-hermes-evidence="${esc(run.id)}">View detailed report</button>
         <button class="act" data-hermes-visual="${esc(run.id)}">View 3D task stages</button>
         <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}
@@ -2290,7 +2385,8 @@ async function loadSettings() {
   S = await gbox.settings();
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
-    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>`;
+    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 reset · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -2298,6 +2394,100 @@ $("#ssave").onclick = async () => {
   vovEnable(!!f.get("voiceOverlay"));
   S = await gbox.saveSettings(s); $("#ssaved").textContent = "saved"; playLoaded = false; refresh();
 };
+
+// ---------------- Settings > Sonic showcase (gbox/sonic_showcase.py: GET /api/showcase, POST = PUT /api/showcase) ----------------
+// The Spark builds showcase_sonic_<title> test versions of the favorites / recently played titles with the Sonic Adventure
+// cast, on the HDD, within a disk budget; titles without a writer go to Hermes's readiness queue. This card turns it on,
+// pauses it and shows the queue, the current title and stage, disk used and the last results (refreshed while open).
+const SC = { data: null, err: "", timer: null, busy: false };
+const scApi = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+const scGB = n => n == null ? "?" : (n / 2 ** 30).toFixed(n >= 10 * 2 ** 30 ? 0 : 1) + " GB";
+const scWhen = t => { if (!t) return ""; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`; };
+const SC_NUMS = [["favorites", "Favorites per pass"], ["recent", "Recently played per pass"], ["budget_gb", "Disk budget (GB, on the HDD)"],
+  ["builds_per_hour", "Builds per hour"], ["whole_cast_max_slots", "Whole cast up to (slots)"]];
+function scRender() {
+  const el = $("#showcase"); if (!el) return;
+  const d = SC.data;
+  if (!d) { el.innerHTML = `<b>Sonic showcase</b><p class="mut">${SC.err ? "⚠ " + esc(SC.err) : "Loading…"}</p>`; return; }
+  const disk = d.disk || {}, pct = disk.budget ? Math.min(100, Math.round(100 * (disk.used || 0) / disk.budget)) : 0;
+  const cur = d.current, stage = s => esc(String(s || "pending").replace(/_/g, " "));
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Sonic showcase</b>
+      <span class="mut" style="font-size:12px">${esc(d.phase || "")}${d.last_tick ? " · checked " + esc(scWhen(d.last_tick)) : ""}</span></div>
+    <p class="mut" style="font-size:12px;margin:4px 0 8px">Builds a test version of your favorites, then recently played titles, with their key people replaced by the
+      Sonic Adventure 1 + 2 cast (showcase_sonic_&lt;title&gt;, on the Spark's HDD, never while you play on the Spark). Titles without a writer go to Hermes's
+      readiness queue (Ghidra / REA). Results show in Mods (filter "Sonic showcase") and the game's right-click menu (Special builds).</p>
+    <label><span><input type="checkbox" data-sc="enabled" ${d.enabled ? "checked" : ""}> Build Sonic showcase versions in the background</span></label>
+    <label><span><input type="checkbox" data-sc="paused" ${d.paused ? "checked" : ""}> Paused</span></label>
+    <div style="display:grid;grid-template-columns:1fr 90px;gap:4px 8px;align-items:center;margin:6px 0">
+      ${SC_NUMS.map(([k, l]) => `<span style="font-size:12px">${l}</span><input type="number" min="0" data-scn="${k}" value="${esc(d.settings?.[k])}">`).join("")}</div>
+    <button class="act" type="button" data-sc-act="apply">Apply</button> <button class="act" type="button" data-sc-act="run" title="Run a pass now">Run a pass now</button>
+    <span class="mut" id="scmsg" style="font-size:12px"></span>
+    <div style="margin:10px 0 4px;font-size:12.5px">${cur ? `Now: <b>${esc(cur.title || cur.game_id)}</b> · ${stage(cur.stage)}${cur.mod ? " · " + esc(cur.mod) : ""}` : esc(d.message || "")}</div>
+    ${d.idle_reason ? `<div class="mut" style="font-size:12px">${esc(d.idle_reason)}</div>` : ""}
+    <div style="font-size:12px;margin:6px 0">Disk: ${scGB(disk.used)} of ${scGB(disk.budget)} (${disk.builds || 0} build${disk.builds === 1 ? "" : "s"})${disk.free != null ? ` · ${scGB(disk.free)} free on the HDD` : ""}
+      · ${d.rate ? `${d.rate.last_hour}/${d.rate.cap} builds this hour` : ""}
+      <div style="height:6px;background:#333;border-radius:3px;margin-top:3px"><div style="height:6px;width:${pct}%;background:${pct > 90 ? "#c55" : "#3a7"};border-radius:3px"></div></div>
+      ${disk.storage_problem ? `<div style="color:#e88;margin-top:3px">⚠ ${esc(disk.storage_problem)}</div>` : ""}</div>
+    ${(d.queue || []).length ? `<details ${SC.openQueue ? "open" : ""} data-sc-det="queue"><summary style="font-size:12px">Queue (${d.queue.length})</summary><table style="font-size:11.5px;width:100%">
+      ${d.queue.slice(0, 40).map(q => `<tr><td>${esc(q.title || q.game_id)}</td><td class="mut">${esc(q.origin || "")}</td><td>${stage(q.stage)}</td></tr>`).join("")}</table></details>` : ""}
+    ${(d.last_results || []).length ? `<details ${SC.openResults ? "open" : ""} data-sc-det="results"><summary style="font-size:12px">Last results</summary><ul style="font-size:11.5px;padding-left:16px;margin:4px 0">
+      ${d.last_results.slice(0, 10).map(r => `<li><b>${esc(r.title || r.game_id)}</b> · ${stage(r.stage)} · ${esc(scWhen(r.at))}${r.message ? ` <span class="mut">${esc(String(r.message).slice(0, 160))}</span>` : ""}</li>`).join("")}</ul></details>` : ""}`;
+}
+async function scLoad() { try { SC.data = await scApi("/api/showcase"); SC.err = ""; } catch (e) { SC.err = e.message; } if (!SC.busy) scRender(); }
+async function scSet(body) {
+  SC.busy = true;
+  try { SC.data = await scApi("/api/showcase", body); SC.err = ""; } catch (e) { SC.err = e.message; }
+  finally { SC.busy = false; scRender(); const m = $("#scmsg"); if (m) m.textContent = SC.err ? "⚠ " + SC.err : "saved"; }
+}
+$("#showcase").addEventListener("change", e => { const k = e.target?.dataset?.sc; if (k) scSet({ [k]: !!e.target.checked }); });
+$("#showcase").addEventListener("toggle", e => { const k = e.target?.dataset?.scDet; if (k === "queue") SC.openQueue = e.target.open; if (k === "results") SC.openResults = e.target.open; }, true);
+$("#showcase").addEventListener("click", async e => {
+  const act = e.target?.closest?.("[data-sc-act]")?.dataset.scAct; if (!act) return;
+  if (act === "apply") {
+    const body = {}; for (const i of document.querySelectorAll("#showcase [data-scn]")) if (i.value !== "") body[i.dataset.scn] = Number(i.value);
+    return scSet(body);
+  }
+  if (act === "run") { try { await scApi("/api/showcase/run", {}); const m = $("#scmsg"); if (m) m.textContent = "pass started"; setTimeout(scLoad, 1500); } catch (err) { const m = $("#scmsg"); if (m) m.textContent = "⚠ " + err.message; } }
+});
+document.querySelector('aside button[data-s="settings"]').addEventListener("click", () => {
+  scLoad(); clearInterval(SC.timer);
+  SC.timer = setInterval(() => { if ($("#settings")?.classList.contains("on")) { if (!document.activeElement?.closest?.("#showcase")) scLoad(); } else clearInterval(SC.timer); }, 10000);
+});
+
+// The Spark's two-tier game cache (docs/cache-tiers.md): NVMe hot tier (capped) in front of the HDD; idle-time moves.
+const tierGB = b => b == null ? "?" : (b / 2 ** 30).toFixed(b >= 10 * 2 ** 30 ? 0 : 1) + " GB";
+const tierAgo = t => { if (!t) return "never"; const m = (Date.now() / 1000 - t) / 60;
+  return m < 60 ? `${Math.max(0, Math.round(m))} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+function renderCacheTiers(t) {
+  if (!t.enabled) return `<h2>Game cache drive</h2><span class="mut">One drive: ${esc(t.cache)} (up to ${tierGB(t.cap)}).</span>`;
+  const h = t.hot, pct = Math.min(100, 100 * h.used / Math.max(1, h.cap)), u = t.units || {};
+  const moving = (t.moving || []).map(m => `<li>${m.op === "demote" ? "To the HDD" : "To the NVMe"}: ${esc(m.unit)} ${m.total ? Math.round(100 * m.done / m.total) + "%" : ""}</li>`).join("");
+  const moves = (t.moves || []).slice(0, 5).map(m => `<li>${m.op === "demote" ? "To the HDD" : "To the NVMe"}: ${esc(m.unit)}, ${tierGB(m.bytes)}, ${tierAgo(m.at)}</li>`).join("");
+  const rows = (t.top || []).slice(0, 12).map(r => `<tr><td title="${esc(r.unit)}">${esc(r.unit)}</td><td>${r.tier === "hot" ? "NVMe" : r.tier === "cold" ? "HDD" : esc(r.tier)}</td>` +
+    `<td>${tierGB(r.size)}</td><td>${tierAgo(r.last_used)}</td><td><input type="checkbox" data-tier-pin="${esc(r.unit)}" ${r.pin ? "checked" : ""}></td></tr>`).join("");
+  return `<h2>Game cache drives</h2>` +
+    `<div>Fast drive (NVMe): <b>${tierGB(h.used)}</b> of ${tierGB(h.cap)}, of which ${tierGB(h.pinned)} is the character library and indexes (always kept here).</div>` +
+    `<div class="meter"><span class="${h.used > h.cap ? "over" : ""}" style="width:${pct.toFixed(1)}%"></span></div>` +
+    `<div class="mut">Games on the NVMe: ${u.hot || 0} · on the HDD: ${u.cold || 0}${u.mixed ? ` · split: ${u.mixed}` : ""} · HDD ${t.cold.available ? "connected" : "<b class=warn>not available</b>"}. ` +
+    `Old games move to the HDD only after ${Math.round(t.idle_minutes)} min with nothing running (now: ${esc(t.idle)}); a game comes back when it is used.</div>` +
+    ((t.warnings || []).map(w => `<div class="warn">${esc(w)}</div>`).join("")) + (t.error ? `<div class="warn">${esc(t.error)}</div>` : "") +
+    (moving ? `<div style="margin-top:8px">Moving now:<ul>${moving}</ul></div>` : "") +
+    (moves ? `<div style="margin-top:8px">Last moves:<ul>${moves}</ul></div>` : "") +
+    (rows ? `<table><tr><th>Game</th><th>Drive</th><th>Size</th><th>Last used</th><th title="Never moved to the HDD">Keep on NVMe</th></tr>${rows}</table>` : "");
+}
+async function loadCacheTiers() {
+  const box = $("#tiers");
+  if (!box) return;
+  const r = await gbox.api("/api/cache/tiers");
+  box.innerHTML = r.ok ? renderCacheTiers(r.data) : `<h2>Game cache drives</h2><span class="mut">Not available: ${esc(r.error)}</span>`;
+}
+$("#tiers").addEventListener("change", async e => {
+  const unit = e.target.dataset?.tierPin;
+  if (!unit) return;
+  const r = await gbox.api("/api/cache/tiers/pin", { unit, pin: e.target.checked });
+  if (!r.ok) { e.target.checked = !e.target.checked; toast?.(`Could not change ${unit}: ${r.error}`, 6000); }
+  loadCacheTiers();
+});
 
 // ---------------- system eyedropper (runs in the shell AND inside the embedded gBox view) ----------------
 const PICKER_SRC = `(() => new Promise(resolve => {
@@ -2800,13 +2990,14 @@ const inboxPoll = singleFlightPoll(async () => {
     const ms = modsFor(x.number);
     return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
       ${x.context?.auto_report ? '<span class="chip" style="float:right;margin:6px">Auto report</span>' : ""}
-      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="The task as a graph: its subtasks, the tools that did them, the screenshots sliding in and out">Detailed report</button>
+      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="The resolution story full size: triage, identification, runs, tokens, cost, time and the code changes, animated">Detailed report</button>
       ${x.status === "done" ? `<button class="act reportincomplete" style="float:right;margin:6px">Report incomplete</button>` : ""}
       ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - ${mm.state_slot == null ? "open the mod (no saved moment attached)" : "load the saved moment"}${mm.video ? " (right-click: video)" : ""}">
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}${mm.state_slot == null ? "play mod" : "load moment"}</figcaption></figure>`).join("")}</div>` : ""}
       <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span>${GBoxRequestSolvers.badge(x)}<span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
       <div class="m">${new Date(x.created * 1000).toLocaleString()} · took ${fmtDur(m.duration_s ?? (x.status === "done" ? null : (Date.now() / 1000 - (x.started || x.created))))}
         · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
+      ${GBoxReportStory.disclosureHtml(x.id)}
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" loading="lazy" decoding="async" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
@@ -2828,6 +3019,7 @@ const inboxPoll = singleFlightPoll(async () => {
   updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (shownRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older requests (${olderRoots} not shown)</button>` : "")
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.slice(0, INBOX_PAGE.limit).map(renderRequest).join("")}</details>` : ""), replyAtt);
+  GBoxReportStory.reattach(host);                             // the open Detailed report keeps running in its re-rendered row
 });
 $("#reqlist").addEventListener("change", async e => {
   if (e.target.id === "req-link-child") { const parent = $("#reqlist [data-link-request]"); parent.dataset.linkRequest = e.target.value; parent.value = ""; return; }
@@ -2864,13 +3056,19 @@ function jobOf(r, what, failed = "job request failed") {
   return j;
 }
 async function jobWait(j, what, ms = 500, max = Infinity) {   // poll until the job settles; a lost poll is a readable error
+  globalThis.GBOX_LAUNCH_BAR?.observe(j);                     // a launch shows on the launch bar from its first answer (#1635)
   for (let i = 0; i < max && ["queued", "running"].includes(j.state); i++) {
     await new Promise(r => setTimeout(r, ms));
     const polled = await gbox.api("/api/jobs/" + j.id).catch(e => ({ ok: false, error: e.message }));
     j = jobOf(polled, `${what} (job ${j.id})`, "job status unavailable");
+    globalThis.GBOX_LAUNCH_BAR?.observe(j);
   }
   return j;
 }
+// A failed launch as an error that keeps its job id: the auto report (POST /api/requests/auto-mod-failure) then lands on
+// the launch failure ticket the server filed for that job ("Reported as #N, being investigated", docs/launch-failure-reports.md).
+function launchError(j) { const err = new Error(j.error || "launch failed"); err.jobId = j.id; return err; }
+const launchReportText = r => window.GBoxLaunchBar?.reportText?.(r) || (r?.number ? `Reported as #${r.number}, being investigated` : "");
 async function modSession(m, launch) {
   const ss = (await liveSessions(0)).data || [];
   const run = ss.find(x => x.state === "running" && x.game_id === m.game_id);
@@ -2880,7 +3078,7 @@ async function modSession(m, launch) {
   const started = await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}&mod=${encodeURIComponent(bootMod)}`, {});   // this PC
   const what = `Launch of ${m.game_title || m.game_id}`;
   const j = await jobWait(jobOf(started, what, "game launch request failed"), what, 1000);
-  if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
+  if (j.state !== "succeeded") throw launchError(j);
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
   if (!j.output?.session_id) throw new Error(`Launch completed without a game session for ${m.game_title || m.game_id}`);
   return { sid: j.output.session_id, bootApplied: !!bootMod };
@@ -2912,7 +3110,9 @@ async function modPlay(m, how) {
     const report = await gbox.api("/api/requests/auto-mod-failure", { session_id: attemptedSid, game: m.game_title || "",
       model: m.title || "", action: "apply mod", target: how, moment: "current game moment",
       detail: `${why}\n${String(err?.stack || "").slice(0, 1600)}`, job_id: err?.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
-    toast("⚠ " + why + (report?.ok && report.data?.number ? ` · auto report #${report.data.number}` : ""), 12000);
+    const filed = report?.ok && report.data?.number ? report.data : null;
+    toast("⚠ " + why + (filed ? " · " + (filed.context?.launch_failure ? launchReportText({ number: filed.number, verified: false })
+      : `auto report #${filed.number}`) : ""), 12000);
   }
 }
 // What went wrong, in words (#993): a guard's own message passes through; an unexpected TypeError (a field missing from an
@@ -2930,6 +3130,50 @@ document.addEventListener("click", e => {
 }, true);
 document.addEventListener("contextmenu", e => { const f = e.target.closest(".reqmod"); if (!f) return;
   const m = MODS.list.find(x => x.id === f.dataset.mod); if (m?.video) { e.preventDefault(); modPlay(m, "video"); } });
+// ---- Mods view: every modded build the Spark made (../web/viz/mods-gallery.js over GET /api/mods/built) ----
+// Pictures open in the texture pop-up (#186); Play on this PC goes through the mod card (modPlay: same PC, same moment,
+// auto report on failure), another PC through the @launch job; Open request shows the thread in Requests.
+const MODSG = { ctl: null };
+async function modsGalleryOpen() {
+  if (MODSG.ctl) { MODSG.ctl.load(0); return MODSG.ctl; }
+  const tok = encodeURIComponent(S.tok || await gbox.token());
+  // method: rename (PATCH) and ★ (PUT / DELETE) on the Mods cards; an older main process posts them (the server takes POST too)
+  const api = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: GBoxLivePoll, here: S.workerName || "windows",
+    url: u => /^(https?|data|blob):/.test(u) ? u : `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    visible: () => $("#mods").classList.contains("on"), openImages: (list, i, at) => texPopOpen(list, i, at),
+    toast: t => toast(t, 8000), play: modsGalleryPlay, openRequest: modsGalleryRequest });
+  return MODSG.ctl;
+}
+async function modsGalleryPlay(m, { node, moment }) {
+  if (node === (S.workerName || "windows") && m.card_id) {
+    const r = await gbox.api(`/api/mods?game_id=${encodeURIComponent(m.game_id)}`);
+    const card = r.ok && r.data.find(c => c.id === m.card_id);
+    if (card) {
+      MODS.list = [...MODS.list.filter(x => x.id !== card.id), card];
+      // the notifications name the build as the operator named it (the card itself keeps its own title)
+      return modPlay(m.mod_title ? { ...card, title: m.mod_title } : card, moment && card.state_slot != null ? "moment" : "play");
+    }
+  }
+  const what = `Launch of ${m.mod_title || m.name}`;
+  const j = await jobWait(jobOf(await gbox.api("/api/jobs", { tool: "@launch", input: { game_id: m.game_id, mod: m.name, node } }), what), what, 1000);
+  if (j.state !== "succeeded") throw launchError(j);
+  const sid = j.output?.session_id;
+  if (moment && m.state_slot != null && sid) {
+    await new Promise(r => setTimeout(r, 8000));                     // let the core boot before loading a state
+    await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid);
+  }
+  toast(`${m.mod_title || m.name}: launched on ${node}`);
+  return sid;
+}
+async function modsGalleryRequest(t) {
+  if (!t.id) { toast(`Request #${t.number} is not in the inbox`); return; }
+  openThreads.add(t.id);
+  document.querySelector('aside button[data-s="requests"]').click();
+  await Promise.resolve(refreshInbox()).catch(() => {});
+  const card = document.querySelector(`#reqlist .req[data-id="${CSS.escape(t.id)}"]`);
+  if (card) card.scrollIntoView({ block: "start", behavior: "smooth" }); else reportGraphOpen(t.id);   // older than the page
+}
 // A click on the docked native game window never reaches this page: close transient menus on focus loss (#1423).
 addEventListener("blur", () => { for (const id of ["#reqmenu", "#chipmenu", "#testpcmenu"]) { const m = $(id); if (m) m.style.display = "none"; } });
 // Right-click anything in the app and file a specific request about it (#1386). Element-level menus (capture,
@@ -2960,7 +3204,16 @@ document.addEventListener("contextmenu", e => {
   const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
   setTimeout(() => document.addEventListener("mousedown", close), 0);
 });
-// Detailed report (#1011): the request as a three.js bubble graph (task -> subtasks -> tools), its screenshots sliding in and out
+// Detailed report: the request's resolution story (GET /api/requests/{id}/story) as a three.js scene; the button opens it
+// full size, each row's disclosure inline (../web/viz/report-story.js). "Tool graph" there opens the older bubble graph.
+function reportStoryDeps() {
+  return { esc, api: p => gbox.api(p), loadThree: flowLoadThree, evidence: rid => evRequest(rid), graph: rid => reportGraphOpen(rid),
+    onChange: () => { EMB.last = ""; } };
+}
+function reportStoryOpen(id) { return GBoxReportStory.openFull(id, reportStoryDeps()); }
+// each row's disclosure triangle: the scene is built on expand and disposed on collapse (one renderer at a time)
+GBoxReportStory.bind($("#reqlist"), () => reportStoryDeps());
+// Tool graph (#1011): the request as a three.js bubble graph (task -> subtasks -> tools), its screenshots sliding in and out
 function reportGraphOpen(id) {
   return GBoxReportGraph.open(id, { $, esc, api: p => gbox.api(p), token: () => gbox.token(), apiUrl: () => S.apiUrl, loadThree: flowLoadThree,
     evidence: (rid, sha) => evRequest(rid, sha), children: rid => inboxSolverRequests.filter(x => x.parent_request_id === rid),
@@ -2970,7 +3223,7 @@ document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
   if (e.target.closest(".reportincomplete")) { e.stopPropagation(); await evRequest(id); $("#ev-incomplete").click(); return; }
-  if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportGraphOpen(id); return; }
+  if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportStoryOpen(id); return; }
   if (e.target.closest("img.shot, img.att-img")) {
     const img = e.target.closest("img.shot, img.att-img");
     const sha = img?.src.match(/\/api\/artifacts\/([0-9a-f]{64})/)?.[1] || null;
@@ -3011,8 +3264,8 @@ function popups() {                                          // floating things 
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on";
-const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
+const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
+const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #bntoast, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
   window.__gboxMenuWatch = new MutationObserver(records => {
@@ -3041,7 +3294,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on")
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on") || GBoxReportStory.isFullOpen()
       || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
@@ -3206,10 +3459,13 @@ function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
-  const items = [...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
+  GM.at = [x, y];                                              // Report… files a problem at this spot
+  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
+                 ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
+                 ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["save", "💾 Save state"], ["load", "📂 Load state"], ["slot+", `Save slot: ${GM.slot}  ▸ next`], ["slot-", "Save slot ◂ previous"],
                  ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
@@ -3228,15 +3484,18 @@ function pipMenu(x, y) {
 async function gameClose() {                                  // ✕ on the game's bar: stop the game, take its window away
   if (!EMB.sid) { pipHandle(null); await gbox.embedKill?.(); await gbox.embedSync(null); EMB.pid = EMB.rect = null; EMB.last = ""; return; }   // a leftover window: just close it
   const sid = EMB.sid;
+  // #1504: the game window goes away at once; the worker kills the emulator's process tree meanwhile (about a second).
+  // gameJob throws unless the worker confirmed the process exited; then the session is docked again with the reason.
+  EMB.closed.add(sid);
+  pipHandle(null); await gbox.embedSync(null); EMB.pid = EMB.sid = EMB.rect = null; EMB.last = "";
+  toast("Stopping…");
   try {
-    const j = await gameJob("session_op", { session_id: sid, op: "stop_game", args: {} });
-    if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error('Emulator stop was not confirmed');
-    EMB.closed.add(sid);
-    if (EMB.sid === sid) {
-      pipHandle(null); await gbox.embedSync(null); EMB.pid = EMB.sid = EMB.rect = null; EMB.last = "";
-    }
+    await gameJob("session_op", { session_id: sid, op: "stop_game", args: { moment: true } });   // the moment, for "Reload with your last moment"
     toast("Closed");
-  } catch (error) { toast('Could not stop game: ' + error.message); }
+  } catch (error) {
+    EMB.closed.delete(sid);                                  // still running: the next embed tick docks it again
+    toast('Could not stop game: ' + error.message);
+  }
 }
 // ---------------- game menu actions (right click on the game, the PiP bar or its ⋮ button) ----------------
 const GM = { menu: false, auto: false, slot: 0 };
@@ -3266,6 +3525,9 @@ async function gameAction(a) {
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
     else if (a === "orb") ORB.on ? orbClose() : orbOpen();
     else if (a === "vov") { vovEnable(!VOV.enabled); toast(VOV.enabled ? "✨ The transition visual shows over the game while you and gBox talk" : "✨ Voice overlay off"); }
+    else if (a === "report") await pwReport(GM.at);
+    else if (a === "pwrclick") { const s = GBoxPickWhip.saveSettings({ rclick: !GBoxPickWhip.settings().rclick }); toast(s.rclick ? "⌖ Right-click a character in the game for its menu (Replace, Copy, Blender…)" : "⌖ Right-click on the game opens the game menu"); }
+    else if (a === "pwpause") { const s = GBoxPickWhip.saveSettings({ pause: !GBoxPickWhip.settings().pause }); toast(s.pause ? "⏸ The game pauses while the pick whip is open" : "⏸ The game keeps running while you pick"); }
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
     else if (a === "load") { toast("📂 Loading…"); await gameJob("session_op", { op: "load_state", args: { slot: GM.slot } }); toast(`📂 Loaded slot ${GM.slot}`); }
     else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
@@ -3472,6 +3734,15 @@ gbox.onPadState?.(pads => {
 // Mini mode hides this window and its view; the view keeps forwarding the pad to the session the mini window shows.
 const miniPadTarget = sid => document.querySelector("#wv")?.executeJavaScript(`window.gboxPadTarget?.(${JSON.stringify(sid || null)})`).catch(() => {});
 gbox.onMiniClosed?.(() => miniPadTarget(null));
+// a finished build in the view's bell tray (gbox/build_notify.py): an OS notification while gBox is not in front
+// (main.js decides), and the shell's own toast while another panel hides the view and its toast
+function buildNoteMsg(m) {
+  gbox.osNotify?.({ id: m.id, title: m.title, body: m.body }).catch(() => {});
+  if (!$("#play")?.classList.contains("on")) toast("🔔 " + m.title + (m.body ? " · " + m.body : ""), 8000);
+}
+// a build notification's OS toast was clicked (main.js notify:os): show the game view with the bell tray open on it
+gbox.onNotifyClick?.(() => { document.querySelector('aside button[data-s="play"]')?.click();
+  document.querySelector("#wv")?.executeJavaScript("window.gboxBuildNoteOpen?.()").catch(() => {}); });
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));
@@ -3483,9 +3754,11 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
+    else if (m.ev === "buildnote") buildNoteMsg(m);                                                                // a finished build
+    else if (m.ev === "openrequest") modsGalleryRequest({ id: m.id });                                            // tray: Open request
     else if (m.ev === "gamecontext" || m.ev === "gamepick") {
       const r = wv.getBoundingClientRect();
-      if (m.ev === "gamecontext") pipMenu(r.left + m.x, r.top + m.y);
+      if (m.ev === "gamecontext") pwRightClick(r.left + m.x, r.top + m.y);
       else eyePoint(r.left + m.x, r.top + m.y);
     }
     else cardDragMsg(m);
@@ -3500,7 +3773,7 @@ gbox.onEmbedEvent?.(async ev => {
   }
   if (ev.event === "gameup") return;
   if (ev.event === "gameclick") return closePops(null);
-  if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pipMenu(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
+  if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === "reset") return document.querySelector("#wv")?.executeJavaScript(          // F5: reset the game being played
     `(s => s && resetGame(s, document.getElementById("resetbtn")))(${JSON.stringify(EMB.sid || "")} || playing || (active && active.sid))`).catch(() => {}); if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
@@ -3510,20 +3783,118 @@ addEventListener("keydown", e => {                            // A / F3 = autopl
   if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); eyeStart(); }
 });
 
+// ---------------- pick whip (../web/viz/pick-whip.js, docs/live-picker.md): pause hold, outline + label, character menu ----------------
+// The game pauses while the pick whip is open (eyedropper, character menu): POST /api/pickwhip/{sid}/hold, renewed while
+// open; main.js resumes it if this window crashes or closes and the server's lease watchdog if everything dies.
+// Right-click a character in the game: Replace with… (pick_replace live -> build), Copy to clipboard / to Blender,
+// Retarget editor, Identify (pick_identify), Export to Blender (round trip), Show in Assets. Each task streams into the
+// mini console next to the character. Naming uses the model chosen in the header on the local Ollama (pick_name).
+const PW = GBoxPickWhip;
+const pwApi = async (p, b) => { const r = await gbox.api(p, b); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+const PWD = { holder: "desktop-" + Math.random().toString(36).slice(2, 8), con: null };
+PWD.hold = PW.createHold({ api: pwApi, holder: PWD.holder, enabled: () => PW.settings().pause,
+  sessionOp: (sid, op) => gameJob("session_op", { session_id: sid, op, args: {} }) });
+const pwCon = () => PWD.con || (PWD.con = PW.createConsole(document, { drag: dragAnywhere }));
+function pwModel() {                                           // the header's model: local Ollama, tools (+ vision for the crop)
+  const v = $("#chatmodel")?.value || "", m = (CH.models?.models || []).find(x => x.name === v);
+  return { name: v === "auto" ? "" : v, vision: !!m?.capabilities?.includes("vision") };
+}
+function pwCrop() {                                            // the frozen frame around the pick (eyedropper), for vision models
+  if (!EYE.on || !EYE.full || !EYE.at) return "";
+  const F = EYE.full, s = Math.round(Math.min(F.width, F.height) * 0.34), c = Object.assign(document.createElement("canvas"), { width: s, height: s });
+  c.getContext("2d").drawImage(F, Math.max(0, EYE.at[0] * F.width - s / 2), Math.max(0, EYE.at[1] * F.height - s / 2), s, s, 0, 0, s, s);
+  return c.toDataURL("image/png").split(",")[1];
+}
+async function pwBlenderCopy(input) {                          // blender_copy on this PC's worker: Blender's own clipboard (Ctrl+V)
+  const ws = await pwApi("/api/workers");
+  const me = ws.find(w => w.online && w.name === S.workerName) || ws.find(w => w.online && w.os === "windows");
+  if (!me) throw new Error("no gBox worker on this PC (Blender's clipboard is local to this machine)");
+  const r = await PW.runTool({ api: pwApi }, "blender_copy", input, { extra: { require_worker: me.id } });
+  if (!r.ok) throw new Error(r.job.error || r.job.state);
+  blenderCopiedMsg({ result: r.result, input, worker: me.name });
+  return r.result;
+}
+function pwSession(sid) {                                      // what the report pre-fills: game, mod, worker
+  const row = (LIVE_SESSIONS.peek?.()?.data || []).find(s => s.session_id === sid) || {};
+  return { game: row.title || EMB.title || "", game_id: row.game_id || EMB.game || "", mod: row.mod || "",
+           worker: row.detail?.worker_name || String(sid || "").split("-")[0] };
+}
+async function pwFrame(at) {                                   // the current frame (frozen eyedropper frame or a fresh capture), spot marked
+  if (EYE.on && EYE.full) return PW.markedFrame(document, EYE.full, at);
+  const R = EMB.rect, shot = R && await gbox.captureOS?.().catch(() => null); if (!shot) return null;
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = shot; });
+  const k = img.width / innerWidth, c = Object.assign(document.createElement("canvas"), { width: Math.round(R.w * k), height: Math.round(R.h * k) });
+  c.getContext("2d").drawImage(img, R.x * k, R.y * k, R.w * k, R.h * k, 0, 0, c.width, c.height);
+  return PW.markedFrame(document, c, at);
+}
+const pwView = () => EMB.surface === "gpu" ? "desktop GPU game surface" : EYE.on ? "desktop eyedropper" : "desktop docked game";
+async function pwReport(p) {                                   // Report… from the game menu: at the right-clicked spot when it's on the game
+  const R = EMB.rect, [x, y] = p || [innerWidth / 2, innerHeight / 3];
+  const inside = !!R && x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h;
+  return PW.reportPopup(document, await pwIO(), { sid: EMB.sid || "", at: inside ? [(x - R.x) / R.w, (y - R.y) / R.h] : null,
+    aspect: R ? R.w / R.h : 4 / 3, x, y, pick: null, view: pwView() });
+}
+function pwAssets(q) {
+  if (window.assetSidebar?.reveal) { window.assetSidebar.reveal(q); toast(`▤ Assets: ${q}`); }
+  else toast("The asset sidebar is still loading");
+}
+async function pwIO() {
+  const tok = encodeURIComponent(await gbox.token()), sid = EMB.sid;
+  return { api: pwApi, toast, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y, 8, 40),
+    img: c => `${S.apiUrl}${c.preview_url || `/api/characters/${encodeURIComponent(c.slug)}/preview`}?token=${tok}`,
+    clipboard: t => navigator.clipboard.writeText(t), assets: pwAssets, chatModel: pwModel, crop: pwCrop, blenderCopy: pwBlenderCopy,
+    session: pwSession, frame: pwFrame, onReported: () => { try { refreshInbox(); } catch {} },
+    retarget: o => /^[0-9a-f]{16}$/.test(o.gid || "") ? retargetOpen({ ...o, title: EMB.title || "" }) : toast("Open the game first: the Retarget editor needs its game id."),
+    fallbackLive: o => gameJob("characters", { op: "live_use", character: o.character, session_id: sid, x: o.x, y: o.y,
+      window_aspect: +(o.aspect || (EMB.rect ? EMB.rect.w / EMB.rect.h : 4 / 3)).toFixed(4),
+      ...((o.kind === "player" || o.target) ? { target: o.kind === "player" ? "player" : o.target } : {}) }),
+    fallbackBuild: o => autoWhipFailure({ sid, game: EMB.title || "the game", model: o.name, character: o.character, target: o.target,
+      targetKind: o.kind, x: o.x, y: o.y, moment: `${Math.round(o.x * 100)}% across, ${Math.round(o.y * 100)}% down`, requested: true, rebuild: true,
+      detail: `Pick whip replace (slot ${o.slot || "unknown"}): ${(o.steps || []).map(s => `${s.via} ${s.mode}: ${s.error || s.status}`).join("; ") || "no live path"}. ` +
+              "Build the replacement and verify it in gameplay with animations and controls." }) };
+}
+async function pwMenuAt(cx, cy) {                              // the character menu at this app point
+  const R = EMB.rect; if (!EMB.sid || !R) return pipMenu(cx, cy);
+  const sid = EMB.sid, frozen = EYE.on, at = [(cx - R.x) / R.w, (cy - R.y) / R.h];
+  if (!frozen) PWD.hold.acquire(sid).then(r => { if (r.error) toast("⚠ could not pause the game: " + r.error.slice(0, 120)); });
+  PW.characterMenu(document, await pwIO(), { sid, at, aspect: R.w / R.h, x: cx, y: cy, preview: frozen ? EYE.preview : null, con: pwCon(), gid: EMB.game, view: pwView(),
+    anchor: [cx + 24, cy - 20], extra: [{ id: "gamemenu", icon: "⋮", text: "Game menu…" }],
+    onExtra: id => { if (id === "gamemenu") pipMenu(cx, cy); },
+    onClose: why => { if (why === "dismiss") PWD.dismissed = Date.now();   // that click closes the menu; it doesn't grab
+                      if (!frozen) PWD.hold.release(sid); EMB.last = ""; embedSoon(); } });
+  EMB.last = ""; embedSoon();
+}
+function pwRightClick(x, y) {                                  // right-click on the game: a character there gets its menu
+  const R = EMB.rect;
+  if (PW.settings().rclick && EMB.sid && R && x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h) return pwMenuAt(x, y);
+  pipMenu(x, y);
+}
 // ---------------- game eyedropper (Ctrl+I / status-bar dropper): freeze the frame, pre-select what's under the cursor,
 // inspect it live, click to grab it into a conversation (vision identifies it, the agent extracts it as an asset) ----------------
 const EYE = { on: false };
 async function eyeStart() {
   if (EYE.on) return eyeStop();
+  if (EYE.starting) return;                                    // a second Ctrl+I while the first is still capturing
   if (!EMB.sid || !EMB.rect) return toast("⚠ Start a game first: the eyedropper picks from the running game");
-  const shot = await gbox.captureOS?.(); if (!shot) return toast("⚠ Could not capture the game window");
+  EYE.starting = true;
+  const sid = EMB.sid;
+  try { await eyeOpen(); }
+  catch (e) { if (!EYE.on) PWD.hold.release(sid); toast("⚠ eyedropper: " + (e?.message || "the frame could not be read")); }   // never leave it paused
+  finally { EYE.starting = false; }
+}
+async function eyeOpen() {
+  const sid = EMB.sid, held = PWD.hold.acquire(sid);           // pause: the frozen frame and the RAM the picker reads agree
+  await Promise.race([held, new Promise(r => setTimeout(r, 600))]);
+  const shot = await gbox.captureOS?.().catch(() => null); if (!shot) { PWD.hold.release(sid); return toast("⚠ Could not capture the game window"); }
   const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = shot; });
   const k = img.width / innerWidth, R = EMB.rect;
   const full = Object.assign(document.createElement("canvas"), { width: Math.round(R.w * k), height: Math.round(R.h * k) });
   full.getContext("2d").drawImage(img, R.x * k, R.y * k, R.w * k, R.h * k, 0, 0, full.width, full.height);
   const W = 320, H = Math.max(1, Math.round(full.height * W / full.width));      // analysis copy (fast flood fill)
   const small = Object.assign(document.createElement("canvas"), { width: W, height: H }); small.getContext("2d").drawImage(full, 0, 0, W, H);
-  Object.assign(EYE, { on: true, full, px: small.getContext("2d").getImageData(0, 0, W, H), W, H, R, mask: null, box: null, ctx: await chatContext().catch(() => ({})) });
+  Object.assign(EYE, { on: true, sid, full, px: small.getContext("2d").getImageData(0, 0, W, H), W, H, R, mask: null, box: null, region: null,
+                       target: null, cur: null, preview: null, label: null, at: null, ctx: await chatContext().catch(() => ({})) });
+  held.then(r => { if (r.error) toast("⚠ could not pause the game: " + r.error.slice(0, 120)); });
   EMB.last = ""; embedTick();
   $("#eyepip")?.remove(); clearInterval(EYE.follow);              // one inspector at a time (a stale copy can't be dragged)
   document.body.insertAdjacentHTML("beforeend", `<div id="eye"><canvas></canvas><div class="eyehint">Eyedropper · hover to pre-select · click to grab · Esc to cancel</div></div>
@@ -3537,37 +3908,31 @@ async function eyeStart() {
   Object.assign(ov.style, { left: R.x + "px", top: R.y + "px", width: R.w + "px", height: R.h + "px" });
   cv.width = full.width; cv.height = full.height; EYE.cv = cv;
   floating($("#eyepip"), $("#eyepip .ah"), "eyepip");
-  eyeDraw();
+  PW.ensureCss(document);
+  EYE.lab = Object.assign(document.createElement("div"), { className: "pw-label" }); EYE.lab.style.display = "none"; document.body.append(EYE.lab);
+  EYE.hover = PW.createHover({                                 // latest wins: one pick_preview in flight, stale answers dropped
+    request: at => PW.runTool({ api: pwApi }, "pick_preview", { session_id: sid, x: +at[0].toFixed(4), y: +at[1].toFixed(4), window_aspect: R.w / R.h },
+                              { ms: 150, max: 60 }).then(r => r.result),
+    apply: res => eyePreviewUpdate(res) });
+  eyeDraw(); EYE.anim = requestAnimationFrame(eyeAnim);
+  cv.oncontextmenu = e => { e.preventDefault(); pwMenuAt(e.clientX, e.clientY); };
   cv.onpointermove = e => { const r = cv.getBoundingClientRect(); EYE.at = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
     if (!EYE.raf) EYE.raf = requestAnimationFrame(() => { EYE.raf = 0; eyeHover(); }); };
-  cv.onclick = () => eyeGrab();
+  cv.onclick = () => { if (Date.now() - (PWD.dismissed || 0) > 400) eyeGrab(); };
   addEventListener("keydown", EYE.esc = e => { if (e.key === "Escape") eyeStop(); });
 }
 function eyeStop() {
   EYE.on = false; $("#eye")?.remove(); if (!EYE.keepPip) $("#eyepip")?.remove(); EYE.keepPip = false;
+  EYE.hover?.stop(); cancelAnimationFrame(EYE.anim); EYE.lab?.remove(); EYE.lab = null;
+  if (EYE.sid) PWD.hold.release(EYE.sid); EYE.sid = null;
   removeEventListener("keydown", EYE.esc); EMB.last = ""; embedTick();
 }
-function eyeHover() {                                          // flood-fill the colour region under the cursor (pre-selection)
-  if (EYE.at) {
-    const at = [...EYE.at];
-    clearTimeout(EYE.previewTimer);
-    EYE.previewTimer = setTimeout(() => eyePreview(at), 150);
-  }
-  const { W, H, px } = EYE, d = px.data, x0 = Math.min(W - 1, Math.floor(EYE.at[0] * W)), y0 = Math.min(H - 1, Math.floor(EYE.at[1] * H));
-  const i0 = (y0 * W + x0) * 4, ref = [d[i0], d[i0 + 1], d[i0 + 2]], tol = 34 * 34 * 3;
-  const mask = new Uint8Array(W * H), st = [y0 * W + x0]; mask[st[0]] = 1;
-  let n = 0, bx0 = x0, by0 = y0, bx1 = x0, by1 = y0;
-  while (st.length && n < W * H * 0.45) {                       // ponytail: colour flood fill, not true object segmentation
-    const p = st.pop(), x = p % W, y = (p / W) | 0; n++;
-    bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y);
-    for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1]) {
-      if (q < 0 || mask[q]) continue;
-      const j = q * 4, dr = d[j] - ref[0], dg = d[j + 1] - ref[1], db = d[j + 2] - ref[2];
-      if (dr * dr + dg * dg + db * db < tol) { mask[q] = 1; st.push(q); }
-    }
-  }
-  EYE.mask = mask; EYE.box = [bx0 / W, by0 / H, (bx1 + 1) / W, (by1 + 1) / H]; EYE.n = n;
-  eyeDraw();
+function eyeHover() {                                          // pre-selection: the colour region + the entity the picker sees there
+  if (!EYE.at) return;
+  EYE.hover?.move([...EYE.at]);                                // pick_preview at the cursor (latest wins)
+  const { W, H, px } = EYE, d = px.data, g = PW.floodRegion(px, W, H, EYE.at), [x0, y0] = g.at, ref = g.ref, n = g.n;
+  EYE.region = g; EYE.mask = g.mask; EYE.box = g.box; EYE.n = n;   // ponytail: colour flood fill, not true object segmentation
+  EYE.target = PW.outlineOf(EYE.preview, g, EYE.R.w / EYE.R.h) || EYE.target;
   const z = $("#eye-zoom").getContext("2d"), F = EYE.full, b = EYE.box;
   z.imageSmoothingEnabled = false; z.fillStyle = "#000"; z.fillRect(0, 0, 160, 120);
   const bw = (b[2] - b[0]) * F.width, bh = (b[3] - b[1]) * F.height, s = Math.min(160 / bw, 120 / bh);
@@ -3582,7 +3947,7 @@ function eyeHover() {                                          // flood-fill the
   }
   $("#eye-hex").textContent = rows.join("\n");
 }
-async function eyePreview(at) {                                 // live semantic preview of the pre-selected region
+async function eyePreview(at) {                                 // (older path, kept for callers): a semantic preview of the region
   if (!EYE.on || !EYE.box || !EMB.sid || !EMB.rect || String(EYE.at) !== String(at)) return;
   const R = EMB.rect, b = EYE.box;
   const x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
@@ -3602,8 +3967,14 @@ async function eyePreview(at) {                                 // live semantic
   } catch (e) { console.warn("pick_preview:", e); }
 }
 function eyePreviewUpdate(p) {                                  // update the inspector PiP with entity + RAM + RE evidence
+  if (EYE.on) {                                                // the outline + label follow what the picker found
+    EYE.preview = p?.picked ? p : null;
+    EYE.target = PW.outlineOf(EYE.preview, EYE.region, EYE.R.w / EYE.R.h) || EYE.target;
+    EYE.label = EYE.preview ? PW.labelOf(EYE.preview) : null;
+  }
   const meta = $("#eye-meta"), ram = $("#eye-ram");
-  if (!p?.picked) { meta.innerHTML = ""; ram.textContent = ""; return; }
+  if (!meta || !ram) return;
+  if (!p?.picked) { meta.innerHTML = p?.note ? `<span class="mut">${esc(p.note)}</span>` : ""; ram.textContent = ""; return; }
   const e = p.picked;
   const fmt = n => (typeof n === "number" ? n.toFixed(1) : n);
   let html = `<b>${esc(e.class || e.kind || "entity")}</b> · ${e.kind || ""} <code>${esc(e.ptr || "?")}</code>`;
@@ -3621,8 +3992,18 @@ function eyePreviewUpdate(p) {                                  // update the in
   meta.innerHTML = html;
   ram.textContent = p.hex ? `RAM @ ${esc(e.ptr || "?")}: ${p.hex}` : "";
 }
-function eyeDraw() {
+function eyeAnim(t) {                                          // the outline eases toward its target; the label rides on it
+  if (!EYE.on) return;
+  const dt = t - (EYE.t || t); EYE.t = t;
+  if (EYE.target) EYE.cur = PW.easeBox(EYE.cur, EYE.target.box, dt);
+  eyeDraw(t);
+  PW.placeLabel(document, EYE.lab, EYE.R, EYE.cur || [0, 0, 0, 0], !EYE.target ? null : EYE.label ||
+    { name: "colour region", kind: "", model: "", slot: "", via: "no entity data here: right-click for actions" });
+  EYE.anim = requestAnimationFrame(eyeAnim);
+}
+function eyeDraw(now = 0) {
   const c = EYE.cv.getContext("2d"), F = EYE.full; c.drawImage(F, 0, 0);
+  if (EYE.target && EYE.cur) return PW.paintOutline(c, EYE.target, EYE.cur, F.width, F.height, { t: now, aspect: EYE.R.w / EYE.R.h });
   if (!EYE.mask) return;
   const { W, H, mask } = EYE, m = c.createImageData(W, H);
   for (let i = 0; i < W * H; i++) if (mask[i]) { m.data[i * 4] = 124; m.data[i * 4 + 1] = 150; m.data[i * 4 + 2] = 255; m.data[i * 4 + 3] = 120; }
@@ -3633,7 +4014,9 @@ function eyeDraw() {
 }
 async function eyeGrab() {
   if (!EYE.box) return;
-  const F = EYE.full, b = EYE.box, pad = 0.03;
+  const F = EYE.full, b = EYE.cur || EYE.box, pad = 0.03, at = EYE.at || [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], R0 = EYE.R;
+  pwCon().anchor(R0.x + b[2] * R0.w + 12, R0.y + b[1] * R0.h);
+  const task = pwCon().open("grab-" + Date.now().toString(36), `Grab ${EYE.label?.name || "selection"}`);
   const x = Math.max(0, b[0] - pad) * F.width, y = Math.max(0, b[1] - pad) * F.height;
   const w = Math.min(1, b[2] + pad) * F.width - x, h = Math.min(1, b[3] + pad) * F.height - y;
   const crop = Object.assign(document.createElement("canvas"), { width: Math.round(w), height: Math.round(h) });
@@ -3643,12 +4026,12 @@ async function eyeGrab() {
   let pickText = "", pick = null;
   if (EMB.sid && EMB.rect) {                                   // try a semantic pick/extraction at the centre of the selection
     try {
-      const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, window_aspect: EMB.rect.w / EMB.rect.h } });
+      const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: +at[0].toFixed(4), y: +at[1].toFixed(4), window_aspect: EMB.rect.w / EMB.rect.h } });
       if (r.ok && r.data?.id) {
-        const j = await jobWait(jobOf(r, "pick"), "pick", 200);
+        const j = await PW.waitJob({ api: pwApi }, jobOf(r, "pick"), { ms: 200, onUpdate: x => task.update(x) });
         if (j.state === "succeeded") { pick = j.output?.result || {}; EYE.pick = pick; }
       }
-    } catch (e) { console.warn("eyeGrab pick:", e); }
+    } catch (e) { console.warn("eyeGrab pick:", e); task.log("pick: " + e.message); }
     if (pick?.picked) {
       const p = pick.picked, fmt = n => typeof n === "number" ? n.toFixed(1) : n;
       pickText = `The semantic picker found ${p.class || p.kind} (id ${p.entity_id}, ptr ${p.ptr || "?"}, world ${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}). `;
@@ -3670,7 +4053,8 @@ async function eyeGrab() {
     const r = await gbox.api(`/api/chat/${CH.cid}`); if (!r.ok) return;
     const ev = r.data.events.slice(-6).filter(e => e.type === "tool_call" || e.type === "assistant");
     $("#eye-log").innerHTML = ev.map(e => e.type === "tool_call" ? `🔧 ${esc(e.name)} ${esc(JSON.stringify(e.args).slice(0, 80))}` : `💬 ${esc((e.text || "").slice(0, 160))}`).join("<br>");
-    if (!r.data.busy) { clearInterval(EYE.follow); setTimeout(() => $("#eyepip")?.remove(), 30000); }
+    task.lines(ev.map(e => e.type === "tool_call" ? `🔧 ${e.name} ${JSON.stringify(e.args).slice(0, 80)}` : `💬 ${(e.text || "").slice(0, 160)}`));
+    if (!r.data.busy) { clearInterval(EYE.follow); task.done(true, "gBox finished: see the chat"); setTimeout(() => $("#eyepip")?.remove(), 30000); }
   }, 1500);
 }
 document.addEventListener("click", e => { if (e.target.closest("#sb-eye")) eyeStart(); });   // the status bar is created further down
@@ -4381,8 +4765,9 @@ const TROUBLE = {
       { q: "Ask gBox", act: () => askAbout("My controller doesn't work in this game. Fix the mapping.") }] },
     { q: "Crashed / frozen / black", kids: [
       { q: "Load the last save state", act: () => gameAction("load") },
-      { q: "Restart the game", act: async () => { const g = EMB.game; await gameJob("session_op", { op: "stop_game", args: {} });
-          document.querySelector("#wv")?.executeJavaScript(`play(${JSON.stringify(g)})`); } },
+      // one server operation: the same game + mod relaunched on this PC; this copy closes only once the new one runs
+      { q: "Restart the game", act: () => EMB.sid && document.querySelector("#wv")?.executeJavaScript(
+          `restartGame(${JSON.stringify(EMB.sid)}).catch(() => {})`).catch(() => {}) },
       { q: "Ask gBox", act: () => askAbout("The game crashed or froze. Recover it.") }] },
     { q: "Stuck / too hard", kids: [
       { q: "Let gBox take control", act: () => gameAction("autoplay") },
@@ -5006,12 +5391,62 @@ function chipMenu(chip, e) {                                   // a conversation
   let m = $("#chipmenu"); if (!m) { m = document.createElement("div"); m.id = "chipmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:220px;font-size:13px;display:block";
   m.innerHTML = `<button class="act" data-load style="width:100%;text-align:left">▶ Load ${esc(chip.dataset.t)}</button>
-    <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>`;
+    <button class="act" data-cast style="width:100%;text-align:left;margin-top:4px">Replace entire cast with…</button>
+    <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>
+    <div data-chip-special style="margin-top:6px"></div>`;
   fitMenu(m, e.clientX, e.clientY, 8, 40);
-  m.onclick = ev => { const b = ev.target.closest("button"); if (!b) return; m.style.display = "none";
-    if (b.dataset.load !== undefined) playInView(chip.dataset.g); else chip.closest(".ci")?.click(); };
+  // the library game menu's "Special builds ▸" section (../web/viz/game-menu.js mountSpecial), same actions and state
+  GBoxGameMenu.mountSpecial(chipSpecialIO(m), m.querySelector("[data-chip-special]"), { gid: chip.dataset.g, title: chip.dataset.t });
+  m.onclick = ev => { if (ev.target.closest("[data-chip-special]")) return; const b = ev.target.closest("button"); if (!b) return; m.style.display = "none";
+    if (b.dataset.load !== undefined) playInView(chip.dataset.g);
+    else if (b.dataset.cast !== undefined) castSwapOpen(chip.dataset.g, chip.dataset.t);
+    else chip.closest(".ci")?.click(); };
   const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
   setTimeout(() => document.addEventListener("mousedown", close), 0);
+}
+// "Special builds" in the chip menu: launches go through the Mods view's play path (this PC via the mod card, another PC
+// via @launch) or the Spark's debugger; Open in Mods page / Open request use the Mods view; rebuilds show in the pop-up
+function chipSpecialIO(m) {
+  const api = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  return { api, worker: S.workerName || "", close: () => { m.style.display = "none"; }, refit: () => { if (m._fitXY) refitMenu(m); },
+    launch: specialBuildLaunch,
+    openMods: async (gid, b) => { document.querySelector('aside button[data-s="mods"]')?.click(); (await modsGalleryOpen()).focus({ q: b?.name || "", game: gid }); },
+    openRequest: t => modsGalleryRequest(t),
+    progress: jobs => { Promise.resolve(processPopupSync(jobs)).catch(() => {}); } };
+}
+async function specialBuildLaunch(gid, x) {
+  const b = x.build || {}, m = { game_id: gid, name: x.mod, mod_title: b.mod_title, card_id: b.card_id,
+                                 state_slot: x.slot === "" || x.slot == null ? null : x.slot };
+  try {
+    if (!x.debug) return await modsGalleryPlay(m, { node: x.node === "auto" ? (S.workerName || "windows") : x.node, moment: m.state_slot != null });
+    const what = `Debug launch of ${b.mod_title || x.mod}`;
+    const j = await jobWait(jobOf(await gbox.api(`/api/games/${encodeURIComponent(gid)}/launch?node=linux&debug=true&mod=${encodeURIComponent(x.mod)}`, {}), what), what, 1000);
+    if (j.state !== "succeeded") throw launchError(j);
+    const sid = j.output?.session_id;
+    if (m.state_slot != null && sid) {
+      await new Promise(r => setTimeout(r, 8000));                   // let the core boot before loading a state
+      await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid);
+    }
+    toast(`${b.mod_title || x.mod}: launched with the debugger on the Spark`);
+  } catch (err) { toast(`⚠ ${err?.message || err}`, 8000); }
+}
+// "Replace entire cast with…" (gbox/cast_swap.py; the dialog is ../web/viz/cast-swap.js, the library's game menu has it too)
+async function castSwapOpen(gid, title) {
+  const tok = encodeURIComponent(await gbox.token());
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  return GBoxCastSwap.open(document, { api, img: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000), retarget: retargetOpen }, { gid, title });
+}
+// Retarget editor (../web/viz/retarget-editor.js; gbox/retarget_profile.py): how a collection character is scaled and
+// proportioned into one game's slot. Opened from the cast plan rows (✎), the pick-whip card menu and the Fitting
+// pop-up's R buttons (the Goals view); "Save and rebuild this slot" hands its job to the pop-up.
+async function retargetOpen(o) {
+  const tok = encodeURIComponent(await gbox.token());
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  return GBoxRetargetEditor.open(document, { api, url: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+    drag: dragAnywhere, confirm: s => confirm(s), onSaved: st => toast(`Retarget profile saved for ${st.name || st.slug}: the next build uses it`, 6000),
+    onRebuild: (r, st) => { toast(`Rebuilding ${st.slot} with ${st.name || st.slug}: the Fitting pop-up follows it`, 6000);
+      if (PROCESS_POPUP) PROCESS_POPUP.follow((r.job_ids || [])[0]); } }, o);
 }
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();
@@ -5086,9 +5521,12 @@ async function autoWhipFailure({ sid, game, model, character, target, targetKind
     action: "pick whip model replacement", target, moment, detail, job_id: jobId || "",
     character: character || "", target_kind: targetKind || "", x, y,
     needs_rebuild: rebuild, replacement_requested: requested, image_b64: shot || null }).catch(() => null);
-  if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); }
-  else toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
+  if (r?.ok) { toast(`Replacement request #${r.data.number} saved; ${r.data.context?.resolution_dispatch === "hermes_queue" ? "queued for Hermes" : "resolution dispatched"}`, 12000); refreshInbox(); return r.data; }
+  toast(`Replacement failed; auto report could not be filed: ${r?.error || "server unavailable"}`, 12000);
+  return null;
 }
+// games whose characters tool resolves a dropped point to a writer slot (characters op=resolve_slot): VR Missions (USA)
+var SLOT_PICK_GAMES = new Set(["afd2fc507bb69843", "f55555ee6513391b"]);
 async function whipCardMenu(card, gp, ev) {
   const targetSid = EMB.sid;
   const r = EMB.rect, game = EMB.title || "the game", f = [(gp[0] - r.x) / r.w, (gp[1] - r.y) / r.h];
@@ -5101,13 +5539,24 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Try live replacement (OoT NPCs)</button>
+    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes; MGS2 cast; others live or by a build)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
+    <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
     <button data-w="x"><span>…</span>Something else (type it)</button>`;
   m.insertAdjacentHTML("afterbegin", `<label>Target <input id="whip-target-name" value="${esc(T.name)}"></label>`);
   if (shot) m.insertAdjacentHTML("beforeend", '<button data-w="identify">Identify selected character</button>');
   m.insertAdjacentHTML("beforeend", '<button data-w="rebuild">Identify target and mark for rebuild</button>');
+  let slot = null;                                             // the writer slot under the drop (VR Missions: Snake / the soldiers)
+  if (SLOT_PICK_GAMES.has(EMB.game || "") && targetSid)
+    gameJob("characters", { op: "resolve_slot", session_id: targetSid, x: +f[0].toFixed(4), y: +f[1].toFixed(4),
+                            window_aspect: +(r.w / r.h).toFixed(4) }).then(res => {
+      if (!res?.slot || EMB.sid !== targetSid) return;
+      slot = res.slot; T = { name: res.name, kind: res.kind };
+      const box = m.querySelector("#whip-target-name"); if (box) box.value = res.name;
+      const b = m.querySelector('button[data-w="live"]');
+      if (b) b.innerHTML = `<span>▶</span>Put ${esc(card.name)} in place of ${esc(res.name)} (running game, same moment)`;
+    }).catch(() => {});                                        // no resolver answer: the generic choices stay
   m.onclick = async e => {
     const bt = e.target.closest("button[data-w]"); if (!bt) return;
     if (bt.dataset.w === "identify") {
@@ -5122,6 +5571,11 @@ async function whipCardMenu(card, gp, ev) {
     }
     m.classList.remove("on");
     T.name = m.querySelector("#whip-target-name")?.value.trim() || T.name;
+    if (bt.dataset.w === "retarget") {                        // the Retarget editor for this donor in this game
+      if (!/^[0-9a-f]{16}$/.test(EMB.game || "")) { toast("Open the game first: the Retarget editor needs its game id."); return; }
+      retargetOpen({ slug: card.slug, name: card.name, gid: EMB.game, title: EMB.title || "", slot: "player" });  // the editor's slot picker lists the game's other slots
+      return;
+    }
     if (!targetSid || EMB.sid !== targetSid) { toast("The selected game changed; pick the target again."); return; }
     const reportContext = { sid: targetSid, game, model: card.name, character: card.slug,
       target: T.name, targetKind: T.kind, x: +f[0].toFixed(4), y: +f[1].toFixed(4), moment: at, shot };
@@ -5133,14 +5587,26 @@ async function whipCardMenu(card, gp, ev) {
     if (bt.dataset.w === "live") {
       const sid = targetSid;
       if (!sid || EMB.sid !== sid) { toast("The selected game changed; pick the target again."); return; }
-      toast(`Preparing ${card.name} for an in-game replacement…`, 60000);
-      try {
-        const res = await gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
-          x: +f[0].toFixed(4), y: +f[1].toFixed(4) });
-        toast(res.message || res.status, 12000);
-        if (/unsupported|failed|error|not_in_collection|missing|overlay|blocked|reverted/i.test(res.status || ""))
-          await autoWhipFailure({ ...reportContext, jobId: res.job_id, detail: res.message || res.status });
+      toast(`Preparing ${card.name} for an in-game replacement…`, 8000);
+      const x = +f[0].toFixed(4), y = +f[1].toFixed(4), window_aspect = +(r.w / r.h).toFixed(4);
+      pwCon().anchor(gp[0] + 24, gp[1] - 20);
+      const task = pwCon().open("whip-" + Date.now().toString(36), `Replace ${T.name} → ${card.name}`);
+      // characters op=live_use: the resolver's writer slot (VR Missions), else the point + the one pick-whip target field
+      const liveUse = () => gameJob("characters", { op: "live_use", character: card.slug, session_id: sid,
+        ...(slot ? { slot } : { x, y, window_aspect, ...((T.kind === "player" || T.name) ? { target: T.kind === "player" ? "player" : T.name } : {}) }) });
+      try {      // a resolved slot: its live_use first; else pick_identify -> pick_replace live (-> build + session swap);
+                 // live_use when pick_replace can't map the pick; a rebuild request when nothing took
+        const res = await PW.replace({ api: pwApi }, { sid, character: card.slug, x, y, aspect: window_aspect, liveFirst: !!slot,
+          pick: { x, y, window_aspect, target: T.name, kind: T.kind, ...(slot ? { slot } : {}) },
+          onUpdate: j => task.update(j), log: t => task.log(t),
+          fallbackLive: liveUse,
+          fallbackBuild: steps => autoWhipFailure({ ...reportContext, requested: true, rebuild: true,
+            detail: (steps || []).map(s => `${s.via} ${s.mode}: ${s.error || s.status}`).join("; ") || "live replacement unavailable" }) });
+        const said = PW.replaceText(res, card.name);
+        task.done(res.ok, res.ok ? said : "could not replace: a report was filed");
+        toast(res.ok ? said : `${card.name}: replacement failed`, 12000);
       } catch (err) {
+        task.done(false, err.message);
         await autoWhipFailure({ ...reportContext, detail: err.message, jobId: err.jobId });
       }
       return;
@@ -5509,11 +5975,11 @@ $("#tb-mini").onclick = async () => {
     const r = await liveSessions(0);
     const s = r.ok && r.data.find(x => x.state === "running" && !(x.detail && x.detail.local_window));
     if (!s) return alert("Mini mode shows a streamed game. Start one (or use the Spark button), then click Mini.");
-    sid = s.session_id; title = s.title;
+    sid = s.session_id; title = sessionTitle(s);
   } else {
     const s = await sessionById(sid);
     if (s && s.detail && s.detail.local_window) return alert("This game runs natively in its own RetroArch window — resize that window directly.");
-    title = s ? s.title : "";
+    title = s ? sessionTitle(s) : "";
   }
   miniPadTarget(sid);
   gbox.miniOpen(sid, title);
@@ -5938,6 +6404,14 @@ const SBX_READY = (async () => { const s = await gbox.settings(); SBX.api = s.ap
 const AUD = { rows: [], after: 0 };
 const activityHost = document.createElement("div"); activityHost.id = "background-activity";
 $("#sb-audit").before(activityHost); activity = new TaskActivity(activityHost);
+// Launch bar (#1635): full width just above this strip while a game launch runs (any path: Library, Mods, Special builds,
+// notifications, swaps). Fed by the jobs poll below and by jobWait; it asks for one finished launch once to learn how it ended.
+try {
+  globalThis.GBOX_LAUNCH_BAR = window.GBoxLaunchBar?.mount({ bottom: 28,
+    fetchJob: async id => { const r = await gbox.api(`/api/jobs/${encodeURIComponent(id)}`); return r.ok ? r.data : null; },
+    onDetails: job => tvOpen(job.id, "job"),
+    onReport: r => modsGalleryRequest({ id: r.request_id, number: r.number }) }) || null;
+} catch (e) { console.error("Launch bar:", e); }
 const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|desktop|web/, "🧑"], [/worker|lilspark|nuc|jaybuilt/i, "🖥️"], [/.*/, "⚙️"]];
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
@@ -5948,13 +6422,14 @@ async function processPopupSync(jobs) {
   await SBX_READY;                                                          // first job must not cache a failed file:// / unauthenticated model load
   if (!PROCESS_POPUP) PROCESS_POPUP = window.GBoxProcessPopup.mount({
     assetUrl: p => `${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
+    retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
   });
   PROCESS_POPUP.sync(jobs);
 }
 function auditPoll(explicit = true) { return pollAudit(explicit); }
 const pollAudit = singleFlightPoll(async () => {
   const [r, jobs] = await pollTogether([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
-  if (jobs.ok) { activity?.remote(jobs.data); await processPopupSync(jobs.data); } if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
+  if (jobs.ok) { activity?.remote(jobs.data); globalThis.GBOX_LAUNCH_BAR?.remote(jobs.data); await processPopupSync(jobs.data); } if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;
