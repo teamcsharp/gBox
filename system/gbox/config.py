@@ -63,6 +63,8 @@ class RecordingConfig(BaseModel):
     bitrate_kbps: int = 8000          # capture bitrate (the export re-encodes to the requested file size)
     idle_s: float = 20.0              # capture runs while pad activity was seen within this long; stops after it
     segment_s: int = 5                # length of one ring segment (export granularity is finer: the range is trimmed)
+    capture: str = "auto"             # auto (Windows: gdigrab of the game window's screen area; Linux: x11grab of the session display) | gdigrab | ddagrab (Windows, GPU zero-copy, NVENC only) | x11grab
+    keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
 
 
 class Config(BaseModel):
@@ -92,6 +94,7 @@ class Config(BaseModel):
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
     examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
+    recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -162,6 +165,12 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # interval_s = 2.0                # seconds between checkpoints
 # depth = 60                      # checkpoints kept per session
 # max_mb = 2048                   # disk cap per session
+
+# [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
+# enabled = true                  # records only while the pad was used in the last idle_s seconds
+# seconds = 120                   # how far back a clip can reach
+# encoder = "auto"                # auto = h264_nvenc when it works on this node, else libx264 (reported in the status)
+# max_mb = 512                    # disk cap per session ring
 
 # [[libraries]]
 # id = "roms"
