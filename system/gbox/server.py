@@ -374,6 +374,11 @@ def create_app(config: Config) -> FastAPI:
         return characters, characters.library_root(config)
 
     _CHAR_STATS: dict = {}
+    try:                                                  # warm the HDD character library in the background at startup
+        from . import characters as _ck
+        _ck.warm_list(_ck.library_root(config))
+    except Exception:
+        pass
 
     @app.get("/api/characters")
     def chars_list(game_id: str = "", actor=Depends(auth)):
@@ -386,16 +391,14 @@ def create_app(config: Config) -> FastAPI:
                 return 0
         tf = lambda slug: sorted("targets/" + f.name for f in (Path(root) / slug / "targets").glob("*") if f.is_file())             if (Path(root) / slug / "targets").is_dir() else []          # game-fitted models (Blender copy of a swap mod)
         entries = K.list_all(root, game_id)
-        gen = (K._LIST_GEN[0], str(root))                 # file stats are cached with the list (thousands of HDD stats per call)
-        stats = _CHAR_STATS.get(gen) or {}
-        if len(_CHAR_STATS) > 4:
-            _CHAR_STATS.clear()
+        stats = _CHAR_STATS.setdefault(str(root), {})     # file stats cached per (slug, model) (thousands of HDD stats per call)
         for m in entries:
-            if m["slug"] not in stats:
-                stats[m["slug"]] = (tf(m["slug"]), model_bytes(m))
-        _CHAR_STATS[gen] = stats
+            k = (m["slug"], m.get("model"), len(m.get("targets") or {}))
+            if k not in stats:
+                stats[k] = (tf(m["slug"]), model_bytes(m))
+        stats_for = {m["slug"]: stats[(m["slug"], m.get("model"), len(m.get("targets") or {}))] for m in entries}
         return [m | {"preview_url": f"/api/characters/{m['slug']}/preview", "model_url": f"/api/characters/{m['slug']}/file/{m['model']}",
-                     "target_files": stats[m["slug"]][0], "model_bytes": stats[m["slug"]][1]}
+                     "target_files": stats_for[m["slug"]][0], "model_bytes": stats_for[m["slug"]][1]}
                 for m in entries]
 
     @app.get("/api/characters/{slug}")

@@ -270,5 +270,5 @@ def test_list_all_is_cached_and_refreshed_by_writes(tmp_path, monkeypatch):
     C.list_all(tmp_path); C.list_all(tmp_path, "g")
     assert reads == []                                   # served from the cache
     C.put_meta(tmp_path, {"slug": "amy", "name": "Amy"})
-    assert sorted(m["slug"] for m in C.list_all(tmp_path)) == ["amy", "sonic"] and reads == [1]
+    assert sorted(m["slug"] for m in C.list_all(tmp_path)) == ["amy", "sonic"] and reads == []   # updated in place, no re-read
 
