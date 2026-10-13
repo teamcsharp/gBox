@@ -89,3 +89,15 @@ def test_registrations():
     assert w and w["routed"] is True
     assert CS.STRATEGIES["gbox.stranglehold_swap"][0] == "pairs" and "gbox.stranglehold_swap" in CS.BUILDERS
     assert RR.spec_for("gbox.stranglehold_swap")["tex"] == 1024
+
+
+def test_build_changes_writes_package_and_toc(tmp_path):
+    from gbox.sm64_swap import load_rig
+    glb, roles = S.donor_glb(tmp_path / "donor.glb")
+    (tmp_path / "char_tequila.xxx").write_bytes(S.package())
+    toc = "1703936 0 0 ..\\StrangleholdGame\\CookedPS3\\char_tequila.xxx 0\r\n5 0 0 ..\\x.bin 0\r\n"
+    changes, rep = W.build_changes(tmp_path, toc, {"char_tequila": (load_rig(glb, roles), None, "donor", "donor")})
+    assert rep["char_tequila"]["status"] == "built"
+    out = changes[f"{W.COOKED}/char_tequila.xxx"]["bytes"]
+    new_toc = changes[W.TOC]["bytes"].decode("latin1")
+    assert new_toc.startswith(f"{len(out)} 0 0 ") and new_toc.count("\r\n") == 2

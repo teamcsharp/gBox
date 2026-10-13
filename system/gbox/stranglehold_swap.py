@@ -608,7 +608,7 @@ def _donor(ctx, meta: dict) -> tuple[dict, dict | None]:
 def build_mod(cfg, game: dict, rom: Path, name: str, plan: dict, progress=None) -> dict:
     from . import filemods
     root = rom.parent / "StrangleholdGame" / "CookedPS3"
-    toc = (rom.parent / "StrangleholdGame" / "PS3TOC.txt").read_text("latin1")
+    toc = (rom.parent / "StrangleholdGame" / "PS3TOC.txt").read_bytes().decode("latin1")
     changes, report = build_changes(root, toc, plan, progress)
     if not any(r["status"] == "built" for r in report.values()):
         raise ValueError("; ".join(f"{k}: {r.get('reason')}" for k, r in report.items())[:800])
@@ -698,7 +698,7 @@ def main(argv=None) -> int:
     rig = load_rig(glb, roles)
     out.mkdir(parents=True, exist_ok=True)
     toc_path = root.parent / "PS3TOC.txt"
-    toc = toc_path.read_text("latin1") if toc_path.is_file() else ""
+    toc = toc_path.read_bytes().decode("latin1") if toc_path.is_file() else ""  # keep CRLF
     t0 = time.time()
     changes, report = build_changes(root, toc, {st: (rig, None, glb.stem, glb.stem) for st in packages_for(slot)},
                                     lambda p, m: print(m))
