@@ -363,6 +363,8 @@ def _cast_plan(cast: tuple[str, str], inp: MashupIn, ctx) -> dict:
     game = _resolve_game(expand(target_name), ctx)
     call = {"op": "cast_swap", "target_game": (game or {}).get("game_id") or target_name, "source": source_name,
             "mapping": "auto", "launch": False}
+    if re.search(r"\brandom(?:ly)?\b", inp.request or "", re.I):   # "randomly selected characters": assign=random
+        call["assign"] = "random"
     steps = [{"step": 1, "action": "identify_target", "status": "ok" if game else "needed",
               "detail": f"Target game: {game.get('title')} ({game.get('game_id')})" if game else
               f"Could not resolve the game {target_name!r}"},

@@ -10,9 +10,17 @@ crew, each donor looking like its own game's character (no outline shell, correc
   prompt and the `mashup` planner (`mashup.parse_cast_request`) route these to `characters op=cast_swap`, never to a
   loop of `op=use`.
 * **Tool**: `characters op=cast_swap target_game=<id|title> source=<game id|title|abbreviation|group>
-  [mapping=auto|random|by_role] [seed] [slots=all|main|enemies|pedestrians|<slot list>] [assignments=[{slot,
-  character}]] [plan_only=true] [launch=true]`. `plan_only` returns the plan (nothing is built, nothing re-extracted).
-  Launching happens only when `launch` is passed explicitly.
+  [mapping=auto|random|by_role] [assign=random] [seed] [prefer=<source>] [slots=all|main|enemies|bosses|npcs|bots|
+  campaign|pedestrians|<comma list of groups / slots>] [assignments=[{slot, character}]] [plan_only=true]
+  [launch=true]`. `plan_only` returns the plan (nothing is built, nothing re-extracted). Launching happens only when
+  `launch` is passed explicitly.
+* **Random from a source, any game** (#1385: "replace ... with randomly selected characters from SA2"):
+  `assign=random seed=<x>` deals the source's donors at random over the chosen slots, the same way as the cast plan's
+  "Deal ticked donors" (PR #291). The deal is seeded, so the same seed gives the same cast. No donor repeats before
+  every donor has been used, and every character name is dealt once before any name repeats (The Rock of No Mercy and
+  The Rock of SmackDown! 2 count as one name, `name_key`). `assign` wins over `mapping`; the mashup planner sets it
+  when a request says "random". `prefer=<source spec>` puts that part of the source first, for example
+  `source=wrestlers prefer=smackdown2,nomercy` for "wrestlers, WWE first".
 * **Desktop / web**: right-click a game in the library (the web client's game menu, also inside the desktop shell) or
   a conversation's game chip in the desktop shell -> **Replace entire cast with...** -> pick a source (groups first:
   Wrestlers, Fighters, Sega, Sonic; then every source game of the collection with its usable count), a mapping, the slots
@@ -24,7 +32,9 @@ crew, each donor looking like its own game's character (no outline shell, correc
 ## How it works
 
 1. **Slots** come from the target's writer (`char_coverage.cast_slots` -> the writer module's `cast_slots()`, or
-   `cast_slots_live(ctx, game)` when the list has to be read off the game: Vice City's peds). Aggregates
+   `cast_slots_live(ctx, game)` when the list has to be read off the game: Vice City's peds, AUF's level cast). A row
+   may list `groups` it belongs to; `slots=` matches groups, kinds and slot names, and a comma list is their union
+   (`slots=campaign,bots`, `slots=player,bosses,npcs,bots`). Aggregates
    (`enemy:boomas`, `enemies`, `drivers`, `pedestrians`, `passengers`, `peds:all`, Def Jam's / No Mercy's `player`)
    and aliases (JGR's and Crazy Taxi's `player` = Beat / Axel) are dropped so each model gets exactly one donor.
    Slots a writer marks `not_working` (the PSO player class: the game doesn't draw it yet) are listed as skipped.
@@ -68,6 +78,7 @@ crew, each donor looking like its own game's character (no outline shell, correc
 | Soul Calibur II GC (`gbox.soulcalibur2_swap`) | **pairs**: `build_cast` (every slot's costume packages, Extra-mode copies included, rewritten in place in human.olk; one disc image) | all 24 fighters (Link included), 73 costumes; `slot=random` alternates two donor pools over each fighter's costumes and patches the body load to draw a costume at random (`docs/soulcalibur2_gc.md`); unverified in Dolphin |
 | JGR (`gbox.jgr_swap`) | **chain**: each cast member's `jgr.build_swap(..., data=)` on the previous step's PLAYER.AFS, one `patch_gdi` | full cast (16) |
 | Crazy Taxi GC (`gbox.crazy_taxi_swap`) | **chain**: each slot's `swap_bank` on the previous step's polDC0.all, one disc image | full cast (4 drivers, 19 pedestrian and 31 passenger groups) |
+| 007 Agent Under Fire GC (`gbox.auf_swap`) | **pairs**: `auf_swap.build_cast` (every level's restable rebuilt once with all its donors, one disc image; the level cast read off the disc) | 57 slots: `campaign:<body>` x 40 (Bond, henchmen, bosses, allies, hostages) and `mp:<body>` x 17 (16 bots + the escort VIP); groups campaign, multiplayer, bots, bosses, npcs, enemies, player, model:<body> (docs/auf_writer.md) |
 | Metal Gear Solid VR Missions PS1 (`gbox.mgs_vr_swap`) | **pairs**: `mgs_vr_swap.build_cast` (every slot fitted into one staged STAGE.DIR: each mission stage's copy of a model and its texture archive, native rewrite, one BIN) | 7 slots: player (Snake), enemy:soldier (38582 + 55267 in 88 stages), enemy:ninja and four stage-specific figures; a node without the disc image hands the build to a Windows worker (`characters op=use slot=cast`); unverified in game (docs/mgs_vr_decomp.md) |
 | Single-slot writers (SM64, GTA III, LCS, PE, PE2, FF7, SA2, MGS disc 1, RE4 GC, RE6, Metal Arms, Clay Fighter) | one slot per mod (`characters op=use`) | the player only; other slots are listed as skipped with the reason (RE6 enemy families, Metal Arms bots picked on screen, Clay Fighter fighters, which also need sprites donors) |
 
@@ -91,7 +102,19 @@ a hard-linked copy under the fixed name (`link_tree`). See docs/sonic_showcase.m
   builder, the PSO pairs build on synthetic enemy packs and a synthetic GDI (`build_swap` donors per enemy,
   `build_cast` writes one image, never the original), the API endpoints, the tool / mashup / agent routing.
 * `tests/test_cast_swap_menu.cjs`: the source picker, the editable plan rows, the edits sent, the controller's plan
-  -> build -> report flow, failures, and the menu entries in both clients.
+  -> build -> report flow, failures, the menu entries in both clients, and a target's own slot sets (AUF's
+  Campaign + multiplayer bots).
+* `tests/test_cast_swap.py` (AUF): the 57 context slots cover the 372 (level, body) pairs once; the group filters
+  (`campaign`, `bots`, `player,bosses,npcs,bots` -> 48); `assign=random` over SA2 (every character once per round,
+  seeded) and on PSO; `prefer=` with cross-game name dedupe (`spread`, `name_key`); the mashup's "randomly" ->
+  `assign=random`. The AUF build path itself is tested in `tests/test_auf_swap.py`.
+
+## 007 Agent Under Fire builds (#1529, #1385)
+
+`auf_cast_wrestlers` (57/57 slots, distinct WWF wrestlers) and `auf_cast_sonic_random` (56/56 slots, SA2 at random
+over the campaign and the bots) were built with the calls in docs/auf_writer.md section 5. They were read back level
+by level and booted in an agent-owned Dolphin: the first mission's cut scene and bot matches showed the donors. The
+frames are in `D:\gBox\research\auf\evidence\`.
 
 ## Live check (2026-10-13, test PC, read-only)
 
