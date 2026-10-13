@@ -460,6 +460,62 @@ def test_api_status_and_settings(tmp_path, monkeypatch):
         assert client.get("/api/showcase/nope").status_code == 404
 
 
+def test_showcase_builds_are_a_group_of_the_special_builds_section(tmp_path, monkeypatch):
+    """The game menu has one Special builds section (gbox/special_builds.py); showcase builds are its "Sonic showcase"
+    group, with its quick launch / options, and their rebuild is the recorded showcase cast_swap call."""
+    from fastapi.testclient import TestClient
+    from gbox import special_builds as S
+    from gbox.config import Config
+    from gbox.server import create_app
+    monkeypatch.setenv("GBOX_HERMES_DISPATCH_STATE", str(tmp_path / "hermes"))
+    cache = tmp_path / "cache"
+    g = gid(1)
+    recorded = {"tool": "characters", "input": {"op": "cast_swap", "target_game": g, "source": "sonic", "mapping": "auto",
+                                                "seed": "showcase", "slots": "all", "mod_name": "showcase_sonic_jgr",
+                                                "showcase": True, "assignments": [{"slot": "player", "character": "sa1_sonic"}],
+                                                "launch": False, "rebuild": True}}
+    cast = [{"slot": "player", "character": "sa1_sonic", "status": "built"}]
+    for name, meta in (
+            ("showcase_sonic_jgr", {"recipe": dict(recorded, recorded=1.0)}),
+            ("showcase_sonic_old", {}),                               # made before recipes were recorded: inferred
+            ("cast_jgr_sonic_abcd", {"showcase": None})):             # an ordinary cast swap stays in Cast swaps
+        d = cache / "mods" / g / name
+        d.mkdir(parents=True)
+        sc = {"source": "Sonic characters (Sonic Adventure 1 + 2)", "plan": "abcd",
+              "previews": [{"slot": "player", "label": "Sonic", "preview": "/api/artifacts/" + "c" * 64}]}
+        (d / ".gbox-mod.json").write_text(json.dumps({
+            "name": name, "game_id": g, "built": 100.0, "cast": cast, "cast_source": "Sonic characters (Sonic Adventure 1 + 2)",
+            "cast_mapping": "auto", "cast_seed": "showcase", "cast_plan": "abcd",
+            **({"showcase": sc} if name.startswith("showcase_") else {}), **{k: v for k, v in meta.items() if v is not None}}))
+    cfg = Config(data_dir=tmp_path / "data", cache_dir=cache)
+    app = create_app(cfg)
+    with TestClient(app) as c:
+        assert app.state.built_mods.wait(10)
+        h = {"Authorization": f"Bearer {cfg.token()}"}
+        r = c.get(f"/api/games/{g}/special_builds", headers=h).json()
+        assert [x["key"] for x in r["groups"]] == ["confirmation", "showcase", "cast", "character", "other"]
+        grp = {x["key"]: x for x in r["groups"]}
+        rows = {b["name"]: b for b in grp["showcase"]["builds"]}
+        assert set(rows) == {"showcase_sonic_jgr", "showcase_sonic_old"}
+        assert [b["name"] for b in grp["cast"]["builds"]] == ["cast_jgr_sonic_abcd"]
+        jgr, old = rows["showcase_sonic_jgr"], rows["showcase_sonic_old"]
+        assert jgr["recipe_recorded"] and jgr["rebuild_recipe"] == recorded
+        assert old["rebuild_recipe"]["input"]["mod_name"] == "showcase_sonic_old" and old["rebuild_recipe"]["input"]["showcase"]
+        assert old["rebuild_recipe"]["input"]["source"] == "sonic"
+        assert jgr["launch_options"][0]["default"] and jgr["showcase"]["previews"][0]["url"].startswith("/api/artifacts/")
+        assert jgr["summary"].startswith("Sonic Adventure cast")
+        # Rebuild all of the group: the recorded showcase calls, never a launch
+        jobs = []
+        monkeypatch.setattr(S, "queue", lambda todo, submit: ([{"key": t["key"], "job_id": f"j{i}", "input": S.sanitize(t["recipe"])["input"]}
+                                                               for i, t in enumerate(todo)], []) if not jobs.append(todo) else None)
+        out = c.post(f"/api/games/{g}/special_builds/rebuild", json={"recipes": "all", "group": "showcase"}, headers=h).json()
+        assert out["queued"] == 2
+        assert all(j["input"]["mod_name"].startswith("showcase_sonic_") and j["input"]["showcase"] and j["input"]["launch"] is False
+                   for j in out["jobs"])
+    # a game without showcase builds keeps the four groups
+    assert [x["key"] for x in S.group([], {}, [])] == ["confirmation", "cast", "character", "other"]
+
+
 def test_gallery_marks_showcase_builds_and_filters_them():
     from gbox import built_mods as B
     rec = {"name": "showcase_sonic_jgr", "game_id": gid(1), "images": [], "donor_previews": [],

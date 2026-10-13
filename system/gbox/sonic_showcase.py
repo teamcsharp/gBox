@@ -978,7 +978,8 @@ def routes(app, store, config, auth, submit, workers):
 
     @app.get("/api/showcase/{game_id}")
     def showcase_game(game_id: str, actor=Depends(auth)):
-        """One title's showcase record (the game menu's Special builds) and its readiness row."""
+        """One title's showcase record (stage, what is missing) and its readiness row; the build itself is listed by
+        the game menu's Special builds (gbox/special_builds.py, "Sonic showcase" group)."""
         if not re.fullmatch(r"[0-9a-f]{16}", game_id or ""):
             raise HTTPException(404, "no such game")
         return svc.game(game_id)

@@ -6,7 +6,7 @@ pushes every title gBox can't write yet into Hermes's readiness queue so the Ghi
 
 Code: `gbox/sonic_showcase.py` (service, API), `gbox/cast_swap.py` (`mod_name=`, `showcase=`, `plan_digest`,
 `link_tree`), `gbox/hermes_work_queue.py` (`ensure_item`, `item_state`), `gbox/built_mods.py` (the Mods page
-filter), `clients/web/viz/mods-gallery.js`, `clients/web/viz/game-menu.js` (Special builds),
+filter), `clients/web/viz/mods-gallery.js`, `gbox/special_builds.py` (the Sonic showcase group of Special builds),
 `clients/desktop/index.html` (Settings card). Tests: `tests/test_sonic_showcase.py`.
 
 ## Turning it on
@@ -111,8 +111,15 @@ Every `interval_s` (or at once after a settings change / `POST /api/showcase/run
 
 * **Mods page**: the *Sonic showcase* builds filter (and a chip on each card); the fitting previews join the card's
   pictures. `GET /api/mods/built?kind=showcase` filters on the server.
-* **Game right-click menu > Special builds**: the title's showcase stage, the build (selectable as the boot mod),
-  the slots replaced, previews, and for a title without a writer what is missing.
+* **Game right-click menu > Special builds** (`gbox/special_builds.py`, one section): the showcase builds are its
+  **Sonic showcase** group (after the confirmation builds, present when the game has one), picked out by the marker's
+  `showcase` record on a `showcase_sonic_*` folder. Each row has the section's quick launch (▶, this PC) and options
+  (another PC, saved moment, the Spark's debugger, Rebuild); its summary is the slots built, its picture the first
+  fitting preview. Rebuild queues the recorded showcase call (`characters op=cast_swap source=sonic
+  mod_name=showcase_sonic_<title> showcase=true launch=false rebuild=true`; `mod_name` / `showcase` are kept in the
+  recipe, and a build made before recipes were recorded gets them inferred from its folder and marker).
+* `GET /api/showcase/{game_id}` still answers the title's record (stage, what is missing for a title without a
+  writer) and readiness row.
 
 ## API
 
@@ -121,7 +128,7 @@ Every `interval_s` (or at once after a settings change / `POST /api/showcase/run
 | `GET /api/showcase` | settings, phase, message, idle reason, current title / stage / job, queue (each title's stage), disk (used, budget, free, storage problem), builds this hour, last results, records |
 | `PUT /api/showcase` (or `POST`) | `enabled`, `paused`, `favorites`, `recent`, `budget_gb`, `builds_per_hour`, `whole_cast_max_slots`, `interval_s`, `dedupe`, `pause_while_playing_anywhere` (clamped) |
 | `POST /api/showcase/run` | run a pass now |
-| `GET /api/showcase/{game_id}` | that title's record and readiness row (Special builds) |
+| `GET /api/showcase/{game_id}` | that title's record (stage, what is missing) and readiness row |
 
 Record stages: `building`, `built`, `unchanged`, `failed`, `deferred`, `evicted`, `over_budget`, `rate_limited`,
 `waiting_storage`, `collecting_donors`, `no_donors`, `no_plan`, `readiness_queued`, `readiness_pending`,

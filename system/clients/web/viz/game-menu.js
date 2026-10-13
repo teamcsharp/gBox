@@ -7,12 +7,20 @@
 // section still waiting on the server says "loading…" and fills in, or says why not with a Retry, when the answer comes.
 // Each section is built on its own: one that throws is replaced by a line saying so and the rest (Play) still opens.
 // Plain functions + a controller over a tiny DOM surface, so node tests drive it (tests/test_game_menu.cjs).
+// "Special builds ▸/▾" (tests/test_special_builds_menu.cjs): a collapsible section (open / closed remembered per user in
+// localStorage) listing the builds made to test or confirm the operator's requests, cast swaps, character swaps and
+// the rest (GET /api/games/{id}/special_builds, gbox/special_builds.py). Drawn at once with placeholder rows, filled when
+// the answer comes; each build: Quick launch (this PC) + an options submenu (Play on <PC>, saved moment, debugger,
+// Open in Mods page, Open request #n, Rebuild), and "Rebuild all confirmation builds" on top (Spark jobs, followed in
+// the process pop-up). mountSpecial() puts the same section into another menu (the desktop app's game chip menu).
 (function (root) {
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const CHARS_TTL = 30000, MODS_TTL = 15000, PREFETCH_TTL = 300000;   // revalidate in the background when older than this
   const CHARS_TIMEOUT = 60000, MODS_TIMEOUT = 10000;         // a read that never answers turns into "didn't load · Retry"
-  const cache = { chars: null, charsAt: 0, charsPending: null, mods: new Map() };   // mods: gid -> { list, at, pending }
+  const SPECIAL_TTL = 15000, SPECIAL_TIMEOUT = 10000, SPECIAL_KEY = "gbox_special_builds_open";
+  const SPECIAL_GROUPS = [["confirmation", "Confirmation builds"], ["cast", "Cast swaps"], ["character", "Character swaps"], ["other", "Other"]];
+  const cache = { chars: null, charsAt: 0, charsPending: null, mods: new Map(), special: new Map() };   // mods / special: gid -> { list, at, pending }
   const now = () => Date.now();
 
   function deadline(promise, ms, what) {
@@ -43,6 +51,139 @@
       .finally(() => { const e = cache.mods.get(gid); if (e && e.pending === p) delete e.pending; });
     cache.mods.set(gid, { ...c, pending: p });
     return p;
+  }
+  // this game's special builds (the server answers from its built-mods index in memory)
+  function loadSpecial(io, gid, force) {
+    const c = cache.special.get(gid) || {};
+    if (c.pending) return c.pending;
+    if (!force && c.list && now() - c.at < SPECIAL_TTL) return Promise.resolve(c.list);
+    let call; try { call = io.api(`/api/games/${encodeURIComponent(gid)}/special_builds`); } catch (err) { call = Promise.reject(err); }
+    const p = deadline(call, io.specialTimeout || SPECIAL_TIMEOUT, "The special builds")
+      .then(r => { if (!r || !Array.isArray(r.groups)) throw new Error("unexpected answer"); cache.special.set(gid, { list: r, at: now() }); return r; })
+      .finally(() => { const e = cache.special.get(gid); if (e && e.pending === p) delete e.pending; });
+    cache.special.set(gid, { ...c, pending: p });
+    return p;
+  }
+  // open / closed, per user: io.special = { get, set } when the host keeps it, else localStorage (gbox_special_builds_open[:user])
+  const specialKey = io => SPECIAL_KEY + (io.user ? ":" + io.user : "");
+  function specialOpenGet(io) {
+    try {
+      if (io.special && io.special.get) return !!io.special.get();
+      const s = io.storage || root.localStorage; return !!s && s.getItem(specialKey(io)) === "1";
+    } catch { return false; }
+  }
+  function specialOpenSet(io, on) {
+    try {
+      if (io.special && io.special.set) return io.special.set(!!on);
+      const s = io.storage || root.localStorage; if (s) s.setItem(specialKey(io), on ? "1" : "0");
+    } catch {}
+  }
+  // ---- the "Special builds" section, from st = { gid, special (the answer) | null, specialErr, specialOpen, sbOpts
+  //      (the build whose options are open), sbBusy, sbStatus, worker } ----
+  const sbBuilds = sp => (sp && Array.isArray(sp.groups) ? sp.groups : []).flatMap(g => Array.isArray(g.builds) ? g.builds : []);
+  const sbFind = (st, key) => sbBuilds(st.special).find(b => b.key === key);
+  const sbDefault = b => (b.launch_options || []).find(o => o.default) || (b.launch_options || [])[0];
+  const sbConfirm = sp => ((sp && sp.groups || []).find(g => g.key === "confirmation")?.builds || []).filter(b => b.rebuild_recipe);
+  function sbOptLabel(o, st) {
+    if (o.target === "here" && !o.moment && !o.debug) return `Play on this PC${st.worker ? ` (${st.worker})` : ""}`;
+    return o.label || o.id;
+  }
+  function sbOptions(b, st) {
+    const btn = (attrs, text, title = "") => `<button class="act" type="button" role="menuitem" ${attrs}${title ? ` title="${ESC(title)}"` : ""} style="display:block;width:100%;text-align:left;margin-top:3px">${text}</button>`;
+    const k = `data-key="${ESC(b.key)}"`;
+    return `<div class="gm-sbo" role="menu" data-gm-sbo="${ESC(b.key)}" style="margin:4px 0 6px 10px;padding-left:6px;border-left:2px solid var(--line,#444)">` +
+      (b.launch_options || []).map(o => btn(`data-gm-sb="launch" ${k} data-opt="${ESC(o.id)}"`, `▶ ${ESC(sbOptLabel(o, st))}`)).join("") +
+      btn(`data-gm-sb="mods" ${k}`, "Open in Mods page") +
+      (b.tickets || []).map(t => btn(`data-gm-sb="request" ${k} data-n="${ESC(t.number)}"`, `Open request #${ESC(t.number)}${t.title ? " · " + ESC(t.title) : ""}`)).join("") +
+      (b.rebuild_recipe ? btn(`data-gm-sb="rebuild" ${k}`, "⟳ Rebuild", "Build it again on the Spark from its recipe (never launches)")
+        : `<div class="mut" style="font-size:11px;margin-top:3px">No rebuild recipe: ${ESC(b.recipe_missing || "none recorded")}</div>`) + `</div>`;
+  }
+  function sbRow(b, st) {
+    const d = sbDefault(b), open = st.sbOpts === b.key;
+    const tickets = (b.tickets || []).map(t => `<span class="mut" title="${ESC(t.title || "")}">#${ESC(t.number)}${t.title ? " " + ESC(t.title) : ""}</span>`).join(" · ");
+    return `<div class="gm-sbr" data-gm-sbkey="${ESC(b.key)}" style="margin:3px 0">
+      <div style="display:flex;gap:4px;align-items:center"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ESC(b.name)}">${ESC(b.mod_title || b.name)}</span>
+      <button class="act pri" type="button" data-gm-sb="quick" data-key="${ESC(b.key)}" title="Quick launch: ${ESC(d ? sbOptLabel(d, st) : "")}" ${d ? "" : "disabled"}>▶</button>
+      <button class="act" type="button" data-gm-sb="opts" data-key="${ESC(b.key)}" aria-haspopup="menu" aria-expanded="${open}" title="Options">⋯</button></div>
+      ${tickets ? `<div style="font-size:11px">${tickets}</div>` : ""}${b.summary ? `<div class="mut" style="font-size:11px">${ESC(b.summary)}</div>` : ""}
+      ${open ? sbOptions(b, st) : ""}</div>`;
+  }
+  function specialHTML(st) {
+    const sp = st.special, open = !!st.specialOpen, total = sp ? (sp.total ?? sbBuilds(sp).length) : null;
+    const head = `<button class="act" type="button" data-gm-sb="toggle" aria-expanded="${open}" style="width:100%;text-align:left">Special builds ${open ? "▾" : "▸"}${total != null ? ` <span class="mut">(${total})</span>` : ' <span class="mut" data-gm-loading="special-count">…</span>'}</button>`;
+    if (!open) return `<div class="gms gm-sb">${head}</div>`;
+    const conf = sbConfirm(sp);
+    const top = `<div class="gm-sbtop" style="margin:6px 0"><button class="act" type="button" data-gm-sb="rebuild-all" style="width:100%" ${!sp || !conf.length || st.sbBusy ? "disabled" : ""}
+      title="Every confirmation build built again on the Spark from its recipe (never launched); progress in the process pop-up">⟳ Rebuild all confirmation builds${sp ? ` (${conf.length})` : ""}</button>
+      <div class="mut" data-gm-sb-status style="font-size:11px">${ESC(st.sbStatus || "")}</div></div>`;
+    let body;
+    if (!sp) body = st.specialErr ? failed("special", "Special builds didn't load: " + st.specialErr)
+      : SPECIAL_GROUPS.map(([k, label]) => `<div class="gm-sbg" data-gm-sbg="${k}"><b style="font-size:12px">${label}</b>
+        <div class="mut gm-sbph" data-gm-loading="special" style="font-size:11px">loading…</div></div>`).join("");
+    else body = sp.groups.map(g => `<div class="gm-sbg" data-gm-sbg="${ESC(g.key)}"><b style="font-size:12px">${ESC(g.label)}</b> <span class="mut">${(g.builds || []).length}</span>
+        ${(g.builds || []).length ? g.builds.map(b => sbRow(b, st)).join("") : '<div class="mut" style="font-size:11px">none</div>'}</div>`).join("");
+    return `<div class="gms gm-sb">${head}${top}${body}</div>`;
+  }
+  // The section's actions, shared by the game menu and mountSpecial: io = { api, launch?(gid, {mod, node, debug, slot,
+  // option, build}), openMods?(gid, build), openRequest?(ticket, build), progress?(jobs) (the process pop-up), worker,
+  // close? } -> { fetch(force), click(target) -> handled? }
+  function specialActions(io, st, repaint, close) {
+    const gid = st.gid;
+    const fetch = force => loadSpecial(io, gid, force).then(r => { st.special = r; st.specialErr = null; repaint(); },
+      err => { st.specialErr = String(err && err.message || err); if (!st.special) repaint(); });
+    async function launch(b, o) {
+      if (!b || !o) return;
+      close();
+      const node = o.target === "here" ? (io.worker || "auto") : o.node;
+      const x = { mod: b.name, node, debug: !!o.debug, slot: o.moment && o.state_slot != null ? o.state_slot : "", option: o, build: b };
+      if (io.launch) return io.launch(gid, x);
+      const path = String(o.call?.path || "").replace(/([?&])node=[^&]*/, `$1node=${encodeURIComponent(node)}`);
+      return io.api(path, {});
+    }
+    async function rebuild(body, what) {
+      st.sbBusy = true; st.sbStatus = `queueing ${what} on the Spark…`; repaint();
+      try {
+        const r = await io.api(`/api/games/${encodeURIComponent(gid)}/special_builds/rebuild`, body);
+        const jobs = (r && r.jobs) || [], skipped = (r && r.skipped) || [];
+        st.sbStatus = (jobs.length ? `✓ ${jobs.length} rebuild${jobs.length === 1 ? "" : "s"} queued on the Spark (${jobs.map(j => j.job_id).join(", ")}): progress in the pop-up`
+          : "✗ nothing queued") + (skipped.length ? ` · ${skipped.length} skipped: ${skipped.map(s => s.reason).slice(0, 2).join("; ")}` : "");
+        if (jobs.length && io.progress) {
+          try { io.progress(jobs.map(j => ({ id: j.job_id, tool: j.tool || "characters", input: j.input || {}, state: j.state || "queued",
+                                             progress: { pct: 0, msg: `rebuild ${j.label || j.key}`, ts: Date.now() / 1000 } }))); } catch {}
+        }
+        return r;
+      } catch (err) { st.sbStatus = "✗ " + String(err && err.message || err).slice(0, 160); }
+      finally { st.sbBusy = false; repaint(); }
+    }
+    function click(t) {
+      const at = s => t && t.closest && t.closest(s);
+      const again = at("[data-gm-retry]");
+      if (again && again.dataset.gmRetry === "special") { st.specialErr = null; repaint(); fetch(true); return true; }
+      const a = at("[data-gm-sb]"); if (!a) return false;
+      const act = a.dataset.gmSb, b = a.dataset.key ? sbFind(st, a.dataset.key) : null;
+      if (act === "toggle") { st.specialOpen = !st.specialOpen; specialOpenSet(io, st.specialOpen); repaint(); }
+      else if (act === "opts") { st.sbOpts = st.sbOpts === a.dataset.key ? null : a.dataset.key; repaint(); }
+      else if (act === "quick") launch(b, b && sbDefault(b));
+      else if (act === "launch") launch(b, b && (b.launch_options || []).find(o => o.id === a.dataset.opt));
+      else if (act === "mods") { close(); io.openMods && io.openMods(gid, b); }
+      else if (act === "request") { close(); const n = a.dataset.n; io.openRequest && io.openRequest((b?.tickets || []).find(x => String(x.number) === String(n)) || { number: +n }, b); }
+      else if (act === "rebuild" && b?.rebuild_recipe) rebuild({ recipes: [b.rebuild_recipe] }, b.mod_title || b.name);
+      else if (act === "rebuild-all") rebuild({ recipes: "all", group: "confirmation" }, "every confirmation build");
+      return true;
+    }
+    return { fetch, click, launch, rebuild };
+  }
+  // The section on its own, in another menu (the desktop app's game chip menu): host = an element; io as above
+  function mountSpecial(io, host, { gid, title = "" }) {
+    const st = { gid, title, worker: io.worker || "", special: cache.special.get(gid)?.list || null, specialErr: null,
+                 specialOpen: specialOpenGet(io), sbOpts: null, sbBusy: false, sbStatus: "" };
+    const repaint = () => { try { host.innerHTML = specialHTML(st); } catch (err) { host.innerHTML = `<p class="mut">Special builds could not be shown: ${ESC(String(err && err.message || err).slice(0, 120))}</p>`; }
+                            if (io.refit) { try { io.refit(host); } catch {} } };
+    const acts = specialActions(io, st, repaint, () => { try { io.close && io.close(); } catch {} });
+    repaint();
+    host.onclick = ev => { if (acts.click(ev.target)) { ev.stopPropagation && ev.stopPropagation(); } };
+    const settled = acts.fetch(false);
+    return { host, state: st, settled, actions: acts, repaint };
   }
   // Warm the character library while the Library shows, so the first right-click already has it (every library redraw
   // calls this; a copy younger than 5 minutes is kept, opening the menu revalidates after 30 s).
@@ -101,24 +242,7 @@
       ${loading ? (st.modsErr ? failed("mods", "Mods didn't load: " + st.modsErr) : '<p class="mut" data-gm-loading="mods">loading mods…</p>')
         : !st.mods.length ? '<p class="mut">No mods for this game yet: ask gBox for one while playing.</p>' : ""}</div>`;
     },
-    // Special builds: this game's Sonic showcase record (GET /api/showcase/{gid}, gbox/sonic_showcase.py), shown when the
-    // client asks for it (io.showcase) and there is one
-    special: st => {
-      const s = st.showcase, r = s && s.record;
-      if (!r) return "";
-      const built = s.mod_exists && r.mod;
-      const slots = (r.slots_replaced || []).filter(x => /built|partial/.test(x.status || ""));
-      const pics = (r.previews || []).filter(p => p.preview).slice(0, 6);
-      const missing = (r.missing || []).slice(0, 4);
-      const when = r.built_at ? new Date(r.built_at * 1000).toLocaleString() : "";
-      return `<div class="gms"><b>Special builds</b>
-      <div class="mut" style="font-size:11px">Sonic showcase · ${ESC(String(r.stage || "pending").replace(/_/g, " "))}${r.build_time ? ` · built in ${Math.round(r.build_time)} s` : ""}${when ? ` · ${ESC(when)}` : ""}</div>
-      ${built ? `<label><input type="radio" name="gmd" value="${ESC(r.mod)}" ${st.boot.disc === r.mod ? "checked" : ""}> ${ESC(r.mod)} (${slots.length} slot${slots.length === 1 ? "" : "s"} as Sonic characters)</label>` : ""}
-      ${slots.length ? `<div class="mut" style="font-size:11px">${slots.slice(0, 8).map(x => `${ESC(x.donor || x.character)} → ${ESC(x.slot_name || x.slot)}`).join(" · ")}${slots.length > 8 ? " …" : ""}</div>` : ""}
-      ${pics.length ? `<div class="gmch">${pics.map(p => `<img loading="lazy" alt="${ESC(p.label || p.slot)}" title="${ESC(p.label || p.slot)}" src="${ESC(st.img ? st.img(p.preview) : p.preview)}" style="max-width:64px;max-height:64px">`).join("")}</div>` : ""}
-      ${!built && r.message ? `<div class="mut" style="font-size:11px">${ESC(String(r.message).slice(0, 200))}</div>` : ""}
-      ${missing.length ? `<ul class="mut" style="font-size:11px;margin:2px 0;padding-left:16px">${missing.map(m => `<li>${ESC(m)}</li>`).join("")}</ul>` : ""}</div>`;
-    },
+    special: st => specialHTML(st),
     collect: () => `<div class="gms"><b>Model collection</b>
       <button id="gmcollect" type="button">Extract this game's character models in the background</button>
       <div id="gmcollectstatus" class="mut" style="font-size:11px;margin-top:5px">Runs on Spark; track progress in Tasks. The game does not need to run here.</div></div>`,
@@ -129,8 +253,8 @@
       <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`,
   };
   const ORDER = ["head", "actions", "chars", "mods", "special", "collect", "slot", "play"];
-  const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", special: "Special builds", collect: "Model collection",
-                  slot: "Start from", play: "Play" };
+  const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", special: "Special builds",
+                  collect: "Model collection", slot: "Start from", play: "Play" };
   // one section; a builder that throws becomes a line saying so, never a menu that doesn't open
   function section(name, st, d) {
     let body;
@@ -155,8 +279,9 @@
     const current = () => el._gmGen === gen;
     const read = (f, fb) => { try { return f(); } catch { return fb; } };
     const cachedMods = cache.mods.get(gid);
-    const st = { gid, title, worker: !!io.worker, img: io.img, boot: read(() => io.boot.get(gid), { disc: "", slot: "", character: "" }),
+    const st = { gid, title, worker: io.worker || "", img: io.img, boot: read(() => io.boot.get(gid), { disc: "", slot: "", character: "" }),
                  kept: read(() => io.keep.get(gid), []), chars: cache.chars, charsErr: null, mods: cachedMods?.list || null, modsErr: null,
+                 special: cache.special.get(gid)?.list || null, specialErr: null, specialOpen: specialOpenGet(io), sbOpts: null, sbBusy: false, sbStatus: "",
                  note: null, building: null, errors: [], painted: {} };
     const close = () => el.classList.remove("on");
     const paint = names => {
@@ -192,11 +317,8 @@
       err => { st.charsErr = String(err && err.message || err); if (!Array.isArray(st.chars)) paint(["chars"]); });
     const fetchMods = force => loadMods(io, gid, force).then(list => { st.mods = list; st.modsErr = null; paint(["mods"]); },
       err => { st.modsErr = String(err && err.message || err); if (!Array.isArray(st.mods)) paint(["mods"]); });
-    const settled = Promise.all([fetchChars(false), fetchMods(false)]);
-    if (io.showcase) {                                        // Special builds: never delays or breaks the rest of the menu
-      let call; try { call = io.api(`/api/showcase/${encodeURIComponent(gid)}`); } catch (err) { call = Promise.reject(err); }
-      deadline(call, MODS_TIMEOUT, "The showcase record").then(s => { st.showcase = s; paint(["special"]); }, () => {});
-    }
+    const special = specialActions(io, st, () => paint(["special"]), close);
+    const settled = Promise.all([fetchChars(false), fetchMods(false), special.fetch(false)]);
 
     el.onchange = async ev => {
       const t = ev.target; if (!current()) return;
@@ -237,6 +359,7 @@
       if (at("[data-models]")) { close(); io.models(gid, title); return; }
       if (at("[data-cover]")) { io.cover(gid, card, at("[data-cover]")); return; }
       if (at("[data-cast]")) { close(); io.cast(gid, title); return; }
+      if (special.click(ev.target)) return;                  // Special builds: toggle, options, launch, rebuild, Retry
       const again = at("[data-gm-retry]");
       if (again) {
         if (again.dataset.gmRetry === "chars") { st.charsErr = null; paint(["chars"]); fetchChars(true); }
@@ -256,7 +379,7 @@
       const g = at("[data-go]"); if (!g) return;
       close(); io.play(gid, g.dataset.go);
     };
-    return { el, state: st, settled, paint };
+    return { el, state: st, settled, paint, special };
   }
 
   // Keep a fixed menu inside the window: flip above the pointer when it would run past the bottom, clamp to the edges,
@@ -269,8 +392,9 @@
     return { left: Math.max(pad, Math.min(x, vw - w - pad)), top: Math.max(minTop, top), maxHeight };
   }
 
-  const api = { open, html, section, derive, fit, prefetch, loadChars, loadMods, readyOf, ORDER, SECTIONS,
-                _reset() { cache.chars = null; cache.charsAt = 0; cache.charsPending = null; cache.mods.clear(); }, _cache: cache };
+  const api = { open, html, section, derive, fit, prefetch, loadChars, loadMods, loadSpecial, specialHTML, mountSpecial,
+                specialOpenGet, specialOpenSet, readyOf, ORDER, SECTIONS, SPECIAL_KEY,
+                _reset() { cache.chars = null; cache.charsAt = 0; cache.charsPending = null; cache.mods.clear(); cache.special.clear(); }, _cache: cache };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxGameMenu = api;
 })(typeof window !== "undefined" ? window : globalThis);

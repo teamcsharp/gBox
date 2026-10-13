@@ -1868,6 +1868,10 @@ def create_app(config: Config) -> FastAPI:
     from . import sonic_showcase
     sonic_showcase.routes(app, store, config, auth,
                           lambda request: submit(JobRequest(**request), "gbox-showcase").model_dump(mode="json"), workers)
+    from . import special_builds                  # the game menu's "Special builds": grouped builds, launch + rebuild
+    special_builds.routes(app, store, config, auth, workers=workers,
+                          submit=lambda tool, inp, require_os, actor: submit(
+                              JobRequest(tool=tool, input=inp, require_os=require_os), actor))
 
     class Progress(BaseModel):
         pct: float

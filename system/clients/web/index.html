@@ -1014,7 +1014,8 @@ const queryParams = (offset) => new URLSearchParams({ q: L.q, platform: L.plats.
 const MODSG = { ctl: null };
 function modsView() { MODSG.ctl?.stop(); MODSG.ctl = null; return `<div id="modsgallery"></div>`; }
 modsView.after = () => {
-  MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto",
+  const focus = MODSG.focus || {}; MODSG.focus = null;      // "Open in Mods page" / "Open request #n" from the game menu
+  MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto", q: focus.q, game: focus.game,
     url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
     visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i) });
 };
@@ -2515,12 +2516,18 @@ document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div
 dragAnywhere($("#gmenu"));
 // #1562: the menu opens in the frame of the right-click from what the page already has (clients/web/viz/game-menu.js:
 // cached character library + this game's cached mods; sections waiting on the server say "loading…" and fill in)
-const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, worker: window.GBOX_LOCAL?.worker || "", showcase: true,
+const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, worker: window.GBOX_LOCAL?.worker || "",
   boot: { get: bootGet, set: bootSet }, keep: { get: modKeepGet, set: modKeep }, badge: bootBadge,
   place: (el, x, y) => fitMenu(el, x, y), refit: el => { if (el._fitXY) refitMenu(el); },
   models: (gid, title) => show("GameModels", gid, title), cover: (gid, card, btn) => attachCover(gid, document.querySelector(`.card[data-gid="${CSS.escape(gid)}"]`) || card, btn),   // the card on screen now
   cast: (gid, title) => castSwapOpen(gid, title),
-  play: (gid, go) => play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined) });
+  play: (gid, go) => play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined),
+  // "Special builds ▸" (gbox/special_builds.py): launch a build (this PC / a PC / saved moment / debugger) through the
+  // usual launch + loader, open it or its request in the Mods page, rebuilds followed in the process pop-up
+  launch: (gid, x) => play(gid, x.node === "auto" ? undefined : x.node, !!x.debug, { disc: x.mod, slot: x.slot === "" || x.slot == null ? "" : String(x.slot), character: "" }),
+  openMods: (gid, b) => { MODSG.focus = { q: b?.name || "", game: gid }; show("Mods"); },
+  openRequest: t => { MODSG.focus = { q: "#" + t.number, game: "" }; show("Mods"); },
+  progress: jobs => window.GBOX_PROCESS_POPUP?.sync(jobs) });
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".card[data-gid]"); if (!c) return; e.preventDefault();
   GBoxGameMenu.open(gameMenuIO(), { gid: c.dataset.gid, title: c.dataset.title, card: c, x: e.clientX, y: e.clientY });

@@ -811,6 +811,7 @@ def routes(app, store, config, auth):
             return cache["data"]
 
     app.state.built_mods_invalidate = lambda: cache.update(at=0.0)
+    app.state.built_mods_current = current             # the joined gallery (gbox.special_builds groups it per game)
 
     @app.get("/api/mods/built")
     def built_list(game_id: str = "", writer: str = "", q: str = "", offset: int = 0, limit: int = 0,
