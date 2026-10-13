@@ -2639,6 +2639,11 @@ def characters_tool(inp: CharIn, ctx):
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
         return {"result": out | crazy_taxi_swap.use(ctx, meta, game, inp)}
+    from . import stranglehold_swap
+    if gid in stranglehold_swap.GAME_IDS and stranglehold_swap.is_slot(inp.slot):
+        # Stranglehold PS3: player | tequila[:outfit] | enemy:<class> | enemies | model:<package> -> sh_<slot>_<hash>
+        # (the char_*.xxx packages with an appended SkeletalMesh export + PS3TOC.txt, in a folder mod)
+        return {"result": out | stranglehold_swap.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}

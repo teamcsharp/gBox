@@ -285,13 +285,38 @@ def parse_mesh(pkg: Package, i: int) -> dict:
     nlod = i32()
     if nlod < 1:
         raise FormatError("no LOD models")
+    lods = []
+    for _ in range(nlod):
+        lod = parse_lod(b, o)
+        lods.append(lod)
+        o = lod["end"]
+    l0 = lods[0]
+    return {"name": pkg.exports[i - 1]["name"], "export": i, "props": props, "bounds": bounds, "materials": materials,
+            "origin": origin, "rot_origin": rot_origin, "bones": bones, "depth": depth, "lods": nlod, "lod": lods,
+            "sections": l0["sections"], "active_bones": l0["active_bones"], "chunks": l0["chunks"],
+            "vertices": l0["vertices"], "size_field": l0["size_field"], "geometry_offset": l0["geometry_offset"],
+            "geometry_end": l0["geometry_end"], "groups": l0["groups"], "lods_end": o, "blob_size": len(b)}
+
+
+def parse_lod(b: bytes, o: int) -> dict:
+    """One FStaticLODModel at offset o (sections .. SPU geometry .. RequiredBones) -> fields + its byte range."""
+    start = o
+
+    def i32():
+        nonlocal o
+        o += 4
+        return struct.unpack_from(">i", b, o - 4)[0]
+
+    def u16s(n):
+        nonlocal o
+        o += 2 * n
+        return list(struct.unpack_from(f">{n}H", b, o - 2 * n))
     sections = []
     for _ in range(i32()):
         m, ch, first, ntri = struct.unpack_from(">HHIH", b, o)
         o += 10
         sections.append({"material": m, "chunk": ch, "first_index": first, "triangles": ntri})
-    nidx = i32()
-    if nidx:
+    if i32():
         raise FormatError("an index buffer on a PS3 mesh: not the SPU segment layout")
     active = u16s(i32())
     nbytes = i32()                                         # TArray<u8>, empty
@@ -304,7 +329,7 @@ def parse_mesh(pkg: Package, i: int) -> dict:
         bl = u16s(i32())
         nr, ns, mi = i32(), i32(), i32()
         chunks.append({"first_vertex": first, "bones": bl, "rigid": nr, "soft": ns, "max_influences": mi})
-    size_field, nverts, zero = i32(), i32(), i32()
+    size_field, nverts, _zero = i32(), i32(), i32()
     geo_offset = o
     groups = []
     for _ in range(i32()):
@@ -316,11 +341,13 @@ def parse_mesh(pkg: Package, i: int) -> dict:
         groups.append(segs)
     if len(groups) != len(chunks):
         raise FormatError(f"{len(groups)} segment groups for {len(chunks)} chunks")
-    return {"name": pkg.exports[i - 1]["name"], "export": i, "props": props, "bounds": bounds, "materials": materials,
-            "origin": origin, "rot_origin": rot_origin, "bones": bones, "depth": depth, "lods": nlod,
-            "sections": sections, "active_bones": active, "chunks": chunks, "vertices": nverts,
-            "size_field": size_field, "geometry_offset": geo_offset, "geometry_end": o, "groups": groups,
-            "blob_size": len(b)}
+    geo_end = o
+    required = b[o + 4:o + 4 + struct.unpack_from(">i", b, o)[0]]
+    o += 4 + len(required)
+    return {"start": start, "end": o, "sections": sections, "active_bones": active, "chunks": chunks,
+            "vertices": nverts, "size_field": size_field, "geometry_offset": geo_offset, "geometry_end": geo_end,
+            "groups": groups, "required_bones": required,
+            "triangles": sum(len(sg["tris"]) for g in groups for sg in g)}
 
 
 def _qmat(q) -> np.ndarray:

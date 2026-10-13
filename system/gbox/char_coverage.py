@@ -62,6 +62,12 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("stranglehold_swap", ["player", "tequila", "tequila:<default|suit|jacket|sweater|jack_swtr>", "enemy:<class>",
+                           "enemies", "model:<package>"],
+     "Stranglehold PS3: Tequila (every outfit, story + multiplayer packages) or a gang enemy / named character's "
+     "multiplayer skin: the donor on the package's own skeleton (native animations), every LOD re-encoded into SPU "
+     "segments as an appended SkeletalMesh export, donor atlas over the body diffuse (DXT), PS3TOC.txt sizes "
+     "updated, in a folder mod; campaign enemies (level packages) not written; unverified in RPCS3"),
     ("twin_snakes_swap", ["player", "model:<key>", "enemies", "soldiers", "bosses", "npcs", "all", "cast"],
      "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
      "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "
