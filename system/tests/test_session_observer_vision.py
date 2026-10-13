@@ -103,8 +103,29 @@ def test_plain_string_lists_are_unchanged_and_bounded():
     ('{"actors": ["a"]}', 'no usable observation'),
     ('{"summary": "   "}', 'no usable observation'),
     ('[1, 2]', 'no usable observation'),
-    ('{"summary": "s", "actors": true}', 'invalid actors'),
 ])
 def test_unusable_replies_still_fail(raw, message):
     with pytest.raises(ValueError, match=message):
         parse_observation(raw)
+
+
+def test_def_jam_ring_crowd_and_hud_shapes_are_kept():
+    """#1374 follow-up: the fight frames of Def Jam Vendetta (two fighters in a ring, a crowd, health/momentum HUD)
+    draw other small-model shapes than the attract frame: a crowd count, booleans, nested HUD maps. None of them may
+    discard an observation that has a summary (that is what filed the "invalid actors" repair)."""
+    raw = json.dumps({
+        'summary': 'Two fighters trade blows in a ring surrounded by a cheering crowd.',
+        'actors': {'player': {'name': 'Fighter in white tank top', 'role': 'player 1', 'health': 0.8},
+                   'opponent': {'name': 'Fighter in red jacket', 'role': 'CPU'}, 'crowd': 40, 'referee': False},
+        'changes': False,
+        'hud': {'health_bars': [0.8, 0.45], 'momentum': 'BLAZIN', 'timer': None},
+        'mechanics_hypotheses': True,
+        'uncertainties': ['crowd size is an estimate']})
+    r = parse_observation(raw)
+    assert r['summary'].startswith('Two fighters')
+    assert r['actors'] == ['player: Fighter in white tank top (player 1): health: 0.8',
+                           'opponent: Fighter in red jacket (CPU)', 'crowd: 40', 'referee: false']
+    assert r['changes'] == [] and r['mechanics_hypotheses'] == []
+    assert r['hud'] == ['health_bars: 0.8, 0.45', 'momentum: BLAZIN', 'timer']
+    assert r['normalized_fields'] == ['actors', 'changes', 'hud', 'mechanics_hypotheses']
+    assert parse_observation('{"summary": "Empty ring", "actors": true}')['actors'] == []
