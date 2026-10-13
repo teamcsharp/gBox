@@ -34,9 +34,11 @@
              writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })) };
   }
 
-  // in-game shots first (what the build looks like running), then the writer's previews, then the donors
+  // in-game shots first (what the build looks like running: card shots, then frames captured from sessions of the build),
+  // then the writer's previews, then the donors
   function imagesOf(m, url = u => u) {
     return [...(m.shots || []).map(s => ({ src: url(s.url), name: `${m.mod_title}: in-game shot`, kind: "shot" })),
+            ...(m.frames || []).map(f => ({ src: url(f.url), name: `${m.mod_title}: ${f.source || "frame"} (session ${String(f.session_id || "").slice(0, 8)})`, kind: "shot" })),
             ...(m.images || []).map(i => ({ src: url(i.url), name: `${m.mod_title}: ${i.name}`, kind: "build" })),
             ...(m.donor_previews || []).map(d => ({ src: url(d.url), name: `Donor ${d.slug} (collection preview)`, kind: "donor" }))];
   }

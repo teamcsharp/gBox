@@ -92,17 +92,32 @@ def _levels(like: C.Pcc, pic: np.ndarray, pal: np.ndarray) -> list[bytes]:
     return out
 
 
-def paint(snake_textures: dict, pcc_bytes: dict, faces: list) -> tuple[dict, list, dict]:
-    """Repaint Snake's texture slots for *faces*.
+def paint(snake_textures: dict, pcc_bytes: dict, faces: list, bins: dict | None = None) -> tuple[dict, list, dict]:
+    """Repaint a model's texture slots (Snake's, a soldier's ...) for *faces*.
 
-    snake_textures: {hash: Pcc} of the textures Snake's KMD names (decoded).
+    snake_textures: {hash: Pcc} of the textures the model's KMD names (decoded).
     pcc_bytes:      {hash: bytes} of every texture in the archive (to re-index CLUT-sharing foreign textures).
     faces:          [(image key or None, rgba image or None, uv (3,2), rgb colour)] per fitted triangle.
+    bins:           {hash: archive id} when the textures live in several DARs (a stage with two texture DARs):
+                    each archive keeps its own byte total; default one archive.
     Returns ({hash: new pcc bytes}, [(texture hash, 8 uv bytes)] per face, report).  The new textures together
-    take no more archive bytes (4-byte aligned) than the originals they replace.
+    take no more archive bytes (4-byte aligned) than the originals they replace.  Archive entries this decoder
+    can't read (8-bit stage textures) are left alone; a slot whose CLUT row overlaps one of their palettes is not
+    repainted (the shared VRAM palette would change that texture's colours).
     """
     from PIL import Image
-    decoded = {h: C.loads(b) for h, b in pcc_bytes.items()}
+    decoded, opaque = {}, {}
+    for h, b in pcc_bytes.items():
+        try:
+            decoded[h] = C.loads(b)
+        except ValueError:
+            opaque[h] = C.header(b)
+    blocked = {h for h, t in snake_textures.items()
+               if any(o["clut"][1] == t.clut[1] and o["clut"] != t.clut and o["clut"][0] < t.clut[0] + 16
+                      and t.clut[0] < o["clut"][0] + max(16, o["colors"]) for o in opaque.values())}
+    snake_textures = {h: t for h, t in snake_textures.items() if h not in blocked}
+    if not snake_textures:
+        raise ValueError("every texture slot shares VRAM palette space with a texture this writer can't re-index")
     use, images, colors = {}, {}, []
     work = []                                             # per face: [key, wrapped uv (3,2)] (key SWATCH: flat colour)
     for key, img, uv, col in faces:
@@ -134,6 +149,20 @@ def paint(snake_textures: dict, pcc_bytes: dict, faces: list) -> tuple[dict, lis
             f[1] = np.clip((f[1] - (cx * 0.5, cy * 0.5)) * 2.0, 0.0, 1.0)
             images.setdefault(t, img[cy * h2:(cy + 1) * h2, cx * w2:(cx + 1) * w2])
             use[t] = use.get(t, 0) + 1
+    # more images than slots (E-102 has 30+): the least used ones become flat colours in the swatch slot
+    room = len(snake_textures) - 1
+    if len(images) + (1 if colors else 0) > len(snake_textures):
+        for k in sorted(images, key=lambda k: -use[k])[room:]:
+            img = images.pop(k)
+            px = img.reshape(-1, img.shape[-1])
+            px = px[px[:, 3] >= 128] if img.shape[-1] == 4 and (px[:, 3] >= 128).any() else px
+            c = tuple(int(v) for v in px[:, :3].mean(0))
+            if c not in colors:
+                colors.append(c)
+            for f in work:
+                if f[0] == k:
+                    f[0], f[1] = SWATCH, np.full((3, 2), colors.index(c) + 0.5)
+            use[SWATCH] = use.get(SWATCH, 0) + use.pop(k)
     if colors:
         images[SWATCH] = np.array([[list(c) + [255]] for c in colors], np.uint8)
     order = sorted(images, key=lambda k: -use[k])
@@ -178,18 +207,27 @@ def paint(snake_textures: dict, pcc_bytes: dict, faces: list) -> tuple[dict, lis
             cands[h] = lv if h in primary else lv[:1] if h not in snake_textures else lv[-1:]
         report["groups"][f"{c[0]},{c[1]}"] = {"members": len(members), "images": sum(
             1 for k in order if snake_textures[slot_of[k]].clut == c), "foreign": sorted(set(members) - set(slots[c]))}
-    budget = sum(len(pcc_bytes[h]) + (-len(pcc_bytes[h]) % 4) for h in cands)
+    bin_of = (lambda h: (bins or {}).get(h, 0))                                    # noqa: E731
+    budget: dict = {}
+    for h in cands:
+        budget[bin_of(h)] = budget.get(bin_of(h), 0) + len(pcc_bytes[h]) + (-len(pcc_bytes[h]) % 4)
     level = {h: 0 for h in cands}
-    size = lambda: sum(len(cands[h][level[h]]) + (-len(cands[h][level[h]]) % 4) for h in cands)  # noqa: E731
+
+    def size(b=None):
+        return sum(len(cands[h][level[h]]) + (-len(cands[h][level[h]]) % 4) for h in cands if b is None or bin_of(h) == b)
     ladder = sorted(primary, key=lambda h: primary[h])                 # least used image degrades first
-    while size() > budget:
-        movable = [h for h in ladder if level[h] < len(cands[h]) - 1]
+    while True:
+        over = [b for b in budget if size(b) > budget[b]]
+        if not over:
+            break
+        movable = [h for h in ladder if level[h] < len(cands[h]) - 1 and bin_of(h) == over[0]]
         if not movable:
             raise ValueError("the repainted textures do not fit the texture archive")
         h = min(movable, key=lambda h: (level[h], primary[h]))
         level[h] += 1
     new = {h: cands[h][level[h]] for h in cands}
-    report.update(bytes=size(), budget=budget, detail_levels={str(h): level[h] for h in primary},
+    report.update(bytes=size(), budget=sum(budget.values()), detail_levels={str(h): level[h] for h in primary},
+                  blocked=sorted(blocked),
                   slot_of={str(k if k == SWATCH else order.index(k)): h for k, h in slot_of.items()})
     out = []
     for k, uv in work:
