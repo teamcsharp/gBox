@@ -385,3 +385,30 @@ def test_no_world_loaded_is_not_reported_as_a_cut():
     scan["recheck"] = re
     out = tools._pick_from_probe(scan, 0.5, 0.5)
     assert out["picked"] is None and "camera unreadable" in out["note"] and "warning" not in out
+
+
+def test_pick_whip_entity_profile_warns_on_a_cut_after_the_click(monkeypatch):
+    """pick_identify (the pick whip) uses pick_tool.entity_profile, not the older pick tool: it rechecks the camera
+    after the scan and records a failed 'camera' evidence step when the shot changed (#1438)."""
+    from gbox import pick_tool, tools
+    p = prof()
+    mem = build(p, SCENE, CAMERA, scripted=((300, 0, 64), (0, 180, 0), 60))
+    monkeypatch.setattr(tools, "_semantic_state", lambda ad, g: {"profile": p["id"], "entities": None})
+    monkeypatch.setattr(semantic, "load_profiles", lambda: [p])
+
+    class Ad:
+        read_memory = staticmethod(mem.read_memory)
+
+    ev = pick_tool.Evidence()
+    out = pick_tool.entity_profile(Ad(), {}, "s", 0.5, 230 / 480, 4 / 3, 0.5, 230 / 480, None, ev, None)
+    assert out["entity"]["class"] == "Bot" and not any(r["step"] == "camera" for r in ev)
+    original = entity_probe.Probe.recheck
+
+    def cut_then_recheck(self, scan):                       # the shot changes between the scan and the recheck
+        mem.u32(CLIENTS + hx(p["camera"]["override"]["flags"][1]), 0x100)
+        return original(self, scan)
+    monkeypatch.setattr(entity_probe.Probe, "recheck", cut_then_recheck)
+    ev = pick_tool.Evidence()
+    pick_tool.entity_profile(Ad(), {}, "s", 0.5, 230 / 480, 4 / 3, 0.5, 230 / 480, None, ev, None)
+    cam = next(r for r in ev if r["step"] == "camera")
+    assert cam["ok"] is False and "click again" in cam["detail"] and cam["data"]["camera_check"]["cut"] is True
