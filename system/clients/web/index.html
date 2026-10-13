@@ -2514,7 +2514,10 @@ async function attachCover(gid, card, btn, url = "") {        // #1067: fetch bo
 }
 // move a running game to another computer behind its loading screen (#1501): the last frame, each step, the progress
 async function moveSession(sid, to, label) {
-  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
+  // the session's mod must come along: an unknown session (list not loaded) would relaunch it without its mod
+  const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
+  if (!s) { loader.show("Can't move this game", ""); $("#ldcancel").style.display = $("#ldlocal").style.display = "none";
+    loader.fail("The session list did not load, so the move would lose the game's mod. The game keeps running where it was; try again."); return; }
   return GBoxSessionMove.run({ api, show: (t, sub, shot) => { loader.show(t, sub, shot); $("#ldcancel").style.display = $("#ldlocal").style.display = "none"; }, progress: (p, m) => loader.progress(p, m), fail: m => loader.fail(m),
       frame: id => `/api/sessions/${encodeURIComponent(id)}/frame.jpg?${tq()}&t=${Date.now()}`,
       done: async nsid => { if (active?.sid === sid) { active.sid = nsid; pip(); } setTimeout(() => loader.hide(), 500); trayTick(); show("Sessions", nsid); } },
