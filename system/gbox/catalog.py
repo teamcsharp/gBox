@@ -757,7 +757,9 @@ def stage_begin(src: Path, game_id: str, config: Config) -> "dict | StageCopy":
     running StageCopy filling the cache (a launch of the same game while one runs joins it)."""
     src, cache = Path(src), config.cache
     try:
-        inside = src.resolve().is_relative_to(Path(cache).resolve())
+        from . import cache_tiers                  # a demoted unit resolves into the cold tier: still "in the cache"
+        real = src.resolve()
+        inside = any(real.is_relative_to(Path(r).resolve()) for r in (cache, cache_tiers.cold_root()) if r)
     except OSError:
         inside = False
     if inside:              # a built file mod (or anything already on the local disk): use it in place. Copying it to
@@ -793,12 +795,34 @@ def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
     return job.result()
 
 
+# never evicted: built mods and their base copies (mods hard-link onto modbase; not a cache of anything), the character
+# and environment libraries, and the two-tier cache's own state (gbox/cache_tiers.py)
+EVICT_KEEP = ("mods", "modbase", "characters", "environments", "characters_mirror", ".gbox-tiers")
+
+
+def _evictable(cache: Path):
+    """Real files of the cache that are copies of something: symlinked folders (data demoted to the cold tier of a
+    two-tier cache) are never followed, so only the hot tier's own files count against the limit."""
+    try:
+        top = list(os.scandir(cache))
+    except OSError:
+        return
+    for e in top:
+        if e.name in EVICT_KEEP or e.is_symlink():
+            continue
+        p = Path(e.path)
+        if e.is_file(follow_symlinks=False):
+            yield p
+        elif e.is_dir(follow_symlinks=False):
+            yield from (f for f in p.rglob("*") if f.is_file() and not f.is_symlink())
+
+
 def evict(cache: Path, limit: int, keep: Path | None = None) -> list[str]:
-    mods = (cache / "mods").resolve()                     # built mods are not a cache of anything: never evict them
+    cache = Path(cache)
     with _STAGE_LOCK:
         busy = {c.part for c in _COPIES.values()}         # a copy still filling its .part
-    files = sorted((p for p in cache.rglob("*") if p.is_file() and p.name not in (STAGE_DB, STAGE_DB + ".tmp")
-                    and p not in busy and not p.resolve().is_relative_to(mods)), key=lambda p: p.stat().st_mtime)
+    files = sorted((p for p in _evictable(cache) if p.name not in (STAGE_DB, STAGE_DB + ".tmp") and p not in busy),
+                   key=lambda p: p.stat().st_mtime)
     total, evicted = sum(p.stat().st_size for p in files), []
     for p in files:
         if total <= limit:

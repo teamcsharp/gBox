@@ -251,8 +251,100 @@ def records(mem: Mem) -> dict:
             "stock_records": sum(1 for v in slots if v < 0)}
 
 
+# ---------------------------------------------------------------------------------------------- pick (pick whip)
+# The renderer's view matrix: 0x8001F1C4 loads it into the GTE (ctc2 to rotation 0-4 and translation 5-7) right before
+# RTPS; s16 m[3][3] (4096 = 1.0), pad, s32 t[3] at +0x14.  Checked on four pcsx_rearmed save states (vr_sud01/03/05,
+# side and top-down cameras): a root at world P lands on the 320x240 picture at (0.5 + v.x/v.z, 0.5 + v.y/v.z) of
+# its width / height, v = m P + t (state 25: Snake 0.83 across, the soldier 0.40; state 62: the two near soldiers
+# at 0.35 / 0.65, 0.11 down, Snake 0.50 / 0.61 under the pause menu).
+VIEW_MATRIX = 0x800B280C
+ACTOR_POS = 0x20                 # GV actor + 0x20: CONTROL.mov, the model root (hip) in world units (SVECTOR)
+FIGURE_UP, FIGURE_DOWN = 570, 1150   # a 16-object figure's top above / soles below its root (Snake: +566 / -1154)
+FIGURE_HALF_WIDTH = 260
+ACTOR_SLOTS = {"../snake_vr/sna_init.c": ("player", "Snake"), "watcher.c": ("enemy:soldier", "soldier")}
+
+
+def view_matrix(mem: Mem):
+    m = struct.unpack("<9h", mem.rd(VIEW_MATRIX, 18))
+    t = struct.unpack("<3i", mem.rd(VIEW_MATRIX + 0x14, 12))
+    return [m[0:3], m[3:6], m[6:9]], t
+
+
+def project(view, p) -> tuple[float, float, float] | None:
+    """World point -> (fraction across, fraction down, depth) of the 4:3 picture; None behind the camera."""
+    m, t = view
+    v = [sum(m[r][c] * p[c] for c in range(3)) / 4096 + t[r] for r in range(3)]
+    if v[2] <= 16:
+        return None
+    return 0.5 + v[0] / v[2], 0.5 + v[1] / v[2], v[2]
+
+
+def figures(mem: Mem) -> list[dict]:
+    """The player and soldier actors with their world root and picture box (top, root, soles)."""
+    view = view_matrix(mem)
+    out = []
+    for _lv, node, head in walk_actors(mem):
+        fname = struct.unpack_from("<I", head, 0x14)[0]
+        if not in_ram(fname):
+            continue
+        name = mem.rd(fname, 32).split(b"\0")[0].decode("latin-1", "replace")
+        if name not in ACTOR_SLOTS:
+            continue
+        pos = struct.unpack("<3h", mem.rd(node + ACTOR_POS, 6))
+        slot, label = ACTOR_SLOTS[name]
+        root = project(view, pos)
+        top = project(view, (pos[0], pos[1] + FIGURE_UP, pos[2]))
+        sole = project(view, (pos[0], pos[1] - FIGURE_DOWN, pos[2]))
+        out.append({"name": label, "slot": slot, "actor": f"{node:#x}", "source": name, "pos": list(pos),
+                    "screen": [round(root[0], 3), round(root[1], 3)] if root else None,
+                    "top": [round(top[0], 3), round(top[1], 3)] if top else None,
+                    "sole": [round(sole[0], 3), round(sole[1], 3)] if sole else None,
+                    "depth": round(root[2]) if root else None})
+    return out
+
+
+def picture_xy(x: float, y: float, window_aspect: float = 4 / 3) -> tuple[float, float]:
+    """A click in the game window -> the 4:3 picture centred in it (letterbox / pillarbox)."""
+    if window_aspect > 4 / 3:
+        w = (4 / 3) / window_aspect
+        x = (x - (1 - w) / 2) / w
+    elif window_aspect < 4 / 3:
+        h = window_aspect / (4 / 3)
+        y = (y - (1 - h) / 2) / h
+    return x, y
+
+
+def _miss(f: dict, x: float, y: float) -> float | None:
+    """Distance (picture pixels, 320x240) from the click to the figure's top-sole segment minus its half width."""
+    if not f["top"] or not f["sole"]:
+        return None
+    ax, ay, bx, by = f["top"][0] * 320, f["top"][1] * 240, f["sole"][0] * 320, f["sole"][1] * 240
+    px, py = x * 320, y * 240
+    dx, dy = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / max(dx * dx + dy * dy, 1e-9)))
+    d = ((ax + t * dx - px) ** 2 + (ay + t * dy - py) ** 2) ** 0.5
+    half = FIGURE_HALF_WIDTH / max(f["depth"] or 1, 1) * 320
+    return max(0.0, d - half)
+
+
+def pick(mem: Mem, x: float, y: float, window_aspect: float = 4 / 3) -> dict:
+    """What is under the click: the nearest player / soldier figure within 12 picture pixels of its box."""
+    stage = stage_name(mem)
+    cx, cy = picture_xy(x, y, window_aspect)
+    rows = []
+    for f in figures(mem):
+        miss = _miss(f, cx, cy)
+        if miss is not None:
+            rows.append(f | {"miss": round(miss, 1)})
+    rows.sort(key=lambda f: (f["miss"], f["depth"] or 0))
+    hit = rows[0] if rows and rows[0]["miss"] <= 12 else None
+    return {"stage": stage, "click": [round(cx, 3), round(cy, 3)], "picked": hit, "actors": rows,
+            "note": None if hit else "no Snake or soldier drawn at that point" if rows else
+            "no Snake or soldier actor is running (menu, loading or result screen)"}
+
+
 # ---------------------------------------------------------------------------------------------- engine
-OPS = ("status", "complete", "unlock_all", "stages")
+OPS = ("status", "complete", "unlock_all", "stages", "pick")
 OP_ALIASES = {"state": "status", "mission_status": "status", "info": "status", "show": "status",
               "complete_mission": "complete", "clear": "complete", "finish": "complete", "win": "complete",
               "mark_complete": "complete", "pass": "complete", "unlock": "unlock_all", "unlockall": "unlock_all",
@@ -319,7 +411,8 @@ def complete(mem: Mem, wait_s: float = 2.0) -> dict:
     return res
 
 
-def run(ad, title: str, op: str = "status", wait_s: float = 2.0) -> dict:
+def run(ad, title: str, op: str = "status", wait_s: float = 2.0, x: float | None = None, y: float | None = None,
+        window_aspect: float = 4 / 3) -> dict:
     op = re.sub(r"[^a-z_]+", "_", (op or "status").lower()).strip("_") or "status"
     op = OP_ALIASES.get(op, op)
     if op not in OPS:
@@ -334,6 +427,10 @@ def run(ad, title: str, op: str = "status", wait_s: float = 2.0) -> dict:
         return status(mem)
     if op == "complete":
         return complete(mem, wait_s)
+    if op == "pick":
+        if x is None or y is None:
+            return {"error": "pick needs x and y (fractions of the game window)"}
+        return pick(mem, x, y, window_aspect)
     return unlock_all(mem)
 
 
@@ -345,8 +442,11 @@ def unlock_all(mem: Mem) -> dict:
 # ---------------------------------------------------------------------------------------------- gBox tool
 class MgsVrIn(BaseModel):
     session_id: str
-    op: str = "status"        # status | complete | unlock_all | stages
+    op: str = "status"        # status | complete | unlock_all | stages | pick
     wait_s: float = 2.0       # complete: how long to watch the clear sequence advance
+    x: float | None = None    # pick: the click, fractions of the game window (0..1)
+    y: float | None = None
+    window_aspect: float = 4 / 3   # pick: width / height of the window the click was in
 
 
 class MgsVrOut(BaseModel):
@@ -360,7 +460,8 @@ def mgs_vr(inp: MgsVrIn, ctx):
     runs the mission manager's own clear routine (what reaching the goal does), so the CLEARED result screen, the
     record and the unlocks follow from the game itself; verified by read-back. op=status shows the stage, mission
     state (running / cleared / over), timer, goal and player position. op=unlock_all opens every mission.
-    op=stages lists the stage families."""
+    op=stages lists the stage families. op=pick x y: which figure (Snake = slot player, a soldier = enemy:soldier) is
+    drawn at that point of the picture (the actors projected through the game's own view matrix)."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
-    return {"result": run(ad, g.get("title", ""), inp.op, inp.wait_s)}
+    return {"result": run(ad, g.get("title", ""), inp.op, inp.wait_s, inp.x, inp.y, inp.window_aspect)}
