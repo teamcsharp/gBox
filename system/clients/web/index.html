@@ -271,6 +271,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/build-shot.js"></script>
+<script src="/viz/last-played.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
 <script src="/viz/builds.js"></script>
@@ -603,6 +604,12 @@ document.addEventListener("click", async e => {
   if (TRAY.open && !e.target.closest("#traypop")) { TRAY.open = false; $("#traypop").classList.remove("on"); }
 });
 trayTick(); setInterval(trayTick, 5000);
+// "Reload the game you had up" (viz/last-played.js over /api/last_played): after the operator's game ends - window
+// closed, Stop, a crash, a failed relaunch, the app or worker restarting - and again on the next start until something
+// is launched; Reload (same game, mod, PC) or Reload with your last moment. The desktop app shows this shell too.
+const LASTPLAYED = GBoxLastPlayed.mount({ api, host: document.body,
+  url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
+  onReloaded: nsid => { if (nsid) show("Sessions", nsid); }, openReport: id => window.open(`/api/requests/${encodeURIComponent(id)}?${tq()}`, "_blank") });
 $("#tok").onchange = e => { tok = e.target.value; try { localStorage.setItem("gbox_tok", tok); } catch {} show(cur); };
 async function api(path, body, method, timeoutMs = 0) {
   const m = method || (body ? "POST" : "GET");
@@ -2634,7 +2641,7 @@ async function hardStop(sid, btn) {
   if (wasActive) { active = null; pip(); }
   show("Library");
   try {
-    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
+    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game", args: { moment: true } } });   // the moment, for "Reload with your last moment"
     if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error(j.error || 'Emulator stop was not confirmed');
   } catch (error) {
     if (btn) btn.title = 'Could not stop game: ' + error.message;
@@ -2742,7 +2749,7 @@ async function sop(sid, op) {
     if (state !== undefined) return sessionPause.control.toggle();   // live session channel, no job queue (#1123)
   }
   if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }   // at once, not after the kill (#1504)
-  const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });
+  const j = await runJob({ tool: "session_op", input: { session_id: sid, op, ...(op === "stop_game" ? { args: { moment: true } } : {}) } });   // Stop keeps the moment for Reload (last played)
   const el = $("#sopres"); if (el) el.textContent = `${op}: ${j.state} ${j.error || JSON.stringify(j.output?.result || "")}`;
   if ((op === 'pause' || op === 'resume') && sessionPause?.sid === sid) sessionPause.control.refresh().catch(() => {});
 }

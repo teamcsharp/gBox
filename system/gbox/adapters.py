@@ -324,24 +324,27 @@ def _pid_window(pid: int):
     return found[0] if found else None
 
 
-def win_send_keys(pid: int, events: list[dict]) -> dict:
+def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
+    """hidden_ok: the keys are emulator hotkeys that need no focus (Dolphin's gBox F13-F15 chords): sent even while the
+    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved)."""
     import ctypes
     from ctypes import wintypes
     u, k = ctypes.windll.user32, ctypes.windll.kernel32
     h = _pid_window(pid)
-    if not h:
+    if not h and not hidden_ok:
         raise RuntimeError("the game window isn't open")
-    root = u.GetAncestor(h, 2)                                   # GA_ROOT: gBox when docked, else the emulator itself
-    for _ in range(100):                                         # wait (up to 10 s) for the operator to bring gBox back
-        if u.GetForegroundWindow() == root:
-            break
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("gBox isn't the active window: autoplay waits rather than typing into another app")
-    me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(h, None)
-    u.AttachThreadInput(me, them, True)
-    u.SetFocus(h)
-    u.AttachThreadInput(me, them, False)
+    if h:
+        root = u.GetAncestor(h, 2)                               # GA_ROOT: gBox when docked, else the emulator itself
+        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
+            if u.GetForegroundWindow() == root:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("gBox isn't the active window: autoplay waits rather than typing into another app")
+        me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(h, None)
+        u.AttachThreadInput(me, them, True)
+        u.SetFocus(h)
+        u.AttachThreadInput(me, them, False)
 
     class KI(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -1853,7 +1856,7 @@ D-Pad/Right = `Pad E`
                *({"key": m, "down": False} for m in reversed(mods))]
         if self.ff_on:                                     # the lane key alone = no speed limit: press it again
             seq.append({"key": self.lane, "down": True})
-        return win_send_keys(self.proc.pid, seq)
+        return win_send_keys(self.proc.pid, seq, hidden_ok=True)
 
     def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
         """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""

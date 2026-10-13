@@ -26,7 +26,7 @@ def dolphin(tmp_path, monkeypatch):
     monkeypatch.setattr(ad, "_gecko_setup", lambda user, rom: None, raising=False)
     ad.proc = SimpleNamespace(pid=4242, poll=lambda: None)
     sent = []
-    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events: sent.extend(events) or {"sent": len(events)})
+    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events, **kw: sent.extend(events) or {"sent": len(events)})
     return ad, exe, sent
 
 

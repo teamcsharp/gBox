@@ -61,6 +61,8 @@ def transport(reset_route, *, native=None, launch_fails=False):
             return {'ended': True}
         if tool == 'prepare_mod':
             return {'ready': True, 'mod': inp['mod']}
+        if tool == 'state_transfer' and inp['op'] == 'export':   # last played: the moment before a relaunch
+            return {'result': {'artifact': 'm' * 64}}
         pytest.fail('Unexpected tool: ' + tool)
     enclosed(session_reset, '_run_job').cell_contents = run
     return calls
@@ -88,14 +90,32 @@ def test_no_native_reset_relaunches_the_same_build_beside_the_running_copy(reset
     out, store = r.json(), reset_route[2]
     assert out['mode'] == 'relaunch' and out['session_id'] == 'w-new' and out['from'] == 'w-live'
     assert any('relaunched instead' in n for n in out['notes'])
-    assert [(t, i.get('op')) for t, i in calls] == [('session_op', 'reset'), ('launch_game', None), ('session_op', 'stop_game')]
-    launch = calls[1][1]
+    assert [(t, i.get('op')) for t, i in calls] == [('session_op', 'reset'), ('state_transfer', 'export'), ('launch_game', None),
+                                                    ('session_op', 'stop_game')]
+    launch = calls[2][1]
     # the exact folder the running copy booted (no rebuild, no staging), started beside it
     assert launch['mod'] == 'tts_sonic_full_cast~9a1b' and launch['keep_session'] == 'w-live'
     new = store.get('session', 'w-new')
     assert (new['mod'], new['collection_mod'], new['launch_mod']) == ('tts_sonic_full_cast', 'tts_sonic_full_cast', 'tts_sonic_full_cast~9a1b')
     old = store.get('session', 'w-live')
     assert old['state'] == 'ended' and old['replaced_by'] == 'w-new' and old['exit']['via'] == 'relaunch'
+    assert old['checkpoint'] == 'm' * 64, 'the moment before the relaunch is kept (Reload with your last moment)'
+
+
+def test_a_relaunch_that_fails_after_the_game_is_gone_is_recorded_for_last_played(reset_route):
+    store = reset_route[2]
+    calls = transport(reset_route, launch_fails=True)
+    run = enclosed(reset_route[3], '_run_job').cell_contents
+
+    def gone(tool, inp, *a, **k):                      # the emulator died while the replacement was starting
+        if tool == 'launch_game':
+            store.put('session', 'w-live', store.get('session', 'w-live') | {'state': 'ended'})
+        return run(tool, inp, *a, **k)
+    enclosed(reset_route[3], '_run_job').cell_contents = gone
+    r = post(reset_route, mode='restart')
+    assert r.status_code == 409 and 'use Play again' in r.json()['detail']
+    assert store.get('session', 'w-live')['exit']['via'] == 'relaunch_failed'
+    assert not any(i.get('op') == 'stop_game' for _, i in calls)
 
 
 def test_a_failed_relaunch_never_stops_the_game_and_says_so(reset_route):
@@ -111,7 +131,7 @@ def test_restart_always_relaunches_and_hard_reset_needs_its_intent(reset_route):
     calls = transport(reset_route, native={'reset': True})
     r = post(reset_route, mode='restart')
     assert r.status_code == 200 and r.json()['mode'] == 'relaunch'
-    assert [t for t, _ in calls][0] == 'launch_game', 'restart applies launch settings: no console reset'
+    assert [t for t, _ in calls][:2] == ['state_transfer', 'launch_game'], 'restart applies launch settings: no console reset'
     reset_route[2].put('session', 'w-live', reset_route[2].get('session', 'w-live') | {'state': 'running'})
     assert post(reset_route, mode='hard').status_code == 422          # a stray request can't throw the mods away
     calls.clear()

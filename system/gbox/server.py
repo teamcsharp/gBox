@@ -876,7 +876,8 @@ def create_app(config: Config) -> FastAPI:
                 pass                                           # already closed by the modded launch
             s_ = store.get("session", sid) or {}
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
-                                            "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid}})
+                                            "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid},
+                                            **({"checkpoint": art, "moment_ts": time.time()} if art else {})})   # last played
         if loaded and (old_luma is None or old_luma > 3):
             # A dark restored frame can be a loading screen. Never reset away the operator's saved moment.
             say(92, "Checking the picture")
@@ -996,6 +997,16 @@ def create_app(config: Config) -> FastAPI:
         build = "" if original else BM.session_build(sess)
         beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
         what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
+        try:                                              # last played: the moment before the restart (best effort)
+            say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
+            moment = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=25,
+                              should_stop=should_stop)["result"]["artifact"]
+            store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
+        except HTTPException as e:
+            if str(e.detail).startswith("cancelled by the operator"):
+                raise
+        except (KeyError, TypeError):
+            pass
         say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
@@ -1003,6 +1014,10 @@ def create_app(config: Config) -> FastAPI:
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
             alive = (store.get("session", sid) or {}).get("state") == "running"
+            if not alive:                                 # the game is gone and its relaunch failed: last played says so
+                s_ = store.get("session", sid) or {}
+                store.put("session", sid, s_ | {"exit": {"via": "relaunch_failed", "error": str(e.detail)[:300],
+                                                         "before": s_.get("exit")}})
             raise HTTPException(409, f"{what} could not be relaunched ({e.detail}). "
                                      + ("Your game is still running as it was." if alive else
                                         "The previous copy is no longer running: use Play again."))
@@ -1490,6 +1505,116 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(422, "a hard reset restarts the ORIGINAL game from boot (mods off, moment lost): it needs "
                                      "intent 'hard_reset' from an explicit operator action")
         return reset_job(sid, r.mode, actor)
+
+    # ---- Last played (gbox/last_played.py, clients/web/viz/last-played.js): after the operator's game ends, offer
+    # to reload it (same game, mod, PC) or reload it with the moment saved just before the end ---------------------------
+    from . import last_played as LP
+
+    @app.get("/api/last_played")
+    def last_played_get(actor=Depends(auth)):
+        return {"entry": LP.entry(store, workers(), _wid)}
+
+    class LastPlayedDismissIn(BaseModel):
+        session_id: str
+        never_for_game: bool = False          # "Don't ask again for this game"
+
+    @app.post("/api/last_played/dismiss")
+    def last_played_dismiss(d: LastPlayedDismissIn, actor=Depends(auth)):
+        s_ = store.get("session", d.session_id) or _404()
+        store.put(LP.DISMISS_KIND, d.session_id, {"session_id": d.session_id, "ts": time.time(), "by": actor})
+        if d.never_for_game and s_.get("game_id"):
+            store.put(LP.MUTE_KIND, s_["game_id"], {"game_id": s_["game_id"], "ts": time.time(), "by": actor})
+        return {"ok": True}
+
+    class LastPlayedReloadIn(BaseModel):
+        session_id: str                       # the session that ended
+        moment: bool = False                  # load the moment saved before the end
+
+    def session_reload(sid: str, actor: str, moment: bool, progress=None) -> dict:
+        """Launch the ended game again (same game, mod and PC); with moment, load the state saved before it ended. Refuses
+        a PC that is playing another game rather than closing it."""
+        say = progress or (lambda pct, msg: None)
+        sess = store.get("session", sid) or _404()
+        game = store.catalog_get(sess.get("game_id") or "") or _404()
+        wid = _wid(sid.split("-")[0])
+        w = next((x for x in workers() if x["id"] == wid and x["online"]), None)
+        if not w:
+            raise HTTPException(409, "The PC that ran this game is offline: start gBox there, then Reload.")
+        busy = [s_ for s_ in store.all("session") if s_.get("state") == "running" and _wid(s_["session_id"].split("-")[0]) == wid
+                and not LP.is_agent_session(store, s_)]
+        if busy:
+            raise HTTPException(409, f"{busy[0].get('title') or 'Another game'} is running on {w['name']}; it was not "
+                                     "stopped. Stop it first, then Reload.")
+        art = (LP.moment_of(store, sess) or {}).get("artifact") if moment else None
+        if moment and not art:
+            raise HTTPException(409, "No saved moment was found for that game; Reload starts it from boot.")
+        mod = str(sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
+        say(5, f"Starting {game['title']}" + (f" ({mod})" if mod else "") + f" on {w['name']}")
+        new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=wid, wait=900,
+                       progress=lambda pct, msg: say(5 + pct * .7, msg))
+        nsid = new["session_id"]
+        store.put(LP.DISMISS_KIND, sid, {"session_id": sid, "ts": time.time(), "by": actor, "reloaded": nsid})
+        out = {"session_id": nsid, "from": sid, "worker": w["name"], "mod": mod, "moment_loaded": False}
+        if art:
+            say(80, "Loading your last moment")
+            time.sleep(6)                                         # let the game boot before loading a state
+            try:
+                r = (_run_job("state_transfer", {"session_id": nsid, "op": "import", "artifact": art}, actor, worker=wid,
+                              wait=120) or {}).get("result") or {}
+                out |= {"moment_loaded": r.get("loaded") is True, "load_verified": r.get("load_verified")}
+            except HTTPException as e:
+                out["notes"] = [f"The game is running, but your moment could not be loaded ({e.detail}). It is kept: {art}."]
+        store.audit(actor, "last_played.reload", sid, {"new": nsid, "moment": bool(art)})
+        return out
+
+    @app.post("/api/last_played/reload")
+    def last_played_reload(r: LastPlayedReloadIn, actor=Depends(auth)):
+        """Reload the ended game as an in-server job (output.session_id = the new session)."""
+        store.get("session", r.session_id) or _404()
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == 'session_reload' and existing.get('state') in ('queued', 'running')
+                        and (existing.get('input') or {}).get('session_id') == r.session_id):
+                    return Job.model_validate(existing)
+            job = Job(tool="session_reload", input={"session_id": r.session_id, "moment": r.moment},
+                      state=JobState.RUNNING, started=time.time())
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                store.put("job", job.id, j)
+
+        def go():
+            try:
+                out, state, err = session_reload(r.session_id, actor, r.moment, prog), JobState.SUCCEEDED, None
+            except HTTPException as e:
+                out, state, err = None, JobState.FAILED, str(e.detail)
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
+                                                                     "error": err})
+                _server_job_threads.discard(job.id)
+        threading.Thread(target=go, daemon=True).start()
+        return job
+
+    @app.post("/api/sessions/{sid}/moment")
+    def session_moment(sid: str, wait: float = 6.0, actor=Depends(auth)):
+        """Save the running game's moment now and keep it as the session's last-played checkpoint (the desktop app calls
+        this for its games just before it quits; best effort within `wait` seconds)."""
+        s_ = store.get("session", sid) or _404()
+        if s_.get("state") != "running":
+            return {"saved": False, "reason": "not running"}
+        try:
+            art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=sid.split("-")[0],
+                           wait=max(1.0, min(float(wait), 30.0)))["result"]["artifact"]
+        except (HTTPException, KeyError, TypeError) as e:
+            return {"saved": False, "reason": str(getattr(e, "detail", e))[:300]}
+        store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": art, "moment_ts": time.time()})
+        return {"saved": True, "artifact": art}
 
     class MoveIn(BaseModel):
         to: str = "windows"                 # a worker name (this PC) | windows | linux (the Spark)

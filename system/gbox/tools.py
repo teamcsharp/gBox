@@ -345,6 +345,7 @@ def _close_previous_games(ctx, keep: str = ""):
 
 
 STOP_SAVE_CAP_S = 2.0          # Save & stop (only when the operator asks for it) waits at most this long for the save
+STOP_MOMENT_CAP_S = 4.0        # Stop with moment (last played): the save + upload of the moment, then the game closes anyway
 STOP_TEARDOWN_WAIT_S = 1.0     # rewind / gameplay-ring teardown awaited at most this long; the rest ends in the background
 
 
@@ -385,7 +386,25 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
     ad, _ = SESSIONS[sid]
     t0 = time.monotonic()
-    timings, saved = {}, None
+    timings, saved, moment = {}, None, None
+    if args.get('moment'):
+        # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
+        # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
+
+        def keep_moment():
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            try:
+                png = ad.get_frame()
+                ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')
+                out['frame'] = sha256(png)
+            except Exception:                        # noqa: BLE001 - a moment without a picture still reloads
+                pass
+            return out
+        done, res, err = _within(keep_moment, cap, f'stop-moment-{sid}')
+        moment = res if done and err is None else {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else
+                                                   f'saving took longer than {cap:g} s'}
+        timings['moment_s'] = round(time.monotonic() - t0, 3)
     if args.get('save'):
         cap = float(args.get('save_cap_s') or STOP_SAVE_CAP_S)
 
@@ -416,6 +435,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     out['timings'] = timings
     if saved is not None:
         out['save'] = saved
+    if moment is not None:
+        out['moment'] = moment
     return {'result': out, 'session_id': sid, 'ended': True}
 
 
@@ -910,7 +931,10 @@ class SessionOut(BaseModel):
 
 def _session_accept(store, out: SessionOut, actor: str):
     if out.ended and (s := store.get("session", out.session_id)) and s.get("state") != "ended":
-        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result})
+        m = out.result.get("moment") if isinstance(out.result.get("moment"), dict) else {}
+        kept = {"checkpoint": m["artifact"], "moment_ts": time.time(), **({"moment_frame": m["frame"]} if m.get("frame") else {})} \
+            if m.get("artifact") else {}                     # last played: the moment saved as the game stopped
+        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result, **kept})
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
       on_accept=_session_accept)
@@ -3775,7 +3799,8 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
         _validate_state_container(data, kind)
-        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"),
+                     session=inp.session_id, **details)          # last played finds the moment by session
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
         return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
     if inp.op == "import":

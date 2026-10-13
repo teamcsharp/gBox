@@ -395,7 +395,7 @@ def test_windows_dolphin_ring_hotkeys_and_speed_limit(monkeypatch, tmp_path):
     ad = adapters.DolphinWinAdapter(Config(data_dir=tmp_path), "gamecube")
     ad.proc = SimpleNamespace(pid=123)
     sent = []
-    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events: sent.extend(events) or {"sent": len(events)})
+    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events, **kw: sent.extend(events) or {"sent": len(events)})
     lane = ad.lane                                                          # gBox's Hotkeys.ini: F13 lane by default
     assert ad.checkpoint_save() == {"slot": 8} and [e["key"] for e in sent] == ["Control_L", "Shift_R", lane, lane, "Shift_R", "Control_L"]
     sent.clear()
