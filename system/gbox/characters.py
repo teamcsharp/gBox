@@ -670,6 +670,8 @@ class CharIn(BaseModel):
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
     b: str = ""                            # swap: whose looks: a name ("Saria", "kokiri boy") | "x,y" picture point
+    target: str = ""                       # live_use / use from the pick whip: what the target was identified as
+                                           # ("a soldier in grey camo", "Snake"); MGS2 maps it to a cast slot
     one_way: bool = False                  # swap: only A <- B ("play as B"), B keeps its own model
     pos: list[float] = []                  # place (OoT): world x, y, z (default: in front of the player)
     near: str = ""                         # place: next to this actor ("Saria", "Deku Tree")
@@ -2366,13 +2368,14 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, mgs2_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
         mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
+        mod = mgs2_swap if g["game_id"] in mgs2_swap.GAME_IDS else mod           # Metal Gear Solid 2 (PS2 DVD)
         from . import retarget_profile as _RP                # game-wide Retarget editor profiles
         chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
@@ -2390,8 +2393,12 @@ def characters_tool(inp: CharIn, ctx):
     if not meta:
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
+        from . import mgs2_swap
+        g = _game(ctx, inp)
+        if g["game_id"] in mgs2_swap.GAME_IDS:            # MGS2: build the slot the whip landed on, swap it in place
+            return {"result": mgs2_swap.use(ctx, meta, g, inp)}
         from . import oot_hot_swap
-        return {"result": oot_hot_swap.use(ctx, meta, _game(ctx, inp), inp)}
+        return {"result": oot_hot_swap.use(ctx, meta, g, inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
         if not library_root(ctx.config).is_dir():
             cp = next((w["id"] for w in _api(ctx, "GET", "/api/workers") if w.get("os") == "linux" and w.get("online")), None)
@@ -2490,6 +2497,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import etm_swap
     if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
         return {"result": out | etm_swap.use(ctx, meta, game, inp)}
+    from . import mgs2_swap
+    if gid in mgs2_swap.GAME_IDS and (mgs2_swap.is_slot(inp.slot) or inp.session_id):
+        # Metal Gear Solid 2 Substance (PS2 DVD): snake | raiden | player | soldiers | soldier_* | olga ... -> a
+        # patched STAGE.DAT image; with a session id it replaces the running game through session_swap
+        return {"result": out | mgs2_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)

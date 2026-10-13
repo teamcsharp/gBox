@@ -60,6 +60,12 @@ WRITERS = [
      "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "
      "rebuilt as plain triangles on the shared 89-joint skeleton in WAD1.DFU, in place; read back from the image; "
      "unverified in PCSX2"),
+    ("mgs2_swap", ["player", "snake", "raiden", "soldiers", "<cast slot>"],
+     "Metal Gear Solid 2 Substance (the catalog's windows_native entry is the PS2 DVD SLUS-20554): Snake (tanker + "
+     "Big Shell models), Raiden (every outfit), the soldier variants (Tanker / Big Shell Gurlukovich, heavy, high-tech, "
+     "SEAL, Tengu), Marines, Olga, the Ninja, Ocelot, Solidus, Otacon: stage kms rebuilt on each model's own skeleton "
+     "with the donor atlas in its texture pack, STAGE.DAT / STAGE2.DAT pages re-deflated + re-encrypted in place; "
+     "pick whip live_use swaps the running session; unverified in PCSX2"),
     ("doapp_swap", ["<fighter>[:<costume>]", "player"],
      "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
      "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "

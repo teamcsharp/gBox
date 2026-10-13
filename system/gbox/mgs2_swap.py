@@ -891,8 +891,9 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
     sid = getattr(inp, "session_id", "") or ""
     stage = current_stage(ctx, sid) if sid else None
     picked = None
-    if (not slot or slot == "player") and sid and (getattr(inp, "x", None) is not None or getattr(inp, "b", "")):
-        picked = slot_for_name(getattr(inp, "b", "") or getattr(inp, "a", "") or "", stage)
+    whip = getattr(inp, "target", "") or ""               # the pick whip's identified target ("a soldier", "Snake")
+    if (not slot or slot == "player") and sid and (whip or getattr(inp, "x", None) is not None):
+        picked = slot_for_name(whip, stage)
         slot = picked or ("raiden" if stage and not re.match(r"(r_tnk|w0\d)", stage) else "snake")
     slot = slot or "player"
     if not C.library_root(ctx.config).is_dir():           # not the control plane: build there
