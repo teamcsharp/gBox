@@ -881,12 +881,14 @@ def donor_segments(glb, part_roles: dict, joint_roles: dict) -> dict:
             p = parent[p]
         jrole[j] = r
     P, N, O, T = [], [], [], []
-    for pr in rig["prims"]:
+    base = 0                                                  # each primitive's indices start at its first vertex
+    for pr in rig["prims"]:                                   # in the concatenated arrays (one prim per material)
         own = np.asarray(pr["owner"], int)
         P.append(np.asarray(pr["pos"], float))
         N.append(np.asarray(pr["nrm"], float))
         O.append(own)
-        T.append(np.asarray(pr["tris"], int) + len(P[-1]) - len(pr["pos"]))
+        T.append(np.asarray(pr["tris"], int).reshape(-1, 3) + base)
+        base += len(P[-1])
     P = np.concatenate(P) if P else np.zeros((0, 3))
     N = np.concatenate(N) if N else np.zeros((0, 3))
     O = np.concatenate(O) if O else np.zeros(0, int)

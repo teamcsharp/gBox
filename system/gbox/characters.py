@@ -71,8 +71,12 @@ def _refresh_list(root):
     key = str(root)
     try:
         entries = {m["slug"]: m for m in _list_all_uncached(root) if m.get("slug")}
+        try:
+            rmt = Path(root).stat().st_mtime
+        except OSError:
+            rmt = None
         with _LIST_LOCK:
-            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False}
+            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False, "root_mtime": rmt}
     except Exception:
         with _LIST_LOCK:
             if key in _LIST_CACHE:
@@ -86,8 +90,15 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
     import copy
     import time as _t
     key = str(root)
+    try:
+        rmt = Path(root).stat().st_mtime                  # a new entry folder (another process collected) changes this
+    except OSError:
+        rmt = 0
     with _LIST_LOCK:
         c = _LIST_CACHE.get(key)
+        if c is not None and c.get("root_mtime") not in (None, rmt) and c.get("entries"):
+            c["root_mtime"] = rmt                         # re-read now: callers right after a collect must see it
+            c = None
         stale = c is not None and _t.time() - c["at"] > LIST_TTL_S and not c.get("refreshing")
         if stale:
             c["refreshing"] = True
@@ -104,6 +115,11 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
         for m in out:
             m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
     return out
+
+
+def refresh_list(root: Path) -> None:
+    """Force a synchronous re-read (after a collect in another process, or ?fresh=1)."""
+    _refresh_list(root)
 
 
 def warm_list(root: Path) -> None:
@@ -1449,6 +1465,10 @@ DEDICATED = [
     ("sa2", lambda t, p: "sonic adventure 2" in t and p == "dreamcast",
      lambda: [{"key": k, "slug": "sonic" if k == "SONIC" else f"sa2_{slugify(n)}", "name": n, "aliases": a, "kind": kd}
               for k, n, a, kd in SA2_CHARS], _sa2_run),
+    # Sonic Adventure (DC): basic-model trees in 1ST_READ.BIN (+ Super Sonic / Tikal overlays), gbox.sa1_chars
+    ("sa1", lambda t, p: re.match(r"sonic adventure(?!\s*2)\b", t) is not None and p == "dreamcast",
+     lambda: __import__("gbox.sa1_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sa1_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("ff7", lambda t, p: re.search(r"final fantasy vii\b", t) is not None and p == "psx",
      lambda: [{"key": k, "slug": "cloud" if k == "HICLOUD" else f"ff7_{k.lower()}", "name": n, "aliases": a, "kind": "character"}
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
@@ -1523,6 +1543,12 @@ DEDICATED = [
     ("doapp", lambda t, p: t.startswith("dead or alive ++") and p == "arcade",
      lambda: __import__("gbox.doapp_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.doapp_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Enter the Matrix (USA): the windows_native entry 3f43b79a68a60b41 is the PS2 disc SLUS-20454 (HyperSpin CHD,
+    # read in place by gbox.chd): actors\*.dcn Bezier-patch models on the shared 89-joint skeleton, tessellated to
+    # rigged GLBs with body roles (docs/matrix_pipeline.md). The GameCube discs are not read yet.
+    ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
@@ -2277,12 +2303,13 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
         from . import retarget_profile as _RP                # game-wide Retarget editor profiles
         chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
@@ -2397,6 +2424,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import defjam_writer
     if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
         return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
+    from . import etm_swap
+    if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
+        return {"result": out | etm_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)

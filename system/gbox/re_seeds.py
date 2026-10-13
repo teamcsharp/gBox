@@ -417,6 +417,90 @@ PLAYBOOKS = [
         "examples": [],
     },
     {
+        "id": "hashed-archive-names", "seed_version": 1,
+        "title": "Open a hashed archive (no file names stored): recover the name hash and the data base",
+        "goal": "Read and patch files of a big game archive whose table holds only name hashes, by recovering the "
+                "game's own hash function and offset rules from the lookup code.",
+        "when": ["archive", "hash", "no file names", "wad", "dfu", "pak", "packfile", "big file", "lookup table",
+                 "file table"],
+        "platforms": ["any"], "tags": ["archive", "hash", "format", "loader"],
+        "steps": [
+            {"do": "Dump the archive header and the first table rows; look for a count, a sorted u32 column (the hash) "
+                   "and offset / size columns (packed vs unpacked size = compressed entries).", "tool": "read_file",
+             "args": {"path": "<archive>", "length": 512}},
+            {"do": "Find the lookup: the code that binary-searches the sorted column (slt/sltu on [table + 16*i], a "
+                   "halving loop). The few instructions before it are the name hash; note every header field it reads "
+                   "(seeds) and every prefix it prepends to the name.", "tool": "ghidra_run",
+             "args": {"op": "refs", "addresses": ["<archive name string>", "<header global>"]}},
+            {"do": "Re-implement the hash and test it on names the executable spells out (debug lists, headers, "
+                   "sprintf formats with their real arguments): one hit proves it.", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "function", "name": "<archive> name hash", "role": "<formula>",
+                      "status": "hypothesis"}},
+            {"do": "Find where the data starts: the read path adds an aligned table size (or a base field) to each "
+                   "offset; check it by reading a known text file (a list file) and inflating packed entries with the "
+                   "decompressor the loader calls (search its version string: 'inflate 1.1.4').", "tool": "ghidra_run",
+             "args": {"op": "explain", "addresses": ["<read / inflate path>"]}},
+            {"do": "Name what you can (every model / level / list file the loaded tables name), record the format.",
+             "tool": "re_dossier", "args": {"op": "record", "kind": "format", "name": "<archive>",
+                                            "role": "<header, row, hash, base, compression>", "status": "documented"}},
+        ],
+        "pitfalls": [
+            "PS2 R5900 code: capstone (and Ghidra's stock MIPS) mis-decode lq/sq (opcodes 0x1e/0x1f), MMI (0x1c: madd, "
+            "3-operand mult) as MSA or junk. Decode those opcodes yourself, use MIPS64 mode for the rest; the 3-operand "
+            "mult (rd = rs * rt) is what hash loops use.",
+            "Sequels change the hash: Path of Neo added a per-position term (c << 8 * (i & 3)) and a 'ps2\\' prefix for "
+            "every name without 'common', and versioned names (levels\\%s.3d2_63, hdr_5): read the sprintf arguments.",
+            "An archive split over several files (WAD1.DFU + WAD1_B.DFU) is usually one address space: the max "
+            "offset + size equals the sum of the parts.",
+            "Offsets often count from the end of the table rounded to the sector size, not from 0.",
+        ],
+        "verify": ["the hash finds names the executable lists", "every packed entry inflates to its table size",
+                   "a parsed list file (AnimList.txt, LevelList.txt) reads as text"],
+        "record": ["re_dossier op=record kind=format", "re_playbook op=lesson"],
+        "examples": [
+            {"game": "Enter the Matrix (PS2 SLUS-20454)", "note": "WAD1.DFU lookup 0x1d8390, inflate 0x241be0 (zlib "
+             "1.1.4); h += a*c; a += b + ((c & 0x30) >> 4); b += 674 + (c & 15); a, b = 22313, 2067 (header fields)",
+             "ref": "gbox/shiny_dfu.py, docs/matrix_pipeline.md"},
+            {"game": "The Matrix: Path of Neo (PS2 SLUS-21273)", "note": "lookup 0x1f5860: same seeds plus c << 8*(i&3) "
+             "and the 'ps2\\' prefix", "ref": "gbox/shiny_dfu.py"},
+        ],
+    },
+    {
+        "id": "bezier-patch-models", "seed_version": 1,
+        "title": "Decode a patch (Bezier surface) character model and write it back as triangles",
+        "goal": "Turn a model made of curved patches (16 / 10 control points per packet) into a rigged triangle mesh, "
+                "and write a donor into the same file format.",
+        "when": ["patch model", "bezier", "control points", "tessellation", "curved surfaces", "dcn", "subdivision"],
+        "platforms": ["ps2", "any"], "tags": ["models", "format", "tessellation"],
+        "steps": [
+            {"do": "Walk the mesh blocks: a packet header that carries 4 (or 3) UV pairs and a size, then 16 (or 10) "
+                   "vertices, is a quad (or triangle) patch; plain triangles carry a UV per vertex.", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "format", "name": "<model ext>", "role": "<packet layout>",
+                      "status": "hypothesis"}},
+            {"do": "Find the control point order by counting, per index, how often its position is shared with other "
+                   "packets: boundary points are shared, interior ones are not (4 x 4 row-major: 5, 6, 9, 10 inner; "
+                   "cubic triangle: centre only). Corner UVs: the assignment with the fewest conflicts at shared corners."},
+            {"do": "Tessellate with the Bernstein basis (UVs bilinear / barycentric from the corners, weights = the "
+                   "basis applied to the control points' weights), render a preview and compare with the game."},
+            {"do": "Write donors as the format's plain-triangle packets (no tessellation needed), keep the skeleton "
+                   "block and checksums, and read the file back with the reader before patching the disc."},
+        ],
+        "pitfalls": [
+            "Plain triangles may be stored with the opposite winding to the patches (ETM: ~99% of its tri3 packets "
+            "face the other way once mirrored): orient by the stored normals, and write new triangles the same way.",
+            "Left-handed model space (facing -Z): mirror one axis for glTF and reverse the winding.",
+            "Keep the written file no larger than the original and the packed size within the slot when patching "
+            "in place.",
+        ],
+        "verify": ["every model file parses to its last byte", "the preview looks like the character",
+                   "a written donor reads back with the same triangle count"],
+        "record": ["re_dossier op=record kind=format", "re_playbook op=lesson"],
+        "examples": [
+            {"game": "Enter the Matrix (PS2)", "note": "actors\\*.dcn: loader 0x167da0 (DCPatchModel); blocks A quad "
+             "patches, B triangle patches, C triangles; 275 files parse", "ref": "gbox/etm_models.py"},
+        ],
+    },
+    {
         "id": "gta-live-state", "seed_version": 1,
         "title": "GTA live state: player, pools, vehicles, weather, time, wanted level, teleport, spawn",
         "goal": "Read or change a running PS2 GTA's world state (the in-game controls of the Ariane map editor).",
@@ -790,6 +874,38 @@ TITLE_FACTS = [
          _f("format", "0x0F5330", "segment 0x04 (MIO0)", "group0 model data, ROM 0x0F5330-0x108590", "gbox/sm64_mario.py"),
          _f("format", "0x108590", "segment 0x17 (geo layouts)", "ROM 0x108590-0x10B3C0; Mario geo 0x17002DD4", "gbox/sm64_mario.py"),
          _f("format", "0x4CE710", "Mario animation DMA table", "u32 count 0xD1, then (offset, size)", "gbox/sm64_mario.py"),
+     ]},
+    # Enter the Matrix: the catalog's windows_native entry 3f43b79a68a60b41 is the PS2 disc (HyperSpin CHD)
+    {"platform": "windows_native", "title_has": ["enter the matrix"], "label": "Enter the Matrix USA PS2 (SLUS-20454)",
+     "executable": {"processor": "MIPS:LE:64:64-32addr", "base": "0x00100000",
+                    "note": "R5900 ELF SLUS_204.54 (sha256 3b076e25...); capstone/Ghidra miss lq/sq/MMI: decode those "
+                            "opcodes by hand. Not a PC install: HyperSpin files the PS2 CHD under Microsoft XBOX"},
+     "facts": [
+         _f("function", "0x1d8390", "WAD1.DFU lookup", "name hash + binary search over the 16-byte rows",
+            "gbox/shiny_dfu.py"),
+         _f("function", "0x241be0", "WadFile inflate", "zlib 1.1.4 inflateInit/inflate of packed entries",
+            "gbox/shiny_dfu.py"),
+         _f("function", "0x167da0", "DCPatchModel loader", ".dcn: header, joints, meshes, textures, materials, configs",
+            "gbox/etm_models.py"),
+         _f("function", "0x14e850", "actor model bind", "model[0] must equal the animation set's skeleton checksum "
+            "(error 'DC2 Model checksum error')", "docs/matrix_pipeline.md"),
+         _f("format", "WAD1.DFU", "hashed archive", "9690 rows {hash, packed, offset, size}; data base 0x26000; split "
+            "over WAD1.DFU + WAD1_B.DFU", "gbox/shiny_dfu.py"),
+         _f("format", "actors\\*.dcn", "DC patch model", "Bezier quad / triangle patches + triangles on the shared "
+            "89-joint skeleton 0x002e5ea3", "gbox/etm_models.py"),
+     ]},
+    {"platform": "windows_native", "title_has": ["path of neo"], "label": "The Matrix: Path of Neo USA PS2 (SLUS-21273)",
+     "executable": {"processor": "MIPS:LE:64:64-32addr", "base": "0x00100000",
+                    "note": "R5900 ELF SLUS_212.73 (sha256 e7d56d8d...); the windows_native entry is the PS2 CHD"},
+     "facts": [
+         _f("function", "0x1f5860", "WAD1.DFU lookup", "ETM's hash + c << 8*(i&3); names without 'common' get 'ps2\\'",
+            "gbox/shiny_dfu.py"),
+         _f("function", "0x1f51b0", "CRC32 (table 0x3f8088)", "ids of chunks inside level packages (not the archive "
+            "hash)", "docs/matrix_pipeline.md"),
+         _f("format", "common\\misc\\ActorHeadersV11.Bin", "actor table", "444 x 0x140: 3 model paths (LODs) + name",
+            "gbox/pon_inventory.py"),
+         _f("format", "level package", "per-level chunk container", "header + {u32 id, u32 offset, u32 size, u32 type} "
+            "rows; characters live inside the level packages", "docs/matrix_pipeline.md"),
      ]},
     {"platform": "ps3", "title_has": ["stranglehold"], "label": "Stranglehold PS3 (BLUS30081, UE3)",
      "executable": {"note": "Unreal Engine 3: gameplay is UnrealScript in CookedPS3 packages (playbook unreal-script)"},

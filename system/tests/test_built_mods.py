@@ -1,6 +1,9 @@
-"""Built mods gallery (/api/mods/built): scan of the configured cache, join with mod cards, card registration, path safety."""
+"""Built mods gallery (/api/mods/built): the persistent index of the configured cache (markers only in the request,
+sizes walked in the background), join with mod cards, card registration, path safety."""
 import io
 import json
+import os
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -35,6 +38,7 @@ def fixture(tmp_path):
     (lib / "preview.png").write_bytes(png("blue"))
     build(cache, "pso", "cast_pso_ult", {
         "built": 2000.0, "image": "pso.gdi", "writer": "gbox.pso_enemy.build_cast", "verified_in_game": False,
+        "previews": ["previews/atlas.webp", "notes.txt", "../outside.png", "/abs/elsewhere.png"],
         "cast": [{"slot": "enemy:booma", "character": "hucast", "status": "built"},
                  {"slot": "enemy:gobooma", "character": "ramar", "status": "failed", "reason": "too many triangles"}],
         "cast_source": "Phantasy Star Online"},
@@ -60,19 +64,28 @@ def fixture(tmp_path):
     return cfg, app, store, {"Authorization": f"Bearer {cfg.token()}"}
 
 
+def ready(app, timeout=10.0):
+    """The index made its first marker pass and walked every folder's size (the server itself never waits)."""
+    assert app.state.built_mods.wait(timeout), "the built mods index did not settle"
+
+
 def test_scan_reads_the_configured_cache_and_skips_staging_and_half_builds(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     recs = built_mods.scan(built_mods.mods_root(cfg))
     assert sorted((r["game_id"], r["name"]) for r in recs) == [("cf3", "cf_hucast_taffy"), ("mgsvr", "mgsvr_hucast"),
                                                                ("pso", "cast_pso_ult")]
     pso = next(r for r in recs if r["name"] == "cast_pso_ult")
+    # the marker's listed pictures + the fixed preview names, nothing else (no folder listing; notes.txt, paths out
+    # of the folder dropped)
     assert pso["images"] == ["frames_preview.png", "previews/atlas.webp"]
-    assert pso["files"] == 5 and pso["size"] > 10
+    assert pso["size"] is None                                   # a marker read never walks the folder
+    assert built_mods.folder_size(tmp_path / "hdd-cache" / "mods" / "pso" / "cast_pso_ult")[2] == 5
 
 
 def test_gallery_joins_cards_launches_tickets_and_previews(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     with TestClient(app) as c:
+        ready(app)
         r = c.get("/api/mods/built", headers=h).json()
     assert r["cache_dir"].endswith("mods") and "hdd-cache" in r["cache_dir"]
     assert [m["name"] for m in r["items"]] == ["cf_hucast_taffy", "cast_pso_ult", "mgsvr_hucast"]   # newest build first
@@ -95,6 +108,7 @@ def test_gallery_joins_cards_launches_tickets_and_previews(tmp_path):
 def test_filters_search_and_pages(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     with TestClient(app) as c:
+        ready(app)
         assert [m["name"] for m in c.get("/api/mods/built?game_id=pso", headers=h).json()["items"]] == ["cast_pso_ult"]
         assert c.get("/api/mods/built?writer=mgsvr", headers=h).json()["total"] == 1
         assert [m["name"] for m in c.get("/api/mods/built?q=taffy", headers=h).json()["items"]] == ["cf_hucast_taffy"]
@@ -107,6 +121,7 @@ def test_filters_search_and_pages(tmp_path):
 def test_every_build_gets_a_launchable_card_once(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     with TestClient(app) as c:
+        ready(app)
         first = c.get("/api/mods/built?fresh=true", headers=h).json()
         cards = store.all("mod")
         made = [m for m in cards if m.get("auto_registered")]
@@ -128,6 +143,7 @@ def test_every_build_gets_a_launchable_card_once(tmp_path):
 def test_a_writers_own_card_replaces_the_stand_in(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     with TestClient(app) as c:
+        ready(app)
         c.get("/api/mods/built?fresh=true", headers=h)
         stand_in = next(m for m in store.all("mod") if built_mods.card_mod(m) == "cast_pso_ult")
         c.post(f"/api/mods/{stand_in['id']}/thumb?append=true", headers=h, content=png("red"))
@@ -203,6 +219,7 @@ def test_symlinked_picture_is_refused(tmp_path):
 def test_screenshot_after_launch_appends_in_game_shots(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     with TestClient(app) as c:
+        ready(app)
         a = c.post("/api/mods/card1/thumb?append=true", headers=h, content=png("red")).json()
         b = c.post("/api/mods/card1/thumb?append=true", headers=h, content=png("blue")).json()
         assert len(b["shots"]) == 2 and b["thumb"] == a["thumb"] == a["shots"][0]
@@ -235,3 +252,150 @@ def test_folder_scan_is_cached_until_the_marker_changes(tmp_path):
     (folder / ".gbox-mod.json").write_text(json.dumps({"name": "cf_hucast_taffy", "game_id": "cf3", "title": "Renamed!",
                                                        "built": 5000.0}))
     assert built_mods.read_folder(folder)["meta"]["title"] == "Renamed!"
+
+
+# ------------------------------------------------------------------ the persistent index (fast answers on a busy disk)
+
+class SlowDisk:
+    """A fake slow cache disk: every stat / listing under the cache costs time. Calls from outside the index's own
+    threads (the request) cost `delay` and are recorded; the index's background threads pay `bg_delay`."""
+
+    def __init__(self, monkeypatch, root, delay=2.0, bg_delay=0.0):
+        self.root, self.delay, self.bg_delay, self.foreign, self.bg = os.fspath(root), delay, bg_delay, [], 0
+        for name in ("stat", "lstat", "scandir", "listdir"):
+            monkeypatch.setattr(os, name, self.wrap(getattr(os, name), name))
+
+    def wrap(self, real, name):
+        def slow(p=".", *a, **k):
+            s = os.fspath(p) if isinstance(p, (str, os.PathLike)) else ""
+            if isinstance(s, str) and s.startswith(self.root):
+                if threading.current_thread().name.startswith("built-mods"):
+                    self.bg += 1
+                    time.sleep(self.bg_delay)
+                else:
+                    self.foreign.append((name, s))
+                    time.sleep(self.delay)
+            return real(p, *a, **k)
+        return slow
+
+
+def test_endpoint_answers_from_the_index_without_touching_the_disk(tmp_path, monkeypatch):
+    cfg, app, store, h = fixture(tmp_path)
+    for i in range(40):                                                   # plenty of builds, a few big folders
+        build(tmp_path / "hdd-cache", f"g{i % 5}", f"bulk_{i}", {"built": 100.0 + i},
+              {f"disc/t{j}.bin": b"x" * 64 for j in range(20)})
+    with TestClient(app) as c:
+        ready(app, 30)
+        disk = SlowDisk(monkeypatch, tmp_path / "hdd-cache", delay=2.0)  # any touch by the request blows the budget
+        t0 = time.perf_counter()
+        r = c.get("/api/mods/built?limit=200", headers=h)
+        took = time.perf_counter() - t0
+        assert r.status_code == 200 and disk.foreign == [], disk.foreign[:5]
+        body = r.json()
+        assert body["all"] == 43 and body["indexing"] is False and body["sizing"] == 0
+        assert all(isinstance(m["size"], int) for m in body["items"])
+        assert took < 1.0, took
+        print(f"GET /api/mods/built?limit=200, 43 builds, slow disk: {took * 1000:.1f} ms")
+        t0 = time.perf_counter()
+        ref = c.post("/api/mods/built/refresh", headers=h)               # never waits for the pass it asks for
+        assert ref.status_code == 200 and ref.json()["indexing"] is True and time.perf_counter() - t0 < 1.0
+        assert disk.foreign == []
+
+
+def test_a_cold_index_answers_at_once_and_fills_in_the_background(tmp_path, monkeypatch):
+    cfg, app, store, h = fixture(tmp_path)
+    disk = SlowDisk(monkeypatch, tmp_path / "hdd-cache", delay=2.0, bg_delay=0.05)
+    with TestClient(app) as c:
+        t0 = time.perf_counter()
+        cold = c.get("/api/mods/built", headers=h).json()
+        assert time.perf_counter() - t0 < 1.0 and cold["indexing"] is True and disk.foreign == []
+        ready(app, 60)
+        warm = c.get("/api/mods/built", headers=h).json()
+    assert warm["indexing"] is False
+    assert [m["name"] for m in warm["items"]] == ["cf_hucast_taffy", "cast_pso_ult", "mgsvr_hucast"]
+    assert all(m["size"] > 0 for m in warm["items"]) and disk.bg > 0 and disk.foreign == []
+
+
+def test_the_index_persists_and_a_restart_walks_nothing(tmp_path, monkeypatch):
+    cfg, app, store, h = fixture(tmp_path)
+    with TestClient(app) as c:
+        ready(app)
+        sizes = {m["name"]: (m["size"], m["files"]) for m in c.get("/api/mods/built", headers=h).json()["items"]}
+    assert sizes["cast_pso_ult"][1] == 5 and all(s > 0 for s, _ in sizes.values())
+    saved = json.loads((cfg.data_dir / built_mods.INDEX_FILE).read_text())
+    assert saved["root"] == str(built_mods.mods_root(cfg))
+    assert set(saved["mods"]) == {"cf3/cf_hucast_taffy", "mgsvr/mgsvr_hucast", "pso/cast_pso_ult"}
+    walked, reads = [], []
+    monkeypatch.setattr(built_mods, "folder_size", lambda f, stop=None: walked.append(f) or (0, 0, 0))
+    real_read = built_mods.read_folder
+    monkeypatch.setattr(built_mods, "read_folder", lambda f, st=None: reads.append(f) or real_read(f, st))
+    app2 = create_app(cfg)
+    idx = app2.state.built_mods
+    assert {r["name"] for r in idx.records()} == set(sizes) and idx.status()["indexing"] is True   # before any pass
+    with TestClient(app2) as c:
+        ready(app2)
+        again = {m["name"]: (m["size"], m["files"]) for m in c.get("/api/mods/built", headers=h).json()["items"]}
+    assert again == sizes and walked == [] and reads == []              # unchanged markers: nothing re-read or walked
+
+
+def test_refresh_reads_only_new_and_changed_markers(tmp_path, monkeypatch):
+    import shutil
+    cfg, app, store, h = fixture(tmp_path)
+    cache = tmp_path / "hdd-cache"
+    with TestClient(app) as c:
+        ready(app)
+        reads, walked, gate = [], [], threading.Event()
+        real_read, real_size = built_mods.read_folder, built_mods.folder_size
+
+        def size(f, stop=None):
+            walked.append(f.name)
+            gate.wait(10)
+            return real_size(f, stop)
+        monkeypatch.setattr(built_mods, "read_folder", lambda f, st=None: reads.append(f.name) or real_read(f, st))
+        monkeypatch.setattr(built_mods, "folder_size", size)
+        build(cache, "pso", "new_build", {"built": 9000.0, "title": "Fresh"}, {"disc/big.iso": b"z" * 1000})
+        marker = cache / "mods" / "cf3" / "cf_hucast_taffy" / ".gbox-mod.json"
+        marker.write_text(json.dumps({**json.loads(marker.read_text()), "title": "Retitled"}))
+        r = c.post("/api/mods/built/refresh", headers=h).json()
+        assert r["ok"] and r["indexing"] is True
+        for _ in range(500):                                               # the marker pass lands; sizes are pending
+            body = c.get("/api/mods/built", headers=h).json()
+            if not body["indexing"]:
+                break
+            time.sleep(0.01)
+        items = {m["name"]: m for m in body["items"]}
+        assert items["new_build"]["size"] is None and items["cf_hucast_taffy"]["size"] is None and body["sizing"] == 2
+        assert items["cf_hucast_taffy"]["mod_title"] == "Retitled" and items["cast_pso_ult"]["size"] > 0
+        gate.set()
+        ready(app)
+        body = c.get("/api/mods/built", headers=h).json()
+        items = {m["name"]: m for m in body["items"]}
+        assert sorted(reads) == ["cf_hucast_taffy", "new_build"] and sorted(walked) == ["cf_hucast_taffy", "new_build"]
+        assert items["new_build"]["size"] >= 1000 and body["sizing"] == 0 and body["indexing"] is False
+        assert body["items"][0]["name"] == "new_build"
+        # a deleted build leaves the index; the timer runs this same incremental pass
+        shutil.rmtree(cache / "mods" / "pso" / "new_build")
+        c.post("/api/mods/built/refresh", headers=h)
+        ready(app)
+        assert "new_build" not in {m["name"] for m in c.get("/api/mods/built", headers=h).json()["items"]}
+        assert sorted(reads) == ["cf_hucast_taffy", "new_build"]
+
+
+def test_game_titles_come_from_the_catalog_and_writers_from_the_marker(tmp_path):
+    cfg, app, store, h = fixture(tmp_path)
+    store.upsert_catalog([{"game_id": "pso", "title": "Phantasy Star Online Ver. 2 (USA)", "platform": "dreamcast"},
+                          {"game_id": "cf3", "title": "ClayFighter 63 1/3 (USA)", "platform": "n64"}])
+    build(tmp_path / "hdd-cache", "zz", "zz_mystery", {"built": 10.0, "game_title": "Marker Game",
+                                                        "writer": "gbox.jgr (cast chain)"})
+    with TestClient(app) as c:
+        ready(app)
+        r = c.get("/api/mods/built", headers=h).json()
+    items = {m["name"]: m for m in r["items"]}
+    pso = items["cast_pso_ult"]
+    assert pso["game_title"] == pso["title"] == "Phantasy Star Online Ver. 2 (USA)" and pso["platform"] == "dreamcast"
+    assert items["cf_hucast_taffy"]["game_title"] == "ClayFighter 63 1/3 (USA)"
+    assert items["zz_mystery"]["game_title"] == "Marker Game" and items["zz_mystery"]["writer"] == "jgr"
+    assert items["mgsvr_hucast"]["game_title"] == "mgsvr"                 # nothing names the game: its id
+    assert {g["game_id"]: g["title"] for g in r["games"]}["pso"] == "Phantasy Star Online Ver. 2 (USA)"
+    card = next(m for m in store.all("mod") if built_mods.card_mod(m) == "cf_hucast_taffy")
+    assert card["game_title"] == "ClayFighter 63 1/3 (USA)"

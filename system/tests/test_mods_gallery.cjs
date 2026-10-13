@@ -286,6 +286,38 @@ test('a failed read shows the error; an unchanged answer does not redraw', async
   } finally { ctl2.stop(); }
 });
 
+test('while the server indexes: "indexing…" in the summary and on unsized cards, faster cached polls, sizes as they arrive', async () => {
+  const unsized = { ...PSO, size: null, own_size: null, files: null };
+  const answers = [{ items: [], indexing: true, sizing: 0 },
+                   { items: [unsized, CF], indexing: false, sizing: 1, cache_dir: '/mnt/hdd/gbox-cache/mods' },
+                   { items: [PSO, CF], indexing: false, sizing: 0, cache_dir: '/mnt/hdd/gbox-cache/mods' }];
+  const ages = [];
+  let n = 0;
+  const poll = { cachedRead: fetcher => ({ get: async maxAge => { ages.push(maxAge); return fetcher(); }, invalidate() {} }) };
+  const h = fakeHost(), env = fakeEnv([], { poll });
+  const api = env.api;
+  env.api = async (p, b) => p === '/api/mods/built' ? answers[Math.min(n++, answers.length - 1)] : api(p, b);
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    assert.match(h.grid(), /Indexing the built mods…/);                       // a cold index: nothing listed yet
+    assert.match(h.parts['[data-mg-sum]'].textContent, /0 of 0 builds · indexing…/);
+    assert.equal(ctl.busy(), true);
+    await ctl.tick();
+    assert.equal(ages.at(-1), MG.TICK - 500, 'polls every tick while the index works');
+    assert.match(h.grid(), /cast_pso_ult · built [^<]* · <span class="mg-sizing">size: indexing…<\/span>/);
+    assert.ok(!h.grid().includes('· 0 B'), 'an unsized folder is not "0 B"');
+    assert.match(h.parts['[data-mg-sum]'].textContent, /2 of 2 builds · \/mnt\/hdd\/gbox-cache\/mods · indexing… \(1 folder size to go\)/);
+    await ctl.tick();
+    assert.match(h.grid(), /1\.0 MB \(3\.00 GB with shared files\)/); assert.ok(!h.grid().includes('size: indexing'));
+    assert.doesNotMatch(h.parts['[data-mg-sum]'].textContent, /indexing/);
+    assert.equal(ctl.busy(), false);
+    await ctl.tick();
+    assert.equal(ages.at(-1), 30000, 'back to the slow cadence once the index is done');
+    await h.fire('click', target({ mg: 'refresh' }));
+    assert.ok(env.calls.some(c => c[0] === '/api/mods/built/refresh' && c[1]), 'Refresh asks for an index pass (POST)');
+  } finally { ctl.stop(); }
+});
+
 test('both clients have a Mods view wired to the shared gallery', () => {
   const desktop = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   const web = fs.readFileSync(path.join(__dirname, '../clients/web/index.html'), 'utf8');
