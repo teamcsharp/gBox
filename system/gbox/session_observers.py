@@ -185,6 +185,32 @@ def analyze(config, frame, previous):
 
 LOOK_NOW = 'press "Done, look now"'
 CHARACTER_STAGES = ('reader', 'writer', 'runtime')   # stages whose evidence is characters seen on screen
+SWAP_STAGES = ('writer', 'runtime')                  # stages that put a collected character into the game
+# What happens when the operator cannot do what an agent asks (operator, inbox #1551: "If it's trying to test the
+# characters being picked, I can't do that because the characters aren't available").
+UNAVAILABLE_ON_SCREEN = ('If no characters are reachable where you are (locked, not unlocked yet, or not in this '
+                         'area), just keep playing: it samples every 30 seconds on its own and the model work also '
+                         'reads the game files, so nothing waits on you.')
+
+
+def characters_available(models):
+    """True when the library holds this game's own collected characters (the slots a swap test fills)."""
+    own = (((models.get('capabilities') or {}).get('operations') or {}).get('characters') or {}).get('in_collection')
+    return bool(own or int((models.get('result') or {}).get('collected') or 0))
+
+
+def _swap_unavailable(title, models):
+    """Why a character swap/pick test cannot run yet and what the operator can (not) do about it."""
+    state = models.get('state') or 'not_started'
+    why = {'unsupported': 'there is no native model reader for this build yet',
+           'queued': 'its collection job is still queued', 'running': 'its collection job is still reading the game files',
+           'cancelling': 'its collection job is stopping', 'not_started': 'its first collection has not run yet'
+           }.get(state, f'the last collection {state}' if state != 'succeeded' else 'the collection found no characters')
+    return {'agent': 'models', 'name': 'Model collector',
+            'text': (f'The character swap test for {title} cannot run yet: none of its own characters are in your '
+                     f'library ({why}), so there is nothing to pick or put in. You cannot set this up in-game; play '
+                     'normally. Once the model collector reads its characters they appear under Characters and the '
+                     'test starts on its own.')}
 
 STAGE_GOALS = {
     'inventory': {
@@ -229,6 +255,7 @@ def _gameplay_agent(view, title, wants_characters):
         'you_can_help': ('Stand still facing a character for a few seconds (or open a character select or cutscene), '
                          'then ' + LOOK_NOW + '.' if wants_characters
                          else 'Keep playing: new areas, menus and characters give it something new to describe.'),
+        'if_unavailable': (UNAVAILABLE_ON_SCREEN if wants_characters else ''),
         'blocked_by': '', 'needs_you': wants_characters}
     error = str(view.get('error') or '')[:300]
     if not view.get('service_online', True):
@@ -276,6 +303,8 @@ def _gameplay_agent(view, title, wants_characters):
                      blocked_by=f'capture or vision failed {_plural(int(view.get("failures") or 0), "time")}: {error}'
                                 + (f' (repair tracked in inbox {rid})' if rid else ''),
                      you_can_help='Nothing in-game; an agent repairs the capture route.')
+    if agent['state'] in ('service_offline', 'paused', 'offline', 'no_window', 'covered', 'stopped', 'backing_off', 'blocked'):
+        agent['if_unavailable'] = ''   # its ask is about the window or service, not about characters on screen
     return agent
 
 
@@ -287,7 +316,7 @@ def _models_agent(models, title, queued):
              'goal': f'Read every character model of {title} straight from the game files into your character library, '
                      'so its characters can be swapped in.',
              'doing': '', 'seeking': '', 'you_can_help': 'Nothing in-game: it reads the game files on the gBox, not your screen.',
-             'blocked_by': '', 'needs_you': False}
+             'if_unavailable': '', 'blocked_by': '', 'needs_you': False}
     favorite = 'Favorite this game so Hermes queues the reader work.' if not queued else ''
     if state == 'not_started':
         agent.update(doing='Not run yet; it starts within a minute of launch.',
@@ -341,7 +370,7 @@ def _hermes_agent(item, title, models, requests, jobs, now):
     running = [{'id': j.get('id'), 'tool': j.get('tool'), 'op': (j.get('input') or {}).get('op'), 'state': j.get('state')}
                for j in jobs][:8]
     agent = {'agent': 'hermes', 'name': 'Hermes (engineering agent)', 'requests': open_requests, 'jobs': running,
-             'blocked_by': '', 'needs_you': False}
+             'if_unavailable': '', 'blocked_by': '', 'needs_you': False}
     replacing = next((r for r in open_requests if r['goal'].startswith('put ')), None)
     if not item:
         agent.update(state='not_queued', stage=None,
@@ -368,22 +397,24 @@ def _hermes_agent(item, title, models, requests, jobs, now):
             agent.update(state=dispatch or 'waiting', stage=stage, stages_verified=done, goal=text['goal'], doing=doing,
                          seeking=text['seeking'] + (f'; next step: {record["next_step"]}' if record.get('next_step') else ''),
                          you_can_help=text['you_can_help'].replace('its inbox request', f'inbox request{number}' if number else 'its inbox request'),
-                         needs_you=stage in ('reader', 'runtime'))
+                         needs_you=stage in ('reader', 'runtime'),
+                         if_unavailable={'reader': UNAVAILABLE_ON_SCREEN,
+                                         'runtime': 'If you cannot reach that spot, say so in its inbox request; it '
+                                                    'tests in its own session and does not wait on yours.'}.get(stage, ''))
             if record.get('status') == 'blocked':
                 agent['blocked_by'] = 'stage blocked: ' + str(record.get('note') or '')[:300]
             elif (item.get('retry_at') or 0) > now:
                 agent['blocked_by'] = f'waiting about {max(1, int((item["retry_at"] - now) // 60))} min before its next attempt'
             elif dispatch == 'paused':
                 agent['blocked_by'] = 'Hermes task mode is off'
-            if stage in ('writer', 'runtime'):
-                own = (((models.get('capabilities') or {}).get('operations') or {}).get('characters') or {}).get('in_collection')
-                if not own and not int((models.get('result') or {}).get('collected') or 0):
-                    agent['blocked_by'] = ((agent['blocked_by'] + '; ') if agent['blocked_by'] else '') + \
-                        f'no collection characters of {title} in the library yet, so its writer has no slot to fill'
+            if stage in SWAP_STAGES and not characters_available(models):
+                agent['blocked_by'] = ((agent['blocked_by'] + '; ') if agent['blocked_by'] else '') + \
+                    f'no collection characters of {title} in the library yet, so its writer has no slot to fill'
+                agent['needs_you'] = False   # nothing in-game makes characters appear in the library
     if replacing:
         agent['seeking'] = (agent.get('seeking') + '; ' if agent.get('seeking') else '') + \
             f'for inbox #{replacing["number"]}: {replacing["goal"]} and see it on screen'
-        if not (models.get('result') or {}).get('collected') and models.get('state') in ('unsupported', 'not_started', None):
+        if not characters_available(models):
             agent['blocked_by'] = ((agent['blocked_by'] + '; ') if agent['blocked_by'] else '') + \
                 f'no collection characters available for the {title} writer yet'
     if running:
@@ -403,11 +434,19 @@ def agent_goals(view, *, queue=None, requests=(), jobs=(), now=None):
     stage = (queue or {}).get('next_stage')
     partial = (models.get('result') or {}).get('status') == 'partial'
     replacing = any((r.get('context') or {}).get('character') for r in requests)
-    wants_characters = stage in CHARACTER_STAGES or partial or replacing
+    swap_test = stage in SWAP_STAGES or replacing
+    available = characters_available(models)
+    # Only ask the operator to show characters when the evidence can be used: a reader matching what is on screen,
+    # or a swap test that has collected characters to put in. A swap test without them is not the operator's to fix.
+    wants_characters = stage == 'reader' or partial or (swap_test and available)
     agents = [_gameplay_agent(view, title, wants_characters), _models_agent(models, title, bool(queue)),
               _hermes_agent(queue, title, models, list(requests), list(jobs), now)]
     ask = next((a for a in agents if a.get('needs_you') and a.get('you_can_help')), None)
-    return {'agents': agents, 'ask': ({'agent': ask['agent'], 'name': ask['name'], 'text': ask['you_can_help']} if ask else None),
+    if ask:
+        ask = {'agent': ask['agent'], 'name': ask['name'], 'text': ask['you_can_help']} | \
+              ({'if_unavailable': ask['if_unavailable']} if ask.get('if_unavailable') else {})
+    return {'agents': agents, 'ask': ask,
+            'cannot_help': _swap_unavailable(title, models) if swap_test and not available else None,
             'look_requested': view.get('look_requested')}
 
 
