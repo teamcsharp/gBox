@@ -152,6 +152,8 @@ def test_build_inventory_on_synthetic_tree(tmp_path):
     (root / "DOA5A.exe.orig").write_bytes(bytes(orig))
     (root / "teknoparrot.ini").write_text("[General]\r\nDongleRegion=EXPORT\r\nFreePlay=1\r\n")
     (root / "steam_appid.txt").write_text("480")
+    (root / "plugins").mkdir()
+    (root / "plugins" / "not_top_level.dll").write_bytes(b"")
     raw = _tmc()
     (cos / "HELENA_COS_001.tmc").write_bytes(inv.kt_compress(raw))
     (cos / "HELENA_COS_001.tmcl").write_bytes(inv.kt_compress(b"\x01" * 300))
@@ -163,6 +165,7 @@ def test_build_inventory_on_synthetic_tree(tmp_path):
     assert src["patch_vs_orig"]["ranges"] == [[0x300, 4, hex(0x400000 + 0x1000 + 0x100)]]
     assert man["launch"]["teknoparrot.ini"]["General"]["DongleRegion"] == "EXPORT"
     assert man["launch"]["steam_appid.txt"] == "480"
+    assert man["launch"]["runtime_dlls"] == ["DOA5A.exe"]   # walk() rows use '/' on every OS
     assert man["roster"][0]["name"] == "HELENA" and man["roster"][0]["costumes"] == 1
     d = man["deep_tmc"][0]
     assert d["raw_size"] == len(raw) and d["tmcl_raw_size"] == 300 and "error" not in d

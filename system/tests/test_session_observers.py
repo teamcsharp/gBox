@@ -323,3 +323,56 @@ def test_worker_session_gone_is_stopped_not_a_repair(observer):
                         'restarted or another game replaced it. Relaunch the game to continue.')
     row = o.store.get('session_observer', 'worker-launch')
     assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')
+
+
+def test_vision_timeouts_back_off_and_file_one_repair_only_after_a_window(observer):
+    # #1455: the Spark was saturated (load 27, GPU 94 percent) and the vision model timed out on Ocarina of
+    # Time; three timeouts filed a repair for a route that was fine. Timeouts now back off instead.
+    import httpx
+    from gbox import session_observers as module
+    o = observer
+    now = [1000.0]
+    o.clock = lambda: now[0]
+    o.observe = lambda *_: (_ for _ in ()).throw(httpx.ReadTimeout('timed out'))
+    delays = []
+    for _ in range(module.TIMEOUT_GAP_COUNT - 1):
+        o.sample(o.session)
+        row = o.store.get('session_observer', 'worker-launch')
+        delays.append(row['next_sample'] - now[0])
+        now[0] = row['next_sample']
+    assert delays == [60, 120, 240, 480]
+    assert row['gameplay_state'] == 'backing_off' and row['timeouts'] == 4 and row['timeout_since'] == 1000
+    assert row.get('failures', 0) == 0 and 'timed out' in row['error']
+    assert not o.store.all('request') and all(c[0] != '/api/requests' for c in o.calls)
+
+    # one answer ends the streak; the next slow spell starts counting from zero
+    o.observe = lambda *_: {'summary': 'Link in Kokiri Forest'}
+    o.sample(o.session)
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'watching' and row['timeouts'] == 0 and row['timeout_since'] is None
+
+    # a capture job the worker failed with a bare TimeoutError (the #1455 reason text) is the same load symptom
+    start = now[0] = 5000.0
+    o.session['last_frame_age'] = None
+    while now[0] - start < module.TIMEOUT_GAP_WINDOW:
+        failed_frame(o, 'TimeoutError: ')
+        row = o.store.get('session_observer', 'worker-launch')
+        assert row['gameplay_state'] == 'backing_off' and row.get('failures', 0) == 0
+        assert not o.store.all('request')  # timeouts inside the window never file a repair
+        assert row['next_sample'] - now[0] <= module.TIMEOUT_BACKOFF[1]
+        now[0] = row['next_sample']
+    failed_frame(o, 'TimeoutError: ')  # still timing out after the whole window: now it is a repair
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['timeouts'] >= module.TIMEOUT_GAP_COUNT and row['timeout_since'] == start
+    assert row['observation_request_id'] == 'request0' and len(o.store.all('request')) == 1
+    assert 'timeouts over' in o.store.get('request', 'request0')['body']
+    failed_frame(o, 'TimeoutError: ')
+    assert len(o.store.all('request')) == 1
+
+
+def test_timeout_detection():
+    import httpx
+    from gbox.session_observers import is_timeout
+    assert is_timeout(TimeoutError()) and is_timeout(httpx.ConnectTimeout('x'))
+    assert is_timeout(RuntimeError('TimeoutError: ')) and is_timeout(RuntimeError('ReadTimeout: timed out'))
+    assert not is_timeout(RuntimeError('vision unavailable')) and not is_timeout(KeyError('sha256'))

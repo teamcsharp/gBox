@@ -276,13 +276,19 @@ def load_listing(path: str) -> list[tuple[str, int, str]]:
 
 
 def walk(root: str) -> list[tuple[str, int, str]]:
+    """Same rows as load_listing: relpaths always use '/' (build_inventory matches them as
+    "character/NAME/costume/..." strings, so Windows' '\\' would hide every deep part)."""
     rows = []
+
+    def rel(p: str) -> str:
+        return os.path.relpath(p, root).replace(os.sep, "/")
+
     for dp, dns, fns in os.walk(root):
         for d in dns:
-            rows.append(("d", 0, os.path.relpath(os.path.join(dp, d), root)))
+            rows.append(("d", 0, rel(os.path.join(dp, d))))
         for fn in fns:
             p = os.path.join(dp, fn)
-            rows.append(("f", os.path.getsize(p), os.path.relpath(p, root)))
+            rows.append(("f", os.path.getsize(p), rel(p)))
     return rows
 
 
