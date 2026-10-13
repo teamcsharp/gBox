@@ -55,6 +55,11 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("etm_swap", ["player", "<cast slot>"],
+     "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
+     "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "
+     "rebuilt as plain triangles on the shared 89-joint skeleton in WAD1.DFU, in place; read back from the image; "
+     "unverified in PCSX2"),
     ("doapp_swap", ["<fighter>[:<costume>]", "player"],
      "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
      "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
