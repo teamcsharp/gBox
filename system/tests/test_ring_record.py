@@ -510,3 +510,23 @@ def test_live_ffmpeg_ring_and_export(tmp_path):
     assert abs(float(probe.stdout.strip()) - 5.0) < 0.5 and res["bytes"] <= 1.02 * 2**20, (res, probe.stdout)
     ring.delete()
     print(json.dumps({k: v for k, v in res.items() if k != "file"}), st["encoder_note"])
+
+
+# --- the control plane: a clip already stored as an artifact attaches to a request by its digest ---
+
+def test_request_message_attaches_an_existing_clip_by_digest(cfg):
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    app = create_app(cfg)
+    store = app.state.store
+    ref = store.put_artifact(b"\0\0\0\x18ftypisom" + b"\0" * 64, "replay-g1.mp4", "video/mp4", {"replay": True})
+    store.put("request", "r1", {"id": "r1", "number": 7, "title": "clip", "status": "open", "messages": [],
+                                "created": time.time(), "source": "app"})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    r = client.post("/api/requests/r1/messages", json={"author": "operator", "text": "Replay clip",
+                                                      "attachments": [{"sha256": ref.sha256, "name": "replay-g1.mp4"}]})
+    assert r.status_code == 200, r.text
+    att = r.json()["messages"][-1]["attachments"]
+    assert att == [{"sha256": ref.sha256, "name": "replay-g1.mp4", "type": "video/mp4", "size": ref.size}]
+    bad = client.post("/api/requests/r1/messages", json={"author": "operator", "text": "x", "attachments": [{"sha256": "ab" * 32}]})
+    assert bad.status_code == 422
