@@ -10,6 +10,7 @@ another title's module (docs/assimilation.md has the per-title history; gbox.ass
   rig           body-role vocabulary, role_of_joint, check_role_map (skinning/retarget role maps)
   oracle        the game's own routine as the oracle (R3000 interpreter harness, inverse/reader checks)
   insn_pattern  find code by masked instruction shape (overlays, per-build patch sites, lis/addi + jal xrefs)
+  sega_md       Mega Drive art: Nemesis, Kosinski (decode + test encoders), 4bpp VDP tiles, colour words -> RGBA
 
 INDEX below says which title modules use which shared piece (kept honest by tests/test_formats.py).
 """
@@ -35,6 +36,8 @@ INDEX = {
     "insn_pattern": ["assimilate (fingerprinter)", "pattern of mgs_vr_tool.find_clear_handler, nomercy_analysis, "
                      "dmc3_slus, re2psx_exe, nightfire_analysis"],
     "disc.listing": ["assimilate (fingerprinter)"],
+    "sega_md.nemesis_decompress / tiles_to_indices / palette_rgba (Mega Drive art)": ["sonic2d_sprites"],
+    "sega_md.kosinski_decompress / kosinski_compress (Kosinski; Sonic 1/2/3K level data, no reader uses it yet)": [],
 }
 
 # Shared pieces that still live in their original module (imported from there, not duplicated):

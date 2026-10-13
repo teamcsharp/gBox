@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import math
 import re
@@ -987,13 +986,30 @@ def simulate(seq: list[dict], animator, overlay: TailsOverlay | None = None, max
                     ticks += [ticks[-1]] * final_hold
                     break
                 a.ended = None
-    # The loop found is the first repeated engine state; the picture may repeat earlier (a reset animation shows its
-    # first frame for one tick before the delay counter settles): pull the loop start back while it does.
     if loop_start is not None and loop_start < len(ticks):
-        while loop_start > 0 and ticks[loop_start - 1].key() == ticks[-1].key() and len(ticks) - loop_start > 1:
-            ticks.pop()
-            loop_start -= 1
+        ticks, loop_start = canonical_loop(ticks, loop_start)
     return {"ticks": ticks, "loop_start": loop_start, "end": end}
+
+
+def canonical_loop(ticks: list[Tick], ls: int) -> tuple[list[Tick], int]:
+    """The loop found is the first repeated engine state; the picture often repeats earlier (a reset animation shows
+    its first frame for a tick before the delay counter settles). Pull the loop start back while the picture allows
+    (dropping as many ticks from the end), to the earliest point that is a frame boundary; a loop that is the whole
+    clip is then rotated so it does not split a frame across the wrap."""
+    n = len(ticks)
+    k = 0
+    while ls - k > 0 and ticks[ls - k - 1].key() == ticks[n - 1 - k].key():
+        k += 1
+    best = 0
+    for j in range(k + 1):
+        p = ls - j
+        if p == 0 or ticks[p - 1].key() != ticks[p].key():
+            best = j
+    ticks, ls = ticks[:n - best], ls - best
+    if ls == 0 and len({t.key() for t in ticks}) > 1:
+        while ticks[0].key() == ticks[-1].key():
+            ticks = ticks[1:] + ticks[:1]
+    return ticks, ls
 
 
 def runs_of(ticks: list[Tick], loop_start: int | None) -> list[dict]:
@@ -1151,6 +1167,9 @@ class Extractor:
                     continue
             out.append(dict(spec, kind="requested"))
         names_used = {p["name"] for p in out}
+        # a requested clip that is one animation (spin dash, the S3K victory pose) already covers it
+        covered = {(p["seq"][0]["anim"], p["seq"][0].get("speed")) for p in out
+                   if len(p["seq"]) == 1 and p["seq"][0]["anim"] is not None}
         n = anim_count(self.d, ch.anim)
         for i in range(n):
             name = self.anim_name(char, i)
@@ -1160,8 +1179,10 @@ class Extractor:
             frames = [b for b in s[1:16] if b < self.lay.player_cmd]
             if not frames or all(f == 0 for f in frames):
                 continue
-            names_used.add(name)
             speed = NOMINAL_SPEED.get(name, 0) if s[0] & 0x80 else None
+            if (i, speed) in covered:
+                continue
+            names_used.add(name)
             out.append({"name": name, "seq": [_a(i, speed=speed)], "what": f"animation {i:#04x} ({name})",
                         "note": "", "kind": "animation"})
         return out
