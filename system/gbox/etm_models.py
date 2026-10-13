@@ -2,7 +2,7 @@
 
 Layout recovered from the owned disc and the model loader in SLUS_204.54 (``0x167da0``, allocation tags
 ``DCPatchModel`` / ``DCjointoffsets`` / ``DCjointpositions`` / ``DC2CharTexture`` / ``DC2CharMaterial`` /
-``DCModelConfigs`` / ``DCModelConfigData``); every one of the 186 ``.dcn`` files on the disc parses to its last byte.
+``DCModelConfigs`` / ``DCModelConfigData``); every one of the 275 ``.dcn`` files the model table names parses to its last byte.
 All little endian; ``qw`` = 16 bytes.
 
     0x00 u32 skeleton checksum      the animation set's skeleton must match ("DC2 Model checksum error"); 0x002e5ea3
@@ -22,10 +22,11 @@ All little endian; ``qw`` = 16 bytes.
          C  triangles: header qw {u32 slot, u32 size (10), u32 vertices (3), 0}, per vertex a UV qw {u, v, 0, 0}
          D  never used on this disc (refused)
          control point / vertex: qw {x, y, z, u32 joint * 4}, qw {nx, ny, nz, u32 extra}, extra x qw
-         {u32 joint * 4, f32 w, u32 joint * 4, f32 w} (two-joint skinning)
+         {u32 joint * 4, f32 w, u32 joint * 4, f32 w} (characters: 0 or 1 = two-joint skinning; 2 in three vehicles)
     textures: 0x40 headers {char name[32] (.tga), u32 w, u32 h, u32 -, u32 pixel bytes, u32 -, u32 palette bytes,
          u32 -, u32 -} then per texture pixels (linear, 4-bit low nibble first or 8-bit) + palette (RGBA8888, alpha
-         0..255 linear; the loader halves alpha and CSM1-swizzles 256-colour palettes itself)
+         0..255 linear; the loader halves alpha and CSM1-swizzles 256-colour palettes itself); no palette = direct
+         colour (16-bit A1B5G5R5 in Cop_LP, 32-bit by size)
     materials: 0x48 {char name[32], i32 texture, i32 -, i32 environment texture, f32 flag (-1 = reflective mask),
          f32 x5, f32}
     configs: 0x14 {ptr, u32 mesh count, ptr, ptr, ptr} x n, then per config i32 meshes[count] + i32 slot_to_material
@@ -95,8 +96,8 @@ def _vertices(b: bytes, r: int, n: int, uvs: bool, nj: int) -> tuple[dict, int]:
     P = np.zeros((n, 3), np.float32)
     Nn = np.zeros((n, 3), np.float32)
     UV = np.zeros((n, 2), np.float32)
-    J = np.zeros((n, 2), np.int32)
-    W = np.zeros((n, 2), np.float32)
+    J = np.zeros((n, 4), np.int32)
+    W = np.zeros((n, 4), np.float32)
     for v in range(n):
         if uvs:
             if r + 16 > len(b):
@@ -110,17 +111,18 @@ def _vertices(b: bytes, r: int, n: int, uvs: bool, nj: int) -> tuple[dict, int]:
         r += 32
         if bone % 4 or bone // 4 >= nj:
             raise FormatError(f"vertex at 0x{r - 32:x}: joint slot {bone} outside the {nj}-joint skeleton")
-        if extra > 1:
-            raise FormatError(f"vertex at 0x{r - 32:x}: {extra} weight quadwords (only 0 / 1 seen)")
+        if extra > 2:
+            raise FormatError(f"vertex at 0x{r - 32:x}: {extra} weight quadwords (0..2 seen)")
         P[v], Nn[v] = (x, y, z), (nx, ny, nz)
-        if extra:
+        if r + 16 * extra > len(b):
+            raise FormatError(f"vertex weights at 0x{r:x} past the end")
+        J[v, 0], W[v, 0] = bone // 4, 1.0
+        for k in range(extra):
             b0, w0, b1, w1 = struct.unpack_from("<IfIf", b, r)
             r += 16
             if b0 % 4 or b1 % 4 or b0 // 4 >= nj or b1 // 4 >= nj:
                 raise FormatError(f"vertex weights at 0x{r - 16:x}: joint slot outside the skeleton")
-            J[v], W[v] = (b0 // 4, b1 // 4), (w0, w1)
-        else:
-            J[v], W[v] = (bone // 4, bone // 4), (1.0, 0.0)
+            J[v, 2 * k:2 * k + 2], W[v, 2 * k:2 * k + 2] = (b0 // 4, b1 // 4), (w0, w1)
     return {"pos": P, "nrm": Nn, "uv": UV, "joints": J, "weights": W}, r
 
 
@@ -198,12 +200,12 @@ def parse_dcn(b: bytes) -> dict:
     for i in range(ntex):
         h = b[p + TEX_HDR * i:p + TEX_HDR * (i + 1)]
         tw, th, _x, dsz, _p, psz = struct.unpack_from("<6I", h, 0x20)
-        if not (tw and th and tw <= 1024 and th <= 1024) or psz not in (64, 1024) \
-                or dsz != (tw * th if psz == 1024 else tw * th // 2):
+        bpp = {(64, tw * th // 2): 4, (1024, tw * th): 8, (0, tw * th * 2): 16, (0, tw * th * 4): 32}.get((psz, dsz))
+        if not (tw and th and tw <= 1024 and th <= 1024) or bpp is None:
             raise FormatError(f"texture {i} ({_cstr(h[:0x20])}): {tw}x{th}, {dsz} pixel / {psz} palette bytes")
         if q + dsz + psz > len(b):
             raise FormatError(f"texture {i} data past the end")
-        tex.append({"name": _cstr(h[:0x20]), "w": tw, "h": th, "bpp": 8 if psz == 1024 else 4, "header": h,
+        tex.append({"name": _cstr(h[:0x20]), "w": tw, "h": th, "bpp": bpp, "header": h,
                     "pixels": b[q:q + dsz], "palette": b[q + dsz:q + dsz + psz], "offset": q})
         q += dsz + psz
     p = q
@@ -262,6 +264,13 @@ def parents(J1: np.ndarray, J2: np.ndarray) -> list[int]:
 
 # ---------------------------------------------------------------- textures
 def decode_texture(t: dict) -> np.ndarray:
+    if t["bpp"] == 32:
+        return np.frombuffer(t["pixels"], np.uint8).reshape(t["h"], t["w"], 4).copy()
+    if t["bpp"] == 16:                                    # PSMCT16: A1 B5 G5 R5, R in the low bits
+        v = np.frombuffer(t["pixels"], "<u2").reshape(t["h"], t["w"]).astype(np.uint32)
+        out = np.stack([(v & 31) << 3, ((v >> 5) & 31) << 3, ((v >> 10) & 31) << 3, np.full_like(v, 255)], -1)
+        out[..., :3] |= out[..., :3] >> 5
+        return out.astype(np.uint8)
     pal = np.frombuffer(t["palette"], np.uint8).reshape(-1, 4)
     d = np.frombuffer(t["pixels"], np.uint8)
     idx = d if t["bpp"] == 8 else np.stack([d & 15, d >> 4], 1).reshape(-1)
@@ -298,7 +307,7 @@ def _tri_basis(bc: np.ndarray) -> np.ndarray:
 def _dense_weights(pk: dict, nj: int) -> np.ndarray:
     n = len(pk["pos"])
     D = np.zeros((n, nj), np.float32)
-    np.add.at(D, (np.arange(n)[:, None].repeat(2, 1), pk["joints"]), pk["weights"])
+    np.add.at(D, (np.arange(n)[:, None].repeat(pk["joints"].shape[1], 1), pk["joints"]), pk["weights"])
     return D
 
 
