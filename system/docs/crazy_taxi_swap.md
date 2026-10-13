@@ -61,11 +61,14 @@ Owned bank `ct/polDC0.all`, sha256 `a5171e43...`, with HUcast `pso_hucast_h0_c0.
 | slot | blobs | fitted / hidden | triangles |
 |---|---|---|---|
 | `driver:axel` (`player`) | 54 | 42 / 12 | 1056 |
-| `driver:bd_joe` | 54 | 42 / 12 | 1117 (old fit) |
-| `driver:gena` | 50 | | 1231 (old fit) |
-| `driver:gus` | 50 | | 1241 (old fit) |
-| `pedestrians` | 253 | | 3570 (old fit) |
-| `passengers` | 695 | | 16226 (old fit, about 10 min) |
+| `driver:bd_joe` | 54 | 42 / 12 | 1132 |
+| `driver:gena` | 50 | | 1212 |
+| `driver:gus` | 50 | | 1214 |
+| `pedestrians` | 253 | | 3489 |
+| `passengers` | 695 | | 16226 (measured with the old fit; about 10 min) |
+
+With the new fit, every part's centroid lands within 0.23 of its part extent of the stock centroid. The s16-range
+shrink is at most 0.88x.
 
 Every blob re-encodes at its stock size and the bank keeps its names and order. Pedestrian parts needed the "smallest
 k that keeps a triangle" search, because three clusters collapse every donor triangle. Gena with HUcast runs as a
