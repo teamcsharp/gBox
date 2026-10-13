@@ -54,10 +54,18 @@ function ui() {
   q("#xt-extract").onclick = extractArea;
   q("#xt-out").onclick = e => { const r = e.target.closest("[data-i]"); if (!r) return; const it = X.items[+r.dataset.i];
     if (e.target.closest(".eye")) { it.obj.visible = !it.obj.visible; if (!it.obj.visible && X.sel === it) select(null); outliner(); } else { select(it); focus(it.obj); } };
-  const frame = () => { if (sec.classList.contains("on")) { const w = cv.clientWidth, h = cv.clientHeight;
-      if (w && cv.width !== Math.round(w * X.r.getPixelRatio())) { X.r.setSize(w, h, false); X.cam.aspect = w / h; X.cam.updateProjectionMatrix(); }
-      X.orbit.update(); X.r.render(X.scene, X.cam); } requestAnimationFrame(frame); };
-  frame();
+  // #712: draw only while the Extract tab is open. The loop used to run from app start for the whole session, asking
+  // the compositor for a frame at the display's refresh rate even when nothing here was ever shown.
+  let looping = false;
+  const frame = () => {
+    if (!sec.classList.contains("on")) { looping = false; return; }
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (w && cv.width !== Math.round(w * X.r.getPixelRatio())) { X.r.setSize(w, h, false); X.cam.aspect = w / h; X.cam.updateProjectionMatrix(); }
+    X.orbit.update(); X.r.render(X.scene, X.cam); requestAnimationFrame(frame);
+  };
+  const start = () => { if (!looping && sec.classList.contains("on")) { looping = true; requestAnimationFrame(frame); } };
+  new MutationObserver(start).observe(sec, { attributes: true, attributeFilter: ["class"] });
+  start();
 }
 const msg = t => q("#xt-msg").textContent = t;
 

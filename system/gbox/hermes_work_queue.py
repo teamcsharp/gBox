@@ -132,6 +132,7 @@ def sync(data, favorites, requests, *, now):
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
                     session_observer=bool(context.get('session_observer')),
+                    launch_failure=bool(context.get('launch_failure')),
                     operator_requested=bool(context.get('replacement_requested')),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
@@ -189,7 +190,9 @@ def candidates(data, requests, native, owned, on_main, *, now):
             continue
         req = by_id.get(rid, {})
         if item['lane'] == 'favorite':
-            if not item.get('favorite') or not item.get('in_catalog') or item['game_id'] in busy_games or not next_stage(item):
+            # a recently played title the Sonic showcase found without a writer (ensure_item) is worked like a favorite
+            if (not (item.get('favorite') or item.get('showcase')) or not item.get('in_catalog')
+                    or item['game_id'] in busy_games or not next_stage(item)):
                 continue
             if heavy >= 2 and next_stage(item) in ('inventory', 'analysis'):
                 continue
@@ -205,12 +208,31 @@ def candidates(data, requests, native, owned, on_main, *, now):
 
 
 def priority_rank(item, data) -> int:
-    """Position of this item's game or request in the operator's priority list; past the end when not listed."""
+    """Position of this item's game or request in the operator's priority list, then in the Spark helper's triage
+    list (launch failures, crashes, regressions), which always ranks after every operator entry; past both when
+    not listed."""
     order = [str(x) for x in (data.get('priority') or [])]
+    triage = [str(x) for x in (data.get('triage_priority') or []) if str(x) not in order]
     for key in (item.get('game_id'), item.get('request_id'), str(item.get('number') or '')):
         if key and key in order:
             return order.index(key)
-    return len(order)
+    for key in (item.get('request_id'), str(item.get('number') or '')):
+        if key and key in triage:
+            return len(order) + triage.index(key)
+    return len(order) + len(triage)
+
+
+def add_triage_priority(request_ids, *, limit=200) -> list[str]:
+    """The Spark helper's inbox triage: these requests go ahead of unlisted work, behind the operator's list."""
+    with delivery.locked('work-queue'):
+        data = _read()
+        current = [str(x) for x in (data.get('triage_priority') or [])]
+        for rid in request_ids:
+            if str(rid) not in current:
+                current.append(str(rid))
+        data['triage_priority'] = current[-limit:]
+        _save(data)
+        return data['triage_priority']
 
 
 def set_priority(ids) -> list[str]:
@@ -235,18 +257,79 @@ def choose(options, data):
         lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
     return min(lane, key=lambda v: (
         priority_rank(v[1], data),
-        0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') or v[1].get('session_observer') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
+        # starred favorites first; a showcase-only title (recently played, no writer yet) after them
+        0 if (v[1]['lane'] == 'favorite' and (v[1].get('favorite') or not v[1].get('showcase')))
+        or v[1].get('operator_requested') or v[1].get('session_observer')
+        else 1 if v[1].get('repair') or v[1]['lane'] == 'favorite' else 2 if v[1].get('on_main') else 3,
         v[1].get('last_dispatched', 0),
         v[1].get('created', 0), v[0])) if lane else None
 
 
-def _prompt(item):
+EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
+
+
+def _operator_playing():
+    """Operator games running on the Spark (Hermes' own machine): the gBox API rows marked not agent-owned on a
+    Linux worker. Unknown (API down) counts as none: the rest of tick() fails loudly on its own API calls."""
+    from . import operator_guard
+    try:
+        sessions = _api('/api/sessions?include_ended=false')
+        workers = _api('/api/workers')
+        return operator_guard.spark_operator_sessions(sessions, workers)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def launches_emulator(item) -> bool:
+    """Queue items whose agents start an emulator on this machine: the favorite runtime stage (replacement tested
+    in a running game) and inbox repairs that need gameplay acceptance."""
+    if item.get('lane') == 'favorite':
+        return next_stage(item) in EMULATOR_STAGES
+    return bool(item.get('repair'))
+
+
+def throttle_sandboxes(playing, throttle=None):
+    """While the operator plays here: running agent sandboxes drop to nice 19 and the idle I/O class."""
+    if not playing:
+        return None
+    from . import operator_guard
+    try:
+        return (throttle or operator_guard.throttle_agent_sandboxes)()
+    except Exception as e:  # noqa: BLE001
+        return {'error': f'{type(e).__name__}: {e}'[:200]}
+
+
+def operator_gate(options, playing, throttled=None):
+    """While the operator plays on the Spark (docs/stream-stability.md): defer emulator-launching items and allow
+    one dispatch per tick. Returns (options, capacity cap or None, report)."""
+    if not playing:
+        return options, None, None
+    kept = [v for v in options if not launches_emulator(v[1])]
+    report = {'games': sorted({s.get('title') or s.get('game_id') or s.get('session_id') for s in playing}),
+              'deferred': [v[0] for v in options if v not in kept], 'sandboxes': throttled}
+    return kept, 1, report
+
+
+def _prompt(item, playing=None):
     rid = item['request_id']
     header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
+    if playing:
+        header += ('The operator is playing ' + ', '.join(playing) + ' on this machine right now. Do not start an '
+                   'emulator here (no local Dolphin, RetroArch, PCSX2 or other game runs, no large parallel builds); '
+                   'do source, reader and static-analysis work. Runtime tests go through gBox launch_game node=idle '
+                   'on another PC, never on this one. ')
     if item['lane'] == 'inbox':
-        if item.get('session_observer'):
+        if item.get('launch_failure'):
+            # gbox/launch_failures.py: a game failed to load; the control plane verifies and closes it after the merge
+            header += ('This is a launch failure report: a game failed to load. The request holds the error, logs, '
+                       'timings, staging and the automatic remedy results. Find the root cause, fix it in gBox code '
+                       'with a focused test and publish it (draft PR) with screenshots of the game loading after the '
+                       'fix (evidence_capture on an idle node). Never stop, pause or replace a game the operator is '
+                       'playing. Leave the request in_progress: the control plane verifies the fix with a launch of '
+                       'the same game and mod after the PR merges and deploys, then closes or reopens it. ')
+        elif item.get('session_observer'):
             header += ('This task supports passive observation of an operator gameplay session. '
                        'Read its observations, capture evidence and exact game build. Repair the native '
                        'model reader or read-only observation capability. Never send input, pause, stop, '
@@ -270,9 +353,32 @@ def _prompt(item):
         return header + mode._handoff()
     stage = next_stage(item)
     template = Path(__file__).resolve().parents[1] / 'hermes/gbox/FAVORITE_WORK.md'
+    fp = item.get('fingerprint') or {}
+    hint = ''
+    if stage in ('inventory', 'analysis'):
+        hint = ('\nAssimilation fingerprint attached to this ticket: ' + fp['summary']
+                + (f" Start from {fp.get('start_from') or fp.get('engine_reader')}."
+                   if fp.get('start_from') or fp.get('engine_reader') else '')
+                if fp.get('summary') and fp.get('source') != 'error' else
+                '\nNo fingerprint yet: run assimilate op=fingerprint for this game_id first (start_job).')
     return header + f"\nGame: {item['title']} ({item['platform']}), game_id={item['game_id']}. " + (
         f"Next unfinished stage: {stage}. Preserved checkpoint: " + json.dumps(item.get('stages', {}))
-        + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+        + hint + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+
+
+FINGERPRINT = None  # (game_id, title, platform, api=) -> compact dict; None = gbox.assimilate.ticket_fingerprint
+
+
+def _fingerprint(item):
+    """Step one of readiness: the assimilate fingerprint (engine, containers, codecs, nearest assimilated titles,
+    reader to start from). Best effort: a ticket is never blocked on it."""
+    try:
+        from .assimilate import ticket_fingerprint
+        fn = FINGERPRINT or ticket_fingerprint
+        return fn(item['game_id'], item.get('title') or '', item.get('platform') or '', api=lambda p: _api(p),
+                  max_files=1500)
+    except Exception as e:  # noqa: BLE001
+        return {'source': 'error', 'error': f'{type(e).__name__}: {e}'[:200], 'summary': 'fingerprint unavailable'}
 
 
 def _ensure_request(data, item, requests):
@@ -281,18 +387,23 @@ def _ensure_request(data, item, requests):
     parent = data.get('parent_request_id')
     if not parent or not any(r['id'] == parent for r in requests):
         raise ValueError('Favorites queue requires its existing operator parent request')
+    if not item.get('fingerprint'):
+        item['fingerprint'] = _fingerprint(item)
+    fp = item['fingerprint']
     # Persist before POST. Lost responses are recovered by the context marker on the next scan.
     item['request_uncertain'] = True
     _save(data)
     r = _api('/api/requests', {
         'title': f"Character replacement readiness: {item['title']}", 'source': 'automation',
         'author': 'agent', 'automated': True, 'parent_request_id': parent,
-        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id']},
+        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id'],
+                    'assimilation_fingerprint': fp},
         'body': (f"Persistent work for favorite game {item['game_id']} ({item['platform']}). "
                  "Inventory the owned build, analyze executable/asset loaders, implement and test native "
                  "character extraction and replacement, then verify the rebuilt game. Preserve hash-identified "
                  "artifacts, reusable Ghidra projects and exact pending job IDs. Each run advances one bounded "
-                 "stage; a report, extracted binary or preview alone is not a working character replacement.")})
+                 "stage; a report, extracted binary or preview alone is not a working character replacement."
+                 f"\n\nFingerprint (gbox.assimilate, step one of inventory): {fp.get('summary', '')}")})
     if not ID.fullmatch(str(r.get('id', ''))):
         raise ValueError('Request creation was not acknowledged')
     item.update(request_id=r['id'], number=r['number'])
@@ -303,6 +414,10 @@ def _ensure_request(data, item, requests):
 def tick(*, now=None):
     now = time.time() if now is None else now
     with delivery.locked('work-queue'):
+        # First, whatever the dispatcher decides below: agent sandboxes already running must not starve the
+        # operator's game on this machine (docs/stream-stability.md).
+        playing = _operator_playing()
+        throttled = throttle_sandboxes(playing)
         controller = mode._job() or {}
         if not controller.get('enabled') or not controller.get('no_agent'):
             return {'status': 'disabled_or_legacy_controller'}
@@ -322,7 +437,14 @@ def tick(*, now=None):
                    'model': (config.get('cron') or {}).get('model')}
         if primary not in eligible:
             return {'status': 'waiting_for_route_supervisor', 'favorites': data['favorites_count']}
-        limit = min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        from . import hermes_local
+        local = hermes_local.is_local(primary)
+        if local:
+            # The Spark's GPU model: one run at a time, never while the operator plays a game on the Spark.
+            gate = local_gate()
+            if gate:
+                return {'status': 'waiting_for_operator', 'reason': gate, 'favorites': data['favorites_count']}
+        limit = 1 if local else min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
         script_ids = {j['id'] for j in jobs if j.get('no_agent')}
         reserved = active - script_ids
         reserved.update(j['id'] for j in jobs if not j.get('no_agent') and j.get('enabled')
@@ -337,6 +459,20 @@ def tick(*, now=None):
                          if c.get('busy') and c.get('id') in chat_ids)
         native = _native_jobs()
         options = candidates(data, requests, native, owned, _on_main(), now=now)
+        # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
+        # and caps dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one at a time
+        # (and returned above while the operator plays, through the proxy's gate).
+        options, cap, gate = operator_gate(options, playing, throttled)
+        if cap is not None:
+            limit = min(limit, cap)
+        titles = (gate or {}).get('games') or []
+        deferred = 0
+        if local:
+            # Small, well-scoped tasks only; big multi-file work stays queued for a paid route.
+            by_id = {r['id']: r for r in requests}
+            small = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
+            deferred = len(options) - len(small)
+            options = small
         dispatched = []
         for _ in range(max(0, limit - len(reserved))):
             # Give both backlogs capacity; spare slots go to whichever has work.
@@ -353,7 +489,9 @@ def tick(*, now=None):
                 options = [v for v in options if v[1].get('game_id') != item['game_id']]
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
-            prompt = _prompt(item)
+            prompt = _prompt(item, titles)
+            if local:
+                prompt = hermes_local.local_prompt(prompt)
             existing = [j for j in jobs if j.get('name') == name]
             if len(existing) > 1:
                 raise RuntimeError('Ambiguous queue job identity')
@@ -362,7 +500,7 @@ def tick(*, now=None):
                 break
             attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
-                        attempts=item.get('attempts', 0) + 1)
+                        attempts=item.get('attempts', 0) + 1, local=local, route=dict(primary))
             _save(data)
             if existing:
                 job = existing[0]
@@ -370,7 +508,8 @@ def tick(*, now=None):
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
-                          '--reasoning-effort', 'high', '--workdir', str(mode._PROMPT.parents[2]),
+                          '--reasoning-effort', hermes_local.settings().reasoning_effort if local else 'high',
+                          '--workdir', str(mode._PROMPT.parents[2]),
                           '--deliver', 'local', '--failure-deliver', 'local')
                 found = [j for j in mode._jobs() if j.get('name') == name]
                 if len(found) != 1:
@@ -381,10 +520,69 @@ def tick(*, now=None):
             data['last_' + item['lane'] + '_kind'] = attempt_kind
             _save(data)
             dispatched.append({'job_id': job['id'], 'request_id': item['request_id'],
-                               'game_id': item.get('game_id'), 'lane': item['lane']})
+                               'game_id': item.get('game_id'), 'lane': item['lane'], 'local': local})
         return {'status': 'dispatched' if dispatched else 'waiting', 'dispatched': dispatched,
                 'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
-                'favorites': data['favorites_count'], 'eligible_tasks': len(options)}
+                'favorites': data['favorites_count'], 'eligible_tasks': len(options),
+                'local_route': local, 'deferred_for_paid_route': deferred,
+                **({'operator_playing': gate} if gate else {})}
+
+
+def local_gate():
+    """Why local-model work must wait now (the operator plays on the Spark, or the gBox proxy is down), else None."""
+    try:
+        state = _api('/api/llm/local/status')
+    except Exception as exc:  # noqa: BLE001 - the proxy lives in the gBox service; no service, no local route
+        return f'gBox local model proxy unreachable ({type(exc).__name__})'
+    if not state.get('enabled', True):
+        return 'the local route is switched off ([hermes.local] enabled = false)'
+    return state.get('gated')
+
+
+def _readiness_row(item):
+    fp = item.get('fingerprint') or {}
+    return {'game_id': item['game_id'], 'title': item.get('title'), 'favorite': bool(item.get('favorite')),
+            'showcase': bool(item.get('showcase')), 'next_stage': next_stage(item),
+            'stages': {k: (v or {}).get('status') for k, v in (item.get('stages') or {}).items()},
+            'request_id': item.get('request_id'), 'number': item.get('number'),
+            'dispatch_state': item.get('dispatch_state'), 'attempts': item.get('attempts', 0),
+            'fingerprint': fp.get('summary') or '', 'start_from': fp.get('start_from') or fp.get('engine_reader') or ''}
+
+
+def item_state(game_id):
+    """One title's readiness row (stages, next stage, ticket, fingerprint summary), or None when it is not queued."""
+    item = _read()['items'].get('favorite:' + str(game_id))
+    return _readiness_row(item) if item else None
+
+
+def ensure_item(game, *, fingerprint=None, source='showcase', now=None):
+    """Put a catalog title in the readiness queue (the favorite lane: inventory -> analysis -> reader -> writer ->
+    runtime, worked by Hermes with Ghidra / REA) with the assimilate fingerprint attached. Used by the Sonic showcase
+    for a title without a writer: a favorite is already there (sync); a recently played one is added with
+    `showcase: true`, which candidates() admits after the starred favorites. Never resets stages or a ticket.
+    Raises BlockingIOError while the queue's tick holds the lock (the caller retries on its next pass)."""
+    now = time.time() if now is None else now
+    gid = str(game.get('game_id') or '')
+    if not ID.fullmatch(gid):
+        raise ValueError('Invalid game ID')
+    with delivery.locked('work-queue'):
+        data = _read()
+        key = 'favorite:' + gid
+        new = key not in data['items']
+        item = data['items'].setdefault(key, {'lane': 'favorite', 'game_id': gid, 'stages': {}, 'attempts': 0,
+                                              'last_dispatched': 0, 'created': now, 'favorite': False})
+        item.update(title=item.get('title') or game.get('title') or gid,
+                    platform=item.get('platform') or game.get('platform'),
+                    in_catalog=item.get('in_catalog') or game.get('in_catalog', True) is True)
+        item[source] = True
+        item.setdefault('requested_by', [])
+        if source not in item['requested_by']:
+            item['requested_by'].append(source)
+        fp = item.get('fingerprint') or {}
+        if fingerprint and (not fp or fp.get('source') == 'error'):
+            item['fingerprint'] = fingerprint
+        _save(data)
+        return _readiness_row(item) | {'new': new}
 
 
 def snapshot(game_id=''):

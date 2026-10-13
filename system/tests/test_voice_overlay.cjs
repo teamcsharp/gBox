@@ -69,13 +69,22 @@ test('a native game gets the floating window with the game rect, a restart once,
   f.tick(); assert.deepEqual(f.calls.viz, [], 'nothing to do while idle');
   TALK.phase = 'listening'; TALK.lvl = 0.1; f.tick();
   assert.equal(f.calls.viz.length, 1);
-  assert.deepEqual(plain(f.calls.viz[0]), { on: true, rect: { x: 0, y: 0, w: 640, h: 480 }, level: 1, beat: false, mode: 'random', restart: true });
+  assert.deepEqual(plain(f.calls.viz[0]), { on: true, rect: { x: 0, y: 0, w: 640, h: 480 }, holes: [], level: 1, beat: false, mode: 'random', restart: true });
   assert.deepEqual(plain(f.calls.gpu), [{ on: false }], 'the GPU layer is told to stay off');
   f.now += 200; f.tick();
   assert.equal(f.calls.viz[1].restart, false); assert.equal('mode' in plain(f.calls.viz[1]), false);
   TALK.phase = 'idle'; f.now += 200; f.tick(); assert.equal(f.calls.viz[2].on, true, 'the hold keeps it up');
   f.now += 2000; f.tick(); assert.deepEqual(plain(f.calls.viz[3]), { on: false }); assert.equal(VOV.on, false);
   f.now += 200; f.tick(); assert.equal(f.calls.viz.length, 4, 'off stays quiet');
+});
+
+test('#1081: the floating visualizer receives the pop-up holes, so app menus stay above it like they do above the game', () => {
+  const f = fixture(), { TALK } = f.ctx;
+  f.ctx.EMB.holes = [{ x: 10, y: 20, w: 100, h: 50 }];
+  TALK.phase = 'listening'; f.tick();
+  assert.deepEqual(plain(f.calls.viz[0].holes), [{ x: 10, y: 20, w: 100, h: 50 }]);
+  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '../clients/desktop/main.js'), 'utf8');
+  assert.match(main, /vizOv\.setShape\(embedGeometry\.shapeMinusHoles\(bounds\.width, bounds\.height, st\.holes \|\| \[\], z\)\)/);
 });
 
 test('a GPU-surface game layers the visual itself: the floating window stays off and the mode travels once', () => {

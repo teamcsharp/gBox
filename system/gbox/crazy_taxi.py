@@ -5,16 +5,19 @@ Evidence (requests #608/#459/#1369; owned hyperspin ISO `Crazy Taxi (USA).iso`, 
 `GCDisc.dol()` = 2190496 bytes; the earlier "c6447c2d..." DOL prefix did not reproduce):
 
 * `ct/polDC0.all` is the common shape bank (1586 shapes: cars, pedestrians, passengers and the four drivers).
-  Layout: u32le count, u32le 0x00410020, u32le 0, u32le 0, then `count` records of name[64] + u32le size, 8 bytes
-  of padding, then the shape blobs back to back in record order (sizes are multiples of 0x20; the last blob ends
-  exactly at EOF).
+  Layout: u32le count, u32le 0x00410020, u32le 0, u32le 0, then `count` records of name[64] + u32le size, zero
+  padding to the next 32-byte boundary (8 bytes for this count), then the shape blobs back to back in record order
+  (sizes are multiples of 0x20; the last blob ends exactly at EOF). main.dol's archive loader (0x800066e0) mallocs the
+  file's length and registers every entry by name, so blobs may change size (gbox.crazy_taxi_look); texDc0.all has
+  the same layout.
 * The drivers are `MP_YH_plyrA..D_*` (Axel, B.D. Joe, Gena, Gus in select order), one rigid `.shp` per body part
   (atama head, mune chest, koshi hips, kata/ude/te upper arm/forearm/hand, momo/sune/kakato thigh/shin/foot, with
   hand-pose variants `_ok/_ch/_gu` and `sl_` low-detail twins). Pedestrians (`MP_YH_Man_*`) use the same part set.
 * A `.shp` is big-endian. Header: f32 1.0, f32 bounding radius, ..., vec3 centre @0x20, vec3 quantisation scale
   @0x2c, per-attribute format words @0x60, GX attribute array offsets @0xc8 (POS @0xcc, NRM @0xd0, CLR0 @0xd4,
   TEX0 @0xdc), material table offset @0x110, first array offset @0x114, display-list base @0x118, texture name
-  table @0x11c (64-byte names, e.g. `white.tex`).
+  table @0x11c (header word 0x10 entries of 0x2c bytes: name[0x28] + a pointer the loader fills; driver parts name
+  their own textures, e.g. white.tex + TY_plyrA_face1.tex; gbox.crazy_taxi_look has the material records).
   Positions are s16x3 and normals s16x3 (1.14); colours RGBA8; UVs s16x2. Each material record (0x24 bytes) holds
   a display-list offset and size. Display lists are GX: 0x90|vat = triangles, 0x98|vat = strip, 0xa0|vat = fan,
   u16 vertex count, then one u16 index per present attribute, in POS, NRM, CLR0, TEX0 order.
@@ -93,7 +96,7 @@ def read_bank(data: bytes) -> list[tuple[str, int, int]]:
     table_end = 0x10 + count * 0x44
     if count <= 0 or table_end > len(data):
         raise ValueError(f"bad shape count {count}")
-    out, off = [], table_end + 8
+    out, off = [], (table_end + 0x1F) & ~0x1F             # main.dol 0x8000682c: blobs start 32-byte aligned
     for i in range(count):
         p = 0x10 + i * 0x44
         name = data[p:p + 64].split(b"\0")[0].decode("latin-1")
@@ -113,7 +116,7 @@ def write_bank(entries: list[tuple[str, bytes]], word1: int = 0x00410020) -> byt
         if len(nm) >= 64:
             raise ValueError(f"name too long: {name}")
         hdr += nm.ljust(64, b"\0") + struct.pack("<I", len(blob))
-    hdr += b"\0" * 8
+    hdr += b"\0" * (((len(hdr) + 0x1F) & ~0x1F) - len(hdr))
     return bytes(hdr) + b"".join(b for _, b in entries)
 
 
@@ -185,16 +188,100 @@ def decode_dl(dl: bytes, attrs: list[str]) -> list[tuple]:
     return tris
 
 
+def _dl_stride(b: bytes) -> int:
+    """Bytes per display-list corner: one u16 index per GX attribute array the part has."""
+    return 2 * sum(1 for _a, o in ATTR_OFFS if _u32(b, o))
+
+
+def dl_whole(dl: bytes, stride: int) -> bool:
+    """Is `dl` whole GX primitives (0x90/0x98/0xa0 + u16 count + count * stride bytes) followed only by NOP padding?
+    A pointer pair naming the middle of a list, or a list cut short, fails: the GPU would read vertex indices as
+    commands (or the next list's commands as indices) and the FIFO never resyncs."""
+    p = 0
+    while p < len(dl):
+        c = dl[p]
+        if c == 0:
+            p += 1
+            continue
+        if c & 0xF8 not in (0x90, 0x98, 0xA0) or p + 3 > len(dl):
+            return False
+        p += 3 + struct.unpack_from(">H", dl, p + 1)[0] * stride
+        if p > len(dl):
+            return False
+    return True
+
+
 def _material_list_slots(b: bytes, mat_off: int, dl_base: int, end: int) -> list[tuple[int, int, int]]:
-    """(slot offset, pointed-to offset, size) for every per-material display-list pointer pair found in
-    [mat_off, dl_base)."""
-    out = []
+    """(slot offset, pointed-to offset, size) for every per-material display-list pointer pair in [mat_off, dl_base),
+    in material-record order.
+
+    The records do not keep their lists in address order: Axel's head (MP_YH_plyrA_atama, sl_atama) draws a fifth
+    list at 0x9e0 that sits before the fourth record's 0xa20, and 43 shapes of the bank (cabs, props, some fares) do
+    the same. A pair is a list pointer when it names whole GX primitives inside [dl_base, end) and overlaps no other
+    pair; on the owned bank these pairs tile the display-list region exactly for 1584 of the 1586 shapes (every
+    MP_YH_ part), which `dl_lists_tiled` checks before a writer repacks the region."""
+    stride = _dl_stride(b)
+    out: list[tuple[int, int, int]] = []
     for o in range(mat_off, dl_base - 7, 4):
         off, size = _u32(b, o), _u32(b, o + 4)
-        if dl_base <= off < end and 0 < size <= end - off and size % 0x20 == 0 and b[off] & 0xF8 in (0x90, 0x98, 0xA0):
-            if not out or out[-1][1] + out[-1][2] <= off:
-                out.append((o, off, size))
+        if not (dl_base <= off < end and 0 < size <= end - off and size % 0x20 == 0
+                and b[off] & 0xF8 in (0x90, 0x98, 0xA0) and dl_whole(b[off:off + size], stride)):
+            continue
+        if any(o < q + 8 and q < o + 8 for q, _f, _s in out) or \
+                any(off < f + s and f < off + size for _q, f, s in out):
+            continue
+        out.append((o, off, size))
     return out
+
+
+def dl_lists_tiled(b: bytes) -> bool:
+    """Do the part's display-list pointer pairs cover [dl_base, tex_off) exactly (back to back in some order, padding
+    to the end zero)? Only then can a writer zero the region and repack it without leaving a material record pointing
+    into the new lists."""
+    mat_off, dl_base, end = _u32(b, 0x110), _u32(b, 0x118), _u32(b, 0x11C) or len(b)
+    cov = sorted((off, off + size) for _o, off, size in _material_list_slots(b, mat_off, dl_base, end))
+    if not cov or cov[0][0] != dl_base or any(x[1] != y[0] for x, y in zip(cov, cov[1:])):
+        return False
+    return not any(b[cov[-1][1]:end])
+
+
+def check_written(template: bytes, blob: bytes, name: str = "") -> None:
+    """Every display-list pointer pair the stock part has must, in the written blob, name whole primitives inside the
+    display-list region whose position indices stay inside the written POS array. Raises ValueError otherwise
+    (the cast_crazy_taxi_usa_sonic_adventure_us_82d27070 freeze: Axel's head kept a stale fifth pointer)."""
+    mat_off, dl_base, end = _u32(template, 0x110), _u32(template, 0x118), _u32(template, 0x11C) or len(template)
+    if len(blob) != len(template):
+        raise ValueError(f"{name}: written {len(blob)} bytes for a {len(template)}-byte part")
+    attrs = [a for a, o in ATTR_OFFS if _u32(blob, o)]
+    stride = 2 * len(attrs)
+    pos_off = _u32(blob, 0xCC)
+    nxt = [x for x in (_u32(blob, o) for _a, o in ATTR_OFFS) if x > pos_off] + [mat_off]
+    npos = (min(nxt) - pos_off) // 6
+    spans = []
+    for slot, stock_off, _s in _material_list_slots(template, mat_off, dl_base, end):
+        off, size = _u32(blob, slot), _u32(blob, slot + 4)
+        if any(off < b and a < off + size for a, b in spans):
+            raise ValueError(f"{name}: material pointer at {slot:#x} names {off:#x}+{size:#x}, inside another "
+                             "material's list")
+        spans.append((off, off + size))
+        if not (dl_base <= off and off + size <= end and size % 0x20 == 0 and off % 0x20 == 0):
+            raise ValueError(f"{name}: material pointer at {slot:#x} names {off:#x}+{size:#x}, outside the lists")
+        dl = blob[off:off + size]
+        if not dl_whole(dl, stride):
+            raise ValueError(f"{name}: material pointer at {slot:#x} names {off:#x}+{size:#x}, not whole GX "
+                             "primitives")
+        vat = template[stock_off] & 7
+        p = 0
+        while p < len(dl):                                   # every primitive on the stock list's VAT
+            if dl[p] == 0:
+                p += 1
+                continue
+            if dl[p] & 7 != vat:
+                raise ValueError(f"{name}: list at {off:#x} draws with VAT {dl[p] & 7}, the stock list used VAT {vat}")
+            p += 3 + struct.unpack_from(">H", dl, p + 1)[0] * stride
+        bad = [c["pos"] for t in decode_dl(dl, attrs) for c in t if c["pos"] >= npos]
+        if bad:
+            raise ValueError(f"{name}: list at {off:#x} indexes position {max(bad)} of {npos}")
 
 
 def _material_lists(b: bytes, mat_off: int, dl_base: int, end: int) -> list[tuple[int, int]]:
@@ -699,20 +786,27 @@ def strips_cw(tris: list[tuple]) -> tuple[list[list[int]], list[tuple]]:
     return best[1], best[2]
 
 
-def _encode_dl(tris, attrs: list[str], nverts: int) -> bytes:
-    """One display list: 0x98 strips then one 0x90 batch of leftover triangles; corner = one u16 index per
-    attribute (nrm/clr use the vertex index, tex always 0: every part shares the solid white.tex)."""
+def _encode_dl(tris, attrs: list[str], nverts: int, vat: int = 0, tex: int = 0) -> bytes:
+    """One display list: 0x98|vat strips then one 0x90|vat batch of leftover triangles; corner = one u16 index per
+    attribute (pos/nrm the vertex index, clr entry 0, TEX0 entry `tex`: the material's one UV, `material_uvs`).
+
+    vat: the vertex attribute table the stock list used (its command byte & 7). The game sets that VAT up for the
+    part's arrays before it calls the list (the people parts use VAT 2, Axel's head accessories VAT 3); VAT 0 holds
+    another format, so a 0x98 list draws the part's s16 arrays at the wrong scale (the select screen filled with
+    one huge flat-shaded driver)."""
+    if not 0 <= vat <= 7:
+        raise ValueError(f"vertex attribute table {vat} is not 0..7")
     out = bytearray()
     strips, singles = strips_cw([tuple(map(int, t)) for t in tris])
     for v in strips:
-        out += b"\x98" + struct.pack(">H", len(v))
+        out += bytes([0x98 | vat]) + struct.pack(">H", len(v))
         for i in v:
-            out += struct.pack(f">{len(attrs)}H", *[0 if a in ("tex", "clr") else i for a in attrs])
+            out += struct.pack(f">{len(attrs)}H", *[tex if a == "tex" else 0 if a == "clr" else i for a in attrs])
     if singles:
-        out += b"\x90" + struct.pack(">H", 3 * len(singles))
+        out += bytes([0x90 | vat]) + struct.pack(">H", 3 * len(singles))
         for t in singles:
             for i in t:
-                out += struct.pack(f">{len(attrs)}H", *[0 if a in ("tex", "clr") else i for a in attrs])
+                out += struct.pack(f">{len(attrs)}H", *[tex if a == "tex" else 0 if a == "clr" else i for a in attrs])
     return bytes(out)
 
 
@@ -781,11 +875,45 @@ def _cluster(pos, nrm, tris, k: int):
     return npos, nnrm, T
 
 
-def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
+def material_uvs(template: bytes, pairs=None) -> list[tuple[int, int]]:
+    """One raw s16 UV per material record (display-list order): the centre of the largest triangle that material
+    draws in the stock part. The parts name only white.tex, but the game binds each material's own texture through
+    the record's table indices (Axel's shirt pattern, the faces), so one UV of (0, 0) for every corner samples a
+    corner texel of each texture, and on the head textures that texel is see-through (the select screen showed a
+    driver without a head). A texel inside a drawn stock triangle is one the stock model shows."""
+    mat_off, dl_base, end = _u32(template, 0x110), _u32(template, 0x118), _u32(template, 0x11C) or len(template)
+    if pairs is None:
+        pairs = _material_list_slots(template, mat_off, dl_base, end)
+    attrs = [a for a, o in ATTR_OFFS if _u32(template, o)]
+    offs = {a: _u32(template, o) for a, o in ATTR_OFFS}
+    if "tex" not in attrs:
+        return [(0, 0)] * len(pairs)
+    bounds = sorted({o for o in offs.values() if o} | {mat_off, dl_base, end, len(template)})
+    ntex = (min(x for x in bounds if x > offs["tex"]) - offs["tex"]) // 4
+    npos = (min(x for x in bounds if x > offs["pos"]) - offs["pos"]) // 6
+    uv = [struct.unpack_from(">2h", template, offs["tex"] + 4 * i) for i in range(ntex)]
+    pos = [struct.unpack_from(">3h", template, offs["pos"] + 6 * i) for i in range(npos)]
+    out = []
+    for _slot, off, size in pairs:
+        best, area = (0, 0), -1.0
+        for t in decode_dl(template[off:off + size], attrs):
+            if any(c["pos"] >= npos or c["tex"] >= ntex for c in t):
+                continue
+            a, b, c = (np.asarray(pos[k["pos"]], float) for k in t)
+            ar = float(np.linalg.norm(np.cross(b - a, c - a)))
+            if ar > area:
+                area = ar
+                best = tuple(int(round(sum(uv[k["tex"]][j] for k in t) / 3)) for j in range(2))
+        out.append(best)
+    return out
+
+
+def encode_shape(template: bytes, pos, nrm, tris, name: str = "", chunks=None) -> bytes:
     """Rewrite one .shp's arrays + display lists, keeping the header, material records (the DL pointer pairs get
     the new packed offsets/sizes), texture names and tail. pos/nrm are in the template's local frame and are
     quantised with the template's own scale/frac, so the game animates the part exactly as before. Returns a blob
-    of the same size."""
+    of the same size. chunks: the triangles per material record (display-list order; gbox.crazy_taxi_swap deals
+    them by region); default: `tris` split evenly over the records."""
     if len(template) < 0x120 or struct.unpack_from(">f", template, 0)[0] != 1.0:
         raise ValueError(f"{name}: not a Crazy Taxi .shp")
     scale = struct.unpack_from(">3f", template, 0x2C)
@@ -803,7 +931,12 @@ def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
     V = len(pos)
     if V < 3 or not tris:
         raise ValueError(f"{name}: a part needs >= 3 vertices and >= 1 triangle")
-    sizes = {"pos": 6 * V, "nrm": 6 * V if "nrm" in attrs else 0, "clr": 4 if "clr" in attrs else 0, "tex": 4}
+    pairs = _material_list_slots(template, mat_off, dl_base, tex_off or len(template))
+    if not pairs:
+        raise ValueError(f"{name}: no per-material display-list pointers found")
+    uvs = material_uvs(template, pairs)
+    sizes = {"pos": 6 * V, "nrm": 6 * V if "nrm" in attrs else 0, "clr": 4 if "clr" in attrs else 0,
+             "tex": 4 * len(pairs)}
     if first + sum(sizes.values()) > mat_off:
         raise ValueError(f"{name}: {V} vertices need {sum(sizes.values())} array bytes, region has {mat_off - first}")
     out = bytearray(template)
@@ -833,15 +966,24 @@ def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
         tclr = np.frombuffer(template, np.uint8, offs["clr"], 4 * max(nclr, 1)).reshape(-1, 4).mean(0).round() \
             .astype(np.uint8)
         out[new_offs["clr"]:new_offs["clr"] + 4] = tclr.tobytes()
-    struct.pack_into(">2h", out, new_offs["tex"], 0, 0)
-    pairs = _material_list_slots(template, mat_off, dl_base, tex_off or len(template))
-    if not pairs:
-        raise ValueError(f"{name}: no per-material display-list pointers found")
+    for k, (u, v) in enumerate(uvs):
+        struct.pack_into(">2h", out, new_offs["tex"] + 4 * k, u, v)
+    if not dl_lists_tiled(template):
+        # a list no pointer pair accounts for would be zeroed here while its record still points at it
+        raise ValueError(f"{name}: the material records' display lists do not tile [{dl_base:#x}, {tex_off:#x}); "
+                         "repacking would leave a record pointing into the new lists")
     out[dl_base:tex_off] = b"\x00" * (tex_off - dl_base)
-    chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    if chunks is None:
+        chunks = [list(c) for c in np.array_split(np.asarray([list(t) for t in tris], int), len(pairs))] if tris else []
+    else:
+        chunks = [[tuple(map(int, t)) for t in c] for c in chunks]
+        if len(chunks) != len(pairs):
+            raise ValueError(f"{name}: {len(chunks)} triangle chunks for {len(pairs)} material records")
+        if any(i < 0 or i >= V for c in chunks for t in c for i in t):
+            raise ValueError(f"{name}: a chunk triangle indexes past {V} vertices")
     cur = dl_base
     for k in range(len(pairs)):
-        block = _encode_dl(chunks[k] if k < len(chunks) else [], attrs, V)
+        block = _encode_dl(chunks[k] if k < len(chunks) else [], attrs, V, template[pairs[k][1]] & 7, k)
         block += b"\x00" * ((0x20 - len(block) % 0x20) % 0x20)
         if cur + len(block) > tex_off:
             raise ValueError(f"{name}: display lists need {cur + len(block) - dl_base} bytes, region is "
@@ -849,7 +991,9 @@ def encode_shape(template: bytes, pos, nrm, tris, name: str = "") -> bytes:
         out[cur:cur + len(block)] = block
         struct.pack_into(">II", out, pairs[k][0], cur, len(block))
         cur += len(block)
-    return bytes(out)
+    out = bytes(out)
+    check_written(template, out, name)
+    return out
 
 
 def donor_segments(glb, part_roles: dict, joint_roles: dict) -> dict:
@@ -873,12 +1017,14 @@ def donor_segments(glb, part_roles: dict, joint_roles: dict) -> dict:
             p = parent[p]
         jrole[j] = r
     P, N, O, T = [], [], [], []
-    for pr in rig["prims"]:
+    base = 0                                                  # each primitive's indices start at its first vertex
+    for pr in rig["prims"]:                                   # in the concatenated arrays (one prim per material)
         own = np.asarray(pr["owner"], int)
         P.append(np.asarray(pr["pos"], float))
         N.append(np.asarray(pr["nrm"], float))
         O.append(own)
-        T.append(np.asarray(pr["tris"], int) + len(P[-1]) - len(pr["pos"]))
+        T.append(np.asarray(pr["tris"], int).reshape(-1, 3) + base)
+        base += len(P[-1])
     P = np.concatenate(P) if P else np.zeros((0, 3))
     N = np.concatenate(N) if N else np.zeros((0, 3))
     O = np.concatenate(O) if O else np.zeros(0, int)
@@ -910,11 +1056,12 @@ def donor_segments(glb, part_roles: dict, joint_roles: dict) -> dict:
 
 
 def part_budgets(template: bytes, attrs: list[str]) -> tuple[int, int]:
-    """(max vertices, display-list region bytes) for a part blob: pos+nrm cost 6 bytes per vertex each, clr and
-    tex are single entries (8 bytes together)."""
+    """(max vertices, display-list region bytes) for a part blob: pos+nrm cost 6 bytes per vertex each, clr is one
+    entry and tex one entry per material record (`material_uvs`)."""
     mat_off, first, dl_base, tex_off = (_u32(template, o) for o in (0x110, 0x114, 0x118, 0x11C))
     per = 6 * (1 + int("nrm" in attrs))
-    fixed = 4 + (4 if "clr" in attrs else 0)
+    nmat = len(_material_list_slots(template, mat_off, dl_base, tex_off or len(template)))
+    fixed = 4 * max(1, nmat) + (4 if "clr" in attrs else 0)
     return (mat_off - first - fixed) // per, tex_off - dl_base
 
 
@@ -989,73 +1136,30 @@ def swap_driver(bank: bytes, glb, part_roles: dict, joint_roles: dict, letter: s
     return bytes(out), stats
 
 
-def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: str, progress=None) -> dict:
-    """A Crazy Taxi file mod: a copy of the disc image with ct/polDC0.all replaced in place (same size)."""
+def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: str, progress=None,
+              extra: dict | None = None) -> dict:
+    """A Crazy Taxi file mod: a copy of the disc image with ct/polDC0.all replaced (in its slot when it fits, else moved
+    past the last file with its FST entry rewritten - main.dol mallocs the archive by its file length), plus `extra`
+    {disc path: bytes} (the v2 driver writer's ct/texDC0.all)."""
     import shutil
     import types
     from . import filemods
     work = Path(cfg.cache) / "characters_build" / "crazy_taxi" / name
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
-    bankfile = work / "polDC0.all"
-    bankfile.write_bytes(bank)
+    changes = {}
+    for path, data in {BANK: bank, **(extra or {})}.items():
+        f = work / Path(path).name
+        f.write_bytes(data)
+        changes[path] = {"from": str(f)}
     progress = progress or (lambda p, m: None)
     progress(90, f"Writing the disc image {image_name}")
-    b = filemods.build_image(types.SimpleNamespace(cache=Path(cfg.cache)), game["game_id"], iso, name,
-                             {BANK: {"from": str(bankfile)}})
-    return b | {"files": [BANK]}
+    b = filemods.build_image(types.SimpleNamespace(cache=Path(cfg.cache)), game["game_id"], iso, name, changes)
+    return b | {"files": list(changes)}
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
-    """characters op=use for Crazy Taxi (GC): slot=player -> Axel the driver (MP_YH_plyrA_*: 15 rigid parts plus
-    his hand-pose, head and sl_ LOD variants) rebuilt from the library character (mod ct_<slug>)."""
-    from . import characters as C
-    from . import filemods
-    gid = game["game_id"]
-    name = f"ct_{meta['slug']}"
-    have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
-    built = None
-    if inp.rebuild or not have:
-        joint_roles = dict(meta.get("rig", {}).get("roles") or {})
-        roles = resolve_roles(joint_roles)
-        if C.library_root(ctx.config).is_dir():
-            from .gcdisc import GCDisc
-            glb = C._local_or_fetch(ctx, meta, meta["model"])
-            iso = C._gc_iso(ctx, game)
-            bank = GCDisc(iso).read(BANK)
-            src_sha = hashlib.sha256(bank).hexdigest()[:16]
-            new_bank, stats = swap_driver(bank, glb, roles, joint_roles, "A", progress=ctx.progress)
-            built = build_mod(ctx.config, game, iso, new_bank, name, f"Crazy Taxi {meta['slug']}.iso",
-                              progress=ctx.progress)
-            built["stats"] = stats
-            C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
-                   json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
-                         "notes": f"replaces Axel the driver (MP_YH_plyrA_*: {len(stats)} .shp parts; source bank "
-                                  f"{src_sha}…); his skeleton/animations stay"})
-        else:
-            cp = next((w["id"] for w in C._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"
-                       and w.get("online")), None)
-            ctx.progress(10, "Building the Crazy Taxi mod on the control-plane node (the collection lives there)")
-            j = C._job(ctx, "characters", {"op": "use", "character": meta["slug"], "game_id": gid,
-                                           "rebuild": inp.rebuild, "launch": False, "slot": inp.slot}, cp, 3600)
-            r = (j.get("output") or {}).get("result") or {}
-            if j.get("state") != "succeeded" or r.get("status") not in ("built", "ready"):
-                return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
-            built = r.get("build")
-    res = {"mod": name, "build": built,
-           "replaces": "Axel the driver (MP_YH_plyrA_* .shp parts, all LODs and hand poses)"}
-    if not inp.launch:
-        return res | {"status": "built" if built else "ready"}
-    ctx.progress(90, f"Launching Crazy Taxi with {meta['name']} (mod {name})")
-    lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": name, "node": "idle"}})
-    t0 = time.time()
-    while lj.get("state") in ("queued", "running") and time.time() - t0 < 1800:
-        time.sleep(2)
-        lj = C._api(ctx, "GET", f"/api/jobs/{lj['id']}")
-    ok = lj.get("state") == "succeeded"
-    launch = {"job": lj.get("id"), "state": lj.get("state"),
-              "session_id": (lj.get("output") or {}).get("session_id"), "error": lj.get("error")}
-    return res | {"status": ("built+launched" if built else "launched") if ok else "launch " + str(lj.get("state")),
-                  "launch": launch,
-                  "message": f"Crazy Taxi is running with {meta['name']} as the driver (mod {name})." if ok else
-                  f"Mod {name} is {'built' if built else 'ready'} but the launch {lj.get('state')}: {lj.get('error')}"}
+    """characters op=use for Crazy Taxi (GC): gbox.crazy_taxi_swap.use (slots player | driver:<name> | drivers |
+    pedestrian(s) | passenger(s)). Kept so older callers of gbox.crazy_taxi.use reach the same writer."""
+    from . import crazy_taxi_swap
+    return crazy_taxi_swap.use(ctx, meta, game, inp)

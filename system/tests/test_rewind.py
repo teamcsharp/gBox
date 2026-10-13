@@ -395,15 +395,17 @@ def test_windows_dolphin_ring_hotkeys_and_speed_limit(monkeypatch, tmp_path):
     ad = adapters.DolphinWinAdapter(Config(data_dir=tmp_path), "gamecube")
     ad.proc = SimpleNamespace(pid=123)
     sent = []
-    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events: sent.extend(events) or {"sent": len(events)})
-    assert ad.checkpoint_save() == {"slot": 8} and [e["key"] for e in sent] == ["Shift_R", "F8", "F8", "Shift_R"]
+    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events, **kw: sent.extend(events) or {"sent": len(events)})
+    lane = ad.lane                                                          # gBox's Hotkeys.ini: F13 lane by default
+    assert ad.checkpoint_save() == {"slot": 8} and [e["key"] for e in sent] == ["Control_L", "Shift_R", lane, lane, "Shift_R", "Control_L"]
     sent.clear()
-    assert ad.checkpoint_load() == {"slot": 8} and sent == [{"key": "F8", "down": True}, {"key": "F8", "down": False}]
+    assert ad.checkpoint_load() == {"slot": 8} and sent == [{"key": "Control_L", "down": True}, {"key": lane, "down": True},
+                                                             {"key": lane, "down": False}, {"key": "Control_L", "down": False}]
     sent.clear()
-    assert ad.fast_forward(on=True) == {"fast_forward": "on"} and sent == [{"key": "Tab", "down": True}]
+    assert ad.fast_forward(on=True) == {"fast_forward": "on"} and sent == [{"key": lane, "down": True}]
     assert ad.fast_forward(on=True) == {"fast_forward": "on"} and len(sent) == 1
-    assert ad.fast_forward(on=False) == {"fast_forward": "off"} and sent[-1] == {"key": "Tab", "down": False}
-    for key in ("F1", "F8", "Tab", "Shift_R"):                              # the keys the hotkeys need have scan codes
+    assert ad.fast_forward(on=False) == {"fast_forward": "off"} and sent[-1] == {"key": lane, "down": False}
+    for key in ("F13", "F14", "F15", "Shift_R", "Control_R", "Control_L"):   # the keys the hotkeys need have scan codes
         assert adapters._SCAN[key][0]
 
 

@@ -37,7 +37,7 @@ def mod_dir(cfg, game_id: str, name: str) -> Path:
             raise ValueError("game and mod names must be single cache-folder components")
     root = (Path(cfg.cache) / "mods").resolve()
     out = root / game_id / name
-    if not out.resolve().is_relative_to(root / game_id):
+    if not out.resolve().is_relative_to((root / game_id).resolve()):   # (root/game_id may link to the cold tier)
         raise ValueError("mod folder must stay inside its game cache")
     return out
 
@@ -68,7 +68,7 @@ def build(cfg, game_id: str, rom: Path, name: str, changes: dict, progress=None)
     if out.exists():
         shutil.rmtree(out)
     norm = {Path(k).as_posix().lower(): (k, v) for k, v in changes.items()}
-    applied = []
+    applied, rows = [], []
     for f in base.rglob("*"):
         if f.name == ".gbox-base-complete":
             continue
@@ -96,13 +96,34 @@ def build(cfg, game_id: str, rom: Path, name: str, changes: dict, progress=None)
                 data[off:off + len(b)] = b
             t.write_bytes(bytes(data))
         applied.append(key)
+        rows.append(_change_row(key, ch, t, f.stat().st_size))
     for key, ch in norm.values():                          # new files the game didn't have
         t = out / key
         t.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ch["from"], t) if "from" in ch else t.write_bytes(ch.get("bytes", b""))
         applied.append(key + " (new)")
-    (out / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": game_id, "files": applied, "built": time.time()}))
+        rows.append(_change_row(key, ch, t, None, new=True))
+    (out / ".gbox-mod.json").write_text(json.dumps(_record({"name": name, "game_id": game_id, "files": applied,
+                                                            "built": time.time()}, rows)))
     return {"mod": name, "dir": str(out), "files": applied}
+
+
+def _change_row(key: str, ch: dict, written: Path, base_size: int | None, new: bool = False) -> dict:
+    """One changed file for the build record (gbox.build_record.file_changes): what changed and the sizes."""
+    from . import build_record
+    try:
+        size = written.stat().st_size
+    except OSError:
+        size = None
+    change = "new" if new else "patched" if ch.get("patch") and not ("from" in ch or "bytes" in ch) else "replaced"
+    return build_record.file_change(key, change, size, base_size, ch.get("patch") if change == "patched" else None)
+
+
+def _record(meta: dict, rows: list[dict]) -> dict:
+    """The marker with the per-file changes; byte patches make it a ROM hack in the Builds view."""
+    from . import build_record
+    kind = "romhack" if any(r["change"] == "patched" or r.get("patches") for r in rows) else "file"
+    return build_record.stamp(meta, kind=kind, file_changes=rows)
 
 
 def is_folder_game(rom: Path) -> bool:
@@ -145,7 +166,8 @@ def build_image(cfg, game_id: str, rom: Path, name: str, changes: dict, progress
         gcz_to_iso(rom, img, progress)
     else:
         shutil.copy2(rom, img)
-    applied, disc = [], None
+    from . import build_record
+    applied, disc, rows = [], None, []
     with open(img, "r+b") as f:
         for key, ch in changes.items():
             if key == "@image":
@@ -153,6 +175,7 @@ def build_image(cfg, game_id: str, rom: Path, name: str, changes: dict, progress
                     f.seek(int(str(p["offset"]), 0))
                     f.write(bytes.fromhex(p["hex"]))
                 applied.append("@image")
+                rows.append(build_record.file_change(img.name, "patched", None, None, ch.get("patch"), "byte patches on the image"))
                 continue
             if disc is None:
                 from .gcdisc import GCDisc
@@ -172,9 +195,12 @@ def build_image(cfg, game_id: str, rom: Path, name: str, changes: dict, progress
                 from .romexport import gc_put_file          # in its slot, or moved to free space after the last file
                 gc_put_file(f, disc, key, data)
             applied.append(key)
+            rows.append(build_record.file_change(key, "patched" if "patch" in ch else "replaced",
+                                                 size if "patch" in ch else len(data), size, ch.get("patch")))
     if disc is not None:
         disc.f.close()
-    (out_dir / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": game_id, "image": img.name, "files": applied, "built": time.time()}))
+    (out_dir / ".gbox-mod.json").write_text(json.dumps(_record({"name": name, "game_id": game_id, "image": img.name,
+                                                                "files": applied, "built": time.time()}, rows)))
     return {"mod": name, "dir": str(out_dir), "image": str(img), "files": applied}
 
 
@@ -184,22 +210,48 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     if not marker.exists():
         raise ValueError(f"no built mod {name!r} for this game")
     meta = json.loads(marker.read_text())
+    if meta.get("launchable") is False:                # universal-modder staged files (um_mod): an overlay, not a game copy
+        raise ValueError(f"mod {name!r} is a staged file set ({meta.get('kind', 'files')}), not a launchable copy of the "
+                         "game: install its files with the game's mod loader (see its README)")
     if meta.get("image"):
         return _file_path(out, meta["image"])
     return out / Path(rom).relative_to(game_root(rom))
 
 
+def _hash_sidecar(d: Path) -> Path:
+    """Digests of a mod folder's files, kept beside it (not inside: the folder's file list is its manifest), so a
+    restart doesn't re-hash a multi-GB disc image before the first launch can fetch the manifest."""
+    return d.parent / f".{d.name}.sha256.json"
+
+
 def _files(d: Path, hashes: bool = False) -> list[dict]:
-    files = []
+    files, saved, dirty = [], {}, False
+    if hashes:
+        try:
+            saved = json.loads(_hash_sidecar(d).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            saved = {}
     for p in sorted(d.rglob('*')):
         if not p.is_file() or p.name.endswith('.part'): continue
         stat = p.stat(); item = {'path': p.relative_to(d).as_posix(), 'size': stat.st_size}
         if hashes:
             key = (str(p.resolve()), stat.st_mtime_ns, stat.st_size)
+            row = saved.get(item['path'])
+            if key not in _HASHES and isinstance(row, list) and row[:2] == [stat.st_mtime_ns, stat.st_size]:
+                _HASHES[key] = row[2]
             if key not in _HASHES:
                 with p.open('rb') as stream: _HASHES[key] = hashlib.file_digest(stream, 'sha256').hexdigest()
             item['sha256'] = _HASHES[key]
+            if row != [stat.st_mtime_ns, stat.st_size, item['sha256']]:
+                saved[item['path']], dirty = [stat.st_mtime_ns, stat.st_size, item['sha256']], True
         files.append(item)
+    if dirty:
+        try:
+            tmp = _hash_sidecar(d).with_suffix('.tmp')
+            tmp.write_text(json.dumps(saved), encoding='utf-8')
+            os.replace(tmp, _hash_sidecar(d))
+        except OSError:
+            pass                                    # a read-only cache still answers, it just re-hashes next restart
     return files
 
 
@@ -291,7 +343,10 @@ def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
     with _FETCH_GUARD:
         lock = _FETCH_LOCKS.setdefault(key, threading.Lock())
     with lock:
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        if progress:
+            progress(20, f"Checking build {name} against the central collection (Spark)")
+        # the Spark hashes a new or just-restarted build's disc image (1+ GB on its HDD) before answering
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
         if r.status_code == 404:
             return name  # Local-only mods still have a local completed marker.
         r.raise_for_status()
@@ -349,7 +404,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
     import httpx
     out = dest or mod_dir(cfg, game_id, name)
     if files is None:
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
         if r.status_code == 404:
             return False
         r.raise_for_status()
@@ -415,7 +470,7 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
         d, game_id, name = meta.parent, meta.parent.parent.name, meta.parent.name
         if (d / STAGED_MARK).exists():
             continue                                       # a local staging copy of a collection mod, not a new build
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
         have = {f["path"]: f["size"] for f in r.json().get("files", [])} if r.status_code == 200 else {}
         todo = [f for f in _files(d) if have.get(f["path"]) != f["size"] and not f["path"].endswith(".part")]
         for f in sorted(todo, key=lambda f: f["path"] == ".gbox-mod.json"):
@@ -427,10 +482,105 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
     return sent
 
 
+LOCAL_MAX = 400                     # builds a worker reports with its heartbeat (newest first)
+LOCAL_TTL = 60.0
+_LOCAL_CACHE: dict = {}
+
+
+def local_builds(cfg, now: float | None = None) -> list[dict]:
+    """This machine's built mods, newest first: {game_id, name, built (marker mtime), staged_of?}. Two directory levels
+    and one marker stat per build (no marker is read beyond a staging copy's tiny mark file); cached LOCAL_TTL s."""
+    now = time.time() if now is None else now
+    root = Path(cfg.cache) / "mods"
+    hit = _LOCAL_CACHE.get(str(root))
+    if hit and now - hit[0] < LOCAL_TTL:
+        return hit[1]
+    out = []
+    try:
+        games = [g for g in os.scandir(root) if g.is_dir(follow_symlinks=False)]
+    except OSError:
+        games = []
+    for g in games:
+        try:
+            mods = list(os.scandir(g.path))
+        except OSError:
+            continue
+        for m in mods:
+            try:
+                if not m.is_dir(follow_symlinks=False):
+                    continue
+                st = os.stat(os.path.join(m.path, ".gbox-mod.json"))
+            except OSError:
+                continue
+            row = {"game_id": g.name, "name": m.name, "built": round(st.st_mtime, 1)}
+            mark = Path(m.path) / STAGED_MARK
+            if mark.is_file():
+                try:
+                    row["staged_of"] = mark.read_text(encoding="utf-8").strip()[:200]
+                except OSError:
+                    row["staged_of"] = m.name.split(STAGED_SEP)[0]
+            elif STAGED_SEP in m.name:
+                row["staged_of"] = m.name.split(STAGED_SEP)[0]
+            out.append(row)
+    out.sort(key=lambda r: -r["built"])
+    out = out[:LOCAL_MAX]
+    _LOCAL_CACHE[str(root)] = (now, out)
+    return out
+
+
 def list_mods(cfg, game_id: str) -> list[dict]:
     d = Path(cfg.cache) / "mods" / game_id
     return [json.loads((m / ".gbox-mod.json").read_text()) for m in sorted(d.iterdir())
             if (m / ".gbox-mod.json").exists() and not (m / STAGED_MARK).exists()] if d.exists() else []
+
+
+def copies_of(cfg, game_id: str, name: str) -> list[str]:
+    """This machine's folders of one build: the build itself and its staged copies (<name>~<build>, or a folder whose
+    staging mark names it). Never the base copy (modbase/) or another build."""
+    root = Path(cfg.cache) / "mods" / game_id
+    out = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return out
+    for e in entries:
+        if not e.is_dir(follow_symlinks=False):
+            continue
+        mark = Path(e.path) / STAGED_MARK
+        try:
+            of = mark.read_text(encoding="utf-8").strip() if mark.is_file() else ""
+        except OSError:
+            of = ""
+        if e.name == name or e.name.startswith(name + STAGED_SEP) or of == name:
+            out.append(e.name)
+    return sorted(out, key=lambda n: (n != name, n))
+
+
+def delete_build(cfg, game_id: str, name: str, in_use=()) -> dict:
+    """Delete one build's local copies (Builds ▸ Delete, file_mod op=delete_build): every staged copy too, with their
+    hash sidecars. Refuses (ModInUse) while a running game uses any of them (in_use: the mod folder names running
+    sessions hold); a folder a process still holds open is left whole and reported."""
+    names = copies_of(cfg, game_id, name)
+    busy = sorted(set(names) & set(in_use or ()))
+    if busy:
+        raise ModInUse(16, f"{name} is in use by a running game ({', '.join(busy)}): stop that game first, then delete it")
+    removed, errors = [], []
+    for n in names:
+        out = mod_dir(cfg, game_id, n)
+        try:
+            shutil.rmtree(out)
+            removed.append(n)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            errors.append(f"{n}: {e}")
+            continue
+        try:
+            _hash_sidecar(out).unlink(missing_ok=True)
+        except OSError:
+            pass
+    _LOCAL_CACHE.clear()                             # the next heartbeat reports the build gone
+    return {"removed": removed, "errors": errors}
 
 
 def remove(cfg, game_id: str, name: str) -> bool:

@@ -4,6 +4,14 @@ import time
 
 from . import characters as C
 
+RECOLLECT_PARTIAL_S = 24 * 3600     # a partial roster is re-collected at most once a day, at a launch
+
+
+def registered(game):
+    """True when a dedicated native reader in characters.DEDICATED matches this catalog game."""
+    title = (game.get('title') or '').lower()
+    return any(test(title, game.get('platform')) for _, test, _, _ in C.DEDICATED)
+
 
 class AutoCollection:
     def __init__(self, store, config):
@@ -19,10 +27,61 @@ class AutoCollection:
             job = self.store.get('job', record['job_id']) or {}
             record = record | {'state': job.get('state', 'not_started'),
                                'result': (job.get('output') or {}).get('result'), 'error': job.get('error')}
+            result = record['result'] or {}
+            # A partial roster is re-checked against the collection as it is now (roles backfilled by a fixed reader,
+            # #1485) instead of re-queueing the job on every launch; the stored job output stays as it was.
+            if result.get('status') == 'partial' and self.config is not None:
+                root = C.library_root(self.config)
+                if root.is_dir():
+                    try:
+                        record['result'] = C.refresh_collection(root, result)
+                    except Exception:                       # a status read never fails on a bad entry
+                        pass
+            upgraded = self._reader_upgraded(record)
+            if upgraded:
+                record['stale_reader'] = upgraded
+        elif record.get('state') == 'unsupported' and self._reader_now_registered(gid):
+            # The stored verdict predates a reader deployed since then (#1369): report "not run yet",
+            # never the false "No native model reader registered", so favorites/launches re-queue it.
+            record = record | {'state': 'not_started', 'stale_unsupported_since': record.get('updated'),
+                               'message': 'A native model reader is registered now; collection has not run since it was deployed.'}
         capability = self.store.get('game_capability', gid)
         if capability:
             record = record | {'capabilities': capability, 'backlog': self.store.get('capability_backlog', gid) or []}
         return record
+
+    def _partial_and_stale(self, record):
+        """An incomplete roster (#1506: "extract everything while it loads") is collected again at a launch once a day:
+        readers improve between launches, and the job runs on the Spark, never on the PC the game plays on."""
+        if record.get('state') != 'succeeded' or (record.get('result') or {}).get('status') != 'partial':
+            return False
+        job = self.store.get('job', record.get('job_id')) if record.get('job_id') else None
+        last = (job or {}).get('finished') or record.get('updated') or 0
+        return time.time() - last > RECOLLECT_PARTIAL_S
+
+    @staticmethod
+    def _reader_upgraded(record):
+        """A finished collection made by an older version of its (versioned) reader, e.g. the AUF roster that listed
+        writer slots only (reader v1, collected nothing): {extractor, collected_with, current}, else None. It is
+        collected again at the next launch instead of waiting for the daily partial re-collect."""
+        if record.get('state') != 'succeeded':
+            return None
+        result = record.get('result') or {}
+        try:
+            current = C.reader_version(result.get('extractor'))
+        except Exception:                                   # a reader that doesn't import never blocks the status
+            return None
+        have = int(result.get('reader_version') or 1)
+        if current is None or have >= current:
+            return None
+        return {'extractor': result.get('extractor'), 'collected_with': have, 'current': current}
+
+    def _reader_now_registered(self, gid):
+        try:
+            game = self.store.catalog_get(gid) or {}
+        except Exception:
+            return False  # unknown catalog row: keep the stored verdict
+        return bool(game) and registered(game)
 
     def track(self, game, entries=None):
         """Persist scoped capability gaps without inventing completion or inbox jobs."""
@@ -70,8 +129,9 @@ class AutoCollection:
         with self.lock:
             previous = self.status(gid)
             # A favorite action explicitly retries failed work; launches never repeat expensive failures.
-            supported = any(test((game.get('title') or '').lower(), game.get('platform')) for _, test, _, _ in C.DEDICATED)
-            if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed'):
+            supported = registered(game)
+            if previous['state'] != 'not_started' and not (previous['state'] == 'unsupported' and supported) and not (retry_failed and previous['state'] == 'failed') \
+                    and not (supported and (self._partial_and_stale(previous) or previous.get('stale_reader'))):
                 return
             if not supported:
                 self.store.put('character_collection', gid, {'state': 'unsupported', 'updated': time.time(),

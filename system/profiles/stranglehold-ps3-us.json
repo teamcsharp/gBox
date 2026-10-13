@@ -10,8 +10,18 @@
     {"role": "presentation verdict", "symbol": "StrangleholdProjectile_Bullet_PrecisionAim.ResolvePrecisionAim", "evidence": "script event (flags 0x20802); disassembly: IsA('StrangleholdPawn') ? SetTrigger(PrecisionAimEnterCinemaTrigger) : SetTrigger(PrecisionAimMissTrigger)", "confidence": "high"},
     {"role": "damage verdict", "symbol": "StrangleholdPawn.ServerResolveDamage", "evidence": "script; branch @01e1 on DamageClass == StrangleholdDamageType_Bullet_PrecisionAim -> PrecisionAimHitMapAsset.HandleCriticalHits -> @02a6 DamageScale = 1000 -> @03ff CauseDamageToSelf", "confidence": "high"},
     {"role": "slow motion", "symbol": "WorldInfo.TimeDilation via StrangleholdInventory_TequilaTime.SetWorldTimeDilation / StrangleholdGameReplicationInfo.SetTequilaTimeActive", "evidence": "script disassembly", "confidence": "high"},
-    {"role": "aim state", "symbol": "StrangleholdPlayerPawn.IsPrecisionAiming (native)", "evidence": "used by PlayerController.ResolveDamage/UpdateHUD to suppress damage UI while aiming", "confidence": "medium"}
+    {"role": "aim state", "symbol": "StrangleholdPlayerPawn.IsPrecisionAiming (native) = TequilaBombMode byte at pawn+0x13FC == 2", "evidence": "EBOOT.BIN decrypted (APP key rev 1): native table entry 0x101CA2CC 'intAStrangleholdPlayerPawnexecIsPrecisionAiming' -> OPD 0x0177B5D0 -> exec 0x002D9600 -> AStrangleholdPlayerPawn::IsPrecisionAiming 0x0039B3AC: lbz r0,0x13FC(this); return r0 == 2. Siblings: IsInBarrage 0x0039B498 (== 3), IsInSpinBomb 0x0039B584 (== 4); writers at 0x0039BFAC-0x0039C0D0 (ServerChangeTequilaBombMode). Used by PlayerController.ResolveDamage/UpdateHUD to suppress damage UI while aiming", "confidence": "high (field), medium (pointer path to the local pawn)"}
   ],
+  "link": {
+    "trigger": {
+      "address": "0x1032D740", "type": "u8", "eq": 2,
+      "path": [0, "0x4C", "0x38", 0, "0x338", {"walk": "0x1B8", "until": {"offset": "0x1BC", "mask": "0x80000000"}}, "0x1AC", {"add": "0x13FC"}],
+      "why": "the local player's TequilaBombMode == 2 (Precision Aim): true from the moment the player enters precision aim until the bullet-cam shot is over",
+      "evidence": "GWorld = *(TOC 0x017F4E80 + 0x1C18) = 0x1032D740 (BSS), read by the local-player-controller helper 0x002A5B14 (stub 0x00394A48): 0x00D273C4 returns World->+0x4C (PersistentLevel)->+0x38 (Actors.Data)->[0] (WorldInfo)->+0x338 (ControllerList); the helper walks NextController (+0x1B8) to the first controller whose bitfield word +0x1BC has its top bit (bIsPlayer) set and that answers IsLocalPlayerController (vtable+0x298); 0x00454640 then reads Controller+0x1AC (Pawn) and calls IsPrecisionAiming on it",
+      "confidence": "medium: static analysis of the decrypted EBOOT; unverified against a running game (the single-player list holds one bIsPlayer controller)",
+      "live_check": "game_link op=start with this trigger, or memory reads along the path: enter Precision Aim (its Tequila Bomb on the d-pad, with at least one Tequila bar) and the byte reads 2; back to 0 after the shot"
+    }
+  },
   "script_patches": {
     "package": "StrangleholdGame",
     "functions": {
