@@ -1233,6 +1233,8 @@ class Agent:
 
     def mgs_vr(self, session_id, op="status"):
         j = self._job("mgs_vr", {"session_id": session_id, "op": op or "status"}, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def sonic_adventure_2(self, session_id, op="status", rank="A", count=0, finish=True, timeout_s=3.0):
         j = self._job("sonic_adventure_2", {"session_id": session_id, "op": op, "rank": rank or "A", "count": int(count or 0),
                                             "finish": bool(finish), "timeout_s": float(timeout_s or 3.0)},
