@@ -32,7 +32,7 @@ SA2Variables.h covers the 2012 PC port only and its GameCube-derived layout is u
       ("Max Score" 020DB294 05F5E0FF; read by the results score function 0x8C054350 at G+0x88).
     * AwardWin(player) 0x8C027E40: stops the timer, sets G+0x43 = 1 (LevelCleared). Called by the main loop's 100-ring
       check at 0x8C0269F2 (MissionNum G+0x22 == 1, TwoPlayerMode G+0x1E == 0, CurrentLevel <= 46 or == 70, Rings >= 100,
-      G+0x43 == 0), by Knuckles/Rouge emerald hunts (0x8C0860B2) and goal objects (0x8C047C74).
+      G+0x43 == 0), by the Knuckles/Rouge emerald hunt (0x8C0860B2) and by 0x8C047C74 / 0x8C048888.
     * CurrentLevel s16 0x8C24EE64 (CodeBreaker "Level Modifier" 0024EE64; compared with 35..38 Cannon's Core, 70, 90
       Chao World), CurrentCharacter s32 0x8C24EE6C ("Always Tails" 0124EE6C 0006 = MechTails; level loader 0x8C023EC0
       compares it with 6/7), GameState s16 0x8C24EE60 (3 at level load, 16 in game, 17 paused - the PC enum).
