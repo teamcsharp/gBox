@@ -488,7 +488,8 @@ def test_the_failure_coming_back_after_a_fix_reopens_the_ticket(plane):
     again = ledger.observe_job(failed_launch(p))
     assert again["id"] == rec["id"] and again["state"] == "investigating" and again["reopen_count"] == 1
     assert p.store.get("request", rec["request_id"])["status"] == "in_progress"
-    assert len(p.investigations) == 2
+    assert len(p.investigations) == 2 and p.attempts == [1, 2]
+    assert p.store.get(LF.KIND, rec["id"])["hermes"]["attempt"] == 2   # the requeue is kept on the record
 
 
 # ------------------------------------------------------------------------------------------------ backfill

@@ -628,10 +628,10 @@ class Ledger:
                 rec.update(state="investigating", reopened=now, pr=None, verify=None, verified=None,
                            reopen_count=rec.get("reopen_count", 0) + 1)
                 self._set_status(req["id"], "open", "The failure happened again after the ticket was closed: reopened.")
-                self.store.put(KIND, sig, rec)
-                self.h.spawn(lambda: self._investigate(sig, reopened=True))
             self.store.put(KIND, sig, rec)
             self._publish(rec)
+            if reopen:                                           # after the record is saved: it updates it
+                self.h.spawn(lambda: self._investigate(sig, reopened=True))
             return rec
         req = self.h.create_request({
             "title": self._title(facts, c), "body": "(collecting evidence)", "source": "automation", "kind": "text",
