@@ -11,6 +11,7 @@ verify_entry ok, collect retargetable 1/1. Only the library GLB is needed here; 
 """
 import hashlib
 import json
+import os
 import types
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import pytest
 
 from gbox import characters as C
 
-LIB_GLB = Path("/home/ehm_eckx/gbox-cache/characters/mgs_vr_snake/mgs_vr_snake.glb")
+LIB_GLB = Path(os.environ.get("GBOX_CHARACTERS", Path.home() / "gbox-cache" / "characters")) / "mgs_vr_snake" / "mgs_vr_snake.glb"
 GLB_SHA = "d92d171ddeee7a1eddf82e27976caab62ba3a5183c1654007d706d232ac2fa89"
 GAME = {"game_id": "afd2fc507bb69843", "title": "Metal Gear Solid - VR Missions", "platform": "psx"}
 WORKERS = [
@@ -29,12 +30,11 @@ WORKERS = [
     {"id": "win_small", "os": "windows", "online": True, "tools": ["characters"]},
 ]
 
-pytestmark = pytest.mark.skipif(not LIB_GLB.is_file(), reason="library VR Missions Snake GLB is not on this node")
+needs_library = pytest.mark.skipif(not LIB_GLB.is_file(), reason="library VR Missions Snake GLB is not on this node")
 
 
 def _collect(monkeypatch, tmp_path, workers, failing=()):
     """Run the real collect() with the decode dispatch and the API answered from the library GLB."""
-    glb = LIB_GLB.read_bytes()
     dispatched, calls = [], []
 
     def api(ctx, method, path, **kw):
@@ -45,7 +45,7 @@ def _collect(monkeypatch, tmp_path, workers, failing=()):
             return {"artifacts": [{"name": "preview.png", "sha256": "p"},
                                   {"name": "mgs-vr-snake.glb", "sha256": "glbsha"}]}
         if path == "/api/artifacts/glbsha":
-            return glb
+            return LIB_GLB.read_bytes()
         raise AssertionError(f"unexpected API call {method} {path}")
 
     def job(ctx, tool, inp, worker=None, limit=900):
@@ -64,6 +64,7 @@ def _collect(monkeypatch, tmp_path, workers, failing=()):
     return res, dispatched, calls, tmp_path / "characters"
 
 
+@needs_library
 def test_forced_recollect_extracts_a_retargetable_snake(monkeypatch, tmp_path):
     assert hashlib.sha256(LIB_GLB.read_bytes()).hexdigest() == GLB_SHA
     res, dispatched, calls, root = _collect(monkeypatch, tmp_path, WORKERS)
@@ -87,6 +88,7 @@ def test_forced_recollect_extracts_a_retargetable_snake(monkeypatch, tmp_path):
     assert not (tmp_path / "cache" / "characters_build" / "extract" / "mgs_vr_snake").exists()
 
 
+@needs_library
 def test_failed_decode_falls_through_to_the_next_windows_worker(monkeypatch, tmp_path):
     res, dispatched, calls, root = _collect(monkeypatch, tmp_path, WORKERS, failing={"win_big"})
     assert [w for _, _, w in dispatched] == ["win_big", "win_small"]
