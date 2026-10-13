@@ -3679,7 +3679,8 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re_agent",        # re_agent: ReAgent reverser/checker/fix loop over the Ghidra Bridge
                               "gta_live",        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
-                              "evidence_capture")):   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
     import sys

@@ -2567,6 +2567,26 @@ def create_app(config: Config) -> FastAPI:
                     "knowledge": [e for e in store.all("edge") if e["game_id"] == gid],
                     "runs": [r for r in store.all("run") if r["game_id"] == gid]}
 
+    @app.get("/api/profiles/{gid}/pick")
+    def profile_pick(gid: str, actor=Depends(auth)):
+        """What the pick whip learned about this game (gbox.pick_learn): struct offsets, model pointers, model
+        signatures, live-replace outcomes, Ghidra findings. {} until the first pick."""
+        return (store.get("profile", gid) or {}).get("pick") or {}
+
+    @app.post("/api/profiles/{gid}/pick")
+    def profile_pick_learn(gid: str, body: dict, actor=Depends(auth)):
+        """Merge a pick's findings into the game's learned data (dicts merge, values replace, null deletes)."""
+        from . import pick_learn
+        with store.lock:
+            p = store.get("profile", gid)
+            if not p:
+                e = store.catalog_get(gid) or _404()
+                p = {"game_id": gid, "title": e["title"], "platform": e["platform"], "created": time.time(), "notes": []}
+            p["pick"] = pick_learn.merge(p.get("pick") or {}, body) | {"updated": time.time()}
+            store.put("profile", gid, p)
+        store.audit(actor, "profile.pick", gid, {"keys": sorted(body)[:20]})
+        return p["pick"]
+
     # --- live sessions (frames up from the worker, input down from the UI) ---
     live: dict[str, dict] = {}
     live_lock = threading.Lock()
@@ -2669,6 +2689,18 @@ def create_app(config: Config) -> FastAPI:
         store.put("session", sid, session)
         store.audit(actor, "session.live_model", sid, {"mod": model.mod})
         return {"session_id": sid, "live_mod": model.mod}
+
+    @app.post("/api/sessions/{sid}/live-pick")
+    def live_pick(sid: str, pick: dict, actor=Depends(auth)):
+        """The pick whip's last saved pick for this session (gbox.pick_tool.compact_pick): what pick_identify found /
+        pick_replace put in. The Blender round trip (gbox.live_link) passes it back to pick_replace unchanged."""
+        session = store.get("session", sid) or _404()
+        if len(json.dumps(pick, default=str)) > 256 << 10:
+            raise HTTPException(413, "pick too large (save the compact pick)")
+        session["live_pick"] = pick | {"saved": time.time()}
+        store.put("session", sid, session)
+        store.audit(actor, "session.live_pick", sid, {"slot": pick.get("slot"), "status": pick.get("status")})
+        return {"session_id": sid, "slot": pick.get("slot")}
 
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
