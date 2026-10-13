@@ -60,6 +60,12 @@ How to work:
   weather value=<sunny|cloudy|rainy|foggy|release> | time hours minutes | wanted level=0-6 | teleport x y z | spawn model.
   Its result lists each address's source and live_checked; a field that is not mapped says how to map it. Vice City
   windows_native 1fd42f50b10252e6 is the Definitive Edition (Unreal Engine 4) and has no table: say so.
+  ida (IDA Pro headless, same analysis.json as analyze_binary) where a node has IDA; n64recomp op=run (rom_path + the
+  analysis_sha256 of re_study's N64 ELF) recompiles an N64 game's boot code to C in a work folder (the ROM is only read);
+  decomp_me to match a function on decomp.me: dry_run first, real calls are opt-in and submit makes a PUBLIC scratch.
+- Ripping a PC game's meshes when RenderDoc can't (characters op=extract / scene_capture first): ninja_ripper op=launch
+  exe=<game.exe> (an agent test PC picked for you, never the operator's game) -> op=rip pid=<pid> worker=<its worker> ->
+  op=import worker=<its worker> name=<name> (one GLB, stored in the collection) -> op=stop pid=<pid>.
 - "Put me on <stage/world/level>", "play as <character>", "skip to <boss>": DO IT, don't explain how the operator could.
   Playbook, in order, until it works: (0) recall + re_dossier op=read (addresses gBox already verified) and the game's own
   tool when it has the warp (zelda_oot op=goto / skip_deku_tree, stage_warp op=warp, re_mods, gta_mods, pso autoplay);
@@ -652,6 +658,29 @@ def tool_specs() -> list[dict]:
         fn("ghidra_script", "Run one Ghidra script (find one with ghidra_scripts) headlessly on an executable, e.g. to decompile "
            "a loader or dump a table. Returns the script log.", {"binary_path": s, "script": s, "args": {"type": "array", "items": s},
            "processor": s}, ["binary_path", "script"]),
+        fn("ida", "IDA Pro headless auto-analysis of an executable (functions + strings, the same analysis.json as "
+           "analyze_binary) on a node with IDA installed; processor = IDA's -p name (mipsb N64, mipsl PS1, r5900l PS2, ppc "
+           "GameCube). op=status shows the IDA used. If no node has IDA the error says how to install it; use analyze_binary.",
+           {"op": s, "binary_path": s, "processor": s}, []),
+        fn("n64recomp", "N64Recomp on an owned N64 ROM: op=run rom_path=<ROM the worker can read> analysis_sha256=<analysis.json "
+           "of re_study's N64 ELF> name=<work folder>: generates symbols from gBox's analysis and recompiles the boot code "
+           "to C (RecompiledFuncs) in a work folder; the ROM is only read. dry_run=true prepares without running. op=status "
+           "| list show installs and work folders.",
+           {"op": s, "rom_path": s, "analysis_sha256": s, "analysis_path": s, "name": s, "entrypoint": s, "dry_run": b}, ["op"]),
+        fn("decomp_me", "decomp.me matching-decompilation scratches. op=status | compilers | platforms | presets | fetch "
+           "(slug) | list (params) | submit (platform + compiler or preset, target_asm, diff_label, context, source_code) | "
+           "compile (slug, source_code). dry_run defaults to true (shows the request); real calls need the operator's "
+           "opt-in (decomp_me_enabled) and submit publishes a PUBLIC scratch, so ask before dry_run=false.",
+           {"op": s, "dry_run": b, "slug": s, "params": {"type": "object"}, "platform": s, "compiler": s,
+            "compiler_flags": s, "preset": i, "diff_label": s, "target_asm": s, "context": s, "source_code": s, "name": s}, ["op"]),
+        fn("ninja_ripper", "NinjaRipper on a Windows test PC (for PC games / emulators RenderDoc can't rip). op=status | launch "
+           "(exe, args: start it with NinjaRipper inside on an agent test PC; returns pid and worker) | attach (session_id of "
+           "an agent-owned session) | rip (pid or session_id: press the rip hotkey, wait for the files) | list (rip sets) | "
+           "import (path = rip folder, default newest; name = collection name: converts the .rip meshes to one GLB and stores "
+           "it in the collection, kind object|character|environment) | stop (pid). Pass worker=<worker from launch> to every "
+           "later call. Never used on the operator's own game.",
+           {"op": s, "exe": s, "args": {"type": "array", "items": s}, "session_id": s, "pid": i, "path": s, "hotkey": s,
+            "wait_s": {"type": "number"}, "name": s, "kind": s, "worker": s, "mode": s}, ["op"]),
         fn("characters", "collect (game): extract the supported native character roster without vision calls; returns verified models, mapped rig readiness and individual failures. gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
            "reusable in any game. use/live_use/overlay/place require a nonempty character copied from the operator's exact slug/name. "
            "Overlay/missing/pending results do not complete a native swap; keep the request pending until native verification. "
@@ -1275,6 +1304,41 @@ class Agent:
         except Exception:
             pass
         return res
+
+    def ida(self, op="analyze", binary_path="", processor=""):
+        j = self._job("ida", {"op": op, "binary_path": binary_path, "processor": processor or ""}, limit=3600)
+        return {"state": j.get("state"), "error": j.get("error"), "output": j.get("output"), "receipt": j.get("receipt_id")}
+
+    def n64recomp(self, op="status", rom_path="", analysis_sha256="", analysis_path="", name="", entrypoint="", dry_run=False):
+        j = self._job("n64recomp", {"op": op, "rom_path": rom_path, "analysis_sha256": analysis_sha256,
+                                    "analysis_path": analysis_path, "name": name, "entrypoint": entrypoint,
+                                    "dry_run": bool(dry_run)}, limit=3600)
+        return (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}
+
+    def decomp_me(self, op="status", dry_run=True, slug="", params=None, platform="", compiler="", compiler_flags="",
+                  preset=None, diff_label="", target_asm="", context="", source_code="", name=""):
+        inp = {"op": op, "dry_run": dry_run is not False, "slug": slug, "params": params or {}, "platform": platform,
+               "compiler": compiler, "compiler_flags": compiler_flags, "preset": preset, "diff_label": diff_label,
+               "target_asm": target_asm, "context": context, "source_code": source_code, "name": name}
+        j = self._job("decomp_me", inp, limit=180)
+        return j.get("output") or {"state": j.get("state"), "error": j.get("error")}
+
+    def ninja_ripper(self, op="status", exe="", args=None, session_id="", pid=0, path="", hotkey="", wait_s=30.0, name="",
+                     kind="object", worker="", mode="auto"):
+        inp = {"op": op, "exe": exe, "args": list(args or []), "session_id": session_id, "pid": int(pid or 0), "path": path,
+               "hotkey": hotkey, "wait_s": float(wait_s or 30), "name": name, "mode": mode or "auto"}
+        # sessions pin their own PC; a new launch goes to an idle PC ticked for background testing (never the operator's)
+        target = session_id.split("-")[0] if session_id else (worker or ("idle" if op == "launch" else None))
+        j = self._job("ninja_ripper", inp, node=None if target else "windows", worker=target, limit=900)
+        if j.get("state") != "succeeded":
+            return {"state": j.get("state"), "error": j.get("error") or j.get("detail"), "worker": j.get("worker_id")}
+        out = dict((j.get("output") or {}).get("result") or {}, worker=j.get("worker_id"))
+        if op == "import" and name and out.get("glb"):
+            add = self._job("characters", {"op": "add", "character": name, "artifact": out["glb"],
+                                           "kind": kind if kind in ("character", "vehicle", "object", "environment") else "object"},
+                            node="linux", limit=3600)
+            out["collection"] = (add.get("output") or {}).get("result") or {"state": add.get("state"), "error": add.get("error")}
+        return out
 
     def video(self, op="search", query="", url="", n=8, at=0.0):
         j = self._job("video", {"op": op, "query": query or (self.game and op == "search" and self.game) or "", "url": url,

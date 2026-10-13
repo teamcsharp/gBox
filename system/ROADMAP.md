@@ -129,4 +129,6 @@ Legend: [x] done and verified on the real systems · [~] partly done (what is mi
 - [~] PUBG locomotion analysis: new `ue_steam` tool handles Steam auto-discovery, anti-cheat refusal,
   and static Ghidra locomotion/animation symbol inference; PUBG is not installed and its anti-cheat
   prevents live runtime work (operator)
-- [ ] decomp.me / IDA Pro / N64Recomp integration: not started (decomp.me publishes code publicly; N64Recomp is a source build)
+- [~] decomp.me / IDA Pro / N64Recomp / NinjaRipper integration (#90, #443): `decomp_me` (opt-in, dry-run default), `ida`,
+  `n64recomp` and `ninja_ripper` registry tools with fakes-only tests (docs/rip_and_decomp_tools.md); live runs wait for
+  IDA / N64Recomp / NinjaRipper installs on the agent test PC (operator)
