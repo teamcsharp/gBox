@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import padstate
+from . import fit_events
 from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
@@ -436,6 +437,106 @@ def create_app(config: Config) -> FastAPI:
             _404()
         store.audit(actor, "character.target", slug, t.model_dump())
         return m
+
+    # --- retarget profiles (gbox/retarget_profile.py): the Retarget editor's per (donor, game[, slot]) adjustments ---
+    def _profile_view(K, root, slug: str, game_id: str, slot: str) -> dict:
+        from . import retarget_profile as RP
+        try:
+            m = K.get(root, slug)
+        except KeyError:
+            _404()
+        key = RP.slot_key(slot)
+        saved = RP.stored(m, game_id) if game_id else {}
+        return {"slug": slug, "name": m.get("name"), "game_id": game_id, "slot": slot or "*", "key": key,
+                "profile": saved.get(key), "game_wide": saved.get("*"), "saved_slots": sorted(saved),
+                "resolved": RP.resolve(m, game_id, slot) if game_id else None,
+                "defaults": RP.DEFAULT, "roles": RP.ROLES, "rig_roles": (m.get("rig") or {}).get("roles") or {},
+                "model_url": f"/api/characters/{slug}/file/{m['model']}" if m.get("model") else None,
+                "source": m.get("source") or {}}
+
+    @app.get("/api/characters/{slug}/retarget_profile")
+    def chars_profile_get(slug: str, game_id: str = "", slot: str = "", actor=Depends(auth)):
+        """The donor's saved profile for game_id (+ slot), the merged one the writers will use, and its rig roles."""
+        K, root = _chars()
+        return _profile_view(K, root, slug, game_id, slot)
+
+    class ProfileIn(BaseModel):
+        game_id: str
+        slot: str = ""
+        profile: dict | None = None         # None / reset=true removes the saved profile of that slot
+        reset: bool = False
+
+    @app.put("/api/characters/{slug}/retarget_profile")
+    @app.post("/api/characters/{slug}/retarget_profile")
+    def chars_profile_put(slug: str, inp: ProfileIn, actor=Depends(auth)):
+        """Save (or reset) a retarget profile; the donor's built mods for that game are marked for rebuild so the next
+        build (single slot or whole cast) fits with it."""
+        from . import retarget_profile as RP
+        K, root = _chars()
+        if not re.fullmatch(r"[0-9a-f]{16}", inp.game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        try:
+            clean = None if inp.reset or inp.profile is None else RP.normalize(inp.profile)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        key = RP.slot_key(inp.slot)
+        with store.lock:
+            try:
+                m = K.get(root, slug)
+            except KeyError:
+                _404()
+            games = m.setdefault("retarget_profiles", {})
+            entry = games.setdefault(inp.game_id, {})
+            if clean is None:
+                entry.pop(key, None)
+            else:
+                entry[key] = clean | {"updated": time.time(), "by": str(actor)[:80]}
+            if not entry:
+                games.pop(inp.game_id, None)
+            if not games:
+                m.pop("retarget_profiles", None)
+            for t in (m.get("targets") or {}).get(inp.game_id, []):
+                if key == "*" or RP.slot_key(t.get("slot")) in (key, "*"):
+                    t["needs_rebuild"] = True
+            K.put_meta(root, m)
+        store.audit(actor, "character.retarget_profile", slug, {"game_id": inp.game_id, "slot": key,
+                                                                 "reset": clean is None})
+        return _profile_view(K, root, slug, inp.game_id, inp.slot)
+
+    @app.get("/api/retarget/reference")
+    def retarget_reference(game_id: str, slot: str = "", actor=Depends(auth)):
+        """The target slot's stock model for the Retarget editor: the collection entry extracted from that game whose
+        name best matches the slot (Kasumi for fighter:KAS), else the game's first collected character, else none
+        (the editor then draws a standard humanoid skeleton at the game's proportions)."""
+        K, root = _chars()
+        if not re.fullmatch(r"[0-9a-f]{16}", game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        own = [m for m in K.list_all(root) if (m.get("source") or {}).get("game_id") == game_id
+               and (m.get("kind") or "character") == "character" and not m.get("variant_of") and m.get("model")]
+        words = set(re.findall(r"[a-z0-9]+", str(slot).lower())) - {"fighter", "wrestler", "player", "enemy", "driver",
+                                                                    "character", "ped", "all", "slot"}
+        name = slot
+        try:
+            from . import cast_swap
+            g = store.catalog_get(game_id)
+            row = next((r for r in cast_swap.slot_rows(g) if r.get("slot") == slot), None) if g else None
+            if row and row.get("name"):
+                name = row["name"]
+                words |= set(re.findall(r"[a-z0-9]+", row["name"].lower()))
+        except Exception:                                    # noqa: BLE001 - the slot name only sharpens the match
+            pass
+
+        def score(m):
+            hay = set(re.findall(r"[a-z0-9]+", " ".join([m["slug"], m.get("name", ""), *m.get("aliases", [])]).lower()))
+            return len(words & hay)
+        best = max(own, key=score, default=None)
+        if best is None:
+            return {"game_id": game_id, "slot": slot, "slot_name": name, "reference": None}
+        exact = score(best) > 0
+        return {"game_id": game_id, "slot": slot, "slot_name": name, "exact": exact,
+                "reference": {"slug": best["slug"], "name": best["name"],
+                              "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
+                              "roles": (best.get("rig") or {}).get("roles") or {}}}
 
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
@@ -1753,10 +1854,56 @@ def create_app(config: Config) -> FastAPI:
             j = store.get("job", jid) or _404()
             if j["state"] != JobState.RUNNING:
                 return {"ok": False, "cancel": bool(j.get("cancel"))}
-            j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": p.msg, "ts": time.time()}
-            j["progress_log"] = (j.get("progress_log") or [])[-49:] + [p.msg]
+            msg, event = fit_events.split(p.msg)              # a writer's fitting stage (gbox.fit_events)
+            if event is not None:
+                j["fitting"] = fit_events.fold(j.get("fitting"), event)
+            j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": msg, "ts": time.time()}
+            j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
             store.put("job", jid, j)
         return {"ok": True, "cancel": bool(j.get("cancel"))}
+
+    def _fitting_dir(jid: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", jid):
+            raise HTTPException(400, "bad job id")
+        return Path(config.cache) / "fitting-jobs" / jid
+
+    @app.post("/api/jobs/{jid}/fitting/files/{name}")
+    async def job_fitting_upload(jid: str, name: str, request: Request, actor=Depends(auth)):
+        """A worker's fitting snapshot (GLB) or preview image for the live Fitting pop-up; served back below."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name) or not name.lower().endswith((".glb", ".png", ".jpg", ".webp")):
+            raise HTTPException(400, "bad file name")
+        with store.lock:
+            j = store.get("job", jid) or _404()
+            if j["state"] != JobState.RUNNING:
+                raise HTTPException(409, "job is not running")
+        data = await request.body()
+        if len(data) > 8 << 20:
+            raise HTTPException(413, "fitting snapshot too large")
+        d = _fitting_dir(jid)
+        if not d.is_dir():                                   # a new job's snapshots: drop those older than 3 days
+            import shutil
+            for old in (d.parent.iterdir() if d.parent.is_dir() else []):
+                try:
+                    if old.is_dir() and time.time() - old.stat().st_mtime > 3 * 86400:
+                        shutil.rmtree(old, ignore_errors=True)
+                except OSError:
+                    pass
+        d.mkdir(parents=True, exist_ok=True)
+        if sum(f.stat().st_size for f in d.iterdir() if f.is_file()) + len(data) > 256 << 20:
+            raise HTTPException(413, "this job's fitting snapshots are over 256 MB")
+        (d / name).write_bytes(data)
+        return {"url": f"/api/jobs/{jid}/fitting/files/{name}"}
+
+    @app.get("/api/jobs/{jid}/fitting/files/{name}")
+    def job_fitting_file(jid: str, name: str, actor=Depends(auth)):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name):
+            _404()
+        f = _fitting_dir(jid) / name
+        if not f.is_file():
+            _404()
+        media = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+        return FileResponse(f, media_type=media.get(f.suffix.lower(), "application/octet-stream"),
+                            headers={"cache-control": "max-age=86400"})
 
     @app.post("/api/jobs/{jid}/cancel")
     def job_cancel(jid: str, actor=Depends(auth)):

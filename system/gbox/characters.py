@@ -2207,6 +2207,8 @@ def characters_tool(inp: CharIn, ctx):
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        from . import retarget_profile as _RP                # game-wide Retarget editor profiles
+        chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2253,6 +2255,16 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"unknown op {inp.op} (list | get | use | overlay | extract | add | blender | environments | coverage)")
     game = _game(ctx, inp)
     gid = game["game_id"]
+    from . import retarget_profile as _RP, fit_events as _FE   # the operator's Retarget editor profile + Fitting pop-up
+    profiled = _RP.apply_to_meta(meta, gid, inp.slot)
+    if profiled is not meta:
+        sk = _RP.slot_key(inp.slot)
+        if not inp.rebuild and any(t.get("needs_rebuild") and (sk == "*" or _RP.slot_key(t.get("slot")) in (sk, "*"))
+                                   for t in (meta.get("targets") or {}).get(gid, [])):
+            inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
+        meta = profiled
+    _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
+                      meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
