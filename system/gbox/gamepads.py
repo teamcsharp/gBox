@@ -13,51 +13,23 @@ from .registry import ToolUnavailable
 
 def xinput_devices() -> list[int]:
     """Connected Xbox/XInput slots, independent of browser gamepad activation."""
-    if os.name != "nt":
-        return []
-    import ctypes
-    class Gamepad(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-    class State(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gamepad", Gamepad)]
-    for name in ("xinput1_4", "xinput9_1_0"):
-        try:
-            dll = getattr(ctypes.windll, name)
-        except OSError:
-            continue
-        dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(State)]
-        dll.XInputGetState.restype = ctypes.c_uint
-        return [slot for slot in range(4) if dll.XInputGetState(slot, ctypes.byref(State())) == 0]
-    return []
+    from . import xinput
+    fn = xinput.load()                     # shared binding (#1638): never retype the DLL's cached function
+    return [slot for slot in range(4) if xinput.read(fn, slot) is not None] if fn is not None else []
 
 
 def xinput_snapshot(slots=range(4)) -> list[dict]:
     """Live pad state for the desktop app (controller glyph, and Player 1 of a streamed game), independent of Chromium focus."""
-    if os.name != "nt":
-        return []
-    import ctypes
-    class Gamepad(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-    class State(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gamepad", Gamepad)]
-    for name in ("xinput1_4", "xinput9_1_0"):
-        try:
-            dll = getattr(ctypes.windll, name)
-        except OSError:
-            continue
-        dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(State)]
-        dll.XInputGetState.restype = ctypes.c_uint
-        out = []
-        for slot in slots:
-            state = State()
-            if dll.XInputGetState(slot, ctypes.byref(state)) == 0:
-                pad = state.gamepad
-                out.append({"slot": slot, "buttons": pad.buttons, "lt": pad.lt, "rt": pad.rt,
-                            "lx": pad.lx, "ly": pad.ly, "rx": pad.rx, "ry": pad.ry})
-        return out
-    return []
+    from . import xinput
+    fn = xinput.load()                     # shared binding (#1638): never retype the DLL's cached function
+    out = []
+    for slot in (slots if fn is not None else ()):
+        state = xinput.read(fn, slot)
+        if state is not None:
+            pad = state.gamepad
+            out.append({"slot": slot, "buttons": pad.buttons, "lt": pad.lt, "rt": pad.rt,
+                        "lx": pad.lx, "ly": pad.ly, "rx": pad.rx, "ry": pad.ry})
+    return out
 
 
 def sdl2_xbox_guid(dll_path: Path) -> str | None:
