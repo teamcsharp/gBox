@@ -147,15 +147,21 @@ async function token() {
   return cachedToken;
 }
 
+// GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
+const ETAGS = new Map();                              // path -> { etag, data }
 async function api(p, body) {
   const t = await token();
+  const known = !body && ETAGS.get(p);
   const r = await fetch(settings().apiUrl + p, {
     method: body ? "POST" : "GET", body: body && JSON.stringify(body),
-    headers: { authorization: `Bearer ${t}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000 : 8000),
   });
+  if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
+  const data = await r.json(), etag = !body && r.headers.get("etag");
+  if (etag) ETAGS.set(p, { etag, data }); else ETAGS.delete(p);
+  return data;
 }
 
 // Windows keeps one mixer volume per playback session. This helper follows gBox's
@@ -200,6 +206,13 @@ ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS)
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
 ipcMain.handle("api", async (_e, p, body) => { try { return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
+// a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
+ipcMain.handle("api:tagged", async (_e, p, have) => {
+  try {
+    const data = await api(p), etag = ETAGS.get(p)?.etag || null;
+    return etag && etag === have ? { ok: true, etag, unchanged: true } : { ok: true, etag, data };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 
 ipcMain.handle("spark:status", async () => {
   const s = settings();

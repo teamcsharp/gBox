@@ -2707,7 +2707,17 @@ function refreshInbox(explicit = true) { return inboxPoll(explicit); }
 // #712: the list renders the newest INBOX_PAGE.limit requests and older ones on demand: all 1,500+ requests with their
 // threads were ~59,000 DOM nodes, a 9 s first render and hundreds of eagerly loaded screenshots.
 const INBOX_PAGE = { limit: 40, step: 40, reuse: false };
-const REQUESTS = GBoxLivePoll.cachedRead(() => gbox.api("/api/requests"), { ttl: 0 });
+// An unchanged history (same ETag from the control plane) arrives as {unchanged} and the previous answer object is
+// reused: no ~8 MB copy into the page and no re-render key over it. Older main processes have no apiTagged.
+const REQUESTS_TAG = { etag: null, last: null };
+const REQUESTS = GBoxLivePoll.cachedRead(async () => {
+  if (!gbox.apiTagged) return gbox.api("/api/requests");
+  const r = await gbox.apiTagged("/api/requests", REQUESTS_TAG.etag);
+  if (r.ok && r.unchanged && REQUESTS_TAG.last) return REQUESTS_TAG.last;
+  if (!r.ok) return r;
+  REQUESTS_TAG.etag = r.etag; REQUESTS_TAG.last = { ok: true, data: r.data, etag: r.etag };
+  return REQUESTS_TAG.last;
+}, { ttl: 0 });
 const inboxPoll = singleFlightPoll(async () => {
   inboxAt = Date.now();
   const r = await REQUESTS.get(INBOX_PAGE.reuse ? 120000 : 0); INBOX_PAGE.reuse = false; if (!r.ok) return;
@@ -2772,7 +2782,7 @@ const inboxPoll = singleFlightPoll(async () => {
   const matches = x => requestFilter === "all" || (requestFilter === "pending" ? hasPending(x) : !hasPending(x));
   const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
   const shownRoots = visibleRoots.slice(0, INBOX_PAGE.limit), olderRoots = visibleRoots.length - shownRoots.length;
-  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, all, MODS.list]), () => (shownRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
+  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (shownRoots.map(renderRequest).join("") || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older requests (${olderRoots} not shown)</button>` : "")
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${visibleUnresolved.slice(0, INBOX_PAGE.limit).map(renderRequest).join("")}</details>` : ""), replyAtt);
 });

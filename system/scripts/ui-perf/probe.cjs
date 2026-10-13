@@ -17,6 +17,7 @@
 //            --section play|control|requests|settings|tools   --docked (a synthetic docked game, native-window path)
 //            --interact (section switch latency)   --visible (show the window on screen; default: off-screen, no focus)
 //            --update-pending (the logo's "update ready" state, as after a deploy while the app runs)
+//            --simulate-etag (tag /api/requests by a body hash when the control plane does not send ETags yet)
 "use strict";
 const { app, BrowserWindow, ipcMain, protocol, net, session, screen } = require("electron");
 const fs = require("fs");
@@ -32,6 +33,7 @@ const SECONDS = +opt("seconds", 60), WARMUP = +opt("warmup", 15);
 const SECTION = opt("section", "play"), DOCKED = !!opt("docked", false), INTERACT = !!opt("interact", false), VISIBLE = !!opt("visible", false);
 const OUT = opt("out", "");
 const UPDATE_PENDING = !!opt("update-pending", false);   // the logo's "update ready" state (new code on disk since the app started)
+const SIMULATE_ETAG = !!opt("simulate-etag", false);
 const WORKER = "PERF-PROBE";
 const TOKEN = process.env.GBOX_TOKEN || fs.readFileSync(TOKEN_FILE, "utf8").trim();
 
@@ -83,6 +85,17 @@ const IPC = {
       const r = await apiFetch("shell-ipc", body ? "POST" : "GET", API.origin + p, { headers: { authorization: `Bearer ${TOKEN}` } });
       if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
       return { ok: true, data: await r.json() };
+    } catch (e) { return { ok: false, error: e.message }; }
+  },
+  // main.js's tagged read: the data only when its ETag changed. --simulate-etag stands in for a control plane that does
+  // not send ETags yet (a hash of the body), so the client side can be measured before the server is deployed.
+  "api:tagged": async (_e, p, have) => {
+    try {
+      const r = await apiFetch("shell-ipc", "GET", API.origin + p, { headers: { authorization: `Bearer ${TOKEN}` } });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      const text = await r.text();
+      const etag = r.headers.get("etag") || (SIMULATE_ETAG ? require("crypto").createHash("sha1").update(text).digest("hex") : null);
+      return etag && etag === have ? { ok: true, etag, unchanged: true } : { ok: true, etag, data: JSON.parse(text) };
     } catch (e) { return { ok: false, error: e.message }; }
   },
   "audio:volume": () => ({ volume: 0, available: false }),

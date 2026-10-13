@@ -271,6 +271,22 @@ test('timer wiring always uses automatic mode and consumes timer rejections', ()
   assert.ok(html.includes('refreshInbox(false).catch(() => {});'));
 });
 
+test('#712: an unchanged request history (same ETag) is neither copied into the page nor keyed by its contents', async () => {
+  const x = setup(true), seen = [];
+  x.context.gbox.apiTagged = async (p, etag) => { seen.push([p, etag]);
+    return etag === 'A' ? { ok: true, etag: 'A', unchanged: true } : { ok: true, etag: 'A', data: [request()] }; };
+  const first = x.run('refreshInbox(false)'); await tick(); await tick();
+  x.request('/api/mods').resolve({ ok: true, data: [] }); await first;
+  const key = x.node('#reqlist').key;
+  assert.ok(key.includes('"A"') && !key.includes('Actual request'), 'the re-render key is the tag, not 8 MB of JSON');
+  const second = x.run('refreshInbox(false)'); await tick(); await tick();
+  x.request('/api/mods', 1).resolve({ ok: true, data: [] }); await second;
+  assert.deepEqual(seen, [['/api/requests', null], ['/api/requests', 'A']]);
+  assert.equal(x.node('#reqlist').key, key, 'same answer, same key: updateInboxView keeps the DOM');
+  assert.equal(x.count('/api/requests'), 0, 'the tagged path replaces the plain one');
+  assert.equal(x.node('#tb-count').textContent, 1);
+});
+
 test('#712: the 8 MB request history is polled every 5 s only while Requests is on screen', () => {
   const timer = between('var inboxAt = 0;', 'function popups()');
   let tickFn = null, polls = 0, now = 1000000;
