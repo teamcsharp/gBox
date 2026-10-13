@@ -554,6 +554,19 @@ def create_app(config: Config) -> FastAPI:
                               "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
                               "roles": (best.get("rig") or {}).get("roles") or {}}}
 
+    @app.get("/api/retarget/goals")
+    def retarget_goals(game_id: str, slot: str = "", actor=Depends(auth)):
+        """The target slot's own skeleton for the Retarget editor's Goals view, as the last fit of that slot loaded it
+        (gbox.fit_events goals: role -> target joint, + the donor's joints that fit used); null before any fit."""
+        from . import retarget_profile as RP
+        if not re.fullmatch(r"[0-9a-f]{16}", game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        key = RP.slot_key(slot)
+        doc = store.get("retarget_goals", f"{game_id}|{key}")
+        if doc is None and key != "*" and ":" in key:        # 'fighter:kasumi' also matches goals kept as 'kasumi'
+            doc = store.get("retarget_goals", f"{game_id}|{key.split(':', 1)[-1]}")
+        return {"game_id": game_id, "slot": slot, "goals": doc}
+
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
@@ -1879,10 +1892,22 @@ def create_app(config: Config) -> FastAPI:
             msg, event = fit_events.split(p.msg)              # a writer's fitting stage (gbox.fit_events)
             if event is not None:
                 j["fitting"] = fit_events.fold(j.get("fitting"), event)
+                _keep_goals(jid, j["fitting"], event)
             j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": msg, "ts": time.time()}
             j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
             store.put("job", jid, j)
         return {"ok": True, "cancel": bool(j.get("cancel"))}
+
+    def _keep_goals(jid: str, fitting: dict, event: dict):
+        """A fit's goals (the target slot's own skeleton as the writer loaded it) for the Retarget editor's Goals
+        view: the newest per (game, slot), whichever donor was fitted."""
+        m = (fitting.get("models") or {}).get(str(event.get("model") or "")[:120]) or {}
+        if not event.get("goals") or not m.get("goals") or not m.get("game") or not m.get("slot"):
+            return
+        from . import retarget_profile as RP
+        store.put("retarget_goals", f"{m['game']}|{RP.slot_key(m['slot'])}",
+                  m["goals"] | {"game_id": m["game"], "slot": m["slot"], "donor_slug": m.get("donor"), "job": jid,
+                                "ts": time.time()})
 
     def _fitting_dir(jid: str) -> Path:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", jid):

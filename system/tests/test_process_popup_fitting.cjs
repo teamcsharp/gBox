@@ -153,3 +153,94 @@ test('a collect job lists the roster as Collecting k/N with extract / preview ch
   assert.equal(popup.previewOf(j), null);                                                   // the mesh wins over a PNG
   assert.equal(popup.stageNumbers('extract', { kind: 'sprites' }), 'sprite sheet');
 });
+
+// ---- "R": the Retarget editor on the model being fitted (fit events name the donor, game and slot) ----------------
+const GAME = '0123456789abcdef';
+function withWho() {
+  const f = JSON.parse(JSON.stringify(FITTING));
+  Object.assign(f.models['fighter:KAS'], { donor: 'amy', game: GAME, slot: 'fighter:KAS' });
+  Object.assign(f.models['fighter:RYU'], { donor: 'sonic', game: GAME, slot: 'fighter:RYU' });
+  return f;                                                     // fighter:TIN: no donor named (an older writer)
+}
+const castJob = (extra = {}) => job({ input: { op: 'cast_swap', target_game: 'Dead or Alive 2', source: 'SA2', slots: 'all' },
+  fitting: withWho(), ...extra });
+
+test('a row opens the editor on its donor, game and slot (the job\'s call rides along for the rebuild)', () => {
+  const o = popup.retargetOf(castJob(), 'fighter:KAS');
+  assert.deepEqual(o, { slug: 'amy', gid: GAME, slot: 'fighter:KAS', name: 'Amy', view: 'goals', key: 'fighter:KAS', job: 'j1',
+    recipe: { tool: 'characters', input: { op: 'cast_swap', target_game: 'Dead or Alive 2', source: 'SA2', slots: 'all' } } });
+  assert.equal(popup.retargetOf(castJob()).slug, 'sonic');                         // no key: the model being fitted
+  assert.equal(popup.retargetOf(castJob(), 'fighter:TIN'), null);                  // no donor named: no R
+  assert.equal(popup.retargetOf(job(), 'fighter:KAS'), null);
+  const use = { id: 'j3', tool: 'characters', state: 'running', input: { op: 'use', character: 'amy', game_id: GAME, slot: 'player' },
+    fitting: { order: ['player'], current: 'player', models: { player: { label: 'Amy -> RE4 (player)', stages: {} } } } };
+  assert.equal(popup.retargetOf(use).slot, 'player'); assert.equal(popup.retargetOf(use).slug, 'amy');
+  const collect = { input: { op: 'collect' }, fitting: { kind: 'collect', order: ['amy'], current: 'amy',
+    models: { amy: { label: 'Amy', donor: 'amy', game: GAME, stages: {} } } } };
+  assert.equal(popup.retargetOf(collect, 'amy'), null);                           // a reader's roster: nothing to fit
+  assert.equal(popup.shownKey(castJob()), 'fighter:RYU');                          // the model whose snapshot is shown
+});
+
+test('every fitting row with a donor gets its own small R', () => {
+  const html = popup.fittingHTML(castJob());
+  assert.match(html, /<i class="done" title="write: cast_doa2_x">W<\/i><button type="button" class="pp-rr" data-pp-r="fighter:KAS" title="Retarget goals: Amy → Kasumi[^"]*">R<\/button>/);
+  assert.match(html, /data-pp-r="fighter:RYU"/);
+  assert.ok(!html.includes('data-pp-r="fighter:TIN"'));
+  assert.ok(!popup.fittingHTML(castJob(), { retarget: false }).includes('pp-rr'));   // a shell without the editor
+});
+
+function mountWith(opts) {
+  const elements = [];
+  function element(tag) {
+    const el = { tagName: tag.toUpperCase(), className: '', textContent: '', innerHTML: '', style: {}, children: [], attributes: {},
+      setAttribute(k, v) { this.attributes[k] = String(v); },
+      classList: { add() {}, remove() {}, contains() { return false; } },
+      append(...c) { for (const ch of c) { this.children.push(ch); ch.parent = this; } this.firstChild = this.children[0] || null; },
+      insertBefore(n) { this.children.unshift(n); n.parent = this; this.firstChild = this.children[0]; },
+      remove() { this.removed = true; }, getContext: () => new Proxy({}, { get: () => () => {} }) };
+    elements.push(el); return el;
+  }
+  const env = { document: { createElement: element, head: element('head'), body: element('body') },
+    setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
+    requestAnimationFrame: () => 1, cancelAnimationFrame: () => {}, Math };
+  return { win: createPopup(env).mount(Object.assign({ now: () => 0 }, opts)), elements };
+}
+
+test('the R in the 3D view\'s corner opens the editor on the model shown; a row\'s R on that row\'s model', () => {
+  const opened = [];
+  const x = mountWith({ retarget: o => opened.push(o) });
+  x.win.sync([castJob()]);
+  const r = x.elements.find(e => e.className === 'pp-rbtn'), stage = x.elements.find(e => e.className === 'pp-stage');
+  assert.ok(stage.children.includes(r)); assert.equal(r.textContent, 'R'); assert.equal(r.style.display, '');
+  assert.match(r.title, /Sonic → fighter:RYU/);
+  r.onclick({ stopPropagation() {} });
+  assert.deepEqual([opened[0].slug, opened[0].gid, opened[0].slot, opened[0].view], ['sonic', GAME, 'fighter:RYU', 'goals']);
+  const fit = x.elements.find(e => e.className === 'pp-fit');
+  assert.match(fit.innerHTML, /data-pp-r="fighter:KAS"/);
+  fit.onclick({ target: { closest: sel => (sel === '[data-pp-r]' ? { dataset: { ppR: 'fighter:KAS' } } : null) } });
+  assert.deepEqual([opened[1].slug, opened[1].slot], ['amy', 'fighter:KAS']);
+  fit.onclick({ target: { closest: () => null } });                                 // anywhere else on the list: nothing
+  assert.equal(opened.length, 2);
+  x.win.sync([job()]);                                                              // no donor named: the corner R hides
+  assert.equal(r.style.display, 'none');
+  x.win.dispose();
+  const plain = mountWith({});                                                      // a shell without the editor: no R
+  plain.win.sync([castJob()]);
+  assert.equal(plain.elements.find(e => e.className === 'pp-rbtn').style.display, 'none');
+  assert.ok(!plain.elements.find(e => e.className === 'pp-fit').innerHTML.includes('pp-rr'));
+  plain.win.dispose();
+});
+
+test('follow(jobId): the rebuild the editor queued takes the window once it is live', () => {
+  const x = mountWith({ retarget: () => {} });
+  const older = castJob({ id: 'j1', progress: { pct: 10, msg: 'x', ts: 50 } });
+  const rebuild = { id: 'j2', tool: 'characters', state: 'queued', created: 10, input: { op: 'cast_swap', slots: 'fighter:KAS' } };
+  x.win.sync([older, rebuild]);
+  const chip = x.elements.find(e => e.className === 'pp-chip');                    // the state chip
+  assert.equal(chip.textContent, 'processing');                                     // running beats queued...
+  x.win.follow('j2'); x.win.sync([older, rebuild]);
+  assert.equal(chip.textContent, 'queued');                                         // ...unless the editor queued it
+  assert.ok(x.elements.some(e => e.className === 'pp-chip' && e.textContent === '+1 more'));
+  assert.equal(x.win.openRetarget('fighter:KAS'), null);                            // the rebuild has no rows yet
+  x.win.dispose();
+});

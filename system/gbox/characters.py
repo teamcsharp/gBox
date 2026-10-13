@@ -2423,6 +2423,7 @@ def characters_tool(inp: CharIn, ctx):
                                    for t in (meta.get("targets") or {}).get(gid, [])):
             inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
         meta = profiled
+    _FE.target(gid)                                           # the Fitting row's Retarget editor game
     _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
                       meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}

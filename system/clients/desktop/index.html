@@ -5118,12 +5118,15 @@ async function castSwapOpen(gid, title) {
     onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000), retarget: retargetOpen }, { gid, title });
 }
 // Retarget editor (../web/viz/retarget-editor.js; gbox/retarget_profile.py): how a collection character is scaled and
-// proportioned into one game's slot. Opened from the cast plan rows (✎) and the pick-whip card menu.
+// proportioned into one game's slot. Opened from the cast plan rows (✎), the pick-whip card menu and the Fitting
+// pop-up's R buttons (the Goals view); "Save and rebuild this slot" hands its job to the pop-up.
 async function retargetOpen(o) {
   const tok = encodeURIComponent(await gbox.token());
   const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   return GBoxRetargetEditor.open(document, { api, url: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
-    drag: dragAnywhere, confirm: s => confirm(s), onSaved: st => toast(`Retarget profile saved for ${st.name || st.slug}: the next build uses it`, 6000) }, o);
+    drag: dragAnywhere, confirm: s => confirm(s), onSaved: st => toast(`Retarget profile saved for ${st.name || st.slug}: the next build uses it`, 6000),
+    onRebuild: (r, st) => { toast(`Rebuilding ${st.slot} with ${st.name || st.slug}: the Fitting pop-up follows it`, 6000);
+      if (PROCESS_POPUP) PROCESS_POPUP.follow((r.job_ids || [])[0]); } }, o);
 }
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();
@@ -6066,6 +6069,7 @@ async function processPopupSync(jobs) {
   await SBX_READY;                                                          // first job must not cache a failed file:// / unauthenticated model load
   if (!PROCESS_POPUP) PROCESS_POPUP = window.GBoxProcessPopup.mount({
     assetUrl: p => `${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
+    retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
   });
   PROCESS_POPUP.sync(jobs);
 }
