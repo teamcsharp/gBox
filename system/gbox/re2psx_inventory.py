@@ -30,10 +30,13 @@ implementation: OpenBiohazard2 fileio/pld.go):
   animation headers (4-byte {u16 count, u16 offset} each), followed by
   count 32-bit table elements per header: 12-bit frame id + 20-bit flag.
 
-Character slots on the Claire disc (PL1/PLD): PL00 Claire (default), PL01
-Leon, PL02/03 sidepack variants, PL04/06 injured Leon, PL05/07 Claire without
-jacket, PL08/0A locker outfits, PL09 Claire locker, PL0B Chris, PL0C Hunk,
-PL0D Tofu, PL0E Ada, PL0F Sherry, plus PL00CH/PL01CH/PL0BCH/PL0ECH Extreme
+Character slots on the Claire disc (PL1/PLD), indexed by player id through the
+executable's u16 table at 0x800a3fa0 (see :mod:`gbox.re2psx_exe`): PL00 Leon
+(scenario B; even ids below 0x0C are Leon variants, 0x08/0x0A his locker
+outfits), PL01 Claire (scenario A default, decoded TIM shows her jacket; odd ids
+below 0x0C are Claire variants, 0x09 her locker outfit), PL0C Hunk, PL0D Tofu,
+PL0E/PL0F the Ada/Sherry partner segments (the room setup saves/restores the main
+character's state for ids 0x0E-0x0F), plus PL00CH/PL01CH/PL0BCH/PL0ECH Extreme
 Battle select-screen variants. PLXXWNN.PLW files are weapon models (0x12 slots
 per character). Enemy models live inside the RDT room archives; the two
 CDEMD*.EMS files are cutscene enemy demos.
