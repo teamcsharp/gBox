@@ -120,6 +120,7 @@ test('desktop and web load the extended popup script (no second copy)', () => {
 test('the cast writers numbers: donor height, rigid ride, per-limb counts, growth and the new VROM range', () => {
   const N = popup.stageNumbers;
   assert.equal(N('scale', { scale: 100, donor_height: 7.9, fitted_height: 790 }), '×100 · 7.9 → 790 tall');
+  assert.equal(N('scale', { donor_height: 1.75, donor_triangles: 1200 }), '1.75 tall · 1,200 tris');
   assert.equal(N('retarget', { mode: 'rigid ride', vertices: 168 }), 'rigid ride · 168 verts');
   assert.equal(N('weights', { limbs: 14, vertices: 168, per_limb: { 'head (limb 14)': 12 } }), '14 limbs · 168 verts');
   assert.equal(N('weights', { nodes: 9, vertices: 1200 }), '9 limbs · 1,200 verts');

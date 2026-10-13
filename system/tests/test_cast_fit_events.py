@@ -303,3 +303,83 @@ def test_no_mercy_and_smackdown_matches_plan_the_cast_and_key_each_wrestler(tmp_
         assert events(lines)[0]["plan"] == [{"model": "Kane", "label": "Amy -> Kane"},
                                             {"model": "The Rock", "label": "Amy -> The Rock"}], mod
         assert [w["fit_key"] for _m, w in seen["p"]] == ["Kane", "The Rock"]
+
+
+# ---------------------------------------------------------------- the chained builders (JGR, Crazy Taxi)
+
+def _cast_ctx(tmp_path):
+    return SimpleNamespace(config=SimpleNamespace(cache=tmp_path / "cache"), progress=lambda *a: None, job_id="j")
+
+
+def test_crazy_taxi_chain_reports_each_driver_from_the_donor_to_the_written_disc(tmp_path, monkeypatch):
+    import gbox.gcdisc as gcdisc
+    from gbox import cast_swap as CS, crazy_taxi as ct, crazy_taxi_swap as CTS
+    TC = importlib.import_module("test_crazy_taxi_swap")
+    bank, _ = TC._bank()
+
+    class Disc:
+        def __init__(self, path):
+            self.f = SimpleNamespace(close=lambda: None)
+
+        def read(self, name):
+            return bank
+
+    def fake_build(cfg, game, iso, new_bank, name, image_name, progress=None):
+        return {"mod": name, "dir": str(tmp_path), "image": str(tmp_path / image_name), "files": [ct.BANK]}
+    monkeypatch.setattr(gcdisc, "GCDisc", Disc)
+    monkeypatch.setattr(ct, "build_mod", fake_build)
+    monkeypatch.setattr(CTS, "donor_segments", lambda glb, roles: TC._segs())
+    monkeypatch.setattr(C, "_gc_iso", lambda ctx, game: tmp_path / "ct.iso")
+    monkeypatch.setattr(C, "_local_or_fetch", lambda ctx, meta, rel: tmp_path / "donor" / rel)
+    meta = {"slug": "donor", "name": "Donor", "model": "donor.glb", "rig": {"roles": {"hip": "j_hip"}}}
+    pairs = [("driver:axel", meta), ("driver:bd_joe", meta), ("driver:nobody", meta)]
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        FE.plan([(s, "donor", f"Donor -> {s}") for s, _m in pairs])
+        r = CS._crazy_taxi(_cast_ctx(tmp_path), {"game_id": "x"}, pairs, "cast_ct", SimpleNamespace())
+    assert r["mod"] == "cast_ct" and r["slots"]["driver:nobody"]["status"] == "failed"
+    evs = events(lines)
+    for slot in ("driver:axel", "driver:bd_joe"):
+        assert order(evs, slot) == FULL, (slot, order(evs, slot))
+        assert_snapshots(evs, slot)
+        assert last(evs, slot, "scale")["data"]["donor_height"] > 0
+        w = last(evs, slot, "weights")["data"]
+        assert w["limbs"] == len(ct.PARTS) and sum(w["per_limb"].values()) == w["vertices"]
+        dec = last(evs, slot, "decimate")["data"]
+        assert dec["from"] > dec["triangles"] > 0                   # dense spheres clustered into the stock parts
+        enc = last(evs, slot, "encode")["data"]
+        assert enc["bytes"] > 0 and enc["relocated"] is False
+        wr = last(evs, slot, "write")["data"]
+        assert wr["mod"] == "cast_ct" and wr["image"] == "Crazy Taxi cast_ct.iso" and wr["bytes"] == len(bank)
+    assert last(evs, "driver:nobody", "write")["state"] == "failed"
+
+
+def test_jgr_chain_names_each_step_and_writes_every_built_slot(tmp_path, monkeypatch):
+    from gbox import cast_swap as CS, gdrom, jgr
+    monkeypatch.setattr(C, "_dc_gdi", lambda ctx, g: tmp_path / "disc.gdi")
+    monkeypatch.setattr(C, "_blender", lambda cfg: None)
+    monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path / "lib")
+    monkeypatch.setattr(gdrom, "GDRom", lambda p: SimpleNamespace(read=lambda path: b"AFS"))
+    monkeypatch.setattr(__import__("gbox.jgr_swap", fromlist=["x"]), "resolve_slot",
+                        lambda slot, data: {"archive": {"character:beat": 4, "character:gum": 6}[slot]})
+
+    def build_swap(gdi, model, roles, work, name, index, *a, data=None):
+        if index == 6:
+            raise ValueError("does not fit")
+        FE.stage("encode", data={"bytes": 10})
+        return {"files": {jgr.PLAYER_AFS: data + b"#4"}}
+    monkeypatch.setattr(jgr, "build_swap", build_swap)
+    monkeypatch.setattr(gdrom, "patch_gdi", lambda gdi, d, name, files, progress=None:
+                        d.mkdir(parents=True) or d / f"{name}.gdi")
+    meta = {"slug": "beat", "name": "Beat", "model": "m.glb", "rig": {"roles": {}}}
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        r = CS._jgr(_cast_ctx(tmp_path), {"game_id": "4187aeab4d67638c"},
+                    [("character:beat", meta), ("character:gum", meta)], "cast_jgr", SimpleNamespace())
+    assert r["mod"] == "cast_jgr"
+    evs = events(lines)
+    assert order(evs, "character:beat") == ["encode", "write"]
+    wr = last(evs, "character:beat", "write")["data"]
+    assert wr == {"mod": "cast_jgr", "image": "cast_jgr.gdi", "files": 1, "bytes": 5}
+    gum = last(evs, "character:gum", "write")
+    assert gum["state"] == "failed" and gum["data"]["reason"] == "does not fit"

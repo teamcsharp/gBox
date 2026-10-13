@@ -95,6 +95,7 @@
     // the donor as loaded -> the fitted height (the writers' scale stage: donor_height / fitted_height, own units)
     const tall = d.donor_height != null && d.fitted_height != null ? ` · ${n2(d.donor_height)} → ${n2(d.fitted_height)} tall` : "";
     if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "") + tall;
+    if (stage === "scale" && d.donor_height != null) return `${n2(d.donor_height)} tall · ${n2(d.donor_triangles || 0)} tris`;
     if (stage === "retarget") return [d.mode || "", d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
       d.segments != null ? `${d.segments} parts` : ""].filter(Boolean).join(" · ");
     if (stage === "proportion") return d.applied ? ["height", "head", "torso_width"].filter(k => d[k] != null && d[k] !== 1)
