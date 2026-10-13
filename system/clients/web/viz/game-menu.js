@@ -101,6 +101,24 @@
       ${loading ? (st.modsErr ? failed("mods", "Mods didn't load: " + st.modsErr) : '<p class="mut" data-gm-loading="mods">loading mods…</p>')
         : !st.mods.length ? '<p class="mut">No mods for this game yet: ask gBox for one while playing.</p>' : ""}</div>`;
     },
+    // Special builds: this game's Sonic showcase record (GET /api/showcase/{gid}, gbox/sonic_showcase.py), shown when the
+    // client asks for it (io.showcase) and there is one
+    special: st => {
+      const s = st.showcase, r = s && s.record;
+      if (!r) return "";
+      const built = s.mod_exists && r.mod;
+      const slots = (r.slots_replaced || []).filter(x => /built|partial/.test(x.status || ""));
+      const pics = (r.previews || []).filter(p => p.preview).slice(0, 6);
+      const missing = (r.missing || []).slice(0, 4);
+      const when = r.built_at ? new Date(r.built_at * 1000).toLocaleString() : "";
+      return `<div class="gms"><b>Special builds</b>
+      <div class="mut" style="font-size:11px">Sonic showcase · ${ESC(String(r.stage || "pending").replace(/_/g, " "))}${r.build_time ? ` · built in ${Math.round(r.build_time)} s` : ""}${when ? ` · ${ESC(when)}` : ""}</div>
+      ${built ? `<label><input type="radio" name="gmd" value="${ESC(r.mod)}" ${st.boot.disc === r.mod ? "checked" : ""}> ${ESC(r.mod)} (${slots.length} slot${slots.length === 1 ? "" : "s"} as Sonic characters)</label>` : ""}
+      ${slots.length ? `<div class="mut" style="font-size:11px">${slots.slice(0, 8).map(x => `${ESC(x.donor || x.character)} → ${ESC(x.slot_name || x.slot)}`).join(" · ")}${slots.length > 8 ? " …" : ""}</div>` : ""}
+      ${pics.length ? `<div class="gmch">${pics.map(p => `<img loading="lazy" alt="${ESC(p.label || p.slot)}" title="${ESC(p.label || p.slot)}" src="${ESC(st.img ? st.img(p.preview) : p.preview)}" style="max-width:64px;max-height:64px">`).join("")}</div>` : ""}
+      ${!built && r.message ? `<div class="mut" style="font-size:11px">${ESC(String(r.message).slice(0, 200))}</div>` : ""}
+      ${missing.length ? `<ul class="mut" style="font-size:11px;margin:2px 0;padding-left:16px">${missing.map(m => `<li>${ESC(m)}</li>`).join("")}</ul>` : ""}</div>`;
+    },
     collect: () => `<div class="gms"><b>Model collection</b>
       <button id="gmcollect" type="button">Extract this game's character models in the background</button>
       <div id="gmcollectstatus" class="mut" style="font-size:11px;margin-top:5px">Runs on Spark; track progress in Tasks. The game does not need to run here.</div></div>`,
@@ -110,8 +128,8 @@
     play: st => `<div class="gmb"><button class="act pri" data-go="">▶ Play</button>${st.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
       <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`,
   };
-  const ORDER = ["head", "actions", "chars", "mods", "collect", "slot", "play"];
-  const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", collect: "Model collection",
+  const ORDER = ["head", "actions", "chars", "mods", "special", "collect", "slot", "play"];
+  const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", special: "Special builds", collect: "Model collection",
                   slot: "Start from", play: "Play" };
   // one section; a builder that throws becomes a line saying so, never a menu that doesn't open
   function section(name, st, d) {
@@ -175,6 +193,10 @@
     const fetchMods = force => loadMods(io, gid, force).then(list => { st.mods = list; st.modsErr = null; paint(["mods"]); },
       err => { st.modsErr = String(err && err.message || err); if (!Array.isArray(st.mods)) paint(["mods"]); });
     const settled = Promise.all([fetchChars(false), fetchMods(false)]);
+    if (io.showcase) {                                        // Special builds: never delays or breaks the rest of the menu
+      let call; try { call = io.api(`/api/showcase/${encodeURIComponent(gid)}`); } catch (err) { call = Promise.reject(err); }
+      deadline(call, MODS_TIMEOUT, "The showcase record").then(s => { st.showcase = s; paint(["special"]); }, () => {});
+    }
 
     el.onchange = async ev => {
       const t = ev.target; if (!current()) return;

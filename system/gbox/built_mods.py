@@ -594,6 +594,10 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
         shots.insert(0, card["thumb"])
     tickets = tickets_of(meta, card)
     title = game_title_of(gid, meta, card, catalog)
+    sc = meta.get("showcase") if isinstance(meta.get("showcase"), dict) else None
+    fits = [{"slot": str(p.get("slot") or ""), "label": str(p.get("label") or p.get("slot") or ""), "url": p["preview"]}
+            for p in (sc or {}).get("previews") or []
+            if isinstance(p, dict) and isinstance(p.get("preview"), str) and p["preview"].startswith("/api/")]
     return {
         "key": f"{gid}/{name}", "name": name, "game_id": gid, "title": title, "game_title": title,
         "platform": (catalog or {}).get("platform") or "",
@@ -609,6 +613,8 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
         "shots": [{"sha256": s, "url": f"/api/artifacts/{s}"} for s in shots],
         "card_id": (card or {}).get("id") or "", "state_slot": (card or {}).get("state_slot"),
         "video": (card or {}).get("video") or "",
+        # a Sonic showcase test build (gbox.sonic_showcase): the Mods page's "Sonic showcase" filter
+        "showcase": bool(sc) and name.startswith("showcase_"), "fit_previews": fits[:MAX_IMAGES],
         "tickets": [{"number": n, **({k: requests[n].get(k) for k in ("id", "title", "status")} if n in requests else {})}
                     for n in tickets],
     }
@@ -744,8 +750,11 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
     return {"items": items, "registered": made, "cache_dir": str(root)}
 
 
-def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "") -> list[dict]:
+def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", kind: str = "") -> list[dict]:
+    """kind=showcase: only the Sonic showcase builds; kind=other: everything else."""
     words = [w for w in q.lower().split() if w]
+    if kind in ("showcase", "other"):
+        items = [m for m in items if bool(m.get("showcase")) == (kind == "showcase")]
 
     def hay(m):
         return " ".join([m["name"], m["game_id"], m["title"], m["mod_title"], m["writer"],
@@ -762,7 +771,8 @@ def facets(items: list[dict]) -> dict:
         g["count"] += 1
         writers[m["writer"]] = writers.get(m["writer"], 0) + 1
     return {"games": sorted(games.values(), key=lambda g: g["title"].lower()),
-            "writers": [{"writer": w, "count": n} for w, n in sorted(writers.items())]}
+            "writers": [{"writer": w, "count": n} for w, n in sorted(writers.items())],
+            "showcase": sum(1 for m in items if m.get("showcase"))}
 
 
 # ------------------------------------------------------------------------------------------------- routes
@@ -804,7 +814,7 @@ def routes(app, store, config, auth):
 
     @app.get("/api/mods/built")
     def built_list(game_id: str = "", writer: str = "", q: str = "", offset: int = 0, limit: int = 0,
-                   fresh: bool = False, actor=Depends(auth)):
+                   fresh: bool = False, kind: str = "", actor=Depends(auth)):
         """Every built mod folder in this node's cache, newest first, joined with its mod card (filters + pages).
         Answers from the index at once; `indexing` while a marker pass is due, `sizing` = folders still being sized
         (size: null). fresh=true rejoins the cards now and asks for an incremental pass in the background."""
@@ -813,7 +823,7 @@ def routes(app, store, config, auth):
             index.ask()
         data = current(fresh)
         items = data["items"]
-        picked = select(items, game_id, writer, q)
+        picked = select(items, game_id, writer, q, kind)
         offset = max(0, offset)
         page = picked[offset:offset + limit] if limit > 0 else picked[offset:]
         return {"total": len(picked), "all": len(items), "offset": offset, "limit": limit, "items": page,
