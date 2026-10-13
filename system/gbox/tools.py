@@ -744,6 +744,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
+        scene_watch = _scene_row_watch(ad)                 # Examine 3D row still settling (#971)
         while sid in SESSIONS:
             time.sleep(3)
             try:
@@ -751,6 +752,8 @@ def _pump(sid: str, ad, server: str, headers: dict):
                 if now and now != pid:                     # emulator relaunched in place (RPCS3 load state): re-dock it
                     c.post(f"/api/sessions/{sid}/detail", json={"pid": now})
                     pid = now
+                if scene_watch:                                # the Vulkan layer loads once the game boots
+                    scene_watch = _refresh_scene_row(c, sid, ad)
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
                     c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
@@ -759,6 +762,25 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
+
+
+def _scene_row_watch(ad) -> bool:
+    """Whether this session's Examine 3D row may still change: started with RenderDoc's Vulkan layer, which hasn't
+    loaded yet (Yuzu / RPCS3 create their Vulkan device once the game boots, after the launch check, #971)."""
+    info = getattr(getattr(ad, "proc", None), "renderdoc", None)
+    return isinstance(info, dict) and info.get("attach") == "layer" and "error" not in info and not info.get("loaded")
+
+
+def _refresh_scene_row(c, sid: str, ad) -> bool:
+    """Re-rate a pending Examine 3D row; once it settles, post it to the session detail (the Examine 3D panel and
+    the relay decision read it there). Returns whether to keep watching."""
+    from .scene_support import session_support
+    row = session_support(ad, HOST_OS)
+    if row.get("layer") == "pending":
+        return True
+    c.post(f"/api/sessions/{sid}/detail", json={"scene_capture": row, "examine": row.get("status") == "supported"})
+    return False
+
 
 
 # --- inspector: read-only peeks over the live session channel (writes go through the audited write_memory job) ---
