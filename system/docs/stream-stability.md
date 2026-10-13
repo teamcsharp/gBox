@@ -134,6 +134,17 @@ it. A swap's child launch has no parent link before this change; look for a `ses
   words and is exempt.
 - An automated `launch_game` (`agent_use`, actor other than `gbox-agent`) is pinned to a worker with no operator game.
   It is rejected with a clear reason when every candidate has one, instead of saving and closing the operator's game.
+- `POST /api/games/{gid}/launch?mod=…` used to turn any Play with a mod into a swap of the newest running copy of
+  that game on any online worker (`node=auto` matched every PC). Mods page, Special builds, build notifications and
+  the showcase all go through this endpoint. Now it swaps only when the caller names the session's PC (worker id,
+  name or OS) as the node, or passes `swap=true`. Otherwise it is a new launch. The swap always keeps the moment
+  (`keep_state=true`). These requests send a real mod name and keep the moment, so they do not match the observed
+  `{mod:"", keep_state:false}` job. That job came from `hardReset`, the only sender of that body.
+- `@launch` with a named node swaps only a session on that node. It still swaps in place with `node=auto`, which is
+  the chat and character-swap path.
+- A worker tool calling the control plane back sends `x-gbox-parent-job` (`worker._run_job`). Its requests inherit
+  the job's identity: a `characters op=use` inside a Hermes job counts as automation and cannot swap the operator's
+  game. Inside an in-app chat job it can.
 - A swap's child launch must be picked up within 180 s (`SWAP_LAUNCH_QUEUE_S`). Otherwise the child is dropped and the
   swap fails with "lilspark did not start launch_game within 180 s (it is busy). Nothing was changed; your current game
   keeps running." The old game is untouched until the worker starts the launch.

@@ -121,7 +121,8 @@ def create_app(config: Config) -> FastAPI:
         h = request.headers
         out = {"client": h.get("x-gbox-client", ""), "user_agent": h.get("user-agent", "")[:160],
                "referer": h.get("referer", "")[:200], "via": "http",
-               "remote": request.client.host if request.client else ""}
+               "remote": request.client.host if request.client else "",
+               "parent_job": h.get("x-gbox-parent-job", "")[:32]}   # a worker tool calling back (worker._run_job)
         return {k: v for k, v in out.items() if v}
 
     from . import asset_library
@@ -919,13 +920,13 @@ def create_app(config: Config) -> FastAPI:
     # server process (restart) and nothing will ever finish or cancel it unless we retire it (#1297)
     _server_job_threads: set[str] = set()
 
-    def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
+    def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, origin=None) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
         sess = store.get("session", sid) or _404()
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
-        if operator_guard.is_agent(actor) and actor != 'gbox-agent' and sess.get('state') == 'running':
+        if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
                 # A swap restarts the emulator (a black screen mid-game): background agents never do that to the
@@ -945,7 +946,9 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, 'This session has ended. Open the running game before replacing its models.')
             job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
                       state=JobState.RUNNING, started=time.time(), actor=actor,
-                      agent_use=operator_guard.is_agent(actor), origin={"via": "swap_job"})
+                      agent_use=operator_guard.is_agent(actor),
+                      origin={"via": "swap_job", **({"parent_job": origin["parent_job"]}
+                                                    if isinstance(origin, dict) and origin.get("parent_job") else {})})
             store.put("job", job.id, job.model_dump())
             _server_job_threads.add(job.id)
 
@@ -1214,7 +1217,7 @@ def create_app(config: Config) -> FastAPI:
         if not s.keep_state and s.intent not in SWAP_DISCARD_INTENTS:
             raise HTTPException(422, "keep_state=false restarts the game without its current moment; it needs intent "
                                      "'hard_reset' or 'reset_model' from an explicit operator action")
-        job = swap_job(sid, s.mod, s.to, actor, s.keep_state)
+        job = swap_job(sid, s.mod, s.to, actor, s.keep_state, origin=origin)
         jid = getattr(job, "id", None)
         if jid:
             with store.lock:
@@ -1829,6 +1832,18 @@ def create_app(config: Config) -> FastAPI:
                 store.audit(actor, 'characters.auto_collect_failed', j['id'], {'error': str(exc)})
 
     # --- jobs ---
+    def _automated(actor: str, origin) -> bool:
+        """A request background automation made: an agent actor (not the in-app chat agent, which speaks for the
+        operator), or a worker tool running inside such an agent's job (x-gbox-parent-job). Operator clicks are not."""
+        if actor == "gbox-agent":
+            return False
+        if operator_guard.is_agent(actor):
+            return True
+        parent = store.get("job", (origin or {}).get("parent_job") or "") if isinstance(origin, dict) else None
+        if parent:
+            return bool(parent.get("agent_use")) and parent.get("actor") != "gbox-agent"
+        return False
+
     def _operator_busy(wid: str, keep: str = "") -> list[dict]:
         """The operator's running sessions on one worker (not agent-owned test sessions)."""
         return operator_guard.operator_sessions(store.all("session"), lambda sid: store.get("slabel", sid),
@@ -1845,11 +1860,16 @@ def create_app(config: Config) -> FastAPI:
             if not sid and i.get("swap", True) and node not in ("idle", "other"):
                 # the game is already running: put the mod into THAT session (same PC, same moment) instead of starting
                 # a second copy on whichever machine happened to build the mod
+                ws = {w["id"]: w for w in workers() if w["online"]}
                 run = [s for s in store.all("session") if s.get("state") == "running" and s.get("game_id") == gid
-                       and _wid(s["session_id"].split("-")[0]) in online]
+                       and _wid(s["session_id"].split("-")[0]) in online
+                       # a named PC/OS: only a game running there is swapped, never one on another machine
+                       and (node in ("", "auto") or node in (_wid(s["session_id"].split("-")[0]),
+                            ws.get(_wid(s["session_id"].split("-")[0]), {}).get("name"),
+                            ws.get(_wid(s["session_id"].split("-")[0]), {}).get("os")))]
                 sid = max(run, key=lambda s: s.get("started") or 0)["session_id"] if run else ""
             if sid and (store.get("session", sid) or {}).get("state") == "running":
-                return swap_job(sid, mod, "", actor)
+                return swap_job(sid, mod, "", actor, origin=origin)       # keeps the moment; automation refused there
             if node in ("", "auto", "linux", "windows"):
                 # nothing running: the PC the operator plays on (newest session among online Windows workers) has the
                 # real GPU and zero input lag; the node a mod was built on (often the Spark) is only a fallback
@@ -1860,7 +1880,7 @@ def create_app(config: Config) -> FastAPI:
                     node = win[_wid(recent[0]["session_id"].split("-")[0])]["name"]
                 elif win:
                     node = "windows"
-            return launch(gid, node=node or "windows", mod=mod, actor=actor)
+            return launch(gid, node=node or "windows", mod=mod, actor=actor, origin=origin)
         t = REGISTRY.get(req.tool)
         if not t:
             raise HTTPException(404, f"unknown tool {req.tool}")
@@ -1876,7 +1896,8 @@ def create_app(config: Config) -> FastAPI:
             if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
                 return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
-                  parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes"),
+                  parent_request_id=req.parent_request_id,
+                  agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin),
                   actor=actor, origin=origin)
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
@@ -2405,9 +2426,14 @@ def create_app(config: Config) -> FastAPI:
         return store.catalog_get(gid)
 
     @app.post("/api/games/{gid}/launch")
-    def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", actor=Depends(auth)):
+    def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", swap: bool = False,
+               actor=Depends(auth), origin=Depends(request_origin)):
         """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
-        debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists."""
+        debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists.
+        With a mod and the game already running, the mod is swapped into that session (same PC, moment kept) only
+        when the caller names that session's PC (worker id, name or OS) as the node or asks for it (swap=true);
+        node=auto alone never turns a Play into a swap of a game running elsewhere (docs/stream-stability.md)."""
+        origin = origin if isinstance(origin, dict) else {"via": "internal"}
         e = store.catalog_get(gid) or _404()
         if node in ("idle", "other"):
             if debug:
@@ -2419,19 +2445,22 @@ def create_app(config: Config) -> FastAPI:
                 inp = pending.get('input') or {}
                 wid = _wid((inp.get('session_id') or '').split('-')[0])
                 worker = available.get(wid) or {}
+            def here(wid):                                  # the caller asked for this session's PC (or swap=true)
+                w = available.get(wid) or {}
+                return node in (wid, w.get('name'), w.get('os')) or (swap and node == 'auto')
+            for pending in store.all('job'):
+                inp = pending.get('input') or {}
+                wid = _wid((inp.get('session_id') or '').split('-')[0])
                 if (pending.get('tool') == 'session_swap' and pending.get('state') in ('queued', 'running')
-                    and inp.get('game_id') == gid and (node == 'auto' or node in (wid, worker.get('name'), worker.get('os')))):
-                    return swap_job(inp['session_id'], mod, inp.get('to', ''), actor)
+                        and inp.get('game_id') == gid and here(wid)):
+                    return swap_job(inp['session_id'], mod, inp.get('to', ''), actor, origin=origin)
             running = [s for s in store.all('session') if s.get('game_id') == gid and s.get('state') == 'running'
-                       and _wid(s['session_id'].split('-')[0]) in available]
-            running = [s for s in running if node == 'auto' or node in (
-                available[_wid(s['session_id'].split('-')[0])]['name'],
-                available[_wid(s['session_id'].split('-')[0])]['os'], _wid(s['session_id'].split('-')[0]))]
+                       and _wid(s['session_id'].split('-')[0]) in available and here(_wid(s['session_id'].split('-')[0]))]
             if running:
                 current = max(running, key=lambda s: s.get('started') or 0)
-                return swap_job(current['session_id'], mod, '', actor)
+                return swap_job(current['session_id'], mod, '', actor, origin=origin)   # keep_state=True
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})},
-                         agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
+                         agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin))
         if debug:
             node = "linux"
         if node in ("linux", "windows"):
@@ -2447,7 +2476,7 @@ def create_app(config: Config) -> FastAPI:
             from . import systems                          # the platform rule wins over a core stored at scan time
             has_core = e.get("core") and (e.get("platform") == "arcade" or systems.core_for(e.get("platform", ""))[0])
             req.require_os = "linux" if has_core else "windows"
-        return submit(req, actor)
+        return submit(req, actor, origin)
 
     @app.get("/api/profiles/{gid}")
     def profile(gid: str, actor=Depends(auth)):

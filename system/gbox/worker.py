@@ -62,7 +62,9 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
-    ctx.server, ctx.headers = server, h
+    # x-gbox-parent-job: a tool calling the control plane back (e.g. characters op=use -> @launch) is traced to this
+    # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
+    ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
     res = {"job_id": job["id"], "ok": True}
     if job.get("agent_use") and HOST_OS == "windows":
         from .audio_volume import keep_pc_at_two_percent

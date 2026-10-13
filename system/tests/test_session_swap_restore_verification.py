@@ -29,7 +29,7 @@ def swap_route(tmp_path, monkeypatch):
     swap = enclosed(enclosed(route.endpoint, 'swap_job').cell_contents, 'session_swap').cell_contents
     # Synchronous HTTP execution avoids creating a real dispatch thread; it
     # still exercises the actual body validation/authentication and swap logic.
-    enclosed(route.endpoint, 'swap_job').cell_contents = lambda sid, mod, to, actor, keep: swap(sid, mod, to, actor, keep)
+    enclosed(route.endpoint, 'swap_job').cell_contents = lambda sid, mod, to, actor, keep, **_: swap(sid, mod, to, actor, keep)
     monkeypatch.setattr(server.time, 'sleep', lambda _: None)
     return cfg, app, store, swap, checkpoint
 

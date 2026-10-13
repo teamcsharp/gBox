@@ -195,7 +195,7 @@ def route(app, path, method="POST"):
 @pytest.fixture
 def swap_app(app, monkeypatch):
     store = app.state.store
-    store.upsert_catalog([{"game_id": "g", "title": "Dead or Alive 2", "platform": "dreamcast",
+    store.upsert_catalog([{"game_id": "g", "title": "Dead or Alive 2", "platform": "dreamcast", "profile_id": "g",
                            "source_paths": [], "format": "gdi"}])
     store.put("worker", "spark", {"id": "spark", "name": "lilspark", "os": "linux", "last_seen": time.time(),
                                   "tools": ["launch_game", "get_frame"]})
@@ -258,10 +258,58 @@ def test_background_agents_never_swap_the_operators_live_game(swap_app, actor):
     app, store, calls, _ = swap_app
     with client(app, actor) as c:
         r = c.post("/api/sessions/spark-op/swap", json={"mod": "amy"})
-        launched = c.post("/api/games/g/launch", params={"mod": "amy", "node": "auto"})
+        on_its_pc = c.post("/api/games/g/launch", params={"mod": "amy", "node": "lilspark"})
+        explicit = c.post("/api/games/g/launch", params={"mod": "amy", "node": "auto", "swap": "true"})
+        auto = c.post("/api/games/g/launch", params={"mod": "amy", "node": "auto"}).json()
     assert r.status_code == 409 and "operator's live session" in r.json()["detail"]
-    assert launched.status_code == 409                       # launch?mod= on a running game becomes a swap: refused too
+    assert on_its_pc.status_code == 409 and explicit.status_code == 409   # launch -> swap: refused too
+    # node=auto is a new launch, never a swap; the only PC is the operator's, so the automated launch is refused
+    assert auto["tool"] == "launch_game" and auto["state"] == "rejected"
     assert not calls and not [j for j in store.all("job") if j["tool"] == "session_swap"]
+
+
+def test_play_with_a_mod_swaps_only_on_the_requested_pc_and_keeps_the_moment(swap_app):
+    """Coordinator lead: launch?mod= with node=auto silently swapped a game running on another machine."""
+    app, store, calls, _ = swap_app
+    store.put("worker", "pc", {"id": "pc", "name": "JAYPC", "os": "windows", "last_seen": time.time(),
+                               "tools": ["launch_game"]})
+    with client(app) as c:
+        auto = c.post("/api/games/g/launch", params={"mod": "amy", "node": "auto"}).json()
+        here = c.post("/api/games/g/launch", params={"mod": "amy", "node": "JAYPC"}).json()
+    assert auto["tool"] == "launch_game" and here["tool"] == "launch_game"   # DOA2 on the Spark untouched
+    assert not [j for j in store.all("job") if j["tool"] == "session_swap"] and not calls
+    with client(app) as c:
+        swap = c.post("/api/games/g/launch", params={"mod": "amy", "node": "lilspark"}).json()
+    job = finish(store, swap["id"])
+    assert job["tool"] == "session_swap" and job["input"]["keep_state"] is True
+    tools_called = [t for t, _, _ in calls]
+    assert tools_called.index("state_transfer") < tools_called.index("launch_game")
+
+
+def test_at_launch_naming_another_pc_never_swaps_the_spark_game(swap_app):
+    app, store, calls, _ = swap_app
+    store.put("worker", "pc", {"id": "pc", "name": "JAYPC", "os": "windows", "last_seen": time.time(),
+                               "tools": ["launch_game"]})
+    with client(app) as c:
+        r = c.post("/api/jobs", json={"tool": "@launch", "input": {"game_id": "g", "mod": "amy", "node": "JAYPC"}}).json()
+    assert r["tool"] == "launch_game" and r["require_worker"] == "pc"
+    assert not [j for j in store.all("job") if j["tool"] == "session_swap"]
+
+
+def test_worker_tool_inside_an_agent_job_cannot_swap_the_operators_game(swap_app):
+    """characters op=use from a Hermes job calls @launch back as the worker: it inherits the job's agent identity."""
+    app, store, calls, _ = swap_app
+    store.put("job", "hermesjob", {"id": "hermesjob", "tool": "characters", "agent_use": True, "actor": "mcp",
+                                   "state": "running"})
+    store.put("job", "chatjob", {"id": "chatjob", "tool": "characters", "agent_use": True, "actor": "gbox-agent",
+                                 "state": "running"})
+    body = {"tool": "@launch", "input": {"game_id": "g", "mod": "amy", "node": "auto"}}
+    with client(app, "worker:lilspark", **{"x-gbox-parent-job": "hermesjob"}) as c:
+        r = c.post("/api/jobs", json=body)
+    assert r.status_code == 409 and "operator's live session" in r.json()["detail"]
+    with client(app, "worker:lilspark", **{"x-gbox-parent-job": "chatjob"}) as c:   # the chat speaks for the operator
+        r = c.post("/api/jobs", json=body)
+    assert r.status_code == 200 and finish(store, r.json()["id"])["origin"]["parent_job"] == "chatjob"
 
 
 def test_agents_may_swap_their_own_test_session_and_the_chat_agent_acts_for_the_operator(swap_app):
