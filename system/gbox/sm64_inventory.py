@@ -14,7 +14,12 @@ Level-script commands used (sm64 decomp include/level_commands.h, read as docume
   0x22 LOAD_MODEL_FROM_GEO                                  {cmd, 0x08, u16 layer<<12 | model, u32 geo}
 The scan accepts a command only when the next command in the stream also has a sane {cmd, len} header.
 
-CLI: python -m gbox.sm64_inventory SRC [--out manifest.json]
+Second favorite (#1680, game b7aecee966090bfa, catalog title "Super Mario 64 (USA)", region US): its owned zip
+(sha256 f10bc05d...ceac, member "Super Mario 64 (USA).z64") normalizes to the same NSMP sha1 4ac57216 as the EU zip.
+`catalog_check` records the catalog region next to the ROM header region so a label mismatch is explicit in the
+manifest and the EU-offset reader/writer is reused only because the bytes match, not because the titles do.
+
+CLI: python -m gbox.sm64_inventory SRC [--game-id ID] [--out manifest.json]
 """
 from __future__ import annotations
 
@@ -34,6 +39,16 @@ KNOWN = {
     "9bef1128717f958171a4afac3ed78ee2bb4e86ce": {"code": "NSME", "region": "US", "version": 0,
                                                  "name": "Super Mario 64 (USA)", "decomp": "us"},
 }
+# Owned catalog rows (gbox catalog table) whose sources were hashed on the Spark: game_id -> catalog label.
+CATALOG = {
+    "66062703301f4969": {"title": "Super Mario 64 (Europe) (En,Fr,De)", "region": "EU",
+                         "rel_path": "collections/Nintendo 64/roms/Europe/Super Mario 64 (Europe) (En,Fr,De).zip",
+                         "source_sha256": "16870d2879e69b0c10d1368d5dcc684ebb2349cbb057d33ea51b42ad3bb0375f"},
+    "b7aecee966090bfa": {"title": "Super Mario 64 (USA)", "region": "US",
+                         "rel_path": "collections/Nintendo 64/roms/USA/Super Mario 64 (USA).zip",
+                         "source_sha256": "f10bc05dbaa0453cc4e0829b9d8c04e651826ba8c5fa57e502de82e878feceac"},
+}
+REGION_BY_CODE = {"E": "US", "P": "EU", "J": "JP", "U": "AU"}
 MARIO_MODEL = 1                                      # MODEL_MARIO
 # Model ids that are NOT reused per level group (decomp include/model_ids.h): Mario, his loose caps (drawn when the
 # cap leaves his head, so a full Mario replacement must cover them too) and the common character NPCs.
@@ -184,10 +199,23 @@ def mario(rom: bytes) -> dict:
             "parts": joints, "textures": tex, "animations": n, "fit_pose_anim": 197}
 
 
-def inventory(src: Path) -> dict:
+def catalog_check(game_id: str, source_sha256: str, ident: dict) -> dict:
+    """Compare the catalog row's label with the ROM header; a region mismatch is reported, never silently trusted."""
+    row = CATALOG.get(game_id)
+    rom_region = REGION_BY_CODE.get(ident["game_code"][-1:], "unknown")
+    out = {"game_id": game_id, "catalog_title": row and row["title"], "catalog_region": row and row["region"],
+           "rom_game_code": ident["game_code"], "rom_region": rom_region,
+           "build": (ident.get("known") or {}).get("name")}
+    out["source_hash_matches_catalog"] = bool(row) and row["source_sha256"] == source_sha256
+    out["region_label_matches_rom"] = bool(row) and row["region"] == rom_region
+    return out
+
+
+def inventory(src: Path, game_id: str = GAME_ID) -> dict:
     src = Path(src)
     rom = n64_rom.read(src)
     ident = identify(rom)
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
     loads = level_loads(rom)
     models = resolve_models(rom, loads, model_loads(rom))
     lay = writer_layout(rom)
@@ -195,9 +223,10 @@ def inventory(src: Path) -> dict:
     compat = (lay["load_seg04"]["ok"] and lay["seg04_mio0"] and lay["seg17_raw_load"] and lay["anim_table"]["ok"]
               and bool(mario_loads))
     manifest = {
-        "game_id": GAME_ID,
-        "source": {"path": str(src), "sha256": hashlib.sha256(src.read_bytes()).hexdigest(), "bytes": src.stat().st_size},
+        "game_id": game_id,
+        "source": {"path": str(src), "sha256": src_sha, "bytes": src.stat().st_size},
         "rom": ident,
+        "catalog_check": catalog_check(game_id, src_sha, ident),
         "launch": {"core": "retroarch/parallel_n64", "cic": ident["cic"], "video": "PAL 50 Hz" if ident["game_code"]
                    .endswith("P") else "NTSC 60 Hz", "save": "EEPROM 4 Kbit", "byte_order": "z64 (big-endian)"},
         "layout": {"level_loads": len(loads), "containers": containers(rom, loads),
@@ -218,13 +247,14 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("src")
+    ap.add_argument("--game-id", default=GAME_ID, choices=sorted(CATALOG))
     ap.add_argument("--out")
     a = ap.parse_args(argv)
-    m = inventory(Path(a.src))
+    m = inventory(Path(a.src), a.game_id)
     text = json.dumps(m, indent=1)
     if a.out:
         Path(a.out).write_text(text)
-    print(json.dumps({k: m[k] for k in ("rom", "launch", "writer_compatible")} |
+    print(json.dumps({k: m[k] for k in ("rom", "catalog_check", "launch", "writer_compatible")} |
                      {"containers": len(m["layout"]["containers"]), "named_models": m["layout"]["named_models"],
                       "mario": {k: v for k, v in (m["characters"]["mario"] or {}).items()
                                 if k not in ("parts", "textures")}},
