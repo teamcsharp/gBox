@@ -11,6 +11,7 @@ Every tool is registered with `@tool(name, version, In, Out, ...)` in `gbox/tool
 | read_memory | read | artifact length/hash | protocol tested via fake |
 | write_memory | memory_write | schema; rollback bytes saved | rejection tested |
 | get_frame | read | PNG signature + IHDR + hash | tested (real capture) |
+| evidence_capture | read (in-server job; agent test sessions) | frames are get_frame PNG artifacts; pairs PNG | fake sessions tested; live untested (docs/pr-evidence.md) |
 | export_asset | read | UAP validator + glTF round trip | tested |
 | open_in_blender | read | vertex/bone counts vs UAP | written, unverified |
 | analyze_binary | read | artifact counts | written, unverified |
