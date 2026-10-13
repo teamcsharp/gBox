@@ -122,25 +122,30 @@ def _find_lui_use_pairs(
     table_name: str,
     max_distance: int = 64,
 ) -> list[CodeXref]:
-    """Find LUI high-half + ADDIU/ORI/ADDI low-half references to a table."""
-    high = (target_address >> 16) & 0xFFFF
+    """Find LUI high-half + ADDIU/ORI/ADDI low-half references to a table.
+
+    ADDIU/ADDI sign-extend their immediate, so for a low half >= 0x8000 the
+    compiler emits LUI %hi(addr) = (addr + 0x8000) >> 16; ORI zero-extends and
+    pairs with the plain high half."""
     low = target_address & 0xFFFF
+    high_ori = (target_address >> 16) & 0xFFFF
+    high_add = ((target_address + 0x8000) >> 16) & 0xFFFF
     results: list[CodeXref] = []
     for i in range(0, len(code) - 3, 4):
         instr = struct.unpack_from(">I", code, i)[0]
         opcode = instr >> MIPS_OPCODE
         rt = (instr >> MIPS_RT) & 0x1F
         imm = instr & MIPS_IMM
-        if opcode != OP_LUI or imm != high:
+        if opcode != OP_LUI or imm not in (high_ori, high_add):
             continue
         for j in range(i + 4, min(i + max_distance, len(code) - 3), 4):
             instr2 = struct.unpack_from(">I", code, j)[0]
             opcode2 = instr2 >> MIPS_OPCODE
-            rt2 = (instr2 >> MIPS_RT) & 0x1F
+            rs2 = (instr2 >> MIPS_RS) & 0x1F   # the low-half add/or reads the LUI register as its source
             imm2 = instr2 & MIPS_IMM
-            if rt2 != rt:
+            if rs2 != rt:
                 continue
-            if opcode2 == OP_ADDIU and imm2 == low:
+            if imm == high_add and opcode2 == OP_ADDIU and imm2 == low:
                 results.append(
                     CodeXref(
                         table_name=table_name,
@@ -152,7 +157,7 @@ def _find_lui_use_pairs(
                     )
                 )
                 break
-            if opcode2 == OP_ADDI and imm2 == low:
+            if imm == high_add and opcode2 == OP_ADDI and imm2 == low:
                 results.append(
                     CodeXref(
                         table_name=table_name,
@@ -164,7 +169,7 @@ def _find_lui_use_pairs(
                     )
                 )
                 break
-            if opcode2 == OP_ORI and imm2 == low:
+            if imm == high_ori and opcode2 == OP_ORI and imm2 == low:
                 results.append(
                     CodeXref(
                         table_name=table_name,
