@@ -70,13 +70,79 @@ class Adapter:
         raise AttributeError(op)
 
 
+def _win_descendants(pid: int) -> list[int]:
+    """PIDs started (transitively) by `pid`, from one Toolhelp snapshot: what taskkill /T walks, without its startup."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)                     # TH32CS_SNAPPROCESS
+    if snap in (None, wintypes.HANDLE(-1).value):
+        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+    children: dict[int, list[int]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            children.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    out, todo = [], [pid]
+    while todo:
+        for child in children.get(todo.pop(), []):
+            if child not in out and child != pid:
+                out.append(child)
+                todo.append(child)
+    return out
+
+
+def _win_terminate_tree(proc: subprocess.Popen) -> None:
+    """TerminateProcess on the emulator (gBox started it: its own handle) and every process it started; nothing else."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = ctypes.c_void_p
+
+    def created(handle) -> int | None:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(ctypes.c_void_p(handle), *(ctypes.byref(t) for t in times)):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    root = created(int(proc._handle))
+    if root is None:
+        raise OSError(ctypes.get_last_error(), "GetProcessTimes failed")
+    kids = _win_descendants(proc.pid)                                # before the parent goes (its children re-parent)
+    proc.kill()                                                      # Popen.kill = TerminateProcess on our handle
+    for pid in kids:
+        h = k32.OpenProcess(0x0001 | 0x1000, False, pid)             # PROCESS_TERMINATE | QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        try:
+            born = created(h)
+            if born is not None and born >= root:                    # a reused parent PID: older, not ours, untouched
+                k32.TerminateProcess(ctypes.c_void_p(h), 1)
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(h))
+
+
 def _kill_tree(proc: subprocess.Popen | None):
-    """Kill the emulator's own process tree now (#1504): taskkill /T /F on the emulator's PID only (TerminateProcess
-    for it and the children it started), SIGTERM on Linux; nothing else on the machine is touched."""
+    """Kill the emulator's own process tree now (#1504): TerminateProcess on the emulator gBox started and on the
+    processes it started (taskkill /T /F on its PID as the fallback), SIGTERM on Linux; nothing else is touched."""
     if not proc or proc.poll() is not None:
         return
     if HOST_OS == "windows":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10)
+        try:
+            _win_terminate_tree(proc)          # ~10 ms; taskkill itself took 1-1.3 s here, ~5 s on a busy PC
+        except Exception:                      # noqa: BLE001 - no Toolhelp / access: the system tool does the same
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10)
     else:
         proc.terminate()
     try:

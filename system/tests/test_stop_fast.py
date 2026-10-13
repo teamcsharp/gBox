@@ -118,7 +118,33 @@ def test_retroarch_stop_kills_the_process_at_once(tmp_path):
         if ad.proc.poll() is None:
             ad.proc.kill()
     assert ad.proc.poll() is not None and res['returncode'] is not None
-    assert took < 4.0                                        # was >= 5 s (QUIT + wait(5)) before the kill (~0.7 s here)
+    assert took < 2.0                                        # was >= 5 s (QUIT + wait(5)), then taskkill ~1 s; now ~0.05-0.16 s
+
+
+@pytest.mark.skipif(adapters.HOST_OS != "windows", reason="TerminateProcess tree kill is the Windows path")
+def test_tree_kill_ends_the_emulator_and_its_children_only(tmp_path):
+    pidfile = tmp_path / "child.pid"
+    parent = subprocess.Popen([sys.executable, "-c",
+        "import subprocess, sys, time; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"open(r'{pidfile}', 'w').write(str(c.pid)); time.sleep(60)"])
+    bystander = _sleeper()                                   # not started by the emulator: must survive
+    try:
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text():
+                break
+            time.sleep(0.05)
+        child = int(pidfile.read_text())
+        assert child in adapters._win_descendants(parent.pid)
+        t = time.monotonic()
+        adapters._kill_tree(parent)
+        assert time.monotonic() - t < 1.0 and parent.poll() is not None
+        gone = subprocess.run(["tasklist", "/FI", f"PID eq {child}", "/NH"], capture_output=True, text=True).stdout
+        assert str(child) not in gone
+        assert bystander.poll() is None
+    finally:
+        bystander.kill()
+        if parent.poll() is None:
+            parent.kill()
 
 
 def test_retroarch_save_state_gives_up_when_the_emulator_is_gone(tmp_path):
