@@ -417,6 +417,8 @@ class Rig:
         struct.pack_into("<h", self.mem.ram, (START_FRAME + 2 * p) & 0x3FFFFF, 1)
         self.mem.ram[(HALF_RATE + p) & 0x3FFFFF] = 1 if self.motions[motion]["half_rate"] else 0
         self.mem.ram[(HALF_PHASE + p) & 0x3FFFFF] = 0
+        self.w32(ROOT + 12 * p, 0)                                # root x / z deltas restart at the origin
+        self.w32(ROOT + 12 * p + 8, 0)
         self.call(SET_MOTION, p, motion)
 
     def tick(self, p: int = 0) -> None:
