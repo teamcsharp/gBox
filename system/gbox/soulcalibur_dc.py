@@ -427,6 +427,31 @@ def engine_skin(model: dict, matrices: list[np.ndarray], *, dtype=np.float32) ->
     return {"positions": P, "normals": N, "stale_adds": int(stale), "counts": (npos, nnrm)}
 
 
+def engine_light(model: dict, matrices: list[np.ndarray], lights: np.ndarray) -> np.ndarray:
+    """The lit-normal pass (0x8c03c7c0 + 0x8c03c9ec) per normal slot: XMTRX = the light matrix (up to 4 light
+    directions as rows, 4th column 0) times the bone's rotation, ftrv on each normal row, every component clamped at
+    0 per bone, the bones' results accumulated (store / add exactly as engine_skin's normals). The rows are stored
+    inward, so a light direction l (the way the light travels) lights a surface whose outward normal faces it.
+    Returns (normal slots, 4) intensities; NaN for slots no row stores."""
+    L = np.zeros((4, 3), np.float32)
+    L[:len(lights)] = np.asarray(lights, np.float32)
+    nn = (model.get("counts") or slot_counts(model))[1]
+    out = np.full((max(nn, slot_counts(model)[1], 1), 4), np.nan, np.float32)
+    for b, M in zip(model["bones"], matrices):
+        k = b["positions"]
+        if not k:
+            continue
+        X = L @ np.asarray(M, np.float32)[:3, :3]
+        rows = np.frombuffer(b["raw"], "<f4").reshape(-1, 4)[k:, :3].astype(np.float32)
+        with np.errstate(invalid="ignore", over="ignore"):
+            v = np.maximum(rows @ X.T, 0)
+        ns, s_slots, a_slots = normal_plan(b)
+        out[s_slots] = v[:ns]
+        for r, s in enumerate(a_slots):
+            out[s] += v[ns + r]
+    return out
+
+
 def pack_model(model: dict, *, tail_at: int | None = None, size: int | None = None) -> bytes:
     """Bytes of a parsed (or writer-built) model: the header, every bone record with its counts and row offset
     recomputed, the bones' rows back to back in bone order (a bone without rows points at the running offset), the

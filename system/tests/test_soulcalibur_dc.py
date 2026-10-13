@@ -313,6 +313,53 @@ def test_encoded_model_skins_like_linear_blend_in_any_pose():
     assert np.linalg.norm(v1 - game[v]) > 0.05
 
 
+def test_engine_light_follows_the_machine_code():
+    """0x8c03c7c0 + 0x8c03c9ec: XMTRX = lights x bone rotation (4th column 0), each bone's 4 terms clamped at 0, then
+    stored / added like the normals (a row lit from behind adds nothing)."""
+    one = 0x3F800000
+    half = 0x3F000000
+    b0 = _bone(1, 0, [_wrow((0, 0, 0), one | 0)], [_wrow((0, 0, 0.5), half | 0)])
+    b1 = _bone(0, 1, [_wrow((0, 0, 0), one | D.ADD_FLAG | 0)], [_wrow((0, 0, -0.5), half | D.ADD_FLAG | 0)])
+    model = {"bones": [b0, b1], "counts": (1, 1)}
+    R = np.eye(4)
+    R[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]                    # 90 degrees about X: z -> -y
+    I = D.engine_light(model, [np.eye(4), R], np.array([[0, 0, 1.0], [0, 1.0, 0]]))
+    # bone 0: (0,0,.5) under light z -> .5, light y -> 0; bone 1: R (0,0,-.5) = (0,.5,0) -> light y .5, z clamped 0
+    assert np.allclose(I[0], (0.5, 0.5, 0, 0))
+
+
+def test_written_normals_light_like_the_surface():
+    """Donor normals that disagree with the donor's own faces (the SM64DS library entries) are replaced by the
+    smooth geometric normal; the written rows, lit with the engine's maths, light each corner as its surface faces."""
+    m0 = D.parse_model(synthetic_model())
+    big = 130
+    m0["bones"][0] = dict(m0["bones"][0], stores=big, adds=0, positions=big, normals=big,
+                          raw=b"".join(_row((0, 0, 0), 1.0, i) for i in range(big)) * 2)
+    m0["bones"][0].pop("wbits")
+    stock = D.pack_model(m0)
+    # a closed octahedron around the chest, counter-clockwise (outward) in the library frame
+    v = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], float) * 0.2
+    centre = D.bone_world(m0["bones"])[1][:3, 3] @ D.FRAME.T
+    tris = np.array([[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]])
+    garbage = -v + np.random.default_rng(2).normal(0, 0.02, (6, 3))     # inverted: they disagree with the faces
+    prim = {"pos": v + centre, "nrm": garbage, "uv": np.zeros((6, 2)), "tris": tris, "J": np.tile([1, 0, 0, 0], (6, 1)),
+            "W": np.tile([1.0, 0, 0, 0], (6, 1)), "tex": np.full((8, 8, 3), 90, np.uint8), "_page": 1}
+    prim["_uv"] = [prim["uv"][t] for t in tris]
+    out = W.corner_normals([prim])[0]
+    assert np.allclose(out, v / 0.2, atol=1e-6)                         # the octahedron's own vertex directions
+    m = D.parse_model(W.encode_model(stock, [prim], [1])["model"])
+    world = D.bone_world(m["bones"])
+    P = D.engine_skin(m, world)["positions"].astype(float)
+    lights = np.array([[0, -1.0, 0], [1.0, 0, 0], [0, 0, -1.0]])        # the way each light travels (library frame)
+    I = D.engine_light(m, world, lights @ D.FRAME.T)
+    for sec in m["sections"]:
+        for s in sec:
+            for p, n in zip(s["pos"], s["nrm"]):
+                outward = (P[p] @ D.FRAME.T - centre) / 0.2               # game -> library frame
+                want = np.maximum(-(lights @ outward), 0)
+                assert np.allclose(I[n][:3], want, atol=2e-3)
+
+
 def test_encode_budget_errors():
     stock = synthetic_model()
     many = _donor_prims(stock)[0]

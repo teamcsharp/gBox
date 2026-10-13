@@ -258,6 +258,41 @@ def _weight_words(inf: dict[int, float], store_bone: int, slot: int) -> dict[int
     return out
 
 
+def corner_normals(prims: list[dict], *, agree: float = 0.5) -> list[np.ndarray]:
+    """Per-corner unit normals for the donor (library frame, outward): the smooth geometric normal of the fitted
+    surface (area-weighted face normals of every prim, the counter-clockwise glTF winding taken as outward, welded by
+    position so seams stay smooth), replaced by the donor's own normal where that one agrees with it (keeps authored
+    creases). Some library donors carry normals unrelated to their faces (the SM64DS ones agree with their own
+    triangles about half the time), which lit them in dark, blotchy patches in game."""
+    def key(v):
+        return tuple(np.round(v, 4))
+    acc: dict = {}
+    for p in prims:
+        pos = np.asarray(p["pos"], float)
+        t = np.asarray(p["tris"], int).reshape(-1, 3)
+        if not len(t):
+            continue
+        f = np.cross(pos[t[:, 1]] - pos[t[:, 0]], pos[t[:, 2]] - pos[t[:, 0]])     # length = 2 x area
+        for c in range(3):
+            for v, n in zip(t[:, c], f):
+                k = key(pos[v])
+                acc[k] = acc.get(k, 0.0) + n
+    out = []
+    for p in prims:
+        pos = np.asarray(p["pos"], float).reshape(-1, 3)
+        g = np.array([acc.get(key(v), np.zeros(3)) for v in pos], float).reshape(-1, 3)
+        gl = np.linalg.norm(g, axis=1, keepdims=True)
+        g = np.where(gl > 1e-12, g / np.maximum(gl, 1e-12), 0.0)
+        d = np.asarray(p["nrm"], float).reshape(-1, 3) if p.get("nrm") is not None else np.zeros_like(pos)
+        dl = np.linalg.norm(d, axis=1, keepdims=True)
+        d = np.where(dl > 1e-12, d / np.maximum(dl, 1e-12), 0.0)
+        use_donor = ((d * g).sum(1) > agree) | (gl[:, 0] <= 1e-12)
+        n = np.where(use_donor[:, None], d, g)
+        n[np.linalg.norm(n, axis=1) < 0.5] = (0.0, 1.0, 0.0)
+        out.append(n)
+    return out
+
+
 def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_influences: int = MAX_INFLUENCES) -> dict:
     """Retargeted donor prims (library frame, J = native bone, W) -> a new model with the stock bone records.
 
@@ -274,9 +309,9 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
     pos_key: dict = {}
     P, Nsum, infl = [], [], []
     corners = []                                          # per prim: list of (pos slot, uv) per vertex
-    for p in prims:
-        pos = np.asarray(p["pos"], float) @ F.T           # library -> game frame
-        nrm = np.asarray(p["nrm"], float) @ F.T
+    for p, cn in zip(prims, corner_normals(prims)):
+        pos = np.asarray(p["pos"], float) @ F.T           # library -> game frame (X mirrored)
+        nrm = cn @ F.T                                    # normals mirror with the positions
         J, W = np.asarray(p["J"], int), np.asarray(p["W"], float)
         slots = []
         for v in range(len(pos)):
@@ -319,17 +354,19 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
     corners = [[renum[s] for s in slots] for slots in corners]
     N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
     gloss = _stock_gloss(model)
-    rows_of = [{"store": [], "add": [], "nrm": []} for _ in range(nb)]
-    # normals: one row per distinct normal of the storing bone (vertices that share one share its slot), numbered
-    # bone by bone so every bone's normal stores are one consecutive run too
+    rows_of = [{"store": [], "add": [], "nstore": [], "nadd": []} for _ in range(nb)]
+    # normals are skinned like the positions (the stock rows do the same): one normal slot per distinct (influences,
+    # normal), its rows on every influencing bone with the same weights, the lowest bone storing (flag clear) and the
+    # others adding (bit 15). Slots are numbered bone by bone, so each bone's normal stores are one consecutive run.
     nslot, nkey = [0] * npos, {}
     for s, inf in enumerate(infl):
         for j, (w, flag) in sorted(_weight_words(inf, first[s], s).items()):
             rows_of[j]["add" if flag else "store"].append((s, w, flag))
-        key = (first[s], tuple(np.round(N[s], 3)))
+        key = (tuple(sorted((j, round(w, 3)) for j, w in inf.items())), tuple(np.round(N[s], 3)))
         if key not in nkey:
-            nkey[key] = len(nkey)
-            rows_of[first[s]]["nrm"].append((nkey[key], s))
+            nkey[key] = ns = len(nkey)
+            for j, (w, flag) in sorted(_weight_words(inf, first[s], ns).items()):
+                rows_of[j]["nadd" if flag else "nstore"].append((ns, s, w, flag))
         nslot[s] = nkey[key]
     nnrm = len(nkey)
     if nnrm > min(stock_nrm, D.SLOT_MASK + 1):
@@ -344,13 +381,13 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         # a position row is the weight-premultiplied bone-local point: the engine's ftrv gives R (w p) + w t
         pos_rows = [row(D._w(w | flag | s) * (inv[j][:3, :3] @ P[s] + inv[j][:3, 3]), w | flag | s)
                     for s, w, flag in r["store"] + r["add"]]
-        # one normal per vertex, stored (flag clear, consecutive slots) by its storing bone, inward like the stock
-        # rows; the low byte of z is the per-vertex highlight byte 0x8c03ca9c reads (the stock model's usual value)
+        # normal rows: inward like the stock rows, weight-premultiplied like the positions, stores before adds; the
+        # low byte of z is the per-vertex highlight byte 0x8c03ca9c reads (the stock model's usual value)
         nrm_rows = []
-        for ns, s in r["nrm"]:
-            n = np.asarray(-(inv[j][:3, :3] @ N[s]), np.float32)
+        for ns, s, w, flag in r["nstore"] + r["nadd"]:
+            n = np.asarray(-D._w(w | flag | ns) * (inv[j][:3, :3] @ N[s]), np.float32)
             n[2] = np.uint32((int(n[2].view(np.uint32)) & ~0xFF) | gloss).view(np.float32)
-            nrm_rows.append(row(n, 0x3F800000 | ns))
+            nrm_rows.append(row(n, w | flag | ns))
         if r["store"] and [s for s, _w, _f in r["store"]] != list(range(r["store"][0][0], r["store"][0][0] + len(r["store"]))):
             raise AssertionError(f"bone {j}: position stores are not consecutive slots")
         bones_out.append({"index": j, "record": b["record"], "stores": len(r["store"]), "adds": len(r["add"]),

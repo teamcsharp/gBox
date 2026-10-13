@@ -187,8 +187,15 @@ Limits:
   - Each position row is `w * inverse(rest) @ P` with the exact `w` word the engine multiplies by (slot and flag bits
     included). Weights are rounded to the upper 16 bits, the add rows set bit 15, and the storing weight makes the
     sum 1.
-  - There is one normal row per distinct normal of the storing bone, flag clear, in consecutive slots. Normals are
-    stored inward, with the stock model's usual highlight byte.
+  - Normals are skinned the same way as positions. Each distinct (influences, normal) pair gets one normal slot,
+    with rows on every influencing bone at the same premultiplied weights: the lowest bone stores and the others
+    add. Normals are stored inward (checked against the geometry: 84-93% of stock normals point into the body) and
+    carry the stock model's usual highlight byte.
+  - Corner normals (`corner_normals`) are the smooth geometric normal of the fitted surface: area-weighted,
+    counter-clockwise faces, welded by position. Where the donor's own normal agrees with it (dot > 0.5), the
+    donor's normal is kept. The SM64DS library normals agree with their own triangles only about half the time.
+    Written as-is, the emulated engine lighting (`engine_light`, `0x8c03c7c0` + `0x8c03c9ec`) lit 27-31% of their
+    corners backwards, against 3-6% for stock. With geometric normals it is 1.5%.
   - The model is laid out by `soulcalibur_dc.pack_model`, the same packer that rebuilds every stock model byte for
     byte.
   - The triangles are stripified with the game's winding, after the library-to-game mirror.
