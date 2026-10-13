@@ -10,6 +10,10 @@ job's "fitting" record ({order, models: {key: {label, stages: {stage: {state, da
 Writers do not pass anything around: characters_tool opens a job sink (job()), and the shared retargets
 (sm64_swap / doa2_weighted_retarget / re4gc_enemies .retarget) call auto_model() + stage(); a writer that knows its
 model better (DOA2 per costume, the cast build's plan) names it with model(). Without a sink every call is a no-op.
+
+characters op=collect uses the same record with kind "collect" (plan(..., kind="collect")): per character an
+"extract" stage (the decoded model as a snapshot, coloured from its textures; a sprite reader's sheet as a preview
+image) and a "preview" stage (the collection's preview render). The pop-up then reads "Collecting k/N".
 """
 from __future__ import annotations
 
