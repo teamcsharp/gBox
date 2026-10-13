@@ -79,6 +79,24 @@ def test_ring_follows_a_slot_switch_and_keeps_the_preserved_checkpoint(tmp_path)
     assert ad.file(15).read_bytes() == b"frame=7" and ad.file(0).read_bytes() == b"operator slot 0"
 
 
+def test_operator_save_to_the_old_slot_survives_the_slot_switch(tmp_path):
+    clock, ad = Clock(), SlotEmulator(tmp_path / "states")
+    ad.file(0).write_bytes(b"operator slot 0")
+    ring = ring_for(tmp_path, ad, clock)
+    ad.frame = 4
+    ring.maybe_take(clock.tick(1.0))
+    with ring.guard():
+        ad.frame = 6
+        ad.save_state(slot=0)                             # the operator saves slot 0 again...
+        ad.frame = 7
+        ad.save_state(slot=15)                            # ...then the freeze recovery preserves slot 15
+    ad.frame = 9
+    ring.maybe_take(clock.tick(1.0))
+    assert ad.file(15).read_bytes() == b"frame=7"
+    assert ad.file(0).read_bytes() == b"frame=6"          # the newer manual save, not the ring's stale backup
+    ring.close()
+    assert ad.file(0).read_bytes() == b"frame=6" and ad.file(15).read_bytes() == b"frame=7"
+
 def test_switch_to_an_empty_slot_never_receives_another_slots_backup(tmp_path):
     clock, ad = Clock(), SlotEmulator(tmp_path / "states", follow=False)   # adapter that cannot name its next file
     ad.file(0).write_bytes(b"operator slot 0")

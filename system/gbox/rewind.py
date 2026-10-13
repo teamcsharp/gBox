@@ -268,7 +268,9 @@ class CheckpointRing:
             target = None
         if not target or Path(target) == self.origin:
             return False
-        self._restore_manual()                     # the old slot is the operator's again
+        if _identity(self.origin) == self._written:
+            self._restore_manual()                 # the old slot is the operator's again
+        # else the operator saved to the old slot since the ring last wrote it: that newer save stays, the backup is stale
         self._manual.unlink(missing_ok=True)
         self.origin, self._has_manual, self._written = Path(target), False, None
         return True
