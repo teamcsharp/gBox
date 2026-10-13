@@ -143,3 +143,16 @@ def test_use_roster_without_a_local_collection_builds_on_the_linux_control_plane
     monkeypatch.setattr(C, "_job", lambda *a, **k: {"state": "failed", "error": "ValueError: boom"})
     with pytest.raises(RuntimeError, match="boom"):
         S.use(SimpleNamespace(config=None, progress=lambda p, m: None), {"slug": "sonic"}, {"game_id": "1de2e7634f3161ff"}, inp)
+
+
+def test_roster_without_a_collection_never_delegates_to_its_own_worker(tmp_path, monkeypatch):
+    """A control plane whose collection is missing (unmounted disk) must fail, not queue the build on itself."""
+    monkeypatch.setenv("GBOX_CHARACTERS", str(tmp_path / "absent"))
+    import gbox.characters as C
+    monkeypatch.setattr(C, "_api", lambda ctx, method, path, **kw:
+                        [{"id": "plane", "os": "linux", "online": True, "tools": ["characters"]}])
+    monkeypatch.setattr(C, "_job", lambda *a, **k: pytest.fail("must not queue a job on itself"))
+    inp = SimpleNamespace(slot="roster", pairs=[{"character": "sonic"}], rebuild=False, launch=False, title="")
+    with pytest.raises(RuntimeError, match="character collection"):
+        S.use(SimpleNamespace(config=None, worker="plane", progress=lambda p, m: None), {"slug": "sonic"},
+              {"game_id": "1de2e7634f3161ff"}, inp)

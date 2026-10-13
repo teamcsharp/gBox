@@ -573,10 +573,13 @@ def _roster_on_control_plane(ctx, game, inp, plan):
     """A Windows worker has no character collection (#1361: 'Not in the collection' for every SA2 donor), so the roster
     disc is built on the online Linux control plane that holds it; the launch, if asked, then happens here."""
     from . import characters as C
+    me = getattr(ctx, 'worker', None)      # never this worker: a plane whose collection is missing would queue itself forever
     plane = next((w['id'] for w in C._api(ctx, 'GET', '/api/workers')
-                  if w.get('os') == 'linux' and w.get('online') and 'characters' in (w.get('tools') or [])), None)
+                  if w.get('os') == 'linux' and w.get('online') and 'characters' in (w.get('tools') or [])
+                  and w.get('id') != me), None)
     if not plane:
-        raise RuntimeError("The roster build needs the character collection on the Linux control plane, which is offline")
+        raise RuntimeError("The roster build needs the character collection on the Linux control plane, which is "
+                           f"{'missing it here' if C.HOST_OS == 'linux' else 'offline'} ({C.library_root(ctx.config)})")
     job = C._job(ctx, 'characters', inp.model_dump() | {'session_id': '', 'game_id': game['game_id'], 'launch': False},
                  plane, 3600)
     if job.get('state') != 'succeeded':
