@@ -473,7 +473,9 @@
   #pwmenu .pw-grid small { margin:0; max-width:none; white-space:normal; font-size:10px; color:var(--mut,#999) }
   #pwmenu .pw-grid .t0 { border-color:#3fb950 } #pwmenu .pw-grid .t3 { opacity:.5 }
   #pwmenu input[type=search] { width:100%; box-sizing:border-box; margin-top:6px }
-  #pwcon { position:fixed; z-index:97; width:300px; display:flex; flex-direction:column; gap:6px; font:11px/1.35 ui-monospace,Consolas,monospace }
+  #pwcon { position:fixed; z-index:97; width:300px; max-width:calc(100vw - 12px); display:flex; flex-direction:column; gap:6px; font:11px/1.35 ui-monospace,Consolas,monospace;
+    overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin }
+  #pwcon .pwc { flex:none }
   #pwcon .pwc { background:#0d0f14ee; color:#d8deea; border:1px solid #2c3242; border-radius:7px; box-shadow:0 6px 18px #0009; overflow:hidden }
   #pwcon .pwc-h { display:flex; gap:6px; align-items:center; padding:4px 6px; background:#161a24; cursor:move; font:12px system-ui,sans-serif }
   #pwcon .pwc-h b { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis }
@@ -562,15 +564,27 @@
     setTimeout(() => { try { q.focus(); } catch {} }, 0);
   }
 
-  // mini console: one small panel per task, stacked next to the picked character
-  function createConsole(doc, { drag } = {}) {
+  // mini console: one small panel per task, stacked next to the picked character. fit(el): the shell keeps it inside the
+  // window and below its header bar (toast-stack.js fit); without one it is capped to the room below its top. Either way
+  // it scrolls inside itself when the panels outgrow the window, and is laid out again on resize and as panels come and go.
+  function createConsole(doc, { drag, fit } = {}) {
     ensureCss(doc);
-    const panels = new Map();
+    const panels = new Map(), W = doc.defaultView || env;
     let box = doc.getElementById("pwcon");
     if (!box) { box = doc.createElement("div"); box.id = "pwcon"; box.setAttribute("aria-live", "polite"); doc.body.append(box); if (drag) drag(box); }
+    function clamp() {
+      if (!box.style) return;
+      if (typeof fit === "function") { try { fit(box); } catch {} return; }
+      const vh = W.innerHeight || 1e4, top = parseFloat(box.style.top) || 40;
+      box.style.maxHeight = Math.max(120, vh - top - 8) + "px";
+    }
+    if (!box._pwFit && typeof W.addEventListener === "function") { box._pwFit = true; W.addEventListener("resize", () => clamp()); }
+    if (!box._pwUp && typeof box.addEventListener === "function") { box._pwUp = true; box.addEventListener("pointerup", () => clamp()); }   // after a drag
     function anchor(x, y) {
-      const vw = (doc.defaultView || env).innerWidth || 1e4, vh = (doc.defaultView || env).innerHeight || 1e4;
+      const vw = W.innerWidth || 1e4, vh = W.innerHeight || 1e4;
       box.style.left = Math.max(6, Math.min(vw - 306, x)) + "px"; box.style.top = Math.max(40, Math.min(vh - 120, y)) + "px";
+      box.style.right = box.style.bottom = "auto";
+      clamp();
     }
     function open(id, title) {
       let p = panels.get(id);
@@ -578,10 +592,11 @@
         const el = doc.createElement("div"); el.className = "pwc"; el.dataset.id = id; el.dataset.state = "queued";
         el.innerHTML = `<div class="pwc-h"><b></b><span class="pwc-s">queued</span><button data-c="min" title="Collapse">▾</button><button data-c="x" title="Close">✕</button></div><div class="pwc-bar" style="width:0"></div><pre></pre>`;
         el.querySelector("b").textContent = title;
-        el.onclick = e => { const c = e.target.dataset && e.target.dataset.c; if (c === "min") el.classList.toggle("min"); if (c === "x") close(id); };
+        el.onclick = e => { const c = e.target.dataset && e.target.dataset.c; if (c === "min") { el.classList.toggle("min"); clamp(); } if (c === "x") close(id); };
         box.append(el);
         p = { el, lines: [], job: null, extra: [] };
         panels.set(id, p);
+        clamp();
       }
       const h = {
         id,
@@ -591,7 +606,7 @@
         done(ok, text) { if (text) p.lines.push((ok ? "✓ " : "✗ ") + text); p.el.dataset.state = ok ? "succeeded" : "failed";
           p.el.querySelector(".pwc-s").textContent = ok ? "done" : "failed"; p.el.querySelector(".pwc-bar").style.width = "100%"; paint(true); return h; },
         title(t) { p.el.querySelector("b").textContent = t; return h; },
-        collapse(on = true) { p.el.classList.toggle("min", on); return h; },
+        collapse(on = true) { p.el.classList.toggle("min", on); clamp(); return h; },
       };
       function paint(keepState) {
         const j = p.job, lines = (j ? consoleLines(j) : []).concat(p.lines, p.extra).slice(-14);
@@ -603,8 +618,8 @@
       }
       return h;
     }
-    function close(id) { const p = panels.get(id); if (p) { p.el.remove(); panels.delete(id); } }
-    return { open, close, anchor, get size() { return panels.size; }, el: box };
+    function close(id) { const p = panels.get(id); if (p) { p.el.remove(); panels.delete(id); clamp(); } }
+    return { open, close, anchor, clamp, get size() { return panels.size; }, el: box };
   }
 
   // ---- Report… : a problem at this spot of the game, into the inbox ---------------------------------------------------
@@ -753,14 +768,14 @@
 
   // ---- the web viewer's overlay (streamed game picture: img#scr) ---------------------------------------------------
   // io: { api, sid(), img(c) (preview url), toast(t), drag(el), place(el, x, y), blenderCopy(input), clipboard(text),
-  //       retarget(o), assets(q), chatModel() }
+  //       retarget(o), assets(q), chatModel(), fit?(el) (keeps the mini console inside the window, below the header) }
   function mountOverlay(doc, io) {
     ensureCss(doc);
     const W = doc.defaultView || env, S = { on: false, frame: null, region: null, outline: null, target: null, cur: null, label: null, raf: 0, sid: "" };
     const holder = "web-" + Math.random().toString(36).slice(2, 8);
     const hold = createHold({ api: io.api, holder, enabled: () => settings().pause,
       sessionOp: io.sessionOp || null });
-    const con = createConsole(doc, { drag: io.drag });
+    const con = createConsole(doc, { drag: io.drag, fit: io.fit });
     const label = doc.createElement("div"); label.className = "pw-label"; label.style.display = "none"; doc.body.append(label);
     const cv = doc.createElement("canvas"); cv.id = "pwcanvas";
     Object.assign(cv.style, { position: "fixed", zIndex: 95, cursor: "crosshair", display: "none" }); doc.body.append(cv);
@@ -860,7 +875,7 @@
     const items = () => menuItems({ label: lbl(), asset: st.asset, canBlender: !!io.blenderCopy, extra: ["-",
       { id: "pause", icon: "⏸", text: `Pause while picking: ${settings().pause ? "on" : "off"}` },
       { id: "cloud", icon: "☁", text: `Cloud naming: ${settings().cloud ? "allowed" : "off (local only)"}` }].concat(o.extra || []) });
-    const con = o.con || createConsole(doc, { drag: io.drag });
+    const con = o.con || createConsole(doc, { drag: io.drag, fit: io.fit });
     if (o.anchor) con.anchor(o.anchor[0], o.anchor[1]);
     const task = (id, title) => con.open(`${id}-${Date.now().toString(36)}`, title);
     const track = h => ({ onUpdate: j => h.update(j) });

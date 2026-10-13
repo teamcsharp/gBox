@@ -28,7 +28,8 @@ Fixture file (JSON):
                reduced_motion?: "reduce" } ]
            actions: {"wait": ms} {"wait_for": sel} {"click": sel} {"right_click": sel} {"dblclick": sel} {"hover": sel}
                     {"eval": js} {"mouse": [x, y]} {"click_at": [x, y, "right"?]} {"press": key} {"select": [sel, value]}
-                    {"fill": [sel, text]}; a value "$name" is the fixture's top-level snippet "name"
+                    {"fill": [sel, text]} {"viewport": [w, h]} (resize the window mid-shot); a value "$name" is the
+                    fixture's top-level snippet "name"
 Unknown GET /api paths that look like pictures (.png/.jpg/…, /preview, /frame.jpg, /mjpeg) answer a placeholder picture,
 .glb paths a synthetic humanoid; every other unknown answer is empty JSON. Non-GET requests without a fixture answer
 {"ok": true} and change nothing. The browser may reach only this server and the public CDNs the UI imports three.js
@@ -558,6 +559,9 @@ def run_shots(base_url: str, fx_data: dict, shots: list[dict], out: Path, offlin
                     page.select_option(v[0], v[1])
                 elif k == "fill":
                     page.fill(v[0], v[1])
+                elif k == "viewport":                  # resize the window: pages lay their pop-ups out again
+                    vw, vh = v
+                    page.set_viewport_size({"width": vw, "height": vh})
                 else:
                     raise ValueError(f"unknown action {k!r}")
             dest = out / f"{shot['name']}.png"

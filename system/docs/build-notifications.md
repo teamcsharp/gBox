@@ -85,4 +85,14 @@ Play; in the desktop app the view also asks the shell (`GBOX:{"ev":"buildnote"}`
 not in front, and clicking it brings the window back with the tray open. A plain browser uses the Notification API
 once the operator allowed it (asked on the first bell click). The tray reads `/api/notify` on its existing 5 s poll.
 
-Tests: `tests/test_build_notify.py` (server), `tests/test_build_notes.cjs` (tray rendering and Play wiring).
+Toasts are cards in one stack (`clients/web/viz/toast-stack.js`, both shells): top-right, right under the header as
+measured (the page's header wraps to two rows in the desktop app's narrower view; a toast fixed 52 px from the top sat
+over it and lost the first line of its title), newest first, at most six, capped to the room left in the window so the
+stack scrolls inside itself, laid out again on resize and when the header changes height. Titles and text wrap. The
+desktop shell's own toasts (`toast()`, build notes while another page is in front) use the same stack below its title
+bar and chat bar, and a docked game window cuts `#gbox-toasts` out of itself. The bell tray, the process pop-up, the
+pick whip's mini console and the last-played pop-up are kept inside the window and below the header the same way; the
+launch bar's failure line wraps instead of cutting off.
+
+Tests: `tests/test_build_notify.py` (server), `tests/test_build_notes.cjs` (tray rendering and Play wiring),
+`tests/test_toast_stack.cjs` (toasts clamped in small and large windows, stacking, scrolling, resize).
