@@ -614,24 +614,27 @@ def fix_crc(rom: bytearray, cic: str | None = None) -> tuple[int, int]:
     return crc
 
 
-def _pack_records(f: Fighter, records: list[bytes], image: bytearray, targets: list[dict]) -> list[int]:
-    """Lay the alpha records out in the fighter's record area; returns each record's RAM offset. Records that don't
-    fit (partial alpha costs bits) fall back to an empty record (binary alpha)."""
+def _pack_records(f: Fighter, records: list[bytes], image: bytearray, targets: list[dict]) -> tuple[list[int], int, int]:
+    """Lay the alpha records out in the fighter's record area; returns (each record's RAM offset, bytes used, frames
+    keeping soft edges). Records that don't fit (partial alpha costs bits) fall back to empty ones (binary alpha)."""
     start = min(f.rec_ram(i) for i in range(f.count))
     limit = f.h[6] if f.h[6] else len(image)
-    total = sum(len(r) for r in records)
-    if start + total > limit:
-        records = [encode_alpha(t["W"], t["H"], {}) for t in targets]
-        total = sum(len(r) for r in records)
-        if start + total > limit:
-            raise ValueError("alpha records do not fit the fighter's record area")
+    records = list(records)
+    empty = [encode_alpha(t["W"], t["H"], {}) for t in targets]
+    # over budget: drop partial alpha from the most expensive frames first (those frames get binary alpha)
+    for i in sorted(range(len(records)), key=lambda k: len(empty[k]) - len(records[k])):
+        if start + sum(len(r) for r in records) <= limit:
+            break
+        records[i] = empty[i]
+    if start + sum(len(r) for r in records) > limit:
+        raise ValueError("alpha records do not fit the fighter's record area")
     offs, p = [], start
     image[start:limit] = bytes(limit - start)
     for r in records:
         image[p:p + len(r)] = r
         offs.append(p)
         p += len(r)
-    return offs
+    return offs, p - start, sum(r != e for r, e in zip(records, empty))
 
 
 def write_fighters(rom: bytes, jobs: list[dict], cic: str | None = None) -> tuple[bytes, list[dict]]:
@@ -651,8 +654,7 @@ def write_fighters(rom: bytes, jobs: list[dict], cic: str | None = None) -> tupl
         image = bytearray(f.image)
         for pid, words in enc["palettes"].items():
             struct.pack_into(">64H", image, f.h[4] + 128 * pid, *words)
-        partial = sum(len(r) for r in enc["records"])
-        rec_offs = _pack_records(f, enc["records"], image, targets)
+        rec_offs, rec_bytes, soft = _pack_records(f, enc["records"], image, targets)
         bms = enc["bitmaps"]
         bm_total = sum(len(b) for b in bms)
         starts, ends = blob_table(bytes(out))
@@ -720,7 +722,7 @@ def write_fighters(rom: bytes, jobs: list[dict], cic: str | None = None) -> tupl
             struct.pack_into(">I", out, CHAR_ROM_END + 4 * job["index"], blob_base + len(blob))
         reports.append({"fighter": SC.ROSTER[job["index"]][0], "frames": f.count, "palettes": len(enc["palettes"]),
                         "bitmap_bytes": bm_total, "original_bitmap_bytes": f.h[7] - HEADER,
-                        "chardef_packed": len(comp), "original_packed": f.h[9], "alpha_record_bytes": partial,
+                        "chardef_packed": len(comp), "original_packed": f.h[9], "alpha_record_bytes": rec_bytes, "soft_edge_frames": soft,
                         "relocated": relocated, "blob": f"0x{(blob_base if relocated else f.base):X}"})
     if len(out) > len(rom):
         out += bytes((-len(out)) % GROW)
