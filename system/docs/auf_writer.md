@@ -158,7 +158,7 @@ python -m gbox.auf_swap build <source.gcz|.iso> <library> <cache dir> --slot pla
     entity-to-slot link and routing.
   * The owned-disc tests check the dm1/m6_1/alp2_2 cast against the snapshot and run the dm1 player slot with a
     donor.
-  * Together with `tests/test_auf_ngc*.py`, 46 tests passed against the owned GCZ. The 337 character-routing tests
+  * Together with `tests/test_auf_ngc*.py`, 51 tests passed against the owned GCZ. The 337 character-routing tests
     still pass.
 * **dm1, `player` ← `sd2_al_snow`** (SmackDown 2, rigged):
   * bond_combat_l has 782 triangles (budget 783) and bond_tux_l has 606. Each uses 16 palette records, against
