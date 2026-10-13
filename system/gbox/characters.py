@@ -1740,7 +1740,7 @@ READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", 
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
-                   "pso_gc": ("gbox.pso_gc", "pso_gc_reader")}
+                   "pso_gc": ("gbox.pso_gc", "pso_gc_reader"),
                    "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader")}
 
 
