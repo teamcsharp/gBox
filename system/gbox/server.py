@@ -116,6 +116,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import asset_library
     asset_library.routes(app, store, config, auth)
+    from . import built_mods                      # built mod folders in the cache, joined with their mod cards
+    built_mods.routes(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")
@@ -286,8 +288,11 @@ def create_app(config: Config) -> FastAPI:
                 except Exception:
                     pass                                     # no picture is fine; the card offers 📷
             threading.Thread(target=_shoot, daemon=True).start()
+        from . import built_mods
+        doc = built_mods.supersede(store, doc)          # a writer's own card replaces the gallery's stand-in for its build
         store.put("mod", mid, doc)
         store.audit(actor, "mod.save", m.title, {"game": gid, "calls": len(doc["calls"])})
+        app.state.built_mods_invalidate()
         return doc
 
     def _session_png(sid: str) -> bytes:
@@ -323,10 +328,12 @@ def create_app(config: Config) -> FastAPI:
         return m
 
     @app.post("/api/mods/{mid}/thumb")
-    async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, actor=Depends(auth)):
-        """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one."""
+    async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, append: bool = False,
+                        actor=Depends(auth)):
+        """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one.
+        append=true adds the picture to the card's in-game shots (the Mods gallery); it becomes the thumb only if none."""
         m = _mod_picture(store.get("mod", mid) or _404())
-        if m.get("thumb") and not force:
+        if m.get("thumb") and not force and not append:
             return m
         body = await request.body()
         if not (body.startswith(b"\x89PNG") or body.startswith(b"\xff\xd8\xff")):
@@ -337,9 +344,14 @@ def create_app(config: Config) -> FastAPI:
             body = await asyncio.to_thread(_session_png, session_id)
         kind = "image/png" if body[:4] == b"\x89PNG" else "image/jpeg"
         ref = store.put_artifact(body, f"mod-{mid}.{kind[6:]}", kind, {"mod": mid, "session": session_id})
-        m["thumb"] = ref.sha256
+        if append:
+            m["shots"] = [ref.sha256, *[x for x in m.get("shots") or [] if x != ref.sha256]][:24]
+            m["thumb"] = m["thumb"] if m.get("thumb") and not force else ref.sha256
+        else:
+            m["thumb"] = ref.sha256
         store.put("mod", mid, m)
-        store.audit(actor, "mod.thumb", mid, {"artifact": ref.sha256})
+        store.audit(actor, "mod.thumb", mid, {"artifact": ref.sha256, "append": append})
+        app.state.built_mods_invalidate()
         return m
 
     @app.get("/api/mods")
@@ -352,6 +364,7 @@ def create_app(config: Config) -> FastAPI:
     def mod_del(mid: str, actor=Depends(auth)):
         store.delete("mod", mid)
         store.audit(actor, "mod.delete", mid, {})
+        app.state.built_mods_invalidate()
         return {"deleted": mid}
 
     # --- character library (gbox/characters.py): models extracted from the operator's games, reusable in any game ---
@@ -1137,6 +1150,12 @@ def create_app(config: Config) -> FastAPI:
         if root not in f.parents or not f.is_file():
             raise HTTPException(404, "not found")
         return FileResponse(f, headers={"cache-control": "no-cache"})
+
+    @app.get("/live-poll.js")
+    def live_poll_js():
+        """The shared cached polling helper (clients/desktop/live-poll.js, #712) for the web client: static, no secrets."""
+        return FileResponse(WEB.parent.parent / "desktop" / "live-poll.js", media_type="text/javascript",
+                            headers={"cache-control": "no-cache"})
 
     @app.get("/brand/{name}")
     def brand(name: str):
