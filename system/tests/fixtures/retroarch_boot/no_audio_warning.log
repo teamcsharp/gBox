@@ -1,0 +1,94 @@
+[WARN] [Input] Player 2 had duplicate pad index 15, reassigning to 0.
+[WARN] [Input] Player 3 had duplicate pad index 15, reassigning to 1.
+[WARN] [Input] Player 4 had duplicate pad index 15, reassigning to 2.
+[WARN] [Input] Player 16 had duplicate pad index 15, reassigning to 3.
+[INFO] RetroArch 1.22.2 (Git 1e9dec8)
+[INFO] === Build =================================================
+[INFO] CPU Model Name: Intel(R) Core(TM) i9-10900X CPU @ 3.70GHz
+[INFO] Capabilities: MMX MMXEXT SSE SSE2 SSE3 SSSE3 SSE4 SSE42 AES PCLMUL AVX AVX2 AVX512 FMA3 LZCNT 
+[INFO] Version: 1.22.2
+[INFO] Git: 1e9dec8
+[INFO] Built: Oct  5 2026
+[INFO] ===========================================================
+[INFO] [Input] Found input driver: "dinput".
+[INFO] [Core] Loading dynamic libretro core from: "D:\gBox\runtime\cores\parallel_n64_libretro.dll".
+[INFO] [Override] Redirecting save file to "D:\gBox\runtime\capture_sessions\ra-54661\saves\Super Mario 64 (USA).srm".
+[INFO] [Override] Redirecting save state to "D:\gBox\runtime\capture_sessions\ra-54661\states\Super Mario 64 (USA).state".
+[INFO] [Environ] GET_CORE_OPTIONS_VERSION.
+[INFO] [Environ] SET_CORE_OPTIONS_V2.
+[INFO] [Environ] SET_CONTROLLER_INFO.
+[INFO] [Environ] GET_LOG_INTERFACE.
+[INFO] [Environ] GET_PERF_INTERFACE.
+[INFO] [Environ] SET_PIXEL_FORMAT: XRGB8888.
+[INFO] [Environ] GET_RUMBLE_INTERFACE.
+[INFO] [Environ] SET_SERIALIZATION_QUIRKS.
+[INFO] [Content] Content loading skipped. Implementation will load it on its own.
+[INFO] [Environ] SET_HW_RENDER, context type: gl.
+[INFO] [HW] Requesting OpenGL context.
+[libretro INFO] mupen64plus: Using full mem base
+[libretro INFO] EmuThread: M64CMD_ROM_OPEN
+[libretro INFO] mupen64plus: Goodname: Super Mario 64 (E) (M3) [!]
+[libretro INFO] mupen64plus: Name: SUPER MARIO 64      
+[libretro INFO] mupen64plus: MD5: 45676429EF6B90E65B517129B700308E
+[libretro INFO] mupen64plus: CRC: A03CF036 BCC1C5D2
+[libretro INFO] mupen64plus: Imagetype: .z64 (native)
+[libretro INFO] mupen64plus: Rom size: 8388608 bytes (or 8 Mb or 64 Megabits)
+[libretro INFO] mupen64plus: Version: 1446
+[libretro INFO] mupen64plus: Manufacturer: Nintendo
+[libretro INFO] mupen64plus: Country: Europe (0x50)
+[libretro INFO] EmuThread: M64CMD_ROM_GET_HEADER
+[INFO] [SRAM] Skipping SRAM load.
+[INFO] [Core] Version of libretro API: 1, Compiled against API: 1
+[INFO] [Core] Geometry: 640x480, Aspect: 1.3333, FPS: 50.0003, Sample rate: 32040 Hz.
+[INFO] [Video] Set video size to: 1920x1440.
+[INFO] [Video] Using HW render, OpenGL driver forced.
+[INFO] [Video] Using configured "glcore" driver for GL HW render.
+[INFO] [GLCore] Found GL context: "wgl".
+[INFO] [GLCore] Detecting screen resolution: 3440x1440.
+[INFO] [WGL] Extensions: WGL_ARB_buffer_region WGL_ARB_create_context WGL_ARB_create_context_no_error WGL_ARB_create_context_profile WGL_ARB_create_context_robustness WGL_ARB_context_flush_control WGL_ARB_extensions_string WGL_ARB_make_current_read WGL_ARB_multisample WGL_ARB_pbuffer WGL_ARB_pixel_format WGL_ARB_pixel_format_float WGL_ARB_render_texture WGL_ATI_pixel_format_float WGL_EXT_colorspace WGL_EXT_create_context_es_profile WGL_EXT_create_context_es2_profile WGL_EXT_extensions_string WGL_EXT_framebuffer_sRGB WGL_EXT_pixel_format_packed_float WGL_EXT_swap_control WGL_EXT_swap_control_tear WGL_NVX_DX_interop WGL_NV_DX_interop WGL_NV_DX_interop2 WGL_NV_copy_image WGL_NV_delay_before_swap WGL_NV_float_buffer WGL_NV_multisample_coverage WGL_NV_multigpu_context WGL_NV_render_depth_texture WGL_NV_render_texture_rectangle 
+[INFO] [WGL] Adaptive VSync supported.
+[INFO] [GLCore] Initializing HW render (1024x1024).
+[INFO] [GLCore] Max texture size: 32768 px, renderbuffer size: 32768 px.
+[INFO] [GLCore] Source is SDR (32-bit), output SDR.
+[INFO] [GLCore] Vendor: NVIDIA Corporation, Renderer: NVIDIA GeForce RTX 3070/PCIe/SSE2.
+[INFO] [GLCore] Version: 4.6.0 NVIDIA 617.14.
+[INFO] [GLCore] Using resolution 1920x1440.
+[INFO] [GLCore] Using Slang shader backend.
+[INFO] [GLCore] Loading stock shader.
+[INFO] [GLCore] Building pass #0 (N/A)
+[INFO] [GLCore] Not using frame history.
+[INFO] [GLCore] Not using framebuffer feedback.
+[INFO] [Input] Found joypad driver: "sdl3".
+[INFO] [Video] Found display server: "win32".
+ReadSpecialSettings: DEFAULT
+[ERROR] [Environ] GET_VARIABLE: mupen64-filtering - Invalid value.
+[INFO] [Environ] SET_INPUT_DESCRIPTORS.
+[libretro INFO] EmuThread: M64CMD_EXECUTE.
+[libretro INFO] mupen64plus: Game controller 0 (Standard controller) has nothing plugged in
+[libretro INFO] mupen64plus: Game controller 1 (Standard controller) has nothing plugged in
+[libretro INFO] mupen64plus: Game controller 2 (Standard controller) has nothing plugged in
+[libretro INFO] mupen64plus: Game controller 3 (Standard controller) has nothing plugged in
+[libretro INFO] mupen64plus: Using CIC type X102
+[INFO] [Environ] SET_MEMORY_MAPS.
+ReadSpecialSettings: DEFAULT
+[ERROR] [Environ] GET_VARIABLE: mupen64-filtering - Invalid value.
+ReadSpecialSettings: SUPER MARIO 64
+[ERROR] [Environ] GET_VARIABLE: mupen64-filtering - Invalid value.
+[libretro INFO] Detected RDRAM size: 007fffff
+[ERROR] [Environ] GET_VARIABLE: mupen64-vcache-vbo - Invalid value.
+[libretro INFO] mupen64plus: Initializing 4 RDRAM modules for a total of 8 MB
+[libretro INFO] mupen64plus: Starting R4300 emulator: Dynamic Recompiler (Ari64)
+[libretro INFO] mupen64plus: Init new dynarec
+[ERROR] [Environ] GET_VARIABLE: mupen64-vcache-vbo - Invalid value.
+[INFO] [Video] Timings deviate too much. Will not adjust. (Display = 60.00 Hz, Game = 50.00 Hz)
+[INFO] [Audio] Set audio input rate to: 32040.00 Hz.
+[INFO] [Microphone] Initialized microphone driver.
+[INFO] [Display] Found display driver: "glcore".
+[INFO] [NetCMD] bringing_up_command_interface_at_port 54661 (all interfaces).
+[INFO] [Playlist] Loading favorites file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_favorites.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_image_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_music_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_video_history.lpl".
+[INFO] [Playlist] Written to file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_history.lpl".
+[INFO] [Input] Controllers of the "sdl3" driver are read through a snapshot taken once a poll.
