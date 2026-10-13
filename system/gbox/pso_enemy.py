@@ -485,7 +485,7 @@ def build_swap(disc, model: Path | None, roles: dict | None, work: Path, name: s
     whole-cast swap: every enemy its own donor, every pack rebuilt once). on_error(key, exc): report a failing enemy
     (or every enemy of a pack that no longer fits) and keep building the rest; without it the first failure raises.
     -> {files {disc path: new pack bytes}, report {enemy key: fit report}, rigged {key: gltf}, atlas {key: PIL}}."""
-    from . import ninja_swap as NS
+    from . import fit_events as FE, ninja_swap as NS
     work = Path(work)
     files, report, rigged, atlases = {}, {}, {}, {}
     by_file: dict[str, list[dict]] = {}
@@ -510,6 +510,8 @@ def build_swap(disc, model: Path | None, roles: dict | None, work: Path, name: s
             d_model = Path(donor["model"]) if donor.get("model") else model
             d_roles, d_name = donor.get("roles", roles), donor.get("name", name)
             d_scale = donor.get("scale", scale) if donor else scale
+            if donor.get("slot"):                         # the whole-cast swap: this enemy's fit is its slot's model
+                FE.model(donor["slot"])
             try:
                 raw, pvm = _unpack(_entry(bml, entry_name))
                 if pvm is None:
@@ -574,6 +576,13 @@ def build_swap(disc, model: Path | None, roles: dict | None, work: Path, name: s
         files[path] = b2
         for en in built:
             report[en["key"]]["pack_bytes"], report[en["key"]]["pack_room"] = len(b2), room
+            if (en.get("donor") or {}).get("slot"):       # the pack as rebuilt: body + atlas, in its own room
+                FE.model(en["donor"]["slot"])
+                r = report[en["key"]]
+                FE.stage("encode", data={"enemy": en["name"], "bytes": r["body_bytes"] + r["pvm_bytes"],
+                                         "body_bytes": r["body_bytes"], "pvm_bytes": r["pvm_bytes"],
+                                         "pack": path, "pack_bytes": len(b2), "room": room, "relocated": False,
+                                         "triangles": r.get("triangles"), "textures_small": r["textures_small"]})
     return {"files": files, "report": report, "rigged": rigged, "atlas": atlases}
 
 
@@ -625,10 +634,12 @@ def build_cast(cfg, game: dict, gdi: Path, pairs: list[tuple[str, dict]], name: 
     import json
     import shutil
     import time
-    from . import characters as C, filemods
+    from . import characters as C, filemods, fit_events as FE
     from .gdrom import GDRom, patch_gdi
     root = Path(root or C.library_root(cfg))
     disc = GDRom(gdi)
+    FE.plan([(slot, meta["slug"], f"{meta.get('name') or meta['slug']} -> {slot.split(':', 1)[-1]}")
+             for slot, meta in pairs])
     slots: dict[str, dict] = {}
     todo: list[dict] = []
     owner: dict[str, str] = {}
@@ -657,7 +668,7 @@ def build_cast(cfg, game: dict, gdi: Path, pairs: list[tuple[str, dict]], name: 
             keys.append(en["key"])
             todo.append(dict(en, donor={"model": root / meta["slug"] / meta["model"], "roles": roles,
                                         "name": meta.get("name") or meta["slug"], "scale": (meta.get("rig") or {}).get("scale"),
-                                        "slug": meta["slug"]}))
+                                        "slug": meta["slug"], "slot": slot}))
         slots[slot] = {"status": "pending", "enemies": keys} if keys else \
             {"status": "failed", "reason": "every body of this slot is assigned by another slot"}
     errors: dict[str, str] = {}
@@ -697,6 +708,16 @@ def build_cast(cfg, game: dict, gdi: Path, pairs: list[tuple[str, dict]], name: 
         "writer": "gbox.pso_enemy.build_cast", "verified": False,
         "enemies": {k: owner[k] for k in b["report"]}, "report": out["detail"]}))
     shutil.rmtree(work, ignore_errors=True)
+    for slot, row in slots.items():                       # each slot's packs, written into the new GD-ROM
+        FE.model(slot)
+        if row["status"] in ("built", "partial"):
+            keys = [k for k in row["enemies"] if k in b["report"]]
+            FE.stage("write", data={"mod": name, "image": img.name, "enemies": len(keys),
+                                    "packs": sorted({b["report"][k]["file"] for k in keys}),
+                                    "pack_bytes": sum({b["report"][k]["file"]: b["report"][k]["pack_bytes"]
+                                                       for k in keys}.values())})
+        else:
+            FE.stage("write", "failed", {"reason": str(row.get("reason") or "not built")[:150]})
     return out | {"mod": name, "image": img.name}
 
 

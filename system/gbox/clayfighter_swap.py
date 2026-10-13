@@ -649,8 +649,25 @@ def write_fighters(rom: bytes, jobs: list[dict], cic: str | None = None) -> tupl
         used = f.used_palettes(frames0)
         keep_last = f.h[11]                                # the costume hook skips the last h11 palettes
         order = [p for p in used if p < f.h[3] - keep_last] + [p for p in used if p >= f.h[3] - keep_last]
+        from . import fit_events as FE
+        if FE.active() and not job.get("canvases"):        # the donor's frames as loaded, at their own size
+            crops = [_crop(np.asarray(d, np.uint8)) for d in job["frames"]]
+            dh = float(np.percentile([c.shape[0] for c in crops], 90)) if crops else 0.0
+            th = float(np.percentile([t["H"] for t in targets], 90))
+            FE.stage("scale", data={"scale": round(th / max(1.0, dh), 4), "donor_height": round(dh, 1),
+                                    "fitted_height": round(th, 1), "donor_frames": len(crops),
+                                    "target_frames": f.count},
+                     preview=FE.image("donor_frames", sheet_of(crops[:36], 9)[0]) if crops else None)
         canvases = job.get("canvases") or fit_frames(targets, job["frames"], job.get("flip", False))
+        if FE.active():                                    # dealt onto every frame, bottom-centre on its hotspot
+            FE.stage("retarget", data={"mode": "sprite frames on the fighter's hotspots", "frames": len(canvases),
+                                       "donor_frames": len(job.get("frames") or []), "flip": bool(job.get("flip"))},
+                     preview=FE.image("fitted_frames", sheet_of(canvases[:36], 9)[0]))
+            FE.stage("proportion", "skipped", {"profile": "sprites keep the donor's proportions"})
+            FE.stage("weights", "skipped", {"mode": "sprites: no skeleton (each frame is drawn whole)"})
         enc = encode_frames(targets, canvases, order[:max(1, min(len(order), f.count))])
+        FE.stage("decimate", "skipped", {"mode": "colour quantization instead: 64 colours per palette",
+                                         "palettes": len(enc["palettes"])})
         image = bytearray(f.image)
         for pid, words in enc["palettes"].items():
             struct.pack_into(">64H", image, f.h[4] + 128 * pid, *words)
@@ -724,6 +741,11 @@ def write_fighters(rom: bytes, jobs: list[dict], cic: str | None = None) -> tupl
                         "bitmap_bytes": bm_total, "original_bitmap_bytes": f.h[7] - HEADER,
                         "chardef_packed": len(comp), "original_packed": f.h[9], "alpha_record_bytes": rec_bytes, "soft_edge_frames": soft,
                         "relocated": relocated, "blob": f"0x{(blob_base if relocated else f.base):X}"})
+        FE.stage("encode", data={"bytes": bm_total + len(comp), "bitmap_bytes": bm_total,
+                                 "was_bytes": f.h[7] - HEADER + f.h[9], "chardef_packed": len(comp),
+                                 "palettes": len(enc["palettes"]), "relocated": relocated,
+                                 "where": f"blob at 0x{(blob_base if relocated else f.base):X}"
+                                          + (f" (was 0x{f.base:X})" if relocated else " (in place)")})
     if len(out) > len(rom):
         out += bytes((-len(out)) % GROW)
     crc = fix_crc(out, cic)
@@ -949,6 +971,10 @@ def build_mod(cfg, game: dict, meta: dict, fighter: dict, flip: bool, progress=l
           "files": ["@image: fighter sprites (gbox.clayfighter_swap)"], "built": time.time(),
           "characters": [meta["slug"]], "replaces": [fighter["name"]], "donor": how, "report": reports[0]}
     (d / ".gbox-mod.json").write_text(json.dumps(mj))
+    from . import fit_events as FE                         # what the game will draw, read back from the new ROM
+    FE.stage("write", data={"mod": name, "image": img, "rom_bytes": len(new), "frames": check.count,
+                            **({"vrom": reports[0]["blob"]} if reports[0]["relocated"] else {})},
+             preview=d / "frames_preview.png")
     return {"mod": name, "image": img, "report": reports[0], "donor": how}
 
 

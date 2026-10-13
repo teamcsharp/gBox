@@ -428,10 +428,17 @@ STRATEGIES = {
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
     "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
                                "(etm_swap.build_cast)"),
+    "gbox.mgs2_swap": ("pairs", "Metal Gear Solid 2 PS2: every slot's kms models (every stage that carries them) "
+                                "rebuilt in one STAGE.DAT / STAGE2.DAT image (mgs2_swap.build_cast)"),
     "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
+    "gbox.mgs_vr_swap": ("pairs", "Metal Gear Solid VR Missions: Snake, every soldier and the other 16-object figures "
+                                  "fitted into one disc (mgs_vr_swap.build_cast: each mission stage's copy of a model "
+                                  "and its texture archive, native STAGE.DIR rewrite)"),
+    "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
+                                       "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
 }
 
 
@@ -459,7 +466,20 @@ def chain(files: dict, steps: list[tuple[str, object]], progress=lambda p, m: No
             report[slot] = {"status": "built", "files": sorted(new)}
         except Exception as e:                            # noqa: BLE001 - one slot never stops the cast
             report[slot] = {"status": "failed", "reason": str(e)[:500] or type(e).__name__}
+            FE.stage("write", "failed", {"reason": report[slot]["reason"][:150]})
     return state, report
+
+
+def chain_written(report: dict, mod: str, image: str, files: dict | None = None):
+    """The write stage of every chained slot once the one image is written: the image, and how big the staged files
+    it changed are (each slot's step rewrote them in place)."""
+    from . import fit_events as FE
+    for slot, r in report.items():
+        if r.get("status") != "built":
+            continue
+        FE.model(slot)
+        FE.stage("write", data={"mod": mod, "image": image, "files": len(r.get("files") or []),
+                                "bytes": sum(len(files[f]) for f in r.get("files") or [] if f in (files or {}))})
 
 
 class StagedDisc:
@@ -621,7 +641,7 @@ def run(ctx, inp) -> dict:
     game = _target_game(ctx, inp)
     root = C.library_root(ctx.config)
     local = root.is_dir()
-    chars = C._api(ctx, "GET", "/api/characters?fresh=1")   # a collect may just have run in another process
+    chars = C._api(ctx, "GET", "/api/characters?fresh=1", timeout=900)   # a full re-read: 35-80 s on the HDD under load   # a collect may just have run in another process
     if not inp.source:
         return {"status": "needs_source", "game_id": game["game_id"], "title": game.get("title"),
                 "sources": source_groups(chars), "message": "name a source: a game or a group (wrestlers, fighters, ...)"}
@@ -736,6 +756,8 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             mod = None
     built = [s for s, r in per.items() if r.get("status") in ("built", "partial")]
     for s, _m in pairs:                                   # every model's last stage in the Fitting pop-up
+        if FE.written(s):                                 # the writer reported its own write (bytes, new place)
+            continue
         FE.model(s)
         ok = s in built and mod
         FE.stage("write", "done" if ok else "failed",
@@ -755,6 +777,12 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             rec["title"] = f"{game.get('title')}: Sonic showcase ({p['source']})"
             rec["showcase"] = {"source": p["source"], "plan": digest, "writer": p["writer"], "strategy": p["strategy"],
                                **({"linked_from": linked_from} if linked_from else {})}
+        from . import build_record                       # who went where, by name (the Builds view's 360 pairs)
+        rec = build_record.stamp(
+            rec, kind="cast", slots=[{"slot": r["slot"], "slot_name": r.get("slot_name") or r["slot"],
+                                      "donor": r["character"], "donor_name": r.get("donor") or r["character"],
+                                      "source": r.get("source") or ""} for r in p["assignments"]],
+            **build_record.from_ctx(ctx))
         if rec_path.parent.is_dir():
             if rec_path.is_file() and rec_path.stat().st_nlink > 1:
                 rec_path.unlink()                         # a hard-linked marker: never write through to the source
@@ -875,6 +903,11 @@ def _gta_vc(ctx, game, pairs, name, inp):
 def _etm(ctx, game, pairs, name, inp):
     from . import etm_swap
     return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _mgs2(ctx, game, pairs, name, inp):
+    from . import mgs2_swap
+    return mgs2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _oot(ctx, game, pairs, name, inp):
     from . import oot_swap
     return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
@@ -910,7 +943,16 @@ def _jgr(ctx, game, pairs, name, inp):
     img = patch_gdi(gdi, d, name, files, ctx.progress)
     (d / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": game["game_id"], "image": img.name,
                                                   "files": sorted(files), "writer": "gbox.jgr (cast chain)"}))
+    chain_written(per, name, img.name, files)
     return {"mod": name, "slots": per}
+
+
+def _mgs_vr(ctx, game, pairs, name, inp):
+    from . import mgs_vr_swap
+    try:
+        return mgs_vr_swap.build_cast(ctx, game, pairs, name, inp)
+    except Exception as e:                                # noqa: BLE001 - the report names why
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
 
 
 def _crazy_taxi(ctx, game, pairs, name, inp):
@@ -934,11 +976,18 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
     files, per = chain({CTS.BANK: bank}, [(s, step(s, m)) for s, m in pairs], ctx.progress)
     if not any(r["status"] == "built" for r in per.values()):
         return {"mod": None, "slots": per}
-    ct.build_mod(ctx.config, game, iso, files[CTS.BANK], name, f"Crazy Taxi {name}.iso", progress=ctx.progress)
+    b = ct.build_mod(ctx.config, game, iso, files[CTS.BANK], name, f"Crazy Taxi {name}.iso", progress=ctx.progress)
+    chain_written(per, name, Path(str((b or {}).get("image") or f"Crazy Taxi {name}.iso")).name, files)
     return {"mod": name, "slots": per}
 
 
+def _twin_snakes(ctx, game, pairs, name, inp):
+    from . import twin_snakes_swap
+    return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
+    "gbox.twin_snakes_swap": _twin_snakes,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
@@ -946,7 +995,9 @@ BUILDERS = {
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
     "gbox.etm_swap": _etm,
+    "gbox.mgs2_swap": _mgs2,
     "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
+    "gbox.mgs_vr_swap": _mgs_vr,
 }

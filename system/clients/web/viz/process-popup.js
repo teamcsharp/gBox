@@ -61,6 +61,8 @@
   const STAGES = ["scale", "retarget", "proportion", "weights", "decimate", "encode", "write"];
   const STAGE_NAMES = { scale: "scale", retarget: "retarget", proportion: "proportion", weights: "weights",
     decimate: "decimate", encode: "encode", write: "write" };
+  const COLLECT_STAGES = ["extract", "preview"];                          // characters op=collect (a reader's roster)
+  const isCollect = job => ((job && job.fitting) || {}).kind === "collect";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const isSnapshot = p => typeof p === "string" && p.includes("/fitting/files/");
 
@@ -71,7 +73,8 @@
       const m = f.models[k], st = m.stages || {};
       const names = STAGES.filter(s => st[s]).concat(Object.keys(st).filter(s => !STAGES.includes(s)));
       return { key: k, label: m.label || k, state: m.state || "pending", current: m.current || null, snapshot: m.snapshot || null,
-        snapshotStage: m.snapshot_stage || null, updated: m.updated || 0,
+        snapshotStage: m.snapshot_stage || null, updated: m.updated || 0, preview: m.preview || null,
+        previewStage: m.preview_stage || null, previewTs: m.preview_ts || 0, snapshotTs: m.snapshot_ts || 0,
         stages: names.map(s => ({ name: s, state: st[s].state || "running", text: stageNumbers(s, st[s].data) })) };
     });
   }
@@ -88,32 +91,89 @@
     const any = rows.filter(r => r.snapshot).sort((a, b) => b.updated - a.updated)[0];
     return any ? any.snapshot : null;
   }
+  // a preview image (a sprite writer's donor / fitted frames, a sprite reader's sheet): shown over the 3D view when the
+  // model being fitted has no mesh snapshot of its own (a mesh snapshot always wins: the operator sees the 3D model)
+  function previewOf(job) {
+    const rows = fittingRows(job), cur = (job.fitting || {}).current;
+    const r = rows.find(x => x.key === cur) || rows.filter(x => x.preview).sort((a, b) => b.updated - a.updated)[0];
+    return r && r.preview && !r.snapshot ? r.preview : null;
+  }
   const n2 = v => (typeof v === "number" ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString("en-US") : String(+v.toFixed(2))) : "");
   function stageNumbers(stage, d) {                                         // the stage's numbers, short
     d = d || {};
     if (d.error || d.reason) return String(d.error || d.reason).slice(0, 60);
-    if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "");
-    if (stage === "retarget") return [d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
+    // the donor as loaded -> the fitted height (the writers' scale stage: donor_height / fitted_height, own units)
+    const tall = d.donor_height != null && d.fitted_height != null ? ` · ${n2(d.donor_height)} → ${n2(d.fitted_height)} tall` : "";
+    if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "") + tall;
+    if (stage === "scale" && d.donor_height != null) return `${n2(d.donor_height)} tall · ${n2(d.donor_triangles || 0)} tris`;
+    if (stage === "retarget") return [d.mode || "", d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
       d.segments != null ? `${d.segments} parts` : ""].filter(Boolean).join(" · ");
     if (stage === "proportion") return d.applied ? ["height", "head", "torso_width"].filter(k => d[k] != null && d[k] !== 1)
       .map(k => `${k.replace("_", " ")} ×${n2(d[k])}`).concat((d.roles_adjusted || []).length ? [`${d.roles_adjusted.length} parts`] : [])
       .join(" · ") || "profile" : (d.profile === "none" ? "no profile" : String(d.profile || ""));
-    if (stage === "weights") return d.vertices_reduced != null ? `${n2(d.vertices_reduced)} verts → ${d.max_influences} bones` : (d.max_influences != null ? `max ${d.max_influences}` : "");
+    const limbs = d.limbs != null ? d.limbs : d.nodes != null ? d.nodes : d.bones;   // per-limb vertex counts
+    if (stage === "weights") return d.vertices_reduced != null ? `${n2(d.vertices_reduced)} verts → ${d.max_influences} bones`
+      : limbs != null ? `${limbs} limbs · ${n2(d.vertices || 0)} verts` : (d.max_influences != null ? `max ${d.max_influences}` : "");
     if (stage === "decimate") return d.from != null && (d.triangles != null || d.to != null) ? `${n2(d.from)} → ${n2(d.triangles != null ? d.triangles : d.to)} tris` : "";
-    if (stage === "encode") return d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
-      : d.triangles != null ? `${n2(d.triangles)} tris` : "";
-    if (stage === "write") return d.mod || d.image || "";
+    const moved = d.relocates || (Array.isArray(d.relocated) ? d.relocated.length : d.relocated) ? " · moved" : "";
+    if (stage === "encode") return (d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
+      : d.triangles != null ? `${n2(d.triangles)} tris` : "") + (d.grew ? ` · +${n2(d.grew / 1024)} KB` : "") + moved;
+    if (stage === "write") return (d.mod || d.image || "") + (d.vrom ? ` · ${d.vrom}` : "");
+    if (stage === "extract") return d.kind === "sprites" ? "sprite sheet" : d.reason ? String(d.reason)
+      : [d.triangles != null ? `${n2(d.triangles)} tris` : "", d.roles ? `${d.roles} roles` : ""].filter(Boolean).join(" · ");
+    if (stage === "preview") return d.roles ? `${d.roles} roles` : (d.kind || "");
     return "";
   }
+  // ---- calibration play-by-play (#1385): the current model's reported fit numbers as a "before -> fitted" tween ----
+  // The writer's scale / proportion stages say how the donor was resized for the title (overall size, height or torso
+  // stretch, torso width or shoulder widening, head). The viewer eases the fitted snapshot from those inverse factors
+  // back to 1 on a loop, so the operator watches each character's proportions adjust while the build runs.
+  const clampK = v => Math.min(1.6, Math.max(0.55, v));
+  const pos = v => (typeof v === "number" && isFinite(v) && v > 0 ? v : null);
+  function calibration(job) {
+    const f = job && job.fitting;
+    if (!f || !f.models || isCollect(job)) return null;
+    let key = f.models[f.current] ? f.current : null;
+    if (!key) { const r = fittingRows(job).filter(x => x.state !== "pending").sort((a, b) => b.updated - a.updated)[0]; key = r ? r.key : null; }
+    const m = key && f.models[key];
+    if (!m) return null;
+    const st = m.stages || {}, sc = (st.scale || {}).data || {};
+    const pr = (st.proportion || {}).state === "skipped" ? {} : ((st.proportion || {}).data || {});
+    let s = pos(sc.scale);
+    if (s == null && pos(sc.donor_height) && pos(sc.fitted_height)) s = sc.fitted_height / sc.donor_height;
+    const torso = pos(sc.torso_up) && pos(sc.torso_down) ? (sc.torso_up + sc.torso_down) / 2 : pos(sc.torso_up) || pos(sc.torso_down);
+    const h = pos(pr.height) || torso || 1, w = pos(pr.torso_width) || pos(sc.shoulder_widen) || 1;
+    const head = pos(pr.head) || pos(sc.head_scale) || 1;
+    s = s || 1;
+    const parts = [];
+    if (Math.abs(s - 1) >= 0.01) parts.push(`size ×${n2(s)}`);
+    if (Math.abs(h - 1) >= 0.01) parts.push(`height ×${n2(h)}`);
+    if (Math.abs(w - 1) >= 0.01) parts.push(`width ×${n2(w)}`);
+    if (Math.abs(head - 1) >= 0.01) parts.push(`head ×${n2(head)}`);
+    if (!parts.length) return null;
+    const label = m.label || key;
+    return { key, label, factors: { scale: s, height: h, width: w, head },
+      from: { x: clampK(1 / (s * w)), y: clampK(1 / (s * h)), z: clampK(1 / (s * w)) },
+      text: `Calibrating ${label}: ${parts.join(" · ")}` };
+  }
+  // 0 = donor proportions, 1 = fitted: hold, ease in-out, hold, repeat (2.8 s)
+  function calibrationPhase(t) {
+    const T = 2.8, u = ((t % T) + T) % T;
+    if (u < 0.5) return 0;
+    if (u >= 1.9) return 1;
+    const x = (u - 0.5) / 1.4;
+    return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+  }
+  const nowS = () => ((env.performance && env.performance.now) ? env.performance.now() : Date.now()) / 1000;
   function fittingHTML(job) {
     const rows = fittingRows(job);
     if (!rows.length) return "";
-    const s = fittingSummary(job);
-    const head = `<div class="pp-fh"><b>Fitting</b> ${s.done}/${s.total} models${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
+    const s = fittingSummary(job), collect = isCollect(job), chips = collect ? COLLECT_STAGES : STAGES;
+    const head = `<div class="pp-fh"><b>${collect ? "Collecting" : "Fitting"}</b> ${s.done}/${s.total} ${collect ? "characters" : "models"}${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
     return head + rows.map(r => `<div class="pp-fr ${ESC(r.state)}${s.current && s.current.key === r.key ? " cur" : ""}" title="${ESC(r.key)}">
-      <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${STAGES.map(name => {
+      <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${chips.map(name => {
         const st = r.stages.find(x => x.name === name);
-        return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name])}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
+        return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name] || name)}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
       }).join("")}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span></div>`).join("");
   }
 
@@ -200,7 +260,7 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
       lastMsgs = [], dead = false, polling = null;
 
@@ -225,6 +285,8 @@
       ".gbox-pp .pp-op{position:absolute;left:8px;top:7px;z-index:2;font:700 10px/1.4 ui-monospace,monospace;color:#ffb46b;",
       "background:#0b0d12cc;padding:1px 6px;border-radius:4px;pointer-events:none}.gbox-pp .pp-op:empty{display:none}",
       ".gbox-pp .pp-fit{padding:2px 10px 4px;max-height:132px;overflow:auto;font-size:11px}.gbox-pp .pp-fit:empty{display:none}",
+      ".gbox-pp .pp-cal{position:absolute;left:8px;bottom:7px;right:8px;z-index:2;font:600 10px/1.4 ui-monospace,monospace;color:#8fe6a8;",
+      "background:#0b0d12cc;padding:1px 6px;border-radius:4px;pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gbox-pp .pp-cal:empty{display:none}",
       ".gbox-pp .pp-fh{color:#9fc2ff;margin:2px 0}.gbox-pp .pp-fh .bad{color:#ff8b8b}",
       ".gbox-pp .pp-fr{display:grid;grid-template-columns:1fr auto;gap:0 6px;padding:2px 4px;border-radius:4px}",
       ".gbox-pp .pp-fr.cur{background:#ffffff0d}.gbox-pp .pp-fr.failed .pp-fl{color:#ff8b8b}.gbox-pp .pp-fr.done .pp-fl{color:#8fe6a8}",
@@ -252,7 +314,10 @@
       stage = doc.createElement("div"); stage.className = "pp-stage";
       overlay = doc.createElement("canvas"); overlay.width = 390; overlay.height = 250;
       opEl = doc.createElement("div"); opEl.className = "pp-op";
-      stage.append(overlay, opEl);
+      picEl = doc.createElement("img"); picEl.className = "pp-pic"; picSrc = null;   // a sprite writer's preview image
+      picEl.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;"
+        + "background:rgba(8,10,16,.92);display:none";
+      stage.append(overlay, picEl, opEl);
       ctx2d = overlay.getContext && overlay.getContext("2d");
       const meta = doc.createElement("div"); meta.className = "pp-meta";
       barEl = doc.createElement("div"); barEl.className = "pp-bar";
@@ -261,6 +326,8 @@
       meta.append(barEl, msgEl);
       logEl = doc.createElement("div"); logEl.className = "pp-log";
       fitEl = doc.createElement("div"); fitEl.className = "pp-fit";                // per-model fitting stages
+      calEl = doc.createElement("div"); calEl.className = "pp-cal";                // the calibration play-by-play caption
+      stage.append(calEl);
       footEl = doc.createElement("div"); footEl.className = "pp-f";
       footEl.textContent = "Progress illustration · following the worker's reported stage";
       root.append(head, stage, meta, fitEl, logEl, footEl);
@@ -336,6 +403,12 @@
       }
       const fitting = fittingSummary(job);
       if (fitEl) { const html = fittingHTML(job); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
+      const pic = previewOf(job);
+      if (picEl && pic !== picSrc) {
+        picSrc = pic;
+        if (pic) picEl.src = assetUrl(pic);
+        picEl.style.display = pic ? "" : "none";
+      }
       if (opEl && fitting.current && fitting.current.current) {             // the model being fitted and its stage
         const lbl = `${fitting.current.current} · ${fitting.done + (fitting.current.state === "done" ? 0 : 1)}/${fitting.total}`;
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
@@ -343,6 +416,7 @@
         const fx = stageEffect(p.msg), lbl = fx ? fx.label : "";
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
       }
+      if (calEl) { const cal = calibration(job), txt = cal ? cal.text : ""; if (txt !== calEl.textContent) calEl.textContent = txt; }
       const t = title(job);
       if (titleEl && t !== titleEl.textContent) titleEl.textContent = t;   // the job may name its model mid-run
       if (three && three.setJob) three.setJob(job);
@@ -392,7 +466,7 @@
       placeholder.dispose();
       group.add(wire);
       let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
-        loadGeneration = 0, raf = 0, stop = false;
+        loadGeneration = 0, raf = 0, stop = false, calib = calibration(job), calT0 = nowS();
       const previewMaterials = new Map();                                  // one original baseline for each shared material
       const swapIn = gltf => {
         // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
@@ -411,7 +485,7 @@
         group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
         if (isSnapshot(path)) {                                             // the writer's own fitted mesh, this stage
           const s = fittingSummary(current || job), r = s.current || fittingRows(current || job).find(x => x.snapshot === path);
-          footEl.textContent = `Fitted mesh · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
+          footEl.textContent = `${isCollect(current || job) ? "Extracted model" : "Fitted mesh"} · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
         } else footEl.textContent = "Donor model preview · stage effects illustrate reported progress";
         fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
       };
@@ -488,7 +562,10 @@
         group.rotation.y += 0.012;                                          // the 360° orbit around the model
         group.rotation.x = 0.25 + Math.sin(group.rotation.y * 0.5) * 0.1;
         if (pulse > 0) { pulse = (pulse + 0.012) % 1; group.scale.setScalar(1 - 0.18 * Math.sin(pulse * Math.PI)); }
-        else if (group.scale.x !== 1) group.scale.setScalar(1);
+        else if (calib && group.userData.model) {                           // donor proportions -> fitted, on a loop
+          const k = calibrationPhase(nowS() - calT0), f = calib.from;
+          group.scale.set(f.x + (1 - f.x) * k, f.y + (1 - f.y) * k, f.z + (1 - f.z) * k);
+        } else if (group.scale.x !== 1 || group.scale.y !== 1 || group.scale.z !== 1) group.scale.setScalar(1);
         for (const o of fxObjs) if (o.isSkeletonHelper) o.updateMatrixWorld(true);
         renderer.render(scene, camera);
         drawOverlay();
@@ -508,10 +585,13 @@
             fxKey = "";
             if (path) safeLoad(path);
           }
+          const nc = calibration(j);
+          if (!nc || !calib || nc.key !== calib.key) calT0 = nowS();        // a new model restarts its play-by-play
+          calib = nc;
           const next = isSnapshot(path) ? null : stageEffect((j.progress || {}).msg);   // a snapshot shows the real result
           if (next || (j.progress || {}).msg) { fx = next; if (!fx) pulse = 0; applyFx(); }
         },
-        get state() { return { path, fx, fxObjs: fxObjs.length, pulse,
+        get state() { return { path, fx, fxObjs: fxObjs.length, pulse, calib: calib ? calib.key : null,
           lineVerts: fxObjs.reduce((n, o) => n + (o.isLineSegments && !o.isSkeletonHelper ? o.geometry.attributes.position.count : 0), 0) }; },
         dispose() { stop = true; ++loadGeneration; clearFx(); (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
           if (group.userData.model) disposeObject(group.userData.model);
@@ -626,5 +706,5 @@
   }
 
   return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS,
-    fittingRows, fittingSummary, fittingHTML, snapshotOf, stageNumbers, STAGES };
+    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, calibration, calibrationPhase, STAGES };
 });

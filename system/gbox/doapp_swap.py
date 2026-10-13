@@ -1108,6 +1108,16 @@ def fit(prims: list[dict], tgt: dict, progress=lambda p, m: None) -> dict:
                     rep.update(bytes=len(data), budget=room, texture=[256, h], extent=info["extent"],
                                extent_limit=EXPANDED_LIMIT, tim_bytes=info["tim_bytes"], level=level,
                                collapses=dec.get("collapses", 0), donor_triangles=int(len(tri["bones"])))
+                    from . import fit_events as FE        # the level that fits: quadric collapses to the vertex caps
+                    n = len(dec["bones"])
+                    FE.stage("decimate", "done" if n < len(tri["bones"]) else "skipped",
+                             {"from": int(len(tri["bones"])), "triangles": int(n), "level": level,
+                              "caps": {str(s): int(v) for s, v in q["counts"].items()}},
+                             prims=[{"pos": np.asarray(dec["pos"], float).reshape(-1, 3) * FLIP,
+                                     "tris": np.arange(3 * n).reshape(-1, 3)}] if n < len(tri["bones"]) else None)
+                    FE.stage("encode", data={"bytes": len(data), "budget": room, "triangles": rep.get("triangles"),
+                                             "texture": f"256x{h}", "tim_bytes": info["tim_bytes"],
+                                             "relocated": False, "where": f"model file {tgt['file']} in place"})
                     progress(None, f"fits: {rep['triangles']} triangles ({len(tri['bones'])} in the donor), page "
                                    f"256x{h}, {len(data)} of {room} bytes")
                     return {"data": data, "geometry": geo, "page": page, "report": rep}
@@ -1240,21 +1250,24 @@ def cast_slots() -> list[dict]:
 
 def build(program_ram: bytes, banked: bytes, model_path: Path, roles: dict, jobs: list[tuple[dict, int]],
           work: Path, name: str, blender: str | None = None, progress=lambda p, m: None, scale=None, props=(),
-          verify: bool = True, preview: Path | None = None) -> dict:
+          verify: bool = True, preview: Path | None = None, fit_keys: list[str] | None = None) -> dict:
     """Collection model -> {file index: model bytes} for every (fighter, costume) job, with reports. verify: read every
     built model back through the game's fight init / skeleton build and the reader; preview: a folder for the
-    read-back GLB + PNG of the first four jobs."""
+    read-back GLB + PNG of the first four jobs. fit_keys: the Fitting pop-up's model per job (build_mod's)."""
     from .sm64_swap import load_rig, retarget
-    from . import doapp_motion as DM
+    from . import doapp_motion as DM, fit_events as FE
     rig_src = load_rig(Path(model_path), roles, props)
     out, reports = {}, {}
     for k, (f, c) in enumerate(jobs):
         lbl = f"{f['name'].title()} costume {c + 1}"
         progress(5 + 80 * k / len(jobs), f"Fitting {name} onto {lbl}")
+        if fit_keys:
+            FE.model(fit_keys[k])
         rig = DM.Rig(program_ram, banked, f, c)
         tgt = target(program_ram, banked, f, c, rig)
         prims, rrep = retarget(rig_src, tgt, scale, jmap=ROLE_BONE)
         rrep["feet_to_ground"] = fit_feet(prims, tgt)
+        FE.weights(prims, ROLE_BONE, skeleton=tgt["joints"], feet_to_ground=len(rrep["feet_to_ground"]))
         prims = _decimated(prims, tgt, work / f"{f['name'].lower().replace(' ', '_')}_{c + 1}", name, blender)
         r = fit(prims, tgt, progress)
         r["report"]["retarget"] = rrep
@@ -1317,8 +1330,15 @@ def build_mod(ctx, meta: dict, game: dict, slot: str, progress=lambda p, m: None
     gid, name = game["game_id"], mod_name(meta, slot)
     work = Path(cfg.cache) / "characters_build" / meta["slug"] / "doapp"
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE                         # one model per costume when the slot covers several
+    keys = [slot or "player"] if len(jobs) == 1 else [f"{slot}:{f['name'].lower().replace(' ', '_')}:{c + 1}"
+                                                      for f, c in jobs]
+    if len(jobs) > 1:
+        FE.plan([(kk, meta["slug"], f"{meta['name']} -> {f['name'].title()} costume {c + 1}")
+                 for kk, (f, c) in zip(keys, jobs)])
     b = build(ram, banked, root / meta["slug"] / meta["model"], roles, jobs, work, meta["name"], Cm._blender(cfg),
-              progress, (meta.get("rig") or {}).get("scale"), [p["node"] for p in meta.get("props") or []])
+              progress, (meta.get("rig") or {}).get("scale"), [p["node"] for p in meta.get("props") or []],
+              fit_keys=keys)
     d = filemods.mod_dir(cfg, gid, name)
     if d.exists():
         shutil.rmtree(d)
@@ -1331,6 +1351,12 @@ def build_mod(ctx, meta: dict, game: dict, slot: str, progress=lambda p, m: None
           "folder: doapp.zip + coh1002m.zip); MAME reports the rebuilt chips as incorrect checksums and runs the set"}
     (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
     shutil.rmtree(work, ignore_errors=True)
+    changed = sorted(k for k, v in rs["chips"].items() if v["changed"])
+    for kk, (f, c) in zip(keys, jobs):                    # each costume's model file, in the rebuilt data ROMs
+        FE.model(kk)
+        rep = b["reports"].get(f["models"][c]) or {}
+        FE.stage("write", data={"mod": name, "image": f"{SET}.zip", "file": f["models"][c], "bytes": rep.get("bytes"),
+                                "chips": len(changed), "relocated": False})
     return {"mod": name, "image": f"{SET}.zip", "chips": rs["chips"], "report": b["reports"]}
 
 

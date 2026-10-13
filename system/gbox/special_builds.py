@@ -41,6 +41,7 @@ KEEP = {"use": ("character", "game_id", "slot", "active_id", "pairs", "title", "
                       "mod_name", "showcase")}
 FAILED = ("failed", "error", "missing", "not_in_collection", "unsupported", "needs_source", "planned", "empty",
           "native", "overlay")
+REUSED = ("ready", "launched", "exists", "reused", "cached")
 
 
 # ------------------------------------------------------------------------------------------------- recipes
@@ -81,10 +82,11 @@ def recipe_from_call(inp: dict, result: dict) -> dict | None:
     return {"tool": "characters", "input": _clean(op, call)}
 
 
-def record(config, game_id: str, mod: str, recipe: dict) -> bool:
-    """Write the recipe into the build's marker (kept otherwise as the writer wrote it). False when the build is not
-    on this node or the marker can't be read / written."""
-    from . import filemods
+def record(config, game_id: str, mod: str, recipe: dict, extra: dict | None = None) -> bool:
+    """Write the recipe into the build's marker (kept otherwise as the writer wrote it), plus the build record fields
+    (gbox.build_record: job_id, built_on, build_call, kind) when given. False when the build is not on this node or
+    the marker can't be read / written."""
+    from . import build_record, filemods
     try:
         path = filemods.mod_dir(config, game_id, mod) / MARKER
         meta = json.loads(path.read_text(encoding="utf-8"))
@@ -92,10 +94,17 @@ def record(config, game_id: str, mod: str, recipe: dict) -> bool:
         return False
     if not isinstance(meta, dict):
         return False
+    before = dict(meta)
+    if extra:
+        try:
+            meta = build_record.stamp(meta, **{k: v for k, v in extra.items() if k not in meta or k != "kind"})
+        except ValueError:
+            pass
     old = meta.get(RECIPE_KEY) if isinstance(meta.get(RECIPE_KEY), dict) else {}
-    if {k: v for k, v in old.items() if k != "recorded"} == recipe:
+    if {k: v for k, v in old.items() if k != "recorded"} == recipe and meta == before:
         return True
-    meta[RECIPE_KEY] = dict(recipe, recorded=time.time())
+    if {k: v for k, v in old.items() if k != "recorded"} != recipe:
+        meta[RECIPE_KEY] = dict(recipe, recorded=time.time())
     try:
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(meta, default=str), encoding="utf-8")
@@ -114,7 +123,14 @@ def record_call(ctx, inp, out) -> dict | None:
         if not recipe:
             return None
         gid = recipe["input"].get("game_id") or recipe["input"].get("target_game")
-        return recipe if record(ctx.config, gid, res["mod"], recipe) else None
+        from . import build_record
+        # the build record (job, node, exact call) only for a build that was just made: an existing build reused
+        # as it is (ready / launched) keeps its marker byte for byte (it is part of the build's pinned manifest)
+        reused = str(res.get("status") or "") in REUSED
+        extra = None if reused else build_record.from_ctx(ctx) | {
+            "build_call": build_record.call_of("characters", d),
+            "kind": "cast" if d.get("op") == "cast_swap" else "character"}
+        return recipe if record(ctx.config, gid, res["mod"], recipe, extra) else None
     except Exception:                                            # noqa: BLE001 - bookkeeping never fails a build
         return None
 

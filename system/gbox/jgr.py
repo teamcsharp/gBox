@@ -1367,6 +1367,10 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     pt = bytearray(data[ptex:ptex + size])
     pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
     afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
+    from . import fit_events as FE                         # the PLAY entry, rebuilt in its own AFS room
+    FE.stage("encode", data={"bytes": len(r["data"]), "budget": room, "atlas_bytes": len(new_t),
+                             "triangles": r["report"].get("triangles"), "nodes": len(r["report"].get("nodes") or []),
+                             "relocated": False, "where": f"PLAY {index:02d} in place (PLAYER.AFS keeps its size)"})
     rep = r["report"] | {"character": f"{index:02d}", "archive_index": index,
                          "native_id": native_id_for_archive(data, index),
                          "source_afs_sha256": hashlib.sha256(data).hexdigest(),

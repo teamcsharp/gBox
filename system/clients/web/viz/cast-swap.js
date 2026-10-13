@@ -1,6 +1,9 @@
 // "Replace entire cast with..." (gbox/cast_swap.py): right-click a game -> pick a source game or group (Wrestlers,
 // Jet Grind Radio, SA2, ...) and a mapping -> the planned assignments (target slot -> donor thumbnail), each editable ->
 // build ONE mod (characters op=cast_swap on the Spark) -> the per-slot built / failed report.
+// Each plan row carries a "replace" tick (mark that character for replacement in this build; unticked rows are left as
+// they are) and the donor chips choose which characters of the source are dealt at random over the ticked rows in one
+// go ("Deal ticked donors": seeded, no donor repeats before every ticked donor is used) (#1385).
 // Shared by the web client's game menu (#gmenu) and the desktop shell's game chip menu; plain functions + a controller
 // that renders HTML strings, so node tests drive it without a DOM (tests/test_cast_swap_menu.cjs).
 (function (root) {
@@ -36,32 +39,66 @@
     const pick = (row) => `<select data-cs-slot="${ESC(row.slot)}" style="max-width:150px">${donors.map(d =>
       `<option value="${ESC(d.slug)}"${d.slug === row.character ? " selected" : ""}>${ESC(d.name)}${d.stale ? " (re-extract)" : ""}</option>`).join("")}
       <option value="">(leave as it is)</option></select>`;
-    const rows = (plan.assignments || []).map(r => `<tr data-row="${ESC(r.slot)}"><td title="${ESC(r.slot)}">${ESC(r.slot_name || r.slot)}</td>
+    const rows = (plan.assignments || []).map(r => `<tr data-row="${ESC(r.slot)}"><td><input type="checkbox" data-cs-mark="${ESC(r.slot)}" checked title="Replace this character in the build (untick to leave it as it is)"></td><td title="${ESC(r.slot)}">${ESC(r.slot_name || r.slot)}</td>
       <td>${r.preview_url ? `<img alt="" loading="lazy" src="${ESC(img(r.preview_url))}" style="width:34px;height:34px;object-fit:contain">` : ""}</td>
       <td>${pick(r)}<div class="mut" style="font-size:10.5px">${ESC(r.why || "")}</div></td>
       <td><button type="button" class="act" data-cs-rt="${ESC(r.slot)}" title="Retarget editor: how this donor is scaled and proportioned into this slot">✎</button></td></tr>`).join("");
     const skipped = (plan.skipped || []).map(s => `<li>${ESC(s.slot)}: ${ESC(s.reason)}</li>`).join("");
     const refused = (plan.refused || []).map(s => `<li>${ESC(s.name || s.slug)}: ${ESC(s.reason)}</li>`).join("");
     const fresh = (plan.refreshed || []).map(s => `<li>${ESC(s.name || s.slug)}: ${ESC(s.status)}</li>`).join("");
+    const chips = donors.map(d => `<label style="display:inline-flex;gap:3px;align-items:center;margin:1px 6px 1px 0"><input type="checkbox" data-cs-donor="${ESC(d.slug)}" checked>${ESC(d.name)}</label>`).join("");
+    const bar = (plan.assignments || []).length ? `<div data-cs="marks" style="font-size:12px;margin:4px 0">
+        <div>Donors to deal: ${chips}</div>
+        <div style="display:flex;gap:6px;margin:4px 0"><button class="act" type="button" data-cs-go="markall">Tick all</button>
+          <button class="act" type="button" data-cs-go="marknone">Tick none</button>
+          <button class="act" type="button" data-cs-go="deal" title="Deal the ticked donors at random over every ticked row">Deal ticked donors</button>
+          <span data-cs="marked" class="mut" style="align-self:center">${(plan.assignments || []).length} of ${(plan.assignments || []).length} marked</span></div></div>` : "";
     return `<div class="mut" style="font-size:12px;margin:4px 0">${ESC(plan.message || "")}${plan.how ? " · " + ESC(plan.how) : ""}</div>
-      <table data-cs="rows" style="width:100%;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table>
+      ${bar}<table data-cs="rows" style="width:100%;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table>
       ${skipped ? `<details><summary>Left as they are (${(plan.skipped || []).length})</summary><ul>${skipped}</ul></details>` : ""}
       ${refused ? `<details><summary>Refused donors (${(plan.refused || []).length})</summary><ul>${refused}</ul></details>` : ""}
       ${fresh ? `<details open><summary>Re-extracted before the build (${(plan.refreshed || []).length})</summary><ul>${fresh}</ul></details>` : ""}`;
   }
 
-  // [{slot, character}] for every row the operator changed
-  function edits(plan, picks) {
-    const was = Object.fromEntries((plan.assignments || []).map(r => [r.slot, r.character]));
-    return Object.entries(picks || {}).filter(([slot, slug]) => slot in was && was[slot] !== slug)
-      .map(([slot, character]) => ({ slot, character }));
+  const has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  // a row's donor as reviewed: an unticked row ("leave as it is") is '', otherwise the picker overrides the plan
+  const chosen = (r, picks, marks) => (has(marks, r.slot) && !marks[r.slot]) ? "" : has(picks, r.slot) ? picks[r.slot] : r.character;
+
+  // [{slot, character}] for every row the operator changed (a different donor, or unticked)
+  function edits(plan, picks, marks) {
+    return (plan.assignments || []).map(r => ({ slot: r.slot, character: chosen(r, picks, marks), was: r.character }))
+      .filter(e => e.character !== e.was).map(({ slot, character }) => ({ slot, character }));
   }
 
-  // every planned row as reviewed (picks override): the build re-plans with the same seed and pins each row, so it
-  // builds exactly what was shown even when a donor is re-extracted first
-  function reviewed(plan, picks) {
-    return (plan.assignments || []).map(r => ({ slot: r.slot,
-      character: picks && Object.prototype.hasOwnProperty.call(picks, r.slot) ? picks[r.slot] : r.character }));
+  // every planned row as reviewed (picks override, unticked rows ''): the build re-plans with the same seed and pins
+  // each row, so it builds exactly what was shown even when a donor is re-extracted first
+  function reviewed(plan, picks, marks) {
+    return (plan.assignments || []).map(r => ({ slot: r.slot, character: chosen(r, picks, marks) }));
+  }
+
+  // a small seeded PRNG (mulberry32 over an FNV-1a hash of the seed): the same seed always deals the same cast
+  function rng(seed) {
+    let h = 2166136261;
+    for (const ch of String(seed ?? "")) h = Math.imul(h ^ ch.codePointAt(0), 16777619) >>> 0;
+    return () => { h = (h + 0x6D2B79F5) >>> 0; let t = h; t = Math.imul(t ^ (t >>> 15), t | 1);
+                   t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+
+  // {slot: donor slug} for the ticked slots, dealt from the ticked donors at random: a seeded shuffle, and no donor
+  // repeats before every donor has been used once (more slots than donors -> the deck is reshuffled and dealt again)
+  function deal(slots, donors, seed = "") {
+    const pool = [...new Set((donors || []).filter(Boolean))], out = {};
+    if (!pool.length) return out;
+    const rand = rng(`${seed}|${pool.join(",")}`);
+    let deck = [];
+    for (const slot of slots || []) {
+      if (!deck.length) {
+        deck = pool.slice();
+        for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+      }
+      out[slot] = deck.shift();
+    }
+    return out;
   }
 
   function reportHTML(res) {
@@ -95,13 +132,14 @@
       io.enable("build", !!p.assignments?.length);
       return p;
     }
-    async function build(picks) {
+    async function build(picks, marks) {
       if (!st.plan) throw new Error("plan first");
-      const f = st.form, changed = edits(st.plan, picks).length;
+      const f = st.form, changed = edits(st.plan, picks, marks).length, rows = reviewed(st.plan, picks, marks);
+      if (!rows.some(r => r.character)) { io.status("Tick at least one character to replace."); return null; }
       io.enable("build", false); io.status(`Queued on the Spark${changed ? ` (${changed} rows changed by you)` : ""}…`);
       let j = await io.api("/api/jobs", { tool: "characters", require_os: "linux", input: { op: "cast_swap",
         target_game: game.gid, source: f.source, mapping: f.mapping, seed: f.seed || "", slots: f.slots || "all",
-        assignments: reviewed(st.plan, picks), launch: false } });
+        assignments: rows, launch: false } });
       while (/queued|running/.test(j.state)) {
         await wait(1500);
         j = await io.api("/api/jobs/" + j.id);
@@ -138,6 +176,11 @@
     const form = () => ({ source: q('[data-cs="source"]').value, mapping: q('[data-cs="mapping"]').value,
                           slots: q('[data-cs="slots"]').value, seed: q('[data-cs="seed"]').value.trim() });
     const picks = () => Object.fromEntries([...el.querySelectorAll("[data-cs-slot]")].map(s => [s.dataset.csSlot, s.value]));
+    const marks = () => Object.fromEntries([...el.querySelectorAll("[data-cs-mark]")].map(m => [m.dataset.csMark, m.checked]));
+    const counted = () => { const m = Object.values(marks()), n = q('[data-cs="marked"]');
+                            if (n) n.textContent = `${m.filter(Boolean).length} of ${m.length} marked`; };
+    const thumb = s => { const d = (c.state.plan?.donors || []).find(x => x.slug === s.value), im = s.closest("tr")?.querySelector("img");
+                         if (im && d) im.src = (io.img || (u => u))(d.preview_url); };
     el.onclick = async e => {
       const rt = e.target.closest("[data-cs-rt]");
       if (rt && rt.dataset.csRt !== undefined) {             // ✎ on a plan row: the Retarget editor for that donor + slot
@@ -149,19 +192,29 @@
       }
       const b = e.target.closest("[data-cs-go]"); if (!b) return;
       if (b.dataset.csGo === "close") { el.remove(); return; }
-      try { if (b.dataset.csGo === "plan") await c.plan(form()); else await c.build(picks()); }
+      if (b.dataset.csGo === "markall" || b.dataset.csGo === "marknone") {
+        el.querySelectorAll("[data-cs-mark]").forEach(m => { m.checked = b.dataset.csGo === "markall"; }); counted(); return;
+      }
+      if (b.dataset.csGo === "deal") {                       // the ticked donors at random over the ticked rows, in one go
+        const on = Object.entries(marks()).filter(([, v]) => v).map(([k]) => k);
+        const ds = [...el.querySelectorAll("[data-cs-donor]")].filter(x => x.checked).map(x => x.dataset.csDonor);
+        if (!on.length || !ds.length) { ui.status("Tick at least one row and one donor to deal."); return; }
+        const dealt = deal(on, ds, `${form().seed}|${Date.now()}`);
+        el.querySelectorAll("[data-cs-slot]").forEach(s => { if (dealt[s.dataset.csSlot]) { s.value = dealt[s.dataset.csSlot]; thumb(s); } });
+        ui.status(`Dealt ${ds.length} donors over ${on.length} marked characters. Change any row, then build.`); return;
+      }
+      try { if (b.dataset.csGo === "plan") await c.plan(form()); else await c.build(picks(), marks()); }
       catch (err) { ui.status("✗ " + String(err.message || err).slice(0, 300)); }
     };
-    el.onchange = e => {                                     // a changed donor: its thumbnail follows
-      const s = e.target.closest("[data-cs-slot]"); if (!s) return;
-      const d = (c.state.plan?.donors || []).find(x => x.slug === s.value), im = s.closest("tr")?.querySelector("img");
-      if (im && d) im.src = (io.img || (u => u))(d.preview_url);
+    el.onchange = e => {                                     // a changed donor: its thumbnail follows; a tick: the count
+      if (e.target.closest("[data-cs-mark]")) { counted(); return; }
+      const s = e.target.closest("[data-cs-slot]"); if (s) thumb(s);
     };
     c.sources().catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
     return { el, controller: c };
   }
 
-  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, reportHTML, controller, open, MAPPINGS, SLOT_SETS };
+  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, deal, reportHTML, controller, open, MAPPINGS, SLOT_SETS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxCastSwap = api;
 })(typeof window !== "undefined" ? window : globalThis);

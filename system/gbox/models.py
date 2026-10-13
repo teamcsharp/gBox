@@ -103,6 +103,9 @@ class WorkerInfo(BaseModel):
     active_jobs: int = 0
     pending_results: int = 0       # executed once; delivery is unresolved, so maintenance must wait
     features: list[str] = []
+    # builds in this machine's own cache (gbox.filemods.local_builds: {game_id, name, built, staged_of?}), newest first;
+    # the Builds view lists them with the Spark's collection (a staged copy maps to the build it mirrors)
+    local_builds: list[dict] = []
 
 
 class CatalogEntry(BaseModel):

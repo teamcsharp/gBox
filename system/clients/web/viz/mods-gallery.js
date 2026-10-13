@@ -18,7 +18,7 @@
   // kind: "" every build | "showcase" the Sonic showcase test builds (gbox/sonic_showcase.py) | "other" everything else
   function filterMods(items, { game = "", writer = "", q = "", kind = "" } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
-    const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
+    const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
     return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer)
         && (!kind || (kind === "showcase") === !!m.showcase) && words.every(w => hay(m).includes(w)))
@@ -37,9 +37,11 @@
              showcase: (items || []).filter(m => m.showcase).length };
   }
 
-  // in-game shots first (what the build looks like running), then the writer's previews, then the donors
+  // in-game shots first (what the build looks like running: card shots, then frames captured from sessions of the build),
+  // then the writer's previews, then the donors
   function imagesOf(m, url = u => u) {
     return [...(m.shots || []).map(s => ({ src: url(s.url), name: `${m.mod_title}: in-game shot`, kind: "shot" })),
+            ...(m.frames || []).map(f => ({ src: url(f.url), name: `${m.mod_title}: ${f.source || "frame"} (session ${String(f.session_id || "").slice(0, 8)})`, kind: "shot" })),
             ...(m.images || []).map(i => ({ src: url(i.url), name: `${m.mod_title}: ${i.name}`, kind: "build" })),
             ...(m.fit_previews || []).map(p => ({ src: url(p.url), name: `${m.mod_title}: ${p.label || p.slot} (fitting)`, kind: "fit" })),
             ...(m.donor_previews || []).map(d => ({ src: url(d.url), name: `Donor ${d.slug} (collection preview)`, kind: "donor" }))];
