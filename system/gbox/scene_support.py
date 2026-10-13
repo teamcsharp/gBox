@@ -40,10 +40,10 @@ _WIN_ONLY = "3D draw-call capture runs on a Windows node (RenderDoc)."
 _STANDALONE = {
     # adapter name -> (status, driver, reason) on a Windows node
     "dolphin": (SUPPORTED, None, "Dolphin renders with Direct3D 12; RenderDoc captures it."),
-    "yuzu": (UNSUPPORTED, "vulkan", "3D draw-call capture is not integrated with the Yuzu window yet "
-             "(planned: Yuzu's Vulkan backend under RenderDoc's Vulkan layer in an agent-owned capture session)."),
-    "rpcs3": (UNSUPPORTED, "vulkan", "3D draw-call capture is not integrated with RPCS3 yet "
-              "(planned: RPCS3's Vulkan renderer under RenderDoc's Vulkan layer in an agent-owned capture session)."),
+    "yuzu": (RELAUNCH, "vulkan", "Yuzu renders with Vulkan; RenderDoc captures it in a separate agent-owned capture "
+             "session with the Vulkan backend (the operator's game keeps running)."),
+    "rpcs3": (RELAUNCH, "vulkan", "RPCS3 renders with Vulkan; RenderDoc captures it in a separate agent-owned capture "
+              "session with the Vulkan backend (the operator's game keeps running)."),
     "xenia": (UNSUPPORTED, None, "Xenia has no RenderDoc capture path in gBox; only the 2D frame is available."),
     "steam": (UNSUPPORTED, None, "PC games are not launched under RenderDoc by gBox; only the 2D frame is available."),
     "rocketlauncher": (UNSUPPORTED, None, "RocketLauncher starts its own emulators outside gBox, so RenderDoc "
@@ -139,7 +139,7 @@ MATRIX_DOC = """\
 | RetroArch, GL-only 3D core (Kronos, YabaSanshiro, melonDS, Play!) | relaunch_under_capture | glcore | not live-checked |
 | RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | 2D frame only |
 | Dolphin (Windows, D3D12) | supported | (current) | |
-| Yuzu | unsupported | vulkan (planned) | still frame only today |
-| RPCS3 | unsupported | vulkan (planned) | still frame only today |
+| Yuzu (Windows, Vulkan) | relaunch_under_capture | vulkan | agent-owned capture session; the operator's game keeps running |
+| RPCS3 (Windows, Vulkan) | relaunch_under_capture | vulkan | agent-owned capture session; the operator's game keeps running |
 | Xenia, Steam, RocketLauncher, Linux sessions | unsupported | - | 2D frame only |
 """

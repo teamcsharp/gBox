@@ -22,18 +22,20 @@ RenderDoc isn't inside the process.
 | RetroArch, GL-only 3D core (Kronos, YabaSanshiro, melonDS, Play!) | relaunch_under_capture | glcore | not live-checked |
 | RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | 2D frame only |
 | Dolphin (Windows, D3D12) | supported | (current) | |
-| Yuzu | unsupported | vulkan (planned) | still frame only today |
-| RPCS3 | unsupported | vulkan (planned) | still frame only today |
+| Yuzu (Windows, Vulkan) | relaunch_under_capture | vulkan | agent-owned capture session; the operator's game keeps running |
+| RPCS3 (Windows, Vulkan) | relaunch_under_capture | vulkan | agent-owned capture session; the operator's game keeps running |
 | Xenia, Steam, RocketLauncher, Linux sessions | unsupported | - | 2D frame only |
 
 ## Status of the plan
 
 1. Capability matrix, session capabilities and panel reason: **done** (`tests/test_scene_support.py`).
-2. Vulkan-first capture sessions (`video_driver=vulkan` + RenderDoc's Vulkan layer, only in an agent-owned capture
-   session's config): **not started**. The matrix already names the driver each row needs.
-3. *Capture again* on the operator's live session (save state, capture session, load state, capture, GLB handed back):
-   **not started**.
-4. 2D fallback for software cores and Xenia: the panel labels these rows 2D-only and shows the live frame. Frame dump /
+2. Vulkan-first capture sessions for RetroArch (`video_driver=vulkan` + RenderDoc's Vulkan layer, only in an
+   agent-owned capture session's config): **done** (`gbox/capture_relaunch.py`, `tests/test_capture_relaunch.py`).
+3. *Capture again* on the operator's live RetroArch session (save state, capture session, load state, capture,
+   GLB handed back): **done**.
+4. Standalone Vulkan emulators (Yuzu, RPCS3): capture session architecture and Yuzu launcher in place
+   (`frame_rip.launch_yuzu`, `capture_relaunch` Yuzu path). Live check on JAYBUILTFINALE is outstanding.
+5. 2D fallback for software cores and Xenia: the panel labels these rows 2D-only and shows the live frame. Frame dump /
    free-look integration is **not started**.
 
 ## Live checks
@@ -42,7 +44,7 @@ Run these on the agent test PC (JAYBUILTFINALE, 2% audio), never in the operator
 
 - PSO Ver.2 (Flycast, RetroArch GL) -> `relaunch_under_capture`, driver `vulkan`.
 - A PS2 game (pcsx2 core, d3d11) -> `supported`; Examine 3D returns a GLB.
-- A Switch game (Yuzu) -> `unsupported`, reason names the planned Vulkan route; the still frame is still available.
+- A Switch game (Yuzu) -> `relaunch_under_capture`, driver `vulkan`; agent-owned capture session boots fresh.
 - A SNES game (snes9x) -> `unsupported`, 2D frame only.
 
 ## Capture sessions for `relaunch_under_capture` rows (#971 stages 2-3)
@@ -67,3 +69,19 @@ the capture session boots the content fresh and says so in `note`.
 Live check, still outstanding, on JAYBUILTFINALE after deployment: launch PSO Ver.2 (Flycast, `gl`), press
 Examine 3D, and expect a GLB with `capture_session.driver = vulkan`, `moment = save_state`, and the operator's
 window still running. Then repeat with a GL-only core (`glcore`).
+
+## Standalone Vulkan capture sessions (Yuzu, RPCS3)
+
+Yuzu and RPCS3 rate `relaunch_under_capture` with driver `vulkan`. `capture_relaunch` starts a separate,
+agent-owned process for these emulators:
+
+- Yuzu is launched under `renderdoccmd` with `--user-path <agent-owned dir>` and `[Renderer] backend=Vulkan`
+  forced in `qt-config.ini`, so RenderDoc's Vulkan layer captures the frame without touching the operator's
+  Yuzu profile.
+- The operator's game keeps running. Yuzu save-state moment preservation is not implemented yet, so the
+  capture session boots fresh and the result says `moment: fresh_boot`.
+- Captures are handed to the same `scene_capture.extract` path used by RetroArch, producing a GLB for the
+  Examine 3D panel.
+
+RPCS3 uses the same architecture; its launcher (`frame_rip.launch_rpcs3`) is the remaining piece once the
+Yuzu path is live-checked.

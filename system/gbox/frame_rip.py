@@ -271,6 +271,21 @@ def launch(content: str, work: Path, core: str = "mednafen_psx_hw", retroarch: s
                             stdout=open(work / "launch.log", "w"), stderr=subprocess.STDOUT)
 
 
+def launch_yuzu(content: str, yuzu_exe: str, user_dir: Path, cap_dir: Path | None = None) -> subprocess.Popen:
+    """Start Yuzu under renderdoccmd with its own `user_dir` (never the operator's Yuzu user directory).
+    Forces the Vulkan renderer so RenderDoc's Vulkan layer captures the frame. Captures land in `cap_dir`."""
+    rd = renderdoc_dir()
+    user_dir = Path(user_dir)
+    (user_dir / "config").mkdir(parents=True, exist_ok=True)
+    (user_dir / "config" / "qt-config.ini").write_text("[Renderer]\nbackend=Vulkan\n")
+    cap_dir = Path(cap_dir or user_dir / "cap")
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    args = [str(rd / "renderdoccmd.exe"), "capture", "-c", str(cap_dir / "frame"), str(yuzu_exe),
+            "--user-path", str(user_dir), "-g", str(content)]
+    return subprocess.Popen(args, env={**os.environ, **renderdoc_env(rd)}, cwd=str(Path(yuzu_exe).parent),
+                            stdout=open(user_dir / "launch.log", "w"), stderr=subprocess.STDOUT)
+
+
 def psx_chd_to_bin(chd: Path, out_bin: Path) -> Path:
     """CHD v4 (HyperSpin set) -> single-track MODE2/2352 .bin + .cue via gbox.psxdisc (no chdman)."""
     from .psxdisc import CHD

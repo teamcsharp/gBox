@@ -1932,6 +1932,8 @@ class YuzuAdapter(Adapter):
         self.bridge_proc = None
         self.paused_tids = []
         self.examine_unavailable_reason = "3D draw-call capture is not integrated with the Yuzu window yet."
+        self.content_path = None
+        self.yuzu_exe = None
 
     def launch_game(self, rom: str) -> dict:
         exe = self.config.library("hyperspin").root() / "emulators" / "yuzu" / "yuzu.exe"
@@ -1960,6 +1962,8 @@ class YuzuAdapter(Adapter):
         if bridge:
             self.bridge_proc = subprocess.Popen([sys.executable, "-u", "-P", "-m", "gbox.yuzu_input", str(self.proc.pid)],
                                                 stdin=subprocess.PIPE, startupinfo=hidden_start())
+        self.content_path = rom
+        self.yuzu_exe = str(exe)
         return {"pid": self.proc.pid, "rom": rom, "local_window": True, "controller_guid": guid,
                 "controller_mode": "xinput_keyboard_bridge" if bridge else "sdl",
                 "worker_name": __import__("platform").node(), "emulator": "yuzu"}

@@ -177,3 +177,86 @@ def test_frame_rip_launch_reuses_the_session_core_and_driver(monkeypatch, tmp_pa
     assert 'video_driver = "glcore"' in (tmp_path / "work" / "ra.cfg").read_text()
     assert seen["args"][seen["args"].index("-L") + 1] == "C:/RA/cores/kronos_libretro.dll"
     assert seen["env"]["VK_INSTANCE_LAYERS"] == "VK_LAYER_RENDERDOC_Capture"
+
+
+def test_frame_rip_launch_yuzu_forces_vulkan_and_user_path(monkeypatch, tmp_path):
+    from gbox import frame_rip
+    monkeypatch.setattr(frame_rip, "renderdoc_dir", lambda *a: tmp_path / "rd")
+    seen = {}
+
+    def popen(args, env=None, cwd=None, stdout=None, stderr=None):
+        seen.update(args=args, env=env)
+        stdout.close()
+        return SimpleNamespace(pid=2)
+    monkeypatch.setattr(frame_rip.subprocess, "Popen", popen)
+    (tmp_path / "rd").mkdir()
+    (tmp_path / "rd" / "renderdoccmd.exe").write_text("")
+    frame_rip.launch_yuzu("C:/roms/game.nsp", "C:/yuzu/yuzu.exe", tmp_path / "user", cap_dir=tmp_path / "cap")
+    assert '[Renderer]\nbackend=Vulkan\n' in (tmp_path / "user" / "config" / "qt-config.ini").read_text()
+    assert "--user-path" in seen["args"] and str(tmp_path / "user") in seen["args"]
+    assert seen["args"][seen["args"].index("-g") + 1] == "C:/roms/game.nsp"
+    assert seen["env"]["VK_INSTANCE_LAYERS"] == "VK_LAYER_RENDERDOC_Capture"
+
+
+class Yuzu:
+    name = "yuzu"
+
+    def __init__(self, tmp):
+        self.content_path = str(tmp / "roms" / "Animal Crossing NH.nsp")
+        self.yuzu_exe = "C:/yuzu/yuzu.exe"
+        self.proc = SimpleNamespace(poll=lambda: None, pid=4242)
+
+
+class YuzuFakes:
+    def __init__(self):
+        self.launched, self.captured, self.stopped = None, None, []
+        self.proc = SimpleNamespace(poll=lambda: None, pid=888)
+
+    def launch_yuzu(self, content, yuzu_exe, user_dir, cap_dir=None):
+        self.launched = (content, yuzu_exe, Path(user_dir), Path(cap_dir) if cap_dir else None)
+        cfg_dir = Path(user_dir) / "config"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "qt-config.ini").write_text("[Renderer]\nbackend=Vulkan\n")
+        return self.proc
+
+    def capture(self, pid, frames, cap_dir, wait):
+        self.captured = (pid, frames, Path(cap_dir))
+        return [Path(cap_dir) / "frame_0.rdc"]
+
+    def extract(self, rdcs, out_dir, fovy, aspect):
+        return {"draws_exported": 5, "textures": 3, "capture": str(rdcs[0])}
+
+    def run(self, ad, tmp):
+        return cr.run(ad, tmp / "out", 2, runtime=tmp / "rt", launch_yuzu=self.launch_yuzu,
+                      capture=self.capture, extract_fn=self.extract,
+                      wait_window=lambda *a, **k: None,
+                      stop=lambda p, *_: self.stopped.append(p), sleep=lambda s: None)
+
+
+def test_yuzu_plan_relaunches_under_vulkan(tmp_path):
+    p = cr.plan(Yuzu(tmp_path))
+    assert p["type"] == "yuzu" and p["driver"] == "vulkan"
+    assert p["content"].endswith("Animal Crossing NH.nsp") and p["yuzu_exe"] == "C:/yuzu/yuzu.exe"
+
+
+def test_yuzu_capture_session_boots_fresh_and_does_not_touch_operator_game(tmp_path):
+    ad, f = Yuzu(tmp_path), YuzuFakes()
+    s = f.run(ad, tmp_path)
+    content, yuzu_exe, user_dir, cap_dir = f.launched
+    assert content == ad.content_path and yuzu_exe == ad.yuzu_exe
+    assert user_dir.parent.parent == tmp_path / "rt" / "capture_sessions"                 # agent-owned user dir
+    assert (user_dir / "config" / "qt-config.ini").read_text() == "[Renderer]\nbackend=Vulkan\n"
+    assert f.captured == (0, 2, cap_dir)
+    assert cap_dir == user_dir.parent / "cap"                                              # captures land next to the user dir
+    assert f.stopped == [f.proc]
+    assert s["capture_session"]["driver"] == "vulkan" and s["capture_session"]["moment"] == "fresh_boot"
+    assert s["capture_session"]["operator_paused"] is False and s["draws_exported"] == 5
+
+
+def test_yuzu_without_content_or_exe_has_no_plan(tmp_path):
+    ad = Yuzu(tmp_path)
+    ad.content_path = ""
+    assert cr.plan(ad) is None
+    ad.content_path = str(tmp_path / "roms" / "game.nsp")
+    ad.yuzu_exe = ""
+    assert cr.plan(ad) is None

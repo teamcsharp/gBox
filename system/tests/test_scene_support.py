@@ -45,8 +45,8 @@ def test_software_cores_are_2d_only(core):
     assert '2D frame only' in row['reason']
 
 
-@pytest.mark.parametrize('adapter,status', [('dolphin', ss.SUPPORTED), ('yuzu', ss.UNSUPPORTED),
-                                            ('rpcs3', ss.UNSUPPORTED), ('xenia', ss.UNSUPPORTED),
+@pytest.mark.parametrize('adapter,status', [('dolphin', ss.SUPPORTED), ('yuzu', ss.RELAUNCH),
+                                            ('rpcs3', ss.RELAUNCH), ('xenia', ss.UNSUPPORTED),
                                             ('steam', ss.UNSUPPORTED), ('rocketlauncher', ss.UNSUPPORTED),
                                             ('something_new', ss.UNSUPPORTED)])
 def test_standalone_emulators_have_a_row_with_reason(adapter, status):
@@ -54,9 +54,14 @@ def test_standalone_emulators_have_a_row_with_reason(adapter, status):
     assert row['status'] == status and row['reason']
 
 
-def test_yuzu_names_the_planned_vulkan_route():
+def test_yuzu_relaunches_under_vulkan():
     row = ss.support('yuzu', host_os='windows')
-    assert row['driver'] == 'vulkan' and 'Yuzu' in row['reason']
+    assert row['driver'] == 'vulkan' and row['status'] == ss.RELAUNCH and 'Yuzu' in row['reason']
+
+
+def test_rpcs3_relaunches_under_vulkan():
+    row = ss.support('rpcs3', host_os='windows')
+    assert row['driver'] == 'vulkan' and row['status'] == ss.RELAUNCH and 'RPCS3' in row['reason']
 
 
 def test_linux_sessions_are_unsupported_with_reason():
