@@ -78,4 +78,5 @@ test('the session chip menu is wired to the move targets and the loader shows th
   assert.match(html, /moveSession\(sid, mb\.dataset\.to, mb\.dataset\.label\)/);
   assert.match(html, /id="ldshot"/);
   assert.match(html, /show\(title, sub, shot\)/);
+  assert.match(html, /\$\("#ldcancel"\)\.style\.display = \$\("#ldlocal"\)\.style\.display = "none"/);   // no Cancel mid-move
 });

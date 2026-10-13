@@ -724,6 +724,7 @@ const loader = {
   show(title, sub, shot) {                                    // shot: a picture of the game (a session being moved: its last frame)
     this.generation++;
     const im = $("#ldshot"); if (im) { im.style.display = shot ? "block" : "none"; if (shot) im.src = shot; }
+    const lc = $("#ldcancel"); if (lc?.style) lc.style.display = "";       // a move hides it: the job can't be cancelled midway
     $("#ldtitle").textContent = title || "Loading"; $("#ldsub").textContent = sub || "";
     $("#ldbar").style.height = "0%"; $("#ldpbar").style.width = "2%"; $("#ldpct").textContent = "0%";
     $("#ldcon").innerHTML = "<div>Preparing…</div>"; $("#ldback").style.display = "none";
@@ -2514,7 +2515,7 @@ async function attachCover(gid, card, btn, url = "") {        // #1067: fetch bo
 // move a running game to another computer behind its loading screen (#1501): the last frame, each step, the progress
 async function moveSession(sid, to, label) {
   const s = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {};
-  return GBoxSessionMove.run({ api, show: (t, sub, shot) => loader.show(t, sub, shot), progress: (p, m) => loader.progress(p, m), fail: m => loader.fail(m),
+  return GBoxSessionMove.run({ api, show: (t, sub, shot) => { loader.show(t, sub, shot); $("#ldcancel").style.display = $("#ldlocal").style.display = "none"; }, progress: (p, m) => loader.progress(p, m), fail: m => loader.fail(m),
       frame: id => `/api/sessions/${encodeURIComponent(id)}/frame.jpg?${tq()}&t=${Date.now()}`,
       done: async nsid => { if (active?.sid === sid) { active.sid = nsid; pip(); } setTimeout(() => loader.hide(), 500); trayTick(); show("Sessions", nsid); } },
     { sid, to, label, title: s.title || "", mod: s.mod || "" });
