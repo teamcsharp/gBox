@@ -1563,6 +1563,11 @@ DEDICATED = [
     ("twin_snakes", lambda t, p: "twin snakes" in t and p == "gamecube",
      lambda: __import__("gbox.twin_snakes", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.twin_snakes", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Soul Calibur II (GameCube, GRSEAF): the 24 fighters (Link included) from root.olk / human.olk, costume 1 with the
+    # default weapon on the hands (gbox.soulcalibur2; writer gbox.soulcalibur2_swap, docs/soulcalibur2_gc.md)
+    ("soulcalibur2", lambda t, p: re.search(r"soul ?calibur (ii|2)\b", t) is not None and p == "gamecube",
+     lambda: __import__("gbox.soulcalibur2", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.soulcalibur2", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1662,7 +1667,8 @@ def dedicated_entries(config, game, name, roster):
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
-                   "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader")}
+                   "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
+                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
