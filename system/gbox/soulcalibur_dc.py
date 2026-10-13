@@ -21,9 +21,14 @@ bit 1 = a literal byte, bit 0 = a big-endian u16 ``v``: copy ``((v >> 11) - 1 & 
 Model (after LZ): header 0x20 bytes (``u32 strips offset @0x18, u16 bones @0x1c``), then one 32-byte record per bone:
 ``u16 stores, u16 adds, u32 vertex offset, u32 extra offset, u16 positions, u16 normals, 4 x s16 rest angles
 (65536 = 360 degrees, applied X then Y then Z), 3 x s16 translation (/16000), s16 parent``. A bone's vertex block is
-``positions`` then ``normals`` 16-byte rows ``x, y, z, w`` in the bone's space; ``w`` is the skin weight whose low 12
-mantissa bits are the output vertex (normal) index: the first ``stores`` rows store ``w * M @ p``, the rest add to it
-(the game skins by accumulation, bone by bone). Strips follow: sections of ``u8 material, u8 flags, u8 0, u8 count``
+``positions`` then ``normals`` 16-byte rows ``x, y, z, w`` in the bone's space. The engine (``0x8c03cea0`` per bone:
+``0x8c03c920`` positions, ``0x8c03cba0`` / ``0x8c03c9ec`` normals) runs ``ftrv`` on the whole row, so a position row
+gives ``R @ xyz + w * t``: the rows hold the weight-premultiplied bone-local point ``w * p`` and the bone contributes
+``w * (R p + t)``. The ``w`` word carries the output slot in its low 12 bits and an add flag in bit 15 (the weight
+itself is the upper 16 bits). The first ``stores`` position rows are written to CONSECUTIVE slots starting at the first
+row's slot (the engine reads the slot once, then advances); the remaining ``adds`` rows add at their own slot. Normal
+rows have no count: rows before the first one with the add flag store consecutively from the first row's slot, every
+row after it adds at its own slot (see ``engine_skin``). Strips follow: sections of ``u8 material, u8 flags, u8 0, u8 count``
 headers with ``count`` x ``(u16 position, u16 normal | 0x8000 on the last, u16 u, u16 v)`` (u / v are the upper half of
 a float), a u32 0 closing each section and an empty section closing the list. ``material & 3`` is the texture page
 (bank entry 1 + page).
@@ -40,7 +45,7 @@ import numpy as np
 GAME_IDS = {"c747331797369f74": "SoulCalibur (USA) CHD", "e4ad4831b09591b6": "Soulcalibur (USA) 7z GDI",
             "32bdc48bc550f79b": "Soul Calibur v1.000 GDI"}
 EXECUTABLE_SHA256 = "646fd82c5a8c65f2ae91f4a049984f8509387b0b2da5f6f511d1ac876781fa7f"
-READER_VERSION = 1
+READER_VERSION = 2                               # 2: engine-exact skinning (premultiplied rows, consecutive stores)
 HUMAN = "HUMAN.DAT"
 GROUP = 10                                       # HUMAN.DAT entries per character id
 COSTUMES, MOTION, WEAPONS = range(0, 4), 4, range(5, 10)
@@ -274,6 +279,11 @@ def page_encode(rgb: np.ndarray) -> bytes:
 
 # ---------------------------------------------------------------- model
 
+SLOT_MASK = 0xFFF                                # w word: output slot (0x8c03c920: (w << 4) & 0xfff0)
+ADD_FLAG = 0x8000                                # w word bit 15: the row adds (set on every stock add row)
+WEIGHT_MASK = 0xFFFF0000                         # w word: the weight proper (bits 12..14 are 0 in every stock row)
+
+
 def _f(bits: int) -> float:
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
@@ -294,13 +304,15 @@ def parse_model(m: bytes) -> dict:
             raise ValueError(f"bone {i}: parent {parent} is not an earlier bone")
         if stores + adds != npos or voff + 16 * (npos + nnrm) > len(m):
             raise ValueError(f"bone {i}: vertex block out of range")
+        raw = m[voff:voff + 16 * (npos + nnrm)]
         with np.errstate(invalid="ignore"):         # Ivy's chain-blade normals hold 0x7fbfffff placeholders
-            rows = np.frombuffer(m, "<f4", (npos + nnrm) * 4, voff).reshape(-1, 4).astype(np.float64)
-        wbits = np.frombuffer(m, "<u4", (npos + nnrm) * 4, voff).reshape(-1, 4)[:, 3].astype(np.int64)
-        weight = np.frombuffer((wbits & ~0xFFF).astype("<u4").tobytes(), "<f4").astype(np.float64)
+            rows = np.frombuffer(raw, "<f4").reshape(-1, 4).astype(np.float64)
+        wbits = np.frombuffer(raw, "<u4").reshape(-1, 4)[:, 3].astype(np.int64)
+        weight = np.frombuffer((wbits & WEIGHT_MASK).astype("<u4").tobytes(), "<f4").astype(np.float64)
         bones.append({"index": i, "stores": stores, "adds": adds, "vertex_offset": voff, "extra_offset": xoff,
                       "positions": npos, "normals": nnrm, "angles": ang, "translation": tr, "parent": parent,
-                      "rows": rows[:, :3], "slot": wbits & 0xFFF, "weight": weight})
+                      "rows": rows[:, :3], "slot": wbits & SLOT_MASK, "weight": weight, "wbits": wbits,
+                      "record": m[o:o + 32], "raw": raw})
     sections, o = [], strips_at
     while True:
         strips = []
@@ -320,12 +332,142 @@ def parse_model(m: bytes) -> dict:
                 raise ValueError(f"strip end flag misplaced before 0x{o:x}")
             uv = np.frombuffer((rec[:, 2:] << 16).astype("<u4").tobytes(), "<f4").reshape(n, 2).astype(np.float64)
             strips.append({"material": h[0], "flags": h[1], "pad": h[2], "pos": rec[:, 0] & 0x7FFF,
-                           "nrm": rec[:, 1] & 0x7FFF, "uv": uv, "raw_uv": rec[:, 2:]})
+                           "nrm": rec[:, 1] & 0x7FFF, "uv": uv, "raw_uv": rec[:, 2:], "head": bytes(h),
+                           "raw": rec.astype(np.uint16)})
         if not strips:
             break
         sections.append(strips)
-    return {"header": m[:0x18], "strips_offset": strips_at, "strips_end": o, "bones": bones, "sections": sections,
-            "tail": m[o:], "size": len(m)}
+    return {"header": m[:0x18], "header_raw": m[:0x20], "strips_offset": strips_at, "strips_end": o, "bones": bones,
+            "sections": sections, "tail": m[o:], "size": len(m),
+            "counts": struct.unpack_from("<HH", m, 0x14)}
+
+
+def _w(bits: int) -> float:
+    return float(np.uint32(bits & 0xFFFFFFFF).view(np.float32))
+
+
+def _wbits(b: dict) -> np.ndarray:
+    """The w words of a bone's rows (parsed, or straight from its raw rows)."""
+    if "wbits" in b:
+        return b["wbits"]
+    return np.frombuffer(bytes(b["raw"]), "<u4").reshape(-1, 4)[:, 3].astype(np.int64)
+
+
+def store_slots(b: dict) -> np.ndarray:
+    """The slots the engine writes a bone's position stores to: consecutive from the first row's slot (0x8c03c920
+    reads the slot of row 0 once and advances 16 bytes per store), whatever the other rows' slot bits say."""
+    if not b["stores"]:
+        return np.zeros(0, np.int64)
+    return int(_wbits(b)[0] & SLOT_MASK) + np.arange(b["stores"], dtype=np.int64)
+
+
+def normal_plan(b: dict) -> tuple[int, np.ndarray, np.ndarray]:
+    """(stores, store slots, add slots) of a bone's normal rows as 0x8c03cba0 / 0x8c03c9ec run them: rows before the
+    first one with the add flag (bit 15 of w) store to consecutive slots from the first row's slot; from that row on
+    every row adds at its own slot."""
+    k = b["positions"]
+    w = _wbits(b)[k:]
+    flagged = np.nonzero(w & ADD_FLAG)[0]
+    n = int(flagged[0]) if len(flagged) else len(w)
+    first = int(w[0] & SLOT_MASK) if len(w) else 0
+    return n, first + np.arange(n, dtype=np.int64), (w[n:] & SLOT_MASK).astype(np.int64)
+
+
+def slot_counts(model: dict) -> tuple[int, int]:
+    """(positions, normals) the engine's buffers need: 1 + the highest slot written or added to."""
+    np_, nn = 0, 0
+    for b in model["bones"]:
+        if not b["positions"]:
+            continue
+        k = b["positions"]
+        ss = store_slots(b)
+        adds = _wbits(b)[b["stores"]:k] & SLOT_MASK
+        np_ = max(np_, 1 + int(ss.max()) if len(ss) else 0, 1 + int(adds.max()) if len(adds) else 0)
+        _n, ns, na = normal_plan(b)
+        nn = max(nn, 1 + int(ns.max()) if len(ns) else 0, 1 + int(na.max()) if len(na) else 0)
+    return np_, nn
+
+
+def engine_skin(model: dict, matrices: list[np.ndarray], *, dtype=np.float32) -> dict:
+    """The game's skinning loop (0x8c03cea0) on parsed rows, in the engine's float32 by default.
+
+    For every bone in index order that has position rows (bones without positions are skipped, normals included):
+    XMTRX = the bone matrix; position stores ``P[first + r] = (M @ row)[:3]`` for r < stores, adds
+    ``P[slot] += (M @ row)[:3]`` (the full 4-vector row: ``w`` multiplies the translation); normals the same with the
+    translation cleared and the store / add split of normal_plan. Buffers start as NaN, so an add into a slot nothing
+    stored this frame (stale memory in the game) shows up as NaN; ``stale_adds`` counts those reads."""
+    npos, nnrm = model.get("counts") or slot_counts(model)
+    need_p, need_n = slot_counts(model)
+    P = np.full((max(npos, need_p, 1), 3), np.nan, dtype)
+    N = np.full((max(nnrm, need_n, 1), 3), np.nan, dtype)
+    stale = 0
+    for b, M in zip(model["bones"], matrices):
+        k = b["positions"]
+        if not k:
+            continue
+        M = np.asarray(M, dtype)
+        R = M.copy()
+        R[:3, 3] = 0
+        rows = np.frombuffer(b["raw"], "<f4").reshape(-1, 4).astype(dtype)
+        with np.errstate(invalid="ignore", over="ignore"):
+            q = rows[:k] @ M.T
+            n = rows[k:] @ R.T
+        st = b["stores"]
+        P[store_slots(b)] = q[:st, :3]
+        wb = _wbits(b)
+        for r in range(st, k):
+            s = int(wb[r] & SLOT_MASK)
+            stale += bool(np.isnan(P[s]).any())
+            P[s] += q[r, :3]
+        ns, s_slots, a_slots = normal_plan(b)
+        N[s_slots] = n[:ns, :3]
+        for r, s in enumerate(a_slots):
+            stale += bool(np.isnan(N[s]).any()) and np.isfinite(n[ns + r, :3]).all()
+            N[s] += n[ns + r, :3]
+    return {"positions": P, "normals": N, "stale_adds": int(stale), "counts": (npos, nnrm)}
+
+
+def pack_model(model: dict, *, tail_at: int | None = None, size: int | None = None) -> bytes:
+    """Bytes of a parsed (or writer-built) model: the header, every bone record with its counts and row offset
+    recomputed, the bones' rows back to back in bone order (a bone without rows points at the running offset), the
+    strip sections, then the tail at ``tail_at`` (zero padding before it; default right after the strips). The
+    header's position / normal counts become slot_counts. ``pack_model(parse_model(m)) == m`` for every shipped
+    costume (tests/test_soulcalibur_dc.py), so the writer lays models out exactly as the game's own files."""
+    bones = model["bones"]
+    nb = len(bones)
+    base = 0x20 + 32 * nb
+    records, body = bytearray(), bytearray()
+    for b in bones:
+        raw = bytes(b["raw"])
+        if len(raw) != 16 * (b["positions"] + b["normals"]) or b["stores"] + b["adds"] != b["positions"]:
+            raise ValueError(f"bone {b.get('index')}: row counts do not match its rows")
+        rec = bytearray(b["record"])
+        struct.pack_into("<HHI", rec, 0, b["stores"], b["adds"], base + len(body))
+        struct.pack_into("<HH", rec, 12, b["positions"], b["normals"])
+        records += rec
+        body += raw
+    strips_at = base + len(body)
+    strips = bytearray()
+    for sec in model["sections"]:
+        for s in sec:
+            raw = np.asarray(s["raw"], "<u2")
+            if raw.ndim != 2 or raw.shape[1] != 4 or not 3 <= len(raw) <= 255:
+                raise ValueError("a strip holds 3..255 corners of 4 u16")
+            strips += bytes(s["head"][:3]) + bytes((len(raw),)) + raw.astype("<u2").tobytes()
+        strips += b"\0\0\0\0"
+    strips += b"\0\0\0\0"
+    out = bytearray(model["header_raw"][:0x20]) + records + body + strips
+    if tail_at is not None:
+        if len(out) > tail_at:
+            raise ValueError(f"rows and strips end at 0x{len(out):x}, past the tail at 0x{tail_at:x}")
+        out += b"\0" * (tail_at - len(out))
+    out += model["tail"]
+    counts = slot_counts(model)
+    struct.pack_into("<HHI", out, 0x14, counts[0], counts[1], strips_at)
+    struct.pack_into("<H", out, 0x1C, nb)
+    if size is not None and len(out) != size:
+        raise ValueError(f"model is {len(out)} bytes, expected {size}")
+    return bytes(out)
 
 
 def _rot(axis: int, a: float) -> np.ndarray:
@@ -354,27 +496,21 @@ def bone_world(bones: list[dict]) -> list[np.ndarray]:
 
 
 def skin(model: dict, world: list[np.ndarray] | None = None) -> dict:
-    """Accumulate every bone's rows like the game: positions, normals and per-vertex influences {bone: weight}."""
+    """The model posed by `world` (default: the rest pose) with the engine's maths (engine_skin, in float64):
+    positions, unit normals (as stored: inward) and per-vertex influences {bone: weight}."""
     bones = model["bones"]
     world = world or bone_world(bones)
-    npos = 1 + max((int(b["slot"][:b["positions"]].max()) for b in bones if b["positions"]), default=-1)
-    nnrm = 1 + max((int(b["slot"][b["positions"]:].max()) for b in bones if b["normals"]), default=-1)
-    P, N = np.zeros((npos, 3)), np.zeros((max(nnrm, 1), 3))
-    infl: list[dict] = [dict() for _ in range(npos)]
-    for b, W in zip(bones, world):
+    e = engine_skin(model, world, dtype=np.float64)
+    P = np.nan_to_num(e["positions"], nan=0.0)
+    N = np.nan_to_num(e["normals"], nan=0.0, posinf=0.0, neginf=0.0)
+    infl: list[dict] = [dict() for _ in range(len(P))]
+    for b in bones:
         k = b["positions"]
-        rows, slot, w = b["rows"], b["slot"], b["weight"]
-        q = rows[:k] @ W[:3, :3].T + W[:3, 3]
-        for r in range(k):
-            s = int(slot[r])
-            if r < b["stores"]:
-                P[s] = w[r] * q[r]
-            else:
-                P[s] += w[r] * q[r]
-            infl[s][b["index"]] = infl[s].get(b["index"], 0.0) + float(w[r])
-        n = np.nan_to_num(rows[k:], nan=0.0, posinf=0.0, neginf=0.0) @ W[:3, :3].T
-        for r in range(len(n)):
-            N[int(slot[k + r])] += w[k + r] * n[r]
+        if not k:
+            continue
+        slots = np.concatenate([store_slots(b), b["slot"][b["stores"]:k]])
+        for s, w in zip(slots, b["weight"][:k]):
+            infl[int(s)][b["index"]] = infl[int(s)].get(b["index"], 0.0) + float(w)
     N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
     return {"positions": P, "normals": N, "influences": infl, "world": world}
 

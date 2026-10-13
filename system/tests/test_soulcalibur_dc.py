@@ -199,7 +199,8 @@ def test_encode_model_round_trip_and_tail():
     sk = D.skin(m1)
     got = sk["positions"] @ D.FRAME.T                                         # back to the library frame
     want = prims[0]["pos"]
-    assert all(np.abs(got - w).sum(1).min() < 1e-5 for w in want)
+    # within the weight quantisation the engine allows (the w word also carries the slot and the add flag)
+    assert all(np.abs(got - w).sum(1).min() < 1e-3 for w in want)
     tris = [(s["pos"][a], s["pos"][b], s["pos"][c]) for sec in m1["sections"] for s in sec
             for a, b, c in D.strip_triangles(len(s["pos"]))]
     assert len(tris) == 2 and all(s["material"] == 0x31 for sec in m1["sections"] for s in sec)
@@ -210,6 +211,106 @@ def test_encode_model_round_trip_and_tail():
     nrm = [s for sec in m1["sections"] for s in sec][0]["nrm"]
     assert (sk["normals"][nrm] @ out_game < 0).all()        # stored inward, like the stock rows
     assert enc["bones_used"] == [1, 11]
+
+
+# ---------------------------------------------------------------- the engine's skinning maths (0x8c03cea0)
+
+def _wrow(p, wbits):
+    return struct.pack("<3fI", *np.asarray(p, np.float32), wbits)
+
+
+def _bone(stores, adds, pos_rows, nrm_rows=()):
+    raw = b"".join(pos_rows) + b"".join(nrm_rows)
+    return {"index": 0, "record": bytes(32), "stores": stores, "adds": adds, "positions": stores + adds,
+            "normals": len(nrm_rows), "raw": raw}
+
+
+def test_engine_skin_follows_the_machine_code():
+    """0x8c03c920: the store run goes to consecutive slots from the FIRST row's slot (later rows' slot bits are not
+    read), adds go to their own slot, and ftrv uses the whole row so w scales the translation. 0x8c03cba0: normal rows
+    store consecutively until the first row with bit 15 set, then everything adds; translation cleared."""
+    one = 0x3F800000
+    half = 0x3F000000
+    b0 = _bone(2, 0, [_wrow((1, 0, 0), one | 0), _wrow((0, 1, 0), one | 3)],          # slot bits 3 are ignored
+               [_wrow((0, 0, 1), one | 0), _wrow((0, 1, 0), one | 1), _wrow((1, 0, 0), one | D.ADD_FLAG | 0)])
+    b1 = _bone(0, 2, [_wrow((0.5, 0, 0), half | D.ADD_FLAG | 1), _wrow((0, 0, 0), one | D.ADD_FLAG | 3)])
+    empty = {"index": 2, "record": bytes(32), "stores": 0, "adds": 0, "positions": 0, "normals": 1,
+             "raw": _wrow((9, 9, 9), one | 2)}                         # no positions: the engine skips its normals
+    model = {"bones": [b0, b1, empty], "counts": (4, 3)}
+    M0 = np.eye(4)
+    M0[:3, 3] = (10, 0, 0)
+    M1 = np.eye(4)
+    M1[:3, :3] = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]                     # 90 degrees about Z
+    M1[:3, 3] = (0, 5, 0)
+    e = D.engine_skin(model, [M0, M1, np.eye(4)])
+    P, N = e["positions"], e["normals"]
+    assert np.allclose(P[0], (11, 0, 0))
+    w1, w2 = D._w(one | 3), D._w(half | D.ADD_FLAG | 1)                 # the whole word is the 4th component
+    assert np.allclose(P[1], np.array((0, 1, 0)) + w1 * M0[:3, 3] + M1[:3, :3] @ (0.5, 0, 0) + w2 * M1[:3, 3])
+    assert np.isnan(P[2]).all()                                         # nothing stores slot 2
+    assert np.isnan(P[3]).all() and e["stale_adds"] == 1                # the add into slot 3 reads stale memory
+    assert np.allclose(N[0], (1, 0, 1)) and np.allclose(N[1], (0, 1, 0)) and np.isnan(N[2]).all()
+    assert D.slot_counts(model) == (4, 2)
+
+
+def _posed(bones, seed, amp=0.7):
+    rng = np.random.default_rng(seed)
+    out = []
+    for b in bones:
+        a = rng.normal(0, amp, 3)
+        X = np.eye(4)
+        X[:3, :3] = D._rot(2, a[2]) @ D._rot(1, a[1]) @ D._rot(0, a[0])
+        L = D.bone_local(b) @ X
+        out.append(out[b["parent"]] @ L if b["parent"] >= 0 else L)
+    return out
+
+
+def test_encoded_model_skins_like_linear_blend_in_any_pose():
+    """The written rows run through the game's maths give linear blend skinning of the donor in the rest pose AND in
+    random poses (premultiplied rows, consecutive store slots, flags), with every drawn slot stored first."""
+    m0 = D.parse_model(synthetic_model())
+    big = 130                                                           # a roomier stock: bone 0 gets 130 rows
+    m0["bones"][0] = dict(m0["bones"][0], stores=big, adds=0, positions=big, normals=big,
+                          raw=b"".join(_row((0, 0, 0), 1.0, i) for i in range(big)) * 2)
+    m0["bones"][0].pop("wbits")
+    stock = D.pack_model(m0)
+    rng = np.random.default_rng(5)
+    k = 14
+    pos = rng.uniform(-0.3, 0.3, (k, 3))
+    bones = [1, 2, 4, 5, 11, 12, 18]
+    J = np.array([rng.choice(bones, 4, replace=False) for _ in range(k)])
+    Wt = rng.dirichlet(np.ones(4) * 0.8, k)
+    Wt[0] = (1, 0, 0, 0)
+    tris = np.array([(i, i + 1, i + 2) for i in range(k - 2)])
+    prim = {"pos": pos, "nrm": np.tile([0, 0, 1.0], (k, 1)), "uv": rng.random((k, 2)), "tris": tris, "J": J, "W": Wt,
+            "tex": np.full((8, 8, 3), 90, np.uint8), "_page": 1}
+    prim["_uv"] = [prim["uv"][t] for t in tris]
+    enc = W.encode_model(stock, [prim], [1])
+    m = D.parse_model(enc["model"])
+    for b in m["bones"]:                                                # one consecutive store run per bone
+        if b["stores"]:
+            assert (b["slot"][:b["stores"]] == b["slot"][0] + np.arange(b["stores"])).all()
+            assert not (b["wbits"][:b["stores"]] & D.ADD_FLAG).any()
+        assert (b["wbits"][b["stores"]:b["positions"]] & D.ADD_FLAG).all()
+    rest = D.bone_world(m["bones"])
+    e = D.engine_skin(m, rest)
+    assert e["stale_adds"] == 0
+    drawn = sorted({int(i) for sec in m["sections"] for s in sec for i in s["pos"]})
+    assert np.isfinite(e["positions"][drawn]).all() and max(drawn) < m["counts"][0]
+    game = pos @ D.FRAME.T
+    slot = [int(np.argmin(np.linalg.norm(e["positions"] - g, axis=1))) for g in game]
+    assert np.allclose(e["positions"][slot], game, atol=1e-3)
+    for seed in range(3):
+        X = _posed(m["bones"], seed)
+        got = D.engine_skin(m, X)["positions"][slot]
+        want = np.array([sum(w * (X[j] @ np.linalg.inv(rest[j]) @ np.append(g, 1.0))[:3]
+                             for j, w in zip(J[v], Wt[v]) if w > 1e-4) for v, g in enumerate(game)])
+        assert np.abs(got - want).max() < 2e-3 * max(1.0, np.abs(want).max())
+    # what the shipped v1 rows did instead: unweighted rows (R p + w t) summed over k influences
+    v = int(np.argmax((Wt > 1e-4).sum(1)))
+    v1 = sum((rest[j][:3, :3] @ (np.linalg.inv(rest[j]) @ np.append(game[v], 1.0))[:3]) + w * rest[j][:3, 3]
+             for j, w in zip(J[v], Wt[v]) if w > 1e-4)
+    assert np.linalg.norm(v1 - game[v]) > 0.05
 
 
 def test_encode_budget_errors():
@@ -437,3 +538,70 @@ def test_owned_disc_every_fighter(tmp_path):
     entries = D.olnk(human)
     stock = D.costume_parts(entries[0])["model"]
     assert len(D.lz_compress(stock)) < len(D.costume_parts(entries[0])["bank"][0]) * 1.02
+
+
+@pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")
+def test_owned_disc_round_trip_identity():
+    """Read every stock costume and write it back unchanged: the game must see the same bytes. The model layout
+    (pack_model), the texture bank and costume tables, and the LZ stream all round-trip exactly."""
+    human = _owned_human()
+    entries = D.olnk(human)
+    n = 0
+    for g, _key, name, _a in D.FIGHTERS:
+        for c in D.costumes_of(entries, g):
+            entry = entries[g * D.GROUP + c]
+            cp = D.costume_parts(entry)
+            m = D.parse_model(cp["model"])
+            assert D.pack_model(m) == cp["model"], (name, c)
+            assert D.pack_model(m, tail_at=m["strips_end"], size=len(cp["model"])) == cp["model"]
+            assert D.slot_counts(m) == m["counts"], (name, c)
+            assert D.engine_skin(m, D.bone_world(m["bones"]))["stale_adds"] == 0, (name, c)
+            assert D.build_table(cp["bank"]) == cp["table"][0] and D.build_table(cp["table"]) == entry
+            packed = D.lz_compress(cp["model"])
+            assert D.lz_decompress(packed) == cp["model"] and len(D.pad32(packed)) <= len(cp["bank"][0]) * 1.05
+            n += 1
+    assert n == 45
+    assert W.replace_entries(human, {}) == human
+
+
+@pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")
+@pytest.mark.parametrize("fighter,costume", [("MIT", 0), ("TAK", 0), ("IVY", 0), ("NIG", 0), ("NIG", 1)])
+def test_owned_disc_stock_geometry_through_the_writer_skins_like_stock(fighter, costume):
+    """A stock costume's own geometry (read with its influences) written back through the donor encoder: the game's
+    maths on both, in random poses, give the same vertices (within the weight rounding the format allows)."""
+    human = _owned_human()
+    entries = D.olnk(human)
+    g = W.group_of(fighter)
+    stock = D.costume_parts(entries[g * D.GROUP + costume])["model"]
+    m0 = D.parse_model(stock)
+    sk0 = D.skin(m0)
+    prims = []
+    for mat, d in D.mesh_arrays(m0, sk0).items():
+        if len(d["tris"]):
+            prims.append({"pos": d["pos"], "nrm": d["nrm"], "uv": d["uv"], "tris": d["tris"], "J": d["joints"],
+                          "W": d["weights"], "_page": mat & 3, "_uv": [d["uv"][t] for t in d["tris"]]})
+    m1 = D.parse_model(W.encode_model(stock, prims, [0, 1, 2, 3])["model"])
+    rest = D.bone_world(m0["bones"])
+    r0 = D.engine_skin(m0, rest)["positions"].astype(float)
+    e1 = D.engine_skin(m1, rest)
+    r1 = e1["positions"].astype(float)
+    assert e1["stale_adds"] == 0 and np.isfinite(r1).all()
+    sk1 = D.skin(m1)
+    pairs = []
+    for s in range(len(r1)):
+        near = np.nonzero(np.linalg.norm(r0 - r1[s], axis=1) < 2e-3)[0]
+        assert len(near), s
+
+        def diff(t):
+            a, b = sk0["influences"][t], sk1["influences"][s]
+            return sum(abs(a.get(k, 0) - b.get(k, 0)) for k in set(a) | set(b))
+        t = min(near, key=diff)
+        if diff(t) < 0.05:                       # stock vertices with more than 4 influences are cut to 4 by the reader
+            pairs.append((s, t))
+    assert len(pairs) > 0.97 * len(r1)
+    a, b = np.array(pairs).T
+    for seed in range(2):
+        X = _posed(m0["bones"], seed + 10 * costume)
+        p0 = D.engine_skin(m0, X)["positions"][b]
+        p1 = D.engine_skin(m1, X)["positions"][a]
+        assert np.abs(p1 - p0).max() < 0.01, (fighter, costume, seed)   # metres; a 1.8 m fighter

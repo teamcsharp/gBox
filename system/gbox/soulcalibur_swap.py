@@ -5,8 +5,9 @@ What gets rewritten (formats in gbox.soulcalibur_dc and docs/soulcalibur_dc.md):
 * the costume's LZ model: the fighter's own bone records stay (rest pose, hierarchy, the motion skeleton 0..17 and the
   cloth / face bones), only their skin rows and the strip list are replaced by the donor's geometry, fitted onto the
   rest pose through the shared weighted retarget (gbox.doa2_weighted_retarget) with the 18 body roles of
-  soulcalibur_dc.roles. Each donor vertex keeps up to four mapped influences, written the game's way (the first bone
-  stores ``w * M @ p``, the others add). The tail after the strips (cloth / chain tables the bone records point at)
+  soulcalibur_dc.roles. Each donor vertex keeps up to four mapped influences, written the way the engine skins
+  (soulcalibur_dc.engine_skin): rows hold the weight-premultiplied bone-local point, the lowest bone stores and the
+  others add (bit 15), and each bone's stores are one run of consecutive slots. The tail after the strips (cloth / chain tables the bone records point at)
   keeps its offset: the new rows and strips must fit before it, and the vertex / normal counts stay within the
   fighter's own, so every buffer the game sized from the stock model still fits;
 * the costume's texture pages: the donor's textures are packed into the 256x256 YUV422 pages (the face page, which
@@ -224,6 +225,39 @@ class BudgetError(ValueError):
     """The donor does not fit the stock model's room (rows + strips, vertex counts or compressed size)."""
 
 
+def _stock_gloss(model: dict) -> int:
+    """The highlight byte (low byte of a normal row's z, read by 0x8c03ca9c) most of the stock rows carry."""
+    counts: dict[int, int] = {}
+    for b in model["bones"]:
+        k = b["positions"]
+        z = np.frombuffer(b["raw"], "<u4").reshape(-1, 4)[k:, 2]
+        for v, c in zip(*np.unique(z & 0xFF, return_counts=True)):
+            counts[int(v)] = counts.get(int(v), 0) + int(c)
+    return max(counts, key=counts.get) if counts else 25
+
+
+def _weight_words(inf: dict[int, float], store_bone: int, slot: int) -> dict[int, tuple[int, int]]:
+    """{bone: (weight bits, add flag)} of one vertex. The engine uses the whole w word as the row's 4th component
+    (slot and flag bits included), so the weights are rounded to the upper 16 bits and the storing bone's weight
+    (bit 15 clear; bits 12..14, which the engine ignores, refine it) takes up the rest, so the effective weights sum
+    to 1 within about 2^-11."""
+    if slot & ~D.SLOT_MASK:
+        raise ValueError(f"slot {slot} does not fit 12 bits")
+    out, total = {}, 0.0
+    for j, w in inf.items():
+        if j == store_bone:
+            continue
+        bits = (int(np.float32(max(w, 0.0)).view(np.uint32)) + 0x8000) & D.WEIGHT_MASK
+        out[j] = (bits, D.ADD_FLAG)
+        total += D._w(bits | D.ADD_FLAG | slot)
+    target = 1.0 - total
+    base = int(np.float32(max(target, 1e-6)).view(np.uint32)) & D.WEIGHT_MASK
+    best = min(((c & D.WEIGHT_MASK) | (k << 12) for c in (base - 0x10000, base, base + 0x10000) for k in range(8)),
+               key=lambda bits: abs(D._w(bits | slot) - target))
+    out[store_bone] = (best, 0)
+    return out
+
+
 def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_influences: int = MAX_INFLUENCES) -> dict:
     """Retargeted donor prims (library frame, J = native bone, W) -> a new model with the stock bone records.
 
@@ -251,6 +285,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
             for c in order:
                 if W[v, c] > 1e-4:
                     inf[int(J[v, c])] = inf.get(int(J[v, c]), 0.0) + float(W[v, c])
+            if not inf:                                   # no usable weight: the top joint takes it all
+                inf = {int(J[v, order[0]]): 1.0}
             tot = sum(inf.values()) or 1.0
             inf = {j: w / tot for j, w in inf.items()}
             key = (tuple(np.round(pos[v], 5)), tuple(sorted((j, round(w, 3)) for j, w in inf.items())))
@@ -264,42 +300,64 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
             slots.append(s)
         corners.append(slots)
     npos = len(P)
-    if npos > min(stock_pos, 4096) or npos > stock_nrm:
-        raise BudgetError(f"donor has {npos} distinct vertices; the stock model has room for "
-                          f"{min(stock_pos, stock_nrm)}")
-    P = np.array(P)
-    N = np.array(Nsum)
-    N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
-    # rows per bone: a vertex is stored by the first (lowest) bone that touches it, added by the others
-    first = [min(inf) for inf in infl]
-    per_bone_store = [[] for _ in range(nb)]
-    per_bone_add = [[] for _ in range(nb)]
-    for s, inf in enumerate(infl):
-        for j, w in inf.items():
+    if npos > min(stock_pos, D.SLOT_MASK + 1):
+        raise BudgetError(f"donor has {npos} distinct vertices; the stock model has room for {stock_pos}")
+    for inf in infl:
+        for j in inf:
             if not 0 <= j < nb:
                 raise ValueError(f"vertex bound to bone {j}, the model has {nb}")
-            (per_bone_store if j == first[s] else per_bone_add)[j].append((s, w))
-    # normals ride with the first bone only (weight 1), stored inward like the stock rows
-    per_bone_nrm = [[] for _ in range(nb)]
-    for s in range(npos):
-        per_bone_nrm[first[s]].append(s)
+    # The engine (0x8c03c920) writes a bone's position stores to CONSECUTIVE slots from its first row's slot and runs
+    # bones in index order, so a vertex is stored by the lowest bone that touches it and added by the others, and the
+    # slots are numbered bone by bone: every bone's stores are one consecutive run, as in the shipped models.
+    first = [min(inf) for inf in infl]
+    order = sorted(range(npos), key=lambda s: (first[s], s))
+    renum = {old: new for new, old in enumerate(order)}
+    P = np.array([P[s] for s in order])
+    N = np.array([Nsum[s] for s in order])
+    infl = [infl[s] for s in order]
+    first = [first[s] for s in order]
+    corners = [[renum[s] for s in slots] for slots in corners]
+    N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
+    gloss = _stock_gloss(model)
+    rows_of = [{"store": [], "add": [], "nrm": []} for _ in range(nb)]
+    # normals: one row per distinct normal of the storing bone (vertices that share one share its slot), numbered
+    # bone by bone so every bone's normal stores are one consecutive run too
+    nslot, nkey = [0] * npos, {}
+    for s, inf in enumerate(infl):
+        for j, (w, flag) in sorted(_weight_words(inf, first[s], s).items()):
+            rows_of[j]["add" if flag else "store"].append((s, w, flag))
+        key = (first[s], tuple(np.round(N[s], 3)))
+        if key not in nkey:
+            nkey[key] = len(nkey)
+            rows_of[first[s]]["nrm"].append((nkey[key], s))
+        nslot[s] = nkey[key]
+    nnrm = len(nkey)
+    if nnrm > min(stock_nrm, D.SLOT_MASK + 1):
+        raise BudgetError(f"donor has {nnrm} distinct normals; the stock model has room for {stock_nrm}")
 
-    def row(vec, w, slot):
-        bits = int(np.float32(w).view(np.uint32)) & ~0xFFF | (slot & 0xFFF)
-        return struct.pack("<3fI", *np.asarray(vec, np.float32), bits)
+    def row(vec, wbits):
+        return struct.pack("<3fI", *np.asarray(vec, np.float32), wbits)
 
-    records = bytearray(stock[0x20:0x20 + 32 * nb])
-    body = bytearray()
-    base = 0x20 + 32 * nb
-    for j in range(nb):
-        off = base + len(body)
-        rows = [row(inv[j][:3, :3] @ P[s] + inv[j][:3, 3], w, s) for s, w in per_bone_store[j]]
-        rows += [row(inv[j][:3, :3] @ P[s] + inv[j][:3, 3], w, s) for s, w in per_bone_add[j]]
-        nrows = [row(-(inv[j][:3, :3] @ N[s]), 1.0, s) for s in per_bone_nrm[j]]
-        body += b"".join(rows) + b"".join(nrows)
-        struct.pack_into("<HHI", records, 32 * j, len(per_bone_store[j]), len(per_bone_add[j]), off)
-        struct.pack_into("<HH", records, 32 * j + 12, len(rows), len(nrows))
-    strips_at = base + len(body)
+    bones_out = []
+    for j, b in enumerate(bones):
+        r = rows_of[j]
+        # a position row is the weight-premultiplied bone-local point: the engine's ftrv gives R (w p) + w t
+        pos_rows = [row(D._w(w | flag | s) * (inv[j][:3, :3] @ P[s] + inv[j][:3, 3]), w | flag | s)
+                    for s, w, flag in r["store"] + r["add"]]
+        # one normal per vertex, stored (flag clear, consecutive slots) by its storing bone, inward like the stock
+        # rows; the low byte of z is the per-vertex highlight byte 0x8c03ca9c reads (the stock model's usual value)
+        nrm_rows = []
+        for ns, s in r["nrm"]:
+            n = np.asarray(-(inv[j][:3, :3] @ N[s]), np.float32)
+            n[2] = np.uint32((int(n[2].view(np.uint32)) & ~0xFF) | gloss).view(np.float32)
+            nrm_rows.append(row(n, 0x3F800000 | ns))
+        if r["store"] and [s for s, _w, _f in r["store"]] != list(range(r["store"][0][0], r["store"][0][0] + len(r["store"]))):
+            raise AssertionError(f"bone {j}: position stores are not consecutive slots")
+        bones_out.append({"index": j, "record": b["record"], "stores": len(r["store"]), "adds": len(r["add"]),
+                          "positions": len(pos_rows), "normals": len(nrm_rows),
+                          "raw": b"".join(pos_rows) + b"".join(nrm_rows)})
+    per_bone_store = [r["store"] for r in rows_of]
+    per_bone_add = [r["add"] for r in rows_of]
     # triangles per page, winding outward in the game frame (the library -> game mirror reverses it)
     by_page: dict[int, list] = {}
     for p, slots in zip(prims, corners):
@@ -311,7 +369,7 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
                 continue
             ca, cb, cc = (a, slots[a], tuple(uvs[t][0])), (c, slots[c], tuple(uvs[t][2])), (b, slots[b], tuple(uvs[t][1]))
             by_page.setdefault(page, []).append((ca, cb, cc))
-    strip_bytes = bytearray()
+    sections = []
     n_tris = n_strips = 0
     for page in sorted(by_page):
         corner_id: dict = {}
@@ -326,28 +384,28 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
                     verts.append(key)
                 ids.append(corner_id[key])
             tris.append(tuple(ids))
+        sec = []
         for st in stripify(tris):
-            strip_bytes += bytes((0x30 | (page & 3), 0, 0, len(st)))
-            for k, v in enumerate(st):
-                s, u, w = verts[v]
-                strip_bytes += struct.pack("<4H", s, s | (0x8000 if k == len(st) - 1 else 0), int(u), int(w))
+            raw = np.array([(verts[v][0], nslot[verts[v][0]] | (0x8000 if k == len(st) - 1 else 0), int(verts[v][1]),
+                             int(verts[v][2])) for k, v in enumerate(st)], np.uint16)
+            sec.append({"head": bytes((0x30 | (page & 3), 0, 0)), "raw": raw})
             n_strips += 1
             n_tris += len(st) - 2
-        strip_bytes += b"\0\0\0\0"
-    strip_bytes += b"\0\0\0\0"                              # the empty section that ends the list
-    end = strips_at + len(strip_bytes)
+        sections.append(sec)
     stock_end = model["strips_end"]
-    if end > stock_end:
-        raise BudgetError(f"donor needs {end - 0x20 - 32 * nb} bytes of rows + strips; the stock model has "
-                          f"{stock_end - 0x20 - 32 * nb} before its tail")
-    out = bytearray(stock[:0x20]) + records + body + strip_bytes
-    out += b"\0" * (stock_end - len(out))
-    out += stock[stock_end:]
-    struct.pack_into("<HH", out, 0x14, npos, npos)
-    struct.pack_into("<I", out, 0x18, strips_at)
-    if len(out) != len(stock):
-        raise AssertionError("model size changed")
-    return {"model": bytes(out), "positions": npos, "triangles": n_tris, "strips": n_strips,
+    built = {"header_raw": stock[:0x20], "bones": bones_out, "sections": sections, "tail": model["tail"]}
+    try:
+        out = D.pack_model(built, tail_at=stock_end, size=len(stock))
+    except ValueError as error:
+        rows_b = sum(len(b["raw"]) for b in bones_out)
+        strips_b = sum(4 + 8 * len(s["raw"]) for sec in sections for s in sec) + 4 * len(sections) + 4
+        raise BudgetError(f"donor needs {rows_b + strips_b} bytes of rows + strips; the stock model has "
+                          f"{stock_end - 0x20 - 32 * nb} before its tail ({error})") from error
+    check = D.parse_model(out)
+    if check["counts"] != (npos, nnrm):
+        raise AssertionError(f"slot counts {check['counts']} != {(npos, nnrm)}")
+    end = check["strips_end"]
+    return {"model": out, "positions": npos, "triangles": n_tris, "strips": n_strips,
             "rows": sum(len(a) + len(b) for a, b in zip(per_bone_store, per_bone_add)),
             "bytes_used": end, "bytes_room": stock_end,
             "bones_used": sorted({j for inf in infl for j in inf})}
@@ -731,12 +789,20 @@ def verify_build(image, source_gdi, files: dict[str, bytes], plan: list[dict], c
             try:
                 cp = D.costume_parts(a)
                 m = D.parse_model(cp["model"])
-                sk = D.skin(m)
                 tris = sum(len(s["pos"]) - 2 for sec in m["sections"] for s in sec)
-                models.append({"entry": i, "triangles": tris, "positions": len(sk["positions"]),
-                               "finite": bool(np.isfinite(sk["positions"]).all())})
-                if not np.isfinite(sk["positions"]).all():
-                    problems.append(f"entry {i}: non-finite skinned positions")
+                # the game's own skinning maths (D.engine_skin, the 0x8c03c920 / 0x8c03cba0 rules), not the reader's
+                # view: every slot a strip draws must be stored this frame and no add may land on a stale slot
+                eng = D.engine_skin(m, D.bone_world(m["bones"]))
+                ps = sorted({int(x) for sec in m["sections"] for s in sec for x in s["pos"]})
+                ns = sorted({int(x) for sec in m["sections"] for s in sec for x in s["nrm"]})
+                finite = bool(np.isfinite(eng["positions"][ps]).all() and np.isfinite(eng["normals"][ns]).all())
+                models.append({"entry": i, "triangles": tris, "positions": len(ps), "finite": finite,
+                               "stale_adds": eng["stale_adds"], "counts": list(m["counts"])})
+                if not finite or eng["stale_adds"]:
+                    problems.append(f"entry {i}: the engine's skinning leaves drawn vertices unset "
+                                    f"(stale adds {eng['stale_adds']})")
+                if max(ps, default=-1) >= m["counts"][0] or max(ns, default=-1) >= m["counts"][1]:
+                    problems.append(f"entry {i}: strips index past the header's vertex counts")
                 stock = D.costume_parts(b)["model"]
                 end = D.parse_model(stock)["strips_end"]
                 if len(cp["model"]) != len(stock) or cp["model"][end:] != stock[end:]:
@@ -916,14 +982,15 @@ def main(argv=None) -> int:
     b.add_argument("name")
     b.add_argument("--game-id", default="c747331797369f74")
     b.add_argument("--no-random", action="store_true")
+    b.add_argument("--title", default="SoulCalibur (USA): Sonic Adventure 2 vs Super Mario 64 DS, random costume on "
+                                      "every fighter load")
     a = ap.parse_args(argv)
     from .gdrom import GDRom
     human = GDRom(a.gdi).read(D.HUMAN)
     plan = plan_costumes(human, SONIC_VS_MARIO)
     res = build_roster(a.gdi, a.donors, a.out, a.name, plan, random_select=not a.no_random,
                        progress=lambda p, m: print(f"{p:5.1f}% {m}", flush=True))
-    _write_marker(Path(a.out), a.name, a.game_id, plan, res,
-                  "SoulCalibur (USA): Sonic Adventure 2 vs Super Mario 64 DS, random costume on every fighter load")
+    _write_marker(Path(a.out), a.name, a.game_id, plan, res, a.title)
     print(json.dumps({"image": str(res["image"]), "built": len(res["reports"]), "failed": res["failures"],
                       "ok": res["verification"]["ok"]}, default=str))
     return 0 if res["verification"]["ok"] and not res["failures"] else 1
