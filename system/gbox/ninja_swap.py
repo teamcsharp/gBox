@@ -63,8 +63,17 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
     rep["source_triangles"] = src_tris
     last = None
     from . import fit_events as FE
-    for budget in budgets:
+    if FE.active():                                        # every vertex rides one node (the game's own tree)
+        collapse = tgt.get("collapse") or {}
+        names = {int(n): f"{r} (node {n})" for r, n in (tgt.get("roles") or {}).items()}
+        counts = FE.per_limb(prims, names, owner=lambda j: int(collapse.get(j, j)))
+        FE.stage("weights", data={"mode": "rigid per node (one node per vertex)", "nodes": len(counts),
+                                  "skeleton_nodes": tgt.get("joints"), "vertices": int(sum(counts.values())),
+                                  "per_limb": counts})
+    for k, budget in enumerate(budgets):
         src = rigged
+        if src_tris <= budget and k == 0:
+            FE.stage("decimate", "skipped", {"from": src_tris, "triangles": src_tris, "budget": budget})
         if src_tris > budget:
             if not blender:
                 raise ValueError(f"{src_tris} triangles (budget {budget}) and no Blender on this node to decimate")
