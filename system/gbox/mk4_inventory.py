@@ -23,7 +23,7 @@ Layout recovered from the ROM itself (nothing written back to the share):
 * Audio banks are ``N64 WaveTables`` blobs (41 found, 0x249884-0x5E1F64).
 * The asset region 0x132800-0xEB0000 holds mid-entropy data (vertex/
   texture-like) up to ~0xB40000 and near-uniform entropy (encrypted or
-  dense-packed) at 0xB40000-0xEB0000.  ROM 0x0000EB00 onward is 0xFF
+  dense-packed) at 0xB40000-0xEB0000.  ROM 0xEB0000 onward is 0xFF
   padding.  No plaintext file-name table exists anywhere in the ROM; data
   is addressed through the patch table and hard-coded offsets in code.
 
@@ -112,6 +112,8 @@ def patch_table(rom: bytes) -> dict:
     i = PATCH_ANCHOR // 4
     while i - 2 >= 0 and ok_at(i - 2):
         i -= 2
+    if not ok_at(PATCH_ANCHOR // 4):
+        raise ValueError(f"no patch-table pair at the anchor {PATCH_ANCHOR:#x}")
     j = PATCH_ANCHOR // 4 + 2
     while ok_at(j) and j - i < 20000:
         j += 2
@@ -145,7 +147,11 @@ def bios(rom: bytes) -> list[dict]:
     """The 15 story fighters: pinned name offsets + following bio text."""
     out = []
     for off, name in sorted(BIO_NAMES.items()):
+        if rom[off:off + len(name)] != name.encode():
+            raise ValueError(f"bio name {name!r} not at {off:#x}")
         end = rom.find(b"\x00", off + len(name))
+        if end < 0:
+            raise ValueError(f"bio of {name!r} is unterminated")
         text = rom[off:end].decode("ascii", "replace")
         out.append({"name": name, "offset": off, "text": text})
     return out
@@ -215,9 +221,7 @@ def inventory(path: str | Path, strict: bool = True) -> dict:
         check_build(src, header)
     cic, ipl3_crc = ipl3_cic(rom)
     entry = decode_entry(rom)
-    fighters = bios(rom)
-    assert [f["name"] for f in fighters] == list(
-        name for _, name in sorted(BIO_NAMES.items()))
+    fighters = bios(rom)  # raises ValueError unless every pinned bio name is in place
     return {
         "game_id": GAME_ID,
         "title": TITLE,

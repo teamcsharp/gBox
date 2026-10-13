@@ -10,8 +10,7 @@ import pytest
 from gbox import mk4_inventory as mk4
 
 SOURCE = Path(os.environ.get(
-    "GBOX_MK4_SOURCE",
-    "/mnt/gbox/hyperspin/Arcade/collections/Nintendo 64/roms/USA/Mortal Kombat 4 (USA).zip"))
+    "GBOX_MK4_SOURCE", str(Path.home() / "gbox-cache" / mk4.GAME_ID / "source.zip")))
 
 
 def test_check_build_refuses_other_roms():
@@ -85,3 +84,16 @@ def test_owned_build_inventory(monkeypatch, tmp_path):
     assert chars["goro_bio_offset"] == 0x4CB40 and chars["noob_saibot_kode_offset"] == 0x121349
     assert m["launch"]["platform"] == "n64" and m["launch"]["cic"] == "6102"
     assert m["next_step"].startswith("analysis:")
+
+
+def test_truncated_or_foreign_roms_raise_valueerror():
+    with pytest.raises(ValueError):
+        mk4.patch_table(bytes(0x1000))
+    with pytest.raises(ValueError):
+        mk4.patch_table(bytes(mk4.PATCH_ANCHOR + 0x100))
+    with pytest.raises(ValueError):
+        mk4.bios(bytes(0x50000))
+    rom = bytearray(0x4B4C8 + 8)
+    rom[0x4B4C8:] = b"SCORPION"
+    with pytest.raises(ValueError):
+        mk4.bios(bytes(rom))
