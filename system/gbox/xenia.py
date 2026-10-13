@@ -440,6 +440,8 @@ class XeniaAdapter:
                 time.sleep(0.06)
             pressed.add(k)
             flags = (0x0001 if vk in (0x25, 0x26, 0x27, 0x28) else 0) | (0 if down else 0x0002)
+            if u.GetForegroundWindow() not in (root, win):    # the operator switched apps mid-batch: never type there
+                return {"sent": sent, "pad_slot": 0, "via": "physical keyboard", "stopped": "another application came to the front"}
             inp = INP(type=1, ki=KI(vk, u.MapVirtualKeyW(vk, 0), flags, 0, 0))
             u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP))
             sent += 1

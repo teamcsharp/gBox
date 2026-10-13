@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from gbox import adapters, game_audio as ga
 from gbox.config import Config, EmulatorConfig, GameAudioConfig
 
@@ -234,3 +236,30 @@ def test_linux_sessions_keep_null_audio_and_the_plain_wait(tmp_path, monkeypatch
     ad = adapters.RetroArchAdapter(EmulatorConfig(core="x"), config=SimpleNamespace(runtime=tmp_path), platform="snes", port=50124)
     plan = ad._audio_plan()
     assert plan["chain"] == ["null"] and plan["sel"] is None
+
+
+def test_audio_timeout_message_is_still_a_content_timeout_for_launch_failures():
+    from gbox import launch_failures as LF
+    w = watch(can_fallback=False)
+    w.observe(log("xaudio_init_stalled.log"), 1.0)
+    assert w.decide(121.0, running=False) == "fail"
+    assert LF.classify(f"RuntimeError: retroarch started but {w.reason}: tail")["cls"] == "content_timeout"
+
+
+def test_boot_timeout_s_sets_the_base_wait_that_audio_extends(monkeypatch):
+    seen = []
+
+    def spy(t0, boot_wait_s, extended_wait_s, *a, **kw):
+        seen.append((boot_wait_s, extended_wait_s))
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(ga, "BootWatch", spy)
+    monkeypatch.setattr(adapters, "HOST_OS", "linux")
+    monkeypatch.setattr(adapters, "Display", lambda *a: SimpleNamespace(name=":99", close=lambda: None))
+    monkeypatch.setattr(adapters, "_popen", lambda *a, **k: SimpleNamespace(pid=1, poll=lambda: None))
+    for port, boot in ((50125, 90), (50126, None), (50127, 300)):      # #318's remedy relaunches with 90 s
+        ad = adapters.RetroArchAdapter(EmulatorConfig(core="x"), config=None, platform="snes", port=port)
+        monkeypatch.setattr(ad, "_argv", lambda rom: ["retroarch", "-L", "x", rom])
+        ad.boot_timeout_s = boot
+        with pytest.raises(RuntimeError, match="stop here"):
+            ad.launch_game("rom.sfc")
+    assert seen == [(90.0, 120.0), (30.0, 120.0), (300.0, 300.0)]

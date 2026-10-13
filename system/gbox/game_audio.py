@@ -108,8 +108,10 @@ class BootWatch:
             self.reason = f"audio opened late and the core's loop still not answering {now - seen['audio_done']:.1f} s on"
             return "fallback"
         if now >= self.deadline():
-            self.reason = (f"content loaded, audio still opening after {now - self.t0:.0f} s" if self.warning
-                           else f"content not running after {now - self.t0:.0f}s")
+            # "content not running after Ns" is what launch_failures classifies as content_timeout (#318)
+            self.reason = (f"content not running after {now - self.t0:.0f}s (content loaded, audio still opening)"
+                           if self.warning
+                           else f"content not running after {self.boot_wait_s:.0f}s")
             return "fail"
         return "wait"
 

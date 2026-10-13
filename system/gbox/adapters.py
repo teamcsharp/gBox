@@ -362,6 +362,8 @@ def win_send_keys(pid: int, events: list[dict]) -> dict:
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
+        if u.GetForegroundWindow() != root:                      # the operator switched apps mid-batch: never type there
+            return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
         seq.append(name)
         u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP))
@@ -1180,6 +1182,9 @@ class RetroArchAdapter(CommandAdapter):
             work.mkdir(parents=True, exist_ok=True)
         from . import game_audio
         ga, chain, attempts, st, watch = plan["ga"], plan["chain"], [], None, None
+        # the base boot wait: launch_game boot_timeout_s (#318, the "content not running in time" remedy) or
+        # [game_audio] boot_wait_s; content loaded with audio still opening extends past it (extended_wait_s)
+        boot_s = float(getattr(self, "boot_timeout_s", None) or ga.boot_wait_s)
         for n, driver in enumerate(chain):
             if n:                                              # the previous driver stalled: same session, next driver
                 self.audio_driver = driver
@@ -1190,8 +1195,8 @@ class RetroArchAdapter(CommandAdapter):
                         + (" · Examine 3D ready" if _examine_ok(self.proc) else ""))
             else:
                 self._p(80, f"Audio device slow ({attempts[-1]['reason']}): restarted with the {driver} audio driver")
-            watch = game_audio.BootWatch(time.monotonic(), ga.boot_wait_s, ga.extended_wait_s, ga.init_grace_s, ga.stall_s,
-                                         can_fallback=n + 1 < len(chain))
+            watch = game_audio.BootWatch(time.monotonic(), boot_s, max(ga.extended_wait_s, boot_s), ga.init_grace_s,
+                                         ga.stall_s, can_fallback=n + 1 < len(chain))
             t0 = time.monotonic()
             verdict, st = self._wait_boot(watch)
             attempts.append({"driver": driver, "outcome": verdict, "s": round(time.monotonic() - t0, 2),
