@@ -3948,6 +3948,30 @@ def create_app(config: Config) -> FastAPI:
             lv["cond"].notify_all()
         return {"ok": True}
 
+    def _rpc_quick(sid: str, op: str, wait: float = 3.0):
+        """session_rpc with a short wait, for the pick whip's pause hold: a session without the live channel answers
+        through the job queue instead, and an unanswered request is withdrawn so a late worker never applies it."""
+        rid, lv = new_id(), _live(sid)
+        item = {"rpc": rid, "op": op, "args": {}}
+        with lv["cond"]:
+            lv["input"].append(item)
+            lv["cond"].notify_all()
+            if not lv["cond"].wait_for(lambda: rid in rpc_results, wait):
+                try:
+                    lv["input"].remove(item)
+                except ValueError:
+                    pass
+                raise TimeoutError("session did not answer")
+        res = rpc_results.pop(rid)
+        if not res.get("ok"):
+            raise RuntimeError(res.get("error") or f"{op} failed")
+        return res["data"]
+
+    from . import pickwhip                        # pick whip pause hold + watchdog (docs/live-picker.md)
+    pickwhip.register(app, auth, store, rpc=_rpc_quick,
+                      submit_op=lambda sid, op: submit(JobRequest(tool="session_op", input={"session_id": sid, "op": op, "args": {}},
+                                                                  require_worker=sid.split("-")[0]), "pickwhip"))
+
     from . import re_inventory_api                # Resident Evil inventory helper (any RE): /api/re/inventory, /api/re/catalog
     re_inventory_api.routes(app, store, config, auth, submit=submit, JobRequest=JobRequest,
                             peek=lambda sid, a, n, actor: session_rpc(sid, Rpc(op="read_memory", args={"address": a, "length": n}), actor))
