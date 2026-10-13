@@ -88,23 +88,64 @@ def _mod(name):
         return None
 
 
+def _code_names(fn) -> set[str]:
+    """Every name/attribute the LOADED function (and its nested code) references. Unlike inspect.getsource this
+    can't drift: a worker that started before a deploy keeps old code in memory while getsource reads the new file
+    by the old line numbers, so a routed writer read as unrouted (#1361: DOA2 cast_swap 'no routed writer')."""
+    out: set[str] = set()
+    stack = [getattr(fn, "__code__", None)]
+    while stack:
+        co = stack.pop()
+        if co is None:
+            continue
+        out |= set(co.co_names) | set(co.co_varnames)
+        stack += [c for c in co.co_consts if hasattr(c, "co_names")]
+    return out
+
+
+def _source_matches_code(fn, src: str) -> bool:
+    """getsource is only trusted when the file on disk still holds the loaded function (same first line/def)."""
+    co = getattr(fn, "__code__", None)
+    return co is not None and src.lstrip().startswith(f"def {co.co_name}(") and \
+        all(n in src for n in co.co_names if n.isidentifier() and len(n) > 3)
+
+
+def _routed(fn, src: str | None, module: str, call: str) -> bool:
+    """Does the loaded characters_tool call `<module alias>.<call>(` (module='' for a bare function call)?"""
+    if src is not None:
+        if module:
+            alias = re.search(rf"from \. import {module}(?: as (\w+))?", src)
+            if alias and f"{alias.group(1) or module}.{call}(" in src:
+                return True
+        elif f"{call}(" in src:
+            return True
+    names = _code_names(fn)
+    return call in names and (not module or module in names)
+
+
 def writer_for(game: dict) -> dict | None:
     """The swap writer op=use reaches for this catalog game, or None."""
     from . import characters as C
-    src = inspect.getsource(C.characters_tool)
+    fn = C.characters_tool
+    try:
+        src = inspect.getsource(fn)
+        if not _source_matches_code(fn, src):
+            src = None                                     # stale module in memory: judge by its code objects
+    except (OSError, TypeError):
+        src = None
     gid, t, plat = game.get("game_id", ""), (game.get("title") or "").lower(), game.get("platform") or ""
     for name, slots, what in WRITERS:
         m = _mod(name)
         if m is not None and gid in (getattr(m, "GAME_IDS", None) or {}):
-            alias = re.search(rf"from \. import {name}(?: as (\w+))?", src)
-            routed = bool(alias) and f"{alias.group(1) or name}.use(" in src
-            return {"writer": f"gbox.{name}", "routed": routed, "slots": slots, "replaces": what}
+            return {"writer": f"gbox.{name}", "routed": _routed(fn, src, name, "use"), "slots": slots,
+                    "replaces": what}
     if gid in C.RE4GC or gid in C.RE4WII:
-        return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": "build_re4(" in src, "slots": SPECIAL[0][2],
-                "replaces": SPECIAL[0][3]}
+        return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": _routed(fn, src, "", "build_re4"),
+                "slots": SPECIAL[0][2], "replaces": SPECIAL[0][3]}
     o = _mod("oot_swap")
     if o is not None and getattr(o, "is_oot", None) and o.is_oot(game):
-        return {"writer": "gbox.oot_swap", "routed": "oot_swap.tool(" in src, "slots": SPECIAL[1][2], "replaces": SPECIAL[1][3]}
+        return {"writer": "gbox.oot_swap", "routed": _routed(fn, src, "oot_swap", "tool"), "slots": SPECIAL[1][2],
+                "replaces": SPECIAL[1][3]}
     return None
 
 
