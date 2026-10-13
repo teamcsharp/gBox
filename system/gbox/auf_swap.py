@@ -323,15 +323,59 @@ class Donor:
     fits: dict = field(default_factory=dict)
 
 
-def load_donor(slug: str, glb, roles: dict, name: str = "") -> Donor:
+def load_donor(slug: str, glb, roles: dict, name: str = "", static_ok: bool = True) -> Donor:
+    """A collection character ready to fit: a rigged one (meta rig.roles with hip and head) through
+    gbox.doa2_weighted_retarget, or - when it has no skeleton (e.g. the Def Jam Vendetta GC wrestlers, static T-pose
+    meshes) and ``static_ok`` - as a static T-pose mesh that ``fit_static`` rigs to the slot's skeleton."""
     from . import doa2_weighted_retarget as WR
     roles = dict(roles or {})
-    if not {"hip", "head"} <= roles.keys():
-        raise ValueError(f"{slug}: the collection entry has no hip/head rig roles (not retargetable)")
     d = Donor(slug, name or slug, Path(glb), roles)
-    d.rig = WR.load_rig(Path(glb), roles)
+    if {"hip", "head"} <= roles.keys():
+        d.rig = WR.load_rig(Path(glb), roles)
+    elif static_ok:
+        d.rig = load_static(Path(glb))
+    else:
+        raise ValueError(f"{slug}: the collection entry has no hip/head rig roles (not retargetable)")
     d.atlas, d.tiles = build_atlas(d.rig["prims"])
     return d
+
+
+def load_static(path: Path) -> dict:
+    """Every triangle primitive of a glTF in world space (glTF frame: Y up, the character facing +Z, its left +X)."""
+    from .re4gc_models import _gltf_load, _node_world
+    gl, acc, image = _gltf_load(path)
+    wn = _node_world(gl)
+    cache, prims = {}, []
+    for ni, nd in enumerate(gl["nodes"]):
+        if "mesh" not in nd:
+            continue
+        M = wn[ni]
+        for pr in gl["meshes"][nd["mesh"]]["primitives"]:
+            if pr.get("mode", 4) != 4:
+                continue
+            a = pr["attributes"]
+            p = acc(a["POSITION"]).astype(float) @ M[:3, :3].T + M[:3, 3]
+            n = (acc(a["NORMAL"]).astype(float) if "NORMAL" in a else np.tile([0, 1.0, 0], (len(p), 1))) @ \
+                np.linalg.inv(M[:3, :3])
+            n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+            uv = acc(a["TEXCOORD_0"]).astype(float) if "TEXCOORD_0" in a else np.zeros((len(p), 2))
+            tris = acc(pr["indices"]).reshape(-1, 3).astype(int) if "indices" in pr else \
+                np.arange(len(p) // 3 * 3).reshape(-1, 3)
+            tex, color = None, (255, 255, 255, 255)
+            if (mi := pr.get("material")) is not None:
+                pbr = gl["materials"][mi].get("pbrMetallicRoughness", {})
+                color = tuple(int(round(c * 255)) for c in pbr.get("baseColorFactor", [1, 1, 1, 1]))
+                if (bct := pbr.get("baseColorTexture")) is not None:
+                    if bct["index"] not in cache:
+                        try:
+                            cache[bct["index"]] = image(bct["index"])
+                        except Exception:                  # noqa: BLE001 - a missing image: plain colour
+                            cache[bct["index"]] = None
+                    tex = cache[bct["index"]]
+            prims.append({"pos": p, "nrm": n, "uv": uv, "tris": tris, "tex": tex, "color": color})
+    if not prims:
+        raise ValueError(f"{Path(path).name}: no triangles")
+    return {"static": True, "prims": prims}
 
 
 def _material_key(p):
@@ -415,6 +459,9 @@ def fit_donor(donor: Donor, body: bytes, head: bytes | None) -> dict:
     sig = skeleton_signature(body)
     if sig in donor.fits:
         return donor.fits[sig]
+    if donor.rig.get("static"):
+        donor.fits[sig] = fit_static(donor, body, head)
+        return donor.fits[sig]
     tgt = target_of(body, head)
     prims, rep = WR.retarget(donor.rig, tgt, jmap=tgt["jmap"])
     Ps, Ns, UVs, Js, Ws, Fs, tiles = [], [], [], [], [], [], []
@@ -448,10 +495,122 @@ def fit_donor(donor: Donor, body: bytes, head: bytes | None) -> dict:
     return fit
 
 
+def _chain(bones, top: int, bottom: int) -> list[int]:
+    """Bones from ``top`` down to ``bottom`` (bottom's ancestors up to top)."""
+    out = [bottom]
+    while out[-1] != top:
+        p = bones[out[-1]]["parent"]
+        if p < 0:
+            raise ValueError("bone %d is not below %d" % (bottom, top))
+        out.append(p)
+    return out[::-1]
+
+
+def _segments(bones, chain: list[int]) -> list[tuple[int, np.ndarray, np.ndarray]]:
+    """(bone, start, end) per chain bone; the last bone continues half its parent's length."""
+    W = [np.asarray(bones[i]["world_pos"], float) for i in chain]
+    out = []
+    for k, b in enumerate(chain):
+        if k + 1 < len(chain):
+            out.append((b, W[k], W[k + 1]))
+        else:
+            d = W[k] - W[k - 1] if k else np.array([0, 0, 1.0])
+            out.append((b, W[k], W[k] + 0.5 * d))
+    return out
+
+
+def _nearest_segment(X: np.ndarray, segs) -> tuple[np.ndarray, np.ndarray]:
+    """For points X (n,3): index of the nearest segment and the projection parameter t in [0, 1] on it."""
+    best_d = np.full(len(X), np.inf)
+    best_i = np.zeros(len(X), int)
+    best_t = np.zeros(len(X))
+    for i, (_b, a, b) in enumerate(segs):
+        d = b - a
+        L = float(d @ d) or 1e-9
+        t = np.clip((X - a) @ d / L, 0, 1)
+        dist = np.linalg.norm(X - (a + t[:, None] * d), axis=1)
+        better = dist < best_d
+        best_d[better], best_i[better], best_t[better] = dist[better], i, t[better]
+    return best_i, best_t
+
+
+def fit_static(donor: Donor, body: bytes, head: bytes | None) -> dict:
+    """A static T-pose donor on a body model's skeleton (no donor skeleton needed).
+
+    The donor (glTF frame: Y up, facing +Z, arms along X) is mapped piecewise onto the slot's rest pose, which is a
+    T-pose on the disc too: heights through (ground, hip, shoulder, top of head), widths through (shoulder, finger tips)
+    so the arms reach the slot's hands, depth by the height ratio.  Each vertex is then skinned to the nearest bone
+    segment of its region (an arm beyond the shoulders, a leg below the hip by side, else the spine/neck/head chain),
+    blended 50/50 with the parent bone within the first 15% of a segment."""
+    bones = ngc.skeleton(body)
+    roles = G.auto_roles(bones)
+    tm = np.asarray(ngc.mesh(body)["positions"], float)
+    hm = np.asarray(ngc.mesh(head)["positions"], float) if head else np.zeros((0, 3))
+    allt = np.concatenate([tm, hm]) if len(hm) else tm
+    wp = lambda r: np.asarray(bones[roles[r]]["world_pos"], float)          # noqa: E731
+    g_t, top_t = float(allt[:, 2].min()), float(allt[:, 2].max())
+    hip_t = float(wp("hip")[2])
+    sh_t = float((wp("l_upper")[2] + wp("r_upper")[2]) / 2)
+    sw_t = float((abs(wp("l_upper")[1]) + abs(wp("r_upper")[1])) / 2)
+    reach_t = float(np.abs(tm[:, 1]).max())
+    cx_t = float(wp("hip")[0])
+    P = np.concatenate([p["pos"] for p in donor.rig["prims"]]) @ A2R      # glTF (left, up, front) -> AUF
+    Nn = np.concatenate([p["nrm"] for p in donor.rig["prims"]]) @ A2R
+    if np.ptp(P[:, 0]) > np.ptp(P[:, 1]):                                   # arms along the depth axis: turn 90 deg
+        P, Nn = P[:, [1, 0, 2]] * [1, -1, 1], Nn[:, [1, 0, 2]] * [1, -1, 1]
+    g_d, top_d = float(P[:, 2].min()), float(P[:, 2].max())
+    H_d, H_t = max(top_d - g_d, 1e-6), max(top_t - g_t, 1e-6)
+    reach_d = float(np.abs(P[:, 1]).max())
+    arm = np.abs(P[:, 1]) > 0.6 * reach_d
+    sh_d = float(np.median(P[arm, 2])) if arm.any() else g_d + (sh_t - g_t) / H_t * H_d
+    hip_d = g_d + (hip_t - g_t) / H_t * H_d
+    sw_d = reach_d * sw_t / max(reach_t, 1e-6)
+    cx_d = float(np.median(P[~arm, 0])) if (~arm).any() else 0.0
+    z = np.interp(P[:, 2], [g_d, hip_d, sh_d, top_d], [g_t, hip_t, sh_t, top_t])
+    ay = np.abs(P[:, 1])
+    y = np.sign(P[:, 1]) * np.where(ay <= sw_d, ay * sw_t / max(sw_d, 1e-6),
+                                    sw_t + (ay - sw_d) * (reach_t - sw_t) / max(reach_d - sw_d, 1e-6))
+    x = cx_t + (P[:, 0] - cx_d) * H_t / H_d
+    X = np.stack([x, y, z], 1)
+    torso = _segments(bones, _chain(bones, roles["hip"], roles["head"]))
+    chains = {side: {"arm": _segments(bones, [roles[f"{side}_{r}"] for r in ("clav", "upper", "fore", "hand")]),
+                     "leg": _segments(bones, [roles[f"{side}_{r}"] for r in ("thigh", "shin", "foot")])}
+              for side in ("l", "r")}
+    J = np.zeros((len(X), 2), int)
+    Wt = np.ones(len(X))
+    is_arm = (np.abs(y) > sw_t * 1.05) & (z > sh_t - 0.25 * (sh_t - hip_t))
+    is_leg = ~is_arm & (z < hip_t - 0.02 * H_t)
+    groups = [(is_arm & (y > 0), chains["l"]["arm"]), (is_arm & (y <= 0), chains["r"]["arm"]),
+              (is_leg & (y > 0), chains["l"]["leg"]), (is_leg & (y <= 0), chains["r"]["leg"]),
+              (~is_arm & ~is_leg, torso)]
+    for sel, segs in groups:
+        if not sel.any():
+            continue
+        si, t = _nearest_segment(X[sel], segs)
+        bone = np.array([segs[i][0] for i in si])
+        par = np.array([segs[i - 1][0] if i > 0 else -1 for i in si])
+        blend = (t < 0.15) & (par >= 0)
+        J[sel, 0] = bone
+        J[sel, 1] = np.where(blend, par, -1)
+        Wt[sel] = np.where(blend, 0.5, 1.0)
+    Ns = Nn / np.maximum(np.linalg.norm(Nn, axis=1, keepdims=True), 1e-9)
+    Fs, tiles, base = [], [], 0
+    for p in donor.rig["prims"]:
+        tris = np.asarray(p["tris"], int).reshape(-1, 3)
+        Fs.append(tris + base)
+        tiles += [donor.tiles[_material_key(p)]] * len(tris)
+        base += len(p["pos"])
+    return {"P": X, "N": Ns, "UV": np.concatenate([p["uv"] for p in donor.rig["prims"]]), "J": J, "W": Wt,
+            "F": np.concatenate(Fs), "tiles": tiles, "roles": roles,
+            "report": {"static": True, "height_scale": round(H_t / H_d, 4), "reach": [round(reach_d, 3), round(reach_t, 3)],
+                       "landmarks_t": [round(v, 2) for v in (g_t, hip_t, sh_t, top_t)]}}
+
+
 def decimate(P: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np.ndarray]:
-    """Shortest-edge collapse on the welded surface until ``target`` triangles remain (collapses that flip a
-    neighbouring face are skipped).  Split vertices (UV seams) move together; every corner keeps its own UV, normal
-    and skin.  -> (moved vertex positions, surviving faces)."""
+    """Quadric-error edge collapse (Garland-Heckbert: area-weighted face planes, open borders held by perpendicular
+    planes) on the welded surface until ``target`` triangles remain; a collapse that flips a neighbouring face is
+    skipped.  Split vertices (UV seams) move together, every corner keeps its own UV, normal and skin.
+    -> (moved vertex positions, surviving faces)."""
     import heapq
     P = np.asarray(P, float)
     F = np.asarray(F, int)
@@ -462,7 +621,8 @@ def decimate(P: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np.
     _u, first, pid = np.unique(key, axis=0, return_index=True, return_inverse=True)
     pid = pid.reshape(-1)
     Q = P[first].copy()
-    parent = list(range(len(Q)))
+    n_pts = len(Q)
+    parent = list(range(n_pts))
 
     def find(i):
         while parent[i] != i:
@@ -471,48 +631,82 @@ def decimate(P: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np.
         return i
     FP = [list(map(int, pid[f])) for f in F]
     alive = [len(set(f)) == 3 for f in FP]
+    K = np.zeros((n_pts, 4, 4))
+    edge_faces: dict = {}
     adj: dict = {}
     for fi, f in enumerate(FP):
-        if alive[fi]:
-            for v in f:
-                adj.setdefault(v, set()).add(fi)
+        if not alive[fi]:
+            continue
+        p0, p1, p2 = Q[f[0]], Q[f[1]], Q[f[2]]
+        n = np.cross(p1 - p0, p2 - p0)
+        area = np.linalg.norm(n)
+        if area < 1e-12:
+            continue
+        n = n / area
+        pl = np.append(n, -n @ p0)
+        for v in f:
+            K[v] += 0.5 * area * np.outer(pl, pl)
+            adj.setdefault(v, set()).add(fi)
+        for a, b in ((f[0], f[1]), (f[1], f[2]), (f[2], f[0])):
+            edge_faces.setdefault((min(a, b), max(a, b)), []).append((fi, n))
+    for (a, b), fl in edge_faces.items():               # open border: keep it in place
+        if len(fl) == 1:
+            e = Q[b] - Q[a]
+            m = np.cross(e, fl[0][1])
+            ln = np.linalg.norm(m)
+            if ln > 1e-12:
+                m = m / ln
+                pl = np.append(m, -m @ Q[a])
+                w = 10.0 * float(e @ e)
+                K[a] += w * np.outer(pl, pl)
+                K[b] += w * np.outer(pl, pl)
+    ver = [0] * n_pts
+
+    def best(a, b):
+        Ks = K[a] + K[b]
+        cands = (Q[a], Q[b], (Q[a] + Q[b]) / 2)
+        errs = [float(np.append(c, 1) @ Ks @ np.append(c, 1)) for c in cands]
+        i = int(np.argmin(errs))
+        return max(errs[i], 0.0), i
     heap = []
-    for fi, f in enumerate(FP):
-        if alive[fi]:
-            for a, b in ((f[0], f[1]), (f[1], f[2]), (f[2], f[0])):
-                heapq.heappush(heap, (float(np.linalg.norm(Q[a] - Q[b])), min(a, b), max(a, b)))
+    for (a, b) in edge_faces:
+        e, i = best(a, b)
+        heap.append((e, a, b, 0, 0, i))
+    heapq.heapify(heap)
     count = sum(alive)
 
     def normal(f, moved=None, pos=None):
         p = [pos if moved is not None and find(v) in moved else Q[find(v)] for v in f]
         return np.cross(p[1] - p[0], p[2] - p[0])
     while count > target and heap:
-        _l, a, b = heapq.heappop(heap)
-        a, b = find(a), find(b)
-        if a == b:
+        _e, a, b, va, vb, ci = heapq.heappop(heap)
+        if find(a) != a or find(b) != b or ver[a] != va or ver[b] != vb or a == b:
             continue
         fa, fb = adj.get(a, set()), adj.get(b, set())
         shared = {fi for fi in fa & fb if alive[fi]}
         if not shared:
             continue
-        mid = (Q[a] + Q[b]) / 2
+        pos = (Q[a], Q[b], (Q[a] + Q[b]) / 2)[ci].copy()
         ok = True
         for fi in (fa | fb) - shared:
             if not alive[fi]:
                 continue
             n0 = normal(FP[fi])
-            n1 = normal(FP[fi], {a, b}, mid)
+            n1 = normal(FP[fi], {a, b}, pos)
             if np.dot(n0, n1) <= 0.2 * np.linalg.norm(n0) * np.linalg.norm(n1):
                 ok = False
                 break
         if not ok:
             continue
         parent[a] = b
-        Q[b] = mid
+        Q[b] = pos
+        K[b] = K[a] + K[b]
+        ver[b] += 1
         for fi in shared:
             alive[fi] = False
             count -= 1
         adj[b] = {fi for fi in fa | fb if alive[fi]}
+        nbrs = set()
         for fi in list(adj[b]):
             f = [find(v) for v in FP[fi]]
             if len(set(f)) < 3:
@@ -520,9 +714,10 @@ def decimate(P: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np.
                 count -= 1
                 adj[b].discard(fi)
                 continue
-            for v in f:
-                if v != b:
-                    heapq.heappush(heap, (float(np.linalg.norm(Q[v] - Q[b])), min(v, b), max(v, b)))
+            nbrs |= {v for v in f if v != b}
+        for v in nbrs:
+            e, i = best(min(v, b), max(v, b))
+            heapq.heappush(heap, (e, min(v, b), max(v, b), ver[min(v, b)], ver[max(v, b)], i))
     out = np.array([Q[find(int(v))] for v in pid])
     return out, F[np.array(alive, bool)]
 
