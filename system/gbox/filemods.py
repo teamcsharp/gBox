@@ -192,17 +192,40 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     return out / Path(rom).relative_to(game_root(rom))
 
 
+def _hash_sidecar(d: Path) -> Path:
+    """Digests of a mod folder's files, kept beside it (not inside: the folder's file list is its manifest), so a
+    restart doesn't re-hash a multi-GB disc image before the first launch can fetch the manifest."""
+    return d.parent / f".{d.name}.sha256.json"
+
+
 def _files(d: Path, hashes: bool = False) -> list[dict]:
-    files = []
+    files, saved, dirty = [], {}, False
+    if hashes:
+        try:
+            saved = json.loads(_hash_sidecar(d).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            saved = {}
     for p in sorted(d.rglob('*')):
         if not p.is_file() or p.name.endswith('.part'): continue
         stat = p.stat(); item = {'path': p.relative_to(d).as_posix(), 'size': stat.st_size}
         if hashes:
             key = (str(p.resolve()), stat.st_mtime_ns, stat.st_size)
+            row = saved.get(item['path'])
+            if key not in _HASHES and isinstance(row, list) and row[:2] == [stat.st_mtime_ns, stat.st_size]:
+                _HASHES[key] = row[2]
             if key not in _HASHES:
                 with p.open('rb') as stream: _HASHES[key] = hashlib.file_digest(stream, 'sha256').hexdigest()
             item['sha256'] = _HASHES[key]
+            if row != [stat.st_mtime_ns, stat.st_size, item['sha256']]:
+                saved[item['path']], dirty = [stat.st_mtime_ns, stat.st_size, item['sha256']], True
         files.append(item)
+    if dirty:
+        try:
+            tmp = _hash_sidecar(d).with_suffix('.tmp')
+            tmp.write_text(json.dumps(saved), encoding='utf-8')
+            os.replace(tmp, _hash_sidecar(d))
+        except OSError:
+            pass                                    # a read-only cache still answers, it just re-hashes next restart
     return files
 
 
@@ -294,7 +317,10 @@ def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
     with _FETCH_GUARD:
         lock = _FETCH_LOCKS.setdefault(key, threading.Lock())
     with lock:
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        if progress:
+            progress(20, f"Checking build {name} against the central collection (Spark)")
+        # the Spark hashes a new or just-restarted build's disc image (1+ GB on its HDD) before answering
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
         if r.status_code == 404:
             return name  # Local-only mods still have a local completed marker.
         r.raise_for_status()
@@ -352,7 +378,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
     import httpx
     out = dest or mod_dir(cfg, game_id, name)
     if files is None:
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
         if r.status_code == 404:
             return False
         r.raise_for_status()
@@ -418,7 +444,7 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
         d, game_id, name = meta.parent, meta.parent.parent.name, meta.parent.name
         if (d / STAGED_MARK).exists():
             continue                                       # a local staging copy of a collection mod, not a new build
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=60)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
         have = {f["path"]: f["size"] for f in r.json().get("files", [])} if r.status_code == 200 else {}
         todo = [f for f in _files(d) if have.get(f["path"]) != f["size"] and not f["path"].endswith(".part")]
         for f in sorted(todo, key=lambda f: f["path"] == ".gbox-mod.json"):
