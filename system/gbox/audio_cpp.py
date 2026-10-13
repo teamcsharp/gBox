@@ -212,7 +212,7 @@ class Service:
             self.stopping.clear()
             if not self.managed or self.running():
                 return self._wait() if wait and self.managed else self.status()
-            if self.health(1.0):
+            if self.health(1.0) is not None:
                 self.adopted = True
                 return self.status()
             if reason := available(self.cfg):
@@ -222,6 +222,7 @@ class Service:
             self.dir.mkdir(parents=True, exist_ok=True)
             conf = self.dir / "server.json"
             conf.write_text(json.dumps(server_config(self.cfg), indent=2), encoding="utf-8")
+            # a .py "binary" is a stand-in server (tests/fake_audiocpp_server.py) run by this Python
             cmd = ([sys.executable, str(binary)] if binary.suffix == ".py" else [str(binary)])
             cmd += [*self.cfg.audio_cpp.args, "--config", str(conf)]
             log = open(self.dir / "server.log", "ab")
