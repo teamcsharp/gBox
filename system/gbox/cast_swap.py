@@ -427,6 +427,8 @@ STRATEGIES = {
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
     "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
                                "(etm_swap.build_cast)"),
+    "gbox.mgs2_swap": ("pairs", "Metal Gear Solid 2 PS2: every slot's kms models (every stage that carries them) "
+                                "rebuilt in one STAGE.DAT / STAGE2.DAT image (mgs2_swap.build_cast)"),
     "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
@@ -831,6 +833,11 @@ def _gta_vc(ctx, game, pairs, name, inp):
 def _etm(ctx, game, pairs, name, inp):
     from . import etm_swap
     return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _mgs2(ctx, game, pairs, name, inp):
+    from . import mgs2_swap
+    return mgs2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _oot(ctx, game, pairs, name, inp):
     from . import oot_swap
     return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
@@ -918,6 +925,7 @@ BUILDERS = {
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
     "gbox.etm_swap": _etm,
+    "gbox.mgs2_swap": _mgs2,
     "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,

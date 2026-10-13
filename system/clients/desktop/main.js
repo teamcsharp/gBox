@@ -1,7 +1,7 @@
 // gBox desktop manager (Electron main process).
 // Manages: the Spark control plane (over SSH: install/update, start/stop, logs), the local Windows worker,
 // dependency setup on both nodes, and hosts the gBox web UI with the API token injected.
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
 // The shell and its guest are one dark app, including native controls and first paint.
@@ -155,7 +155,9 @@ async function api(p, body) {
   const r = await fetch(settings().apiUrl + p, {
     method: body ? "POST" : "GET", body: body && JSON.stringify(body),
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
-    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000 : 8000),
+    // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
+    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
+      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000),
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -199,6 +201,7 @@ ipcMain.handle("audio:volume", (_e, value) => {
   return { volume: volumePercent(settings().volume), available: process.platform === "win32" && !!audioVolumeHelper };
 });
 app.on("before-quit", () => shutdownSessions());
+app.on("will-quit", () => { hotkeys.release(); try { globalShortcut.unregisterAll(); } catch {} });   // no key stays taken
 
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
@@ -356,6 +359,18 @@ function startPadWatcher() {
 }
 
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
+// a finished build (the embedded view's bell tray, gbox/build_notify.py): an OS notification while gBox is not in front;
+// a click brings the window back with the tray open. Kept referenced until closed (a collected one loses its click).
+const OS_NOTES = new Set();
+ipcMain.handle("notify:os", (_e, n = {}) => {
+  if (!Notification.isSupported() || (win && win.isVisible() && win.isFocused() && !win.isMinimized())) return false;
+  const note = new Notification({ title: String(n.title || "gBox").slice(0, 120), body: String(n.body || "").slice(0, 240) });
+  OS_NOTES.add(note);
+  note.on("click", () => { OS_NOTES.delete(note); if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); win.webContents.send("notify:click", n.id || ""); } });
+  note.on("close", () => OS_NOTES.delete(note));
+  note.show();
+  return true;
+});
 
 ipcMain.handle("report:clipboard-files", async () => {
   if (process.platform !== "win32") return [];
@@ -497,7 +512,7 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
 }));
 // Universal game hotkeys, the same for every emulator: F2 save state, F4 load state, F3 autoplay on/off.
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
-// through global shortcuts (registered only while a game is docked, see f3()).
+// through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
 const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "reset" };   // F5 = the console's reset switch
 ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
@@ -511,9 +526,10 @@ function embedCmd(cmd) {
     embedder = spawn(venvPython(), ["-u", path.join(__dirname, "winembed.py")], { windowsHide: true });
     embedder.stdout.on("data", d => { embedBuf += d; let i; while ((i = embedBuf.indexOf("\n")) >= 0) { const l = embedBuf.slice(0, i); embedBuf = embedBuf.slice(i + 1); const m = JSON.parse(l);
       if (m.event === "whip") { pickWhip(m); continue; }
+      if (m.event === "foreground") { hotkeys.setFront(!!m.front); continue; }   // gBox gained / lost the foreground
       if (m.event) { if (win) { const k = screen.getDisplayMatching(win.getBounds()).scaleFactor; win.webContents.send("embed:event", { ...m, x: m.x / k, y: m.y / k }); } continue; }
       const r = embedQ.shift(); r && r(m); } });
-    embedder.on("close", () => { embedder = null; embedded = null; embedQ.splice(0).forEach(r => r({ ok: false })); });
+    embedder.on("close", () => { embedder = null; embedded = null; fgWatched = 0; hotkeys.setFront(false); embedQ.splice(0).forEach(r => r({ ok: false })); });
   }
   return new Promise(res => { embedQ.push(res); embedder.stdin.write(JSON.stringify(cmd) + "\n"); });
 }
@@ -563,14 +579,28 @@ async function pickWhip(m) {
 // Overlay swap (overlay.js): a collection model tracked over the player's character in the docked game, any game
 const OV = require("./overlay")({ app, ipcMain, BrowserWindow, getWin: () => win, venvPython, settings, token, send });
 // F3 = autoplay while a game is docked: the game window owns the keyboard, so it has to be a global shortcut.
-// ponytail: F3 is taken system-wide only while a game is docked in gBox; scope it to foreground if that ever bites.
+// F2 save · Shift/Ctrl+F2 slot ± · F4 load · Alt+Enter / F11 = full screen on/off (the docked game owns the keyboard, so
+// without these there is no way out of full screen from inside the game; Esc stays the game's own key).
+// Scoped to gBox: held only while a game is docked AND gBox (or the game docked in it) is the foreground window. Any other
+// application in front (Blender: F2 rename, F3 search, Ctrl+I invert, F11...) gets its keys; nothing is registered then.
+const hotkeys = require("./hotkey-scope")({ globalShortcut, onKey: a => win && win.webContents.send("hotkey", a),
+  keys: { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper",
+          "Alt+Enter": "fullscreen", "F11": "fullscreen" } });
+let fgWatched = 0;                                               // the gBox HWND winembed.py reports the foreground for
+const appHwnd = () => win && !win.isDestroyed() ? Number(win.getNativeWindowHandle().readBigUInt64LE(0)) : 0;
+// Ask winembed.py whether gBox is in front now (and have it report every change from then on). Only for a docked game,
+// which runs the helper anyway; with no answer the hotkeys stay released.
+async function checkFront() {
+  const hwnd = appHwnd();
+  if (!hwnd || process.platform !== "win32") return hotkeys.setFront(false);
+  fgWatched = hwnd;
+  const r = await embedCmd({ op: "watch", app: hwnd }).catch(() => null);
+  if (!(r && r.ok)) fgWatched = 0;
+  return hotkeys.setFront(!!(r && r.ok && r.front));
+}
 function f3(on) {
-  // F2 save · Shift/Ctrl+F2 slot ± · F4 load · Alt+Enter / F11 = full screen on/off (the docked game owns the keyboard, so
-  // without these there is no way out of full screen from inside the game; Esc stays the game's own key)
-  const keys = { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper",
-                 "Alt+Enter": "fullscreen", "F11": "fullscreen" };
-  try { if (on && !globalShortcut.isRegistered("F3")) Object.entries(keys).forEach(([k, a]) => globalShortcut.register(k, () => win && win.webContents.send("hotkey", a)));
-        else if (!on && globalShortcut.isRegistered("F3")) Object.keys(keys).forEach(k => globalShortcut.unregister(k)); } catch {}
+  hotkeys.setDocked(on);
+  if (on && appHwnd() !== fgWatched) checkFront();
 }
 let embedSyncQueue = Promise.resolve();
 const syncGameSurface = require("./game-surface-main")({ getWin: () => win, embedCmd,
@@ -839,7 +869,13 @@ app.whenReady().then(() => {
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
   win.loadFile(path.join(__dirname, "index.html"));
   startPadWatcher();
-  win.on("focus", () => win.webContents.send("app-focus"));   // coming back to gBox: the renderer decides whether the game gets focus
+  win.on("focus", () => { win.webContents.send("app-focus"); if (hotkeys.docked) checkFront(); });   // coming back to gBox: the renderer decides whether the game gets focus
+  // Another app took the foreground / gBox minimized: release the game hotkeys at once, then confirm with the helper (a
+  // blur can also mean the docked game took the keyboard inside gBox, which keeps them).
+  win.on("blur", () => { hotkeys.setFront(false); if (hotkeys.docked) checkFront(); });
+  win.on("minimize", () => hotkeys.setFront(false));
+  win.on("hide", () => hotkeys.setFront(false));
+  win.on("restore", () => { if (hotkeys.docked) checkFront(); });
   cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
     if (settings().autoStartWorker) startWorker();
