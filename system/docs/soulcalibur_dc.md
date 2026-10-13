@@ -260,9 +260,34 @@ The donor pools are the 12 SA2 entries and the 9 replacement-ready SM64DS humano
 `D:\gBox\research\soulcalibur\evidence\*_before_after.png`. These are offline renders of every costume, stock next to
 the build read back from the disc.
 
-**Not verified in game.** No session was started. Things to check when the operator plays it:
+### In game: v1 exploded; v2 and v3 are the fixes
 
-- the load (the HUMAN work buffer was never exceeded: every entry keeps its stock size)
-- lighting with the inward normals
-- the hook's randomness on Flycast's TMU emulation
+**v1 (`sc_sonic_vs_mario_random`) exploded in game.** Ivy and Taki were huge stretched triangles, and Nightmare
+was a blob with spikes. Its rows followed the reader's guess at the format, not the engine (see "Skinning, as the
+engine runs it"):
+
+- Stores were scattered over slots, but the engine writes each bone's stores to consecutive slots.
+- Rows were not weight-premultiplied.
+
+Through `engine_skin`, 13-60% of the slots v1 draws are never written in a frame, and adds pile onto stale
+memory. Its own read-back missed this because it re-read the build with the same reader.
+
+**v2 (`sc_sonic_vs_mario_random_v2`)** is the engine-exact skinning. In-game frames from i9-NUC
+(`evidence_capture`) show whole bodies. The SM64DS donors were lit in dark, blotchy patches, because their
+library normals disagree with their own faces.
+
+**v3 (`sc_sonic_vs_mario_random_v3`)** adds the geometric normals and the skinned normal rows. In game, Luigi,
+Mario, Eggman and Shadow are smoothly lit. The frames are in `D:\gBox\research\soulcalibur\evidence\v2\`, listed in
+`evidence.json`.
+
+Known limits:
+
+- The SM64DS Peach library entry (`sm64ds_peach`) is stretched before any fitting: one primitive spans 17 units
+  with 5.5-unit edges. Ivy's and Seung Mina's Peach costumes show long spikes until that donor is fixed upstream.
+- VS BATTLE and TEAM BATTLE wait for "PRESS 2P START". `evidence_capture` only drives the player-1 pad, so the
+  in-game frames are Arcade fights, player 1 against the CPU. Both fighters still load through the patched loader.
+
+Still unchecked:
+
+- the hook's randomness on Flycast's TMU emulation, beyond the costumes seen
 - how the green-key and blend materials behave now that donors use opaque `0x3x` materials only
