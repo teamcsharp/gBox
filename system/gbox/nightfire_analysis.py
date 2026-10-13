@@ -63,7 +63,7 @@ def census(levels: dict[str, tuple[bytes, dict]]) -> dict:
             types[TYPE_NAMES.get(e["type"], f"type{e['type']}")] += 1
             if e["type"] == 3:
                 skins[e["name"].lower()].append(name)
-                if int(e["name"], 16) == BONDCOMBAT_SKIN:
+                if e.get("hash") and int(e["hash"], 16) == BONDCOMBAT_SKIN:
                     p = data[e["offset"]:e["offset"] + e["size"]]
                     bond[name] = {"size": e["size"], "sha256": hashlib.sha256(p).hexdigest(),
                                   **skin_header(p)}

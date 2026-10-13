@@ -83,6 +83,19 @@ def test_method1_rejects_wrong_unpacked_size():
         edl.decompress(_edl(w.words(), 2))
 
 
+def test_method1_rejects_truncated_stream_and_overrun():
+    w = _W()
+    w.put(0, 1); w.put(3, 15); w.put(0x41, 8)              # stored block of 3 cut after one byte
+    body = w.words()
+    with pytest.raises(edl.EDLError):
+        edl.decompress(_edl(body[:4], 3))
+    w = _W()
+    w.put(0, 1); w.put(0x7FFF, 15)                          # stored block far beyond the unpacked size
+    with pytest.raises(edl.EDLError):
+        edl.decompress(_edl(w.words(), 3))
+
+
+
 def test_skin_header():
     p = struct.pack("<I3f", 0x05000007, 1.0, 1.0, 1.0) + bytes([1, 0, 0x16, 0x3C, 0])
     assert na.skin_header(p) == {"hash": "0x05000007", "scale": [1.0, 1.0, 1.0], "head": [1, 0, 0x16, 0x3C, 0]}
