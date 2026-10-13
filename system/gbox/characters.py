@@ -1610,6 +1610,12 @@ DEDICATED = [
     ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
      lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Metal Gear Solid 2: Substance (USA): the catalog's cb7aae71edb10cd3 (filed windows_native by HyperSpin's "Microsoft
+    # XBOX" list) is the PS2 DVD-9 SLUS-20554 (CHD, both layers read in place): stage kms models + texture packs
+    # (encrypted, zlib pages) -> rigged GLBs; Snake, Raiden, the soldier variants and main cast (docs/mgs2.md)
+    ("mgs2", lambda t, p: "metal gear solid 2" in t and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.mgs2_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mgs2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
@@ -2461,13 +2467,14 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, mgs2_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
         mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
+        mod = mgs2_swap if g["game_id"] in mgs2_swap.GAME_IDS else mod           # Metal Gear Solid 2 (PS2 DVD)
         from . import retarget_profile as _RP                # game-wide Retarget editor profiles
         chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
@@ -2486,11 +2493,13 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
         game = _game(ctx, inp)
-        from . import mgs_vr_swap, twin_snakes_swap
+        from . import mgs2_swap, mgs_vr_swap, twin_snakes_swap
         if game["game_id"] in mgs_vr_swap.GAME_IDS:          # VR Missions: rebuild + session_swap at the same moment
             return {"result": mgs_vr_swap.live_use(ctx, meta, game, inp)}
         if game["game_id"] in twin_snakes_swap.GAME_IDS:    # Twin Snakes GC: mod + session swap + loaded-stage write
             return {"result": twin_snakes_swap.live_use(ctx, meta, game, inp)}
+        if game["game_id"] in mgs2_swap.GAME_IDS:          # MGS2: build the slot the whip landed on, swap it in place
+            return {"result": mgs2_swap.use(ctx, meta, game, inp)}
         from . import oot_hot_swap
         return {"result": oot_hot_swap.use(ctx, meta, game, inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
@@ -2596,6 +2605,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import etm_swap
     if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
         return {"result": out | etm_swap.use(ctx, meta, game, inp)}
+    from . import mgs2_swap
+    if gid in mgs2_swap.GAME_IDS and (mgs2_swap.is_slot(inp.slot) or inp.session_id):
+        # Metal Gear Solid 2 Substance (PS2 DVD): snake | raiden | player | soldiers | soldier_* | olga ... -> a
+        # patched STAGE.DAT image; with a session id it replaces the running game through session_swap
+        return {"result": out | mgs2_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)

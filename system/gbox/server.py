@@ -3203,6 +3203,14 @@ def create_app(config: Config) -> FastAPI:
                     d["library"] = {"slug": hit.get("slug"), "name": hit.get("name")}
             except Exception:
                 pass
+            if "metal gear solid 2" in (w.game or "").lower():   # MGS2: the cast slot the whipped thing belongs to
+                try:
+                    from . import mgs2_swap
+                    slot = mgs2_swap.slot_for_name(d.get("name") or "", None, d.get("kind"))
+                    if slot:
+                        d["slot"] = slot
+                except Exception:
+                    pass
             return d
 
         with concurrent.futures.ThreadPoolExecutor(2) as ex:

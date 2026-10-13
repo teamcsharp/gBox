@@ -5337,7 +5337,7 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes)</button>
+    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes; MGS2 cast)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
