@@ -365,3 +365,12 @@ def test_owned_disc_dm1_textures_and_bond_materials(tmp_path):
     import hashlib
     png = auf_ngc.png_bytes(auf_ngc.texture_rgba(pkg, st[0]), 128, 128)
     assert hashlib.sha256(png).hexdigest() == "e8e98b385732d3b42055788b5e66fc3654a9b706f8bff221e8597d26b9424a31"
+
+
+def test_boa_and_restable_reject_truncated_input():
+    with pytest.raises(ValueError):
+        auf_ngc.boa_expand(b"\xff\x41", 4)          # literal flags promise more bytes than exist
+    with pytest.raises(ValueError):
+        auf_ngc.boa_expand(b"\x00\x13", 4)          # back-reference cut in half
+    with pytest.raises(ValueError):
+        auf_ngc.parse_restable(struct.pack(">I", 1000) + bytes(12))

@@ -123,9 +123,13 @@ def boa_expand(src: bytes, size: int, pos: int = 0) -> tuple[bytes, int]:
             if len(out) >= size:
                 break
             if flags >> bit & 1:
+                if i >= n_src:
+                    raise ValueError("BOA literal past the end of the stream")
                 out.append(src[i])
                 i += 1
                 continue
+            if i + 1 >= n_src:
+                raise ValueError("BOA back-reference past the end of the stream")
             b0, b1 = src[i], src[i + 1]
             i += 2
             n = b0 & 15
@@ -198,7 +202,11 @@ class Resource:
 
 
 def parse_restable(table: bytes) -> list[Resource]:
+    if len(table) < 0x10:
+        raise ValueError("restable shorter than its 0x10-byte header")
     count = struct.unpack_from(">I", table, 0)[0]
+    if 0x10 + count * 16 > len(table):
+        raise ValueError("restable: %d records overrun the table" % count)
     out = []
     for i in range(count):
         no, do, sz, hv = struct.unpack_from(">4I", table, 0x10 + i * 16)
