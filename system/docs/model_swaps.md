@@ -611,6 +611,7 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 |---|---|---|---|---|
 | Final Fantasy VII (Discs 1-3) | psx | ff7 (battle LZS + field BCX) | cloud (+2 variants), ff7_tifa, 9 field models (7 with roles); not ripped: battle models of Barret, Aerith, Red XIII, Cid, Yuffie, Vincent, Cait Sith (no auto roles yet) | **gbox.ff7_swap**: player (Cloud field + battle) |
 | Parasite Eve (Discs 1-2) | psx | parasite_eve | aya + all 4 other outfits | **gbox.pe_swap**: player (Aya, all outfits) |
+| Parasite Eve II (Discs 1-2) | psx | pe2 | pe2_aya + 4 other outfits (19 bones, roles) | **gbox.pe2_swap**: player (Aya, every outfit file); built + read back, in-game check pending (docs/pe2_pipeline.md) |
 | Super Mario 64 (USA / Europe) | n64 | sm64 | mario | **gbox.sm64_swap**: player |
 | Resident Evil 4 (GC, Discs 1-2) / Wii Edition | gamecube / wii | re4gc | leon | **build_re4 (+ re4wii)**: player (+ enemies via re4gc_enemies by hand) |
 | Resident Evil 6 | xbox360 | re6_models | re6_leon, re6_helena | **gbox.re6_tool**: player, enemies, enemy:<family> |
@@ -624,7 +625,7 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 | Super Smash Bros. Melee | gamecube | melee | 27 fighters | overlay only |
 | Shenmue (Disc 1) | dreamcast | shenmue | ryo | overlay only |
 | Resident Evil 4 (2023, Steam) | pc | re4r | re4r_leon, re4r_ashley (no roles) | overlay only |
-| RE Director's Cut, RE3 Nemesis, Parasite Eve II, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
+| RE Director's Cut, RE3 Nemesis, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
 
 Regenerate it with `characters op=coverage`: `char_coverage.markdown()` prints this table from the live data. A new
 writer counts as soon as its module has `GAME_IDS` + `use()`, is listed in `char_coverage.WRITERS`, and
