@@ -202,6 +202,25 @@ def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: fl
         W[:, 0] = 1
         out.append({**{k: v for k, v in p.items() if k not in ("pos", "nrm", "J", "W", "owner")},
                     "pos": P, "nrm": N, "J": J, "W": W})
+    return _profiled(rig, out, scale, T, {tidx[b]: r for r, b in roles.items() if b in tidx}, s, sy_up, sy_dn)
+
+
+def _profiled(rig, out, scale, T, joint_role, s, sy_up, sy_dn):
+    """Fitting pop-up stages (gbox.fit_events) + the operator's retarget profile (gbox.retarget_profile)."""
+    from . import fit_events as FE, retarget_profile as RP
+    if FE.active():
+        FE.auto_model(rig.get("source"))
+        FE.stage("scale", data={"scale": float(s), "torso_up": float(sy_up / s), "torso_down": float(sy_dn / s)})
+        FE.stage("retarget", data={"roles": len(rig["roles"]), "vertices": int(sum(len(p["pos"]) for p in out))},
+                 prims=out)
+    prof = RP.profile_of(scale)
+    if prof is None:
+        FE.stage("proportion", "skipped", {"profile": "none"})
+        return out
+    feet = [T[r][1] for r in ("l_foot", "r_foot") if r in T]
+    pos = {r: v for r, v in T.items() if r in RP.ROLES}
+    out, rep = RP.apply_roles(out, pos, joint_role, prof, min(feet) if feet else None)
+    FE.stage("proportion", data=rep, prims=out)
     return out
 
 

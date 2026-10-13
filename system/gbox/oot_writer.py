@@ -327,8 +327,9 @@ def run_dl(segs: dict, addr: int, on_tri=None, st=None, depth=0, init: dict | No
         elif cmd == 0xE3:
             ln = (w0 & 0xFF) + 1
             sh = 32 - ((w0 >> 8) & 0xFF) - ln
-            mask = ((1 << ln) - 1) << sh
-            st["omh"] = (st["omh"] & ~mask) | (w1 & mask)
+            if sh >= 0:                                  # (a data word that only looks like a list: ignored)
+                mask = ((1 << ln) - 1) << sh
+                st["omh"] = (st["omh"] & ~mask) | (w1 & mask)
         elif cmd == 0xF5 and (w1 >> 24) & 7 == 0:
             st["tile0"] = (w0, w1)
         elif cmd == 0xF2 and (w1 >> 24) & 7 == 0:

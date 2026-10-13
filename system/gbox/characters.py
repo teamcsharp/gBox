@@ -49,7 +49,37 @@ def slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+_LIST_CACHE: dict = {}            # str(root) -> (built_at, root_mtime, generation, [meta])
+_LIST_GEN = [0]                  # bumped by put_meta: a write through this module refreshes the list at once
+LIST_TTL_S = 90.0                # writes that bypass put_meta show up within this long
+
+
+def _invalidate_list():
+    _LIST_GEN[0] += 1
+
+
 def list_all(root: Path, game_id: str = "") -> list[dict]:
+    """Every character entry. Cached: the library lives on an NTFS HDD where reading 645 meta.json files takes
+    ~13 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13)."""
+    import copy
+    import time as _t
+    key = str(root)
+    try:
+        rmt = Path(root).stat().st_mtime
+    except OSError:
+        rmt = 0
+    hit = _LIST_CACHE.get(key)
+    if not (hit and hit[1] == rmt and hit[2] == _LIST_GEN[0] and _t.time() - hit[0] < LIST_TTL_S):
+        hit = (_t.time(), rmt, _LIST_GEN[0], _list_all_uncached(root))
+        _LIST_CACHE[key] = hit
+    out = copy.deepcopy(hit[3])
+    if game_id:
+        for m in out:
+            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
+    return out
+
+
+def _list_all_uncached(root: Path) -> list[dict]:
     out = []
     for p in sorted(Path(root).glob("*/meta.json")):
         try:
@@ -58,8 +88,6 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
             continue
         if not isinstance(m, dict) or not m.get("name"):
             continue                    # a bookkeeping folder (e.g. "shared": slug + targets only) is not a character
-        if game_id:
-            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
         out.append(m)
     return sorted(out, key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
 
@@ -88,18 +116,27 @@ def find(chars: list[dict], query: str) -> dict | None:
 
 
 def put_meta(root: Path, meta: dict) -> dict:
+    """Write an entry's meta.json. Only a character (a slug AND a name) is written: a bookkeeping record (the
+    'shared' folder holding just slug + targets, 2026-10-13) is not a library entry and made /api/characters 500."""
+    if not isinstance(meta, dict) or not str(meta.get("slug") or "").strip() or not str(meta.get("name") or "").strip():
+        raise ValueError("not a character library entry (meta.json needs a slug and a name): "
+                         + json.dumps(meta, default=str)[:200])
     d = Path(root) / meta["slug"]
     d.mkdir(parents=True, exist_ok=True)
     import uuid
     tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
+    _invalidate_list()
     return meta
 
 
 def set_target(root: Path, slug: str, game_id: str, entry: dict) -> dict:
-    """Record a built swap mod (or a retargeted rig) for a target game; merges by (slot, mod)."""
+    """Record a built swap mod (or a retargeted rig) for a target game; merges by (slot, mod). Only on an existing
+    character: a nameless folder is bookkeeping, not an entry (KeyError, the route answers 404)."""
     m = get(root, slug)
+    if not m.get("name"):
+        raise KeyError(slug)
     lst = m.setdefault("targets", {}).setdefault(game_id, [])
     for t in lst:
         if t.get("slot") == entry.get("slot") and (t.get("mod") == entry.get("mod") or not t.get("mod")):
@@ -567,7 +604,8 @@ class CharIn(BaseModel):
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
-    launch: bool = True                    # use: launch after building
+    strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
+    launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
@@ -587,7 +625,7 @@ class CharIn(BaseModel):
     near: str = ""                         # place: next to this actor ("Saria", "Deku Tree")
     yaw: float | None = None               # place: facing, degrees (default: towards the player)
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
-    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
+    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest; use slot=cast (007 Agent Under Fire GC): [{target?, donor}] (target = a body, model:<body>, player/enemies/bosses/npcs/bots/all), untargeted donors dealt over every other body
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
     # cast_swap (gbox.cast_swap): the entire cast of target_game replaced by the cast of source, one mod
     target_game: str = ""                  # cast_swap: the game whose cast is replaced (catalog id or title; default game/game_id)
@@ -1357,6 +1395,12 @@ def _mgs_vr_run(ctx, game, entry, work):
                      'the fixed KMD object map (characters.MGS_VR_SNAKE_OBJECTS), checked against the decoded tree.'}
 
 
+def _auf_run(ctx, game, e, work):
+    """One AUF body (gbox.auf_chars): body + head of its representative level as a rigged, textured GLB with roles."""
+    from . import auf_chars
+    return auf_chars.extract_run(ctx, game, e, work)
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
@@ -1394,6 +1438,11 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
+    # 007 Agent Under Fire GC: every body model of the cast (Bond's outfits, henchmen, bosses, npcs, the 16 multiplayer
+    # characters) as a rigged GLB from its representative level (gbox.auf_chars); the writer's slots stay in
+    # gbox.auf_swap (roster / cast_slots, characters op=use slot=...)
+    ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
+     lambda: __import__("gbox.auf_chars", fromlist=["x"]).roster(), _auf_run),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1471,7 +1520,18 @@ def dedicated_entries(config, game, name, roster):
 # extractor -> (module with READER_VERSION [and needs_refresh(meta)], the meta field its entries record the version in;
 # entries without the field were made by version 1). A newer reader re-extracts older entries (extract_dedicated,
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader")}
+# AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
+# stored collection made by an older reader is collected again at the next launch (character_collection).
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader")}
+
+
+def reader_version(extractor: str | None) -> int | None:
+    """The current READER_VERSION of a versioned DEDICATED reader, else None."""
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    return int(getattr(importlib.import_module(spec[0]), "READER_VERSION", 1))
 
 
 def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
@@ -1558,7 +1618,7 @@ def collect(ctx, inp):
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     from . import char_coverage
     return collection_status(results) | {
-        'game_id': game['game_id'], 'extractor': name,
+        'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
@@ -2190,6 +2250,8 @@ def characters_tool(inp: CharIn, ctx):
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        from . import retarget_profile as _RP                # game-wide Retarget editor profiles
+        chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2236,6 +2298,16 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"unknown op {inp.op} (list | get | use | overlay | extract | add | blender | environments | coverage)")
     game = _game(ctx, inp)
     gid = game["game_id"]
+    from . import retarget_profile as _RP, fit_events as _FE   # the operator's Retarget editor profile + Fitting pop-up
+    profiled = _RP.apply_to_meta(meta, gid, inp.slot)
+    if profiled is not meta:
+        sk = _RP.slot_key(inp.slot)
+        if not inp.rebuild and any(t.get("needs_rebuild") and (sk == "*" or _RP.slot_key(t.get("slot")) in (sk, "*"))
+                                   for t in (meta.get("targets") or {}).get(gid, [])):
+            inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
+        meta = profiled
+    _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
+                      meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
@@ -2274,6 +2346,11 @@ def characters_tool(inp: CharIn, ctx):
         # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>; enemy:<name> | enemies -> pso_<slug>_as_<name>
         # (gbox.pso_enemy: the character on the enemy's node tree and motions)
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
+    from . import auf_swap
+    if gid in auf_swap.GAME_IDS and auf_swap.is_slot(inp.slot):
+        # 007 Agent Under Fire GC: player | enemies | bosses | npcs | bots | all | model:<body> | cast (+pairs
+        # [{target, donor}]) -> auf_<slot>_<plan hash> (every level's .ngc rebuilt in a disc-image copy)
+        return {"result": out | auf_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
