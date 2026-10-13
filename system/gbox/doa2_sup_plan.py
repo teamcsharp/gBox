@@ -205,8 +205,8 @@ def _plan(primitives, maximum_seams=MAX_SEAMS, *, enforce=True, allowed=None, si
         # model, as do opaque single-pair triangles whose pair it already draws.
         # Every other triangle sits in a model of its exact pair, drawn once,
         # opaque and transparent material together like the native seam models.
-        single = len(edges) == 1 and not (row['opaque'] and edges <= multi_edges[a])
-        key = (a, next(iter(edges))[1]) if single else (a, None)
+        alone = len(edges) == 1 and not (row['opaque'] and edges <= multi_edges[a])
+        key = (a, next(iter(edges))[1]) if alone else (a, None)
         by_model[key].append(row)
     models = []
     for (a,only_b), rows in sorted(by_model.items(),key=lambda item:(item[0][0], -1 if item[0][1] is None else item[0][1])):
