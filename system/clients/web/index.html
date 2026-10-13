@@ -1574,7 +1574,8 @@ async function smartSearchInit(sid) {
 // when the game has run since.
 function examineView(sid, s) {
   const local = !!(s.detail && s.detail.local_window);
-  return `<div class="exam" id="exam" data-sid="${esc(sid)}" data-local="${local ? 1 : 0}">
+  const support = (s.detail && s.detail.scene_capture) || null;      // capability matrix (gbox/scene_support.py)
+  return `<div class="exam" id="exam" data-sid="${esc(sid)}" data-local="${local ? 1 : 0}" data-support="${esc(JSON.stringify(support))}">
     <div class="exv" id="exv"><div class="exhint">drag: orbit · right-drag: pan · wheel: zoom · click: inspect a draw call · double-click: orbit around it</div>
       <div class="exprog" id="exprog"><span id="exmsg">Pausing…</span><i id="exbar"></i></div></div>
     <div class="side">
@@ -1605,6 +1606,8 @@ async function examineAfter(sid) {
   if (worker && !worker.tools.includes("scene_capture")) {
     examineFallback(sid, worker.unavailable?.scene_capture || "This worker does not support 3D frame capture."); return;
   }
+  const support = examineSupport(sid);
+  if (support && support.status !== "supported" && !EXAM.cache[sid]) { examineFallback(sid, support.reason, support); return; }
   try {
     EXAM.mod = EXAM.mod || await import("/viz/examine3d.js");
   } catch (e) { if (current()) examineFallback(sid, "3D viewer unavailable: " + e.message); return; }
@@ -1638,11 +1641,22 @@ async function examineAfter(sid) {
   if (c && !c.stale) { done(); return; }   // same frame: instant
   examineCapture(sid, say, done);
 }
-function examineFallback(sid, message) {
+function examineSupport(sid) {
+  const el = $("#exam");
+  if (!el || el.dataset.sid !== sid) return null;
+  try { return JSON.parse(el.dataset.support || "null"); } catch { return null; }
+}
+function examineFallback(sid, message, support) {
   if (EXAM.sid !== sid || $("#exam")?.dataset.sid !== sid) return;
+  support = support || examineSupport(sid);
   EXAM.viewer?.dispose(); EXAM.viewer = null;
   $("#exv").innerHTML = `<div style="padding:16px"><p>${esc(message)}</p><p class="mut">Live game view. Inspect remains available for this game; a 3D scene requires a supported graphics capture.</p><img style="max-width:100%;max-height:55vh" alt="Live game frame" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}"><p><button class="act pri" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect this game</button><button class="act" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Retry 3D capture</button></p></div>`;
-  if (/without Examine 3D/.test(message)) {
+  if (support && support.status !== "supported") {
+    const label = support.status === "unsupported" ? "2D-only: no 3D capture path for this emulator yet"
+      : support.driver ? `3D capture needs a capture session on ${support.driver} (not started automatically yet)` : "Relaunch under capture to examine in 3D";
+    $("#exv").firstElementChild.insertAdjacentHTML("afterbegin", `<p class="mut" id="ex_support" data-status="${esc(support.status)}">${esc(label)}</p>`);
+  }
+  if (/without Examine 3D/.test(message) && !(support && support.driver)) {
     $("#exv").insertAdjacentHTML("beforeend", '<button class="act" id="ex_relaunch">Save state and relaunch for 3D capture</button><p class="mut" id="ex_relaunch_msg"></p>');
     $("#ex_relaunch").onclick = () => examineRelaunch(sid).catch(e => { if (EXAM.sid === sid) $("#ex_relaunch_msg").textContent = e.message; });
   }

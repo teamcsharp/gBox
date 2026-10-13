@@ -450,8 +450,15 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
-    return {"session_id": sid, "adapter": ad.name, "capabilities": rewind.capabilities(sid, ad.get_capabilities()),
-            "detail": detail}
+    caps = rewind.capabilities(sid, ad.get_capabilities())
+    try:                                                       # Examine 3D: supported / relaunch_under_capture / unsupported
+        from .scene_support import session_support
+        detail["scene_capture"] = session_support(ad, HOST_OS)
+        caps["scene_capture"] = detail["scene_capture"]["status"]
+    except Exception as e:                                     # noqa: BLE001 - never block the launch
+        detail["scene_capture"] = {"status": "unsupported", "reason": f"capability check failed: {e}", "fallback": "frame_2d"}
+        caps["scene_capture"] = "unsupported"
+    return {"session_id": sid, "adapter": ad.name, "capabilities": caps, "detail": detail}
 
 
 _HOTKEY = {"thread": None}
