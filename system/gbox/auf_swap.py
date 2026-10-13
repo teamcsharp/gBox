@@ -119,6 +119,48 @@ MISSION_CAST = {
 }
 
 
+# body key -> the entity scripts (models/<name>.men) that wear it, all 38 levels (73 scripts)
+MEN = {
+    "biosuit": "actor_biosuit", "bond_combat": "actor_bond_combat mp_player_bondcombat",
+    "bond_graysuit": "actor_bond_graysuit", "bond_jetpack": "actor_bond_jetpack", "bond_shirt": "actor_male_hostage1",
+    "bond_tux": "actor_bond_tux bond mp_player_bondtux", "cigar_skirt": "actor_female_hostage4",
+    "embassy_guard_body": "actor_brittish_embassy_guard actor_brittish_embassy_guard_2",
+    "g8canada_body": "actor_g8canada", "g8france_body": "actor_g8france", "g8germany_body": "actor_g8germany",
+    "g8italy_body": "actor_g8italy", "g8japan_body": "actor_g8japan", "g8russia_body": "actor_g8russia",
+    "g8uk_body": "actor_g8uk", "g8us_body": "actor_g8us", "griffin_body": "actor_griffin mp_player_griffen",
+    "henchmen_vest": "actor_hench1_exp actor_thug10_mean actor_thug1_mask mp_player_thug",
+    "host1": "actor_female_hostage1", "hostage2": "actor_female_hostage2", "jackal_body": "actor_jackal_red mp_player_jackal",
+    "m_suit": "actor_female_hostage3", "malprave_gown": "actor_malprave",
+    "malprave_suit": "actor_malprave_suit actor_malprave_suit_combat mp_player_malprave",
+    "missileofficer_body": "actor_missileofficer", "natalya_body": "actor_natalya", "rigdiver_body": "mp_player_rigdiver",
+    "rigdiver_wetsuit": "actor_rigdiver_wetsuit", "scientist_male": "actor_r_labcoat", "showergirl_body": "actor_showergirl",
+    "superthug_body": "actor_superthug mp_player_superthug",
+    "thug_alpine_inside": "actor_thug_alp1_exp actor_thug_alp2_exp mp_player_alpinethug",
+    "thug_alpine_outside": "actor_thug_alp3_exp actor_thug_alp4_exp",
+    "thug_carrier": "actor_thug_carrier1_exp actor_thug_carrier2_exp actor_thug_carrier3_exp mp_player_carrierthug",
+    "thug_oilrig": "actor_thug_oilrig1_exp actor_thug_oilrig2_exp actor_thug_oilrig3_exp",
+    "thug_oilrig_mp": "mp_player_oilrigthug",
+    "thug_orchid": "actor_thug_orchid1_exp actor_thug_orchid2_exp actor_thug_orchid3_exp mp_player_orchidthug",
+    "thug_uwb": "actor_thug_uwb1_exp actor_thug_uwb2_exp actor_thug_uwb3_exp mp_player_uwbthug",
+    "twins": "actor_twin", "twins_mp": "mp_player_twin", "vip_body": "mp_actor_vip mp_actor_vip_4p", "zero": "actor_zero",
+    "zero_body": "mp_player_bloch", "zero_jetpack": "actor_zero_jetpack", "zoe_body": "actor_zoe mp_player_zoe",
+}
+
+
+def slot_for_entity(model: str, pkg: "ngc.NgcPackage | None" = None) -> str | None:
+    """Pick-whip link (#1438): an entity's model string (Entity+0x28, read by gbox.entity_probe with
+    profiles/auf-gcn-us.json, e.g. 'models/mp_player_griffen.men' for a bot) -> the writer slot 'model:<body>' that
+    replaces it, from the level package when given (its .men scripts), else from the MEN snapshot."""
+    stem = Path((model or "").replace("\\", "/")).name.lower()
+    stem = stem[:-4] if stem.endswith(".men") else stem
+    if pkg is not None:
+        for c in level_cast(pkg):
+            if Path(c.men).name.lower()[:-4] == stem:
+                return f"model:{c.key}"
+        return None
+    return next((f"model:{k}" for k, v in MEN.items() if stem in v.split()), None)
+
+
 def level_keys() -> dict[str, dict[str, str]]:
     """{level: {body key: 'actor' | 'deathmatchplayer'}} for all 37 levels with people (frontend has none)."""
     out = {lv: {k: "actor" for k in ks.split()} for lv, ks in MISSION_CAST.items()}

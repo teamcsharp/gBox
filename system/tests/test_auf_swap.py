@@ -553,6 +553,18 @@ def test_cast_plan_fixed_targets_and_seeded_deal():
     assert S.mod_name("cast", plan) == S.mod_name("cast", dict(plan)) and S.mod_name("player", plan).startswith("auf_player_")
 
 
+def test_entity_model_strings_map_to_slots():
+    # the attract-mode bot match on JAYBUILTFINALE (docs/auf-entity-analysis.md section 6)
+    assert S.slot_for_entity("models/mp_player_bondtux.men") == "model:bond_tux"
+    assert S.slot_for_entity("models/mp_player_griffen.men") == "model:griffin_body"
+    assert S.slot_for_entity("models/mp_player_bloch.men") == "model:zero_body"
+    assert S.slot_for_entity("MODELS\\\\ACTOR_THUG_ORCHID2_EXP.MEN") == "model:thug_orchid"
+    assert S.slot_for_entity("models/fx_steam.men") is None
+    assert set(S.MEN) == set(S.NAMES)
+    pkg = N.NgcPackage(level_package())
+    assert S.slot_for_entity("models/mp_player_other.men", pkg) == "model:other"
+
+
 def test_roster_and_cast_slots_list_without_collecting():
     ros = S.roster()
     assert len(ros) == len(S.NAMES) and all(r["kind"] == "slot" and r["collect"] is False for r in ros)
