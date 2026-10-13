@@ -421,6 +421,8 @@ def apply_edits(plan: list[dict], edits: list[dict], donors: list[dict], slots: 
 STRATEGIES = {
     "gbox.pso_player": ("pairs", "PSO Ver.2: every enemy pack rebuilt with its donors in one GD-ROM (gbox.pso_enemy.build_cast)"),
     "gbox.doa2_swap": ("pairs", "DOA2: the roster build (doa2_swap.use_roster: every selectable fighter in one disc)"),
+    "gbox.soulcalibur_swap": ("pairs", "SoulCalibur DC: every fighter's costumes rebuilt in one HUMAN.DAT, one GD-ROM "
+                                       "(soulcalibur_swap.build_cast)"),
     "gbox.defjam_writer": ("pairs", "Def Jam Vendetta: op=match (every wrestler container in one data.bin)"),
     "gbox.yukes_sd": ("pairs", "SmackDown! 2: op=match (every wrestler in one disc)"),
     "gbox.aki_wrestling": ("pairs", "No Mercy / WCW: op=match (every wrestler in one ROM)"),
@@ -919,6 +921,14 @@ def _twin_snakes(ctx, game, pairs, name, inp):
     return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
+def _soulcalibur(ctx, game, pairs, name, inp):
+    from . import soulcalibur_swap
+    try:
+        return soulcalibur_swap.build_cast(ctx, game, pairs, name)
+    except Exception as e:                                # noqa: BLE001 - the disc build failed as a whole
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
+
+
 def _soulcalibur2(ctx, game, pairs, name, inp):
     from . import soulcalibur2_swap
     return soulcalibur2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
@@ -929,6 +939,7 @@ BUILDERS = {
     "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
+    "gbox.soulcalibur_swap": _soulcalibur,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
     "gbox.yukes_sd": _match_builder("yukes_sd"),
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
