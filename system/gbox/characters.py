@@ -657,6 +657,7 @@ class CharIn(BaseModel):
     strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
     launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
+    target: str = ""                       # use / live_use: what the pick whip identified there ("soldier", "Snake")
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
     from_clipboard: bool = False           # add: the model last sent to the gBox clipboard (Blender add-on "Send to gBox")
@@ -1505,6 +1506,11 @@ DEDICATED = [
     # gbox.auf_swap (roster / cast_slots, characters op=use slot=...)
     ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
      lambda: __import__("gbox.auf_chars", fromlist=["x"]).roster(), _auf_run),
+    # Metal Gear Solid: The Twin Snakes (GC, both discs): Snake, the Genome soldiers, bosses and NPCs as rigged,
+    # textured GLBs from stage.dat (gbox.twin_snakes; writer gbox.twin_snakes_swap, docs/twin_snakes.md)
+    ("twin_snakes", lambda t, p: "twin snakes" in t and p == "gamecube",
+     lambda: __import__("gbox.twin_snakes", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.twin_snakes", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1579,6 +1585,9 @@ def dedicated_entries(config, game, name, roster):
                          else f"{prefix}_{w['group']}_{w['member']}_{slugify(w['name'])}",
                  "name": w['name'], "aliases": [f"{game['title']} {w['name']}", f"{w['group']}-{w['member']}"],
                  "kind": "character"} for w in aki_wcw.roster(rom)]
+    if name == "twin_snakes":                             # each disc carries part of the cast (Liquid: disc 2)
+        from . import twin_snakes
+        roster = functools.partial(twin_snakes.roster, twin_snakes.disc_of(game))
     root = library_root(config)
     entries = []
     for entry in roster():
@@ -1594,7 +1603,8 @@ def dedicated_entries(config, game, name, roster):
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader")}
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
+                   "twin_snakes": ("gbox.twin_snakes", "tts_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
@@ -2310,7 +2320,9 @@ def characters_tool(inp: CharIn, ctx):
     enemy:boomas, the other BM_ENE packs); unsupported games return unsupported without capture or an LLM call. |
     live_use character=<name> session_id [x,y|slot]: bounded in-engine OoT NTSC 1.2 single-object NPC swap,
     preserving the session and pause state. Changes all loaded actors sharing that model until object reload.
-    Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay. |
+    Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay.
+    Metal Gear Solid: The Twin Snakes (GC): [x,y | slot] picks Snake / the soldier / the cast member there, builds the
+    mod, moves the session onto it with the session swap (moment kept) and writes the body into the loaded stage. |
     extract character=<what> kind=character|vehicle|object|environment session_id (or game) [x, y = the thing's point
     on the picture, 0..1]: returns it if it's already in the collection, else runs the game's own extractor, else cuts it
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
@@ -2384,8 +2396,11 @@ def characters_tool(inp: CharIn, ctx):
     if not meta:
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
-        from . import oot_hot_swap
-        return {"result": oot_hot_swap.use(ctx, meta, _game(ctx, inp), inp)}
+        from . import oot_hot_swap, twin_snakes_swap
+        g = _game(ctx, inp)
+        if g["game_id"] in twin_snakes_swap.GAME_IDS:    # Twin Snakes GC: mod + session swap + loaded-stage write
+            return {"result": twin_snakes_swap.live_use(ctx, meta, g, inp)}
+        return {"result": oot_hot_swap.use(ctx, meta, g, inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
         if not library_root(ctx.config).is_dir():
             cp = next((w["id"] for w in _api(ctx, "GET", "/api/workers") if w.get("os") == "linux" and w.get("online")), None)
@@ -2468,6 +2483,11 @@ def characters_tool(inp: CharIn, ctx):
         # 007 Agent Under Fire GC: player | enemies | bosses | npcs | bots | all | model:<body> | cast (+pairs
         # [{target, donor}]) -> auf_<slot>_<plan hash> (every level's .ngc rebuilt in a disc-image copy)
         return {"result": out | auf_swap.use(ctx, meta, game, inp)}
+    from . import twin_snakes_swap
+    if gid in twin_snakes_swap.GAME_IDS and (twin_snakes_swap.is_slot(inp.slot) or inp.x is not None or inp.slot):
+        # Metal Gear Solid: The Twin Snakes GC: player | model:<key> | enemies | bosses | npcs | all | cast | a pick
+        # point / words -> tts_<slot>_<plan hash> (stage.dat rebuilt in a disc-image copy; session swap on launch)
+        return {"result": out | twin_snakes_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]

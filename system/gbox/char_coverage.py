@@ -55,6 +55,12 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("twin_snakes_swap", ["player", "model:<key>", "enemies", "soldiers", "bosses", "npcs", "all", "cast"],
+     "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
+     "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "
+     "Johnny: re-encoded .kms on the MGS2 21-bone skeleton (native animations), donor atlas over the model's colour "
+     "texture, every gameplay stage of stage.dat rebuilt in place in a disc-image copy; pick whip / live_use writes "
+     "the body into the running game after the session swap; unverified in Dolphin"),
     ("etm_swap", ["player", "<cast slot>"],
      "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
      "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "
