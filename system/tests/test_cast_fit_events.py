@@ -210,8 +210,8 @@ def test_defjam_match_plans_every_wrestler_and_build_mod_writes_each(tmp_path, m
     lines, sink = collect()
     with FE.job(sink, tmp_path / "snaps"):
         DJ.match(None, [a, b], {}, None, [("amy", "Briggs"), ("kane", "DMX")])
-    assert events(lines)[0]["plan"] == [{"model": "Briggs", "label": "Amy -> Briggs"},
-                                        {"model": "DMX", "label": "Kane -> DMX"}]
+    assert events(lines)[0]["plan"] == [{"model": "Briggs", "label": "Amy -> Briggs", "donor": "amy", "slot": "Briggs"},
+                                        {"model": "DMX", "label": "Kane -> DMX", "donor": "kane", "slot": "DMX"}]
     monkeypatch.setattr(M, "_source_iso", lambda ctx, game: tmp_path / "djv.iso")
     jobs = {}
 
@@ -300,8 +300,9 @@ def test_no_mercy_and_smackdown_matches_plan_the_cast_and_key_each_wrestler(tmp_
         with FE.job(sink, tmp_path / "snaps"):
             mod.match(SimpleNamespace(config=None), [a], {"game_id": "23a346e48b6368a6"}, None,
                       [("amy", "Kane"), ("amy", "")])
-        assert events(lines)[0]["plan"] == [{"model": "Kane", "label": "Amy -> Kane"},
-                                            {"model": "The Rock", "label": "Amy -> The Rock"}], mod
+        assert events(lines)[0]["plan"] == [{"model": "Kane", "label": "Amy -> Kane", "donor": "amy", "slot": "Kane"},
+                                            {"model": "The Rock", "label": "Amy -> The Rock", "donor": "amy",
+                                             "slot": "The Rock"}], mod
         assert [w["fit_key"] for _m, w in seen["p"]] == ["Kane", "The Rock"]
 
 
@@ -443,7 +444,8 @@ def test_auf_cast_reports_each_body_even_from_level_worker_processes(tmp_path, w
     with FE.job(sink, tmp_path / "snaps"):
         r = S.build_mod(tmp_path / "cache", src, "auf_fit", plan, {"synthetic_wrestler": donor}, workers=workers)
     evs = events(lines)
-    assert evs[0]["plan"] == [{"model": "body", "label": "Synthetic Wrestler -> body"}]
+    assert evs[0]["plan"] == [{"model": "body", "label": "Synthetic Wrestler -> body", "donor": "synthetic_wrestler",
+                              "slot": "body"}]
     assert order(evs, "body") == FULL, order(evs, "body")
     assert_snapshots(evs, "body", ("scale", "retarget", "decimate"))
     sc = last(evs, "body", "scale")["data"]

@@ -2677,10 +2677,11 @@ function castSwapOpen(gid, title) {
   return GBoxCastSwap.open(document, { api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, retarget: retargetOpen }, { gid, title });
 }
 // Retarget editor (gbox/retarget_profile.py via clients/web/viz/retarget-editor.js): how a collection character is
-// scaled and proportioned into one game's slot; opened from the cast plan rows (✎) and the character cards (✎ Retarget…)
+// scaled and proportioned into one game's slot; opened from the cast plan rows (✎), the character cards (✎ Retarget…)
+// and the Fitting pop-up's R buttons (the Goals view); "Save and rebuild this slot" hands its job to the pop-up
 function retargetOpen(o) {
   return GBoxRetargetEditor.open(document, { api, url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, drag: dragAnywhere,
-    confirm: s => confirm(s) }, o);
+    confirm: s => confirm(s), onRebuild: r => window.GBOX_PROCESS_POPUP && window.GBOX_PROCESS_POPUP.follow((r.job_ids || [])[0]) }, o);
 }
 async function attachCover(gid, card, btn, url = "") {        // #1067: fetch box art online (or a chosen picture) and keep it for this game
   btn.disabled = true; btn.textContent = url ? "Fetching that picture…" : "Looking for the cover online…";
@@ -3820,6 +3821,7 @@ if (!new URLSearchParams(location.search).has('embedded')) {
   window.GBOX_PROCESS_POPUP = GBoxProcessPopup.mount({
     fetchJobs: () => api('/api/jobs?state=queued,running&limit=100'),
     assetUrl: p => p + (p.includes('?') ? '&' : '?') + tq(),
+    retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
   });
   window.addEventListener('pagehide', () => window.GBOX_PROCESS_POPUP.dispose(), { once: true });
 }

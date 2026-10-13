@@ -169,6 +169,8 @@ def load_rig(path: Path, roles: dict, props=()):
 
 def retarget(rig: dict, target: dict, scale=None, jmap=None):
     """Fit bind geometry continuously and preserve each mapped native influence."""
+    from gbox.retarget_profile import move_joints, profile_of
+    rig, moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
     jmap = jmap or target['jmap']
     hip_joint, chest_joint = jmap['hip'], jmap.get('chest', jmap['hip'])
     basis = S.facing(rig)
@@ -287,6 +289,8 @@ def retarget(rig: dict, target: dict, scale=None, jmap=None):
                  'scale': s, 'torso_up': upper / s, 'torso_down': lower / s, 'shoulder_widen': widen,
                  'head_scale': head_scale, 'limb_stretch': stretch, 'normals_flipped': flipped,
                  'roles_used': sorted(ri), 'facing': basis.tolist(), 'runtime_verified': False}
+    if moved['moved']:
+        report['joints_moved'] = moved
     # Fitting pop-up stages and the operator's retarget profile (weights blend the role adjustments per vertex).
     return S._profiled(rig, target, out, report, scale, destination, jmap)
 
