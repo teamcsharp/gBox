@@ -343,7 +343,7 @@ def _gif_transfers(pkt: bytes) -> list[dict]:
             bb, tr = regs.get(0x50), regs.get(0x52)
             if bb is None or tr is None:
                 raise FormatError("IMAGE transfer without BITBLTBUF/TRXREG")
-            out.append({"dbp": (bb >> 32) & 0x3FFF, "dbw": (bb >> 48) & 0x3F, "dpsm": (bb >> 56) & 0x3F,
+            out.append({"at": o, "dbp": (bb >> 32) & 0x3FFF, "dbw": (bb >> 48) & 0x3F, "dpsm": (bb >> 56) & 0x3F,
                         "w": tr & 0xFFF, "h": (tr >> 32) & 0xFFF, "data": pkt[o:o + n]})
             o += n
         elif nloop == 0 and not eop:
