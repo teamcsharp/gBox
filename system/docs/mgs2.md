@@ -166,7 +166,7 @@ collection `meta.json`).
 ## Pick whip and on the fly
 
 * **Pick whip.** The desktop pick whip's **Try live replacement** sends `characters op=live_use character=<donor>
-  session_id x y target=<identified name>`. The new `target` field carries the name from "Identify selected
+  session_id x y target=<identified name>`. The `target` field carries the name from "Identify selected
   character", if the operator used it. For MGS2 this routes to `mgs2_swap.use`:
   * the session's current stage is read from EE RAM. The stage loader's state pointer is at `0x1b9300` and
     `+0x3c` holds the stage name hash (`current_stage`, mapped through the 283 stage names).
