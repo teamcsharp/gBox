@@ -735,16 +735,56 @@ def _api(ctx, method, path, **kw):
     return r.json() if "json" in r.headers.get("content-type", "") else r.content
 
 
-def _local_or_fetch(ctx, meta: dict, rel: str) -> Path:
-    """A library file on this node: the library itself on the control plane, else a node-local copy from the API."""
-    p = library_root(ctx.config) / meta["slug"] / rel
-    if p.is_file():
-        return p
-    p = Path(ctx.config.cache) / "characters_mirror" / meta["slug"] / rel
-    if not p.is_file():
+def _fresh_meta(ctx, slug: str) -> dict | None:
+    """The library entry as stored right now (local meta.json on the control plane, else the API); None if unreadable."""
+    try:
+        f = library_root(ctx.config) / slug / "meta.json"
+        if f.is_file():
+            return json.loads(f.read_text())
+        m = _api(ctx, "GET", f"/api/characters/{slug}")
+        return m if isinstance(m, dict) else None
+    except Exception:                                      # noqa: BLE001 - only a hint for the retry below
+        return None
+
+
+def _local_or_fetch(ctx, meta: dict, rel: str, retries: int = 4, wait: float = 20.0, sleep=time.sleep) -> Path:
+    """A library file on this node: the library itself on the control plane, else a node-local copy from the API.
+
+    A 404 means the entry changed under the caller (#1671: hucast was re-collected while an op=use job fitted it, so
+    pso_hucast_h0_c0.glb was briefly absent): re-read the entry, follow a renamed model, wait a bounded time for a
+    re-collect to land, then fail with an actionable error instead of a bare HTTP 404. Downloads are atomic so an
+    interrupted transfer never leaves a truncated mirror copy that later runs would trust."""
+    import httpx
+    slug = meta["slug"]
+    for attempt in range(retries + 1):
+        p = library_root(ctx.config) / slug / rel
+        if p.is_file():
+            return p
+        p = Path(ctx.config.cache) / "characters_mirror" / slug / rel
+        if p.is_file():
+            return p
+        try:
+            data = _api(ctx, "GET", f"/api/characters/{slug}/file/{rel}", timeout=300)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is None or exc.response.status_code != 404:
+                raise
+            fresh = _fresh_meta(ctx, slug) or {}
+            if rel == meta.get("model") and fresh.get("model") and fresh["model"] != rel:
+                rel = fresh["model"]                       # the entry was re-collected under a new model name
+                continue
+            if attempt >= retries:
+                raise FileNotFoundError(
+                    f"character library entry {slug!r} has no file {rel!r} (HTTP 404 after {retries} retries); "
+                    f"its model is {fresh.get('model')!r}. Re-collect it (characters op=collect) or re-extract "
+                    f"the donor, then retry this job.") from exc
+            sleep(wait)
+            continue
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(_api(ctx, "GET", f"/api/characters/{meta['slug']}/file/{rel}", timeout=300))
-    return p
+        tmp = p.with_name(p.name + ".part")
+        tmp.write_bytes(data)
+        tmp.replace(p)
+        return p
+    raise FileNotFoundError(f"character library entry {slug!r}: {rel!r} unavailable")
 
 
 def _blender(cfg) -> str | None:
