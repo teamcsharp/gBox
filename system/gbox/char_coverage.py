@@ -50,6 +50,10 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("doapp_swap", ["<fighter>[:<costume>]", "player"],
+     "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
+     "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
+     "the game's fight init + skeleton build; unverified in MAME"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
