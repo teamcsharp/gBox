@@ -25,7 +25,7 @@ def test_bearing_ahead_right_behind():
     assert abs(b) < 3 and 14 < d < 17 and n == 9
     b, _, _ = h.radar_bearing(frame_with_dot(1, 15.5, 0.5), 1)
     assert 85 < b < 95
-    b, _, _ = h.radar_bearing(frame_with_dot(2, 0.5, 15), 2)
+    b, _, _ = h.radar_bearing(frame_with_dot(2, 0.5, 15, colour=(200, 20, 20)), 2)  # P2 sees P1 red
     assert abs(abs(b) - 180) < 5
 
 
@@ -56,3 +56,15 @@ def test_cycle_keys_maps_and_characters():
     assert h.cycle_keys(order, "IDENTICON GUARD", "BOND", "o", "u") == ["o"]
     assert h.cycle_keys(order, "SUPER THUG", "BOND", "o", "u") == ["u"]
     assert set(h.MP_CHARACTERS) | {"BOND"} == set(order)
+
+
+def test_other_player_dot_colour_depends_on_viewer():
+    from gbox.auf_mp_harness import is_other_player_dot, radar_bearing, RADAR_CENTRES
+    assert is_other_player_dot((0, 100, 100), 1) and not is_other_player_dot((0, 100, 100), 2)
+    assert is_other_player_dot((200, 20, 20), 2) and not is_other_player_dot((200, 20, 20), 1)
+    cx, cy = RADAR_CENTRES[2]
+    # red dot 10 px to the right of P2's radar centre -> bearing +90
+    def px(x, y):
+        return (200, 20, 20) if abs(x - (cx + 10)) <= 1 and abs(y - cy) <= 1 else (0, 0, 0)
+    b, d, n = radar_bearing(px, 2)
+    assert abs(b - 90) < 5 and 8 < d < 12 and n >= 2
