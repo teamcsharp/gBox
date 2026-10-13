@@ -399,7 +399,7 @@ def test_registration():
     pick = lambda t, p: next((n for n, test, _r, _run in C.DEDICATED if test(t, p)), None)     # noqa: E731
     assert pick("soulcalibur (usa)", "dreamcast") == "soulcalibur"
     assert pick("soul calibur v1.000", "dreamcast") == "soulcalibur"
-    assert pick("soulcalibur ii", "gamecube") is None and pick("soulcalibur ii", "dreamcast") is None
+    assert pick("soulcalibur ii", "gamecube") != "soulcalibur" and pick("soulcalibur ii", "dreamcast") is None
     roster = D.roster()
     assert len(roster) == 19 and len({r["slug"] for r in roster}) == 19
     assert C.reader_version("soulcalibur") == D.READER_VERSION

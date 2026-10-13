@@ -125,6 +125,17 @@ interpreter of exactly those instructions.
 Because the choice happens in the loader, every fighter load picks again. In VS mode that is every selection. In
 arcade mode the player's fighter can also change between stages.
 
+The DOA2 build (`docs/doa2_mixed_random.md`) works differently. It hooks the select confirm and draws from each
+fighter's whole costume pool, because DOA2's render script and accessory tables follow the selected costume. Nothing
+in SoulCalibur's body path follows the selection except the 2D VS portrait: the costume entry carries the model,
+pages, voice and cloth data, and the weapon has its own index. Hooking the loader is therefore enough. What it does
+not do:
+
+- It does not hook the select screen itself.
+- Extra costumes are not in the pool.
+
+The container is the same OLK `olnk` format that Soul Calibur II on GameCube uses (`gbox.soulcalibur2.olk_table`).
+
 ## Reader (`characters op=collect game_id=c747331797369f74`)
 
 The reader produces 19 entries, `sc_<name>`. Each is the fighter's 1P costume as a skinned GLB in the library frame

@@ -429,6 +429,8 @@ STRATEGIES = {
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
     "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
                                "(etm_swap.build_cast)"),
+    "gbox.mgs2_swap": ("pairs", "Metal Gear Solid 2 PS2: every slot's kms models (every stage that carries them) "
+                                "rebuilt in one STAGE.DAT / STAGE2.DAT image (mgs2_swap.build_cast)"),
     "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
@@ -438,6 +440,8 @@ STRATEGIES = {
                                   "and its texture archive, native STAGE.DIR rewrite)"),
     "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
                                        "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
+    "gbox.soulcalibur2_swap": ("pairs", "Soul Calibur II GC: every fighter's costume packages rewritten in place in "
+                                        "human.olk, one disc image (soulcalibur2_swap.build_cast)"),
 }
 
 
@@ -833,6 +837,11 @@ def _gta_vc(ctx, game, pairs, name, inp):
 def _etm(ctx, game, pairs, name, inp):
     from . import etm_swap
     return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _mgs2(ctx, game, pairs, name, inp):
+    from . import mgs2_swap
+    return mgs2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _oot(ctx, game, pairs, name, inp):
     from . import oot_swap
     return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
@@ -919,8 +928,14 @@ def _soulcalibur(ctx, game, pairs, name, inp):
         return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
 
 
+def _soulcalibur2(ctx, game, pairs, name, inp):
+    from . import soulcalibur2_swap
+    return soulcalibur2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
     "gbox.twin_snakes_swap": _twin_snakes,
+    "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
     "gbox.soulcalibur_swap": _soulcalibur,
@@ -929,6 +944,7 @@ BUILDERS = {
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
     "gbox.etm_swap": _etm,
+    "gbox.mgs2_swap": _mgs2,
     "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,

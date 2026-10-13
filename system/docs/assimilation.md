@@ -379,6 +379,32 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
 - **Reusable:** it reuses the `aki_wrestling` bake/decimate helpers and `sm64_swap`. Its ISO walk is now
   `gbox.formats.iso9660`.
 
+### Metal Gear Solid 2: Substance (PS2, Konami)
+
+- **Modules:** `mgs2_inventory`, `mgs2_models`, `mgs2_swap` and `ps2_gs` (a GS memory model).
+- **Doc:** `mgs2.md`.
+- **Container:** a DVD-9 with two ISO9660 layers (layer 1 has its own PVD at the layer break).
+  - `MGS2/STAGE.DAT` and `STAGE2.DAT` hold an encrypted TOC of `{name[8], sector}` rows.
+  - Each stage has an encrypted header of `(type << 24 | 24-bit name hash, offset)` rows, grouped into pages.
+- **Codec:** zlib 1.1.3 pages under a 32-bit LCG xor stream (`k = k * 0x02e90edd + step`). The keys come from the
+  archive time stamp and the stage name hash; a page's key comes from its first u16. The first u16 is stored minus
+  0x8f3.
+- **Model:** kms (type 0x0a). Bone records hold rest offsets and parents. Parts are <= 32-vertex triangle strips:
+  s16 position + weight word, s16 normal + ADC flag, s16 uv.
+- **Texture:** packs (type 0x13). The VRAM image is uploaded page-linearly as PSMCT32 and sampled as PSMT8 / PSMT4
+  sub-rects with their own TEX0 / CLAMP / CLUT.
+- **Skeleton:** in the kms (rest pose without rotations, mm).
+- **Animation:** type 0x0c / 0x12, not decoded.
+- **How it was cracked:**
+  - `string-xref-loader`: `stage.dat` -> the ELF file table (`0x180b08`) -> the readers (`0x1008b0`, `0x101448`) ->
+    the cipher (`0x1007a8` / `0x1007d8`) and the name hash (`0x1424c8`).
+  - Model names came from the stage overlay's strings (`sna_def`, `rai_def`, `gbs_def`).
+  - Characters were identified by rendering every 18-role kms on the disc.
+  - `round-trip-proof`: page re-deflate + re-encrypt reads back identically.
+- **Effort:** 2026-10-13, one session (branch `mgs2-cast`).
+- **Reusable:** `ps2_gs` for any PS2 texture swizzle, and the two-layer `Disc` for any DVD-9. It reuses `sm64_swap`
+  (load_rig / retarget), `gta_stories_models.pack_atlases` and `defjam_writer.quantize`.
+
 ### GTA III (PS2), Vice City (PC), Liberty City Stories and Vice City Stories (PS2)
 
 - **Modules:** `gta_rw` (shared), `gta3_*`, `gta_vc_models`, `gta_vc_swap`, `gta_stories_models`,

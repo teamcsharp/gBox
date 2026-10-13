@@ -24,7 +24,8 @@ Fixture file (JSON):
   lists:   ["/api/sessions", …]   collection paths whose UNKNOWN answer is [] (everything else unknown answers {})
   local_storage: { key: value }   set before the page's scripts run
   desktop: { "settings": {...} }   the desktop app's window.gbox shim (pages under /clients/desktop/)
-  shots:   [ { name, url, viewport: [w, h], actions: [...], clip?: selector, pad?: px, init_js?: js } ]
+  shots:   [ { name, url, viewport: [w, h], actions: [...], clip?: selector, pad?: px, init_js?: js,
+               reduced_motion?: "reduce" } ]
            actions: {"wait": ms} {"wait_for": sel} {"click": sel} {"right_click": sel} {"dblclick": sel} {"hover": sel}
                     {"eval": js} {"mouse": [x, y]} {"click_at": [x, y, "right"?]} {"press": key} {"select": [sel, value]}
                     {"fill": [sel, text]}; a value "$name" is the fixture's top-level snippet "name"
@@ -511,7 +512,8 @@ def run_shots(base_url: str, fx_data: dict, shots: list[dict], out: Path, offlin
         for shot in shots:
             vw, vh = shot.get("viewport", [1280, 800])
             ctx = browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=shot.get("scale", 1),
-                                      color_scheme=shot.get("color_scheme", "dark"))
+                                      color_scheme=shot.get("color_scheme", "dark"),
+                                      reduced_motion=shot.get("reduced_motion", "no-preference"))
             def route(r):                                  # (one parameter: playwright passes the request to a second)
                 host = urlsplit(r.request.url).netloc
                 if host == local or (not offline and host in CDN_HOSTS):

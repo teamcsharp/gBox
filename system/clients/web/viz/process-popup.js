@@ -124,6 +124,47 @@
     if (stage === "preview") return d.roles ? `${d.roles} roles` : (d.kind || "");
     return "";
   }
+  // ---- calibration play-by-play (#1385): the current model's reported fit numbers as a "before -> fitted" tween ----
+  // The writer's scale / proportion stages say how the donor was resized for the title (overall size, height or torso
+  // stretch, torso width or shoulder widening, head). The viewer eases the fitted snapshot from those inverse factors
+  // back to 1 on a loop, so the operator watches each character's proportions adjust while the build runs.
+  const clampK = v => Math.min(1.6, Math.max(0.55, v));
+  const pos = v => (typeof v === "number" && isFinite(v) && v > 0 ? v : null);
+  function calibration(job) {
+    const f = job && job.fitting;
+    if (!f || !f.models || isCollect(job)) return null;
+    let key = f.models[f.current] ? f.current : null;
+    if (!key) { const r = fittingRows(job).filter(x => x.state !== "pending").sort((a, b) => b.updated - a.updated)[0]; key = r ? r.key : null; }
+    const m = key && f.models[key];
+    if (!m) return null;
+    const st = m.stages || {}, sc = (st.scale || {}).data || {};
+    const pr = (st.proportion || {}).state === "skipped" ? {} : ((st.proportion || {}).data || {});
+    let s = pos(sc.scale);
+    if (s == null && pos(sc.donor_height) && pos(sc.fitted_height)) s = sc.fitted_height / sc.donor_height;
+    const torso = pos(sc.torso_up) && pos(sc.torso_down) ? (sc.torso_up + sc.torso_down) / 2 : pos(sc.torso_up) || pos(sc.torso_down);
+    const h = pos(pr.height) || torso || 1, w = pos(pr.torso_width) || pos(sc.shoulder_widen) || 1;
+    const head = pos(pr.head) || pos(sc.head_scale) || 1;
+    s = s || 1;
+    const parts = [];
+    if (Math.abs(s - 1) >= 0.01) parts.push(`size ×${n2(s)}`);
+    if (Math.abs(h - 1) >= 0.01) parts.push(`height ×${n2(h)}`);
+    if (Math.abs(w - 1) >= 0.01) parts.push(`width ×${n2(w)}`);
+    if (Math.abs(head - 1) >= 0.01) parts.push(`head ×${n2(head)}`);
+    if (!parts.length) return null;
+    const label = m.label || key;
+    return { key, label, factors: { scale: s, height: h, width: w, head },
+      from: { x: clampK(1 / (s * w)), y: clampK(1 / (s * h)), z: clampK(1 / (s * w)) },
+      text: `Calibrating ${label}: ${parts.join(" · ")}` };
+  }
+  // 0 = donor proportions, 1 = fitted: hold, ease in-out, hold, repeat (2.8 s)
+  function calibrationPhase(t) {
+    const T = 2.8, u = ((t % T) + T) % T;
+    if (u < 0.5) return 0;
+    if (u >= 1.9) return 1;
+    const x = (u - 0.5) / 1.4;
+    return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+  }
+  const nowS = () => ((env.performance && env.performance.now) ? env.performance.now() : Date.now()) / 1000;
   function fittingHTML(job) {
     const rows = fittingRows(job);
     if (!rows.length) return "";
@@ -219,7 +260,7 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, picEl = null, picSrc = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
       lastMsgs = [], dead = false, polling = null;
 
@@ -244,6 +285,8 @@
       ".gbox-pp .pp-op{position:absolute;left:8px;top:7px;z-index:2;font:700 10px/1.4 ui-monospace,monospace;color:#ffb46b;",
       "background:#0b0d12cc;padding:1px 6px;border-radius:4px;pointer-events:none}.gbox-pp .pp-op:empty{display:none}",
       ".gbox-pp .pp-fit{padding:2px 10px 4px;max-height:132px;overflow:auto;font-size:11px}.gbox-pp .pp-fit:empty{display:none}",
+      ".gbox-pp .pp-cal{position:absolute;left:8px;bottom:7px;right:8px;z-index:2;font:600 10px/1.4 ui-monospace,monospace;color:#8fe6a8;",
+      "background:#0b0d12cc;padding:1px 6px;border-radius:4px;pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gbox-pp .pp-cal:empty{display:none}",
       ".gbox-pp .pp-fh{color:#9fc2ff;margin:2px 0}.gbox-pp .pp-fh .bad{color:#ff8b8b}",
       ".gbox-pp .pp-fr{display:grid;grid-template-columns:1fr auto;gap:0 6px;padding:2px 4px;border-radius:4px}",
       ".gbox-pp .pp-fr.cur{background:#ffffff0d}.gbox-pp .pp-fr.failed .pp-fl{color:#ff8b8b}.gbox-pp .pp-fr.done .pp-fl{color:#8fe6a8}",
@@ -283,6 +326,8 @@
       meta.append(barEl, msgEl);
       logEl = doc.createElement("div"); logEl.className = "pp-log";
       fitEl = doc.createElement("div"); fitEl.className = "pp-fit";                // per-model fitting stages
+      calEl = doc.createElement("div"); calEl.className = "pp-cal";                // the calibration play-by-play caption
+      stage.append(calEl);
       footEl = doc.createElement("div"); footEl.className = "pp-f";
       footEl.textContent = "Progress illustration · following the worker's reported stage";
       root.append(head, stage, meta, fitEl, logEl, footEl);
@@ -371,6 +416,7 @@
         const fx = stageEffect(p.msg), lbl = fx ? fx.label : "";
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
       }
+      if (calEl) { const cal = calibration(job), txt = cal ? cal.text : ""; if (txt !== calEl.textContent) calEl.textContent = txt; }
       const t = title(job);
       if (titleEl && t !== titleEl.textContent) titleEl.textContent = t;   // the job may name its model mid-run
       if (three && three.setJob) three.setJob(job);
@@ -420,7 +466,7 @@
       placeholder.dispose();
       group.add(wire);
       let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
-        loadGeneration = 0, raf = 0, stop = false;
+        loadGeneration = 0, raf = 0, stop = false, calib = calibration(job), calT0 = nowS();
       const previewMaterials = new Map();                                  // one original baseline for each shared material
       const swapIn = gltf => {
         // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
@@ -516,7 +562,10 @@
         group.rotation.y += 0.012;                                          // the 360° orbit around the model
         group.rotation.x = 0.25 + Math.sin(group.rotation.y * 0.5) * 0.1;
         if (pulse > 0) { pulse = (pulse + 0.012) % 1; group.scale.setScalar(1 - 0.18 * Math.sin(pulse * Math.PI)); }
-        else if (group.scale.x !== 1) group.scale.setScalar(1);
+        else if (calib && group.userData.model) {                           // donor proportions -> fitted, on a loop
+          const k = calibrationPhase(nowS() - calT0), f = calib.from;
+          group.scale.set(f.x + (1 - f.x) * k, f.y + (1 - f.y) * k, f.z + (1 - f.z) * k);
+        } else if (group.scale.x !== 1 || group.scale.y !== 1 || group.scale.z !== 1) group.scale.setScalar(1);
         for (const o of fxObjs) if (o.isSkeletonHelper) o.updateMatrixWorld(true);
         renderer.render(scene, camera);
         drawOverlay();
@@ -536,10 +585,13 @@
             fxKey = "";
             if (path) safeLoad(path);
           }
+          const nc = calibration(j);
+          if (!nc || !calib || nc.key !== calib.key) calT0 = nowS();        // a new model restarts its play-by-play
+          calib = nc;
           const next = isSnapshot(path) ? null : stageEffect((j.progress || {}).msg);   // a snapshot shows the real result
           if (next || (j.progress || {}).msg) { fx = next; if (!fx) pulse = 0; applyFx(); }
         },
-        get state() { return { path, fx, fxObjs: fxObjs.length, pulse,
+        get state() { return { path, fx, fxObjs: fxObjs.length, pulse, calib: calib ? calib.key : null,
           lineVerts: fxObjs.reduce((n, o) => n + (o.isLineSegments && !o.isSkeletonHelper ? o.geometry.attributes.position.count : 0), 0) }; },
         dispose() { stop = true; ++loadGeneration; clearFx(); (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
           if (group.userData.model) disposeObject(group.userData.model);
@@ -654,5 +706,5 @@
   }
 
   return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS,
-    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, STAGES };
+    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, calibration, calibrationPhase, STAGES };
 });
