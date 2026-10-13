@@ -12,15 +12,28 @@ A profile is stored per (donor character, target game[, slot]) in the character'
         "torso_width": 1.0,                          # torso x scale about the body centre; the limbs ride along
         "arm_length": 1.0, "leg_length": 1.0,        # every arm / leg segment along its bone
         "adjust": {role: {"length": 1, "girth": 1, "scale": [1, 1, 1], "offset": [0, 0, 0], "rotate": [0, 0, 0]}},
+        "joints": {role: [dx, dy, dz]},              # the Goals view's circles: where that role's joint (its pivot) sits
+                                                     #   on the DONOR, moved from where its rig put it - a fraction of
+                                                     #   the donor's height in the editor frame (left +X, up +Y, front
+                                                     #   +Z), each component within +-0.25 ("the elbow was guessed too
+                                                     #   high": l_fore [0, -0.03, 0])
     }
 
 "*" is the game-wide profile; a slot with its own (complete) profile uses that instead. Offsets are fractions of the target
 figure height (game units differ: Mario's skeleton is ~100 units tall, DOA2's ~1.7), rotations are degrees (XYZ).
 
-Writers apply a profile in two places:
+Writers apply a profile in three places:
   1. before fitting: apply_to_meta() returns the meta with the role overrides merged into rig.roles and the profile
      in rig.scale["profile"]; every writer already passes rig.roles to load_rig and rig.scale to retarget.
-  2. after the automatic fit, in target space: the shared retargets (sm64_swap.retarget - used by SM64, OoT, PE1/2,
+  2. the donor rig, before the fit: the shared retargets start with move_joints(rig, profile), which moves the donor
+     joints of profile["joints"] (the Goals view's circles) and re-derives which limb segment owns the vertices a moved
+     elbow / wrist / knee / ankle swept across, so the fit's pivots, limb rotations, stretch, segmentation and weights
+     all use the moved joint: every writer that hands rig.scale to sm64_swap.retarget (SM64, OoT, PE1/2, FF7,
+     SA2/JGR/PSO, SmackDown! 2, No Mercy/WCW, Def Jam, DOA++, Enter the Matrix), doa2_weighted_retarget (DOA2) or
+     re4gc_enemies.retarget (RE4, Metal Arms). Writers that call those retargets without the profile (GTA III /
+     Vice City / Stories, RE6, 007 AUF, MGS VR) or fit without them (Crazy Taxi's principal-axis parts, the sprite
+     writers) do not honour joint moves (nor the rest of the profile, except Crazy Taxi's part_transform below).
+  3. after the automatic fit, in target space: the shared retargets (sm64_swap.retarget - used by SM64, OoT, PE1/2,
      FF7, SA2/JGR/PSO through ninja_swap, SmackDown! 2, No Mercy/WCW, Def Jam - doa2_weighted_retarget.retarget and
      re4gc_enemies.retarget) call apply_jmap()/apply_roles() on their output. Crazy Taxi's principal-axis fit scales
      its parts with part_transform().
@@ -50,7 +63,10 @@ ROOT = {r: ("l_upper" if r in ARMS and r[0] == "l" else "r_upper" if r in ARMS e
             "l_thigh" if r[0] == "l" else "r_thigh") for r in ARMS | LEGS}
 SCALE_RANGE = (0.25, 4.0)
 DEFAULT = {"roles": {}, "height": 1.0, "ground": 0.0, "head": 1.0, "torso_width": 1.0, "arm_length": 1.0,
-           "leg_length": 1.0, "adjust": {}}
+           "leg_length": 1.0, "adjust": {}, "joints": {}}
+JOINT_RANGE = 0.25                                       # a joint moves at most a quarter of the donor height per axis
+LIMB_CHAINS = [("l_upper", "l_fore", "l_hand"), ("r_upper", "r_fore", "r_hand"),
+               ("l_thigh", "l_shin", "l_foot"), ("r_thigh", "r_shin", "r_foot")]      # = sm64_swap.LIMBS
 ADJUST_DEFAULT = {"length": 1.0, "girth": 1.0, "scale": [1.0, 1.0, 1.0], "offset": [0.0, 0.0, 0.0],
                   "rotate": [0.0, 0.0, 0.0]}
 
@@ -109,6 +125,15 @@ def normalize(profile: dict | None) -> dict:
                  "rotate": _vec(a.get("rotate"), [0.0] * 3, -180.0, 180.0)}
         if clean != ADJUST_DEFAULT:
             out["adjust"][role] = clean
+    joints = profile.get("joints") or {}
+    if not isinstance(joints, dict):
+        raise ValueError("profile.joints maps a body role to its joint move [dx, dy, dz]")
+    for role, d in joints.items():
+        if role not in ROLES:
+            raise ValueError(f"unknown body role {role!r} in profile.joints")
+        v = [round(x, 6) for x in _vec(d, [0.0] * 3, -JOINT_RANGE, JOINT_RANGE)]
+        if any(abs(x) > 1e-6 for x in v):
+            out["joints"][role] = v
     for k in ("notes", "updated", "by"):
         if isinstance(profile.get(k), (str, int, float)):
             out[k] = profile[k] if not isinstance(profile[k], str) else profile[k][:500]
@@ -120,8 +145,9 @@ def is_identity(profile: dict | None) -> bool:
     if not profile:
         return True
     p = normalize(profile)
-    return (not p["adjust"] and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head", "torso_width",
-                                                                 "arm_length", "leg_length")))
+    return (not p["adjust"] and not p["joints"] and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
+                                                                                     "torso_width", "arm_length",
+                                                                                     "leg_length")))
 
 
 def digest(profile: dict | None) -> str:
@@ -327,6 +353,119 @@ def apply_jmap(prims: list[dict], T, jmap: dict, profile: dict | None, ground: f
         if isinstance(j, (int, np.integer)) and int(j) not in joint_role:
             joint_role[int(j)] = role
     return apply_roles(prims, role_pos, joint_role, profile, ground)
+
+
+# ---------------------------------------------------------------- joint moves (the donor rig, before the fit)
+
+def _unit(v) -> np.ndarray:
+    n = float(np.linalg.norm(v))
+    return np.asarray(v, float) / n if n > 1e-12 else np.zeros(3)
+
+
+def boundary_normal(parent, joint, child=None) -> np.ndarray:
+    """The plane through a limb joint that splits its parent segment from its own: the bisector of the two bone
+    directions (just the parent bone's direction at a chain's end)."""
+    n = _unit(np.asarray(joint, float) - parent) + (_unit(np.asarray(child, float) - joint) if child is not None
+                                                     else 0.0)
+    return _unit(n) if np.linalg.norm(n) > 1e-9 else _unit(np.asarray(joint, float) - parent)
+
+
+def resegment(points, roles, old: dict, new: dict, chain: tuple) -> np.ndarray:
+    """Vertex roles of one limb chain after its joints moved: a vertex the moved elbow / wrist (knee / ankle) plane
+    swept across changes segment, every other vertex keeps its role. points (N,3); roles (N,) role names; old / new:
+    {role: joint position} before / after the move (same axes as points). Returns the new role per vertex."""
+    out = np.asarray(roles, dtype=object).copy()
+    P = np.asarray(points, float).reshape(-1, 3)
+    for i in (1, 2):                                       # the joints inside the chain: fore / hand, shin / foot
+        if i >= len(chain):
+            break
+        par, x = chain[i - 1], chain[i]
+        nxt = chain[i + 1] if i + 1 < len(chain) else None
+        if par not in old or x not in old:
+            continue
+        if all(np.allclose(old[r], new[r]) for r in (par, x, nxt) if r in old):
+            continue                                       # this boundary's plane did not move
+        n0 = boundary_normal(old[par], old[x], old.get(nxt) if nxt else None)
+        n1 = boundary_normal(new[par], new[x], new.get(nxt) if nxt else None)
+        s0, s1 = (P - old[x]) @ n0 > 0, (P - new[x]) @ n1 > 0
+        out[(out == par) & s1 & ~s0] = x                   # the joint moved towards the body: these now bend with x
+        out[(out == x) & s0 & ~s1] = par                   # moved away: these stay with the parent segment
+    return out
+
+
+def donor_frame(rig: dict) -> tuple[np.ndarray, float]:
+    """(B, H): the facing rotation (rows: left, up, front in the rig's own axes, sm64_swap.facing) and the donor's
+    height (the mesh's extent along up) - the frame the Goals view's joint moves are measured in."""
+    from .sm64_swap import facing
+    B = facing(rig)
+    allp = np.concatenate([np.asarray(p["pos"], float).reshape(-1, 3) for p in rig["prims"]])
+    return B, max(float(np.ptp(allp @ B[1])) if len(allp) else 1.0, 1e-9)
+
+
+def move_joints(rig: dict, profile: dict | None) -> tuple[dict, dict]:
+    """The donor rig with profile["joints"] applied (a shallow copy; the input is not mutated): each moved role's
+    joint at its new place (descendant joints stay), and the vertices the moved limb joints swept across re-owned by
+    their new segment (owner, and J where a prim carries weights: influences of the chain's two segments go to the
+    new one). Returns (rig, report); the rig itself when nothing moves, so builds without joint moves are unchanged."""
+    prof = profile_of({"profile": profile}) if profile else None
+    ri = rig.get("roles") or {}
+    moves = {r: np.asarray(d, float) for r, d in (prof or {}).get("joints", {}).items() if r in ri}
+    if not moves:
+        return rig, {"moved": []}
+    from .formats.rig import role_of_joint
+    B, Hd = donor_frame(rig)
+    old_j = np.asarray(rig["joints"], float)
+    new_j = old_j.copy()
+    for r, d in moves.items():
+        new_j[ri[r]] = old_j[ri[r]] + (d * Hd) @ B          # editor frame -> the rig's axes (B is orthonormal)
+    jrole = np.array(role_of_joint({"roles": ri, "parent": rig["parent"]}), dtype=object)
+    old = {r: old_j[j] for r, j in ri.items()}
+    new = {r: new_j[j] for r, j in ri.items()}
+    chains = [c for c in LIMB_CHAINS if any(r in moves for r in c) and c[0] in ri and c[1] in ri]
+    prims, changed = [], 0
+    for p in rig["prims"]:
+        owner = np.asarray(p["owner"], int)
+        before = jrole[owner]
+        after = before.copy()
+        for c in chains:
+            after = resegment(p["pos"], after, old, new, tuple(r for r in c if r in ri))
+        diff = np.nonzero(after != before)[0]
+        if not len(diff):
+            prims.append(p)
+            continue
+        changed += len(diff)
+        own = owner.copy()
+        own[diff] = [ri[r] for r in after[diff]]
+        q = {**p, "owner": own}
+        if p.get("J") is not None and np.ndim(p["J"]) == 2:
+            J = np.asarray(p["J"], int).copy()
+            for v in diff:
+                pair = {before[v], after[v]}
+                for col in range(J.shape[1]):
+                    if jrole[J[v, col]] in pair:
+                        J[v, col] = ri[after[v]]
+            q["J"] = J
+        prims.append(q)
+    return ({**rig, "joints": new_j, "prims": prims},
+            {"moved": sorted(moves), "vertices_reassigned": int(changed), "donor_height": round(Hd, 4)})
+
+
+def goals(donor_pos: dict, target_pos: dict, donor_ground: float | None = None,
+          target_ground: float | None = None) -> dict:
+    """What the fit aims at, for the Fitting pop-up and the Retarget editor's Goals view: each role's donor joint
+    (the editor frame, donor units) and the target slot's joint it lands on (target space, +Y up)."""
+    def clean(pos):
+        out = {}
+        for r, v in (pos or {}).items():
+            v = np.asarray(v, float).reshape(-1)
+            if r in ROLES and len(v) == 3 and np.isfinite(v).all():
+                out[r] = [round(float(x), 5) for x in v]
+        return out
+    g = {"donor": clean(donor_pos), "target": clean(target_pos)}
+    for k, v in (("donor_ground", donor_ground), ("target_ground", target_ground)):
+        if v is not None and math.isfinite(float(v)):
+            g[k] = round(float(v), 5)
+    return g
 
 
 def part_transform(role: str | None, role_pos: dict, profile: dict | None, ground: float | None = None):

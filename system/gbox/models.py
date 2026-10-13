@@ -57,6 +57,7 @@ class Job(BaseModel):
     require_os: str | None = None    # pin to "windows"/"linux" only when necessary
     require_worker: str | None = None
     agent_use: bool = False       # agent is using a PC; keep its output unobtrusive
+    low_priority: bool = False    # background work (the Sonic showcase): workers claim it after every other job
     state: JobState = JobState.QUEUED
     worker_id: str | None = None
     created: float = Field(default_factory=time.time)
@@ -65,6 +66,10 @@ class Job(BaseModel):
     output: dict | None = None
     error: str | None = None
     receipt_id: str | None = None
+    # Who asked (x-gbox-actor) and from where (client headers / parent job): an unexplained launch or swap of the
+    # operator's game can be traced to its submitter (docs/stream-stability.md).
+    actor: str | None = None
+    origin: dict[str, Any] = {}
 
 
 class ArtifactRef(BaseModel):

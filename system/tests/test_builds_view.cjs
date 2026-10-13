@@ -213,7 +213,7 @@ test('row: thumbnail, escaped name, game, kind chips, date, size, where, launch 
   assert.match(html, /data-bv-key="g1\/cast_g1"/);
   assert.match(html, /<img class="bv-thumb"[^>]*src="\/api\/characters\/kane\/preview\?token=t"/);
   assert.ok(html.includes('G1: cast as &#60;Wrestlers&#62;') && !html.includes('<Wrestlers>'));
-  assert.match(html, /data-bv="name" title="Double-click to rename · folder cast_g1"/);
+  assert.match(html, /data-bv="name" title="Double-click \(or ✎\) to rename · folder cast_g1"/);
   assert.match(html, /Game &#60;One&#62;/);
   assert.match(html, /<span class="bv-chip bv-k1">cast swap<\/span><span class="bv-chip">test<\/span>/);
   assert.match(html, /just now/); assert.match(html, /1\.0 MB/);
@@ -345,6 +345,66 @@ test('controller: list, rename by double-click (PATCH display_name), launch on t
     // filters
     ctl.onInput({ target: { dataset: { bvF: 'kind' }, value: 'cheats' } });
     assert.match(h.querySelector('[data-bv-list]').innerHTML, /g2_hack/); assert.doesNotMatch(h.querySelector('[data-bv-list]').innerHTML, /cast_g1/);
+  } finally { ctl.stop(); }
+});
+
+test('#1656 rows: ☆/★ and ✎ next to the name; ▾ options carry Rename…, favorite, restore; favorites first + ★ filter', () => {
+  const html = BV.rowHTML(CAST, {}, {});
+  assert.match(html, /<div class="bv-nm"><button class="bv-ico bv-star" type="button" data-bv="fav" aria-pressed="false"[^>]*>☆<\/button><span class="bv-name"/);
+  assert.match(html, /data-bv="rename" title="Rename this build \(the folder keeps its name\)" aria-label="Rename">✎</);
+  const fav = BV.rowHTML({ ...CAST, favorite: true, display_name: 'Best', label: 'Best' }, { opts: 'g1/cast_g1' }, { here: 'MYPC' });
+  assert.match(fav, /class="bv-row bv-fav" data-bv-key="g1\/cast_g1"/);
+  assert.match(fav, /data-bv="fav" aria-pressed="true"[^>]*>★</);
+  assert.match(fav, /data-bv="rename" data-key="g1\/cast_g1"[^>]*>✎ Rename…</);
+  assert.match(fav, /data-bv="fav" data-key="g1\/cast_g1">☆ Remove from favorites</);
+  assert.match(fav, /data-bv="unname" data-key="g1\/cast_g1">↺ Restore “G1: cast as &#60;Wrestlers&#62;”</);
+  const unnamed = { ...CAST, display_name: '', label: CAST.original_title };       // (earlier tests rename the shared CAST)
+  assert.match(BV.optionsHTML(unnamed, 'MYPC'), /★ Add to favorites/);
+  assert.match(BV.rowHTML(unnamed, { renaming: 'g1/cast_g1' }, {}), /<input class="bv-rename"[^>]* data-nomic>/,
+               'no dictation wrapper: moving the field would blur (so close) it in the web shell');
+  assert.ok(!BV.optionsHTML(unnamed, 'MYPC').includes('unname'), 'no display name: nothing to restore');
+  const all = [CAST, { ...PATCH, favorite: true }, HACK];
+  const plain = BV.filterBuilds([CAST, PATCH, HACK]).map(b => b.name);
+  assert.deepEqual(BV.filterBuilds(all).map(b => b.name), ['g1_patch', ...plain.filter(n => n !== 'g1_patch')], 'the favorite first, then newest');
+  assert.deepEqual(BV.filterBuilds(all, { fav: true }).map(b => b.name), ['g1_patch']);
+  assert.equal(BV.facets(all).favorites, 1);
+});
+
+test('#1656 controller: ☆ stars (PUT), the row moves first, ★ Favorites filters; right-click opens the options; Rename… / restore', async () => {
+  const env = fakeEnv({ routes: {
+    // copies: the controller updates the rows it shows, the shared fixtures stay as they are for the other tests
+    'GET /api/builds': () => ({ items: [{ ...CAST, display_name: '', label: CAST.original_title }, { ...PATCH }, { ...HACK }], indexing: false, sizing: 0 }),
+    'PUT /api/builds/g2/g2_hack/favorite': b => ({ key: 'g2/g2_hack', favorite: b.favorite }),
+    'PATCH /api/builds/g1/cast_g1': b => ({ key: 'g1/cast_g1', display_name: b.display_name, label: b.display_name || CAST.original_title }),
+  } }), h = host();
+  const ctl = BV.mount(h, env); await ctl.ready;
+  const list = () => h.querySelector('[data-bv-list]').innerHTML;
+  try {
+    assert.ok(list().indexOf('g1/cast_g1') < list().indexOf('g2/g2_hack'));
+    await ctl.onClick({ target: target({ bv: 'fav', key: 'g2/g2_hack' }) });
+    assert.deepEqual(env.calls.find(c => c[0] === 'PUT'), ['PUT', '/api/builds/g2/g2_hack/favorite', { favorite: true }]);
+    assert.ok(list().indexOf('g2/g2_hack') < list().indexOf('g1/cast_g1'), 'the favorite moves first');
+    assert.match(list(), /★ Favorite: listed first and kept/);
+    assert.match(h.innerHTML, /★ Favorites \(1\)/);
+    ctl.onInput({ target: { dataset: { bvF: 'fav' }, type: 'checkbox', checked: true } });
+    assert.match(list(), /g2_hack/); assert.doesNotMatch(list(), /cast_g1/);
+    ctl.onInput({ target: { dataset: { bvF: 'fav' }, type: 'checkbox', checked: false } });
+    // right-click a row: the options under it; Rename… from there opens the field
+    ctl.onContext({ target: target({ key: 'g1/cast_g1' }), preventDefault() {}, stopPropagation() {} });
+    assert.equal(ctl.st.opts, 'g1/cast_g1'); assert.match(list(), /data-bv-opts="g1\/cast_g1"/);
+    await ctl.onClick({ target: target({ bv: 'rename', dataset: { key: 'g1/cast_g1' } }) });
+    assert.equal(ctl.st.opts, null); assert.equal(ctl.st.renaming, 'g1/cast_g1');
+    await ctl.onKey({ key: 'Enter', target: target({ rename: 'g1/cast_g1', value: 'Sonic Full Cast' }) });
+    await flush();
+    assert.match(list(), /data-bv="name"[^>]*>Sonic Full Cast</);
+    // ✎ next to the name opens the field too; ↺ restores the original name ("")
+    await ctl.onClick({ target: target({ bv: 'rename', key: 'g1/cast_g1' }) });
+    assert.equal(ctl.st.renaming, 'g1/cast_g1');
+    ctl.onKey({ key: 'Escape', target: target({ rename: 'g1/cast_g1', value: '' }) });
+    await ctl.onClick({ target: target({ bv: 'unname', dataset: { key: 'g1/cast_g1' } }) });
+    await flush();
+    assert.deepEqual(env.calls.filter(c => c[0] === 'PATCH').map(c => c[2]), [{ display_name: 'Sonic Full Cast' }, { display_name: '' }]);
+    assert.match(list(), /Original name restored: G1: cast as &#60;Wrestlers&#62;/);
   } finally { ctl.stop(); }
 });
 
@@ -486,4 +546,46 @@ test('the web shell (and so the desktop app, which embeds it) has the Builds tab
   assert.ok(!/[^\r]\n/.test(web), 'CRLF line endings kept');
   const desktop = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   assert.match(desktop, /url\.searchParams\.set\("embedded", "1"\)/, 'the desktop app shows the web shell (top bar included)');
+});
+
+// 📷 Screenshot in the Builds tab follows the Mods gallery's rules (clients/web/viz/build-shot.js): another build of the
+// same game running = the row asks, and nothing is launched, swapped or captured before the operator's second click.
+test('📷 Screenshot: this build running = a frame now; another build running = a choice, never a silent swap', async () => {
+  const CARDED = { ...CAST, card_id: 'c-cast' }, OTHER = { ...PATCH, card_id: 'c-patch' };
+  let sessions = [{ session_id: 'w1-op', state: 'running', game_id: 'g1', mod: 'g1_patch~a1b2', collection_mod: 'g1_patch', started: 5 }];
+  const env = fakeEnv({ wait: async () => {}, routes: {
+    'GET /api/builds': () => ({ items: [CARDED, OTHER, HACK], indexing: false, sizing: 0 }),
+    'GET /api/sessions': () => sessions,
+    'POST /api/mods/c-patch/thumb': () => ({ id: 'c-patch' }), 'POST /api/mods/c-cast/thumb': () => ({ id: 'c-cast' }) } });
+  const h = host(), ctl = BV.mount(h, env); await ctl.ready;
+  const list = () => h.querySelector('[data-bv-list]').innerHTML;
+  const acted = () => env.calls.filter(c => /\/thumb|\/swap$|^\/api\/jobs$/.test(c[1])).map(c => c[1]);
+  try {
+    assert.match(list(), /data-bv="shot" [^>]*aria-label="Screenshot">📷/);
+    assert.match(BV.rowHTML(HACK, {}, {}), /data-bv="shot" disabled/, 'no mod card: nothing to add a picture to');
+    await ctl.onClick({ target: target({ bv: 'shot', key: 'g1/cast_g1' }) });
+    assert.deepEqual(acted(), [], 'first click: nothing launched, swapped or captured');
+    assert.match(list(), /class="bv-shot" data-bv-key="g1\/cast_g1"[\s\S]*is running <b>Patch<\/b>, not this build/);
+    assert.match(list(), /data-bv="shot-running"[^>]*>Capture from the running build instead \(adds to that build's card\)/);
+    assert.match(list(), /data-bv="shot-switch"[^>]*>Switch to this build/);
+    await ctl.onClick({ target: target({ bv: 'shot-running', key: 'g1/cast_g1' }) });
+    assert.deepEqual(acted(), ['/api/mods/c-patch/thumb?append=true&session_id=w1-op']);
+    assert.doesNotMatch(list(), /bv-shot"/);
+    // the build that runs (a staged copy of it) is captured at once
+    sessions = [{ session_id: 'w1-op', state: 'running', game_id: 'g1', mod: 'cast_g1~ff00', started: 6 }];
+    await ctl.onClick({ target: target({ bv: 'shot', key: 'g1/cast_g1' }) });
+    assert.deepEqual(acted().slice(1), ['/api/mods/c-cast/thumb?append=true&session_id=w1-op']);
+  } finally { ctl.stop(); }
+});
+
+test('build-shot.js plan: exact build (staged / collection / live model), another build, nothing; ended sessions ignored', () => {
+  const BS = require('../clients/web/viz/build-shot.js');
+  const b = { game_id: 'g', name: 'm' };
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'm~x', session_id: 'a' }]).kind, 'exact');
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'z', live_mod: 'm', session_id: 'a' }]).kind, 'exact');
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'm', live_mod: 'z', session_id: 'a' }]).kind, 'other');
+  assert.equal(BS.plan(b, [{ state: 'ended', game_id: 'g', mod: 'm' }, { state: 'running', game_id: 'h', mod: 'm' }]).kind, 'none');
+  assert.equal(BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'm', stopping: true }]).kind, 'none');
+  const p = BS.plan(b, [{ state: 'running', game_id: 'g', mod: 'old', started: 1, session_id: 'o' }, { state: 'running', game_id: 'g', mod: 'new', started: 2, session_id: 'n' }]);
+  assert.deepEqual([p.kind, p.session.session_id, p.build], ['other', 'n', 'new'], 'the newest session of the game');
 });
