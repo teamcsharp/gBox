@@ -130,13 +130,16 @@ def merge_head(body: dict, head: dict, fallback: int | None = None) -> dict:
     body's rest pose through their first joint, head sections follow the body's."""
     bones, hb = body["bones"], head["bones"]
     by_hash = {b["hash"]: b["index"] for b in bones}
-    remap = []
+    head_by_hash = {b["hash"]: b["index"] for b in hb}
+    remap, anchor = [], []                                  # body bone, and the head bone whose rest pose maps onto it
     for b in hb:
         j, seen = b["index"], set()
         while j >= 0 and j not in seen and hb[j]["hash"] not in by_hash:
             seen.add(j)
             j = hb[j]["parent"]
-        remap.append(by_hash[hb[j]["hash"]] if j >= 0 and j not in seen else -1)
+        ok = j >= 0 and j not in seen
+        remap.append(by_hash[hb[j]["hash"]] if ok else -1)
+        anchor.append(j if ok else -1)
     P = np.asarray(head["positions"], float)
     Nn = np.asarray(head["normals"], float)
     J = np.asarray(head["joints"], int).reshape(-1, 2)
@@ -144,11 +147,13 @@ def merge_head(body: dict, head: dict, fallback: int | None = None) -> dict:
     if len(P) and any(remap[j] < 0 for j in np.unique(J)):
         if fallback is None:
             raise ValueError("head vertices hang on bones the body does not have")
+        fb_head = head_by_hash.get(bones[fallback]["hash"])
+        anchor = [a if r >= 0 else (i if fb_head is None else fb_head) for i, (a, r) in enumerate(zip(anchor, remap))]
         remap = [fallback if r < 0 else r for r in remap]
     if len(P):
         first = J[:, 0]
         for hj in np.unique(first):
-            Rh, th = _bone_mat(hb[hj])
+            Rh, th = _bone_mat(hb[anchor[hj]])
             Rb, tb = _bone_mat(bones[remap[hj]])
             M = Rb @ Rh.T
             sel = first == hj
@@ -192,10 +197,15 @@ def export(pkg: "N.NgcPackage", body: str, head: str | None, out: Path, name: st
     if not mb["bones"]:
         raise ValueError(f"{body}: no skeleton")
     roles_i = G.auto_roles(mb["bones"])
-    m, gh = mb, None
+    m, gh, head_error = mb, None, None
     if head:
         gh = pkg.read(head)
-        m = merge_head(mb, N.mesh(gh), roles_i["head"])
+        try:
+            mh = N.mesh(gh)
+        except (ValueError, struct.error) as e:             # a head model without geometry (none on the disc)
+            mh, head_error = None, f"{Path(head).name}: {e}"
+        if mh is not None and mh["faces"]:
+            m = merge_head(mb, mh, roles_i["head"])
     if not m["faces"]:
         raise ValueError(f"{body}: no triangles")
     shd, tex = N.shaders(pkg), N.textures(pkg)
@@ -208,7 +218,8 @@ def export(pkg: "N.NgcPackage", body: str, head: str | None, out: Path, name: st
     return {"path": out, "roles": {r: names[i] for r, i in roles_i.items()}, "vertices": len(m["positions"]),
             "triangles": len(m["faces"]), "sections": len(m["shaders"]),
             "textures": len({im[0] for im in images if im is not None}),
-            "body_sha1": hashlib.sha1(gb).hexdigest(), "head_sha1": hashlib.sha1(gh).hexdigest() if gh else None}
+            "body_sha1": hashlib.sha1(gb).hexdigest(), "head_sha1": hashlib.sha1(gh).hexdigest() if gh else None,
+            "head_merged": m is not mb, "head_error": head_error}
 
 
 def extract_body(pkg: "N.NgcPackage", key: str, out: Path, name: str = "") -> dict:
@@ -262,7 +273,9 @@ def extract_run(ctx, game, e, work):
              "auf_level": level, "auf_men": r["men"], "auf_classname": r["classname"],
              "auf_animations": r["animations"], "auf_lod": r["lod"], "auf_scripts": e.get("men") or [],
              "auf_multiplayer": bool(e.get("multiplayer")), "auf_mp_names": e.get("mp_names") or [],
-             "auf_body_sha1": r["body_sha1"], "auf_head_sha1": r["head_sha1"]}
+             "auf_body_sha1": r["body_sha1"], "auf_head_sha1": r["head_sha1"], "auf_head_merged": r["head_merged"]}
+    if r["head_error"]:
+        extra["auf_head_error"] = r["head_error"]
     return {"files": [r["path"]], "tool": "gbox.auf_chars (auf_ngc reader)", "source_files": src, "roles": r["roles"],
             "extra": extra,
             "notes": f"{r['triangles']} triangles, {len(r['roles'])} body roles, {r['textures']} textures; body "
