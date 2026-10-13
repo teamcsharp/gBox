@@ -1219,11 +1219,12 @@ def _doa2_run(ctx, game, e, work):
 
 def doa2_motion_extra(work: Path, slug: str, names: list[str]) -> dict:
     """The fighter's MOT bank (doa2_chars.export copies it into work) as <slug>.anims.glb control clips (#1384):
-    meta extras {anims_file, animations, anims_report}; an unsupported bank leaves a reason instead of clips."""
+    meta extras {anims_file, animations, anims_report}; an unsupported bank leaves a reason instead of clips, a fighter
+    without a mapped bank (doa2_chars.MOT_FILES) adds nothing."""
     from . import anim_clips
     mot = next((n for n in names if n.upper().endswith(".MOT")), None)
     if mot is None:
-        return {"anims_report": {"status": "missing", "reason": "no motion bank mapped to this fighter"}}
+        return {}
     try:
         nodes, clips, report = anim_clips.doa2_clips((Path(work) / mot).read_bytes(), f"DOA2/{mot}")
         if not clips:

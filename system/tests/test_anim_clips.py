@@ -237,7 +237,7 @@ def test_doa2_extraction_writes_the_bank_beside_the_model(tmp_path):
     assert extra["anims_file"] == "doa2_kas.anims.glb" and (tmp_path / "doa2_kas.anims.glb").is_file()
     assert [a["name"] for a in extra["animations"]] == ["kasumi_000", "kasumi_001"]
     assert extra["anims_report"]["exported"] == 2 and extra["anims_report"]["skipped"] == 0
-    assert C.doa2_motion_extra(tmp_path, "doa2_x", ["X.CHR"])["anims_report"]["status"] == "missing"
+    assert C.doa2_motion_extra(tmp_path, "doa2_x", ["X.CHR"]) == {}
     (tmp_path / "BAD.MOT").write_bytes(b"\x01" * 16)
     assert C.doa2_motion_extra(tmp_path, "doa2_x", ["BAD.MOT"])["anims_report"]["status"] == "unsupported"
 
