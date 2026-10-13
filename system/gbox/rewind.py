@@ -139,10 +139,17 @@ class CheckpointRing:
     Stepping back walks from the newest entry to the oldest; letting go of the chord drops the entries newer than the
     one loaded (that future was undone, like RetroArch's own rewind) and the ring resumes from there."""
 
+    MAX_WAIT_S = 120.0                          # the slowest pacing: a checkpoint at least every two minutes
+
     def __init__(self, adapter, directory: Path, interval_s: float = 2.0, depth: int = 60, max_mb: int = 2048,
-                 content=None, settle_s: float = 4.0, load_settle_s: float = 0.75, clock=time.monotonic, sleep=time.sleep):
+                 content=None, settle_s: float = 4.0, load_settle_s: float = 0.75, clock=time.monotonic, sleep=time.sleep,
+                 max_duty: float = 0.05, timer=time.perf_counter):
         self.adapter, self.dir = adapter, Path(directory)
         self.interval, self.depth = max(0.25, float(interval_s)), max(1, int(depth))
+        # Frame-rate budget (#1489): a save state stalls the emulator while it serializes (Flycast: ~27 MB). The ring
+        # paces itself so measured save time stays within max_duty of wall time: a 1 s save -> one checkpoint per 20 s.
+        self.max_duty = max(0.0, float(max_duty or 0.0))
+        self.timer, self.last_cost = timer, None
         self.max_bytes = max(0, int(max_mb)) * 2**20
         self.kind = getattr(adapter, "checkpoint_state", None)
         self.content = Path(content) if content else None
@@ -162,9 +169,17 @@ class CheckpointRing:
         self.dir.mkdir(parents=True, exist_ok=True)
 
     # --- periodic checkpoints ---
+    def paced_interval(self) -> float:
+        """Seconds between checkpoints: the configured interval, stretched so saving costs at most max_duty of play."""
+        base = self.interval
+        if self.max_duty > 0 and self.last_cost:
+            base = max(base, min(self.MAX_WAIT_S, self.last_cost / self.max_duty))
+        return base
+
     def due(self, now: float | None = None) -> bool:
         now = self.clock() if now is None else now
-        wait = self.interval if not self.failures else min(30.0, self.interval * 2 ** min(self.failures, 4))
+        base = self.paced_interval()
+        wait = base if not self.failures else min(max(30.0, base), base * 2 ** min(self.failures, 4))
         return self.cursor is None and now - self.last_take >= wait
 
     def maybe_take(self, now: float | None = None) -> dict | None:
@@ -199,9 +214,10 @@ class CheckpointRing:
     def _take(self) -> dict:
         with self._adapter_lock():
             self._protect_manual()
-            started = time.time_ns()
+            started, t0 = time.time_ns(), self.timer()
             res = self._call("checkpoint_save", "save_state")
             path = self._locate(res if isinstance(res, dict) else {}, started)
+            self.last_cost = max(0.0, self.timer() - t0)   # the emulator-side save (an upper bound: includes polling)
             self._adopt_stash()
             self.seq += 1
             dst = self.dir / f"ckpt-{self.seq:06d}.bin"
@@ -359,6 +375,8 @@ class CheckpointRing:
     def status(self) -> dict:
         span = round(self.entries[-1]["ts"] - self.entries[0]["ts"], 1) if len(self.entries) > 1 else 0.0
         return {"entries": len(self.entries), "depth": self.depth, "interval_s": self.interval, "span_s": span,
+                "effective_interval_s": round(self.paced_interval(), 2), "max_duty": self.max_duty,
+                "last_save_s": None if self.last_cost is None else round(self.last_cost, 3),
                 "bytes": self.size(), "taken": self.taken, "cursor": self.cursor, "error": self.error}
 
 
@@ -545,6 +563,7 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
     checkpoints = bool(getattr(rc, "checkpoints", True)) if enabled is None else bool(enabled)
     interval, depth = getattr(rc, "interval_s", 2.0), getattr(rc, "depth", 60)
     max_mb, repeat = getattr(rc, "max_mb", 2048), getattr(rc, "repeat_s", 0.6)
+    max_duty = getattr(rc, "max_duty", 0.05)
     native = bool(getattr(adapter, "rewind_on", False))
     ring = reason = None
     if native:
@@ -560,7 +579,7 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
             sweep(config)
             interval = max(float(interval), float(getattr(adapter, "checkpoint_min_interval_s", 0) or 0))
             ring = CheckpointRing(adapter, ring_dir(config, sid), interval, depth, max_mb,
-                                  content=(game or {}).get("_rom_path"))
+                                  content=(game or {}).get("_rom_path"), max_duty=max_duty)
     # The pad reaches RetroArch's own hotkeys on Windows (XInput binds in the session cfg) and, streamed, where the
     # game leaves the triggers free (trigger_hotkeys); elsewhere the worker drives the native rewind and the ramp itself.
     hotkeys = HOST_OS == "windows" or bool(getattr(adapter, "trigger_hotkeys", False))
