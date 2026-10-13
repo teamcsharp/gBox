@@ -16,6 +16,7 @@ The exceptions are vendored under `gbox/vendor/`, each with its licence file and
 | Blender | 3D reconstruction | GPLv2+ | separate process; the bridge script runs inside Blender. ponytail: a script that imports `bpy` is arguably GPL-covered, so keep it under a GPL-compatible license if distributed |
 | ffmpeg | frame capture | LGPL/GPL (build-dependent) | separate process |
 | Steam client | PC launch | proprietary | `steam://` URI only |
+| audio.cpp `audiocpp_server` (ShugoAI LLC; `github.com/mirek190/audio.cpp`, reviewed at `73c55549`) | local speech assistant (TTS/ASR) | Apache-2.0 (models: Kokoro-82M and Qwen3-ASR Apache-2.0) | separate process built and installed by the operator; HTTP on localhost; not bundled (`docs/audio_cpp.md`) |
 | Sunshine / Moonlight (planned) | streaming + remote input | GPLv3 | separate process |
 | ComfyUI | local image generation (`um_comfy`) | GPLv3 | separate server, HTTP API only; not bundled |
 
