@@ -130,7 +130,7 @@ def mdl_table(data: bytes) -> dict:
 
 def pvm_names(blob: bytes) -> list[str]:
     """Texture names of a PVM (PVMH flags: 8 names[28], 4 format u16, 2 dims u16, 1 GBIX u32)."""
-    if blob[:4] != b"PVMH":
+    if blob[:4] != b"PVMH" or len(blob) < 12:
         raise ValueError("not a PVM")
     flags, n = struct.unpack_from("<HH", blob, 8)
     p, out = 12, []
@@ -141,6 +141,8 @@ def pvm_names(blob: bytes) -> list[str]:
             name = blob[p:p + 28].split(b"\0")[0].decode("latin-1")
             p += 28
         p += 2 * bool(flags & 4) + 2 * bool(flags & 2) + 4 * bool(flags & 1)
+        if p > len(blob):
+            raise ValueError(f"PVM texture table truncated at entry {len(out)}")
         out.append(name)
     return out
 

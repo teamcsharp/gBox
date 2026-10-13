@@ -111,3 +111,15 @@ def test_real_disc_manifest():
     assert all(e["room"] >= e["size"] for e in r)
     assert {n for n, c in m["other_characters"].items() if c["group"] == "event_hi_detail"} == {
         f"CHRDATA/H{i}.MDL" for i in ("00", "01", "02", "03", "11", "12", "13")}
+
+
+def test_truncated_inputs_raise_valueerror():
+    pvm = _pvm(["sonic_body", "sonic_head"])
+    assert inv.pvm_names(pvm) == ["sonic_body", "sonic_head"]
+    for n in range(len(pvm)):
+        with pytest.raises(ValueError):
+            inv.pvm_names(pvm[:n])
+    mdl = bytes(_mdl([(1, pvm), (4, _nmdm(30))]))
+    for n in (0, 7, 8, 20, inv.mdl_table(mdl)["data_end"] - 1):
+        with pytest.raises(ValueError):
+            inv.mdl_table(mdl[:n])
