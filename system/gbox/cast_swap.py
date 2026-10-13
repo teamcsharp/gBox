@@ -504,6 +504,8 @@ STRATEGIES = {
                                        "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
     "gbox.soulcalibur2_swap": ("pairs", "Soul Calibur II GC: every fighter's costume packages rewritten in place in "
                                         "human.olk, one disc image (soulcalibur2_swap.build_cast)"),
+    "gbox.stranglehold_swap": ("pairs", "Stranglehold PS3: every slot's char_*.xxx package rewritten in one folder mod "
+                                        "(stranglehold_swap.build_cast; PS3TOC.txt updated once)"),
     "gbox.auf_swap": ("pairs", "007 Agent Under Fire GC: every body in the missions (campaign:<body>) and in the "
                                "multiplayer maps (mp:<body>, the bots) gets its donor; every level rebuilt once, one disc "
                                "image (auf_swap.build_cast)"),
@@ -1098,6 +1100,11 @@ def _soulcalibur2(ctx, game, pairs, name, inp):
     return soulcalibur2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
+def _stranglehold(ctx, game, pairs, name, inp):
+    from . import stranglehold_swap
+    return stranglehold_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _auf(ctx, game, pairs, name, inp):
     from . import auf_swap
     return auf_swap.build_cast(ctx, game, pairs, name, ctx.progress)
@@ -1105,6 +1112,7 @@ def _auf(ctx, game, pairs, name, inp):
 
 BUILDERS = {
     "gbox.twin_snakes_swap": _twin_snakes,
+    "gbox.stranglehold_swap": _stranglehold,
     "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,

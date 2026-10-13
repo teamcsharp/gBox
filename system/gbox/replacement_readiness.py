@@ -69,9 +69,10 @@ TITLES = {"0871eee3b68cdea3": ("Resident Evil 6", "xbox360"),
           "f55555ee6513391b": ("Metal Gear Solid - VR Missions", "psx"),
           "f27552db74dffdeb": ("Metal Gear Solid (USA) (Disc 1)", "psx"),
           "b13795ef235edee3": ("Metal Gear Solid (USA) (Disc 2)", "psx"),
-          "bc02bb68790ce2e7": ("Crazy Taxi (USA)", "gamecube")}
+          "bc02bb68790ce2e7": ("Crazy Taxi (USA)", "gamecube"),
+          "9c436f5a9754f777": ("John Woo Presents Stranglehold", "ps3")}
 PLATFORMS = ("psx", "ps2", "n64", "dreamcast", "gamecube", "arcade", "windows_native", "pc_steam", "nds", "3ds",
-             "psp", "xbox360", "wii", "genesis", "megadrive", "snes")
+             "psp", "xbox360", "wii", "genesis", "megadrive", "snes", "ps3")
 
 
 # ================================================================ glTF reading (no image decoding)
@@ -948,6 +949,9 @@ SPECS: dict[str, dict] = {
                       "tex": 256, "decimate": True, "budget": "1.2 x the slot body's own LOD triangles (>= 300)"},
     "gbox.crazy_taxi_swap": {"skeleton": "Crazy Taxi rigid .shp parts", "roles": "all", "influences": 1, "tex": 128,
                              "decimate": True, "budget": "each part's room in polDC0.all"},
+    "gbox.stranglehold_swap": {"skeleton": "Stranglehold medium_skeleton (87-94 bones, HumanIK names)", "roles": "all",
+                               "influences": 1, "tex": 1024, "decimate": True,
+                               "budget": "SPU segments (<= 700 vertices / 1100 triangles); LODs at the stock counts"},
     "gbox.crazy_taxi2_swap": {"skeleton": "Crazy Taxi 2 rigid NAOMI-library parts (15 joints, IK-posed by the game)",
                               "joints": 15, "roles": "all", "influences": 1, "tex": 128, "decimate": True,
                               "budget": "the driver's pol buffer (1ST_READ.BIN size word); atlas in its largest texture"},

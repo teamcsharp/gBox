@@ -66,6 +66,12 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("stranglehold_swap", ["player", "tequila", "tequila:<default|suit|jacket|sweater|jack_swtr>", "enemy:<class>",
+                           "enemies", "model:<package>"],
+     "Stranglehold PS3: Tequila (every outfit, story + multiplayer packages) or a gang enemy / named character's "
+     "multiplayer skin: the donor on the package's own skeleton (native animations), every LOD re-encoded into SPU "
+     "segments as an appended SkeletalMesh export, donor atlas over the body diffuse (DXT), PS3TOC.txt sizes "
+     "updated, in a folder mod; campaign enemies (level packages) not written; unverified in RPCS3"),
     ("crazy_taxi2_swap", ["player", "driver:<axel|bd_joe|gena|gus|slash|iceman|cinnamon|hot_d>", "drivers"],
      "Crazy Taxi 2 DC: any of the eight drivers, both detail levels (polPP??/H + texPP??/H rebuilt: one atlas mesh per "
      "part in the driver's largest texture slot, gesture hands carry the donor hand, accessories hidden; slot tables "

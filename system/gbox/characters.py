@@ -1635,6 +1635,11 @@ DEDICATED = [
     ("soulcalibur2", lambda t, p: re.search(r"soul ?calibur (ii|2)\b", t) is not None and p == "gamecube",
      lambda: __import__("gbox.soulcalibur2", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.soulcalibur2", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # John Woo Presents Stranglehold (PS3): Tequila, the gang enemies and the named cast from the UE3 char_*.xxx
+    # packages (SPU-segment SkeletalMeshes; gbox.stranglehold_models, docs/stranglehold.md, #1410)
+    ("stranglehold", lambda t, p: "stranglehold" in t and p == "ps3",
+     lambda: __import__("gbox.stranglehold_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.stranglehold_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1742,6 +1747,7 @@ READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", 
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
+                   "stranglehold": ("gbox.stranglehold_models", "stranglehold_reader"),
                    "pso_gc": ("gbox.pso_gc", "pso_gc_reader"),
                    "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader")}
 
@@ -2694,6 +2700,11 @@ def characters_tool(inp: CharIn, ctx):
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
         return {"result": out | crazy_taxi_swap.use(ctx, meta, game, inp)}
+    from . import stranglehold_swap
+    if gid in stranglehold_swap.GAME_IDS and stranglehold_swap.is_slot(inp.slot):
+        # Stranglehold PS3: player | tequila[:outfit] | enemy:<class> | enemies | model:<package> -> sh_<slot>_<hash>
+        # (the char_*.xxx packages with an appended SkeletalMesh export + PS3TOC.txt, in a folder mod)
+        return {"result": out | stranglehold_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi2_swap
     if gid in crazy_taxi2_swap.GAME_IDS and crazy_taxi2_swap.is_slot(inp.slot):
         # Crazy Taxi 2 DC: player (Slash) | driver:<name> | drivers -> ct2_<slug>_<slot> (pol/tex + 1ST_READ.BIN slot
