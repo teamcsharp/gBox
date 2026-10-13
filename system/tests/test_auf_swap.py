@@ -561,6 +561,35 @@ def test_roster_and_cast_slots_list_without_collecting():
     assert len({c["slot"] for c in cast}) == len(cast)
 
 
+def test_use_builds_the_mod_and_records_the_target(tmp_path, monkeypatch):
+    """characters op=use on the control plane: donor from the collection, plan from the slot, disc mod built, target
+    recorded; the plan's mod name is stable so a second use reuses the build."""
+    from gbox import characters as C
+    lib = tmp_path / "lib" / "synthetic_wrestler"
+    lib.mkdir(parents=True)
+    N.to_glb(N.mesh(_model(("body_mat",))), lib / "donor.glb", "donor")
+    roles = {r: "bone%02d_%08x" % (i, 0x1000 + i) for r, i in G.auto_roles(N.skeleton(template())).items()}
+    meta = {"slug": "synthetic_wrestler", "name": "Synthetic Wrestler", "model": "donor.glb", "rig": {"roles": roles},
+            "source": {}}
+    (lib / "meta.json").write_text(json.dumps(meta))
+    iso = gc_image(tmp_path / "auf.iso", {"maps/dm1.ngc": level_package(), "opening.bnr": b"x" * 64})
+    calls = []
+    monkeypatch.setattr(C, "library_root", lambda cfg=None: tmp_path / "lib")
+    monkeypatch.setattr(C, "_gc_iso", lambda ctx, game: iso)
+    monkeypatch.setattr(C, "_api", lambda ctx, method, path, **kw: calls.append((method, path, kw.get("json"))) or {})
+    monkeypatch.setattr(S, "NAMES", {"body": ("Body", "bot")})
+    monkeypatch.setattr(S, "level_keys", lambda: {"dm1": {"body": "deathmatchplayer"}})
+    ctx = types.SimpleNamespace(config=types.SimpleNamespace(cache=tmp_path / "cache"), progress=lambda p, m: None)
+    inp = types.SimpleNamespace(slot="bots", pairs=[], rebuild=False, launch=False, session_id="", title="")
+    game = {"game_id": S.GAME_ID, "title": "007 - Agent Under Fire (USA)", "platform": "gamecube"}
+    r = S.use(ctx, meta, game, inp)
+    assert r["status"] == "built_unverified" and r["mod"].startswith("auf_bots_") and r["cast"] == [("body", meta["slug"])]
+    assert (tmp_path / "cache" / "mods" / S.GAME_ID / r["mod"] / ".gbox-mod.json").exists()
+    assert calls and calls[0][1] == "/api/characters/synthetic_wrestler/targets" and calls[0][2]["slot"] == "bots"
+    again = S.use(ctx, meta, game, inp)
+    assert again["status"] == "ready" and again["mod"] == r["mod"] and len(calls) == 1
+
+
 def test_writer_is_registered_and_routed():
     from gbox import char_coverage as CC
     from gbox import characters as C
