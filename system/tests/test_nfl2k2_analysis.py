@@ -5,6 +5,8 @@ Every assertion encodes a fact OBSERVED on this build (see the module
 docstring); these tests would fail if the disc cache is missing or if a
 future run changes the validated hypotheses.
 """
+import struct
+
 import pytest
 
 from gbox.nfl2k2_analysis import (
@@ -16,11 +18,12 @@ from gbox.nfl2k2_analysis import (
 from gbox.nfl2k2_inventory import CACHE_DIR, Disc, gd_dir
 
 GDI = CACHE_DIR / "disc.gdi"
-pytestmark = pytest.mark.skipif(not GDI.exists(), reason="disc cache not present")
 
 
 @pytest.fixture(scope="module")
 def disc():
+    if not GDI.exists():
+        pytest.skip("disc cache not present")
     return Disc(GDI)
 
 
@@ -178,3 +181,39 @@ def test_gamedata_anim_records(summary, disc):
 def test_scne_header_guards():
     assert scne_header(b"") == {}
     assert scne_header(b"NOTS" + b"\x00" * 28) == {}
+
+
+# --- synthetic (no disc needed) ---------------------------------------------
+
+def test_synthetic_headers():
+    scne = b"SCNE" + struct.pack("<3I", 0x100, SCNE_F8_CONST, 0x200) + b"pl\0\0\0\0\0\0" + b"SNE2"
+    scne += struct.pack("<I", 1) + struct.pack("<I", 0x40)
+    h = scne_header(scne)
+    assert h["name"] == "pl" and h["sub"] == "SNE2" and h["sne2_count"] == 1 and h["table_first"] == 0x40
+    assert scne_header(scne[:31]) == {}
+    sp = b"SPRT" + struct.pack("<3I", 0x38, 1, SPRT_F12_CONST) + b"letters\0"
+    assert sprt_header(sp) == {"magic": "SPRT", "f4": 0x38, "f8": 1, "f12": SPRT_F12_CONST, "name": "letters"}
+    assert sprt_header(sp[:23]) == {}
+    vq = b"VQCB" + struct.pack("<3I", 0x7FE, 0xA02, 0x808) + b"c001555\0"
+    assert vqcb_header(vq)["name"] == "c001555" and vqcb_header(vq[:20]) == {}
+
+
+def test_synthetic_gdfs_end_relative_layout():
+    # ascending pack: three 32-byte parts ending at 32, 64, 96 in a 96-byte DAT
+    recs = [{"off": 10001 + i, "x": 32, "size": 32 * (i + 1)} for i in range(3)]
+    ranges, bad = gdfs_record_ranges(recs, 96)
+    assert ranges == [(0, 32), (32, 64), (64, 96)] and bad == 0
+    p = gdfs_layout_probe(recs, 96)
+    assert p["A_end_relative"] == {"violations": 0, "total": 96}
+    assert p["B_off_start"]["violations"] == 3 and p["contiguous_ascending"] == 2
+    # a terminal record whose x exceeds its end is reported, not clamped
+    ranges, bad = gdfs_record_ranges(recs + [{"off": 0, "x": 64, "size": 0}], 96)
+    assert bad == 1 and ranges[-1] == (-1, -1)
+
+
+def test_synthetic_anim_records_and_type_tags():
+    blob = b"\0" * 8 + b"ANIM" + struct.pack("<3I", 0x4FC, 0xA02, 0x8C0) + b"actionreplay\0" + b"\0" * 20
+    blob += b"DOUBLE" + b"ANIM"  # trailing ANIM too short for a record
+    recs = find_anim_records(blob)
+    assert len(recs) == 1 and recs[0]["off"] == 8 and recs[0]["name"] == "actionreplay"
+    assert [t["tag"] for t in scne_type_tags(blob, 0, len(blob))] == ["ANIM", "DOUBLE", "ANIM"]
