@@ -17,6 +17,13 @@ GET   /api/builds/scheduled                     queued / claimed / running build
 GET   /api/builds/scheduled/{job_id}            investigate: log tail, receipt + artifacts, fitting events, result
 POST  /api/builds/scheduled/{job_id}/edit       {input}: a queued build job with edited input (cancel + resubmit, same
                                                 OS / PC / parent request / agent flag)
+GET   /api/builds/local?node=<PC>               the builds that PC has in its own cache (its heartbeat's local_builds):
+                                                the Mods cards' and Builds rows' download icon (#1639)
+GET   /api/builds/{game_id}/{name}/formats      the export dialog's formats: same as the original (its container, from the
+                                                catalog file) first, plain, patch, zip (gbox.build_export.options)
+POST  /api/builds/{game_id}/{name}/local        {op: download | locate | export, node, dest?, format?, label?}: a
+                                                build_local job on that PC (download = stage into its cache, never launch;
+                                                export = write it to dest on that PC); answers {job_id, state, node}
 
 Requests read the built-mods index (memory), the store and the workers' heartbeats; never the mod folders (details
 stat only the files a build's marker names). Display names live in the store (gbox.built_mods.NAME_KIND), never in
@@ -1120,6 +1127,77 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
     def builds_delete_post(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
         """DELETE for clients whose api() only posts (the desktop app's IPC before it took a method): {scope, node}."""
         return delete_build(game_id, name, str(body.get("scope") or "all"), str(body.get("node") or ""), actor)
+
+    # ---------------------------------------------------------------------------------------------- on this PC (#1639)
+    def pc_of(node: str, ws: list[dict]) -> dict:
+        w = next((x for x in ws if node and node in (x.get("name"), x.get("id"))), None)
+        if w is None:
+            raise HTTPException(422, f"node: the PC to use ({node or 'none given'} is not a known PC: open gBox on that PC)")
+        if w.get("os") == "linux":
+            raise HTTPException(422, "the Spark keeps the collection itself: download or export to a PC")
+        if not w.get("online"):
+            raise HTTPException(409, f"{w.get('name')} is offline: start gBox's worker there, then try again")
+        return w
+
+    @app.get("/api/builds/local")
+    def builds_local(node: str = "", actor=Depends(auth)):
+        """The builds one PC has in its own cache (its heartbeat's local_builds; a staged copy counts for its build):
+        {node, known, online, builds: {"game/name": {built, staged}}}."""
+        ws = workers()
+        w = next((x for x in ws if node and node in (x.get("name"), x.get("id"))), None)
+        name = (w or {}).get("name") or node
+        have = {k: next(h for h in v if h["node"] == name) for k, v in local_index(ws).items()
+                if any(h["node"] == name for h in v)}
+        return {"node": name, "known": w is not None, "online": bool((w or {}).get("online")),
+                "os": (w or {}).get("os") or "",
+                "builds": {k: {"built": h.get("built"), "staged": bool(h.get("staged"))} for k, h in have.items()}}
+
+    @app.get("/api/builds/{game_id}/{name}/formats")
+    def builds_formats(game_id: str, name: str, actor=Depends(auth)):
+        """The export dialog's choices for this build: the original's container first (the catalog's own file name),
+        then plain, patch and zip; which program a format needs on the PC (chdman, dolphin-tool, wit)."""
+        from . import build_export as BX
+        key, item = known(game_id, name)
+        _k, _i, meta = find(game_id, name)
+        try:
+            c = store.catalog_get(game_id) or {}
+        except Exception:                                        # noqa: BLE001
+            c = {}
+        src = Path(str(c.get("rel_path") or (c.get("launch") or {}).get("path") or "").replace("\\", "/")).name
+        image = str(meta.get("image") or "")
+        folder = BX.is_folder(meta) if meta else False
+        return {"key": key, "source": src, "image": image, "folder": folder, "platform": c.get("platform") or "",
+                "game_title": c.get("title") or (item or {}).get("title") or game_id,
+                "label": (item or {}).get("mod_title") or name,
+                "formats": BX.options(src, image, c.get("platform") or "", folder=folder)}
+
+    @app.post("/api/builds/{game_id}/{name}/local")
+    def builds_local_op(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        """This PC's copy of a build: op=download (stage it into that PC's cache without launching), locate (its folder
+        there) or export ({dest, format, label}: write it to a folder on that PC). Queues build_local on that PC."""
+        from . import build_export as BX
+        op = str(body.get("op") or "download")
+        if op not in ("download", "locate", "export"):
+            raise HTTPException(422, "op: download, locate or export")
+        key, item = known(game_id, name)
+        w = pc_of(str(body.get("node") or ""), workers())
+        inp = {"op": op, "game_id": game_id, "name": name}
+        if op == "export":
+            dest, fmt = str(body.get("dest") or "").strip(), str(body.get("format") or "same")
+            if not dest:
+                raise HTTPException(422, "dest: the folder on that PC to export to")
+            if fmt not in BX.FORMATS:
+                raise HTTPException(422, f"format: one of {', '.join(BX.FORMATS)}")
+            label = str(body.get("label") or (item or {}).get("mod_title") or name)[:NAME_MAX]
+            inp |= {"dest": dest, "format": fmt, "label": label}
+        j = submit({"tool": "build_local", "input": inp, "require_worker": w.get("id") or w.get("name"), "agent_use": False}, actor)
+        j = j.model_dump(mode="json") if hasattr(j, "model_dump") else dict(j)
+        if j.get("state") == "rejected":
+            raise HTTPException(409, j.get("error") or f"{w.get('name')} can't run build_local yet: update its worker")
+        if op != "locate":
+            store.audit(actor, f"build.{op}", key, {"node": w.get("name"), "job": j.get("id"),
+                                                     **({"dest": inp["dest"], "format": inp["format"]} if op == "export" else {})})
+        return {"job_id": j.get("id"), "state": j.get("state"), "node": w.get("name"), "op": op, "key": key}
 
     @app.get("/api/builds/deleted")
     def builds_deleted(limit: int = 50, actor=Depends(auth)):
