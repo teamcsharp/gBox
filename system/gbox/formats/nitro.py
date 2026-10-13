@@ -271,39 +271,52 @@ def decode_texture(fmt: int, w: int, h: int, texels: bytes, palette: bytes = b""
 
 
 def _decode_4x4(w: int, h: int, texels: bytes, pidx: bytes, palette: bytes) -> np.ndarray:
-    """4x4 compressed: per 4x4 block a u32 of 2-bit indices (row per byte) and a u16 [mode:2 | offset:14]; colours
-    are read at palette + offset*4. Modes: 0 c0 c1 c2 transparent; 1 c0 c1 (c0+c1)/2 transparent; 2 c0..c3;
-    3 c0 c1 (5c0+3c1)/8 (3c0+5c1)/8."""
+    """4x4 compressed: per 4x4 block a u32 of 2-bit indices (one row per byte, the leftmost texel in the low bits;
+    blocks row-major) and a u16 [mode:2 | offset:14] from the slot-1 index area; colours are read at palette +
+    offset*4 bytes (two colours per offset step). Modes: 0 c0 c1 c2 transparent; 1 c0 c1 (c0+c1)/2 transparent;
+    2 c0..c3; 3 c0 c1 (5c0+3c1)/8 (3c0+5c1)/8. The hardware blends the 5-bit BGR555 fields and truncates (GBATEK,
+    melonDS GPU3D_Soft), then the result widens like any other colour."""
     bw, bh = w // 4, h // 4
     blocks = bw * bh
     if len(texels) < blocks * 4 or len(pidx) < blocks * 2:
         raise ValueError("4x4 texture: truncated block or palette-index data")
     words = np.frombuffer(palette[:len(palette) // 2 * 2], dtype="<u2")
-    cols = rgb555(words).astype(np.int32)
-    out = np.zeros((h, w, 4), np.uint8)
-    data = np.frombuffer(texels[:blocks * 4], dtype="<u4")
-    infos = np.frombuffer(pidx[:blocks * 2], dtype="<u2")
-    for b in range(blocks):
-        info = int(infos[b])
-        mode, base = info >> 14, (info & 0x3FFF) * 2
-        c = [cols[min(base + k, len(cols) - 1)] if len(cols) else np.zeros(3, np.int32) for k in range(4)]
-        a = [255, 255, 255, 255]
-        if mode == 0:
-            a[3] = 0
-        elif mode == 1:
-            c[2] = (c[0] + c[1]) // 2
-            a[3] = 0
-        elif mode == 3:
-            c[2] = (c[0] * 5 + c[1] * 3) // 8
-            c[3] = (c[0] * 3 + c[1] * 5) // 8
-        bits = int(data[b])
-        by, bx = divmod(b, bw)
-        for py in range(4):
-            for px in range(4):
-                k = (bits >> (2 * (py * 4 + px))) & 3
-                out[by * 4 + py, bx * 4 + px, :3] = c[k]
-                out[by * 4 + py, bx * 4 + px, 3] = a[k]
-    return out
+    if not len(words):
+        words = np.zeros(1, np.uint16)
+    fields = np.stack([words & 31, (words >> 5) & 31, (words >> 10) & 31], axis=-1).astype(np.int32)
+    data = np.frombuffer(texels[:blocks * 4], dtype="<u4").astype(np.int64)
+    infos = np.frombuffer(pidx[:blocks * 2], dtype="<u2").astype(np.int64)
+    mode, base = infos >> 14, (infos & 0x3FFF) * 2
+    c = np.stack([fields[np.minimum(base + k, len(fields) - 1)] for k in range(4)], axis=1)   # (blocks, 4, 3) 5-bit
+    c1 = mode == 1
+    c3 = mode == 3
+    c[c1, 2] = (c[c1, 0] + c[c1, 1]) // 2
+    c[c3, 2] = (c[c3, 0] * 5 + c[c3, 1] * 3) // 8
+    c[c3, 3] = (c[c3, 0] * 3 + c[c3, 1] * 5) // 8
+    rgb = ((c << 3) | (c >> 2)).astype(np.uint8)
+    alpha = np.full((blocks, 4), 255, np.uint8)
+    alpha[mode <= 1, 3] = 0
+    k = (data[:, None] >> (2 * np.arange(16))) & 3                                          # (blocks, 16) row-major
+    b = np.arange(blocks)[:, None]
+    texel = np.concatenate([rgb[b, k], alpha[b, k][..., None]], axis=-1)                     # (blocks, 16, 4)
+    return texel.reshape(bh, bw, 4, 4, 4).transpose(0, 2, 1, 3, 4).reshape(h, w, 4)
+
+
+def screen_door(rgba: np.ndarray) -> float:
+    """Share of a texture drawn as a stipple: transparent texels that touch an opaque one (4-neighbourhood), weighted
+    by how much of the texture is transparent. A cut-out (an atlas margin, a fringe) keeps its transparent texels
+    together and scores low; a screen-door pattern (an 'invisible' variant that drops every other texel) scores near
+    its transparent share. 0.0 for an opaque texture."""
+    a = np.asarray(rgba)[..., 3] == 0
+    if not a.any():
+        return 0.0
+    op = ~a
+    nb = np.zeros_like(a)
+    nb[1:] |= op[:-1]
+    nb[:-1] |= op[1:]
+    nb[:, 1:] |= op[:, :-1]
+    nb[:, :-1] |= op[:, 1:]
+    return float((a & nb).sum() / a.size)
 
 
 # ------------------------------------------------------------------ GX display lists

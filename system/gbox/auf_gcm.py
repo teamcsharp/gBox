@@ -504,26 +504,61 @@ def _from565(c: np.ndarray) -> np.ndarray:
     return np.stack([((c >> 11) & 31) * 255 // 31, ((c >> 5) & 63) * 255 // 63, (c & 31) * 255 // 31], -1).astype(float)
 
 
+def _cmpr_fit(blk: np.ndarray, hi: np.ndarray, lo: np.ndarray):
+    """Quantise endpoints (c0 > c1: four-colour mode) and pick each texel's nearest of the four colours.
+    -> (c0, c1, indices, squared error per block)."""
+    c0, c1 = _rgb565(hi), _rgb565(lo)
+    swap = c0 < c1
+    c0, c1 = np.where(swap, c1, c0), np.where(swap, c0, c1)
+    p0, p1 = _from565(c0), _from565(c1)
+    pal = np.stack([p0, p1, (2 * p0 + p1) / 3, (p0 + 2 * p1) / 3], -2)              # (..., 4, 3)
+    d = ((blk[..., :, None, :] - pal[..., None, :, :]) ** 2).sum(-1)                  # (..., 16, 4)
+    idx = d.argmin(-1)
+    same = c0 == c1
+    idx = np.where(same[..., None], 0, idx)                                         # 3-colour mode: index 0 only
+    picked = np.take_along_axis(d, idx[..., None], -1)[..., 0].sum(-1)
+    err = np.where(same, ((blk - p0[..., None, :]) ** 2).sum((-1, -2)), picked)
+    return c0, c1, idx, err
+
+
 def encode_cmpr(rgba: np.ndarray) -> bytes:
     """RGBA8 image (h, w, 4) -> one GX CMPR level (8x8 tiles of four big-endian DXT1 blocks; opaque 4-colour mode).
-    Sizes below 8 are padded by edge replication (a GX CMPR level always occupies whole 8x8 tiles)."""
+    Sizes below 8 are padded by edge replication (a GX CMPR level always occupies whole 8x8 tiles).
+
+    Endpoints start at the extremes of the block's principal colour axis (not its brightest and darkest texel, whose
+    line can miss the other colours of a two-hue block), then two least-squares rounds refit them to the chosen
+    indices; each block keeps whichever fit has the smaller error. Nothing is dithered."""
     img = np.asarray(rgba, np.uint8)[..., :3].astype(float)
     h, w = img.shape[:2]
     H, Wd = max(8, -(-h // 8) * 8), max(8, -(-w // 8) * 8)
     if (H, Wd) != (h, w):
         img = np.pad(img, ((0, H - h), (0, Wd - w), (0, 0)), mode="edge")
     blk = img.reshape(H // 4, 4, Wd // 4, 4, 3).transpose(0, 2, 1, 3, 4).reshape(H // 4, Wd // 4, 16, 3)
-    lum = blk @ np.array([0.299, 0.587, 0.114])
-    hi_c = np.take_along_axis(blk, lum.argmax(-1)[..., None, None], 2)[:, :, 0]
-    lo_c = np.take_along_axis(blk, lum.argmin(-1)[..., None, None], 2)[:, :, 0]
-    c0, c1 = _rgb565(hi_c), _rgb565(lo_c)
-    swap = c0 < c1
-    c0, c1 = np.where(swap, c1, c0), np.where(swap, c0, c1)
-    p0, p1 = _from565(c0), _from565(c1)
-    pal = np.stack([p0, p1, (2 * p0 + p1) / 3, (p0 + 2 * p1) / 3], 2)            # (by, bx, 4, 3)
-    d = ((blk[:, :, :, None, :] - pal[:, :, None, :, :]) ** 2).sum(-1)          # (by, bx, 16, 4)
-    idx = d.argmin(-1)
-    idx = np.where((c0 == c1)[..., None], 0, idx)
+    mean = blk.mean(-2)
+    dev = blk - mean[..., None, :]
+    _vals, vecs = np.linalg.eigh(np.einsum("...ni,...nj->...ij", dev, dev))
+    axis = vecs[..., -1]                                                             # principal axis (unit)
+    t = np.einsum("...ni,...i->...n", dev, axis)
+    hi = mean + t.max(-1)[..., None] * axis
+    lo = mean + t.min(-1)[..., None] * axis
+    best = _cmpr_fit(blk, hi, lo)
+    weight = np.array([1.0, 0.0, 2 / 3, 1 / 3])
+    for _ in range(2):
+        a = weight[best[2]]                                                          # texel = a * E0 + (1 - a) * E1
+        saa, sab, sbb = (a * a).sum(-1), (a * (1 - a)).sum(-1), ((1 - a) ** 2).sum(-1)
+        ax, bx = np.einsum("...n,...ni->...i", a, blk), np.einsum("...n,...ni->...i", 1 - a, blk)
+        det = saa * sbb - sab * sab
+        ok = np.abs(det) > 1e-9
+        det = np.where(ok, det, 1.0)
+        e0 = ((sbb[..., None] * ax - sab[..., None] * bx) / det[..., None]).clip(0, 255)
+        e1 = ((saa[..., None] * bx - sab[..., None] * ax) / det[..., None]).clip(0, 255)
+        e0 = np.where(ok[..., None], e0, _from565(best[0]))
+        e1 = np.where(ok[..., None], e1, _from565(best[1]))
+        cand = _cmpr_fit(blk, e0, e1)
+        better = cand[3] < best[3]
+        best = tuple(np.where(better[..., None], c, b) if c.ndim == 3 else np.where(better, c, b)
+                     for c, b in zip(cand, best))
+    c0, c1, idx, _err = best
     bits = np.zeros(idx.shape[:2], np.uint64)
     for i in range(16):
         bits |= idx[..., i].astype(np.uint64) << np.uint64(30 - 2 * i)

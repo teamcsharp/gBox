@@ -215,6 +215,24 @@ def test_cmpr_encoder_decodes_back():
     assert len(chain) == N.gx_chain_size(N.GX_CMPR, 64, 64, 4)
 
 
+def test_cmpr_endpoints_fit_the_block_not_its_extreme_texels():
+    """Blocks whose texels sit at 0, 1/3 and 2/3 of the way between two hues: the brightest / darkest texel pair
+    leaves the middle texel between two palette colours (up to 59 off); principal-axis endpoints refitted by least
+    squares land every texel within 565 rounding of a palette colour."""
+    rng = np.random.default_rng(5)
+    img = np.zeros((32, 32, 4), np.uint8)
+    img[..., 3] = 255
+    for by in range(8):
+        for bx in range(8):
+            a, b = rng.integers(0, 256, 3).astype(float), rng.integers(0, 256, 3).astype(float)
+            t = rng.choice([0, 1 / 3, 2 / 3], 16)
+            t[:3] = [0, 1 / 3, 2 / 3]
+            img[by * 4:by * 4 + 4, bx * 4:bx * 4 + 4, :3] = np.rint(a + (b - a) * t[:, None]).reshape(4, 4, 3)
+    back = np.frombuffer(N.decode_gx(N.GX_CMPR, 32, 32, G.encode_cmpr(img)), np.uint8).reshape(32, 32, 4)
+    err = np.abs(back[..., :3].astype(int) - img[..., :3])
+    assert err.max() <= 28 and err.mean() < 4.5
+
+
 # ----------------------------------------------------------------------------------------------- a synthetic level
 
 def _restxtrs(texs):
