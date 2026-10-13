@@ -1558,6 +1558,12 @@ DEDICATED = [
     ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
      lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Metal Gear Solid 2: Substance (USA): the catalog's cb7aae71edb10cd3 (filed windows_native by HyperSpin's "Microsoft
+    # XBOX" list) is the PS2 DVD-9 SLUS-20554 (CHD, both layers read in place): stage kms models + texture packs
+    # (encrypted, zlib pages) -> rigged GLBs; Snake, Raiden, the soldier variants and main cast (docs/mgs2.md)
+    ("mgs2", lambda t, p: "metal gear solid 2" in t and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.mgs2_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mgs2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
