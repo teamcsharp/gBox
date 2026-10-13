@@ -252,6 +252,40 @@
   #taskpanel .tkv-stat { background:#ffffff0a; border:1px solid #ffffff1b; border-radius:9px; padding:9px 12px; }
   #taskpanel .tkv-stat strong { display:block; font-size:19px; line-height:1.2; font-variant-numeric:tabular-nums; }
   #taskpanel .tkv-stat span { color:#94a7ca; font-size:10px; text-transform:uppercase; letter-spacing:.09em; }
+  /* Providers: which Hermes route did the work and which is out of credit (cards in Visual, a table in Technical) */
+  #taskpanel .tkp { padding:0 20px 12px; }
+  #taskpanel .tkp-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+  #taskpanel .tkp-head > b { color:#94a7ca; font-size:10px; text-transform:uppercase; letter-spacing:.09em; }
+  #taskpanel .tkp-rec { flex:1 1 320px; min-width:0; color:#d7e3ff; font-size:12px; line-height:1.35; }
+  #taskpanel .tkp-window { display:inline-flex; gap:2px; padding:2px; border:1px solid #ffffff26; border-radius:6px; }
+  #taskpanel .tkp-window button { border:0; border-radius:4px; background:transparent; color:#a9bfdf; font:inherit; font-size:11px; padding:2px 8px; cursor:pointer; }
+  #taskpanel .tkp-window button[aria-pressed=true] { background:#5267ba; color:#fff; }
+  #taskpanel .tkp-cards { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; }
+  #taskpanel .tkp-card { flex:0 0 228px; min-width:0; background:#ffffff0a; border:1px solid #ffffff1b; border-radius:9px; padding:8px 11px; font-size:11px; color:#b8c9e6; }
+  #taskpanel .tkp-card.current { border-color:#57ddbb99; box-shadow:inset 0 0 0 1px #57ddbb33; }
+  #taskpanel .tkp-card header { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  #taskpanel .tkp-card header b { color:#e9f0ff; font-size:13px; }
+  #taskpanel .tkp-tag { border:1px solid #6b91d770; border-radius:10px; padding:0 6px; font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:#a9c0e8; }
+  #taskpanel .tkp-tag.current { border-color:#57ddbb; color:#57ddbb; } #taskpanel .tkp-tag.local { border-color:#c9a4ff99; color:#d4b8ff; }
+  #taskpanel .tkp-model { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#8fa4c8; margin:2px 0 4px; }
+  #taskpanel .tkp-status { color:#e9f0ff; font-weight:600; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #taskpanel .tkp-status i, #taskpanel .tkp-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; background:#8796b3; vertical-align:1px; }
+  #taskpanel .working .tkp-status i, #taskpanel .working .tkp-dot { background:#57ddbb; box-shadow:0 0 8px #57ddbb; }
+  #taskpanel .out_of_credit .tkp-status i, #taskpanel .usage_limit .tkp-status i, #taskpanel .out_of_credit .tkp-dot, #taskpanel .usage_limit .tkp-dot { background:#ff6b81; }
+  #taskpanel .cooling .tkp-status i, #taskpanel .rate_limited .tkp-status i, #taskpanel .cooling .tkp-dot, #taskpanel .rate_limited .tkp-dot { background:#ffc061; }
+  #taskpanel .failing .tkp-status i, #taskpanel .failing .tkp-dot { background:#ff8f5a; }
+  #taskpanel .tkp-card dl { display:grid; grid-template-columns:1fr 1fr; gap:3px 10px; margin:6px 0; }
+  #taskpanel .tkp-card dt { font-size:9px; text-transform:uppercase; letter-spacing:.07em; color:#8196bb; }
+  #taskpanel .tkp-card dd { margin:0; color:#e1ebff; font-variant-numeric:tabular-nums; } #taskpanel .tkp-card dd small { color:#ff9aa8; }
+  #taskpanel .tkp-balance { color:#9fe3cf; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #taskpanel .tkp-error { color:#ffa3ae; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }
+  #taskpanel .tkp-empty { color:#9eafd0; margin:0; }
+  #taskpanel #tk-visual:has(.tkp-cards) .tkv-layout { height:calc(100% - 300px); }
+  #taskpanel .tkp-tech .tkp-rec { color:inherit; margin:4px 0 8px; }
+  #taskpanel .tkp-tech .tkp-window { border-color:var(--line); } #taskpanel .tkp-tech .tkp-window button { color:var(--mut); }
+  #taskpanel .tkp-tech .tkp-window button[aria-pressed=true] { color:#fff; }
+  #taskpanel .tkp-tech table { margin-bottom:8px; } #taskpanel .tkp-tech td { text-align:left; vertical-align:top; }
+  #taskpanel .tkp-tech .tkp-err { max-width:280px; overflow-wrap:anywhere; }
   #taskpanel .tkv-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(260px,32%); height:calc(100% - 139px); min-height:370px; border-top:1px solid #ffffff1b; }
   #taskpanel .tkv-stage { position:relative; overflow:hidden; background:radial-gradient(ellipse at center,#2336584a,transparent 68%); }
   #taskpanel .tkv-stage canvas { width:100%; height:100%; display:block; }
@@ -859,7 +893,7 @@ window.taskVisualGraphCreate = (canvas, labels, onPick) => {
       const label = document.createElement("button"); label.type = "button";
       label.className = "tkv-node-label" + (task.id === selected ? " selected" : "");
       label.setAttribute("aria-label", `${task.name}, ${task.state}`);
-      label.innerHTML = `<small>${task.kind.replace("_", " ")} · ${task.state}</small>${task.name.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]).slice(0, 28)}`;
+      label.innerHTML = `<small>${task.kind.replace("_", " ")} · ${task.state}${task.provider ? ` · ${task.provider.replace(/[&<>"']/g, "")}` : ""}</small>${task.name.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]).slice(0, 28)}`;
       label.onclick = () => onPick(task.parentId || task.id, task.eventIndex); labels.append(label);
       nodes.push({ task, mesh, halo, label, x, y, z, running, labelAbove:running ? i % 2 === 1 : pastRow === 0, phase:i * 1.7 });
     });
@@ -1148,7 +1182,9 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/report-story.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
+<script src="hermes-providers.js"></script>
 <script src="../web/viz/process-popup.js"></script>
+<script src="../web/viz/launch-bar.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
 <script src="../web/viz/game-menu.js"></script>
 <script src="../web/viz/mods-gallery.js"></script>
@@ -1395,11 +1431,12 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="t
     <div class="tkv-head"><div><div class="tkv-kicker">Live task network</div><h2>Work in motion</h2><p>Follow each run from active work to its result.</p></div>
       <span class="tkv-live"><i></i> Refreshes every 5 seconds</span></div>
     <div class="tkv-stats" id="tkv-stats"></div>
+    <div class="tkp" id="tkv-providers"></div>
     <div class="tkv-layout"><div class="tkv-stage"><canvas id="tkv-canvas" aria-label="Interactive 3D task graph"></canvas><div class="tkv-labels" id="tkv-labels"></div>
       <div class="tkv-caption"><span>Active mainline</span><span class="past">Completed branch</span><span class="failed">Failed branch</span><span>Click a bubble or label to inspect</span></div></div>
       <aside class="tkv-side" id="tkv-side"><div class="tkv-empty"><b>Choose a task</b><span>Inspect live metrics, attempts and evidence.</span></div></aside></div>
   </div>
-  <div id="tk-technical" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-technical-tab" hidden><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div></div>`);
+  <div id="tk-technical" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-technical-tab" hidden><div id="tk-providers"></div><div id="tk-local"></div><div id="tk-body"><p class="mut" style="padding:12px">loading…</p></div></div></div>`);
 document.body.insertAdjacentHTML("beforeend", `<div id="tkv-media" role="dialog" aria-modal="true" aria-label="Task artifact">
   <header><b id="tkv-media-title">Task artifact</b><button class="act" id="tkv-media-close">Close</button></header>
   <div class="body"><div class="stage" id="tkv-media-stage"></div><aside id="tkv-media-side"></aside></div></div>`);
@@ -1586,7 +1623,8 @@ $("#rp-close").onclick = () => {
 const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
   focus: false, focusEvents: [], visualOpenSteps: new Set(), artifacts: [],
   expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map(),
-  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0, hermesLimit: 20 };
+  jobDetail: new Map(), pointerDown: 0, scrolledAt: 0, hermesLimit: 20,
+  providers: null, providersBusy: false, providersWindow: (() => { try { return localStorage.getItem("gbox.tasks.providersWindow") === "7d" ? "7d" : "today"; } catch { return "today"; } })() };
 function tkView(view) {
   TK.view = view;
   $("#taskpanel").classList.toggle("visual-mode", view === "visual");
@@ -1603,7 +1641,7 @@ function tkView(view) {
 function tkVisualItems(d) {
   const items = [];
   for (const run of (d.hermes || []).slice(0, 9)) items.push({ id:`hermes:${run.id}`, kind:"hermes", name:run.name || "Hermes run", state:run.state,
-    active:["running","queued"].includes(run.state), data:run });
+    provider:run.provider || "", active:["running","queued"].includes(run.state), data:run });
   for (const run of (d.resolutions || []).slice(0, 6)) items.push({ id:`resolution:${run.id}`, kind:"resolution", name:`#${run.number} ${run.name}`,
     state:run.state, active:["running","queued","in_progress"].includes(run.state), data:run });
   for (const job of (d.jobs || [])) items.push({ id:`job:${job.id}`, kind:"job", name:job.tool || "Worker job", state:job.state,
@@ -1660,7 +1698,7 @@ async function tkVisualDetail() {
   box.querySelectorAll("#tkv-detail-events details[open]").forEach(el => TK.visualOpenSteps.add(el.id));
   const d = item.data, started = d.started || d.created;
   let html = `<span class="tkv-pill">${esc(item.kind)} · ${esc(item.state)}</span><h3>${esc(item.name)}</h3>
-    <p>${started ? `Started ${tkAge(started)} ago` : "Live process"}${d.model ? ` · ${esc(d.model)}` : ""}</p>`;
+    <p>${started ? `Started ${tkAge(started)} ago` : "Live process"}${item.kind === "hermes" && d.provider ? ` · ${esc(d.provider)}` : ""}${d.model ? ` · ${esc(d.model)}` : ""}</p>`;
   if (item.kind === "hermes") {
     const total = Number(d.tokens_in || 0) + Number(d.tokens_out || 0);
     html += tkVisualMeter("Input tokens", Number(d.tokens_in || 0), total, Number(d.tokens_in || 0).toLocaleString()) +
@@ -1753,6 +1791,32 @@ function tkVisualUpdate(d) {
   TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
   tkVisualDetail();
 }
+// Providers strip (Visual) and table (Technical): GET /api/hermes/providers, refreshed with the 5 s task poll.
+async function tkProvidersLoad() {
+  if (TK.providersBusy) return;
+  TK.providersBusy = true;
+  const want = TK.providersWindow;
+  let r;
+  try { r = await gbox.api(`/api/hermes/providers?window=${encodeURIComponent(want)}`); } finally { TK.providersBusy = false; }
+  if (!$("#taskpanel").classList.contains("on")) return;
+  if (want !== TK.providersWindow) { tkProvidersLoad(); return; }
+  TK.providers = r.ok ? r.data : { error: r.error || "request failed" };
+  tkProvidersRender();
+}
+function tkProvidersRender() {
+  const P = window.GBoxProviders; if (!P) return;
+  const box = $("#tkv-providers"), html = P.cards(TK.providers, { window: TK.providersWindow });
+  if (box.tkHtml !== html) { box.innerHTML = html; box.tkHtml = html; }
+  tkRender($("#tk-providers"), P.table(TK.providers, { window: TK.providersWindow }), $("#tk-technical"));
+}
+function tkProvidersWindow(e) {
+  const b = e.target.closest("[data-tkp-window]"); if (!b || b.dataset.tkpWindow === TK.providersWindow) return;
+  TK.providersWindow = b.dataset.tkpWindow;
+  try { localStorage.setItem("gbox.tasks.providersWindow", TK.providersWindow); } catch {}
+  tkProvidersRender(); tkProvidersLoad();
+}
+$("#tkv-providers").onclick = tkProvidersWindow;
+$("#tk-providers").onclick = tkProvidersWindow;
 $("#tk-visual-tab").onclick = () => tkView("visual");
 $("#tk-technical-tab").onclick = () => tkView("technical");
 $("#tkv-side").onclick = e => {
@@ -1981,10 +2045,11 @@ async function tasksLoad() {
   const d = r.data, kind = k => `<span class="kd ${k === "game" ? "game" : k === "agent test" ? "agent" : ""}">${esc(k)}</span>`;
   $("#tk-at").textContent = "updated " + new Date().toLocaleTimeString();
   tkVisualUpdate(d);
+  tkProvidersLoad();
   tkRender($("#tk-body"), `<div class="mc"><div class="mh"><b>Hermes background runs</b><span class="mut">${(d.hermes || []).length}</span></div>
       ${(d.hermes || []).map(run => `<div class="hermes-run"><details data-detail-hermes="${esc(run.id)}" ${TK.hermesExpanded.has(run.id) ? "open" : ""}>
         <summary>${kind(run.state)} <span class="nm">${esc(run.name)}</span> ${tkRunTickets(run)} <span class="mut">${esc(run.progress || "")}</span></summary>
-        <div class="meta">${esc(run.provider || "")} ${esc(run.model || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
+        <div class="meta">${esc(window.GBoxProviders?.runLabel(run) || "Hermes")} · ${esc(tkTokenSummary(run))} · started ${tkAge(run.started)} ago</div>
         <button class="act" data-hermes-evidence="${esc(run.id)}">View detailed report</button>
         <button class="act" data-hermes-visual="${esc(run.id)}">View 3D task stages</button>
         <pre>${esc(TK.hermesOutput.get(run.id) || "Loading live Hermes output…")}</pre></details></div>`).join("") || '<p class="mut">No Hermes runs recorded.</p>'}
@@ -2307,7 +2372,8 @@ async function loadSettings() {
   S = await gbox.settings();
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
-    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>`;
+    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 reset · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -2918,10 +2984,12 @@ function jobOf(r, what, failed = "job request failed") {
   return j;
 }
 async function jobWait(j, what, ms = 500, max = Infinity) {   // poll until the job settles; a lost poll is a readable error
+  globalThis.GBOX_LAUNCH_BAR?.observe(j);                     // a launch shows on the launch bar from its first answer (#1635)
   for (let i = 0; i < max && ["queued", "running"].includes(j.state); i++) {
     await new Promise(r => setTimeout(r, ms));
     const polled = await gbox.api("/api/jobs/" + j.id).catch(e => ({ ok: false, error: e.message }));
     j = jobOf(polled, `${what} (job ${j.id})`, "job status unavailable");
+    globalThis.GBOX_LAUNCH_BAR?.observe(j);
   }
   return j;
 }
@@ -3117,7 +3185,7 @@ function popups() {                                          // floating things 
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
 const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on";
-const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
+const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #bntoast, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
   window.__gboxMenuWatch = new MutationObserver(records => {
@@ -3580,6 +3648,15 @@ gbox.onPadState?.(pads => {
 // Mini mode hides this window and its view; the view keeps forwarding the pad to the session the mini window shows.
 const miniPadTarget = sid => document.querySelector("#wv")?.executeJavaScript(`window.gboxPadTarget?.(${JSON.stringify(sid || null)})`).catch(() => {});
 gbox.onMiniClosed?.(() => miniPadTarget(null));
+// a finished build in the view's bell tray (gbox/build_notify.py): an OS notification while gBox is not in front
+// (main.js decides), and the shell's own toast while another panel hides the view and its toast
+function buildNoteMsg(m) {
+  gbox.osNotify?.({ id: m.id, title: m.title, body: m.body }).catch(() => {});
+  if (!$("#play")?.classList.contains("on")) toast("🔔 " + m.title + (m.body ? " · " + m.body : ""), 8000);
+}
+// a build notification's OS toast was clicked (main.js notify:os): show the game view with the bell tray open on it
+gbox.onNotifyClick?.(() => { document.querySelector('aside button[data-s="play"]')?.click();
+  document.querySelector("#wv")?.executeJavaScript("window.gboxBuildNoteOpen?.()").catch(() => {}); });
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));
@@ -3591,6 +3668,8 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
+    else if (m.ev === "buildnote") buildNoteMsg(m);                                                                // a finished build
+    else if (m.ev === "openrequest") modsGalleryRequest({ id: m.id });                                            // tray: Open request
     else if (m.ev === "gamecontext" || m.ev === "gamepick") {
       const r = wv.getBoundingClientRect();
       if (m.ev === "gamecontext") pipMenu(r.left + m.x, r.top + m.y);
@@ -5258,7 +5337,7 @@ async function whipCardMenu(card, gp, ev) {
   let T = { name: "the character at this point", kind: "character" };
   const at = `${Math.round(f[0] * 100)}% across, ${Math.round(f[1] * 100)}% down`;
   m.innerHTML = `<b>Put ${esc(card.name)} in place of ${esc(T.name)}</b><div class="mut">${esc(T.kind || "")} at ${at} in ${esc(game)}</div>
-    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes)</button>
+    <button data-w="live"><span>▶</span>Replace it in the running game (OoT NPCs; VR Missions: Snake, soldiers; Twin Snakes; MGS2 cast)</button>
     <button data-w="swap"><span>▶</span>Build replacement and restart</button>
     <button data-w="ovl"><span>◐</span>Overlay ${esc(card.name)} on it now (any game)</button>
     <button data-w="retarget"><span>✎</span>Adjust how ${esc(card.name)} is retargeted…</button>
@@ -6112,6 +6191,13 @@ const SBX_READY = (async () => { const s = await gbox.settings(); SBX.api = s.ap
 const AUD = { rows: [], after: 0 };
 const activityHost = document.createElement("div"); activityHost.id = "background-activity";
 $("#sb-audit").before(activityHost); activity = new TaskActivity(activityHost);
+// Launch bar (#1635): full width just above this strip while a game launch runs (any path: Library, Mods, Special builds,
+// notifications, swaps). Fed by the jobs poll below and by jobWait; it asks for one finished launch once to learn how it ended.
+try {
+  globalThis.GBOX_LAUNCH_BAR = window.GBoxLaunchBar?.mount({ bottom: 28,
+    fetchJob: async id => { const r = await gbox.api(`/api/jobs/${encodeURIComponent(id)}`); return r.ok ? r.data : null; },
+    onDetails: job => tvOpen(job.id, "job") }) || null;
+} catch (e) { console.error("Launch bar:", e); }
 const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|desktop|web/, "🧑"], [/worker|lilspark|nuc|jaybuilt/i, "🖥️"], [/.*/, "⚙️"]];
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
@@ -6128,7 +6214,7 @@ async function processPopupSync(jobs) {
 function auditPoll(explicit = true) { return pollAudit(explicit); }
 const pollAudit = singleFlightPoll(async () => {
   const [r, jobs] = await pollTogether([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
-  if (jobs.ok) { activity?.remote(jobs.data); await processPopupSync(jobs.data); } if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
+  if (jobs.ok) { activity?.remote(jobs.data); globalThis.GBOX_LAUNCH_BAR?.remote(jobs.data); await processPopupSync(jobs.data); } if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;

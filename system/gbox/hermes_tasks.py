@@ -257,6 +257,7 @@ def list_runs(limit: int = DEFAULT_RUNS) -> list[dict]:
                 terminal_scripts.add(r['job_id'])
             out.append({"id": r["id"], "job_id": r["job_id"], "name": names.get(r["job_id"], r["job_id"]),
                         "state": r["status"], "started": started, "finished": _stamp(r["finished_at"]),
+                        "session_id": session["id"] if session else None,
                         "model": session["model"] if session else None,
                         "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                         **_usage(session),
