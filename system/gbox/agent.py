@@ -1939,7 +1939,7 @@ class ChatHub:
         errs = [e for e in turn if e.get("type") in ("tool_result", "error") and failed(e)]
         final = next((e.get("text") or "" for e in reversed(turn) if e.get("type") == "assistant"), "")
         if status != "blocked":
-            if final and not self.GAP_GAVE_UP.search(final):
+            if final and not self.GAP_GAVE_UP.search(re.sub(r"```.*?(```|$)", " ", final, flags=re.S)):   # returned data isn't a give-up
                 return                                # it recovered and delivered: errors on the way aren't a gap
             if not final and not errs:
                 return
