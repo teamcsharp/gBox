@@ -668,6 +668,8 @@ class CharIn(BaseModel):
     slots: str = "all"                     # cast_swap: all | main | enemies | pedestrians | ... | a comma list of slot names
     assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
     plan_only: bool = False                # cast_swap: return the plan without building
+    mod_name: str = ""                     # cast_swap: a fixed mod folder name (the Sonic showcase's showcase_sonic_<title>); the plan hash in its marker decides a rebuild
+    showcase: bool = False                 # cast_swap: a Sonic showcase test build (gbox.sonic_showcase): marked in its record, no Play-as targets
 
     @model_validator(mode="after")
     def require_named_character(self):
