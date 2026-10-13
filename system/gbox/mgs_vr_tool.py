@@ -92,14 +92,25 @@ def stage_dir(data: bytes) -> dict[str, int]:
     return out
 
 
+def stg_entry(data: bytes, off: int, index: int) -> tuple[str, bytes]:
+    """Entry *index* of the .stg at *off*: header u8 1, u8 0, u16 sectors, then 8-byte entries {u16 hash, u8 mode,
+    u8 ext, u32 size}; the leading non-cached entries are stored in order from +0x800, each sector aligned
+    (init.stg: 0 = model DAR 0_0.dar, 1 = texture DAR 1_0.dar; a mission stage: 0 = code overlay .bin)."""
+    pos = off + 0x800
+    for i in range(index + 1):
+        _hash, mode, ext, size = struct.unpack_from("<HBBI", data, off + 4 + 8 * i)
+        if chr(mode) == "c":
+            raise ValueError(f"entry {i} is cached; only the leading streamed entries are addressable here")
+        if i == index:
+            return chr(ext), data[pos:pos + size]
+        pos += (size + 2047) // 2048 * 2048
+    raise IndexError(index)
+
+
 def stage_overlay(data: bytes, name: str) -> bytes:
-    """A stage's code overlay: .stg header (u8 1, u8 0, u16 sectors, then 8-byte entries {u16 hash, u8 mode,
-    u8 ext, u32 size}); entry 0 is the 'b' (.bin) overlay, stored from offset 0x800."""
-    off = stage_dir(data)[name]
-    hash_, mode, ext, size = struct.unpack_from("<HBBI", data, off + 4)
-    if chr(ext) != "b":
-        return b""
-    return data[off + 0x800:off + 0x800 + size]
+    """A stage's code overlay: entry 0 of its .stg when that is a 'b' (.bin) file."""
+    ext, body = stg_entry(data, stage_dir(data)[name], 0)
+    return body if ext == "b" else b""
 
 
 # ---------------------------------------------------------------------------------------------- memory
