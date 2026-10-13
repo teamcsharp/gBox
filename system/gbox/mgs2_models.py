@@ -524,14 +524,27 @@ def extract_model(index: Index, h: int, out: Path, name: str) -> dict:
     return r | {"stage": f"{fn}:{stage}"}
 
 
+_OPEN: dict = {}
+
+
+def _index_for(path: Path) -> "Index":
+    """One opened disc + stage index per image for the process (a collection reads 19 models from one disc)."""
+    p = Path(path)
+    key = (str(p), p.stat().st_mtime)
+    if key not in _OPEN:
+        for d, _i in _OPEN.values():
+            d.close()
+        _OPEN.clear()
+        disc, _ident = open_disc(p)
+        _OPEN[key] = (disc, Index(disc))
+    return _OPEN[key][1]
+
+
 def extract_run(ctx, game: dict, e: dict, work: Path) -> dict:
     """characters.DEDICATED hook: one MGS2 character -> rigged, textured GLB with body roles."""
-    disc, _ident = open_disc(source_disc(ctx, game))
+    idx = _index_for(source_disc(ctx, game))
     h = int(e.get("model_hash") or int(e["key"], 16))
-    try:
-        r = extract_model(Index(disc), h, Path(work) / f"{e['slug']}.glb", e["slug"])
-    finally:
-        disc.close()
+    r = extract_model(idx, h, Path(work) / f"{e['slug']}.glb", e["slug"])
     if not r["verified"]:
         raise FormatError(f"model {h:06x}: failed verification ({r['triangles']} triangles, "
                           f"{len(r['roles'])} body roles, {r['height_m']} m)")

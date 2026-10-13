@@ -334,6 +334,52 @@ def test_slots_and_pick_whip_names():
     assert S.STAGE_NAMES()[inv.name_hash("w00a")] == "w00a" and len(S.STAGE_LIST) > 250
 
 
+def test_pick_whip_live_use_builds_the_whipped_slot_and_swaps_the_session(tmp_path, monkeypatch):
+    """live_use from the pick whip: the stage is read from EE RAM, the target name picks the slot, the mod is built
+    and launched into the session (session_swap keeps the moment)."""
+    from gbox import characters as C
+    calls = []
+    ram = {S.STAGE_STATE_PTR: struct.pack("<I", 0x00400000), 0x00400000 + 0x3C: struct.pack("<I", inv.name_hash("w00a"))}
+
+    def api(ctx, method, path, **kw):
+        calls.append((method, path, kw.get("json")))
+        if path.endswith("/rpc"):
+            a = kw["json"]["args"]
+            return ram[a["address"]].hex()
+        if path == "/api/jobs":
+            return {"id": "job1"}
+        return {}
+    monkeypatch.setattr(C, "_api", api)
+    monkeypatch.setattr(C, "library_root", lambda cfg=None: tmp_path)
+    built = []
+    monkeypatch.setattr(S, "build_mod", lambda cfg, game, pairs, progress=None, title=None, **kw:
+                        built.append(pairs) or {"mod": "m", "image": "x.iso", "reports": []})
+
+    class Inp:
+        op, character, session_id, slot, rebuild, launch = "live_use", "sonic", "w1-abc", "player", False, True
+        x, y, target, pairs, title = 0.4, 0.5, "a soldier with a rifle", None, None
+
+    class Ctx:
+        class config:
+            cache = tmp_path
+
+        @staticmethod
+        def progress(p, m):
+            pass
+    meta = {"slug": "sonic", "name": "Sonic"}
+    r = S.use(Ctx, meta, {"game_id": inv.GAME_ID}, Inp)
+    assert r["stage"] == "w00a" and r["slot"] == "soldier_tanker" and r["picked"] == "soldier_tanker"
+    assert built and built[0][0][1] == "soldier_tanker" and r["status"] == "launching"
+    launch = [c for c in calls if c[1] == "/api/jobs"][-1][2]
+    assert launch["tool"] == "@launch" and launch["input"]["session_id"] == "w1-abc"
+    # no name, no stage -> the player slot of the Tanker (Snake)
+    ram.clear()
+    Inp.target = ""
+    built.clear()
+    r = S.use(Ctx, meta, {"game_id": inv.GAME_ID}, Inp)
+    assert r["slot"] == "snake" and r["stage"] is None
+
+
 def test_registrations_and_platform():
     from gbox import cast_swap, char_coverage, characters as C, systems
     game = {"game_id": inv.GAME_ID, "title": "Metal Gear Solid 2: Substance (USA)", "platform": "windows_native"}

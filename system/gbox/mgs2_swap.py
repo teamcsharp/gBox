@@ -627,6 +627,7 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
             done_stages = set()
             plans: dict = {}
             written: set = set()
+            weighed = False
             for h in models:
                 places = idx.stages_with(inv.T_KMS, h)
                 for fn, stage in places:
@@ -674,13 +675,14 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
                                 plans[pkey] = (pl, pb)
                             plan, pack_b = plans[pkey]
                             tex_hash = plan["hijack"]
-                        fk = (sig, plan["A"] if plan else 128)
+                        fk = (str(jb.model), jb.fit_key, sig, plan["A"] if plan else 128)
                         if isinstance(fits_cache.get(fk), str):
                             raise SwapError(fits_cache[fk])
                         if fk not in fits_cache:
                             try:
                                 fitted = fit(jb.model, jb.roles, tgt, jb.props, jb.scale)
-                                if not any(isinstance(v, tuple) for v in fits_cache.values()):
+                                if not weighed:
+                                    weighed = True
                                     FE.weights(fitted["prims"], names={i: M.bone_name(i, tgt["roles"])
                                                                        for i in range(tgt["joints"])},
                                                skeleton=tgt["joints"])
@@ -968,7 +970,7 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
     if sid and getattr(inp, "launch", True) is not False:
         node = sid.split("-")[0]
         lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": res["mod"],
-                                                                                  "node": node}})
+                                                                                  "node": node, "session_id": sid}})
         res |= {"status": "launching", "launch_job": lj.get("id"), "node": node,
                 "message": f"MGS2 mod {res['mod']} replaces the running game through session_swap (save state -> "
                            "modded image -> load state). Models already in memory change at the next area load "
