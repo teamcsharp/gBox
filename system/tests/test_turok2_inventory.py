@@ -51,6 +51,16 @@ def test_header_requires_z64():
         t2.header(b"\x37\x80\x40\x12" + b"\0" * 0x1000)
 
 
+def test_inventory_rejects_object_types_overrun():
+    obj = _set([b"\0" * 8, b"\1" * 8, b"\2" * 8, b"\3" * 8])
+    go = _set([obj])
+    bad_types = struct.pack(">II", 2, 0x7FFF)               # claims 32767 entries in an 8-byte block
+    root = _set([go, b"\x55" * 16, bad_types] + [b"\x55" * 16 for _ in range(18)])
+    with pytest.raises(ValueError, match="ObjectTypes"):
+        t2.inventory(b"\xAA" * 0x40 + root + b"RNC")
+
+
+
 @pytest.mark.skipif(not SRC.exists(), reason="owned Turok 2 EU zip not cached")
 def test_owned_rom_inventory():
     from gbox import n64_rom

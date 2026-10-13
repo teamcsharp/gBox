@@ -132,7 +132,11 @@ def inventory(rom: bytes, decode_all: bool = True) -> dict:
 
     # ObjectTypes raw table
     ot = root_base + root[2][0]
+    if root[2][1] < 8:
+        raise ValueError("ObjectTypes block shorter than its 8-byte header")
     sub, n_ot = struct.unpack_from(">II", rom, ot)
+    if 8 + 2 * n_ot > root[2][1]:
+        raise ValueError(f"ObjectTypes count {n_ot} overruns its {root[2][1]}-byte block")
     anim_types = struct.unpack_from(f">{n_ot}H", rom, ot + 8)
 
     # GraphicObjects
@@ -196,7 +200,7 @@ def inventory(rom: bytes, decode_all: bool = True) -> dict:
     # whole-ROM RNC census
     census, i = Counter(), 0
     while (i := rom.find(b"RNC", i)) >= 0:
-        if rom[i + 3] in (1, 2):
+        if i + 3 < len(rom) and rom[i + 3] in (1, 2):
             census[rom[i + 3]] += 1
         i += 1
 
