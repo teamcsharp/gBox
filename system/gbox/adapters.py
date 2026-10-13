@@ -1181,7 +1181,7 @@ class RetroArchAdapter(CommandAdapter):
                                 time.sleep(.1)
                                 continue
                             actual = int(match[1] or 0)
-                            self.slot = actual
+                            self.slot, self._last_state_path = actual, path
                             result = {'slot': actual, 'requested_slot': requested,
                                       'path': str(path), 'bytes': stat.st_size,
                                       'verified': True, 'slot_verified': actual == requested}
@@ -1193,6 +1193,14 @@ class RetroArchAdapter(CommandAdapter):
                 time.sleep(.1)
             detail = f'; last container validation: {validation_error}' if validation_error else ''
             raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed' + detail)
+
+    def checkpoint_target(self) -> Path | None:
+        """The file the next SAVE_STATE writes (the current slot), named after the last verified save: the checkpoint
+        ring protects that slot before saving into it (#1488). None until a save has shown RetroArch's state folder."""
+        last, slot = getattr(self, "_last_state_path", None), int(getattr(self, "slot", 0) or 0)
+        if last is None or slot < 0:
+            return None
+        return last.with_name(re.sub(r'\.state(-?\d+)?$', '.state' + (str(slot) if slot else ''), last.name))
 
     def load_state(self, slot: int | None = None) -> dict:
         slot = self._slot(slot)
