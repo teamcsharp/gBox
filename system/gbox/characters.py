@@ -15,6 +15,7 @@ Every model here was extracted from the operator's own copy of the game, for loc
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
 import re
@@ -2224,11 +2225,6 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
-@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
-      artifacts=["preview.png"],
-      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
-                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
-                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard"])
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
@@ -2461,3 +2457,19 @@ def characters_tool(inp: CharIn, ctx):
         need = needs_for(game)
     from . import char_coverage                               # no writer: overlay now (if the game runs) + a gap report
     return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
+
+
+@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
+      artifacts=["preview.png"],
+      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
+                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
+                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard",
+                    "use/match/cast_swap: records the rebuild recipe in the built mod's .gbox-mod.json"])
+@functools.wraps(characters_tool)
+def characters_recorded(inp: CharIn, ctx):
+    """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
+    out = characters_tool(inp, ctx)
+    from . import special_builds
+    special_builds.record_call(ctx, inp, out)
+    return out

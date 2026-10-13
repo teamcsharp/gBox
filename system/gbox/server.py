@@ -1859,6 +1859,11 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.rejected" if missing else "job.submit", job.id, {"tool": t.name, "input": inp, "missing": missing})
         return job
 
+    from . import special_builds                  # the game menu's "Special builds": grouped builds, launch + rebuild
+    special_builds.routes(app, store, config, auth, workers=workers,
+                          submit=lambda tool, inp, require_os, actor: submit(
+                              JobRequest(tool=tool, input=inp, require_os=require_os), actor))
+
     class Progress(BaseModel):
         pct: float
         msg: str
