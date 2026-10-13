@@ -34,7 +34,7 @@ WRITERS = [
     ("pso_player", ["player", "enemy:<name>", "enemies"],
      "a PSO class (Ninja node tree, not drawn by the game yet); enemy:booma / gobooma / gigobooma / boomas or any BM_ENE "
      "pack on the enemy's own motions (gbox.pso_enemy, unverified in game)"),
-    ("jgr_swap", ["player", "character:<name>", "id:N", "<00-15>"],
+    ("jgr_swap", ["player", "character:<name>", "id:<N>", "<00-15>"],
      "JGR USA: any of the 16 PLAYER.AFS cast (player = Beat unless active_id): every textured body group and its "
      "texlist's body atlas rebuilt in a new GD-ROM mod; gameplay replacement unverified until launched"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
