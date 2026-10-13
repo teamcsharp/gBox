@@ -608,6 +608,10 @@ def create_app(config: Config) -> FastAPI:
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
 
+    # ghost runs (gbox/ghost_runs.py, #1098): recorded runs per game, the live player for the overlay, ghost picks
+    from . import ghost_runs
+    ghost_runs.register(app, auth, store)
+
     # Blender round trip (gbox/blender_roundtrip.py): a character out as one GLB with its rig role names / props,
     # copy to the clipboard (the picker's right-click), import back as a variant / new donor (a characters job)
     from . import blender_roundtrip
