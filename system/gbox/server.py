@@ -2795,6 +2795,13 @@ def create_app(config: Config) -> FastAPI:
     def _attach(rid: str, items: list[dict]) -> list[dict]:
         out = []
         for a in items[:20]:
+            if a.get("sha256") and not a.get("b64"):        # an artifact gBox already holds (a replay clip, #1084)
+                meta = store.get("artifact", str(a["sha256"]))
+                if not meta:
+                    raise HTTPException(422, f"unknown artifact {str(a['sha256'])[:12]}")
+                out.append({"sha256": meta["sha256"], "name": a.get("name") or meta.get("name"),
+                            "type": a.get("type") or meta.get("media_type"), "size": meta.get("size")})
+                continue
             name = a.get("name") or "image.png"
             mt = a.get("type") or ("image/png" if name.lower().endswith(".png") else "application/octet-stream")
             ref = store.put_artifact(base64.b64decode(a["b64"]), name, mt, {"request": rid, "attachment": True})

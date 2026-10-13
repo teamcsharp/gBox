@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .agent_contracts import validate_cheat_call
 
-from . import adapters, catalog, provision, rewind, uap
+from . import adapters, catalog, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
 from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
@@ -218,6 +218,7 @@ class LaunchIn(BaseModel):
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
+    keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -266,37 +267,59 @@ def _launch_fail(store, job: dict, actor: str):
 _LAUNCH_LOCK = threading.RLock()
 
 
-def _close_previous_games(ctx):
-    """One emulator per worker. Preserve every current game before stopping any of them."""
-    previous = list(SESSIONS.items())
+def _session_ended_on_server(ctx, sid) -> bool:
+    """True only when the control plane positively reports this session as ended; any doubt keeps the save path."""
+    if not getattr(ctx, 'server', None):
+        return False
+    try:
+        r = httpx.get(f'{ctx.server}/api/sessions/{sid}', headers=ctx.headers, timeout=5)
+        return r.status_code == 200 and (r.json() or {}).get('state') == 'ended'
+    except Exception:
+        return False
+
+
+def _close_previous_games(ctx, keep: str = ""):
+    """One emulator per worker, except the session named by `keep` stays up (game_link host + guest on one worker).
+    Preserve every current game before stopping any of them."""
+    previous = [(sid, ad, game) for sid, (ad, game) in SESSIONS.items() if sid != keep]
     checkpoints = []
-    for sid, (ad, game) in previous:
+    for sid, ad, game in previous:
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is not None:
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
             rewind.stop(sid)
+            ring_record.stop(sid)
             SESSIONS.pop(sid, None)
+            continue
+        if _session_ended_on_server(ctx, sid):
+            # The control plane already ended this session (app relaunch, lost stop): nobody is playing it, so it is
+            # closed without a save instead of blocking every new launch on this PC.
+            ctx.progress(71, 'Closing a leftover emulator the server had already ended')
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None, 'orphan': True})
             continue
         ctx.progress(71, 'Saving the previous game before switching')
         try:
             saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
         except Exception as exc:
-            raise Unsupported(f"The previous game could not be saved: {exc}. It was kept running. Stop it in Sessions before starting another game.") from exc
+            title = game.get('title') or game.get('game_id') or sid
+            raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
+                              "(or close its emulator window) before starting another game.") from exc
         checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), **saved})
-    for sid, (ad, _) in previous:
+    for sid, ad, _ in previous:
         if sid not in SESSIONS:
             continue
         ad.stop_game()
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is None:
             raise RuntimeError('The previous emulator is still running; another game was not started')
-        if getattr(ctx, 'server', None):
-            snapshot = next(s for s in checkpoints if s['session_id'] == sid)
+        snapshot = next(s for s in checkpoints if s['session_id'] == sid)
+        if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
         rewind.stop(sid)
+        ring_record.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
     return checkpoints
@@ -321,10 +344,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     if g.launch.get("kind") == "steam":
-        checkpoints = _close_previous_games(ctx)
+        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         detail = ad.launch_game(g.launch["appid"], (g.source_paths or [None])[0])
     elif isinstance(ad, adapters.RocketLauncherAdapter):
-        checkpoints = _close_previous_games(ctx)
+        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
         src = rom_path(g, ctx.config)
@@ -372,7 +395,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             from . import rom_archives
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
-        checkpoints = _close_previous_games(ctx)
+        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         detail = ad.launch_game(str(src))
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
@@ -404,6 +427,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
     except Exception as e:                                     # noqa: BLE001 - never block the launch
         detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
+    # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
+    try:
+        detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
+    except Exception as e:                                     # noqa: BLE001 - never block the launch
+        detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -526,6 +554,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                             threading.Thread(target=answer, args=(e,), daemon=True).start()
                     if pad:
                         rewind.feed(sid, pad)                 # Select+L2 / Select+R2 on a streamed session's pad
+                        ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
                     if pad and "send_input" in ad.supported:
                         ad.send_input(pad)
                 except Exception:
@@ -549,6 +578,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                 if not running:
                     c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
                     rewind.stop(sid)
+                    ring_record.stop(sid)
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
@@ -760,10 +790,67 @@ def session_op(inp: SessionIn, ctx: Ctx):
         if proc is not None and proc.poll() is None:
             raise RuntimeError('Emulator process is still running; stop was not confirmed')
         rewind.stop(inp.session_id)
+        ring_record.stop(inp.session_id)
         SESSIONS.pop(inp.session_id, None)
         track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
             "ended": inp.op == "stop_game"}
+
+
+# --- background gameplay ring (#1084) -------------------------------------------------------
+
+class RecordingIn(BaseModel):
+    session_id: str
+    op: str = "status"                     # status | export | enable | disable
+    in_s: float | None = None              # export: the clip starts this many recorded seconds before the newest moment (None: all)
+    out_s: float = 0.0                     # export: and ends this many seconds before it (0 = the newest moment)
+    target_mb: float = 20.0                # export: file size goal in MiB; the bitrate (and, if needed, the resolution) follow it
+
+class RecordingOut(BaseModel):
+    session_id: str
+    op: str
+    status: dict
+    clip: dict | None = None               # export: {sha256, name, bytes, seconds, kbps, width, height, encoder, fits, ...}
+
+def _recording_validate(out: RecordingOut, arts) -> list[str]:
+    if out.op != "export":
+        return []
+    clip = out.clip or {}
+    data = arts.get(clip.get("name") or "")
+    if data is None:
+        return ["exported clip artifact missing"]
+    if sha256(data) != clip.get("sha256") or len(data) != clip.get("bytes"):
+        return ["clip artifact hash / size does not match the output"]
+    return [] if data[4:8] == b"ftyp" else ["clip artifact is not an MP4"]
+
+@tool("recording", "1.0", RecordingIn, RecordingOut, capabilities=["video", "runtime"], permissions=[P.EXECUTE], timeout_s=900,
+      side_effects=["background ffmpeg capture of the session while the pad is in use (bounded ring on local disk)"],
+      artifacts=["replay-*.mp4"], validation="clip artifact hash + size + MP4 signature", validate=_recording_validate,
+      check=lambda c: None if shutil.which("ffmpeg") else "ffmpeg not on PATH")
+def recording(inp: RecordingIn, ctx: Ctx):
+    """Background gameplay ring of a session (#1084): status (timeline, encoder), export the range in_s..out_s seconds
+    before the newest recorded moment as an MP4 of about target_mb, or enable / disable the capture for the session."""
+    ring = ring_record.get(inp.session_id)
+    op = inp.op.lower()
+    clip = None
+    if op in ("enable", "disable"):
+        ring.set_enabled(op == "enable")
+    elif op == "export":
+        ctx.progress(10, "Copying the recorded segments")
+        res = ring.export(inp.in_s, inp.out_s, inp.target_mb, progress=ctx.progress)
+        path = res.pop("file")
+        try:
+            data = path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+        ctx.artifact(res["name"], data, "video/mp4", session=inp.session_id, game=ring.meta.get("game_id"),
+                     title=ring.meta.get("title"), seconds=res["seconds"], in_s=res["in_s"], out_s=res["out_s"],
+                     target_mb=res["target_mb"], encoder=res["encoder"], replay=True)
+        clip = res | {"sha256": sha256(data), "bytes": len(data)}
+        ctx.progress(100, f"Clip ready: {len(data) / 2**20:.1f} MB, {res['seconds']:.0f} s, {res['height']}p ({res['encoder']})")
+    elif op != "status":
+        raise ValueError(f"unknown op {inp.op} (status, export, enable, disable)")
+    return {"session_id": inp.session_id, "op": op, "status": ring.status(), "clip": clip}
 
 
 class PokeIn(BaseModel):
@@ -3002,12 +3089,12 @@ AGENTS = [
     {"name": "orchestrator", "role": "Owns the task plan; splits requests into typed tool jobs and delegates to the roles below",
      "tools": ["*"], "status": "defined", "notes": "Today the coding agent (Claude Code) plays this role through the inbox + API."},
     {"name": "reverse_engineering", "role": "Static/runtime hypotheses: functions, structures, loaders",
-     "tools": ["analyze_binary", "ghidra_script", "read_memory", "session_op"], "status": "defined"},
+     "tools": ["analyze_binary", "ghidra_script", "ida", "n64recomp", "decomp_me", "read_memory", "session_op"], "status": "defined"},
     {"name": "game_state", "role": "Semantic state discovery (player/enemy/room) from memory diffs + RE",
      "tools": ["read_memory", "session_op", "get_frame", "ghidra_script"], "status": "defined"},
     {"name": "autoplay_strategy", "role": "Route/strategy improvement from evaluated runs", "tools": ["launch_game", "session_op", "read_memory", "get_frame"],
      "status": "planned", "notes": "Needs the semantic-state extractor (Phase 2) first."},
-    {"name": "asset", "role": "Dependency extraction and normalization into UAP packages", "tools": ["export_asset", "read_memory", "get_frame"], "status": "defined"},
+    {"name": "asset", "role": "Dependency extraction and normalization into UAP packages", "tools": ["export_asset", "read_memory", "get_frame", "scene_capture", "ninja_ripper"], "status": "defined"},
     {"name": "conversion", "role": "Rig/material/format conversion", "tools": ["export_asset", "open_in_blender"], "status": "defined"},
     {"name": "mod", "role": "Transformation planning/building with reversible changesets", "tools": ["write_memory", "export_asset"],
      "status": "planned", "notes": "Mod builder (Phase 8) not built yet."},
@@ -3028,6 +3115,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
+                              "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
                               "aki_wrestling",   # aki_wrestling: No Mercy / Revenge / World Tour writers (via characters op=use|match)
@@ -3038,11 +3126,18 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
+                              "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
+                              "ninja_ripper",  # ninja_ripper: NinjaRipper launch/attach/rip on agent test PCs, .rip -> GLB
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game
                               "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
                               "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
+                              "sa2_mods",      # sa2_mods: Sonic Adventure 2 (DC/GC USA): finish stage, A rank, emblems
                               "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
-                              "stranglehold")):   # stranglehold: PS3 bullet-time interception systems and chat driver
+                              "stranglehold",   # stranglehold: PS3 bullet-time interception systems and chat driver
+                              "universal_modder",   # universal_modder: um_* tools (scan, kb, backup, publish check, sprite, mod, comfy, render3d)
+                              "ghidra_bridge_tool",   # ghidra_bridge: the operator's Ghidra as JSON functions (Dryxio/ghidra-bridge)
+                              "re_agent",        # re_agent: ReAgent reverser/checker/fix loop over the Ghidra Bridge
+                              "gta_live")):        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
     import importlib
     import subprocess
     import sys
