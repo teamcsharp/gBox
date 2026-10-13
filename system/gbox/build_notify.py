@@ -561,12 +561,18 @@ class Notifier:
     def decorate(self, notes: list[dict]) -> list[dict]:
         """GET /api/notify: launch options for the PCs online now, and young entries' thumbnails re-resolved (a capture
         that arrived after the build replaces the preview)."""
-        pcs = None
+        pcs = names = None
         now = self.clock()
         for n in notes:
             if n.get("auto") != AUTO:
                 continue
             pcs = self._pcs() if pcs is None else pcs
+            if names is None:
+                try:
+                    from .built_mods import display_names
+                    names = display_names(self.store)
+                except Exception:                                # noqa: BLE001 - a name is a convenience
+                    names = {}
             changed = False
             if now - (n.get("updated") or 0) < REFRESH_FOR and now - self._resolved.get(n["id"], 0) > REFRESH_EVERY:
                 self._resolved[n["id"]] = now
@@ -583,7 +589,14 @@ class Notifier:
                 self.store.put("notify", n["id"], n)
             for i, it in enumerate(n.get("items") or []):
                 it["thumbnail"] = f"/api/notify/{n['id']}/thumb?i={i}&v={_v(it)}"
-            n |= headline(n, keep_text=True)
+            # the operator's name for a build (#1656: Mods card / Builds rename) wins in the tray, old entries too;
+            # shown only (the stored entry keeps the writer's title, so clearing the name restores it)
+            renamed = False
+            for it in n.get("items") or []:
+                named = names.get(f"{it.get('game_id')}/{it.get('mod')}") if it.get("mod") else None
+                if named and it.get("mod_title") != named:
+                    it["mod_title"], renamed = named, True
+            n |= headline(n, keep_text=not renamed)
         return notes
 
     def _failure_request(self, job_id: str) -> str:
