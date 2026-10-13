@@ -278,7 +278,8 @@ Tecmo's packed bytes exactly (327 / 327 sections; `tests/test_doapp_swap.py` own
 Examples (owned ROMs, collection donors, read back through the game's skeleton build): Cloud (FF7, 3324 triangles) as
 Tina costume 1: 807 triangles, 14 seams, 100104 of 113332 bytes; Leon (RE4, 7980) as Kasumi 2: 855 triangles, 175
 seams; DOA2 Kasumi as Ayane 4: 999 triangles, 150 seams; Aya (PE) as Bass 1: 866 triangles, 173 seams; ~20 s per
-costume.
+costume. `slot=player` with Leon: all 44 costume models fit (850-862 triangles, full 256 x 256 page, at most 98 % of a
+file's bytes: Tina costume 4) and all 44 read back ok; 18 min including the read-backs.
 
 ## Status
 
