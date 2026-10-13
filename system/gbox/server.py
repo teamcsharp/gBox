@@ -59,6 +59,7 @@ class JobRequest(BaseModel):
     require_worker: str | None = None
     parent_request_id: str | None = None
     agent_use: bool = False
+    low_priority: bool = False      # background work (the Sonic showcase): claimed after every other queued job
 
 
 class Evaluation(BaseModel):
@@ -2094,7 +2095,8 @@ def create_app(config: Config) -> FastAPI:
                 w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
             # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
-            for j in sorted(store.queued_jobs(), key=lambda j: not _is_stop_job(j)):
+            # Low-priority background work (the Sonic showcase) goes last.
+            for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
@@ -2403,7 +2405,7 @@ def create_app(config: Config) -> FastAPI:
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id,
                   agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin),
-                  actor=actor, origin=origin)
+                  low_priority=req.low_priority, actor=actor, origin=origin)
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
@@ -2475,6 +2477,10 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.rejected" if missing else "job.submit", job.id, {"tool": t.name, "input": inp, "missing": missing})
         return job
 
+    # --- the Sonic showcase (docs/sonic_showcase.md): background showcase_sonic_<title> builds, readiness for the rest ---
+    from . import sonic_showcase
+    sonic_showcase.routes(app, store, config, auth,
+                          lambda request: submit(JobRequest(**request), "gbox-showcase").model_dump(mode="json"), workers)
     from . import special_builds                  # the game menu's "Special builds": grouped builds, launch + rebuild
     special_builds.routes(app, store, config, auth, workers=workers,
                           submit=lambda tool, inp, require_os, actor: submit(

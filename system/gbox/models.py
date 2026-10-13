@@ -57,6 +57,7 @@ class Job(BaseModel):
     require_os: str | None = None    # pin to "windows"/"linux" only when necessary
     require_worker: str | None = None
     agent_use: bool = False       # agent is using a PC; keep its output unobtrusive
+    low_priority: bool = False    # background work (the Sonic showcase): workers claim it after every other job
     state: JobState = JobState.QUEUED
     worker_id: str | None = None
     created: float = Field(default_factory=time.time)

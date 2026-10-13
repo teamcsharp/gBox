@@ -190,7 +190,9 @@ def candidates(data, requests, native, owned, on_main, *, now):
             continue
         req = by_id.get(rid, {})
         if item['lane'] == 'favorite':
-            if not item.get('favorite') or not item.get('in_catalog') or item['game_id'] in busy_games or not next_stage(item):
+            # a recently played title the Sonic showcase found without a writer (ensure_item) is worked like a favorite
+            if (not (item.get('favorite') or item.get('showcase')) or not item.get('in_catalog')
+                    or item['game_id'] in busy_games or not next_stage(item)):
                 continue
             if heavy >= 2 and next_stage(item) in ('inventory', 'analysis'):
                 continue
@@ -236,7 +238,10 @@ def choose(options, data):
         lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
     return min(lane, key=lambda v: (
         priority_rank(v[1], data),
-        0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') or v[1].get('session_observer') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
+        # starred favorites first; a showcase-only title (recently played, no writer yet) after them
+        0 if (v[1]['lane'] == 'favorite' and (v[1].get('favorite') or not v[1].get('showcase')))
+        or v[1].get('operator_requested') or v[1].get('session_observer')
+        else 1 if v[1].get('repair') or v[1]['lane'] == 'favorite' else 2 if v[1].get('on_main') else 3,
         v[1].get('last_dispatched', 0),
         v[1].get('created', 0), v[0])) if lane else None
 
@@ -481,6 +486,52 @@ def tick(*, now=None):
                 'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
                 'favorites': data['favorites_count'], 'eligible_tasks': len(options),
                 **({'operator_playing': gate} if gate else {})}
+
+
+def _readiness_row(item):
+    fp = item.get('fingerprint') or {}
+    return {'game_id': item['game_id'], 'title': item.get('title'), 'favorite': bool(item.get('favorite')),
+            'showcase': bool(item.get('showcase')), 'next_stage': next_stage(item),
+            'stages': {k: (v or {}).get('status') for k, v in (item.get('stages') or {}).items()},
+            'request_id': item.get('request_id'), 'number': item.get('number'),
+            'dispatch_state': item.get('dispatch_state'), 'attempts': item.get('attempts', 0),
+            'fingerprint': fp.get('summary') or '', 'start_from': fp.get('start_from') or fp.get('engine_reader') or ''}
+
+
+def item_state(game_id):
+    """One title's readiness row (stages, next stage, ticket, fingerprint summary), or None when it is not queued."""
+    item = _read()['items'].get('favorite:' + str(game_id))
+    return _readiness_row(item) if item else None
+
+
+def ensure_item(game, *, fingerprint=None, source='showcase', now=None):
+    """Put a catalog title in the readiness queue (the favorite lane: inventory -> analysis -> reader -> writer ->
+    runtime, worked by Hermes with Ghidra / REA) with the assimilate fingerprint attached. Used by the Sonic showcase
+    for a title without a writer: a favorite is already there (sync); a recently played one is added with
+    `showcase: true`, which candidates() admits after the starred favorites. Never resets stages or a ticket.
+    Raises BlockingIOError while the queue's tick holds the lock (the caller retries on its next pass)."""
+    now = time.time() if now is None else now
+    gid = str(game.get('game_id') or '')
+    if not ID.fullmatch(gid):
+        raise ValueError('Invalid game ID')
+    with delivery.locked('work-queue'):
+        data = _read()
+        key = 'favorite:' + gid
+        new = key not in data['items']
+        item = data['items'].setdefault(key, {'lane': 'favorite', 'game_id': gid, 'stages': {}, 'attempts': 0,
+                                              'last_dispatched': 0, 'created': now, 'favorite': False})
+        item.update(title=item.get('title') or game.get('title') or gid,
+                    platform=item.get('platform') or game.get('platform'),
+                    in_catalog=item.get('in_catalog') or game.get('in_catalog', True) is True)
+        item[source] = True
+        item.setdefault('requested_by', [])
+        if source not in item['requested_by']:
+            item['requested_by'].append(source)
+        fp = item.get('fingerprint') or {}
+        if fingerprint and (not fp or fp.get('source') == 'error'):
+            item['fingerprint'] = fingerprint
+        _save(data)
+        return _readiness_row(item) | {'new': new}
 
 
 def snapshot(game_id=''):

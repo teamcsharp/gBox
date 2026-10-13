@@ -1170,6 +1170,7 @@ window.taskVizCreate = canvas => {
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+      <div id="showcase" style="margin-top:22px;border:1px solid var(--line,#333);border-radius:8px;padding:10px 12px"></div>
       <div class="card" id="tiers"><h2>Game cache drives</h2><span class="mut">Loading...</span></div>
     </div></section>
   </main>
@@ -2383,6 +2384,65 @@ $("#ssave").onclick = async () => {
   vovEnable(!!f.get("voiceOverlay"));
   S = await gbox.saveSettings(s); $("#ssaved").textContent = "saved"; playLoaded = false; refresh();
 };
+
+// ---------------- Settings > Sonic showcase (gbox/sonic_showcase.py: GET /api/showcase, POST = PUT /api/showcase) ----------------
+// The Spark builds showcase_sonic_<title> test versions of the favorites / recently played titles with the Sonic Adventure
+// cast, on the HDD, within a disk budget; titles without a writer go to Hermes's readiness queue. This card turns it on,
+// pauses it and shows the queue, the current title and stage, disk used and the last results (refreshed while open).
+const SC = { data: null, err: "", timer: null, busy: false };
+const scApi = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+const scGB = n => n == null ? "?" : (n / 2 ** 30).toFixed(n >= 10 * 2 ** 30 ? 0 : 1) + " GB";
+const scWhen = t => { if (!t) return ""; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`; };
+const SC_NUMS = [["favorites", "Favorites per pass"], ["recent", "Recently played per pass"], ["budget_gb", "Disk budget (GB, on the HDD)"],
+  ["builds_per_hour", "Builds per hour"], ["whole_cast_max_slots", "Whole cast up to (slots)"]];
+function scRender() {
+  const el = $("#showcase"); if (!el) return;
+  const d = SC.data;
+  if (!d) { el.innerHTML = `<b>Sonic showcase</b><p class="mut">${SC.err ? "⚠ " + esc(SC.err) : "Loading…"}</p>`; return; }
+  const disk = d.disk || {}, pct = disk.budget ? Math.min(100, Math.round(100 * (disk.used || 0) / disk.budget)) : 0;
+  const cur = d.current, stage = s => esc(String(s || "pending").replace(/_/g, " "));
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Sonic showcase</b>
+      <span class="mut" style="font-size:12px">${esc(d.phase || "")}${d.last_tick ? " · checked " + esc(scWhen(d.last_tick)) : ""}</span></div>
+    <p class="mut" style="font-size:12px;margin:4px 0 8px">Builds a test version of your favorites, then recently played titles, with their key people replaced by the
+      Sonic Adventure 1 + 2 cast (showcase_sonic_&lt;title&gt;, on the Spark's HDD, never while you play on the Spark). Titles without a writer go to Hermes's
+      readiness queue (Ghidra / REA). Results show in Mods (filter "Sonic showcase") and the game's right-click menu (Special builds).</p>
+    <label><span><input type="checkbox" data-sc="enabled" ${d.enabled ? "checked" : ""}> Build Sonic showcase versions in the background</span></label>
+    <label><span><input type="checkbox" data-sc="paused" ${d.paused ? "checked" : ""}> Paused</span></label>
+    <div style="display:grid;grid-template-columns:1fr 90px;gap:4px 8px;align-items:center;margin:6px 0">
+      ${SC_NUMS.map(([k, l]) => `<span style="font-size:12px">${l}</span><input type="number" min="0" data-scn="${k}" value="${esc(d.settings?.[k])}">`).join("")}</div>
+    <button class="act" type="button" data-sc-act="apply">Apply</button> <button class="act" type="button" data-sc-act="run" title="Run a pass now">Run a pass now</button>
+    <span class="mut" id="scmsg" style="font-size:12px"></span>
+    <div style="margin:10px 0 4px;font-size:12.5px">${cur ? `Now: <b>${esc(cur.title || cur.game_id)}</b> · ${stage(cur.stage)}${cur.mod ? " · " + esc(cur.mod) : ""}` : esc(d.message || "")}</div>
+    ${d.idle_reason ? `<div class="mut" style="font-size:12px">${esc(d.idle_reason)}</div>` : ""}
+    <div style="font-size:12px;margin:6px 0">Disk: ${scGB(disk.used)} of ${scGB(disk.budget)} (${disk.builds || 0} build${disk.builds === 1 ? "" : "s"})${disk.free != null ? ` · ${scGB(disk.free)} free on the HDD` : ""}
+      · ${d.rate ? `${d.rate.last_hour}/${d.rate.cap} builds this hour` : ""}
+      <div style="height:6px;background:#333;border-radius:3px;margin-top:3px"><div style="height:6px;width:${pct}%;background:${pct > 90 ? "#c55" : "#3a7"};border-radius:3px"></div></div>
+      ${disk.storage_problem ? `<div style="color:#e88;margin-top:3px">⚠ ${esc(disk.storage_problem)}</div>` : ""}</div>
+    ${(d.queue || []).length ? `<details ${SC.openQueue ? "open" : ""} data-sc-det="queue"><summary style="font-size:12px">Queue (${d.queue.length})</summary><table style="font-size:11.5px;width:100%">
+      ${d.queue.slice(0, 40).map(q => `<tr><td>${esc(q.title || q.game_id)}</td><td class="mut">${esc(q.origin || "")}</td><td>${stage(q.stage)}</td></tr>`).join("")}</table></details>` : ""}
+    ${(d.last_results || []).length ? `<details ${SC.openResults ? "open" : ""} data-sc-det="results"><summary style="font-size:12px">Last results</summary><ul style="font-size:11.5px;padding-left:16px;margin:4px 0">
+      ${d.last_results.slice(0, 10).map(r => `<li><b>${esc(r.title || r.game_id)}</b> · ${stage(r.stage)} · ${esc(scWhen(r.at))}${r.message ? ` <span class="mut">${esc(String(r.message).slice(0, 160))}</span>` : ""}</li>`).join("")}</ul></details>` : ""}`;
+}
+async function scLoad() { try { SC.data = await scApi("/api/showcase"); SC.err = ""; } catch (e) { SC.err = e.message; } if (!SC.busy) scRender(); }
+async function scSet(body) {
+  SC.busy = true;
+  try { SC.data = await scApi("/api/showcase", body); SC.err = ""; } catch (e) { SC.err = e.message; }
+  finally { SC.busy = false; scRender(); const m = $("#scmsg"); if (m) m.textContent = SC.err ? "⚠ " + SC.err : "saved"; }
+}
+$("#showcase").addEventListener("change", e => { const k = e.target?.dataset?.sc; if (k) scSet({ [k]: !!e.target.checked }); });
+$("#showcase").addEventListener("toggle", e => { const k = e.target?.dataset?.scDet; if (k === "queue") SC.openQueue = e.target.open; if (k === "results") SC.openResults = e.target.open; }, true);
+$("#showcase").addEventListener("click", async e => {
+  const act = e.target?.closest?.("[data-sc-act]")?.dataset.scAct; if (!act) return;
+  if (act === "apply") {
+    const body = {}; for (const i of document.querySelectorAll("#showcase [data-scn]")) if (i.value !== "") body[i.dataset.scn] = Number(i.value);
+    return scSet(body);
+  }
+  if (act === "run") { try { await scApi("/api/showcase/run", {}); const m = $("#scmsg"); if (m) m.textContent = "pass started"; setTimeout(scLoad, 1500); } catch (err) { const m = $("#scmsg"); if (m) m.textContent = "⚠ " + err.message; } }
+});
+document.querySelector('aside button[data-s="settings"]').addEventListener("click", () => {
+  scLoad(); clearInterval(SC.timer);
+  SC.timer = setInterval(() => { if ($("#settings")?.classList.contains("on")) { if (!document.activeElement?.closest?.("#showcase")) scLoad(); } else clearInterval(SC.timer); }, 10000);
+});
 
 // The Spark's two-tier game cache (docs/cache-tiers.md): NVMe hot tier (capped) in front of the HDD; idle-time moves.
 const tierGB = b => b == null ? "?" : (b / 2 ** 30).toFixed(b >= 10 * 2 ** 30 ? 0 : 1) + " GB";
