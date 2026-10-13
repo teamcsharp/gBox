@@ -357,6 +357,8 @@ def win_send_keys(pid: int, events: list[dict]) -> dict:
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
+        if u.GetForegroundWindow() != root:                      # the operator switched apps mid-batch: never type there
+            return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
         seq.append(name)
         u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP))
