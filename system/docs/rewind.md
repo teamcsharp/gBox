@@ -74,8 +74,12 @@ gBox never intercepts the pad; it watches it.
   per save is possible on the heaviest cores (raise `interval_s` for those).
 - Frame-rate budget (#1489): the ring times every save and stretches its interval so saving takes at most
   `max_duty` (default 0.05 = 5 %) of play time, capped at one checkpoint per 120 s; a 1 s save means one checkpoint
-  every 20 s. Flycast (Dreamcast / NAOMI / Atomiswave) has a 20 s floor regardless: its ~27 MB states at 2 s dropped
-  PSO to 2 fps. The live status reports `effective_interval_s` and `last_save_s`. `max_duty = 0` disables the pacing.
+  every 20 s. Flycast (Dreamcast / NAOMI / Atomiswave) has a 20 s floor regardless: a full Flycast state every 2 s
+  dropped PSO to 2 fps. The live status reports `effective_interval_s` and `last_save_s`. `max_duty = 0` disables the pacing.
+  Measured on the Spark (RetroArch Flycast, PSO Ver. 2 title screen, GL on the GB10): each checkpoint stalls the
+  game 0.38-0.57 s for a ~9 MB state, so the old 2 s pacing spent up to 29 % of play time saving; at the 20 s floor
+  it is 2.9 %. `tests/test_rewind_flycast_live.py` repeats that check on a real disc (opt-in:
+  `GBOX_FLYCAST_LIVE_ROM=<disc.chd>`; it writes only to a scratch runtime).
 - Step granularity is the interval (2 s), not frames; the first press goes back up to 2 s.
 - Dolphin's hotkeys are sent as keystrokes into its window (`win_send_keys`), which needs gBox to be the active
   window and moves keyboard focus to the game. Dolphin checkpoints are therefore taken only while the operator's pad
