@@ -31,9 +31,15 @@ How to work:
   for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
+- PC game modding (universal-modder, the um_* tools): "what engine is this", "how do I mod X", "has anyone modded X" -> um_scan
+  (session_id of the live PC game, or name / path) then um_kb op=search (prior field notes) and op=playbook. Back up saves with
+  um_backup op=create before changing them (restore is a dry run until confirm=true). New files go into a gBox mod with um_mod
+  op=stage, never into the game install; lint it with um_publish_check. 2D art: um_sprite (cutout / fit / pixelate ... on an
+  artifact or the live frame), um_comfy (local ComfyUI images), um_render3d (a collection character -> sprite frames). Report each
+  result's changed + undo. No mods for online play or games with anti-cheat (um_kb op=safety).
 - Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
-  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods,
-  mario_kart for Mario Kart 64 items);
+  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re5, re6, gta_mods,
+  ac_mods, mario_kart for Mario Kart 64 items);
   (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
   memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
   surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
@@ -134,6 +140,14 @@ How to work:
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
 - After mercenaries_unlock the title menu rebuilds once the attract demo plays (~60 s idle) then Start; Up once from LOAD
   = THE MERCENARIES. Dolphin input takes pad names (a, b, start, up), not raw keys.
+- Resident Evil Mercenaries / unlock asks, by game (docs/mercenaries.md has the matrix): RE4 GameCube/Wii = re_mods, RE5
+  Gold PS3 = re5, RE6 X360 = re6. "Unlock all characters / costumes / stages / weapons" or "unlock all secret / hidden
+  content" -> re_mods op=unlock_all | re5 op=unlock_all | re6 op=unlock_all. "Triple / quadruple the combo (bonus) time"
+  -> re_mods op=combo_time multiplier=3|4 (the combo window) and, for clock time, op=merc_time_bonus multiplier=3|4.
+  "Grenades don't hurt me" -> re_mods op=grenade_safe on=true. "Punch enemies" -> re_mods op=punch and relay its
+  statement (RE4 has no free punch; offer explosive_melee / super_melee on the knife). "Change the weapons I start
+  Mercenaries with" -> re_mods op=merc_loadout character=<name|any> items=["name:amount", ...] on=true | re6 op=set_loadout.
+  RE5 / RE6 clock or combo time: no published address - say so (the tools refuse with the reason).
 - MODELS: extract -> collection -> use in any game. The collection (characters tool) holds characters, vehicles, objects
   and environments extracted from the operator's own games; never download models. "Extract / add X to my collection"
   (pick whip "Extract X's model ...") -> characters op=extract character=X kind=character|vehicle|object|environment
@@ -390,7 +404,12 @@ def tool_specs() -> list[dict]:
            "like a door does; story rooms; r3xx island rooms incl. the final battle r332 are only on disc 2; rooms with a pending "
            "first-visit event can crash - save first) | teleport items=[x,y,z] (move inside the room; status shows player_pos). "
            "No chapter select exists in the GC build. Weapons on non-Leon Merc characters use Leon's stats but keep their own "
-           "model; P.R.L. 412 does not exist in the GameCube version (say so).",
+           "model; P.R.L. 412 does not exist in the GameCube version (say so). GameCube also: combo_time multiplier=N "
+           "('triple / quadruple the combo bonus time' = 3 / 4: the Mercenaries combo window x N; RE4 gives no clock time "
+           "for melee, so pair it with merc_time_bonus for hourglasses) | grenade_safe on=true|false ('grenades don't hurt "
+           "me': your hand grenades' blast becomes player-owned) | punch (RE4 has no free punch: relay the statement and "
+           "offer explosive_melee / super_melee) | merc_loadout items accept 'name:amount' ('handgun ammo:200') | "
+           "merc_loadout_list | item_ids (the item id table) | addresses (this release's address table: source, live_checked).",
            {"session_id": s, "op": s, "item": s, "count": i, "target": s, "on": b, "seconds": i, "character": s,
             "items": {"type": "array", "items": s}, "fire_rate": s, "damage": {"type": "number"}, "reset": b,
             "multiplier": {"type": "number"}, "kind": s, "force": {"type": "number"}, "direction": s, "speed": {"type": "number"}},
@@ -423,6 +442,15 @@ def tool_specs() -> list[dict]:
            "campaign-only characters (Deborah, Simmons...) as playable Mercenaries characters, faster movement for a swapped character.",
            {"session_id": s, "op": s, "item": s, "amount": i, "slot": i, "items": {"type": "array", "items": {}}, "character": s,
             "replace": b, "on": b, "target": s, "costume": s}, ["op"]),
+        fn("re5", "Resident Evil 5 Gold Edition (PS3 in RPCS3; session_id = the running RE5 session, or empty for the "
+           "Windows node's RPCS3 with serial=BLUS30491|BLES00816). 'Unlock all secret / hidden content' / 'unlock "
+           "everything' = op=unlock_all: a save edit with the published Game Genie offsets (Apollo patch database) + the "
+           "save checksum: every Bonus Feature, File, cutscene, main-game figurine, chapter + Professional, BSAA emblem, "
+           "item/upgrade in Item Management (groups=[...] for a subset; 'points'/'money' only when asked). Original kept: "
+           "on=false or op=revert restores it. Takes effect when RE5 loads its save: tell the operator to restart RE5 "
+           "from gBox. Mercenaries characters/stages: not confirmed by the source (say so). op=status (checksum + what is "
+           "unlocked) | groups | addresses. merc_time / combo_time: refused - no published address for the PS3 build.",
+           {"session_id": s, "op": s, "on": b, "groups": {"type": "array", "items": s}, "serial": s}, ["op"]),
         fn("re_inventory", "ANY Resident Evil running live (RE4 GameCube, RE6 Xbox 360, classic REs whose slot layout gBox "
            "knows): the selected character's inventory. FIRST CHOICE for 'give me a rocket launcher', 'put a first aid spray in "
            "my inventory', 'remove the knife', 'change my shotgun to a magnum', 'set my handgun ammo to 99', 'what do I have'. "
@@ -651,6 +679,43 @@ def tool_specs() -> list[dict]:
            "the operator presses Ctrl+Shift+V in Blender (gBox add-on) to import it, edits it, then 'Send to gBox' in the "
            "add-on panel; then call characters op=add character=<new name> from_clipboard=true.",
            {"character": s, "package": s}, []),
+        # universal-modder (gbox/universal_modder.py, #825). worker = the PC to run on (default: the session's, else Windows)
+        fn("um_scan", "Fingerprint a PC game install (universal-modder): engine + version, .NET or native, anti-cheat, installed "
+           "mod loaders, mod and save folders, ranked modding routes + the engine playbook. op=scan with session_id (the live "
+           "game), game_id, path or name (installed Steam/Epic/Xbox game); op=list = installed games. Read-only.",
+           {"op": s, "session_id": s, "game_id": s, "path": s, "name": s, "playbook": b, "worker": s}, []),
+        fn("um_kb", "universal-modder field notes (how ~200 games were really modded: versions, route, gotchas) and engine "
+           "playbooks. op=search query [game engine route] | show path (a hit's path) | playbook playbook|engine | safety | engines.",
+           {"op": s, "query": s, "game": s, "engine": s, "route": s, "path": s, "playbook": s, "limit": i}, ["op"]),
+        fn("um_backup", "Snapshot save/config folders before changing them: op=create path [name note] | list [name] | diff name "
+           "| restore name [snapshot to clean] (dry run unless confirm=true; takes <name>-pre-restore first; never into a game "
+           "install) | delete name snapshot. Close the game before restoring.",
+           {"op": s, "path": s, "name": s, "note": s, "snapshot": s, "to": s, "clean": b, "confirm": b, "session_id": s,
+            "worker": s}, ["op"]),
+        fn("um_publish_check", "Lint a mod folder before sharing: FAIL on game files copied verbatim, leaked keys, .env; WARN on "
+           "decompiled code, big archives, user paths, no README. path, or mod + game_id; game_path / session_id adds the "
+           "game-file check.", {"path": s, "mod": s, "game_id": s, "game_path": s, "session_id": s, "worker": s}, []),
+        fn("um_mod", "gBox mod folder for new files (never the game install): op=stage game_id name files=[{dest, path|artifact}] "
+           "[install_into note overwrite] -> cache/mods/<game_id>/<name> + .gbox-mod.json + README; op=list [game_id]; "
+           "op=remove game_id name (to gBox's trash, undoable).",
+           {"op": s, "game_id": s, "name": s, "files": {"type": "array", "items": {"type": "object"}}, "install_into": s,
+            "note": s, "overwrite": b, "worker": s}, ["op"]),
+        fn("um_sprite", "2D sprite tools on an artifact (sha256), a worker path or the live frame (session_id, crop=[x,y,w,h]): "
+           "op=info | cutout | fit size=64x26 | pixelate size colors outline | palette ref | sheet inputs=[...] | slice frame=32x32 "
+           "| frames n kind | team_mask hue | seamless | tile_preview | preview. Outputs are PNG artifacts; mod + game_id [+ dest] "
+           "also stages them into that gBox mod.",
+           {"op": s, "artifact": s, "path": s, "session_id": s, "crop": {"type": "array", "items": i},
+            "inputs": {"type": "array", "items": s}, "size": s, "anchor": s, "colors": i, "outline": s, "ref": s, "frame": s,
+            "n": i, "kind": s, "hue": s, "scale": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, ["op"]),
+        fn("um_comfy", "Images from the local ComfyUI server (no API key): op=status | image prompt [checkpoint size steps seed n "
+           "sprite=true for a cut-out game sprite] | run workflow (API format) [set=['6.text=...']]. Outputs are artifacts.",
+           {"op": s, "prompt": s, "negative": s, "checkpoint": s, "size": s, "steps": i, "seed": i, "n": i, "sprite": b,
+            "workflow": {"type": "object"}, "set": {"type": "array", "items": s}, "name": s, "url": s, "worker": s}, ["op"]),
+        fn("um_render3d", "Render a 3D model to sprite frames with headless Blender: character (collection slug) | artifact (glb) "
+           "| path; preset side|aoe2|iso8|trueiso|topdown|turntable, canvas '128', length px, anims 'idle:4:bob,walk:8:walk'. "
+           "One sheet per animation as an artifact; mod + game_id stages them.",
+           {"character": s, "artifact": s, "path": s, "preset": s, "canvas": s, "length": {"type": "number"}, "anims": s,
+            "shadows": b, "engine": s, "headings": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, []),
         fn("rea_tools", "Discover REA tools for deconstruction, analysis and reconstruction. Search query first, then exact name "
            "to obtain its input schema and examples. Call run_tool with the rea_ name; keep analysis on its returned worker_id.",
            {"query": s, "name": s}, []),
@@ -1048,6 +1113,12 @@ class Agent:
             else self._job("re6", inp, node="windows", limit=1800)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def re5(self, op="status", session_id="", on=True, groups=None, serial=""):
+        inp = {"op": op, "session_id": session_id, "on": on, "groups": groups or [], "serial": serial or ""}
+        j = self._job("re5", inp, worker=session_id.rsplit("-", 1)[0]) if session_id \
+            else self._job("re5", inp, node="windows")
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def re4r(self, op="status", session_id="", **kw):
         inp = {"op": op, **{k: v for k, v in kw.items() if v not in (None, "", [])}}
         j = self._job("re4r", inp, node="windows", limit=3600)
@@ -1123,6 +1194,37 @@ class Agent:
                                             "guest_session_id": guest_session_id, "trigger": trigger or {},
                                             "win": win or {}, "lose": lose or {}}, worker=session_id.rsplit("-", 1)[0] if session_id else None)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    # --- universal-modder (gbox/universal_modder.py): typed worker jobs; files live on a worker, so route there
+    def _um(self, tool, args):
+        args = {k: v for k, v in args.items() if v is not None}
+        worker = args.pop("worker", "") or ((args.get("session_id") or "").rsplit("-", 1)[0] if args.get("session_id") else "")
+        j = self._job(tool, args, node=None if worker else "windows", worker=worker or None, limit=3600)
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def um_scan(self, **args):
+        return self._um("um_scan", args)
+
+    def um_kb(self, **args):
+        return self._um("um_kb", args)
+
+    def um_backup(self, **args):
+        return self._um("um_backup", args)
+
+    def um_publish_check(self, **args):
+        return self._um("um_publish_check", args)
+
+    def um_mod(self, **args):
+        return self._um("um_mod", args)
+
+    def um_sprite(self, **args):
+        return self._um("um_sprite", args)
+
+    def um_comfy(self, **args):
+        return self._um("um_comfy", args)
+
+    def um_render3d(self, **args):
+        return self._um("um_render3d", args)
 
     def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
         j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
@@ -1589,10 +1691,14 @@ def zelda_equip_card(result: dict, session_id: str) -> dict:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
+MODIFIES = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
+
+
 MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
 
 
