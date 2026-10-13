@@ -458,6 +458,28 @@ class ChdDisc:
         s = offset - first * 2048
         return buf[s:s + size]
 
+    def write_iso(self, out: Path, progress=None) -> Path:
+        """The whole data track as a plain 2048-byte-sector ISO (what PCSX2 and the patch writers take). Written to
+        ``out.part`` and renamed, so a half-written image is never mistaken for a finished one."""
+        out = Path(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        part = out.with_name(out.name + ".part")
+        frames = self.frames or self.chd.nhunks * self.chd.frames_per_hunk
+        with open(part, "wb") as f:
+            for h in range(-(-frames // self.chd.frames_per_hunk)):
+                hunk = self.chd._read_hunk(h)
+                for k in range(self.chd.frames_per_hunk):
+                    n = h * self.chd.frames_per_hunk + k
+                    if n >= frames:
+                        break
+                    fr = hunk[k * FRAME:(k + 1) * FRAME]
+                    f.write(fr[:2048] if self.track_type == "MODE1" else
+                            fr[24:24 + 2048] if self.track_type == "MODE2_RAW" and fr[15] == 2 else fr[16:16 + 2048])
+                if progress and h % 2048 == 0:
+                    progress(h * self.chd.frames_per_hunk, frames)
+        part.replace(out)
+        return out
+
     def extract(self, name: str, out: Path, progress=None) -> Path:
         """Stream one file to disk (big archives: 2048-byte sectors, never the whole file in memory)."""
         lba, n = self.files[name.upper()]
