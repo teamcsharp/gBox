@@ -446,7 +446,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
                     fh.write(chunk)
                     done += len(chunk)
                     if progress and time.monotonic() - reported >= .5:
-                        progress(20 + int(8 * done / total), f"Fetching mod {name} from the collection: {done >> 20}/{total >> 20} MB")
+                        progress(20 + round(8 * done / total, 2), f"Fetching mod {name} from the collection: {done >> 20}/{total >> 20} MB")
                         reported = time.monotonic()
         if tmp.stat().st_size != f['size']:
             raise ValueError(f"incomplete mod transfer: {f['path']}")
