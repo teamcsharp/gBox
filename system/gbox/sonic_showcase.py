@@ -34,6 +34,8 @@ import threading
 import time
 from pathlib import Path
 
+from pydantic import BaseModel
+
 SOURCE = "sonic"
 PREFIX = "showcase_sonic_"
 DONOR_READERS = ("sa1", "sa2")             # characters.DEDICATED names of the donor games' readers
@@ -924,25 +926,27 @@ def fit_previews(fitting, planned: list[dict]) -> list[dict]:
 
 # ------------------------------------------------------------------------------------------------- routes
 
+class ShowcaseIn(BaseModel):
+    """PUT /api/showcase: the editable settings (the safety limits - hdd_root, require_hdd, min_free_gb - are
+    gbox.toml only)."""
+    enabled: bool | None = None
+    paused: bool | None = None
+    favorites: int | None = None
+    recent: int | None = None
+    budget_gb: float | None = None
+    builds_per_hour: int | None = None
+    whole_cast_max_slots: int | None = None
+    interval_s: float | None = None
+    dedupe: bool | None = None
+    pause_while_playing_anywhere: bool | None = None
+
+
 def routes(app, store, config, auth, submit, workers):
     """GET/PUT /api/showcase (+ POST, for clients without PUT), POST /api/showcase/run, GET /api/showcase/{game_id}."""
     from fastapi import Depends, HTTPException
-    from pydantic import BaseModel
 
     svc = Showcase(store, config, submit, workers)
     app.state.showcase = svc
-
-    class ShowcaseIn(BaseModel):
-        enabled: bool | None = None
-        paused: bool | None = None
-        favorites: int | None = None
-        recent: int | None = None
-        budget_gb: float | None = None
-        builds_per_hour: int | None = None
-        whole_cast_max_slots: int | None = None
-        interval_s: float | None = None
-        dedupe: bool | None = None
-        pause_while_playing_anywhere: bool | None = None
 
     @app.get("/api/showcase")
     def showcase_status(actor=Depends(auth)):
