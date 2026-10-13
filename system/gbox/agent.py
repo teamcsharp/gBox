@@ -31,6 +31,12 @@ How to work:
   for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
+- PC game modding (universal-modder, the um_* tools): "what engine is this", "how do I mod X", "has anyone modded X" -> um_scan
+  (session_id of the live PC game, or name / path) then um_kb op=search (prior field notes) and op=playbook. Back up saves with
+  um_backup op=create before changing them (restore is a dry run until confirm=true). New files go into a gBox mod with um_mod
+  op=stage, never into the game install; lint it with um_publish_check. 2D art: um_sprite (cutout / fit / pixelate ... on an
+  artifact or the live frame), um_comfy (local ComfyUI images), um_render3d (a collection character -> sprite frames). Report each
+  result's changed + undo. No mods for online play or games with anti-cheat (um_kb op=safety).
 - Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
   already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re5, re6, gta_mods,
   ac_mods, mario_kart for Mario Kart 64 items);
@@ -634,6 +640,43 @@ def tool_specs() -> list[dict]:
            "the operator presses Ctrl+Shift+V in Blender (gBox add-on) to import it, edits it, then 'Send to gBox' in the "
            "add-on panel; then call characters op=add character=<new name> from_clipboard=true.",
            {"character": s, "package": s}, []),
+        # universal-modder (gbox/universal_modder.py, #825). worker = the PC to run on (default: the session's, else Windows)
+        fn("um_scan", "Fingerprint a PC game install (universal-modder): engine + version, .NET or native, anti-cheat, installed "
+           "mod loaders, mod and save folders, ranked modding routes + the engine playbook. op=scan with session_id (the live "
+           "game), game_id, path or name (installed Steam/Epic/Xbox game); op=list = installed games. Read-only.",
+           {"op": s, "session_id": s, "game_id": s, "path": s, "name": s, "playbook": b, "worker": s}, []),
+        fn("um_kb", "universal-modder field notes (how ~200 games were really modded: versions, route, gotchas) and engine "
+           "playbooks. op=search query [game engine route] | show path (a hit's path) | playbook playbook|engine | safety | engines.",
+           {"op": s, "query": s, "game": s, "engine": s, "route": s, "path": s, "playbook": s, "limit": i}, ["op"]),
+        fn("um_backup", "Snapshot save/config folders before changing them: op=create path [name note] | list [name] | diff name "
+           "| restore name [snapshot to clean] (dry run unless confirm=true; takes <name>-pre-restore first; never into a game "
+           "install) | delete name snapshot. Close the game before restoring.",
+           {"op": s, "path": s, "name": s, "note": s, "snapshot": s, "to": s, "clean": b, "confirm": b, "session_id": s,
+            "worker": s}, ["op"]),
+        fn("um_publish_check", "Lint a mod folder before sharing: FAIL on game files copied verbatim, leaked keys, .env; WARN on "
+           "decompiled code, big archives, user paths, no README. path, or mod + game_id; game_path / session_id adds the "
+           "game-file check.", {"path": s, "mod": s, "game_id": s, "game_path": s, "session_id": s, "worker": s}, []),
+        fn("um_mod", "gBox mod folder for new files (never the game install): op=stage game_id name files=[{dest, path|artifact}] "
+           "[install_into note overwrite] -> cache/mods/<game_id>/<name> + .gbox-mod.json + README; op=list [game_id]; "
+           "op=remove game_id name (to gBox's trash, undoable).",
+           {"op": s, "game_id": s, "name": s, "files": {"type": "array", "items": {"type": "object"}}, "install_into": s,
+            "note": s, "overwrite": b, "worker": s}, ["op"]),
+        fn("um_sprite", "2D sprite tools on an artifact (sha256), a worker path or the live frame (session_id, crop=[x,y,w,h]): "
+           "op=info | cutout | fit size=64x26 | pixelate size colors outline | palette ref | sheet inputs=[...] | slice frame=32x32 "
+           "| frames n kind | team_mask hue | seamless | tile_preview | preview. Outputs are PNG artifacts; mod + game_id [+ dest] "
+           "also stages them into that gBox mod.",
+           {"op": s, "artifact": s, "path": s, "session_id": s, "crop": {"type": "array", "items": i},
+            "inputs": {"type": "array", "items": s}, "size": s, "anchor": s, "colors": i, "outline": s, "ref": s, "frame": s,
+            "n": i, "kind": s, "hue": s, "scale": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, ["op"]),
+        fn("um_comfy", "Images from the local ComfyUI server (no API key): op=status | image prompt [checkpoint size steps seed n "
+           "sprite=true for a cut-out game sprite] | run workflow (API format) [set=['6.text=...']]. Outputs are artifacts.",
+           {"op": s, "prompt": s, "negative": s, "checkpoint": s, "size": s, "steps": i, "seed": i, "n": i, "sprite": b,
+            "workflow": {"type": "object"}, "set": {"type": "array", "items": s}, "name": s, "url": s, "worker": s}, ["op"]),
+        fn("um_render3d", "Render a 3D model to sprite frames with headless Blender: character (collection slug) | artifact (glb) "
+           "| path; preset side|aoe2|iso8|trueiso|topdown|turntable, canvas '128', length px, anims 'idle:4:bob,walk:8:walk'. "
+           "One sheet per animation as an artifact; mod + game_id stages them.",
+           {"character": s, "artifact": s, "path": s, "preset": s, "canvas": s, "length": {"type": "number"}, "anims": s,
+            "shadows": b, "engine": s, "headings": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, []),
         fn("rea_tools", "Discover REA tools for deconstruction, analysis and reconstruction. Search query first, then exact name "
            "to obtain its input schema and examples. Call run_tool with the rea_ name; keep analysis on its returned worker_id.",
            {"query": s, "name": s}, []),
@@ -1092,6 +1135,37 @@ class Agent:
                                             "guest_session_id": guest_session_id, "trigger": trigger or {},
                                             "win": win or {}, "lose": lose or {}}, worker=session_id.rsplit("-", 1)[0] if session_id else None)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    # --- universal-modder (gbox/universal_modder.py): typed worker jobs; files live on a worker, so route there
+    def _um(self, tool, args):
+        args = {k: v for k, v in args.items() if v is not None}
+        worker = args.pop("worker", "") or ((args.get("session_id") or "").rsplit("-", 1)[0] if args.get("session_id") else "")
+        j = self._job(tool, args, node=None if worker else "windows", worker=worker or None, limit=3600)
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def um_scan(self, **args):
+        return self._um("um_scan", args)
+
+    def um_kb(self, **args):
+        return self._um("um_kb", args)
+
+    def um_backup(self, **args):
+        return self._um("um_backup", args)
+
+    def um_publish_check(self, **args):
+        return self._um("um_publish_check", args)
+
+    def um_mod(self, **args):
+        return self._um("um_mod", args)
+
+    def um_sprite(self, **args):
+        return self._um("um_sprite", args)
+
+    def um_comfy(self, **args):
+        return self._um("um_comfy", args)
+
+    def um_render3d(self, **args):
+        return self._um("um_render3d", args)
 
     def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
         j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
