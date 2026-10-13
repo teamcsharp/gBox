@@ -1555,15 +1555,45 @@ def get_frame(inp: FrameIn, ctx: Ctx):
 
 
 def mean_luma(png: bytes) -> float | None:
-    """Average brightness via ffmpeg signalstats (no imaging library needed)."""
-    with tempfile.TemporaryDirectory() as t:
-        f = Path(t) / "f.png"
-        f.write_bytes(png)
-        r = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(f), "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
-                            "-f", "null", "-"], capture_output=True, text=True, timeout=30)
-    for ln in (r.stdout + r.stderr).splitlines():
+    """Mean full-range BT.601 luma of a PNG frame: 0-255, ~0 means a black screen.
+
+    Decoded in-process with Pillow (a declared dependency; emulation_issue.py uses the same measure). The probe is
+    best effort and must never fail a capture: #1546's observer get_frame job dcad3153a9564007 failed because an
+    ffmpeg signalstats subprocess timed out after 30 s on a loaded operator PC. ffmpeg's YAVG is also limited-range
+    for colour PNGs (black 16, white 235), so the `< 6` / `<= 3` black-screen guards never fired on black frames.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageStat
+        with Image.open(BytesIO(png)) as im:
+            return round(ImageStat.Stat(im.convert("L")).mean[0], 2)
+    except Exception:                      # no Pillow / undecodable: hardened ffmpeg fallback, still non-fatal
+        return _ffmpeg_luma(png)
+
+
+def _ffmpeg_luma(png: bytes, timeout: float = 10) -> float | None:
+    """ffmpeg signalstats YAVG mapped to full range; None on any failure (missing ffmpeg, timeout, bad output)."""
+    exe = shutil.which("ffmpeg")
+    if not exe or png[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:
+            f = Path(t) / "f.png"
+            f.write_bytes(png)
+            r = subprocess.run([exe, "-hide_banner", "-nostdin", "-i", str(f), "-frames:v", "1", "-vf",
+                                "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for ln in ((r.stdout or "") + (r.stderr or "")).splitlines():
         if "YAVG=" in ln:
-            return round(float(ln.split("YAVG=")[1]), 2)
+            try:
+                y = float(ln.split("YAVG=")[1].split()[0])
+            except (IndexError, ValueError):
+                return None
+            if png[25:26] not in (b"\x00", b"\x04"):   # colour/palette PNG -> limited-range YUV; grey stays full
+                y = (y - 16) * 255 / 219
+            return round(min(255.0, max(0.0, y)), 2)
     return None
 
 
