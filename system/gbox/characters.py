@@ -715,6 +715,8 @@ class CharIn(BaseModel):
     slots: str = "all"                     # cast_swap: all | main | enemies | pedestrians | ... | a comma list of slot names
     assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
     plan_only: bool = False                # cast_swap: return the plan without building
+    mod_name: str = ""                     # cast_swap: a fixed mod folder name (the Sonic showcase's showcase_sonic_<title>); the plan hash in its marker decides a rebuild
+    showcase: bool = False                 # cast_swap: a Sonic showcase test build (gbox.sonic_showcase): marked in its record, no Play-as targets
 
     @model_validator(mode="after")
     def require_named_character(self):
@@ -1065,7 +1067,16 @@ def _dc_gdi(ctx, game) -> Path:
         shutil.rmtree(d, ignore_errors=True)
         tmp.rename(d)
         return d / "disc.gdi"
-    if rom.suffix.lower() != ".chd" or not shutil.which("chdman"):
+    if rom.suffix.lower() == ".chd" and not shutil.which("chdman"):
+        from . import chd                                # no chdman here: gbox.chd unpacks v4 / v5 GD-ROM CHDs
+        ctx.progress(5, f"Unpacking the GD-ROM {rom.name} (gbox.chd, once per game)")
+        tmp = d.with_name(d.name + ".part")
+        shutil.rmtree(tmp, ignore_errors=True)
+        chd.write_gdi(rom, tmp)
+        shutil.rmtree(d, ignore_errors=True)
+        tmp.rename(d)
+        return d / "disc.gdi"
+    if rom.suffix.lower() != ".chd":
         raise ValueError(f"{rom.name}: reading a Dreamcast disc needs a GDI, or a CHD plus chdman on this node")
     tmp = d.with_name(d.name + ".part")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -1582,6 +1593,19 @@ DEDICATED = [
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
      _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
+    # Super Mario 64 DS (USA): the playable four (head models attached), Peach, Bowser, bosses and notable enemies
+    # from the game's own BMD models (NitroFS + NARC + LZ77, GX display lists, DS texel formats) as rigged, textured
+    # GLBs with body roles (gbox.sm64ds_chars, docs/sm64ds.md)
+    ("sm64ds", lambda t, p: "super mario 64 ds" in t and p == "nds",
+     lambda: __import__("gbox.sm64ds_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sm64ds_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # SoulCalibur (DC, T-1401N): the 19 fighters from HUMAN.DAT (olnk + Namco LZ, accumulation-skinned models, YUV422
+    # pages), each with its weapon attached at the hands and the 18 body roles (gbox.soulcalibur_dc,
+    # docs/soulcalibur_dc.md); writer gbox.soulcalibur_swap
+    ("soulcalibur", lambda t, p: re.match(r"soul ?calibur(?! ?(ii|iii|iv|v|vi|2|3|4|5|6)\b)\b", t) is not None
+     and p == "dreamcast",
+     lambda: __import__("gbox.soulcalibur_dc", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.soulcalibur_dc", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("tetris_ds", lambda t, p: t.startswith("tetris ds") and p == "nds",
      lambda: __import__("gbox.tetris_ds", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1597,6 +1621,11 @@ DEDICATED = [
     ("twin_snakes", lambda t, p: "twin snakes" in t and p == "gamecube",
      lambda: __import__("gbox.twin_snakes", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.twin_snakes", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Soul Calibur II (GameCube, GRSEAF): the 24 fighters (Link included) from root.olk / human.olk, costume 1 with the
+    # default weapon on the hands (gbox.soulcalibur2; writer gbox.soulcalibur2_swap, docs/soulcalibur2_gc.md)
+    ("soulcalibur2", lambda t, p: re.search(r"soul ?calibur (ii|2)\b", t) is not None and p == "gamecube",
+     lambda: __import__("gbox.soulcalibur2", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.soulcalibur2", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1696,7 +1725,9 @@ def dedicated_entries(config, game, name, roster):
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
 READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
-                   "twin_snakes": ("gbox.twin_snakes", "tts_reader")}
+                   "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
+                   "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
+                   "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
@@ -2579,6 +2610,7 @@ def characters_tool(inp: CharIn, ctx):
                                    for t in (meta.get("targets") or {}).get(gid, [])):
             inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
         meta = profiled
+    _FE.target(gid)                                           # the Fitting row's Retarget editor game
     _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
                       meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
@@ -2587,6 +2619,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
+    from . import soulcalibur_swap
+    if gid in soulcalibur_swap.GAME_IDS:
+        return {"result": out | soulcalibur_swap.use(ctx, meta, game, inp)}
     from . import sm64_swap
     if gid in sm64_swap.GAME_IDS and inp.slot == "player":        # SM64: build sm64_<slug> if missing, launch it
         return {"result": out | sm64_swap.use(ctx, meta, game, inp)}
@@ -2629,6 +2664,11 @@ def characters_tool(inp: CharIn, ctx):
         # Metal Gear Solid: The Twin Snakes GC: player | model:<key> | enemies | bosses | npcs | all | cast | a pick
         # point / words -> tts_<slot>_<plan hash> (stage.dat rebuilt in a disc-image copy; session swap on launch)
         return {"result": out | twin_snakes_swap.use(ctx, meta, game, inp)}
+    from . import soulcalibur2_swap
+    if gid in soulcalibur2_swap.GAME_IDS and soulcalibur2_swap.is_slot(inp.slot):
+        # Soul Calibur II GC: fighter:<key>[:<costume>] | all | cast (+pairs) | random (two sources alternate per
+        # costume + the random costume select) -> sc2_<slot>_<plan hash> (human.olk costumes rewritten in place)
+        return {"result": out | soulcalibur2_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]

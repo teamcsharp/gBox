@@ -613,10 +613,20 @@ def _reuse(path: Path, config: Config, in_cache: bool = False) -> dict:
     hashes = {"sha1": rec["sha1"], "crc32": rec.get("crc32")} if known else file_hashes(path, {})
     os.utime(path)                                        # mtime = last use, drives LRU
     _db_set(cache, str(path), rec | hashes | {"ident": _ident(path.stat())})
-    evicted = [] if in_cache else evict(cache, int(config.cache_limit * 1024**3), keep=path)
+    if not in_cache:                 # a reuse adds no bytes: the LRU trim (a walk of the whole cache) runs off the launch
+        threading.Thread(target=_evict_quietly, args=(cache, int(config.cache_limit * 1024**3), path), daemon=True,
+                         name="stage-evict").start()
+    evicted: list[str] = []
     out = {"src": str(path), "dst": str(path), "size": path.stat().st_size, "copied": False, "sha1": hashes["sha1"],
            "hashed": not known, "seconds": round(time.monotonic() - t0, 3), "staged_at": time.time(), "evicted": evicted}
     return out | ({"in_cache": True} if in_cache else {})
+
+
+def _evict_quietly(cache: Path, limit: int, keep: Path) -> None:
+    try:
+        evict(cache, limit, keep=keep)
+    except Exception as e:                                # noqa: BLE001 - the next copy trims again
+        print(f"gBox: cache trim after a reuse failed: {e}", flush=True)
 
 
 def _read_ahead(src: Path, start: int, total: int, streams: int = STAGE_STREAMS, block: int = STAGE_BLOCK):
