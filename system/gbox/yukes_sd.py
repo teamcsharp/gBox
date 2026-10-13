@@ -733,9 +733,10 @@ def face_slots(FB: np.ndarray, allowed: dict[str, set]) -> np.ndarray:
     cache, out = {}, []
     for bs in map(tuple, np.asarray(FB).tolist()):
         if bs not in cache:
-            maj = Counter(bs).most_common(1)[0][0]
-            pref = [SLOT_OF[maj]] + [SLOT_OF[b] for b in bs] + list(SLOT_BONES)
-            cache[bs] = next((s for s in pref if set(bs) <= allowed[s]), SLOT_OF[maj])
+            maj = Counter(bs).most_common(1)[0][0]        # (a helper bone, e.g. a clavicle, has no slot of its own)
+            pref = [s for s in [SLOT_OF.get(maj)] + [SLOT_OF.get(b) for b in bs] + list(SLOT_BONES) if s]
+            cache[bs] = next((s for s in pref if set(bs) <= allowed[s]),
+                             SLOT_OF.get(maj) or next((s for s in SLOT_BONES if maj in allowed[s]), "torso"))
         out.append(cache[bs])
     return np.array(out, dtype=object)
 
@@ -837,6 +838,33 @@ def cut_slots(P, N, UV, F, FM, JV, T, tmpl: dict, mats: list, work: Path, blende
     return geo, report
 
 
+def slot_chunk(g: dict | None, corners: list, W: list, speck_bone: int, uv0=(0, 0)) -> tuple[list, list]:
+    """One slot's mesh (cut_slots geometry; corners = [(slot vertex triple, uv triple)], glTF winding) -> chunk_build
+    input: a vertex group per bone (positions and 4.12 normals in the bone's rest frame), triangles in the game's
+    winding indexing across the groups."""
+    groups, tris = [], []
+    if g is not None and corners:
+        used = sorted({x for q, _uv in corners for x in q})
+        ci, k0 = {}, 0
+        for b in sorted({int(g["bone"][x]) for x in used}):
+            R, t = W[b]
+            vs = []
+            for x in used:
+                if g["bone"][x] != b:
+                    continue
+                n = R.T @ (G @ np.asarray(g["N"][x], float))
+                vs.append(tuple(R.T @ (G @ np.asarray(g["P"][x], float) - t)) + tuple(n / (np.linalg.norm(n) or 1) * 4096))
+                ci[x] = k0
+                k0 += 1
+            groups.append((b, vs))
+        for q, uv in corners:                              # glTF counter-clockwise -> the game's winding
+            tris.append(((ci[q[0]], ci[q[2]], ci[q[1]]), (uv[0], uv[2], uv[1])))
+    if not groups:                                         # every slot draws something: a hidden speck
+        groups = [(speck_bone, [(0, 0, 0, 0, 0, 4096), (1, 0, 0, 0, 0, 4096), (0, 1, 0, 0, 0, 4096)])]
+        tris = [((0, 1, 2), (tuple(uv0), tuple(uv0), tuple(uv0)))]
+    return groups, tris
+
+
 def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path, name: str, props=(), scale=None,
                   blender: str | None = None, progress=lambda p, m: None) -> dict:
     """-> {file: {"emd": parsed original (template), "chunks": {slot: (groups, tris)}, "atlas": (img, rect, tpage,
@@ -860,7 +888,7 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     if tris_src > 8000 and blender:
         src = decimate(rigged, work / "sd2_dec.glb", 8000.0, blender)
     rp = read_rigged(src)
-    progress(30, "Cutting the model into the wrestler's bone parts")
+    progress(30, "Cutting the model into the wrestler's part meshes")
     mats, mkey = [], {}
     allP, allN, allUV, allJ, F, FM = [], [], [], [], [], []
     base = 0
@@ -903,31 +931,7 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
             at = {tuple(x): int(i) for x, i in zip(part["P"], part["used"])}
             for q in faces:                                # the bake's corners are copies of the part's vertices
                 corners[s].append(([at[tuple(vp[k])] for k in q], [(u0 + vu[k][0], v0 + vu[k][1]) for k in q]))
-        chunks = {}
-        for s in FILE_SLOTS[f]:
-            groups, tris = [], []
-            if corners[s]:
-                g = geo[s]
-                used = sorted({x for q, _uv in corners[s] for x in q})
-                ci, k0 = {}, 0
-                for b in sorted({int(g["bone"][x]) for x in used}):
-                    R, t = W[b]
-                    vs = []
-                    for x in used:
-                        if g["bone"][x] != b:
-                            continue
-                        n = R.T @ (G @ np.asarray(g["N"][x], float))
-                        vs.append(tuple(R.T @ (G @ np.asarray(g["P"][x], float) - t)) + tuple(n / (np.linalg.norm(n) or 1) * 4096))
-                        ci[x] = k0
-                        k0 += 1
-                    groups.append((b, vs))
-                for q, uv in corners[s]:                   # glTF counter-clockwise -> the game's winding
-                    tris.append(((ci[q[0]], ci[q[2]], ci[q[1]]), (uv[0], uv[2], uv[1])))
-            if not groups:                                 # every slot draws something: a hidden speck
-                b = SLOT_BONES[s][0]
-                groups = [(b, [(0, 0, 0, 0, 0, 4096), (1, 0, 0, 0, 0, 4096), (0, 1, 0, 0, 0, 4096)])]
-                tris = [((0, 1, 2), ((u0, v0), (u0, v0), (u0, v0)))]
-            chunks[s] = (groups, tris)
+        chunks = {s: slot_chunk(geo.get(s), corners[s], W, SLOT_BONES[s][0], (u0, v0)) for s in FILE_SLOTS[f]}
         out[f] = {"tmpl": p0, "chunks": chunks, "atlas": (img, (u0, v0, rw, rh), tpage, clut)}
     report["triangles"] = sum(v["faces"] for k, v in report.items() if k.startswith("slot_"))
     report["retarget"] = rep
@@ -1144,11 +1148,19 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
     mj = {"name": name, "game_id": gid, "image": cue, "title": t, "built": time.time(),
           "files": ["ED1H.PAC / ED1B.PAC / ED1L.PAC: wrestler model entries (gbox.yukes_sd)"],
           "characters": [m["slug"] for m, _w in pairs], "replaces": [w["name"] for _m, w in pairs],
-          "triangles": [r["triangles"] for r in b["reports"]]}
+          "triangles": [r["triangles"] for r in b["reports"]], "fit": FIT_VERSION}
     (d / ".gbox-mod.json").write_text(json.dumps(mj))
     shutil.rmtree(work, ignore_errors=True)
     return {"mod": name, "image": cue, "previews": previews,
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
+
+
+def built_current(mod_dir: Path) -> bool:
+    """A mod built by this writer version (an older fit, e.g. the per-bone shells before FIT_VERSION 2, is rebuilt)."""
+    try:
+        return json.loads((Path(mod_dir) / ".gbox-mod.json").read_text()).get("fit", 1) == FIT_VERSION
+    except (OSError, ValueError):
+        return False
 
 
 def _roster_for(ctx, game) -> list[dict]:
@@ -1182,7 +1194,7 @@ def use(ctx, meta: dict, game: dict, inp, pairs: list | None = None, title: str 
             w = find_wrestler(ros, inp.slot if inp.slot and inp.slot != "player" else "The Rock")
             pairs = [(meta, w)]
         name = mod_name(pairs, title)
-        have = (filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json").exists()
+        have = built_current(filemods.mod_dir(ctx.config, gid, name))
         built = None
         if inp.rebuild or not have:
             built = build_mod(ctx.config, game, pairs, ctx.progress, title=title)
