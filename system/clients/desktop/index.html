@@ -280,6 +280,13 @@
   #taskpanel .tkp-balance { color:#9fe3cf; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #taskpanel .tkp-error { color:#ffa3ae; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }
   #taskpanel .tkp-empty { color:#9eafd0; margin:0; }
+  #taskpanel .tkp-local { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 8px; padding:6px 10px; border-radius:8px;
+    border:1px solid #c9a4ff55; background:#c9a4ff12; font-size:12px; color:#d9ccf5; }
+  #taskpanel .tkp-local.active { border-color:#c9a4ffaa; background:#c9a4ff24; color:#f1e8ff; }
+  #taskpanel .tkp-local.standby { opacity:.8; }
+  #taskpanel .tkp-local b { color:inherit; } #taskpanel .tkp-local-why { flex:1 1 220px; min-width:0; }
+  #taskpanel .tkp-local-stats { color:#b9a8dc; font-variant-numeric:tabular-nums; }
+  #taskpanel .tkp-card.tkp-grunt { border-style:dashed; }
   #taskpanel #tk-visual:has(.tkp-cards) .tkv-layout { height:calc(100% - 300px); }
   #taskpanel .tkp-tech .tkp-rec { color:inherit; margin:4px 0 8px; }
   #taskpanel .tkp-tech .tkp-window { border-color:var(--line); } #taskpanel .tkp-tech .tkp-window button { color:var(--mut); }

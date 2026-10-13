@@ -235,6 +235,12 @@ def set_enabled(enabled: bool) -> dict:
 
 def dispatch_request(request_id: str, number: int) -> str:
     """Queue a cloud investigation after the incident's immediate recovery finishes."""
+    from . import hermes_local
+    if hermes_local.active():
+        # A root-cause emulation investigation is too big for the Spark's local model: the open report stays in the
+        # work queue (a repair item, dispatched on a paid route once one recovers).
+        raise RuntimeError('Hermes is on the local model while the paid routes are out of credit; '
+                           'the investigation stays queued for a paid route')
     with _LOCK:
         name = f"gBox emulation investigation #{number}"
         jobs = _jobs()

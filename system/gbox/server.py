@@ -3101,7 +3101,77 @@ def create_app(config: Config) -> FastAPI:
         one-line recommendation.
         """
         from . import hermes_providers
-        return hermes_providers.summary(window)
+        out = hermes_providers.summary(window)
+        out["grunt"] = grunt.status()               # the Spark helper card ("Spark helper: doing X")
+        return out
+
+    # --- Hermes local route: the proxy in front of the Spark's Ollama, and the Spark helper (docs/hermes-local-fallback.md)
+    from . import llm_proxy, spark_grunt
+
+    def _spark_operator_playing() -> str | None:
+        """The operator plays a game on the Spark (not an agent's test session): local model calls wait."""
+        rows = workers()
+        sess = spark_grunt.operator_session_on(store.all("session"), {x["session_id"]: x for x in store.all("slabel")},
+                                               spark_grunt.spark_workers(rows), _wid)
+        if sess:
+            return f"the operator is playing {sess.get('title') or sess.get('game_id') or 'a game'} on the Spark"
+        return None
+
+    llm_proxy.routes(app, config, auth, gate=_spark_operator_playing)
+
+    def _grunt_submit(tool: str, inp: dict) -> dict:
+        return submit(JobRequest(tool=tool, input=inp, agent_use=True), "spark-helper").model_dump(mode="json")
+
+    grunt = spark_grunt.install(app, store, config, submit=_grunt_submit, cancel=lambda jid: job_cancel(jid, "spark-helper"),
+                                workers=workers, auto_collection=auto_collection, resolve=_wid)
+
+    @app.on_event("startup")
+    async def _grunt_start():
+        # The Spark helper runs on the control plane's own node (the Spark) only, never in tests or on a Windows host.
+        if (config.hermes.grunt.enabled and HOST_OS == "linux" and not os.environ.get("PYTEST_CURRENT_TEST")
+                and os.environ.get("GBOX_GRUNT", "1") != "0"):
+            grunt.start()
+
+    @app.on_event("shutdown")
+    async def _grunt_stop():
+        grunt.stop()
+
+    @app.get("/api/grunt")
+    def grunt_status(actor=Depends(auth)):
+        """The Spark helper: what it is doing now, why it waits, and each chore's last result and next run."""
+        return grunt.status()
+
+    class GruntIn(BaseModel):
+        enabled: bool | None = None
+        run: str = ""                  # a chore name: make it due now (it still waits for an idle Spark)
+
+    @app.post("/api/grunt")
+    def grunt_control(body: GruntIn, actor=Depends(auth)):
+        if body.enabled is not None:
+            grunt.set_enabled(body.enabled)
+        if body.run:
+            try:
+                grunt.force(body.run)
+            except KeyError:
+                raise HTTPException(404, f"no chore named {body.run}") from None
+        store.audit(actor, "grunt.control", body.run, body.model_dump())
+        return grunt.status()
+
+    @app.get("/api/hermes/local")
+    def hermes_local_state(actor=Depends(auth)):
+        """The local route: model, whether Hermes is on it now and why, and the operator's local-only switch."""
+        from . import hermes_local
+        return hermes_local.status() | {"proxy": app.state.local_llm.status()}
+
+    class LocalModeIn(BaseModel):
+        local_only: bool
+
+    @app.post("/api/hermes/local")
+    def hermes_local_set(body: LocalModeIn, actor=Depends(auth)):
+        """local_only=true: Hermes uses only the Spark's GPU model (the supervisor applies it within 5 minutes)."""
+        from . import hermes_local
+        store.audit(actor, "hermes.local_only", "", {"local_only": body.local_only})
+        return hermes_local.set_local_only(body.local_only)
 
     @app.get("/api/tasks/resolutions/{rid}")
     def tasks_resolution(rid: str, actor=Depends(auth)):
