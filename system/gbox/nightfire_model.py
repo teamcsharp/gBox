@@ -11,8 +11,8 @@ HT_Skin (pack type 3, LE): a skeleton, not a mesh.
   Bondcombat 0x05000007: 73 bones, 60 attachments (4320 B); the 2144 B skins are the same 73-bone rig, 0 att.
 
 Character models are 0x01 objects of pack type 2 (BE): header 00000000 1400000e <hash>, u32 texture
-count + 12-B records (u16 id, u16 w-1, u16 h-1, u16 0x0100, 0xFFFFFFFF; Bond: 7, pixel data is NOT inside
-the object -- no `60000017` chunk), then one node chunk per mesh, tag `b000000c 0000000f name[]`
+count at +0x14 + 12-B records from +0x1C (u16 key, u16 w-1, u16 h-1, u16 flags, runtime ptr 0xFFFFFFFF),
+the texture chunks (Bond: 7 local CMPR), then one node chunk per mesh, tag `b000000c 0000000f name[]`
 followed by 40 u32 fields: [0] material groups, [1] index-stream u16 count, [2] vertex count,
 [3] degenerate (strip-restart) triangle count, [4] 22 on humans, ... and 13 runtime pointers at [22..34].
 The pointers are not file offsets: `_map_pointers` recovers the per-object runtime base from the vertex
@@ -33,7 +33,10 @@ Bond: 7 groups / 127 strips use all 3392 entries -> 2449 triangles + 689 degener
 96 runs = 61 blended (415 verts) + 35 rigid (863 verts); 1141 UVs. The HT_Skin bind records are INVERSE
 bind transforms (world -> bone, all 73 Bondcombat rotations identity): bone origins (-t) span the mesh
 extents and rigid runs sit on their own bone, so `export_glb` writes a skinned glTF with 2-bone weights.
-Textures (`60000017` chunks) are not decoded yet.
+Textures: chunks `<u16 flags> 0017 <0 | 'DT' u16 id> name[16] 78015d02 ...` follow the table in order
+(`object_textures`); local chunks carry the GX mip chain at +0x48 from the magic, engine format +0x20
+1/3/8 = CMPR/RGB5A3/RGBA8. 'DT' chunks are header-only references to shared level textures (grunt's
+eyeball_brown/Suit_black_open/Blackshoe1); their texels are not in the level or the 0x07E0000x packs.
 """
 from __future__ import annotations
 
@@ -358,8 +361,9 @@ def export_glb(level_data: bytes, out_path: str, object_name: str = "01000075",
     """Export a Nightfire object node + its HT_Skin as a skinned glTF 2.0 .glb.
 
     One primitive per material group, vertices split per (position, texcoord) corner, JOINTS_0/WEIGHTS_0
-    from the influence runs and inverse bind matrices from the HT_Skin records.  Textures are not
-    decoded yet, so materials are flat colours named after the native material index.
+    from the influence runs and inverse bind matrices from the HT_Skin records.  Each material group's
+    first texture-table index selects the object's texture; inline GX textures (CMPR/RGB5A3/RGBA8,
+    level 0) are embedded as PNG baseColor maps, shared 'DT' references keep a flat colour.
     """
     import numpy as np
 
@@ -416,14 +420,40 @@ def export_glb(level_data: bytes, out_path: str, object_name: str = "01000075",
              "TEXCOORD_0": add(uv, 5126, "VEC2", 34962), "JOINTS_0": add(jnt, 5121, "VEC4", 34962),
              "WEIGHTS_0": add(wgt, 5126, "VEC4", 34962)}
     ibm_acc = add(np.array([m.T for m in ibm], dtype=np.float32).reshape(n_bones, 16), 5126, "MAT4")
+    obj_payload = level_data[mesh["object"]["offset"]:mesh["object"]["offset"] + mesh["object"]["size"]]
+    texs = object_textures(obj_payload)
+    images, textures, tex_of = [], [], {}
+    for ti, t in enumerate(texs):
+        rgba = texture_rgba(obj_payload, t)
+        if rgba is None:
+            continue
+        png = _png(rgba)
+        while len(blob) % 4:
+            blob.append(0)
+        views.append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(png)})
+        blob.extend(png)
+        images.append({"name": t["name"], "mimeType": "image/png", "bufferView": len(views) - 1})
+        textures.append({"source": len(images) - 1, "sampler": 0})
+        tex_of[ti] = (len(textures) - 1, bool((rgba[..., 3] < 128).any()))
     prims, materials = [], []
     for gi, g in enumerate(tab["groups"]):
         if not prim_idx[gi]:
             continue
-        hue = (g["material"] * 0.618) % 1.0
-        materials.append({"name": f"{object_name}_mat{g['material']}", "pbrMetallicRoughness": {
-            "baseColorFactor": [0.55 + 0.4 * hue, 0.5, 0.95 - 0.4 * hue, 1.0],
-            "metallicFactor": 0.0, "roughnessFactor": 0.85}})
+        if g["material"] >= len(texs):
+            raise ValueError(f"{object_name}: group {gi} uses texture {g['material']} of {len(texs)}")
+        t = texs[g["material"]]
+        mat = {"name": f"{object_name}_mat{g['material']}_{t['name']}", "pbrMetallicRoughness": {
+            "metallicFactor": 0.0, "roughnessFactor": 0.85}}
+        if g["material"] in tex_of:
+            ti, cutout = tex_of[g["material"]]
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": ti}
+            if cutout:
+                mat["alphaMode"], mat["alphaCutoff"] = "MASK", 0.5
+        else:
+            hue = (g["material"] * 0.618) % 1.0
+            mat["pbrMetallicRoughness"]["baseColorFactor"] = [0.55 + 0.4 * hue, 0.5, 0.95 - 0.4 * hue, 1.0]
+            mat["extras"] = {"shared_dt_texture": t["dt_id"]}
+        materials.append(mat)
         prims.append({"attributes": attrs, "indices": add(np.array(prim_idx[gi], dtype=itype), ict,
                                                           "SCALAR", 34963),
                       "mode": 4, "material": len(materials) - 1})
@@ -444,11 +474,16 @@ def export_glb(level_data: bytes, out_path: str, object_name: str = "01000075",
         "asset": {"version": "2.0", "generator": "gbox.nightfire_model",
                   "extras": {"object": object_name, "skin": skin_name, "node": mesh["node"]["name"],
                              "triangles": len(tab["tris"]), "native_vertices": len(V),
-                             "uvs": len(tab["uvs"]), "textures": "not decoded"}},
+                             "uvs": len(tab["uvs"]),
+                             "textures": [{"name": t["name"], "size": [t["width"], t["height"]],
+                                           "gx_format": t["gx_format"], "dt_id": t["dt_id"],
+                                           "embedded": i in tex_of} for i, t in enumerate(texs)]}},
         "scene": 0, "scenes": [{"nodes": [n_bones + 1]}],
         "nodes": nodes, "meshes": [{"name": mesh["node"]["name"], "primitives": prims}],
         "skins": [{"joints": list(range(n_bones)), "inverseBindMatrices": ibm_acc, "skeleton": roots[0]}],
         "materials": materials, "accessors": accs, "bufferViews": views,
+        "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}],
+        "images": images, "textures": textures,
         "buffers": [{"byteLength": 0}],
     }
     while len(blob) % 4:
@@ -462,6 +497,91 @@ def export_glb(level_data: bytes, out_path: str, object_name: str = "01000075",
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_bytes(out)
     return Path(out_path)
+
+
+TEX_TAG = b"\x00\x17"            # u16 chunk type in the 8-byte texture prefix
+TEX_MAGIC = b"\x78\x01\x5d\x02"  # first word after the 16-byte texture name
+TEX_HEADER = 0x48                # magic .. first texel
+ENGINE_GX = {1: 14, 3: 5, 8: 6}  # header +0x20 -> GX CMPR / RGB5A3 / RGBA8
+_GX_BLOCK = {14: (4, 8, 8), 5: (16, 4, 4), 6: (32, 4, 4)}
+
+
+def mip_bytes(gx: int, w: int, h: int, mips: int) -> int:
+    """Bytes of a GX mip chain (each level padded to whole tiles)."""
+    bpp, bw, bh = _GX_BLOCK[gx]
+    total = 0
+    for _ in range(mips):
+        total += ((w + bw - 1) // bw * bw) * ((h + bh - 1) // bh * bh) * bpp // 8
+        w, h = max(1, w // 2), max(1, h // 2)
+    return total
+
+
+def object_texture_table(payload: bytes) -> list[dict]:
+    """The 0x01 object texture table: BE u32 count at +0x14, 12-B records from +0x1C."""
+    n = struct.unpack_from(">I", payload, 0x14)[0]
+    if 0x1C + 12 * n > len(payload) or n > 1024:
+        raise ValueError(f"texture table of {n} records does not fit the object")
+    out = []
+    for i in range(n):
+        key, wm1, hm1, flags, ptr = struct.unpack_from(">4HI", payload, 0x1C + 12 * i)
+        out.append({"key": key, "width": wm1 + 1, "height": hm1 + 1, "flags": flags, "runtime_ptr": ptr})
+    return out
+
+
+def object_textures(payload: bytes) -> list[dict]:
+    """Texture chunks of a 0x01 object, matched in order to its texture table (raises on misfit).
+
+    Chunk: u16 flags, u16 0x0017, u32 0 (local) or 'DT'+u16 id (shared level texture, header only),
+    char name[16], then from the magic 78015d02: +4 u32 mip-chain bytes, +8 u16 w, u16 h, +0xC class,
+    +0x20 engine format (ENGINE_GX), +0x24 mip count, +0x48 texels (GX tiled, level 0 first).
+    """
+    table = object_texture_table(payload)
+    hits = [m.start() for m in re.finditer(re.escape(TEX_MAGIC), payload)
+            if m.start() >= 24 and payload[m.start() - 22:m.start() - 20] == TEX_TAG]
+    out = []
+    for k, h in enumerate(hits):
+        size, w, hh = struct.unpack_from(">IHH", payload, h + 4)
+        fmt, mips = struct.unpack_from(">2I", payload, h + 0x20)
+        name = payload[h - 16:h].split(b"\0")[0].decode("latin-1")
+        if fmt not in ENGINE_GX or not 1 <= mips <= 12:
+            raise ValueError(f"texture {name}: unknown engine format {fmt} / {mips} mips")
+        gx = ENGINE_GX[fmt]
+        if size != mip_bytes(gx, w, hh, mips):
+            raise ValueError(f"texture {name}: {size} B is not a {w}x{hh} gx{gx} chain of {mips}")
+        ref = payload[h - 20:h - 16]
+        dt_id = struct.unpack(">H", ref[2:])[0] if ref[:2] == b"DT" else None
+        limit = hits[k + 1] - 24 if k + 1 < len(hits) else len(payload)
+        inline = limit - (h + TEX_HEADER) >= size
+        if dt_id is None and not inline:
+            raise ValueError(f"local texture {name} has no texel data")
+        out.append({"name": name, "width": w, "height": hh, "mips": mips, "engine_format": fmt,
+                    "gx_format": gx, "size": size, "dt_id": dt_id, "chunk": h - 24,
+                    "data_offset": h + TEX_HEADER if inline else None})
+    if len(out) != len(table):
+        raise ValueError(f"{len(out)} texture chunks for {len(table)} table records")
+    for t, r in zip(out, table):
+        if (t["width"], t["height"]) != (r["width"], r["height"]):
+            raise ValueError(f"texture {t['name']} is {t['width']}x{t['height']}, table says "
+                             f"{r['width']}x{r['height']}")
+        t["record"] = r
+    return out
+
+
+def texture_rgba(payload: bytes, tex: dict):
+    """Level-0 RGBA (h, w, 4) uint8 of an inline texture; None for a shared 'DT' reference."""
+    if tex["data_offset"] is None:
+        return None
+    from .melee_models import decode_texture
+    o = tex["data_offset"]
+    return decode_texture(payload[o:o + tex["size"]], tex["gx_format"], tex["width"], tex["height"])
+
+
+def _png(rgba) -> bytes:
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.fromarray(rgba, "RGBA").save(buf, "PNG")
+    return buf.getvalue()
 
 
 def write_obj(path, verts: list[tuple], scale: float = 1 / 8192.0) -> None:

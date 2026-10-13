@@ -170,3 +170,59 @@ def test_owned_bond_glb(level, tmp_path):
         return m
 
     assert max(np.abs(world(j) @ ibm[j] - np.eye(4)).max() for j in range(73)) < 1e-5
+    # every Bond material carries its embedded CMPR texture as a PNG
+    assert [i["name"] for i in gltf["images"]] == [n for n, *_ in BOND_TEX]
+    assert all("baseColorTexture" in m["pbrMetallicRoughness"] for m in gltf["materials"])
+    v = gltf["bufferViews"][gltf["images"][0]["bufferView"]]
+    assert d[b0 + v["byteOffset"]:b0 + v["byteOffset"] + 8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _tex_chunk(name, w, h, fmt, mips, dt_id=None, data=b""):
+    gx = nm.ENGINE_GX[fmt]
+    size = nm.mip_bytes(gx, w, h, mips)
+    ref = b"DT" + struct.pack(">H", dt_id) if dt_id is not None else b"\0" * 4
+    head = nm.TEX_MAGIC + struct.pack(">IHHI", size, w, h, 8) + struct.pack(">4I", 0, 1, 0, 0)
+    head += struct.pack(">3I", fmt, mips, 0xFFFFFFFF) + bytes(0x48 - 0x2C)
+    return b"\0\x0b\0\x17" + ref + name.encode().ljust(16, b"\0") + head + data
+
+
+def test_synthetic_texture_chunks():
+    assert nm.mip_bytes(14, 256, 256, 6) == 43680 and nm.mip_bytes(14, 64, 64, 4) == 2720
+    assert nm.mip_bytes(5, 64, 32, 4) == 5440 and nm.mip_bytes(6, 64, 64, 5) == 21824
+    cmpr = struct.pack(">HHI", 0xF800, 0x001F, 0) * 4          # 8x8 CMPR: 4 blocks, colour0 red
+    obj = b"\0\0\0\0\x14\0\0\x0e" + struct.pack(">IIIII", 0x01000001, 1, 0, 2, 0x58000010)
+    obj += struct.pack(">4HI", 0, 7, 7, 0x100, 0xFFFFFFFF) + struct.pack(">4HI", 0, 31, 31, 0x100, 0xFFFFFFFF)
+    obj += _tex_chunk("skin", 8, 8, 1, 1, data=cmpr) + _tex_chunk("shared", 32, 32, 1, 3, dt_id=0xFD)
+    texs = nm.object_textures(obj)
+    assert [(t["name"], t["gx_format"], t["dt_id"]) for t in texs] == [("skin", 14, None), ("shared", 14, 0xFD)]
+    assert texs[1]["data_offset"] is None and nm.texture_rgba(obj, texs[1]) is None
+    rgba = nm.texture_rgba(obj, texs[0])
+    assert rgba.shape == (8, 8, 4) and tuple(rgba[0, 0]) == (255, 0, 0, 255)
+    with pytest.raises(ValueError):                              # table/chunk dimension mismatch
+        nm.object_textures(obj.replace(struct.pack(">4HI", 0, 7, 7, 0x100, 0xFFFFFFFF),
+                                       struct.pack(">4HI", 0, 15, 7, 0x100, 0xFFFFFFFF)))
+
+
+BOND_HEAD_SHA = "a86c1a4651774dfb"  # bond_head CMPR mip chain, level 07000001
+BOND_TEX = [("bond_head", 256, 256), ("bond_tongue", 32, 32), ("Bond_eyeball", 64, 32), ("male_hand", 128, 128),
+            ("bond_bluesuit_c", 256, 256), ("bond_bluesuit_p", 128, 128), ("sleeve", 128, 64)]
+
+
+def test_owned_roster_textures(level):
+    import hashlib
+    data, by, _ = level
+    bond = _payload(data, by["01000075"])
+    texs = nm.object_textures(bond)
+    assert [(t["name"], t["width"], t["height"]) for t in texs] == BOND_TEX
+    assert all(t["gx_format"] == 14 and t["dt_id"] is None and t["data_offset"] for t in texs)
+    assert texs[0]["chunk"] == 0xAC and texs[0]["size"] == 43680 and texs[0]["mips"] == 6
+    o = texs[0]["data_offset"]
+    assert hashlib.sha256(bond[o:o + 43680]).hexdigest().startswith(BOND_HEAD_SHA)
+    head = nm.texture_rgba(bond, texs[0])
+    r, g, b = head[..., :3].reshape(-1, 3).mean(0)
+    assert r > g > b and head[..., 3].min() == 255               # opaque skin-toned face map
+    may = nm.object_textures(_payload(data, by["01000145"]))
+    assert [t["name"] for t in may] == ["mayhew", "mayhew_eye", "mayhewtrousers", "Mayhewshirt", "male_hand"]
+    grunt = nm.object_textures(_payload(data, by["0100006f"]))
+    assert len(grunt) == 10 and [t["dt_id"] for t in grunt if t["dt_id"] is not None] == [0xFD, 0x101, 0x104]
+    assert [t["gx_format"] for t in grunt[-3:]] == [5, 5, 5]
