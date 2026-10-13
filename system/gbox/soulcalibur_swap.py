@@ -643,7 +643,19 @@ SONIC_VS_MARIO = {
 
 
 def franchise(slug: str) -> str:
-    return "SM64DS" if slug.startswith("sm64ds_") else "SA2" if slug in SA2 else "other"
+    """SM64DS = the Mario side: SM64 DS, SM64 (sm64_* / mario) and HD (*_hd) donors."""
+    if slug.startswith(("sm64ds_", "sm64_")) or slug.endswith("_hd") or slug == "mario":
+        return "SM64DS"
+    return "SA2" if slug in SA2 else "other"
+
+
+def mario_group(library, assignments: dict[str, list[str]] = SONIC_VS_MARIO) -> dict[str, list[str]]:
+    """The assignments with every Mario-side donor upgraded to the collection's best model of that character
+    (gbox.cast_swap group 'mario': HD > SM64 > SM64 DS)."""
+    from . import cast_swap
+    slugs = sorted({s for v in assignments.values() for s in v})
+    up = cast_swap.upgrade_slugs(slugs, cast_swap.library_metas(Path(library)))
+    return {k: [up.get(s, s) for s in v] for k, v in assignments.items()}
 
 
 def plan_costumes(human: bytes, assignments: dict[str, list[str]]) -> list[dict]:
@@ -844,9 +856,13 @@ def use_roster(ctx, meta, game, inp) -> dict:
     gdi = C._dc_gdi(ctx, game)
     human = GDRom(str(gdi)).read(D.HUMAN)
     pairs = [(str(p.get("slot") or ""), str(p.get("character") or "")) for p in (inp.pairs or [])]
-    plan = _plan_from_pairs(human, pairs) if pairs else plan_costumes(human, SONIC_VS_MARIO)
+    from .cast_swap import GROUPS
+    mario = (getattr(inp, "source", "") or "").strip().lower() in {"mario", *GROUPS["mario"]["aliases"]}
+    plan = _plan_from_pairs(human, pairs) if pairs else plan_costumes(
+        human, mario_group(C.library_root(ctx.config)) if mario else SONIC_VS_MARIO)
     digest = hashlib.sha256(json.dumps([(r["entry"], r["character"]) for r in plan]).encode()).hexdigest()[:8]
-    name = "sc_sonic_vs_mario_random" if not pairs else f"sc_roster_{digest}"
+    name = (("sc_sonic_vs_mario_hd_random" if mario else "sc_sonic_vs_mario_random") if not pairs
+            else f"sc_roster_{digest}")
     out = filemods.mod_dir(ctx.config, game["game_id"], name)
     try:
         cached = json.loads((out / ".gbox-mod.json").read_text(encoding="utf-8"))
@@ -905,7 +921,7 @@ def use(ctx, meta, game, inp) -> dict:
 
 
 def main(argv=None) -> int:
-    """python -m gbox.soulcalibur_swap build GDI DONORS_ROOT OUT_DIR NAME [--no-random]"""
+    """python -m gbox.soulcalibur_swap build GDI DONORS_ROOT OUT_DIR NAME [--no-random] [--mario-group]"""
     import argparse
     ap = argparse.ArgumentParser(prog="gbox.soulcalibur_swap")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -916,10 +932,13 @@ def main(argv=None) -> int:
     b.add_argument("name")
     b.add_argument("--game-id", default="c747331797369f74")
     b.add_argument("--no-random", action="store_true")
+    b.add_argument("--mario-group", action="store_true",
+                   help="Mario-side donors from cast_swap's 'mario' group: the best model per character (HD > SM64 > DS)")
     a = ap.parse_args(argv)
     from .gdrom import GDRom
     human = GDRom(a.gdi).read(D.HUMAN)
-    plan = plan_costumes(human, SONIC_VS_MARIO)
+    assignments = mario_group(a.donors) if a.mario_group else SONIC_VS_MARIO
+    plan = plan_costumes(human, assignments)
     res = build_roster(a.gdi, a.donors, a.out, a.name, plan, random_select=not a.no_random,
                        progress=lambda p, m: print(f"{p:5.1f}% {m}", flush=True))
     _write_marker(Path(a.out), a.name, a.game_id, plan, res,

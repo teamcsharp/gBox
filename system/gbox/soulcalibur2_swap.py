@@ -627,7 +627,14 @@ def build_cast(cfg, game: dict, pairs, name: str, progress=None) -> dict:
 
 def pool_slugs(root: Path, pool: str) -> list[str]:
     """Humanoid donors of a pool in a library folder: sa2 = the Sonic Adventure 2 entries, sm64ds = the Super Mario
-    64 DS ones, both only when replacement readiness (or the roles) allow a full-body fit."""
+    64 DS ones, mario = gbox.cast_swap's 'mario' group (the best model per character: HD > SM64 > SM64 DS), all only
+    when replacement readiness (or the roles) allow a full-body fit."""
+    if pool == "mario":
+        from . import cast_swap
+        metas = {m["slug"]: m for m in cast_swap.library_metas(Path(root)) if m.get("slug")}
+        need = {"hip", "head", "l_hand", "r_hand", "l_foot", "r_foot"}
+        return sorted(s for s in cast_swap.group_best(list(metas.values()), "mario").values()
+                      if need <= ((metas[s].get("rig") or {}).get("roles") or {}).keys())
     title = POOLS.get(pool, pool)
     out = []
     for m in sorted(Path(root).glob("*/meta.json")):
@@ -654,7 +661,8 @@ def main(argv=None) -> int:
     r.add_argument("image")
     r.add_argument("library")
     r.add_argument("out")
-    r.add_argument("--pool", action="append", required=True, help="sa2 | sm64ds | a source game title")
+    r.add_argument("--pool", action="append", required=True,
+                   help="sa2 | sm64ds | mario (best per character: HD > SM64 > DS) | a source game title")
     r.add_argument("--seed", default="sc2")
     r.add_argument("--name", default=RANDOM_MOD)
     r.add_argument("--game-id", default="201629ad498aba7b")

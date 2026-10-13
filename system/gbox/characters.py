@@ -1381,6 +1381,9 @@ def sm64_mario_roles(path: Path) -> dict[str, str]:
 
 
 def _sm64_run(ctx, game, e, work):
+    if str(e.get("key", "")).startswith("decomp:"):
+        from . import sm64_decomp
+        return sm64_decomp.extract_run(ctx, game, e, work)
     from . import sm64_mario as S, n64_rom
     data = n64_rom.read(_rom(ctx, game))
     out = work / "sm64_mario.gltf"
@@ -1591,8 +1594,11 @@ DEDICATED = [
     ("doa2", lambda t, p: "dead or alive 2" in t and p == "dreamcast", _doa2_roster, _doa2_run),
     ("shenmue", lambda t, p: re.match(r"shenmue(?! ii)", t) is not None and p == "dreamcast",
      _one("YKB", "ryo", "Ryo Hazuki", ["Ryo", "Shenmue Ryo"]), _shenmue_run),
+    # Super Mario 64 (N64): `mario` (gbox.sm64_mario: the 20-joint skeleton the SM64 writer keeps) plus the decomp-
+    # layout donors sm64_mario / peach / toad / yoshi / bowser (gbox.sm64_decomp: smooth normals, 18 body roles)
     ("sm64", lambda t, p: "super mario 64" in t and p == "n64",
-     _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"]), _sm64_run),
+     lambda: _one("MARIO", "mario", "Mario", ["SM64 Mario", "Super Mario 64 Mario"])() +
+     __import__("gbox.sm64_decomp", fromlist=["x"]).roster(), _sm64_run),
     # Super Mario 64 DS (USA): the playable four (head models attached), Peach, Bowser, bosses and notable enemies
     # from the game's own BMD models (NitroFS + NARC + LZ77, GX display lists, DS texel formats) as rigged, textured
     # GLBs with body roles (gbox.sm64ds_chars, docs/sm64ds.md)

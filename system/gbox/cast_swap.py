@@ -47,7 +47,91 @@ GROUPS = {
     "sonic": {"label": "Sonic characters (Sonic Adventure 1 + 2)", "extractors": ["sa1", "sa2"],
               "aliases": ["sonic", "sonic characters", "sonic games", "sonic adventures", "sonic adventure 1 and 2",
                           "sonic adventure 1 + 2", "sa1 + sa2", "sa1 and sa2"]},
+    # every Mario-series model in the collection (Super Mario 64 DS, Super Mario 64 from the ROM, the Render96 HD
+    # models imported through the Blender round trip with donor_group "mario"), collapsed to the best one per
+    # character after the quality gate (best_per_character: HD > SM64 decomp reader > SM64 DS > the 20-joint SM64 entry)
+    "mario": {"label": "Mario characters (best of HD / Super Mario 64 / Super Mario 64 DS per character)",
+              "extractors": ["sm64ds", "sm64"], "donor_group": "mario", "best_per_character": True,
+              "aliases": ["mario", "mario characters", "mario games", "super mario", "nintendo", "mushroom kingdom",
+                          "mario hd", "hd mario"]},
 }
+# donor rank inside a best_per_character group: meta donor_quality first, then the reader that made the entry
+QUALITY_RANK = {"hd": 30, "rom": 20}
+EXTRACTOR_RANK = {"sm64ds": 10, "sm64": 5}
+CHARACTER_PREFIX = re.compile(r"^(?:sm64ds|sm64|r96|render96)_")
+CHARACTER_SUFFIX = re.compile(r"_(?:hd|r96|render96)(?:_\d+)?$")
+
+
+def character_key(meta: dict) -> str:
+    """Which character an entry is, across games and packs: meta['character'] (the SM64 decomp reader and the
+    Render96 import set it), else the slug without its game prefix / pack suffix (sm64ds_mario, sm64_mario,
+    mario_hd -> mario; metal_wario stays metal_wario)."""
+    c = str(meta.get("character") or "").strip().lower()
+    if c:
+        return re.sub(r"[^a-z0-9]+", "_", c).strip("_")
+    s = CHARACTER_SUFFIX.sub("", CHARACTER_PREFIX.sub("", str(meta.get("slug") or "").lower()))
+    return s or re.sub(r"[^a-z0-9]+", "_", re.sub(r"\(.*?\)", "", base_name(meta))).strip("_")
+
+
+def donor_rank(meta: dict) -> tuple:
+    """Higher is better: the source quality, then the triangle count (more detail survives decimation better)."""
+    q = QUALITY_RANK.get(str(meta.get("donor_quality") or ""), EXTRACTOR_RANK.get(extractor_of(meta) or "", 0))
+    return (q, int((meta.get("stats") or {}).get("triangles") or 0))
+
+
+def best_per_character(donors: list[dict]) -> tuple[list[dict], list[dict]]:
+    """One donor per character (character_key), the best ranked one; -> (kept in the input order, superseded rows
+    [{slug, name, character, by}])."""
+    best: dict[str, dict] = {}
+    for m in donors:
+        k = character_key(m)
+        if k not in best or donor_rank(m) > donor_rank(best[k]):
+            best[k] = m
+    keep = [m for m in donors if best[character_key(m)] is m]
+    gone = [{"slug": m["slug"], "name": m.get("name"), "character": character_key(m),
+             "by": best[character_key(m)]["slug"]} for m in donors if best[character_key(m)] is not m]
+    return keep, gone
+
+
+def in_group(meta: dict, group: str) -> bool:
+    """Is this entry part of a named source group (by the reader that made it, or its own donor_group)?"""
+    g = GROUPS[group]
+    dg = meta.get("donor_group")
+    return extractor_of(meta) in set(g["extractors"]) or (bool(g.get("donor_group")) and (
+        dg == g["donor_group"] or (isinstance(dg, list) and g["donor_group"] in dg)))
+
+
+def group_best(chars: list[dict], group: str = "mario", ready_only: bool = True) -> dict[str, str]:
+    """{character: best slug} of a best_per_character group in a collection list (no gate run): the builders'
+    `--mario-group` / `--pool mario`. ready_only drops entries whose replacement readiness is blocked / limited."""
+    pool = [m for m in _candidates(chars) if in_group(m, group)]
+    if ready_only:
+        pool = [m for m in pool if ((m.get("readiness") or {}).get("status") or "ready") == "ready"]
+    keep, _gone = best_per_character(pool)
+    return {character_key(m): m["slug"] for m in keep}
+
+
+def library_metas(root: Path) -> list[dict]:
+    """Every entry's meta.json in a library folder (the builders' CLI, no API)."""
+    out = []
+    for p in sorted(Path(root).glob("*/meta.json")):
+        try:
+            out.append(json.loads(p.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def upgrade_slugs(slugs: list[str], chars: list[dict], group: str = "mario") -> dict[str, str]:
+    """{slug: best slug of the same character in the group} for the given slugs (unchanged when the group has no
+    better entry): sm64ds_mario -> mario_hd when the HD model is in the collection."""
+    best = group_best(chars, group)
+    by_slug = {m.get("slug"): m for m in chars}
+    out = {}
+    for s in slugs:
+        m = by_slug.get(s) or {"slug": s}
+        out[s] = best.get(character_key(m), s)
+    return out
 # Short names the operator uses for games (target and source).
 ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr": "jet grind radio",
           "jet set radio": "jet grind radio", "sa2": "sonic adventure 2", "sa1": "sonic adventure",
@@ -113,7 +197,10 @@ def source_groups(chars: list[dict]) -> list[dict]:
             ex_count[g["extractor"]] = ex_count.get(g["extractor"], 0) + 1
     out = []
     for key, grp in GROUPS.items():
-        n = sum(ex_count.get(e, 0) for e in grp["extractors"])
+        if grp.get("best_per_character"):                  # one per character across its games and packs
+            n = len({character_key(m) for m in _candidates(chars) if in_group(m, key)})
+        else:
+            n = sum(ex_count.get(e, 0) for e in grp["extractors"])
         if n:
             out.append({"key": key, "label": grp["label"], "kind": "group", "count": n})
     games = sorted(by_game.values(), key=lambda g: g["label"].lower())
@@ -131,15 +218,16 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
     the available sources when nothing matches."""
     pool = _candidates(chars, kind)
     picked: dict[str, dict] = {}
-    labels = []
+    labels, best_groups = [], []
     for part in [p.strip() for p in re.split(r"[,+]|\band\b", spec or "") if p.strip()]:
         q = part.lower()
         hits: list[dict] = []
         grp = next((k for k, g in GROUPS.items() if q == k or q in g["aliases"]), None)
         if grp:
-            ex = set(GROUPS[grp]["extractors"])
-            hits = [m for m in pool if extractor_of(m) in ex]
+            hits = [m for m in pool if in_group(m, grp)]
             labels.append(GROUPS[grp]["label"])
+            if GROUPS[grp].get("best_per_character"):
+                best_groups.append(grp)
         elif re.fullmatch(r"[0-9a-f]{16}", q):
             hits = [m for m in pool if (m.get("source") or {}).get("game_id") == q]
             labels.append(next(((m["source"].get("game_title")) for m in hits), q))
@@ -172,7 +260,7 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
             picked.setdefault(m["slug"], m)
     if not picked:
         raise ValueError("source is empty: name a game, a game id or a group (wrestlers, fighters, ...)")
-    return {"label": " + ".join(labels), "entries": list(picked.values())}
+    return {"label": " + ".join(labels), "entries": list(picked.values()), "best_per_character": best_groups}
 
 
 def dedupe(entries: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -584,6 +672,13 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
         refused = [r for r in refused if r["slug"] not in stale]
         refreshed = [{"slug": r["slug"], "name": r["name"], "reader": r["reader"], "status": "will be re-extracted "
                       f"(reader v{r['reader']['entry']} -> v{r['reader']['current']})"} for r in flagged if r["slug"] in stale]
+    superseded = []
+    if src.get("best_per_character"):                      # source=mario: the best gated model of each character
+        def member(m):
+            return any(in_group(m, g) for g in src["best_per_character"])
+        keep, superseded = best_per_character([m for m in donors if member(m)])
+        kept = {m["slug"] for m in keep}
+        donors = [m for m in donors if not member(m) or m["slug"] in kept]
     pos = {m["slug"]: i for i, m in enumerate(entries)}    # the source's own order, re-extracted or not: same plan
     rows = donor_rows(sorted(donors, key=lambda m: pos.get(m["slug"], 1 << 30)), root)
     for r in rows:
@@ -606,6 +701,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
             "slots": [{k: s.get(k) for k in ("slot", "name", "kind", "status", "skip", "size") if s.get(k) is not None}
                       for s in chosen],
             "donors": rows, "refused": refused, "costumes_merged": costumes, "refreshed": refreshed,
+            **({"superseded": superseded} if superseded else {}),
             "assignments": out, "skipped": [{"slot": s["slot"], "reason": s["skip"]} for s in chosen if s.get("skip")],
             "mod": mod_name(game, src["label"], out) if out else None,
             "message": (f"{len(out)} slots of {game.get('title')} get {src['label']} donors ({len(rows)} usable, "
