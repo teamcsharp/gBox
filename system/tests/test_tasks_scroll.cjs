@@ -182,7 +182,7 @@ const setup = `
 document.body.innerHTML='<style>#tk-technical{height:300px;overflow:auto}#taskpanel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}#taskpanel .task-detail pre{margin:6px 0;padding:8px}#taskpanel .mc{padding:8px}</style><div id="taskpanel" class="on"><div id="tk-at"></div><div id="tk-technical"><div id="tk-local"></div><div id="tk-body"></div></div></div>';
 const $=s=>document.querySelector(s),esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const TK={busy:false,expanded:new Set(['j1']),localExpanded:new Set(),hermesExpanded:new Set(),resolutionExpanded:new Set(),hermesOutput:new Map(),hermesScroll:new Map(),jobDetail:new Map(),pointerDown:0,scrolledAt:0};
-const tkVisualUpdate=()=>{},tkAge=()=>'',tkTokenSummary=()=>'',tkBar=()=>'',tkProgress=()=>'';
+const tkVisualUpdate=()=>{},tkProvidersLoad=()=>{},tkAge=()=>'',tkTokenSummary=()=>'',tkBar=()=>'',tkProgress=()=>'';
 const S={apiUrl:'https://fixture.invalid',tok:'fixture'};
 const lines=n=>Array.from({length:n},(_,i)=>'trace '+i).join('\\n');
 const F={job:{id:'j1',state:'running',input:{},progress_log:['short progress'],log_sha:'abc'},longLog:lines(1000),hermesLog:lines(1000),pauseLog:false,resolveLog:null,data:{hermes:[],resolutions:[],machines:[{worker_id:'w',name:'Worker',totals:{cpu_pct:1},tasks:[]}],jobs:[{id:'j1',state:'running',tool:'characters',created:1}],recent:[]}};
