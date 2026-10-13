@@ -443,6 +443,14 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
   - Technique: `string-xref-loader` on the decrypted EBOOT (`intAStrangleholdPlayerPawnexecIsPrecisionAiming` ->
     OPD -> function), plus the `unreal-script` playbook.
   - PRs #167 #230.
+- **Stranglehold models** (`stranglehold_models`, `stranglehold_swap`; `stranglehold.md`, #1410):
+  - Formats: SkeletalMesh LODs cooked as SPU segments (Sony Edge style). Indexes use a sequential bit, 2-bit
+    triangle codes and explicit indexes delta-coded on eight u16 lanes. Vertexes are 23 bytes with half positions
+    and UVs. Weights are 4-influence over two bone-matrix ranges. Texture2D mips are inline DXT.
+  - Technique: `known-shape oracle` on the UV atlas of the first all-new strip.
+  - A beam search over UV/3D-consistent triangles produced ground truth. A lag scan of that truth
+    (`index[k] - index[k-8]`) exposed the lane coding.
+  - Effort: one session, 2026-10-13. 39 characters extracted; a writer appends the re-encoded mesh export.
 - **UE4** (`ue_pak`, `ue_asset`, `ue_mesh`, `ue_steam`; `ue_steam.md`):
   - Formats: .pak v1-11 and IoStore headers; zlib/gzip, or Oodle through the game's own DLL; cooked USkeletalMesh
     (4.24-4.27) LOD0 plus the reference skeleton.

@@ -134,8 +134,6 @@ packages (828 chunked zlib, 48 fully compressed script packages, 5 raw),
 - bosses: Damon / Vlad Zakarov, Jerry Ying, Wong, Dapang in 6 mission
   packages + cinematics + `char_*_MP`.
 
-A native model reader still needs: the SkeletalMesh export's tagged
-properties, bounds, materials, RefSkeleton (FMeshBone), LODModels
-(FStaticLODModel: sections, index buffer, chunks with rigid/soft vertices,
-influences), the bulk data in the package's own chunks, and Texture2D mips
-(DXT) behind the MaterialInstanceConstants (`READER_NOTES` in the module).
+The native model reader and the writer for these meshes are `gbox.stranglehold_models` and
+`gbox.stranglehold_swap`, documented in `docs/stranglehold.md`. That doc covers the SPU-segment SkeletalMesh layout,
+the 39-character roster and the Tequila / multiplayer-skin writer.
