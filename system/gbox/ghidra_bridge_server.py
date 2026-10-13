@@ -212,6 +212,14 @@ class Bridge:
         run = getattr(pyghidra, "ghidra_script", None)
         if run is None:
             raise RuntimeError("this PyGhidra has no ghidra_script(); use Ghidra 11.3+ PyGhidra or the ghidra_script job")
+        # Java scripts compile only from a registered source bundle (headless gets these from -scriptPath)
+        from generic.jar import ResourceFile
+        from ghidra.app.script import GhidraScriptUtil
+        from java.io import File
+        host = GhidraScriptUtil.getBundleHost()
+        folder = ResourceFile(File(os.path.dirname(os.path.abspath(path))))
+        if host.getExistingGhidraBundle(folder) is None:
+            host.add(folder, True, False)
         out, err = run(path, None, self._need(), [str(a) for a in args], echo_stdout=False, echo_stderr=False)
         return {"script": os.path.basename(path), "stdout": str(out)[-20000:], "stderr": str(err)[-5000:]}
 
