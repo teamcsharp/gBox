@@ -589,9 +589,12 @@
   #xt-view .xhint { position:absolute; left:8px; bottom:6px; font-size:10.5px; color:#ffffff70; pointer-events:none; }
   #xt-ins h4 { margin:4px 0 8px; } #xt-ins img { max-width:100%; border-radius:4px; margin-top:6px; } #xt-ins pre { font:10.5px/1.35 ui-monospace,Consolas,monospace; color:#9fd; white-space:pre; overflow:auto; }
   #xt-ins .kv td { padding:1px 6px 1px 0; vertical-align:top; } #xt-ins .kv td:first-child { color:var(--mut); }
-  #brand.upd img { animation:holo 2.6s ease-in-out infinite; }
+  /* #712: three pulses when an update arrives, then a still highlight (pulsing again while hovered). Endless, the filter and
+     gradient animations repainted the logo at the display's refresh rate for the rest of the session on the CPU and GPU. */
+  #brand.upd img { animation:holo 2.6s ease-in-out 3; filter:drop-shadow(0 0 5px #b48cff); }
   #brand.upd span { background:linear-gradient(100deg, #8fe9ff, #b48cff, #ff9de2, #9dffcf, #8fe9ff); background-size:300% 100%;
-                    -webkit-background-clip:text; background-clip:text; color:transparent; animation:holotext 3.2s linear infinite; }
+                    -webkit-background-clip:text; background-clip:text; color:transparent; animation:holotext 3.2s linear 3; }
+  #brand.upd:hover img, #brand.upd:hover span { animation-iteration-count:infinite; }
   #brand.upd span small { -webkit-text-fill-color:transparent; }
   @keyframes holo { 0%, 100% { filter:drop-shadow(0 0 2px #8fe9ff) hue-rotate(0deg) brightness(1); transform:scale(1); }
                     50% { filter:drop-shadow(0 0 12px #b48cff) drop-shadow(0 0 4px #ff9de2) hue-rotate(160deg) brightness(1.45); transform:scale(1.07); } }
@@ -3072,7 +3075,7 @@ function vovSignals() {
 function vovApply(d) {                                            // the GPU surface layers it itself; a native game gets the floating window
   if (EMB.surface === "gpu") { gbox.vizOverlay?.({ on: false }); gpuGameVoice({ on: d.on, level: d.level, beat: d.beat, mode: d.mode }); return; }
   gpuGameVoice({ on: false });
-  gbox.vizOverlay?.(d.on ? { on: true, rect: EMB.rect, level: d.level, beat: d.beat, mode: d.mode, restart: d.restart } : { on: false });
+  gbox.vizOverlay?.(d.on ? { on: true, rect: EMB.rect, holes: EMB.holes || [], level: d.level, beat: d.beat, mode: d.mode, restart: d.restart } : { on: false });
 }
 setInterval(() => {
   const d = vovDecide(vovSignals(), VOV, Date.now());

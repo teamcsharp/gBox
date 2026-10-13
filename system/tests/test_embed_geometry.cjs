@@ -48,6 +48,20 @@ test('session layout refits after wrapping headers, resizing and changing views'
   current=null; context.watchSessionLayout(); assert.equal(layout.style.height,'394px');
 });
 
+test('#1081: overlay windows over the game are shaped around the app\'s pop-ups (zoomed, clipped, exact cover)', () => {
+  assert.deepEqual(G.shapeMinusHoles(100, 80, []), [{ x: 0, y: 0, width: 100, height: 80 }]);
+  const shape = G.shapeMinusHoles(200, 100, [{ x: 40, y: 20, w: 40, h: 20 }, { x: 120, y: 60, w: 40, h: 40 }], 1.5);
+  const area = shape.reduce((a, s) => a + s.width * s.height, 0);
+  assert.equal(area, 200 * 100 - 60 * 30 - 20 * 10, 'everything but the zoomed holes (one clipped at the corner)');
+  const inside = (x, y) => shape.some(s => x >= s.x && x < s.x + s.width && y >= s.y && y < s.y + s.height);
+  assert.equal(inside(70, 40), false, 'the menu shows through');
+  assert.equal(inside(10, 10), true); assert.equal(inside(199, 99), false);
+  for (const a of shape) for (const b of shape) if (a !== b)       // no double-covered pixels
+    assert.ok(a.x >= b.x + b.width || b.x >= a.x + a.width || a.y >= b.y + b.height || b.y >= a.y + a.height);
+  const overlay = fs.readFileSync(require.resolve('../clients/desktop/overlay.js'), 'utf8');
+  assert.match(overlay, /ov\.setShape\(shapeMinusHoles\(w, h, st\.holes, z\)\)/, 'the overlay swap uses the same shape');
+});
+
 // #1081: which DOM changes must re-cut the docked native game window (fake DOM: each node lists the selectors it matches)
 function fakeDom() {
   const make = (id, sels = [], parent = null) => {

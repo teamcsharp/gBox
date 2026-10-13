@@ -626,6 +626,8 @@ ipcMain.handle("viz:overlay", (_e, st) => {
     vizOv.loadURL(settings().apiUrl + "/viz/overlay.html" + (st.mode ? "?mode=" + encodeURIComponent(st.mode) : ""));
   }
   vizOv.setBounds(bounds); vizOv.setOpacity(Math.max(0.1, Math.min(0.9, st.opacity ?? 0.42)));
+  // the app's menus and panels over the game stay above the visualizer, as they do above the game itself (#1081)
+  try { vizOv.setShape(embedGeometry.shapeMinusHoles(bounds.width, bounds.height, st.holes || [], z)); } catch {}
   if (!vizOv.isVisible()) vizOv.showInactive();
   // a fresh conversation (#250) starts a new random transition visual; the level and beats follow who is talking
   if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat, ...(st.restart ? { mode: st.mode || "random" } : {}) })})`).catch(() => {});

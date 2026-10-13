@@ -45,7 +45,27 @@
     return records.some(r => r.type === "attributes" ? relevant(r.target)
       : [...r.addedNodes, ...r.removedNodes].some(n => relevant(n) || (bodyChildren && r.target === body && n.nodeType === 1)));
   }
-  const api = { intersect, guestRect, nativePlacement, popupMutation };
+  // The visible part of an overlay window of w x h device px laid over the docked game, minus the app's pop-ups over the
+  // game (holes in CSS px relative to the game picture, scaled by zoom), as rectangles for BrowserWindow.setShape. The
+  // overlay swap model and the voice visualizer float above the game; without this they covered the app's menus (#1081).
+  function shapeMinusHoles(w, h, holes = [], zoom = 1) {
+    let shape = [{ x: 0, y: 0, width: w, height: h }];
+    for (const o of holes || []) {
+      const hx = o.x * zoom, hy = o.y * zoom, hx2 = hx + o.w * zoom, hy2 = hy + o.h * zoom, next = [];
+      for (const s of shape) {
+        const sx2 = s.x + s.width, sy2 = s.y + s.height;
+        if (hx >= sx2 || hx2 <= s.x || hy >= sy2 || hy2 <= s.y) { next.push(s); continue; }
+        if (hy > s.y) next.push({ x: s.x, y: s.y, width: s.width, height: hy - s.y });
+        if (hy2 < sy2) next.push({ x: s.x, y: hy2, width: s.width, height: sy2 - hy2 });
+        const my = Math.max(s.y, hy), my2 = Math.min(sy2, hy2);
+        if (hx > s.x) next.push({ x: s.x, y: my, width: hx - s.x, height: my2 - my });
+        if (hx2 < sx2) next.push({ x: hx2, y: my, width: sx2 - hx2, height: my2 - my });
+      }
+      shape = next;
+    }
+    return shape.map(s => ({ x: Math.round(s.x), y: Math.round(s.y), width: Math.max(1, Math.round(s.width)), height: Math.max(1, Math.round(s.height)) }));
+  }
+  const api = { intersect, guestRect, nativePlacement, popupMutation, shapeMinusHoles };
   root.GBoxEmbedGeometry = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(globalThis);
