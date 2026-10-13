@@ -11,6 +11,12 @@ Writers do not pass anything around: characters_tool opens a job sink (job()), a
 (sm64_swap / doa2_weighted_retarget / re4gc_enemies .retarget) call auto_model() + stage(); a writer that knows its
 model better (DOA2 per costume, the cast build's plan) names it with model(). Without a sink every call is a no-op.
 
+Every model row also names what the Retarget editor needs to open on it (the pop-up's "R" buttons): the donor
+(collection slug), the target game id (target(), set by the cast build / characters op=use) and the slot (the cast
+plan's slot = the model key, unless a plan row names another). The shared retargets' "retarget" stage carries the fit's
+goals (retarget_profile.goals: each role's donor joint and the target slot's joint it lands on); the server keeps the
+newest per (game, slot) for the editor's Goals view (GET /api/retarget/goals).
+
 characters op=collect uses the same record with kind "collect" (plan(..., kind="collect")): per character an
 "extract" stage (the decoded model as a snapshot, coloured from its textures; a sprite reader's sheet as a preview
 image) and a "preview" stage (the collection's preview render). The pop-up then reads "Collecting k/N".
@@ -89,6 +95,45 @@ def _small(data, depth=0):
     return str(data)[:80]
 
 
+WHO = ("donor", "game", "slot")                          # the row's Retarget editor target (the pop-up's R buttons)
+
+
+def _who(m: dict, src: dict):
+    for k in WHO:
+        v = src.get(k)
+        if isinstance(v, str) and v.strip():
+            m[k] = v.strip()[:120]
+
+
+def clean_goals(g) -> dict | None:
+    """A fit's goals as they may travel: {donor: {role: [x, y, z]}, target: {...}, donor_ground, target_ground}."""
+    if not isinstance(g, dict):
+        return None
+    out = {}
+    for side in ("donor", "target"):
+        pos = g.get(side)
+        if not isinstance(pos, dict):
+            continue
+        clean = {}
+        for r, v in list(pos.items())[:32]:
+            try:
+                xyz = [float(x) for x in np.asarray(v, float).reshape(-1)]
+            except (TypeError, ValueError):
+                continue
+            if isinstance(r, str) and len(r) <= 16 and len(xyz) == 3:
+                if all(math.isfinite(x) for x in xyz):
+                    clean[r] = [round(x, 5) for x in xyz]
+        out[side] = clean
+    for k in ("donor_ground", "target_ground"):
+        try:
+            f = float(g.get(k))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f):
+            out[k] = round(f, 5)
+    return out if out.get("target") else None
+
+
 def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
     """The server side: merge one event into a job's fitting record."""
     st = state if isinstance(state, dict) else {}
@@ -103,6 +148,7 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
             st["order"].append(key)
             st["models"][key] = {"label": str(row.get("label") or key)[:160], "stages": {}, "updated": ts,
                                  "state": "pending"}
+            _who(st["models"][key], row)
     key = str(event.get("model") or "")[:120]
     if not key:
         return st
@@ -114,6 +160,10 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
         m = st["models"][key] = {"label": key, "stages": {}, "state": "pending"}
     if event.get("label"):
         m["label"] = str(event["label"])[:160]
+    _who(m, event)
+    goal = clean_goals(event.get("goals"))
+    if goal:
+        m["goals"] = goal
     stage = event.get("stage")
     if stage:
         s = m["stages"].setdefault(str(stage)[:24], {})
@@ -171,29 +221,44 @@ def _send(event: dict, text: str):
             raise
 
 
-def plan(rows: list[tuple[str, str, str]], kind: str = "fit"):
-    """The cast build's models before any of them is fitted: [(model key, donor slug, label)]. auto_model(slug)
+def target(game_id: str | None):
+    """The game this job fits into (the Fitting rows' Retarget editor target): the cast build / characters op=use."""
+    sk = _sink.get()
+    if sk is not None and game_id:
+        sk["game"] = str(game_id)
+
+
+def plan(rows: list[tuple], kind: str = "fit"):
+    """The cast build's models before any of them is fitted: [(model key, donor slug, label[, slot])]. auto_model(slug)
     then takes the next planned key of that donor. A key already planned keeps its row (the cast swap plans every
-    model, then the writer's own build_cast plans the same ones again when it runs alone)."""
+    model, then the writer's own build_cast plans the same ones again when it runs alone). The slot (the Retarget
+    editor's) defaults to the key: the cast plan's keys are its slots."""
     sk = _sink.get()
     if sk is None:
         return
     labels = sk.setdefault("labels", {})
-    rows = [(str(k), s, lab) for k, s, lab in rows if str(k) not in labels]
+    rows = [(str(r[0]), r[1], r[2], str(r[3]) if len(r) > 3 and r[3] else str(r[0])) for r in rows
+            if str(r[0]) not in labels]
     if not rows:
         return
-    for key, slug, label in rows:
+    for key, slug, label, slot in rows:
         sk["plan"].setdefault(str(slug), []).append((key, label))
         labels[key] = label
-    ev = {"plan": [{"model": k, "label": lab} for k, _s, lab in rows]}
+        sk.setdefault("slots", {})[key] = slot
+    game = sk.get("game")
+    ev = {"plan": [{"model": k, "label": lab, **({"donor": str(s)} if s and kind == "fit" else {}),
+                    **({"slot": slot, **({"game": game} if game else {})} if kind == "fit" else {})}
+                   for k, s, lab, slot in rows]}
     if kind != "fit":
         ev["kind"] = kind
     _send(ev, f"{'Collecting' if kind == 'collect' else 'Fitting'} {len(rows)} models")
 
 
-def model(key: str, label: str | None = None, slug: str | None = None, explicit: bool = True) -> str | None:
+def model(key: str, label: str | None = None, slug: str | None = None, explicit: bool = True,
+          slot: str | None = "") -> str | None:
     """Start (or switch to) one model: the following stage() calls belong to it. A writer's explicit model keeps
-    every fit until the next model() (refits included); label defaults to the cast plan's label for the key."""
+    every fit until the next model() (refits included); label defaults to the cast plan's label for the key.
+    slot: the Retarget editor's slot for the row ("" = the key; None = unknown, e.g. a row named after its donor)."""
     sk = _sink.get()
     if sk is None:
         return None
@@ -207,7 +272,14 @@ def model(key: str, label: str | None = None, slug: str | None = None, explicit:
         q[:] = [row for row in q if row[0] != key]
     sk["current"] = {"key": key, "label": label, "slug": slug, "closed": False, "explicit": explicit,
                      "fitted": False}
-    _send({"model": key, "label": label}, f"Fitting {label}")
+    ev = {"model": key, "label": label}
+    if slug:
+        ev["donor"] = str(slug)
+    if sk.get("game"):
+        ev["game"] = sk["game"]
+    if slot is not None:
+        ev["slot"] = str(slot or sk.get("slots", {}).get(key) or key)
+    _send(ev, f"Fitting {label}")
     return key
 
 
@@ -243,7 +315,7 @@ def auto_model(source: str | Path | None = None) -> str | None:
         return model(key, label, dslug)
     sk["m"] += 1
     name = slug or f"model {sk['m']}"
-    return model(name if sk["m"] == 1 else f"{name} #{sk['m']}", name, slug, explicit=False)
+    return model(name if sk["m"] == 1 else f"{name} #{sk['m']}", name, slug, explicit=False, slot=None)
 
 
 def current() -> str | None:
@@ -252,8 +324,9 @@ def current() -> str | None:
 
 
 def stage(name: str, state: str = "done", data: dict | None = None, text: str | None = None, prims=None,
-          preview: str | Path | None = None):
-    """One stage of the current model. prims (fitted geometry) become a snapshot GLB the pop-up can show."""
+          preview: str | Path | None = None, goals: dict | None = None):
+    """One stage of the current model. prims (fitted geometry) become a snapshot GLB the pop-up can show; goals
+    (retarget_profile.goals) are what the fit aimed at, for the Retarget editor's Goals view."""
     sk = _sink.get()
     if sk is None:
         return
@@ -272,6 +345,10 @@ def stage(name: str, state: str = "done", data: dict | None = None, text: str | 
             pass
     if preview:
         ev["preview"] = str(preview)
+    if goals:
+        g = clean_goals(goals)
+        if g:
+            ev["goals"] = g
     if name == "retarget" and state == "done":
         cur["fitted"] = True
     if name in LAST and state in ("done", "failed"):

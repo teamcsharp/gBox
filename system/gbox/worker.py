@@ -62,7 +62,9 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
-    ctx.server, ctx.headers = server, h
+    # x-gbox-parent-job: a tool calling the control plane back (e.g. characters op=use -> @launch) is traced to this
+    # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
+    ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
     res = {"job_id": job["id"], "ok": True}
     if job.get("agent_use") and HOST_OS == "windows":
         from .audio_volume import keep_pc_at_two_percent
@@ -203,7 +205,7 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                     stream.close()
                     stream = None
                 if stream is not None:
-                    if stream.proc.poll() is not None:
+                    if stream.proc is not None and stream.proc.poll() is not None:   # None: its supervisor is restarting it
                         stream.close()
                         stream = None
                     elif stream.wait(seen, 1) and stream.latest:
