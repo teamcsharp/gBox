@@ -35,6 +35,9 @@ FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
 # Keep rendered textures in emulated VRAM, so future states can include them.
 # Unthreaded rendering also keeps serialization size stable between query/write.
 FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+# Flycast save states are ~27 MB and stall the game while they serialize: gBox's checkpoint ring takes one at most every
+# 20 s there (#1489, 2 fps in PSO with a checkpoint every 2 s); the ring's frame-rate budget can stretch it further.
+FLYCAST_CHECKPOINT_MIN_S = 20.0
 # Windows N64 (docked, resizable window) uses parallel_n64's software angrylion RDP, whose output scales with the window.
 # angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
 # angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
@@ -735,6 +738,7 @@ class RetroArchAdapter(CommandAdapter):
         self.addr, self.display, self.stream, self.log_path = (host, port), None, None, None
         self._state_lock = threading.RLock()
         self.rewind_on = (platform or "") not in NO_REWIND
+        self.checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S if (platform or "") in FLYCAST_PLATFORMS else 0.0
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
         if HOST_OS == "windows":
@@ -977,6 +981,9 @@ class RetroArchAdapter(CommandAdapter):
         if self.config is not None:
             rom = self._from_lst_zip(self._from_lst(self._from_gme(self._from_old_chd(self._from_7z(rom)))))
         argv = self._argv(rom)
+        from .scene_support import video_driver
+        self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
+        self.core_path = argv[argv.index("-L") + 1] if "-L" in argv else None
         self.examine_unavailable_reason = None
         if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
             self.examine_unavailable_reason = (
@@ -1181,7 +1188,7 @@ class RetroArchAdapter(CommandAdapter):
                                 time.sleep(.1)
                                 continue
                             actual = int(match[1] or 0)
-                            self.slot = actual
+                            self.slot, self._last_state_path = actual, path
                             result = {'slot': actual, 'requested_slot': requested,
                                       'path': str(path), 'bytes': stat.st_size,
                                       'verified': True, 'slot_verified': actual == requested}
@@ -1193,6 +1200,14 @@ class RetroArchAdapter(CommandAdapter):
                 time.sleep(.1)
             detail = f'; last container validation: {validation_error}' if validation_error else ''
             raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed' + detail)
+
+    def checkpoint_target(self) -> Path | None:
+        """The file the next SAVE_STATE writes (the current slot), named after the last verified save: the checkpoint
+        ring protects that slot before saving into it (#1488). None until a save has shown RetroArch's state folder."""
+        last, slot = getattr(self, "_last_state_path", None), int(getattr(self, "slot", 0) or 0)
+        if last is None or slot < 0:
+            return None
+        return last.with_name(re.sub(r'\.state(-?\d+)?$', '.state' + (str(slot) if slot else ''), last.name))
 
     def load_state(self, slot: int | None = None) -> dict:
         slot = self._slot(slot)
@@ -1287,7 +1302,9 @@ class RetroArchAdapter(CommandAdapter):
     # (verified with Flycast: rcheevos registers 16MB SYSTEM RAM at $0); GameCube/Wii MEM1 at 0x80000000/0xC0000000.
     RAM_WINDOWS = {"dreamcast": (0x1F000000, 0x0C000000, 0x00FFFFFF), "naomi": (0x1F000000, 0x0C000000, 0x00FFFFFF),
                    "gamecube": (0x3E000000, 0x00000000, 0x01FFFFFF), "wii": (0x3E000000, 0x00000000, 0x01FFFFFF),
-                   "n64": (0x1F800000, 0x00000000, 0x007FFFFF)}
+                   "n64": (0x1F800000, 0x00000000, 0x007FFFFF),
+                   # NDS main RAM: 4 MiB at 0x02000000 (mirrored to 0x02FFFFFF); melonDS registers it as SYSTEM_RAM at $0
+                   "nds": (0xFF000000, 0x02000000, 0x003FFFFF)}
 
     def _ram_offset(self, address: int) -> int:
         w = self.RAM_WINDOWS.get(self.platform or "")

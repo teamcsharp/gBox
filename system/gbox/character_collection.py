@@ -19,6 +19,16 @@ class AutoCollection:
             job = self.store.get('job', record['job_id']) or {}
             record = record | {'state': job.get('state', 'not_started'),
                                'result': (job.get('output') or {}).get('result'), 'error': job.get('error')}
+            result = record['result'] or {}
+            # A partial roster is re-checked against the collection as it is now (roles backfilled by a fixed reader,
+            # #1485) instead of re-queueing the job on every launch; the stored job output stays as it was.
+            if result.get('status') == 'partial' and self.config is not None:
+                root = C.library_root(self.config)
+                if root.is_dir():
+                    try:
+                        record['result'] = C.refresh_collection(root, result)
+                    except Exception:                       # a status read never fails on a bad entry
+                        pass
         capability = self.store.get('game_capability', gid)
         if capability:
             record = record | {'capabilities': capability, 'backlog': self.store.get('capability_backlog', gid) or []}

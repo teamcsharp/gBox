@@ -170,12 +170,11 @@ class SessionObservers:
             return row
 
     def _user_session(self, session):
+        from .background_testing import agent_owned
         sid = session['session_id']
         label = self.store.get('slabel', sid) or {}
-        if label.get('owner') == 'you':
-            return True
         job = self.store.get('job', sid.split('-', 1)[-1]) or {}
-        return label.get('owner') != 'agent' and not job.get('agent_use')
+        return not agent_owned(label, job)
 
     def _gap(self, session, role, reason, frame=None):
         """One durable request per game/role; reconcile before POST after a restart."""

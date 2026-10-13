@@ -271,3 +271,20 @@ def test_validate_profile_reports_unknown_fields():
     assert any("unknown type q64" in x for x in problems)
     assert any("flags: bad rule" in x for x in problems)
     assert any("fov_axis" in x for x in problems)
+
+
+
+def test_under_point_collapses_cloneplayer_twin_onto_its_bot():
+    from gbox.entity_probe import Probe
+    bot = {"index": 2, "class": "Bot", "kind": "bot", "model": "models/mp_player_bloch.men",
+           "x": 332.858, "y": -683.912, "z": 0.125, "screen_box": [300, 100, 380, 300], "depth": 400.0}
+    clone = dict(bot, index=114, **{"class": "ClonePlayer", "kind": "player", "screen_box": [310, 110, 370, 290], "depth": 399.0})
+    viewer = {"index": 0, "class": "DeathmatchPlayer", "kind": "player", "model": "models/mp_player_bondtux.men",
+              "x": 40.0, "y": -340.0, "z": 0.125, "is_viewer": True, "screen_box": None}
+    viewer_clone = dict(viewer, index=108, is_viewer=False, **{"class": "ClonePlayer", "screen_box": [0, 0, 640, 480], "depth": 1.0})
+    scan = {"frame": [640, 480], "entities": [viewer, bot, viewer_clone, clone]}
+    hit = Probe.under_point(340, 200, scan)
+    assert hit["entity"]["index"] == 2 and hit["contained"]
+    assert all(o["class"] != "ClonePlayer" for o in hit["others"])
+    lone = dict(clone, index=200, x=999.0)          # a ClonePlayer with no owner stays pickable
+    assert Probe.under_point(340, 200, {"frame": [640, 480], "entities": [lone]})["entity"]["index"] == 200

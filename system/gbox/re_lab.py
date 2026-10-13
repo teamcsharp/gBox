@@ -203,7 +203,7 @@ def summarize_analysis(a: dict, artifact: str, keywords=("player", "item", "hp",
     """analysis.json (functions + strings from Ghidra) -> what fits in a dossier."""
     fns = a.get("functions") or []
     names = [f.get("name") if isinstance(f, dict) else str(f) for f in fns]
-    named = [n for n in names if n and not re.match(r"^(FUN|LAB|thunk_FUN|SUB|switchD)_", n)]
+    named = [n for n in names if n and not re.match(r"^(FUN|LAB|thunk_FUN|SUB|switchD|sub|nullsub|j_sub|loc)_", n)]   # Ghidra + IDA defaults
     strs = [s.get("value") if isinstance(s, dict) else str(s) for s in (a.get("strings") or [])]
     hits = [s for s in strs if s and any(k in s.lower() for k in keywords) and len(s) < 120]
     return {"functions": len(fns), "strings": len(strs), "artifact": artifact, "named": named[:200], "strings_sample": hits[:80],
