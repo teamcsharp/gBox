@@ -550,7 +550,7 @@ class CharIn(BaseModel):
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -838,8 +838,36 @@ def _dc_gdi(ctx, game) -> Path:
     rom = _rom(ctx, game)
     if rom.suffix.lower() in (".gdi", ".cdi"):
         return rom
+    if rom.is_dir():                                     # an already-extracted disc set
+        gdi = next(rom.glob("*.gdi"), None)
+        if gdi is None:
+            raise ValueError(f"{rom.name}: extracted Dreamcast disc has no .gdi descriptor")
+        return gdi
     d = Path(ctx.config.cache) / "dc" / game["game_id"]
     if (d / "disc.gdi").exists():
+        return d / "disc.gdi"
+    if rom.suffix.lower() == ".7z":                      # archived GDI set: extract once, flatten,
+        exe = next((p for n in ("7z", "7zz") if (p := shutil.which(n))), None)
+        if exe is None:
+            raise ValueError(f"{rom.name}: reading an archived Dreamcast disc needs the 7z CLI on this node")
+        tmp = d.with_name(d.name + ".part")              # keep tracks beside disc.gdi (GDRom resolves
+        shutil.rmtree(tmp, ignore_errors=True)           # track paths relative to the descriptor)
+        tmp.mkdir(parents=True)
+        ctx.progress(5, f"Unpacking the GD-ROM archive {rom.name} (7z, once per game)")
+        subprocess.run([exe, "x", "-y", f"-o{tmp}", str(rom)], check=True,
+                       capture_output=True, timeout=1800)
+        for p in [p for p in tmp.rglob("*") if p.is_file() and p.parent != tmp]:
+            p.rename(tmp / p.name)
+        for sub in sorted((p for p in tmp.rglob("*") if p.is_dir()), reverse=True):
+            sub.rmdir()
+        gdi = next(tmp.glob("*.gdi"), None)
+        if gdi is None:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise ValueError(f"{rom.name}: archive contains no .gdi descriptor")
+        if gdi.name != "disc.gdi":
+            shutil.copyfile(gdi, tmp / "disc.gdi")
+        shutil.rmtree(d, ignore_errors=True)
+        tmp.rename(d)
         return d / "disc.gdi"
     if rom.suffix.lower() != ".chd" or not shutil.which("chdman"):
         raise ValueError(f"{rom.name}: reading a Dreamcast disc needs a GDI, or a CHD plus chdman on this node")
@@ -1341,6 +1369,10 @@ DEDICATED = [
     ("revenge", lambda t, p: "revenge" in t and "wcw" in t and p == "n64",
      lambda: __import__("gbox.aki_wcw", fromlist=["x"]).revenge_roster(),
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Clay Fighter: Sculptor's Cut (N64): the 16 fighters' sprite frames as sprites entries; slots fighter:<name>
+    ("clayfighter", lambda t, p: ("clay fighter" in t or "clayfighter" in t) and "sculptor" in t and p == "n64",
+     lambda: __import__("gbox.clayfighter_swap", fromlist=["x"]).roster_entries(),
+     lambda ctx, game, e, work: __import__("gbox.clayfighter_swap", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta (GDTE69 rev 0): static model-space meshes from data/sNNNx/*.gpl; rig not decoded yet
@@ -2023,7 +2055,7 @@ def characters_tool(inp: CharIn, ctx):
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
     and files a request | use character=<name> session_id|game: launch/build the swap mod (RE4 GC replaces Leon, SM64 Mario, GTA LCS
     PS2 every Toni outfit, OoT Link both ages or [x, y | slot=<NPC name>] the NPC there, Parasite Eve Aya (all outfits),
-    FF7 Cloud (field + battle)), else the overlay (when the game runs) + a gap report so the writer gets built |
+    FF7 Cloud (field + battle), Clay Fighter SC slot=fighter:<name> (a sprites entry re-draws that fighter)), else the overlay (when the game runs) + a gap report so the writer gets built |
     coverage: per studied game, can gBox rip its characters and reimport any character into it (slots) | swap a=<who> b=<who> session_id (OoT; who = "link", an NPC name or a picture point
     "x,y"): A gets B's model and B gets A's (one_way=true: only A <- B, "play as B") | place character=<name>
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
@@ -2158,6 +2190,10 @@ def characters_tool(inp: CharIn, ctx):
     from . import yukes_sd
     if gid in yukes_sd.GAME_IDS or gid in yukes_sd.SD1_IDS:   # Yuke's SmackDown! 2 (PS1): slot = a wrestler (The Rock)
         return {"result": out | yukes_sd.use(ctx, meta, game, inp)}
+    from . import clayfighter_swap
+    if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
+        # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>
+        return {"result": out | clayfighter_swap.use(ctx, meta, game, inp)}
     from . import pe_swap
     if gid in pe_swap.GAME_IDS and inp.slot == "player":         # Parasite Eve (PS1): Aya, all 5 outfits -> pe_<slug>
         return {"result": out | pe_swap.use(ctx, meta, game, inp)}

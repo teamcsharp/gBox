@@ -91,6 +91,22 @@ class VoiceConfig(BaseModel):
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
 
 
+class RecordingConfig(BaseModel):
+    """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
+    operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
+    enabled: bool = True              # false: no background capture (the recording tool's op=enable switches it per session)
+    seconds: int = 120                # how far back a clip can reach (the ring keeps this much on disk)
+    encoder: str = "auto"             # auto (NVENC when ffmpeg has it, else libx264) | h264_nvenc | hevc_nvenc | libx264
+    max_mb: int = 512                 # disk cap per session's ring; the oldest segments go first
+    fps: int = 30                     # capture rate
+    bitrate_kbps: int = 8000          # capture bitrate (the export re-encodes to the requested file size)
+    idle_s: float = 20.0              # capture runs while pad activity was seen within this long; stops after it
+    segment_s: int = 5                # length of one ring segment (export granularity is finer: the range is trimmed)
+    capture: str = "auto"             # auto (Windows: gdigrab of the game window's screen area; Linux: x11grab of the session display) | gdigrab | ddagrab (Windows, GPU zero-copy, NVENC only) | x11grab
+    priority: str = "low"             # low: ffmpeg below the emulator (Windows below-normal, Linux nice 10) | normal
+    keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
+
+
 class Config(BaseModel):
     data_dir: Path = Path("gbox-data")
     libraries: list[Library] = []
@@ -125,6 +141,7 @@ class Config(BaseModel):
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
+    recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -209,6 +226,11 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # tts_family = "kokoro_tts"       # tts_model / stt_model = explicit GGUF paths when discovery finds none
 # tts_voice = "af_heart"
 # stt_family = "qwen3_asr"
+# [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
+# enabled = true                  # records only while the pad was used in the last idle_s seconds
+# seconds = 120                   # how far back a clip can reach
+# encoder = "auto"                # auto = h264_nvenc when it works on this node, else libx264 (reported in the status)
+# max_mb = 512                    # disk cap per session ring
 
 # [[libraries]]
 # id = "roms"
