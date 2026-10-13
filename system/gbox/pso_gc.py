@@ -47,7 +47,8 @@ def build_body_manifest(disc: gcdisc.GCDisc, cls: str, out_dir: Path | None = No
     slots record the Ninja texture ids so a later writer can bind GVM entries."""
     letter = CLASS_LETTER.get(cls, cls).upper()
     nj = read_body(disc, cls)
-    name = name or f"pso_gc_{CLASSES[ord(letter) - ord('A')].lower()}"
+    idx = ord(letter) - ord("A")
+    name = name or f"pso_gc_{CLASSES[idx].lower() if 0 <= idx < len(CLASSES) else 'pl' + letter.lower()}"
     textures = [""] * 256
     return ninja.to_manifest(nj, name, {
         "game": "Phantasy Star Online Episode I & II Plus (USA) (GC)",
@@ -72,20 +73,26 @@ def export_body(disc_path: Path, cls: str, out_dir: Path) -> Path:
 
 # ---------------------------------------------------------------- texture-list probe (GVM)
 def gvm_list(data: bytes) -> dict:
-    """Parse just the GVMH header: return {size, count, names[]}.  Full GVRT decoding is
-    future work; this proves we can identify the texture archive layout."""
-    if data[:4] != b"GVMH":
+    """Parse just the GVMH header: return {header_size, flags, count, names[]}.  Full GVRT
+    decoding is future work; this proves we can identify the texture archive layout.
+
+    Header: "GVMH", u32 LE header size, u16 BE flags, u16 BE count, then per texture
+    {u16 BE id, char name[28] (flags & 8), u16 format (& 4), u16 dims (& 2), u32 gbix (& 1)}."""
+    if len(data) < 12 or data[:4] != b"GVMH":
         raise ValueError("not a GVM file")
     size = struct.unpack_from("<I", data, 4)[0]
     count = struct.unpack_from(">H", data, 0xA)[0]
+    flags = (data[8] | data[9]) & 0x0F       # entry-field bits; taken from either byte of the u16 flag word
+    end = min(len(data), 8 + size)
+    stride = 2 + (28 if flags & 8 else 0) + (2 if flags & 4 else 0) + (2 if flags & 2 else 0) + (4 if flags & 1 else 0)
+    if 12 + count * stride > end:
+        raise ValueError(f"{count} GVM entries of {stride} bytes overrun the {size}-byte header")
     names = []
     for i in range(count):
-        off = 0xE + i * 0x20
-        if off + 0x20 > 8 + size:
-            break
-        nm = data[off:off + 0x20].split(b"\0")[0].decode("latin-1", "replace")
-        names.append(nm)
-    return {"header_size": size, "count": count, "names": names}
+        off = 12 + i * stride + 2
+        names.append(data[off:off + 28].split(b"\0")[0].decode("latin-1", "replace")
+                     if flags & 8 else f"tex{i}")
+    return {"header_size": size, "flags": flags, "count": count, "names": names}
 
 
 def _selftest():
