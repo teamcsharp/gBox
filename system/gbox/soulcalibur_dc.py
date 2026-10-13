@@ -294,7 +294,8 @@ def parse_model(m: bytes) -> dict:
             raise ValueError(f"bone {i}: parent {parent} is not an earlier bone")
         if stores + adds != npos or voff + 16 * (npos + nnrm) > len(m):
             raise ValueError(f"bone {i}: vertex block out of range")
-        rows = np.frombuffer(m, "<f4", (npos + nnrm) * 4, voff).reshape(-1, 4).astype(np.float64)
+        with np.errstate(invalid="ignore"):         # Ivy's chain-blade normals hold 0x7fbfffff placeholders
+            rows = np.frombuffer(m, "<f4", (npos + nnrm) * 4, voff).reshape(-1, 4).astype(np.float64)
         wbits = np.frombuffer(m, "<u4", (npos + nnrm) * 4, voff).reshape(-1, 4)[:, 3].astype(np.int64)
         weight = np.frombuffer((wbits & ~0xFFF).astype("<u4").tobytes(), "<f4").astype(np.float64)
         bones.append({"index": i, "stores": stores, "adds": adds, "vertex_offset": voff, "extra_offset": xoff,
@@ -371,7 +372,7 @@ def skin(model: dict, world: list[np.ndarray] | None = None) -> dict:
             else:
                 P[s] += w[r] * q[r]
             infl[s][b["index"]] = infl[s].get(b["index"], 0.0) + float(w[r])
-        n = rows[k:] @ W[:3, :3].T
+        n = np.nan_to_num(rows[k:], nan=0.0, posinf=0.0, neginf=0.0) @ W[:3, :3].T
         for r in range(len(n)):
             N[int(slot[k + r])] += w[k + r] * n[r]
     N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
@@ -405,6 +406,7 @@ def mesh_arrays(model: dict, sk: dict, frame: np.ndarray = FRAME) -> dict:
     """Unique corners per material: {material: {pos, nrm, uv, joints, weights, tris}} in the library frame."""
     P = sk["positions"] @ frame.T
     N = -sk["normals"] @ frame.T                     # stored normals point inward (lit as -N); outward here
+    N[np.linalg.norm(N, axis=1) < 0.5] = (0.0, 1.0, 0.0)   # placeholder rows (no normal) -> a unit default
     flip = np.linalg.det(frame) < 0
     out: dict[int, dict] = {}
     for sec in model["sections"]:
@@ -546,7 +548,10 @@ def roles(model: dict) -> dict[str, int]:
         raise ValueError("not a fighter skeleton (bones 0..17 differ from the shared motion skeleton)")
     out = dict(CORE_ROLES)
     kids = [b for b in bones if b["parent"] == 2 and b["positions"]]
-    out["head"] = max(kids, key=lambda b: b["positions"])["index"] if kids else 2
+    if kids:
+        out["head"] = max(kids, key=lambda b: b["positions"])["index"]
+    else:                                         # head and neck are one bone (Voldo, Yoshimitsu, Inferno, Rock 1P)
+        out["head"] = out.pop("neck")
     return out
 
 
@@ -611,6 +616,25 @@ def export(human: bytes, group: int, costume: int, out: Path, name: str, weapon:
     world = list(sk["world"])
     parents = glb_parents(body["bones"])
     names = bone_names(body)
+    if "neck" not in rl:                          # head and neck are one bone: export a head joint above the neck
+        neck = rl["head"]
+        rows = [i for i, inf in enumerate(sk["influences"]) if inf.get(neck, 0) > 0]
+        ys = sk["positions"][rows, 1]
+        y0 = float(world[neck][1, 3])
+        split = y0 + 0.3 * (float(ys.max()) - y0)
+        hw = world[neck].copy()
+        hw[1, 3] = split
+        head = len(bones)
+        bones.append({"index": head, "parent": neck, "positions": 0})
+        world.append(hw)
+        parents.append(neck)
+        names[neck] = "neck"
+        names.append("head")
+        for i in rows:
+            if sk["positions"][i, 1] > split:
+                inf = sk["influences"][i]
+                inf[head] = inf.pop(neck)
+        rl = dict(rl, neck=neck, head=head)
     parts = [{"arrays": mesh_arrays(body, sk), "pages": list(range(len(pages)))}]
     weapon_info = None
     wlist = weapons_of(entries, group)
@@ -657,3 +681,96 @@ def export(human: bytes, group: int, costume: int, out: Path, name: str, weapon:
     return {"glb": glb, "roles": {r: names[j] for r, j in rl.items()}, "role_bones": rl, "bones": len(body["bones"]),
             "triangles": tris, "positions": len(sk["positions"]), "pages": len(cp["pages"]), "weapon": weapon_info,
             "model_bytes": len(cp["model"])}
+
+
+# ---------------------------------------------------------------- the collection (characters.DEDICATED "soulcalibur")
+
+def slug_of(name: str) -> str:
+    return "sc_" + "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+
+
+def roster() -> list[dict]:
+    """One entry per selectable fighter (the 1P costume, its first weapon attached)."""
+    return [{"key": key, "slug": slug_of(name), "name": name, "kind": "character",
+             "aliases": [name, f"SoulCalibur {name}", f"{name} (SoulCalibur)", f"fighter:{key}", *aliases],
+             "group": g, "costume": 0} for g, key, name, aliases in FIGHTERS]
+
+
+def _gdi(ctx, game) -> Path:
+    from . import characters as C
+    return C._dc_gdi(ctx, game)
+
+
+def extract_run(ctx, game: dict, e: dict, work) -> dict:
+    """characters op=collect / extract: the fighter's costume as a rigged, textured GLB (+ its weapon at the hands)."""
+    from .gdrom import GDRom
+    gdi = _gdi(ctx, game)
+    disc = GDRom(str(gdi))
+    exe = disc.read("1ST_READ.BIN")
+    human = disc.read(HUMAN)
+    g, key, name = fighter(e["key"])
+    costume = int(e.get("costume") or 0)
+    work = Path(work)
+    r = export(human, g, costume, work / f"{e['slug']}.glb", e["slug"],
+               extras={"source": "SoulCalibur (DC, T-1401N) HUMAN.DAT", "fighter": name, "costume": costume,
+                       "entry": g * GROUP + costume, "units": "model units (about metres; Mitsurugi 1.83)",
+                       "frame": "left +X, up +Y, facing +Z (the game's left-handed space mirrored on X)"})
+    manifest = {"fighter": name, "key": key, "entry": g * GROUP + costume, "costume": costume,
+                "bones": r["bones"], "triangles": r["triangles"], "positions": r["positions"], "pages": r["pages"],
+                "weapon": r["weapon"], "roles": r["roles"], "reader": "gbox.soulcalibur_dc", "reader_version": READER_VERSION,
+                "executable_sha256": hashlib.sha256(exe).hexdigest(),
+                "human_sha256": hashlib.sha256(human).hexdigest()}
+    (work / "manifest.json").write_text(json.dumps(manifest, indent=1, default=str), encoding="utf-8")
+    return {"files": [r["glb"], work / "manifest.json"], "tool": "gbox.soulcalibur_dc",
+            "source_files": [HUMAN], "roles": r["roles"],
+            "extra": {"sc_reader": READER_VERSION, "slot": f"fighter:{key}", "costume": costume,
+                      "weapon": r["weapon"]},
+            "notes": f"{name}: {r['triangles']} triangles on the shared fighter skeleton ({r['bones']} bones), "
+                     f"{r['pages']} YUV422 pages, weapon entry {(r['weapon'] or {}).get('entry')} attached at the "
+                     "hands (rest placement; the motion places it in game). Rest pose from the model's bone records."}
+
+
+def coverage(human: bytes) -> dict:
+    """Every costume and weapon of every fighter decoded: counts per fighter."""
+    entries = olnk(human)
+    out = []
+    for g, key, name, _a in FIGHTERS:
+        row = {"fighter": name, "key": key, "costumes": [], "weapons": []}
+        for c in costumes_of(entries, g):
+            m = parse_model(costume_parts(entries[g * GROUP + c])["model"])
+            sk = skin(m)
+            row["costumes"].append({"costume": c, "bones": len(m["bones"]), "positions": len(sk["positions"]),
+                                    "triangles": sum(len(s["pos"]) - 2 for sec in m["sections"] for s in sec),
+                                    "roles": len(roles(m)) + (0 if "neck" in roles(m) else 1)})
+        for w in weapons_of(entries, g):
+            m = parse_model(weapon_parts(entries[g * GROUP + w])["model"])
+            row["weapons"].append({"slot": w, "parts": len(m["bones"]),
+                                   "triangles": sum(len(s["pos"]) - 2 for sec in m["sections"] for s in sec)})
+        out.append(row)
+    return {"fighters": out, "costumes": sum(len(r["costumes"]) for r in out),
+            "weapons": sum(len(r["weapons"]) for r in out)}
+
+
+def main(argv=None) -> int:
+    """python -m gbox.soulcalibur_dc DISC.gdi OUT [fighter ...]   (or a HUMAN.DAT instead of the GDI)"""
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) < 2:
+        print(main.__doc__)
+        return 2
+    src, out = Path(argv[0]), Path(argv[1])
+    if src.suffix.lower() == ".gdi":
+        from .gdrom import GDRom
+        human = GDRom(str(src)).read(HUMAN)
+    else:
+        human = src.read_bytes()
+    keys = argv[2:] or [k for _g, k, _n, _a in FIGHTERS]
+    for k in keys:
+        g, key, name = fighter(k)
+        r = export(human, g, 0, out / f"{slug_of(name)}.glb", slug_of(name))
+        print(f"{name}: {r['triangles']} triangles, {r['bones']} bones, weapon {r['weapon'] and r['weapon']['entry']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

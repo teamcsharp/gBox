@@ -118,6 +118,22 @@ KNOWN_TITLES = [
                  "texture": "4bpp twiddled parts + ARGB4444 palettes", "animation": "cells + hitboxes (2D)"},
      "techniques": [T_PAT, T_RT], "files": [("PL00_DAT.BIN", None, []), ("PL00_FAC.BIN", None, []), ("1ST_READ.BIN", None, [])],
      "strings": [], "effort": "2026-10-11 -> 2026-10-12 (#1315), PRs #126 #175"},
+    {"id": "soulcalibur_dc", "title": "SoulCalibur (Dreamcast, USA)", "platform": "dreamcast",
+     "title_has": ["soulcalibur", "soul calibur"], "engines": ["namco_dc"], "reader": "gbox.soulcalibur_dc",
+     "formats": {"container": "*.DAT olnk archives (u32 count, 'olnk', header, size; (offset, size) pairs) of counted "
+                              "tables (u32 n, header, end offsets, '32byte' padding)",
+                 "codec": "Namco LZ (0x8c0ee76c): LSB-first flag byte with sentinel, BE u16 tokens (5-bit count, "
+                          "11-bit back reference)",
+                 "model": "accumulation-skinned bone records (store / add rows, weight's low 12 mantissa bits = "
+                          "output slot) + strips (bf16 UVs)",
+                 "texture": "256x256 YUV422 twiddled pages (no header)",
+                 "skeleton": "shared 18-bone motion skeleton (two roots) + cloth / face bones; rest angles in the records",
+                 "animation": "group entry 4 (not read)"},
+     "techniques": [T_STR, T_PAT, T_RT],
+     "files": [("HUMAN.DAT", "olnk", []), ("STAGE.DAT", "olnk", []), ("CDATA.DAT", "olnk", []),
+               ("VCSEL.DAT", "olnk", []), ("1ST_READ.BIN", None, [])],
+     "strings": ["human%1x%02x.dat", "buki%1x%02x.dat", "HUMAN MEMORY OVER!", "P0 MODEL WORK ADDRESS=%p"],
+     "effort": "2026-10-13, one session (operator request after #1652)"},
     {"id": "shenmue_dc", "title": "Shenmue (Dreamcast)", "platform": "dreamcast", "title_has": ["shenmue"],
      "engines": ["sega_am2"], "reader": "gbox.shenmue_mt5",
      "formats": {"container": ".PKS/.PKF (gzip; PAKS/IPAC, PAKF/TEXN)", "codec": "gzip", "model": "MT5/HRCM",

@@ -537,6 +537,12 @@ def patch_random_costume(exe: bytes) -> bytes:
     """1ST_READ.BIN with the random costume hook (refuses any executable but the verified USA one)."""
     if hashlib.sha256(exe).hexdigest() != D.EXECUTABLE_SHA256:
         raise ValueError("unsupported SoulCalibur executable; the patch addresses are for T-1401N 1ST_READ.BIN")
+    return apply_random_costume(exe)
+
+
+def apply_random_costume(exe: bytes) -> bytes:
+    """The hook written into any image that holds the stock site and free caves (patch_random_costume checks the
+    executable's identity first)."""
     out = bytearray(exe)
     if out[LOADER_SITE - BASE:LOADER_SITE - BASE + 4] != STOCK_SITE:
         raise ValueError("loader site does not hold the stock instructions")
@@ -611,3 +617,317 @@ def simulate_random_patch(exe: bytes, costume: int, tcnt: int) -> int:
             continue
         pc = nxt
     raise RuntimeError("patch did not return to the loader")
+
+
+# ---------------------------------------------------------------- plans and builds
+
+SA2 = ["sonic", "sa2_amy_rose", "sa2_chaos_0", "sa2_dr_eggman", "sa2_knuckles", "sa2_metal_sonic", "sa2_rouge",
+       "sa2_shadow", "sa2_super_shadow", "sa2_super_sonic", "sa2_tails", "sa2_tikal"]
+SM64DS = ["sm64ds_mario", "sm64ds_luigi", "sm64ds_wario", "sm64ds_yoshi", "sm64ds_metal_wario", "sm64ds_peach",
+          "sm64ds_bowser", "sm64ds_koopa_troopa", "sm64ds_ukiki"]
+# Sonic vs Mario: costume 0 (and 2) a Sonic Adventure 2 character, costume 1 (and 3) a Super Mario 64 DS one, each
+# fighter's pair picked to suit it (Lizardman -> Yoshi, Astaroth / Nightmare -> Bowser, Siegfried -> the metal ones)
+SONIC_VS_MARIO = {
+    "MIT": ["sonic", "sm64ds_mario"], "SEU": ["sa2_amy_rose", "sm64ds_peach"], "TAK": ["sa2_rouge", "sm64ds_yoshi"],
+    "MAX": ["sa2_shadow", "sm64ds_luigi", "sa2_tails"], "VOL": ["sa2_chaos_0", "sm64ds_koopa_troopa", "sa2_tikal",
+                                                                 "sm64ds_mario"],
+    "SOP": ["sa2_tikal", "sm64ds_peach", "sa2_amy_rose"], "SIE": ["sa2_metal_sonic", "sm64ds_metal_wario",
+                                                                  "sa2_super_sonic"],
+    "ROC": ["sa2_knuckles", "sm64ds_wario"], "HWA": ["sa2_super_sonic", "sm64ds_luigi"],
+    "IVY": ["sa2_rouge", "sm64ds_peach"], "KIL": ["sa2_tails", "sm64ds_luigi"],
+    "XIA": ["sa2_amy_rose", "sm64ds_mario", "sa2_tails"], "LIZ": ["sa2_chaos_0", "sm64ds_yoshi"],
+    "YOS": ["sa2_super_shadow", "sm64ds_ukiki"], "EDG": ["sa2_dr_eggman", "sm64ds_wario"],
+    "NIG": ["sa2_shadow", "sm64ds_bowser"], "AST": ["sa2_dr_eggman", "sm64ds_bowser"],
+    "INF": ["sa2_super_shadow", "sm64ds_metal_wario", "sonic"], "CER": ["sa2_knuckles", "sm64ds_koopa_troopa"],
+}
+
+
+def franchise(slug: str) -> str:
+    return "SM64DS" if slug.startswith("sm64ds_") else "SA2" if slug in SA2 else "other"
+
+
+def plan_costumes(human: bytes, assignments: dict[str, list[str]]) -> list[dict]:
+    """[{fighter, costume, entry, character}] for every costume slot a fighter has on the disc (extra donors in the
+    assignment beyond the disc's costumes are dropped; missing ones repeat the fighter's list)."""
+    entries = D.olnk(human)
+    rows = []
+    for key, donors in assignments.items():
+        g, k, name = D.fighter(key)
+        if not donors:
+            continue
+        for i, c in enumerate(D.costumes_of(entries, g)):
+            rows.append({"fighter": k, "name": name, "costume": c, "entry": g * D.GROUP + c,
+                         "character": donors[i % len(donors)]})
+    return rows
+
+
+def build_roster(gdi, donors_root, out_dir, name: str, plan: list[dict], *, random_select: bool = True,
+                 progress=lambda p, m: None) -> dict:
+    """One copied GD-ROM: every planned costume rebuilt with its donor, the random costume hook in 1ST_READ.BIN,
+    everything read back before the marker is written."""
+    from .gdrom import GDRom, patch_gdi
+    from . import fit_events as FE
+    import tempfile
+    disc = GDRom(gdi)
+    human = disc.read(D.HUMAN)
+    exe = disc.read("1ST_READ.BIN")
+    if hashlib.sha256(exe).hexdigest() != D.EXECUTABLE_SHA256:
+        raise ValueError("unsupported SoulCalibur executable (the writer is verified on T-1401N USA)")
+    entries = D.olnk(human)
+    FE.plan([(f"fighter:{r['fighter']}:{r['costume']}", r["character"],
+              f"{r['character']} -> {r['name']} (costume {r['costume']})") for r in plan])
+    changes, reports, failures = {}, [], []
+    with tempfile.TemporaryDirectory(prefix="gbox-sc-") as work:
+        for i, row in enumerate(plan):
+            progress(80 * i / max(len(plan), 1), f"{row['name']} costume {row['costume']}: {row['character']}")
+            FE.model(f"fighter:{row['fighter']}:{row['costume']}")
+            donor_dir = Path(donors_root) / row["character"]
+            try:
+                new, rep = fit_and_build(entries[row["entry"]], donor_dir, f"fighter:{row['fighter']}",
+                                         Path(work))
+            except Exception as error:                     # noqa: BLE001 - one costume's failure leaves it stock
+                failures.append(row | {"error": f"{type(error).__name__}: {error}"[:300]})
+                FE.stage("write", "failed", {"error": str(error)[:150]})
+                continue
+            changes[row["entry"]] = new
+            reports.append(row | {k: v for k, v in rep.items() if k != "fit"} |
+                           {"fit": {k: rep["fit"].get(k) for k in ("scale", "head_scale", "limb_stretch", "donor",
+                                                                    "max_influences", "model_sha256",
+                                                                    "retarget_profile_digest")}})
+    human2 = replace_entries(human, changes)
+    files = {D.HUMAN: human2}
+    if random_select:
+        files["1ST_READ.BIN"] = patch_random_costume(exe)
+    progress(85, "Writing the GD-ROM copy")
+    image = patch_gdi(gdi, out_dir, name, files, progress)
+    verification = verify_build(image, gdi, files, plan, changes)
+    if not verification["ok"]:
+        raise AssertionError(f"build read-back failed: {verification['problems'][:5]}")
+    for r in plan:
+        if r["entry"] in changes:
+            FE.model(f"fighter:{r['fighter']}:{r['costume']}")
+            FE.stage("write", data={"mod": name, "entry": r["entry"], "bytes": len(changes[r["entry"]])})
+    return {"image": Path(image), "reports": reports, "failures": failures, "verification": verification,
+            "random_select": verify_random_patch(files["1ST_READ.BIN"]) if random_select else None}
+
+
+def verify_build(image, source_gdi, files: dict[str, bytes], plan: list[dict], changes: dict[int, bytes]) -> dict:
+    """Read the written image back: the two files byte for byte, every entry of HUMAN.DAT (rebuilt ones parse,
+    skin and carry the planned triangles; the rest are the stock bytes), the patch in 1ST_READ.BIN, and every
+    other file on the disc unchanged."""
+    from .gdrom import GDRom
+    new, old = GDRom(image), GDRom(source_gdi)
+    problems = []
+    for key, data in files.items():
+        if new.read(key) != data:
+            problems.append(f"{key} differs from the planned bytes")
+    for key in old.files:
+        if key not in files and new.read(key) != old.read(key):
+            problems.append(f"{key} changed")
+    human_new, human_old = D.olnk(new.read(D.HUMAN)), D.olnk(old.read(D.HUMAN))
+    models = []
+    for i, (a, b) in enumerate(zip(human_new, human_old)):
+        if i in changes:
+            try:
+                cp = D.costume_parts(a)
+                m = D.parse_model(cp["model"])
+                sk = D.skin(m)
+                tris = sum(len(s["pos"]) - 2 for sec in m["sections"] for s in sec)
+                models.append({"entry": i, "triangles": tris, "positions": len(sk["positions"]),
+                               "finite": bool(np.isfinite(sk["positions"]).all())})
+                if not np.isfinite(sk["positions"]).all():
+                    problems.append(f"entry {i}: non-finite skinned positions")
+                stock = D.costume_parts(b)["model"]
+                end = D.parse_model(stock)["strips_end"]
+                if len(cp["model"]) != len(stock) or cp["model"][end:] != stock[end:]:
+                    problems.append(f"entry {i}: model tail moved")
+                if m["strips_end"] > end:
+                    problems.append(f"entry {i}: strips run into the tail")
+            except Exception as error:                     # noqa: BLE001 - every failure is a reported problem
+                problems.append(f"entry {i}: {error}")
+        elif a != b:
+            problems.append(f"entry {i} changed without a plan row")
+    patch = verify_random_patch(new.read("1ST_READ.BIN")) if "1ST_READ.BIN" in files else None
+    if patch is not None and not patch["patched"]:
+        problems.append("random costume hook missing")
+    if patch is not None:
+        exe = new.read("1ST_READ.BIN")
+        patch["simulated"] = {f"{c}:{t:#x}": simulate_random_patch(exe, c, t)
+                              for c in (0, 1, 2) for t in (0x0, 0x1, 0x100, 0x12345, 0xFFFF0001)}
+    return {"ok": not problems, "problems": problems, "models": models, "random_select": patch,
+            "entries_rebuilt": len(changes), "entries_total": len(human_new)}
+
+
+def marker(name: str, game_id: str, image: Path, plan: list[dict], result: dict, title: str) -> dict:
+    """The .gbox-mod.json record (the DOA2 roster mods' fields)."""
+    roster = {}
+    for r in plan:
+        roster.setdefault(r["fighter"], {"fighter": r["fighter"], "name": r["name"], "pool": []})
+        roster[r["fighter"]]["pool"].append({"costume": r["costume"], "character": r["character"],
+                                             "franchise": franchise(r["character"]),
+                                             "built": not any(f["entry"] == r["entry"] for f in result["failures"])})
+    for v in roster.values():
+        v["character"] = v["pool"][0]["character"]
+        v["franchise"] = v["pool"][0]["franchise"]
+    chars = sorted({r["character"] for r in plan})
+    return {"name": name, "game_id": game_id, "image": Path(image).name, "character": ",".join(chars),
+            "files": [D.HUMAN, "1ST_READ.BIN"] if result.get("random_select") else [D.HUMAN],
+            "report": {"costumes": result["reports"], "failures": result["failures"], "gameplay_verified": False},
+            "writer_sha256": writer_fingerprint(), "profile_digest": "", "gameplay_verified": False,
+            "roster": list(roster.values()), "title": title,
+            "cast_source": "Sonic Adventure 2 (USA) + Super Mario 64 DS (USA)", "cast_mapping": "mixed_random",
+            "random_select": ({"patch": "gbox.soulcalibur_swap.patch_random_costume", "hook": f"0x{LOADER_SITE:08x}",
+                               "caves": [f"0x{CAVE_A:08x}", f"0x{CAVE_B:08x}"],
+                               "rule": "costume 0 or 1 -> bit 0 of TCNT0 ^ TCNT0>>8 ^ TCNT0>>16 at each fighter load; "
+                                       "costumes 2 and 3 (extra costumes) are kept"}
+                              if result.get("random_select") else None),
+            "verification": {k: v for k, v in result["verification"].items() if k != "models"},
+            "verified_in_game": False}
+
+
+# ---------------------------------------------------------------- gBox routes (characters op=use, cast swap)
+
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: every selectable fighter (all its costumes take the donor)."""
+    return [{"slot": f"fighter:{key}", "name": name, "kind": "fighter", "size": FIGHTER_SIZE.get(key, 1.0),
+             "writer": "gbox.soulcalibur_swap"} for _g, key, name, _a in D.FIGHTERS]
+
+
+def _plan_from_pairs(human: bytes, pairs: list[tuple[str, str]]) -> list[dict]:
+    """[(slot, donor slug)] -> plan rows: 'fighter:MIT' fills every costume, 'fighter:MIT:1' one costume."""
+    entries = D.olnk(human)
+    rows, seen = [], set()
+    for slot, slug in pairs:
+        key, costume = fighter_slot(slot)
+        g, k, name = D.fighter(key)
+        for c in ([costume] if costume is not None else D.costumes_of(entries, g)):
+            if not entries[g * D.GROUP + c]:
+                raise ValueError(f"{name} has no costume {c}")
+            if (k, c) in seen:
+                raise ValueError(f"{name} costume {c} was assigned twice")
+            seen.add((k, c))
+            rows.append({"fighter": k, "name": name, "costume": c, "entry": g * D.GROUP + c, "character": slug})
+    return rows
+
+
+def _write_marker(out: Path, name: str, game_id: str, plan, res, title: str, extra: dict | None = None) -> dict:
+    rec = marker(name, game_id, res["image"], plan, res, title) | (extra or {})
+    Path(out, "build-report.json").write_text(json.dumps(res["reports"], indent=1, default=str), encoding="utf-8")
+    Path(out, "verification.json").write_text(json.dumps(res["verification"], indent=1, default=str),
+                                              encoding="utf-8")
+    Path(out, ".gbox-mod.json").write_text(json.dumps(rec, default=str), encoding="utf-8")      # written last
+    return rec
+
+
+def build_cast(ctx, game: dict, pairs, name: str, *, random_select: bool = False) -> dict:
+    """cast_swap pairs [(slot, meta)] -> one disc (every slot's costumes rebuilt), per-slot status."""
+    from . import characters as C, filemods
+    from .gdrom import GDRom
+    gdi = C._dc_gdi(ctx, game)
+    human = GDRom(str(gdi)).read(D.HUMAN)
+    plan = _plan_from_pairs(human, [(s, m["slug"]) for s, m in pairs])
+    out = filemods.mod_dir(ctx.config, game["game_id"], name)
+    res = build_roster(gdi, C.library_root(ctx.config), out, name, plan, random_select=random_select,
+                       progress=ctx.progress)
+    _write_marker(out, name, game["game_id"], plan, res, f"{game.get('title', 'SoulCalibur')}: cast swap {name}")
+    failed = {f["fighter"] for f in res["failures"]}
+    return {"mod": name, "slots": {s: ({"status": "partial" if fighter_slot(s)[0] in failed and any(
+        r["fighter"] == fighter_slot(s)[0] for r in res["reports"]) else "failed" if fighter_slot(s)[0] in failed
+        else "built"}) for s, _m in pairs}, "detail": {"failures": res["failures"]}}
+
+
+def use_roster(ctx, meta, game, inp) -> dict:
+    """slot='roster' / 'sonic vs mario': every fighter's costumes from `pairs` (or the Sonic vs Mario plan) in one
+    disc; random_select (default on) adds the random costume hook so each load picks costume 0 or 1 at random."""
+    from . import characters as C, filemods
+    from .gdrom import GDRom
+    gdi = C._dc_gdi(ctx, game)
+    human = GDRom(str(gdi)).read(D.HUMAN)
+    pairs = [(str(p.get("slot") or ""), str(p.get("character") or "")) for p in (inp.pairs or [])]
+    plan = _plan_from_pairs(human, pairs) if pairs else plan_costumes(human, SONIC_VS_MARIO)
+    digest = hashlib.sha256(json.dumps([(r["entry"], r["character"]) for r in plan]).encode()).hexdigest()[:8]
+    name = "sc_sonic_vs_mario_random" if not pairs else f"sc_roster_{digest}"
+    out = filemods.mod_dir(ctx.config, game["game_id"], name)
+    try:
+        cached = json.loads((out / ".gbox-mod.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cached = {}
+    result = None
+    if inp.rebuild or cached.get("writer_sha256") != writer_fingerprint():
+        res = build_roster(gdi, C.library_root(ctx.config), out, name, plan, random_select=True,
+                           progress=ctx.progress)
+        _write_marker(out, name, game["game_id"], plan, res,
+                      f"{game.get('title', 'SoulCalibur')}: Sonic Adventure 2 vs Super Mario 64 DS, random costume")
+        result = {"built": len(res["reports"]), "failures": res["failures"], "verification": res["verification"]["ok"]}
+        for slug in sorted({r["character"] for r in plan}):
+            C._api(ctx, "POST", f"/api/characters/{slug}/targets",
+                   json={"game_id": game["game_id"], "slot": "roster", "mod": name, "nodes": [C.HOST_OS],
+                         "notes": "SoulCalibur roster build (random costume hook). Gameplay verification required."})
+    launch = C._launch(ctx, game["game_id"], name, C.HOST_OS) if inp.launch else None
+    return {"status": "built_unverified", "mod": name, "build": result, "launch": launch, "gameplay_verified": False,
+            "replacement_kind": "native_rom",
+            "roster": [{"fighter": r["fighter"], "costume": r["costume"], "character": r["character"]} for r in plan]}
+
+
+def use(ctx, meta, game, inp) -> dict:
+    """characters op=use on SoulCalibur: slot 'fighter:<name>[:<costume>]' (every costume when none is given), or
+    'roster' for the whole cast with the random costume hook."""
+    from . import characters as C, filemods
+    from .gdrom import GDRom
+    if (inp.slot or "").strip().casefold() in ("roster", "cast", "everyone", "all fighters", "sonic vs mario", "random"):
+        return use_roster(ctx, meta, game, inp)
+    key, costume = fighter_slot(inp.slot or "")
+    name = f"sc_{key.lower()}{'' if costume is None else costume}_{meta['slug']}"
+    out = filemods.mod_dir(ctx.config, game["game_id"], name)
+    try:
+        cached = json.loads((out / ".gbox-mod.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cached = {}
+    result = None
+    if inp.rebuild or cached.get("writer_sha256") != writer_fingerprint():
+        gdi = C._dc_gdi(ctx, game)
+        human = GDRom(str(gdi)).read(D.HUMAN)
+        plan = _plan_from_pairs(human, [(inp.slot, meta["slug"])])
+        res = build_roster(gdi, C.library_root(ctx.config), out, name, plan, random_select=False,
+                           progress=ctx.progress)
+        if not res["reports"]:
+            raise ValueError(f"no costume could take {meta['slug']}: {res['failures'][:2]}")
+        _write_marker(out, name, game["game_id"], plan, res, f"{game.get('title', 'SoulCalibur')}: {meta['name']} as {key}")
+        result = {"built": len(res["reports"]), "failures": res["failures"]}
+        C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
+               json={"game_id": game["game_id"], "slot": f"fighter:{key}" + ("" if costume is None else f":{costume}"),
+                     "mod": name, "nodes": [C.HOST_OS],
+                     "notes": "Native SoulCalibur costume rebuild; fighter motions and weapons kept. Gameplay "
+                              "verification required."})
+    launch = C._launch(ctx, game["game_id"], name, C.HOST_OS) if inp.launch else None
+    return {"status": "built_unverified", "mod": name, "build": result, "fighter": key, "costume": costume,
+            "launch": launch, "gameplay_verified": False, "replacement_kind": "native_rom"}
+
+
+def main(argv=None) -> int:
+    """python -m gbox.soulcalibur_swap build GDI DONORS_ROOT OUT_DIR NAME [--no-random]"""
+    import argparse
+    ap = argparse.ArgumentParser(prog="gbox.soulcalibur_swap")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    b = sub.add_parser("build")
+    b.add_argument("gdi")
+    b.add_argument("donors")
+    b.add_argument("out")
+    b.add_argument("name")
+    b.add_argument("--game-id", default="c747331797369f74")
+    b.add_argument("--no-random", action="store_true")
+    a = ap.parse_args(argv)
+    from .gdrom import GDRom
+    human = GDRom(a.gdi).read(D.HUMAN)
+    plan = plan_costumes(human, SONIC_VS_MARIO)
+    res = build_roster(a.gdi, a.donors, a.out, a.name, plan, random_select=not a.no_random,
+                       progress=lambda p, m: print(f"{p:5.1f}% {m}", flush=True))
+    _write_marker(Path(a.out), a.name, a.game_id, plan, res,
+                  "SoulCalibur (USA): Sonic Adventure 2 vs Super Mario 64 DS, random costume on every fighter load")
+    print(json.dumps({"image": str(res["image"]), "built": len(res["reports"]), "failed": res["failures"],
+                      "ok": res["verification"]["ok"]}, default=str))
+    return 0 if res["verification"]["ok"] and not res["failures"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

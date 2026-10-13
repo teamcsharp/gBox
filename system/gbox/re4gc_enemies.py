@@ -241,8 +241,12 @@ def write_rigged_gltf(prims: list[dict], tmpl: R.Bin, path: Path, name: str = "e
 # ---------------------------------------------------------------- building
 def blender_exe() -> str | None:
     import glob
+    import shutil
     cands = sorted(glob.glob("C:/Users/maste/Desktop/Blender Builds/Builds/stable/blender-4.5*/blender.exe")) + \
         sorted(glob.glob("/usr/bin/blender"))
+    if not cands:                                          # a standard Windows install, or blender on PATH
+        cands = sorted(glob.glob("C:/Program Files/Blender Foundation/Blender */blender.exe")) + \
+            [p for p in [shutil.which("blender")] if p]
     return cands[-1] if cands else None
 
 

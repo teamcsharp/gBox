@@ -197,6 +197,20 @@ Each technique has a playbook of the same id in `gbox/re_seeds.py`.
   - Technique: header-invariant analysis.
   - Status: probe stage. PRs #126 #153.
 
+### SoulCalibur (Dreamcast, USA)
+
+- **Formats:** `*.DAT` olnk archives of counted tables, plus a Namco LZ codec. Fighters are accumulation-skinned
+  models: the weight's low 12 mantissa bits hold the output slot, and the first bone stores while the rest add. Pages
+  are 256x256 YUV422 twiddled. The voice banks are AICA SOSB/SOSP/SOSD with ADPCM. The executable's strings
+  (`human%1x%02x.dat`, `buki%1x%02x.dat`, `HUMAN MEMORY OVER!`) led to the HUMAN loader `0x8c02e37a`.
+- **Technique:** `string-xref-loader` plus `instruction-pattern`. Ghidra headless, SH-4 at `0x8c010000`. A literal
+  pool scan for the `olnk`/`SOSB` magics found the archive loader and the sound driver. The loader's callees then led
+  to the LZ codec `0x8c0ee76c` and the model relocation. The disc, all 45 costumes and the writer were proved by round
+  trip (`round-trip-proof`), and the GD-ROM CHD (v4, `CHT2`) is unpacked by `chd.write_gdi` without chdman.
+- **Effort:** one session, 2026-10-13. Reader `gbox.soulcalibur_dc`, writer `gbox.soulcalibur_swap`, docs
+  `docs/soulcalibur_dc.md`. `assimilate op=fingerprint` on the disc names `gbox.soulcalibur_dc` as nearest
+  (olnk x10).
+
 ## GameCube and Wii
 
 ### Crazy Taxi (GameCube)
