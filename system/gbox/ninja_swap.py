@@ -90,8 +90,11 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
 
 def split_nodes(prims: list[dict], tgt: dict) -> dict:
     """Un-indexed prims (world positions in the bind pose, joint per vertex in J[:, 0]) -> {node: (pos, nrm,
-    [((i0, i1, i2), ((u, v) x3))])} in node space, one vertex per position within a node."""
+    [((i0, i1, i2), ((u, v) x3))])} in node space, one vertex per position within a node. tgt["collapse"] {joint:
+    node}: geometry fitted to a joint the game can't draw from (a marker node, a virtual limb end: gbox.pso_enemy)
+    is stored on that node instead."""
     inv = [np.linalg.inv(w) for w in tgt["W"]]
+    collapse = tgt.get("collapse") or {}
     out: dict = {}
     keys: dict = {}
     for p in prims:
@@ -99,6 +102,7 @@ def split_nodes(prims: list[dict], tgt: dict) -> dict:
         J = np.asarray(p["J"]).reshape(len(P), -1)[:, 0]
         for t in np.asarray(p["tris"]).reshape(-1, 3):
             j = int(np.bincount(J[t]).argmax())
+            j = int(collapse.get(j, j))
             M = inv[j]
             pos, nrm, tris = out.setdefault(j, ([], [], []))
             kk = keys.setdefault(j, {})

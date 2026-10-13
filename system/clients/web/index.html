@@ -1607,7 +1607,7 @@ async function examineAfter(sid) {
     const c = EXAM.cache[sid]; if (!c?.glb) return;
     $("#ex_blmsg").textContent = "Copying to Blender…";
     try { const r = await blenderCopy({ artifact: c.glb, nodes }, sid); if (!current()) return;
-          $("#ex_blmsg").textContent = `✓ ${r.objects} object(s), ${r.triangles} triangles, ${r.packed} texture(s): press Ctrl+V in Blender's 3D viewport`; }
+          $("#ex_blmsg").textContent = `✓ ${r.objects} object(s) ${blenderCopyNote(r)}`; }
     catch (e) { if (current()) $("#ex_blmsg").textContent = "✗ " + e.message; }
   };
   $("#ex_blsel").onclick = () => EXAM.picked && toBlender([EXAM.picked]);
@@ -2081,7 +2081,7 @@ async function wbInit() {
       const L = m.calls.find(c => c.tool === "@launch").input;
       st.textContent = "copying to Blender…";
       try { const r = await blenderCopy({ mod: L.mod, game_id: L.game_id || m.game_id }, sid);
-            st.textContent = `on Blender's clipboard: ${r.triangles} triangles, ${r.packed} textures (Ctrl+V in its viewport)`; }
+            st.textContent = "✓ " + blenderCopyNote(r); }
       catch (err) { st.textContent = "✗ " + err.message.slice(0, 120); st.title = err.message; }
     } else if (e.target.closest("button[data-romx]")) {
       const b = e.target.closest("button[data-romx]"); b.disabled = true; st.textContent = "Export ROM hack: starting…"; st.title = "";
@@ -2197,7 +2197,7 @@ async function charsInit() {
       finally { hg.disabled = false; } return; }
     const bl = e.target.closest("button[data-bl]");
     if (bl) { const box = bl.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i"); bl.disabled = true; st.textContent = "copying to Blender…";
-      try { const r = await blenderCopy({ character: c.slug }, sid); st.textContent = `✓ on Blender's clipboard (${r.triangles} triangles, ${r.packed} textures): Ctrl+V in its viewport`; }
+      try { const r = await blenderCopy({ character: c.slug }, sid); st.textContent = "✓ " + blenderCopyNote(r); }
       catch (err) { st.textContent = "✗ " + err.message; } finally { bl.disabled = false; } return; }
     const b = e.target.closest("button[data-use]"); if (!b) return;
     try { const u = JSON.parse(localStorage.getItem("gbox_char_used") || "{}"); u[b.closest(".chc").dataset.slug] = Date.now(); localStorage.setItem("gbox_char_used", JSON.stringify(u)); } catch {}
@@ -2364,7 +2364,19 @@ async function blenderCopy(input, sid) {
   if (!me) throw new Error("no gBox worker on this PC (Blender's clipboard is local to this machine)");
   const j = await runJob({ tool: "blender_copy", input, require_worker: me.id });
   if (j.state !== "succeeded") throw new Error(j.error || j.state);
-  return j.output.result;
+  const r = j.output?.result;
+  if (!r || !blenderCopyFiles(r).length) throw new Error(`the copy ran on ${me.name} but no clipboard file was written`);
+  blenderCopied(r, input, me);
+  return r;
+}
+// #1393: the worker writes copybuffer.blend to every temp dir the operator's Blender may read; say which PC and how many
+// files, and hand the result to the desktop shell (GBOX: console bridge) for its pop-up with the model rotating.
+const blenderCopyFiles = r => (r?.copybuffers || [r?.copybuffer]).filter(Boolean);
+const blenderCopyNote = r => `on Blender's clipboard${r.host ? " on " + r.host : ""}: ${r.triangles} triangles, ${r.packed} textures` +
+  ` · hover a 3D viewport there and press Ctrl+V (${blenderCopyFiles(r).length} file${blenderCopyFiles(r).length === 1 ? "" : "s"} written)`;
+function blenderCopied(r, input, me) {
+  if (!window.GBOX_LOCAL?.worker) return;                    // only the desktop shell listens
+  console.log("GBOX:" + JSON.stringify({ ev: "blendercopied", result: r, input, worker: me.name }));
 }
 async function modShot(m, sid, card, force) {                // the mod card's picture = this game's screen now
   const st = card.querySelector(".row i");

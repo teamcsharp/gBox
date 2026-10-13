@@ -23,8 +23,8 @@
   aside h1 { font-size:18px; margin:0 4px 12px; display:flex; align-items:center; gap:10px; cursor:pointer; border-radius:8px; padding:6px; }
   aside h1:hover { background:var(--card); } aside h1 img { height:34px; width:auto; }
   aside h1 small { display:block; font-size:10px; font-weight:400; color:var(--mut); }
-  aside button { text-align:left; background:none; border:0; color:var(--mut); padding:8px 10px; border-radius:6px; font:inherit; cursor:pointer; }
-  aside button.on { background:var(--card); color:var(--fg); }
+  aside > button { text-align:left; background:none; border:0; color:var(--mut); padding:8px 10px; border-radius:6px; font:inherit; cursor:pointer; }
+  aside > button.on { background:var(--card); color:var(--fg); }
   aside .st { margin-top:auto; font-size:12px; color:var(--mut); padding:8px; display:grid; gap:4px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--mut); }
   .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); } .dot.warn { background:var(--warn); }
@@ -363,6 +363,16 @@
   #whipmenu > div { margin:2px 0 8px; } #whipmenu button { display:flex; gap:10px; align-items:center; width:100%; text-align:left; padding:7px 8px;
     border:0; background:none; color:var(--fg); font:inherit; border-radius:6px; cursor:pointer; } #whipmenu button:hover { background:var(--card); }
   #whipmenu button span { width:16px; text-align:center; color:var(--acc); }
+  #blpop { display:none; position:fixed; z-index:92; width:360px; padding:8px 10px 10px; background:var(--bg); border:1px solid var(--line);
+    border-radius:10px; box-shadow:0 12px 40px #000b; font-size:13px; } #blpop.on { display:block; }
+  #blpop .hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; } #blpop .hd b { font-size:13.5px; }
+  #blpop .x { background:none; border:0; color:var(--fg); cursor:pointer; font-size:14px; padding:2px 6px; border-radius:5px; } #blpop .x:hover { background:var(--card); }
+  #blpop .av { position:relative; height:220px; border-radius:8px; overflow:hidden; background:radial-gradient(circle at 50% 40%, #26304d, #0b0d14); }
+  #blpop .av canvas { width:100%; height:100%; display:block; cursor:grab; }
+  #blpop .av .hint { position:absolute; right:8px; bottom:6px; font-size:10px; color:#ffffff70; pointer-events:none; }
+  #blpop .av .err { position:absolute; inset:auto 8px 8px 8px; color:var(--bad); font-size:12px; }
+  #blpop .cap { margin:8px 0 4px; font-weight:600; } #blpop details { margin-top:6px; } #blpop summary { cursor:pointer; opacity:.8; font-size:12px; }
+  #blpop ul { margin:4px 0 0; padding-left:18px; font-size:11.5px; word-break:break-all; max-height:120px; overflow:auto; }
   /* overlay swap bar (over the game's top-right corner; cut out of the native game window like the other panels) */
   #ovbar { display:none; position:fixed; z-index:89; align-items:center; gap:2px; padding:3px 6px; background:var(--bg); border:1px solid var(--line);
     border-radius:8px; box-shadow:0 6px 20px #0009; font-size:12px; max-width:560px; } #ovbar.on { display:flex; }
@@ -1061,6 +1071,8 @@ window.taskVizCreate = canvas => {
 </div>
 <script src="floating.js"></script>
 <script src="inbox-view.js"></script>
+<script src="dock.js"></script>
+<script src="report-graph.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
 <script src="../web/viz/process-popup.js"></script>
@@ -1310,12 +1322,27 @@ document.body.insertAdjacentHTML("beforeend", `<div id="task-evidence" role="dia
 document.body.insertAdjacentHTML("beforeend", `<div id="remote-pip" aria-label="Other computer live desktop">
   <div class="rp-head"><b>Other PC</b><select id="rp-worker" aria-label="Computer to watch"></select>
     <button class="act" id="rp-view" title="Switch between the gBox window and the full desktop">Desktop</button>
+    <button class="act" id="rp-fit" title="Fit the whole picture in the window">Fit</button><button class="act" id="rp-one" title="One remote pixel per screen pixel">1:1</button>
     <button class="act" id="rp-expand" title="Expand view">Expand</button><button class="act" id="rp-min" title="Minimize remote view">Minimize</button>
     <button class="act" id="rp-close" title="Close remote view">Close</button></div>
-  <div id="rp-stage" class="rp-stage" title="Wheel to zoom; middle-drag to pan; double-click to reset"><img id="rp-image" alt="Live view of the selected computer" draggable="false">
+  <div id="rp-stage" class="rp-stage" title="Wheel to zoom at the pointer; middle-drag to pan; double-click or Fit shows everything; 1:1 shows real pixels"><img id="rp-image" alt="Live view of the selected computer" draggable="false">
     <div id="rp-empty" class="rp-empty" hidden><b>gBox window unavailable</b><span id="rp-empty-detail">The other computer has no visible gBox window right now.</span>
       <button type="button" id="rp-show-desktop">Show full desktop</button></div></div>
   <div id="rp-meta" class="rp-foot mut">Connecting...</div></div>`);
+// ---------------- Other PC (#1010): another worker's gBox window by default, Desktop to expand, zoom at the pointer, middle-drag pan, Fit / 1:1 ----------------
+const REMOTE_MAX_ZOOM = 8;
+// zoom the picture about a stage point (x, y relative to the stage centre), pure: the remote pixel under the pointer stays put
+function remoteZoomAt(st, factor, x, y) {
+  const zoom = Math.max(1, Math.min(REMOTE_MAX_ZOOM, st.zoom * factor));
+  if (zoom === 1) return { zoom: 1, panX: 0, panY: 0 };
+  const k = 1 - zoom / st.zoom;
+  return { zoom, panX: st.panX + (x - st.panX) * k, panY: st.panY + (y - st.panY) * k };
+}
+// the zoom at which one remote pixel is one screen pixel for a frame shown with object-fit: contain in the stage, pure
+function remoteOneToOne(natW, natH, stageW, stageH) {
+  if (!(natW > 0 && natH > 0 && stageW > 0 && stageH > 0)) return 1;
+  return Math.max(1, Math.min(REMOTE_MAX_ZOOM, 1 / Math.min(stageW / natW, stageH / natH)));
+}
 const REMOTE = { worker: null, timer: null, pollTimer: null, pending: false, opened: 0, quietReady: false,
   view: "app", zoom: 1, panX: 0, panY: 0 };
 function remoteTransform() {
@@ -1337,12 +1364,7 @@ async function remotePollFrame() {
   REMOTE.pending = true;
   try {
     const started = await gbox.api("/api/jobs", { tool: "get_frame", input: {}, require_worker: REMOTE.worker });
-    if (!started.ok) throw new Error(started.error || "Could not capture desktop");
-    let job = started.data;
-    for (let i = 0; i < 40 && ["queued", "running"].includes(job.state); i++) {
-      await new Promise(r => setTimeout(r, 500));
-      job = (await gbox.api(`/api/jobs/${job.id}`)).data;
-    }
+    const job = await jobWait(jobOf(started, "get_frame", "Could not capture desktop"), "get_frame", 500, 40);
     if (job.state !== "succeeded") throw new Error(job.error || job.state);
     const token = await gbox.token();
     $("#rp-image").src = `${S.apiUrl}/api/artifacts/${job.output.sha256}?token=${encodeURIComponent(token)}&t=${Date.now()}`;
@@ -1427,14 +1449,16 @@ $("#rp-show-desktop").onclick = () => $("#rp-view").click();
 $("#rp-image").onerror = () => remoteFallback();
 $("#rp-stage").addEventListener("wheel", e => {
   e.preventDefault();
-  const old = REMOTE.zoom, next = Math.max(1, Math.min(5, old * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
   const box = e.currentTarget.getBoundingClientRect();
-  const x = e.clientX - box.left - box.width / 2, y = e.clientY - box.top - box.height / 2;
-  REMOTE.panX += (x - REMOTE.panX) * (1 - next / old);
-  REMOTE.panY += (y - REMOTE.panY) * (1 - next / old);
-  REMOTE.zoom = next; if (next === 1) REMOTE.panX = REMOTE.panY = 0;
+  Object.assign(REMOTE, remoteZoomAt(REMOTE, e.deltaY < 0 ? 1.2 : 1 / 1.2, e.clientX - box.left - box.width / 2, e.clientY - box.top - box.height / 2));
   remoteTransform();
 }, { passive: false });
+$("#rp-fit").onclick = remoteResetZoom;
+$("#rp-one").onclick = () => {                               // real pixels: the picture at its natural size, centred
+  const img = $("#rp-image"), box = $("#rp-stage").getBoundingClientRect();
+  Object.assign(REMOTE, { panX: 0, panY: 0, zoom: remoteOneToOne(img.naturalWidth, img.naturalHeight, box.width, box.height) });
+  remoteTransform();
+};
 let remotePan = null;
 $("#rp-stage").addEventListener("pointerdown", e => {
   if (e.button !== 1) return;
@@ -2188,11 +2212,13 @@ const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API 
 async function loadSettings() {
   S = await gbox.settings();
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
-    `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>`;
+    `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
+    `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
   s.autoStartWorker = !!f.get("autoStartWorker");
+  vovEnable(!!f.get("voiceOverlay"));
   S = await gbox.saveSettings(s); $("#ssaved").textContent = "saved"; playLoaded = false; refresh();
 };
 
@@ -2682,7 +2708,7 @@ const inboxPoll = singleFlightPoll(async () => {
     const ms = modsFor(x.number);
     return `<div class="req ${openThreads.has(x.id) ? "open-thread" : ""}" data-id="${x.id}">
       ${x.context?.auto_report ? '<span class="chip" style="float:right;margin:6px">Auto report</span>' : ""}
-      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="Open screenshots, tasks, attempts and results">Detailed report</button>
+      <button class="act" data-report-detail="${esc(x.id)}" style="float:right;margin:6px" title="The task as a graph: its subtasks, the tools that did them, the screenshots sliding in and out">Detailed report</button>
       ${x.status === "done" ? `<button class="act reportincomplete" style="float:right;margin:6px">Report incomplete</button>` : ""}
       ${ms.length ? `<div class="reqmods">${ms.map(mm => `<figure class="reqmod" data-mod="${mm.id}" title="${esc(mm.game_title || "")}: ${esc(mm.title)} - ${mm.state_slot == null ? "open the mod (no saved moment attached)" : "load the saved moment"}${mm.video ? " (right-click: video)" : ""}">
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}${mm.state_slot == null ? "play mod" : "load moment"}</figcaption></figure>`).join("")}</div>` : ""}
@@ -2722,19 +2748,28 @@ async function modRun(c, sid) {
   const started = swapping
     ? await gbox.api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: c.input.mod || "", keep_state: true })
     : await gbox.api("/api/jobs", { tool: c.tool, input: { ...c.input, session_id: sid }, require_worker: sid.split("-")[0] });
-  if (!started.ok || !started.data) throw new Error(`${c.tool}: ${started.error || "job request failed"}`);
-  let j = started.data;
-  if (!j?.id || !j?.state) throw new Error(`${c.tool}: invalid job response`);
-  while (["queued", "running"].includes(j.state)) {
-    await new Promise(r => setTimeout(r, 500));
-    const polled = await gbox.api("/api/jobs/" + j.id);
-    if (!polled.ok || !polled.data) throw new Error(`${c.tool}: ${polled.error || "job status unavailable"} (job ${j.id})`);
-    j = polled.data;
-  }
+  const j = await jobWait(jobOf(started, c.tool), c.tool, 500);
   if (j.state !== "succeeded") { const err = new Error(`${c.tool}: ${j.error || j.state}`); err.jobId = j.id; throw err; }
   if (swapping && j.output?.state_loaded === false) {
     const err = new Error("The mod opened, but restoration of the saved game moment was not verified. This replacement still needs verification.");
     err.jobId = j.id; throw err;
+  }
+  return j;
+}
+// A job answer that is missing or malformed fails with words, never with a TypeError (#993: "Cannot read properties of
+// undefined (reading 'state')" while applying a mod). gbox.api answers {ok, data, error}; data must be a job with an id
+// and a state before anything reads or polls it. Every job loop in this file goes through these two.
+function jobOf(r, what, failed = "job request failed") {
+  if (!r || !r.ok || !r.data) throw new Error(`${what}: ${r?.error || failed}`);
+  const j = r.data;
+  if (typeof j !== "object" || !j.id || !j.state) throw new Error(`${what}: invalid job response`);
+  return j;
+}
+async function jobWait(j, what, ms = 500, max = Infinity) {   // poll until the job settles; a lost poll is a readable error
+  for (let i = 0; i < max && ["queued", "running"].includes(j.state); i++) {
+    await new Promise(r => setTimeout(r, ms));
+    const polled = await gbox.api("/api/jobs/" + j.id).catch(e => ({ ok: false, error: e.message }));
+    j = jobOf(polled, `${what} (job ${j.id})`, "job status unavailable");
   }
   return j;
 }
@@ -2745,22 +2780,15 @@ async function modSession(m, launch) {
   if (run || !launch) return { sid: run?.session_id || "", bootApplied: !!run && !!bootMod && run.mod === bootMod };
   toast(`Launching ${m.game_title || "the game"}…`);
   const started = await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}&mod=${encodeURIComponent(bootMod)}`, {});   // this PC
-  if (!started.ok || !started.data) throw new Error(started.error || "game launch request failed");
-  let j = started.data;
-  if (!j?.id || !j?.state) throw new Error(`Launch returned no trackable job for ${m.game_title || m.game_id}`);
-  while (["queued", "running"].includes(j.state)) {
-    await new Promise(r => setTimeout(r, 1000));
-    const polled = await gbox.api("/api/jobs/" + j.id);
-    if (!polled.ok || !polled.data) throw new Error(polled.error || `Could not read launch job ${j.id}`);
-    j = polled.data;
-  }
+  const what = `Launch of ${m.game_title || m.game_id}`;
+  const j = await jobWait(jobOf(started, what, "game launch request failed"), what, 1000);
   if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
   if (!j.output?.session_id) throw new Error(`Launch completed without a game session for ${m.game_title || m.game_id}`);
   return { sid: j.output.session_id, bootApplied: !!bootMod };
 }
 async function modPlay(m, how) {
-  let attemptedSid = "";
+  let attemptedSid = "", step = "find or start the game";
   try {
     if (how === "video") { const t = await gbox.token(); window.open(`${S.apiUrl}/api/artifacts/${m.video}?token=${encodeURIComponent(t)}`); return; }
     const target = await modSession(m, how !== "apply");
@@ -2769,22 +2797,32 @@ async function modPlay(m, how) {
     if (!sid) { toast(`Start ${m.game_title || "the game"} first`); return; }
     for (const c of m.calls) {
       if (c.tool === "@launch" && target.bootApplied) continue;
+      step = c.tool === "@launch" ? "open the mod" : `apply ${c.tool}`;
       const job = await modRun(c, sid);
       sid = job.output?.session_id || sid;
       attemptedSid = sid;
     }
     if (how === "moment" && m.state_slot != null) {
+      step = "load the saved moment";
       await modRun({ tool: "session_op", input: { op: "load_state", args: { slot: m.state_slot } } }, sid);
       toast(`${m.title}: saved moment loaded`);
     } else toast(`${m.title}: ${m.state_slot == null && how === "moment" ? "mod opened; no saved moment is attached to its picture" : "on"}`);
     document.querySelector(`[data-s="play"]`)?.click();             // show the game
   } catch (err) {
+    const why = modFailureText(err, step);
     const shot = await gbox.captureOS?.().catch(() => null);
     const report = await gbox.api("/api/requests/auto-mod-failure", { session_id: attemptedSid, game: m.game_title || "",
       model: m.title || "", action: "apply mod", target: how, moment: "current game moment",
-      detail: `${err.message}\n${String(err.stack || "").slice(0, 1600)}`, job_id: err.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
-    toast("⚠ " + err.message + (report?.ok ? ` · auto report #${report.data.number}` : ""), 12000);
+      detail: `${why}\n${String(err?.stack || "").slice(0, 1600)}`, job_id: err?.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
+    toast("⚠ " + why + (report?.ok && report.data?.number ? ` · auto report #${report.data.number}` : ""), 12000);
   }
+}
+// What went wrong, in words (#993): a guard's own message passes through; an unexpected TypeError (a field missing from an
+// answer) is named as the app's fault with the step it was on, so the auto report says what could not be done, not "reading 'state'".
+function modFailureText(err, step) {
+  const msg = String(err?.message || err || "unknown error");
+  const internal = err instanceof TypeError || /^Cannot (read|set) propert|is not a function$|is not iterable$|^undefined is not/.test(msg);
+  return `Could not ${step}: ${internal ? `gBox's app hit an internal error (${msg})` : msg}`;
 }
 document.addEventListener("click", e => {
   const f = e.target.closest(".reqmod, .modplay, .modapply, .modvideo"); if (!f) return;
@@ -2824,11 +2862,18 @@ document.addEventListener("contextmenu", e => {
   const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
   setTimeout(() => document.addEventListener("mousedown", close), 0);
 });
+// Detailed report (#1011): the request as a three.js bubble graph (task -> subtasks -> tools), its screenshots sliding in and out
+function reportGraphOpen(id) {
+  return GBoxReportGraph.open(id, { $, esc, api: p => gbox.api(p), token: () => gbox.token(), apiUrl: () => S.apiUrl, loadThree: flowLoadThree,
+    evidence: (rid, sha) => evRequest(rid, sha), children: rid => inboxSolverRequests.filter(x => x.parent_request_id === rid),
+    onChange: () => { EMB.last = ""; } });
+}
 document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
   if (e.target.closest(".reportincomplete")) { e.stopPropagation(); await evRequest(id); $("#ev-incomplete").click(); return; }
-  if (e.target.closest("[data-report-detail], img.shot, img.att-img")) {
+  if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportGraphOpen(id); return; }
+  if (e.target.closest("img.shot, img.att-img")) {
     const img = e.target.closest("img.shot, img.att-img");
     const sha = img?.src.match(/\/api\/artifacts\/([0-9a-f]{64})/)?.[1] || null;
     e.stopPropagation(); evRequest(id, sha); return;
@@ -2881,7 +2926,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
-    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on")
       || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
@@ -2899,7 +2944,7 @@ async function embedTick() {
       }
     }
     if (rect) rect = GBoxEmbedGeometry.intersect(rect, { x: 0, y: 0, w: innerWidth, h: innerHeight });
-    if (rect && !pipNow && $("#live").classList.contains("on"))
+    if (rect && !pipNow && $("#live").classList.contains("on") && !$("#live").closest("#dock"))        // docked in the sidebar (#262) it is already out of the way
       rect = GBoxEmbedGeometry.intersect(rect, { x:0, y:0, w:Math.max(0, $("#live").getBoundingClientRect().left - 4), h:innerHeight });
     EMB.rect = rect;
     const hidden = overlay || EYE.on;
@@ -2931,19 +2976,41 @@ async function embedTick() {
   finally { EMB.busy = false; }
 }
 setInterval(embedTick, 250);
-const VOV = { on: false };
-setInterval(() => {                                               // voice overlay over the game while anyone is talking
-  const ai = !!(TALK.audio && !TALK.audio.paused), me = !!(PTT.down || document.body.classList.contains("talking") || TALK.on);
-  const on = !!(EMB.sid && EMB.rect && (ai || me));
-  if (!on && !VOV.on) return;
-  VOV.on = on;
-  if (EMB.surface === "gpu") {
-    gbox.vizOverlay?.({ on: false });
-    gpuGameVoice({ on, level: ai ? 0.9 : 0.5, beat: ai && Math.random() < 0.3 });
-    return;
-  }
+// ---------------- voice overlay (#250): the randomized transition visual over the game while you talk with gBox or it talks back ----------------
+// The picture is /viz/overlay.html (the loading-screen visualizer; a fresh random mode each time the overlay starts), floated over the
+// docked or picture-in-picture game by main.js (viz:overlay) or layered into the GPU game surface. It shows while you speak (push-to-talk
+// held, the voice conversation hears you), while gBox works on what you said, and while its reply plays; a short hold keeps it from
+// flickering between words. Settings > "Voice overlay on the game" (or the game's right-click menu) turns it off.
+const VOV = { on: false, last: 0, enabled: true, hold: 1500 };
+function vovEnabledPref() { try { return localStorage.getItem("gbox_voice_overlay") !== "off"; } catch { return true; } }
+VOV.enabled = vovEnabledPref();
+function vovEnable(on) {
+  VOV.enabled = !!on; try { localStorage.setItem("gbox_voice_overlay", on ? "on" : "off"); } catch {}
+  if (!on && VOV.on) { VOV.on = false; vovApply({ on: false }); }
+}
+// what the overlay should do for these signals, pure: ai = gBox's reply is playing, me = you are talking (or gBox is working on what you
+// said), level = microphone 0..1, game = a game picture is on screen. The hold keeps it up across short pauses.
+function vovDecide(sig, st, now) {
+  const active = !!(sig.game && st.enabled && (sig.ai || sig.me));
+  if (active) st.last = now;
+  const on = active || !!(st.on && sig.game && st.enabled && now - st.last < st.hold);
+  const restart = on && !st.on;                                  // a fresh start: a new random visual
+  return { on, restart, level: sig.ai ? 0.9 : Math.max(0.35, Math.min(1, (sig.level || 0) * 12)), beat: !!sig.ai && Math.random() < 0.3, mode: restart ? "random" : undefined };
+}
+function vovSignals() {
+  const phase = TALK.phase || "idle";
+  return { ai: !!(TALK.audio && !TALK.audio.paused) || phase === "speaking", level: TALK.lvl || 0, game: !!(EMB.sid && EMB.rect),
+           me: !!(PTT.down || document.body.classList.contains("talking") || phase === "listening" || phase === "thinking") };
+}
+function vovApply(d) {                                            // the GPU surface layers it itself; a native game gets the floating window
+  if (EMB.surface === "gpu") { gbox.vizOverlay?.({ on: false }); gpuGameVoice({ on: d.on, level: d.level, beat: d.beat, mode: d.mode }); return; }
   gpuGameVoice({ on: false });
-  gbox.vizOverlay?.(on ? { on, rect: EMB.rect, level: ai ? 0.9 : 0.5, beat: ai && Math.random() < 0.3 } : { on: false });
+  gbox.vizOverlay?.(d.on ? { on: true, rect: EMB.rect, level: d.level, beat: d.beat, mode: d.mode, restart: d.restart } : { on: false });
+}
+setInterval(() => {
+  const d = vovDecide(vovSignals(), VOV, Date.now());
+  if (!d.on && !VOV.on) return;
+  VOV.on = d.on; vovApply(d);
 }, 200);
 document.addEventListener("focusin", e => { if (EMB.sid && e.target.closest?.("input, textarea, select, [contenteditable]")) gbox.appFocus?.(); });
 addEventListener("resize", () => { EMB.last = ""; });
@@ -3019,6 +3086,7 @@ function pipMenu(x, y) {
   const items = [...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
+                 ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["save", "💾 Save state"], ["load", "📂 Load state"], ["slot+", `Save slot: ${GM.slot}  ▸ next`], ["slot-", "Save slot ◂ previous"],
                  ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
@@ -3053,8 +3121,8 @@ async function gameJob(tool, input, wait = true) {
   const sid = input.session_id || EMB.sid || (await chatContext().catch(() => ({}))).session_id;
   if (!sid) throw new Error("no game running");
   const r = await gbox.api("/api/jobs", { tool, input: { session_id: sid, ...input }, require_worker: sid.split("-")[0] });
-  if (!r.ok) throw new Error(r.error); let j = r.data;
-  while (wait && ["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 400)); j = (await gbox.api(`/api/jobs/${j.id}`)).data; }
+  let j = jobOf(r, tool);                                      // #993: a missing answer is an error in words, not a TypeError
+  if (wait) j = await jobWait(j, tool, 400);
   if (["failed", "rejected", "cancelled"].includes(j.state)) {
     const error = new Error(j.error || j.state); error.jobId = j.id; throw error;
   }
@@ -3074,6 +3142,7 @@ async function gameAction(a) {
       GM.auto = !GM.auto && !!r.started; toast(GM.auto ? `🤖 gBox has control: ${r.objective || r.started}` : r.error || "You have control again");
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
     else if (a === "orb") ORB.on ? orbClose() : orbOpen();
+    else if (a === "vov") { vovEnable(!VOV.enabled); toast(VOV.enabled ? "✨ The transition visual shows over the game while you and gBox talk" : "✨ Voice overlay off"); }
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
     else if (a === "load") { toast("📂 Loading…"); await gameJob("session_op", { op: "load_state", args: { slot: GM.slot } }); toast(`📂 Loaded slot ${GM.slot}`); }
     else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
@@ -3284,6 +3353,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gameclick") closePops(null);
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
+    else if (m.ev === "blendercopied") blenderCopiedMsg(m);
     else if (m.ev === "gamecontext" || m.ev === "gamepick") {
       const r = wv.getBoundingClientRect();
       if (m.ev === "gamecontext") pipMenu(r.left + m.x, r.top + m.y);
@@ -3446,9 +3516,7 @@ async function eyeGrab() {
     try {
       const r = await gbox.api("/api/jobs", { tool: "pick", input: { session_id: EMB.sid, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, window_aspect: EMB.rect.w / EMB.rect.h } });
       if (r.ok && r.data?.id) {
-        const id = r.data.id;
-        const wait = async () => { let j; while ((j = (await gbox.api(`/api/jobs/${id}`)).data).state === "queued" || j.state === "running") await new Promise(r => setTimeout(r, 200)); return j; };
-        const j = await wait();
+        const j = await jobWait(jobOf(r, "pick"), "pick", 200);
         if (j.state === "succeeded") { pick = j.output?.result || {}; EYE.pick = pick; }
       }
     } catch (e) { console.warn("eyeGrab pick:", e); }
@@ -3647,6 +3715,50 @@ async function stripShow() {
   p.classList.add("on");
 }
 
+// ---------------- Blender paste pop-up (#1393): after blender_copy, the copied model rotating + the clipboard files written ----------------
+// The copy runs on this PC's worker (gbox/blender_copy.py writes copybuffer.blend to every temp dir the operator's Blender
+// may read). The embedded library page reports the result over the GBOX: console bridge; this shows it in a movable window.
+const BLENDER_PASTE_CAPTION = "Copied to Blender's clipboard: hover a 3D viewport and press Ctrl+V";
+const blenderPasteFiles = r => (r?.copybuffers || [r?.copybuffer]).filter(Boolean);
+function blenderPasteGlb(source, apiUrl, tok) {              // the same GLB the worker imported: an API path -> a fetchable URL
+  const s = String(source || "");
+  if (!s.startsWith("/api/")) return "";                       // a local file on the worker: nothing to fetch from here
+  return `${apiUrl}${s}${s.includes("?") ? "&" : "?"}token=${encodeURIComponent(tok || "")}`;
+}
+function blenderPasteHtml(r) {
+  const files = blenderPasteFiles(r), skipped = Object.entries(r?.skipped || {});
+  const facts = [r?.triangles != null ? `${r.triangles} triangles` : "", r?.packed != null ? `${r.packed} textures` : "",
+    r?.blender_version ? `Blender ${r.blender_version}` : "", r?.host ? `on ${r.host}` : ""].filter(Boolean).join(" · ");
+  return `<div class="hd"><b>Copied to Blender</b><button class="x" data-close title="Close">✕</button></div>
+    <div class="av"><canvas></canvas><span class="hint">drag to orbit · wheel to zoom</span></div>
+    <p class="cap">${esc(BLENDER_PASTE_CAPTION)}</p>
+    <div class="mut">${esc(facts)}</div>
+    <details open><summary>${files.length} clipboard file${files.length === 1 ? "" : "s"} written</summary><ul>${files.map(f => `<li>${esc(f)}</li>`).join("")}</ul></details>
+    ${skipped.length ? `<details><summary>${skipped.length} not written</summary><ul>${skipped.map(([d, why]) => `<li>${esc(d)}: ${esc(why)}</li>`).join("")}</ul></details>` : ""}
+    ${Array.isArray(r?.running) && !r.running.length ? `<div class="mut">Blender was not open on ${esc(r.host || "that PC")} when this was copied: open it there, then paste.</div>` : ""}`;
+}
+function blenderPastePopup(r, glbUrl, at) {
+  let m = $("#blpop");
+  if (!m) { m = document.createElement("div"); m.id = "blpop"; document.body.append(m); dragAnywhere(m);
+    m.addEventListener("click", e => { if (e.target.closest("[data-close]")) blenderPasteClose(); }); }
+  m.innerHTML = blenderPasteHtml(r);                           // a new model: the old stage leaves the DOM, its renderer stops
+  m.classList.add("on");
+  const [x, y] = at || [innerWidth - 372, 56];
+  fitMenu(m, x, y, 8, 40);
+  const av = m.querySelector(".av");
+  if (!glbUrl) av.insertAdjacentHTML("beforeend", `<span class="err">no preview: the source is a file on the worker</span>`);
+  else if (!window.assetView) av.insertAdjacentHTML("beforeend", `<span class="err">3D viewer not loaded</span>`);
+  else window.assetView(av, glbUrl).catch(err => av.insertAdjacentHTML("beforeend", `<span class="err">${esc(err.message)}</span>`));
+  return m;
+}
+function blenderPasteClose() { const m = $("#blpop"); if (m) { m.classList.remove("on"); m.innerHTML = ""; } }
+async function blenderCopiedMsg(m) {                          // GBOX:{ev:"blendercopied", result, input, worker}
+  const r = m.result || {};
+  let tok = S.tok || "";
+  if (!tok && String(r.source || "").startsWith("/api/")) { try { tok = S.tok = await gbox.token(); } catch {} }
+  blenderPastePopup(r, blenderPasteGlb(r.source, S.apiUrl, tok));
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#blpop")?.classList.contains("on")) blenderPasteClose(); });
 // ---------------- texture pop-up (#186): click any texture or picture in gBox to inspect it in a movable window ----------------
 // Zoom with the wheel at the cursor or + / − (Fit, 1:1), pan by dragging the picture, ‹ › through the sibling textures,
 // brightness / contrast sliders, alpha checkerboard, per-channel views + histogram when the pixels are readable (data URLs
@@ -4349,7 +4461,7 @@ $("#chatflowbtn").onclick = () => FLOW.on ? flowClose() : flowOpen();
 
 
 // ---------------- voice conversation: listen -> Spark STT -> agent -> XTTS clone voice; live sidebar ----------------
-const TALK = { on: false, stream: null, ctx: null, audio: null, seen: 0 };
+const TALK = { on: false, stream: null, ctx: null, audio: null, seen: 0, phase: "idle", lvl: 0 };   // phase: idle | listening | thinking | speaking (#250)
 const live = (h) => { $("#livefeed").insertAdjacentHTML("beforeend", h); $("#livefeed").scrollTop = $("#livefeed").scrollHeight; };
 const liveStatus = t => $("#livestatus").textContent = t;
 async function liveVoices() {
@@ -4384,7 +4496,7 @@ function recordUtterance() {                                     // simple VAD: 
       if (!TALK.on) { mr.state !== "inactive" && mr.stop(); return; }
       an.getFloatTimeDomainData(buf); const rms = Math.sqrt(buf.reduce((a, v) => a + v * v, 0) / buf.length);
       $("#livemeter i").style.width = Math.min(100, rms * 900) + "%"; TALK.lvl = rms;
-      if (!speaking) { noise = noise * 0.95 + rms * 0.05; if (rms > Math.max(0.02, noise * 3)) { speaking = true; liveStatus("Listening…"); } }
+      if (!speaking) { noise = noise * 0.95 + rms * 0.05; if (rms > Math.max(0.02, noise * 3)) { speaking = true; TALK.phase = "listening"; liveStatus("Listening…"); } }
       else if (rms < Math.max(0.012, noise * 1.8)) { silentSince ||= Date.now(); if (Date.now() - silentSince > 1200) return mr.stop(); }
       else silentSince = 0;
       if (!speaking && Date.now() - started > 15000) { started = Date.now(); }       // keep waiting, quietly
@@ -4396,15 +4508,15 @@ function recordUtterance() {                                     // simple VAD: 
 }
 async function talkLoop() {
   while (TALK.on) {
-    liveStatus("Waiting for you to speak…");
+    liveStatus("Waiting for you to speak…"); TALK.phase = "idle";
     const blob = await recordUtterance(); if (!TALK.on || !blob) break;
-    liveStatus("Transcribing (Spark faster-whisper)…");
+    liveStatus("Transcribing (Spark faster-whisper)…"); TALK.phase = "thinking";
     let text = ""; try { text = (await gbox.stt(await blob.arrayBuffer())).trim(); } catch (e) { live(`<div class="lv">⚠ ${esc(e.message)}</div>`); continue; }
-    if (!text || text.length < 2) continue;
+    if (!text || text.length < 2) { TALK.phase = "idle"; continue; }
     live(`<div class="lv you"><b>You:</b> ${esc(text)}</div>`);
     const quick = await instantCommand(text).catch(() => null);
     if (quick) {                                                   // instant command: act, confirm out loud, keep listening
-      live(`<div class="lv ai"><b>gBox:</b> ${esc(quick.say)}</div>`);
+      live(`<div class="lv ai"><b>gBox:</b> ${esc(quick.say)}</div>`); TALK.phase = "speaking";
       if (quick.alternatives?.length) live(`<div class="lvcard">🎮 also matched:<br>${quick.alternatives.map(g => esc(g.title + " · " + (g.system || ""))).join("<br>")}</div>`);
       try { const wav = await gbox.tts(quick.say, $("#livevoice").value);
         TALK.audio = new Audio(URL.createObjectURL(new Blob([wav], { type: "audio/wav" })));
@@ -4431,9 +4543,9 @@ async function talkLoop() {
       if (!r.data.busy) break;
       if (!TALK.on) return;
     }
-    if (!reply) continue;
+    if (!reply) { TALK.phase = "idle"; continue; }
     live(`<div class="lv ai"><b>gBox:</b> ${esc(reply)}</div>`);
-    liveStatus(`Speaking (${($("#livevoice").value || "xtts").split(":")[0]})…`);
+    liveStatus(`Speaking (${($("#livevoice").value || "xtts").split(":")[0]})…`); TALK.phase = "speaking";
     try {
       const wav = await gbox.tts(reply.replace(/[*_#`>|]/g, "").slice(0, 900), $("#livevoice").value);
       TALK.audio = new Audio(URL.createObjectURL(new Blob([wav], { type: "audio/wav" })));
@@ -4451,7 +4563,7 @@ async function talkStart() {
   talkLoop();
 }
 function talkStop() {
-  TALK.on = false; TALK.audio && TALK.audio.pause();
+  TALK.on = false; TALK.phase = "idle"; TALK.audio && TALK.audio.pause();
   TALK.stream && TALK.stream.getTracks().forEach(t => t.stop()); TALK.ctx && TALK.ctx.close();
   $("#talkbtn").classList.remove("on"); $("#live").classList.remove("on"); document.body.classList.remove("talking"); liveStatus("Idle"); EMB.last = "";
 }
@@ -4562,8 +4674,7 @@ document.addEventListener("input", e => { const l = e.target.closest("#chatlog .
     const input = fill(c.input), sid = input.session_id;
     try {
       const r = await gbox.api("/api/jobs", { tool: c.tool, input, ...(sid ? { require_worker: sid.split("-")[0] } : {}) });
-      if (!r.ok) throw new Error(r.error); let j = r.data;
-      while (["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 400)); j = (await gbox.api(`/api/jobs/${j.id}`)).data; }
+      const j = await jobWait(jobOf(r, c.tool), c.tool, 400);
       if (j.state !== "succeeded") throw new Error(j.error || j.state);
       st.textContent = "✓"; st.title = JSON.stringify(j.output?.result || j.output || {}).slice(0, 400);
     } catch (err) { st.textContent = "⚠"; st.title = err.message; }
@@ -5346,7 +5457,7 @@ const POPS = [["#busysteps", "#chatbusy"], ["#taskpanel", "#tb-tasks"], ["#audit
 function closePops(target) {                                 // target null = a click on the game itself: close everything
   for (const [pop, opener] of POPS) {
     const el = document.querySelector(pop + ".on");
-    if (!el || (target && (el.contains(target) || (opener && target.closest(opener))))) continue;
+    if (!el || el.closest("#dock") || (target && (el.contains(target) || (opener && target.closest(opener))))) continue;   // docked panels (#262) stay
     el.classList.remove("on");
     if (pop === "#taskpanel") clearInterval(TK.t);
     if (pop === "#reinv") riStop();
@@ -5634,6 +5745,9 @@ $("#remote-pip .rp-head").addEventListener("pointermove", e => {
   panel.style.right = panel.style.bottom = "auto";
 });
 $("#remote-pip .rp-head").addEventListener("pointerup", () => { remoteDrag = null; });
+
+// ================= dock (#262): drag any of these panels by its header onto the sidebar; the game takes the freed room =================
+GBoxDock.mount({ floating, onLayout: () => { EMB.last = ""; setTimeout(() => dispatchEvent(new Event("resize")), 200); } });
 
 // ================= chat window: open from the status bar, history toggle, images, exports =================
 $("#sb-chat").onclick = () => { const p = $("#chatpanel"); p.classList.toggle("on"); dispatchEvent(new Event("resize"));

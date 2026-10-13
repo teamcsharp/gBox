@@ -616,7 +616,8 @@ ipcMain.handle("viz:overlay", (_e, st) => {
   }
   vizOv.setBounds(bounds); vizOv.setOpacity(Math.max(0.1, Math.min(0.9, st.opacity ?? 0.42)));
   if (!vizOv.isVisible()) vizOv.showInactive();
-  if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat })})`).catch(() => {});
+  // a fresh conversation (#250) starts a new random transition visual; the level and beats follow who is talking
+  if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat, ...(st.restart ? { mode: st.mode || "random" } : {}) })})`).catch(() => {});
   return { on: true };
 });
 ipcMain.handle("embed:kill", async () => { const r = embedded ? await embedCmd({ op: "kill" }) : { ok: false }; embedded = null; return r; });

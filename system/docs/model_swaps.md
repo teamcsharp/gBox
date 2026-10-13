@@ -57,6 +57,14 @@ Licensing: every source model here (Nintendo, SEGA, Capcom, Rockstar) is copyrig
 
 ---
 
+### Live size changes: `zelda_oot op=scale_link / scale_sword` (`gbox/oot_scale.py`, 2026-10-12, #213 / #216)
+- **`scale_link factor=N`** ("make Link 2x bigger"): writes 0.01 x N to the player actor's `Actor.scale` (+0x50; the actor is `play->actorCtx.actorLists[ACTORCAT_PLAYER].head`, accepted only with id 0 / category 2). The game sets 0.01 again whenever Link is re-created (every scene change), so the session's hold thread re-resolves him and rewrites it until `factor=1`.
+- **`scale_sword factor=N`** ("make my sword three times bigger"): scales only the equipped sword. Link's loaded object (`object_link_boy` / `object_link_child`, found through `play->objectCtx.slots[]`) is read once, the display lists that draw that sword are walked (hand lists `sPlayerLeftHandSwordDLs` / `gPlayerLeftHandBgsDLs`, sheath lists `D_80125E78` / `D_80125D28` / `D_80125E88` / `D_80125D88`; offsets from the decomp's `object_link_boy.xml` / `object_link_child.xml`), and the vertices of triangles drawn with the sword's textures (pommel / guard / emblem, the gameplay_keep metal texture for the blade in hand, sheath + band on the back) are scaled about the pommel; the hand and the shield share those Vtx arrays and keep their vertices. s16 overflow is refused up front (`max_factor` in the result: 7.99 Master Sword, 5.12 Biggoron's, 15.95 Kokiri), the original 16-byte Vtx records are kept so `factor=1` restores, and the sword's hit range (`sMeleeWeaponLengths`, verified by content in `code`) follows unless `reach=false`. The object is reloaded from ROM on every scene change (usually at another address), so the same hold thread re-resolves it and re-applies only where it reads the ROM's vertices, following age and equipment changes; a half-written load or a model that is not the ROM's is skipped and reported.
+- Why not `freeze_memory`: a freeze keeps writing raw bytes at one fixed address; Link's actor and his object move between scenes, so the freeze would hit whatever the game allocates there next. The hold (same pattern as the statue watcher in `oot_live.watch`) re-resolves every 0.5 s and only ever writes over the game's own default values.
+- `scale_status` reports what is held and how often it was re-applied; `scale_release` restores everything and stops the hold. Tests: `tests/test_oot_scale.py`. Revisions: NTSC 1.0 / 1.1 / 1.2 (bases from `gbox.oot.layout`; the two Link objects are byte-identical in the retail 1.0 and 1.2 ROMs, which the EXPECT table in `oot_scale.py` was checked against).
+
+---
+
 ### N64 ROM: built into gBox (`gbox/oot_swap.py`, `oot_writer.py`, `oot_place.py`, `oot_live.py`, 2026-10-07)
 
 Status: **works on NTSC 1.2 (USA Rev B, the operator's ROM), checked in game on the Spark**. Tifa played as child
@@ -235,6 +243,7 @@ Feasibility: **Hard.** The exporter is experimental, the skeletons are different
 - Rig: the stock PC III/VC peds are **segmented, rigid hierarchies**. Frame names and order must match the original ped (for example the root, pelvis, spine, head and limb frames). Vertices are rigid per frame. Smooth skinned peds need the **Skin and Bones** plugin (aap) for III: https://gtaforums.com/topic/815077-skin-and-bones/ and https://www.mixmods.com.br/2018/08/iii-skin-and-bones-3-0-xbox-peds-claude-corpo-suave/. re3/reVC also support skinned (Xbox/mobile) peds: https://github.com/GTAmodding/re3
 - **Player**: replace `player.dff/player.txd` (VC) in the IMG.
 - **Replace all pedestrians**: copy or rename the same `.dff/.txd` over every ped entry in the IMG. Alternatively, point each `default.ide` ped line at one model and txd. Scripting this is trivial.
+- **Built into gBox (2026-10-12, classic VC PC port)**: `gbox/gta_vc_models.py` (reader: IMG v1, HAnim/Skin, D3D8 geometry + rasters, rigged GLB) and `gbox/gta_vc_swap.py` (writer: slots `player`, `ped:<dff>`, `peds:all`, `all`; rebuilt `gta3.img/.dir` in a filemods mod dir). Routed for both windows_native ids. The owned install is the **Definitive Edition** (UE4 pak, no `gta3.img`), which `op=use` detects and reports as a gap; see `docs/gta_vc_pc_swap.md` for the facts, the bone-tag role map and the live check.
 
 ### Existing skins
 - VC Mario player model (ripped from SM64): https://www.modland.net/gta-vice-city-mods/skins/mario-player-model.html. Thread: https://gtaforums.com/topic/289934-trying-to-use-the-mario-skin-mod/
