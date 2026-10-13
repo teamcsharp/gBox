@@ -457,6 +457,53 @@ def create_app(config: Config) -> FastAPI:
         f = _env_file(slug, rel)
         return FileResponse(f, filename=f.name)
 
+    # --- bevy: the gBox Bevy viewer's scenes, renders and live sessions (the desktop app's Bevy tab) ---
+    def _bevy_render(name: str) -> Path:
+        import re as _re
+        if not _re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name):
+            _404()
+        f = (config.data_dir / "bevy" / f"{name}.png").resolve()
+        if not f.is_file():
+            _404()
+        return f
+
+    @app.get("/api/bevy")
+    def bevy_status(actor=Depends(auth)):
+        """Bevy support & offerings: viewer build state, saved scenes and renders, live windows on this node."""
+        from .tools import BEVY
+        sdir = config.data_dir / "bevy"
+
+        def _items(f: Path) -> int:
+            try:
+                return len(json.loads(f.read_text()).get("items", []))
+            except Exception:
+                return 0
+
+        def _src(f: Path) -> list:
+            try:
+                return json.loads(f.read_text()).get("_src", [])
+            except Exception:
+                return []
+
+        scenes = [{"name": f.stem, "mtime": f.stat().st_mtime, "items": _items(f), "src": _src(f)}
+                  for f in sorted(sdir.glob("*.json"), key=lambda p: p.name)]
+        renders = [{"name": f.stem, "mtime": f.stat().st_mtime} for f in sorted(sdir.glob("*.png"), key=lambda p: p.name)]
+        live = [{"name": n, "pid": s["proc"].pid, "items": len(s["spec"]["items"])}
+                for n, s in BEVY.items() if s["proc"].poll() is None]
+        exe = config.runtime / "bevy-target" / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
+        try:
+            from . import characters
+            n_char = len(characters.list_all(characters.library_root(config)))
+            n_env = len(characters.list_all(characters.env_root(config)))
+        except Exception:
+            n_char, n_env = None, None
+        return {"viewer_built": exe.exists(), "scenes": scenes, "renders": renders, "live": live,
+                "characters": n_char, "environments": n_env}
+
+    @app.get("/api/bevy/render/{name}.png")
+    def bevy_render_png(name: str, actor=Depends(auth)):
+        return FileResponse(_bevy_render(name), media_type="image/png")
+
     class NotifyIn(BaseModel):
         title: str
         text: str = ""

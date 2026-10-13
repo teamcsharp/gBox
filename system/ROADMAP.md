@@ -113,6 +113,9 @@ Legend: [x] done and verified on the real systems · [~] partly done (what is mi
       built, launched in Dolphin from the modded disc, drawing. Limit: a replacement larger than the original file (needs a disc
       rebuild).
 - [x] Phase 9 — cross-title into a target project: PSO Forest + Savage Wolf in a Bevy scene (`bevy_scene` tool)
+- [x] Bevy support & offerings: reactive live-scene ops for the LLM (`bevy_scene` op=open/snapshot/set_camera/add/remove/
+      close/list driving a live viewer window) + a Bevy tab in the desktop app (scenes, renders, live windows, quick-scene
+      runner, `/api/bevy` status endpoint)
 - [~] Phase 10 — broader coverage: compatibility fixes (PS2, 3DS, Neo Geo CD, GameCube, PC-FX, Doom routing); NAOMI/Atomiswave boot
       (.lst GD sets, 7z ROM sets: Capcom vs SNK 2, Demolish Fist); missing: CD-i and PocketStation BIOS files (operator)
 

@@ -766,9 +766,10 @@ window.assetView = async (box, glbUrl) => {
   g.scene.position.sub(c); cam.position.set(sz * 0.55, sz * 0.35, sz * 0.75); cam.near = sz / 500; cam.far = sz * 20; cam.updateProjectionMatrix();
   ctl.target.set(0, 0, 0); ctl.update();
   let vis = true; new IntersectionObserver(e => vis = e[0].isIntersecting).observe(box);
-  const v = { box, stop: false }; live.add(v);
+  const v = { box, stop: false, player: null }, clock = new T.Clock(); live.add(v);
   const frame = () => {
-    if (v.stop || !box.isConnected) { r.dispose(); live.delete(v); return; }
+    if (v.stop || !box.isConnected) { v.player?.dispose(); v.clips?.remove(); r.dispose(); live.delete(v); return; }
+    const dt = clock.getDelta(); v.player?.update(dt);
     if (vis) { const w = cv.clientWidth, h = cv.clientHeight;
       if (cv.width !== Math.round(w * r.getPixelRatio())) { r.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
       ctl.update(); r.render(scene, cam); }
@@ -776,7 +777,14 @@ window.assetView = async (box, glbUrl) => {
   };
   frame();
   const tris = g.scene.children.reduce((n, o) => { o.traverse(m => { if (m.geometry?.index) n += m.geometry.index.count / 3; }); return n; }, 0);
-  return { triangles: tris };
+  // #1384: a GLB that carries clips gets the clip list + play / pause / loop / speed / scrubber under its view
+  if (g.animations.length && window.GBoxClips) {
+    let ui = null; v.clips = document.createElement("div"); box.after(v.clips);
+    v.player = GBoxClips.player(T, g.scene, st => ui?.render(st));
+    ui = GBoxClips.mount(v.clips, GBoxClips.list(null, g.animations.map(a => ({ name: a.name, duration: a.duration }))),
+      { url: x => x, load: async row => ({ player: v.player, clip: g.animations.find(a => a.name === row.name) }) });
+  }
+  return { triangles: tris, clips: g.animations.length };
 };
 // Live task map. Stable positions make new work join the mainline while finished work peels away.
 window.taskVisualGraphCreate = (canvas, labels, onPick) => {
@@ -1027,6 +1035,7 @@ window.taskVizCreate = canvas => {
     <button data-s="settings">Settings</button>
     <button data-s="tools">Tools</button>
     <button data-s="extract" title="The scene you're playing, frozen as 3D: navigate, select, inspect, export">Extract</button>
+    <button data-s="bevy" title="Bevy: the gBox Bevy viewer — real-time 3D scenes, one-shot renders, and live windows the LLM drives reactively">Bevy</button>
     <div class="st">
       <div><span id="d-api" class="dot"></span>Spark API</div>
       <div><span id="d-svc" class="dot"></span>Spark service</div>
@@ -1079,6 +1088,40 @@ window.taskVizCreate = canvas => {
       <table class="reg"><thead><tr><th></th><th>Name</th><th>Kind</th><th>Category</th><th>Status</th><th>Description</th></tr></thead><tbody id="tl-body"></tbody></table>
     </div></section>
     <section id="extract"></section>
+    <section id="bevy"><div class="pane" style="max-width:1400px">
+      <div class="bar"><h2 style="margin:0">Bevy</h2><span class="mut" id="bv-sum">loading…</span><button class="act" onclick="BV.data=null;loadBevy()">Refresh</button></div>
+      <p class="mut">The gBox Bevy viewer renders collection characters, captured environments and UAP asset packages as
+        real-time 3D — one-shot PNGs shown in chat, or a live window on this PC that the LLM drives reactively through the
+        <b>bevy_scene</b> tool (op=open / snapshot / set_camera / add / remove / close / list).</p>
+      <div class="cards">
+        <div class="card"><h2>Offerings</h2>
+          <div class="kv" id="bv-offer"><span>viewer</span><span>…</span></div>
+          <div class="btns">
+            <button class="act pri" id="bv-live" title="Open a live Bevy window on this PC (PSO Forest + Savage Wolf)">Open live viewer</button>
+            <button class="act" id="bv-render" title="One-shot render of the same scene (PNG lands in the chat)">Render that scene</button>
+          </div>
+          <p class="mut" id="bv-msg" style="margin:8px 0 0"></p>
+        </div>
+        <div class="card"><h2>Quick scene</h2>
+          <p class="mut" style="margin-top:0">items — collection entries (<code>{"character": "slug"}</code>, <code>{"environment": "slug"}</code>) and UAP packages (<code>{"package": "pso_dc_forest01"}</code>):</p>
+          <textarea id="bv-items" rows="4" style="width:100%;font:13px ui-monospace,Consolas,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:6px">[
+  { "package": "pso_dc_forest01" },
+  { "package": "pso_v2_savage_wolf", "translation": [120, 0, 40], "scale": 1.0 }
+]</textarea>
+          <div class="bar" style="margin-top:8px">
+            <label style="color:var(--mut);font-size:13px"><input type="checkbox" id="bv-shot" checked> screenshot (PNG in chat)</label>
+            <button class="act pri" id="bv-run">Run bevy_scene</button>
+          </div>
+          <p class="mut" id="bv-run-msg" style="margin:8px 0 0"></p>
+        </div>
+      </div>
+      <div class="bar" style="margin-top:12px"><h3 style="margin:0">Scenes</h3><span class="mut" id="bv-scenes-sum"></span></div>
+      <table class="reg"><thead><tr><th>Name</th><th>Items</th><th>Updated</th><th></th></tr></thead><tbody id="bv-scenes"></tbody></table>
+      <div class="bar" style="margin-top:12px"><h3 style="margin:0">Renders</h3><span class="mut" id="bv-renders-sum"></span></div>
+      <div id="bv-renders" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start"></div>
+      <div class="bar" style="margin-top:12px"><h3 style="margin:0">Live windows on this node</h3></div>
+      <table class="reg"><thead><tr><th>Name</th><th>PID</th><th>Items</th></tr></thead><tbody id="bv-live-t"></tbody></table>
+    </div></section>
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
@@ -5441,6 +5484,80 @@ $("#tl-kind").onchange = e => { TL.kind = e.target.value; renderTools(); };
 document.querySelector('aside button[data-s="tools"]').addEventListener("click", () => TL.data || loadTools());
 
 
+// ---------------- Bevy: the gBox Bevy viewer (scenes, renders, live windows the LLM drives reactively) ----------------
+const BV = { data: null };
+const BV_DEMO = () => [{ package: "pso_dc_forest01" }, { package: "pso_v2_savage_wolf", translation: [120, 0, 40], scale: 1.0 }];
+async function bvJob(input, os) {
+  const req = { tool: "bevy_scene", input };
+  // "on this PC": a live window opens on this PC's worker (and its later ops must reach the same process)
+  if (S.workerName) req.require_worker = S.workerName; else if (os) req.require_os = os;
+  const r = await gbox.api("/api/jobs", req);
+  return r.ok ? r.data : { error: r.error };
+}
+async function loadBevy() {
+  const r = await gbox.api("/api/bevy");
+  if (!r.ok) { $BV_SUM(); return; }
+  const d = r.data; BV.data = d;
+  $BV_SUM();
+  const t = s => new Date(s * 1000).toLocaleString();
+  $("#bv-offer").innerHTML = [
+    ["viewer", d.viewer_built ? "built ✓" : "not built yet (first bevy_scene job compiles it)"],
+    ["collection characters", d.characters == null ? "?" : String(d.characters)],
+    ["captured environments", d.environments == null ? "?" : String(d.environments)],
+    ["saved scenes", String(d.scenes.length)],
+    ["renders", String(d.renders.length)],
+    ["live windows", d.live.length ? d.live.map(l => `${l.name} (pid ${l.pid})`).join(", ") : "none — bevy_scene op=open starts one"],
+  ].map(([k, v]) => `<span>${k}</span><span>${esc(String(v))}</span>`).join("");
+  $("#bv-scenes-sum").textContent = `${d.scenes.length} scene${d.scenes.length === 1 ? "" : "s"}`;
+  $("#bv-renders-sum").textContent = `${d.renders.length} render${d.renders.length === 1 ? "" : "s"}`;
+  $("#bv-scenes").innerHTML = d.scenes.length ? d.scenes.map(s => `<tr>
+      <td><b>${esc(s.name)}</b></td><td>${s.items}</td><td class="mut">${t(s.mtime)}</td>
+      <td><button class="act" data-bv-render="${esc(s.name)}">Render</button>
+          <button class="act" data-bv-open="${esc(s.name)}">Open live</button></td></tr>`).join("")
+    : `<tr><td colspan="4" class="mut">No scenes yet — run a scene above or ask the LLM for one.</td></tr>`;
+  $("#bv-renders").innerHTML = d.renders.length ? d.renders.map(n => {
+    const src = SBX.api ? `${SBX.api}/api/bevy/render/${encodeURIComponent(n.name)}.png?token=${encodeURIComponent(SBX.tok)}` : "";
+    return `<figure style="margin:0"><img src="${src}" alt="${esc(n.name)}" loading="lazy"
+        style="max-width:300px;max-height:220px;border:1px solid var(--line);border-radius:6px;background:#090a0e">
+        <figcaption class="mut" style="font-size:11px;margin-top:3px">${esc(n.name)}</figcaption></figure>`;
+  }).join("") : `<p class="mut" style="margin:0">No renders yet.</p>`;
+  $("#bv-live-t").innerHTML = d.live.length ? d.live.map(l =>
+      `<tr><td><b>${esc(l.name)}</b></td><td>${l.pid}</td><td>${l.items}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="mut">Nothing live on this node.</td></tr>`;
+}
+const $BV_SUM = () => {
+  const d = BV.data;
+  $("#bv-sum").textContent = d ? `viewer ${d.viewer_built ? "built" : "unbuilt"} · ${d.scenes.length} scenes · ${d.renders.length} renders · ${d.live.length} live` : "…";
+};
+const $BV_MSG = (id, text, ok = true) => { const el = $(id); el.textContent = text; el.className = "mut" + (ok ? "" : " bad"); };
+$("#bv-run").onclick = async () => {
+  let items;
+  try { items = JSON.parse($("#bv-items").value); } catch (e) { $BV_MSG("#bv-run-msg", "items is not valid JSON: " + e.message, false); return; }
+  $BV_MSG("#bv-run-msg", "dispatching bevy_scene…");
+  const j = await bvJob({ name: "scene", items, screenshot: $("#bv-shot").checked, camera: {} }, "windows");
+  $BV_MSG("#bv-run-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); the PNG appears in the chat when it finishes.`);
+};
+$("#bv-render").onclick = async () => { $BV_MSG("#bv-msg", "dispatching render…");
+  const j = await bvJob({ name: "scene", items: BV_DEMO(), screenshot: true }, "windows");
+  $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); the PNG appears in the chat when it finishes.`);
+};
+$("#bv-live").onclick = async () => { $BV_MSG("#bv-msg", "dispatching live viewer (first build takes several minutes)…");
+  const j = await bvJob({ name: "scene", op: "open", items: BV_DEMO() }, "windows");
+  $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}); a gBox · Bevy window opens on this PC. The LLM can then drive it (op=snapshot/set_camera/add/remove/close).`);
+};
+$("#bv-scenes").onclick = async e => {
+  const b = e.target.closest("button[data-bv-render], button[data-bv-open]");
+  if (!b) return;
+  const row = BV.data.scenes.find(s => s.name === b.dataset.bvRender || s.name === b.dataset.bvOpen);
+  const open = b.hasAttribute("data-bv-open");
+  const input = open ? { name: row.name, op: "open", items: row.src || [] }
+                     : { name: row.name, op: "render", items: [], screenshot: true };
+  const j = await bvJob(input, "windows");   // renders + live windows run on a Windows node (real display); its data dir is the shared gbox-data the Spark serves
+  $BV_MSG("#bv-msg", j.error ? j.error : `job ${j.id} queued (${j.state}).`);
+};
+document.querySelector('aside button[data-s="bevy"]').addEventListener("click", () => BV.data || loadBevy());
+
+
 // ---------------- screen recording (MP4 streamed to disk) ----------------
 const REC = { mr: null, t0: 0, timer: null, file: null };
 gbox.onRecordingCancelled(() => { REC.cancelled = true; if (REC.mr?.state === "recording") REC.mr.stop(); });
@@ -6010,6 +6127,7 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
 </script>
 <script src="issue-report.js"></script>
 <script src="../web/viz/asset-sidebar.js"></script>
+<script src="../web/viz/clip-player.js"></script>
 <script>
 (async () => {
   const settings = await gbox.settings(), token = await gbox.token(), host = document.querySelector('.app');

@@ -125,9 +125,10 @@ def test_load_names_from_data_file():
 def test_fighter_map_covers_twelve_roster():
     fighters = {k: s.FIGHTERS[k] for k in s.ROSTER}
     assert len(fighters) == 12
-    assert fighters["mario"] == (202, 204)
-    assert fighters["ness"] == (238, 240)
-    assert s.FIGHTERS["boss"] == (249, 250)
+    assert fighters["mario"] == (215, 217)   # US 202..204 shifted +13
+    assert fighters["ness"] == (251, 253)    # US 238..240 shifted +13
+    assert s.FIGHTERS["boss"] == (262, 263)  # US 249..250 shifted +13
+    assert s.FIGHTERS["mario"] == (s.us_to_eur(202), s.us_to_eur(204))
     assert len(s.POLYGON_TEAM) == 12
     for (lo, hi) in fighters.values():
-        assert 202 <= lo <= hi <= 248
+        assert 215 <= lo <= hi <= 261
