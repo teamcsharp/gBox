@@ -304,9 +304,9 @@ def _close_previous_games(ctx, keep: str = ""):
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
-            rewind.stop(sid)
-            ring_record.stop(sid)
+            sr = rewind.detach(sid)
             SESSIONS.pop(sid, None)
+            _teardown(sid, sr)
             continue
         if _session_ended_on_server(ctx, sid):
             # The control plane already ended this session (app relaunch, lost stop): nobody is playing it, so it is
@@ -325,19 +325,95 @@ def _close_previous_games(ctx, keep: str = ""):
     for sid, ad, _ in previous:
         if sid not in SESSIONS:
             continue
+        sr = rewind.detach(sid)                     # every game was saved above; the ring takes nothing more
         ad.stop_game()
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is None:
+            rewind.reattach(sid, sr, lambda sid=sid: sid in SESSIONS)
             raise RuntimeError('The previous emulator is still running; another game was not started')
         snapshot = next(s for s in checkpoints if s['session_id'] == sid)
         if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
-        rewind.stop(sid)
-        ring_record.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
+        _teardown(sid, sr)
     return checkpoints
+
+
+STOP_SAVE_CAP_S = 2.0          # Save & stop (only when the operator asks for it) waits at most this long for the save
+STOP_TEARDOWN_WAIT_S = 1.0     # rewind / gameplay-ring teardown awaited at most this long; the rest ends in the background
+
+
+def _within(fn, seconds: float, name: str):
+    """Run fn on a daemon thread and wait at most `seconds`: (finished, result, error)."""
+    box = {}
+
+    def run():
+        try:
+            box['result'] = fn()
+        except Exception as e:                       # noqa: BLE001 - reported to the caller
+            box['error'] = e
+    t = threading.Thread(target=run, daemon=True, name=name)
+    t.start()
+    t.join(max(0.0, seconds))
+    return not t.is_alive(), box.get('result'), box.get('error')
+
+
+def _teardown(sid: str, sr, wait: float = STOP_TEARDOWN_WAIT_S) -> bool:
+    """After the emulator is gone: close its rewind (gives the operator's save slot back, deletes the ring) and stop the
+    gameplay ring's ffmpeg. A checkpoint still waiting on the dead emulator, or ffmpeg finalising its last segment
+    (up to 8 + 5 s), went on the Stop button's clock before (#1504); now it finishes in the background."""
+    def work():
+        if sr is not None:
+            try:
+                sr.close()
+            except Exception as e:                   # noqa: BLE001
+                print(f'gBox: rewind teardown of {sid} failed: {e}', flush=True)
+        try:
+            ring_record.stop(sid)
+        except Exception as e:                       # noqa: BLE001
+            print(f'gBox: gameplay ring teardown of {sid} failed: {e}', flush=True)
+    return _within(work, wait, f'session-teardown-{sid}')[0]
+
+
+def _stop_session(sid: str, args: dict, ctx) -> dict:
+    """Stop = the emulator's process tree killed now (#1504). A save happens only when the operator asked for one
+    (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
+    ad, _ = SESSIONS[sid]
+    t0 = time.monotonic()
+    timings, saved = {}, None
+    if args.get('save'):
+        cap = float(args.get('save_cap_s') or STOP_SAVE_CAP_S)
+
+        def save():
+            with rewind.guard(sid, 'save_state'):
+                return ad.save_state()
+        done, res, err = _within(save, cap, f'stop-save-{sid}')
+        if done and err is None:
+            saved = res if isinstance(res, dict) else {'value': str(res)[:200]}
+        else:
+            saved = {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else f'the save took longer than {cap:g} s'}
+        timings['save_s'] = round(time.monotonic() - t0, 3)
+    sr = rewind.detach(sid)
+    t = time.monotonic()
+    res = ad.stop_game()
+    timings['kill_s'] = round(time.monotonic() - t, 3)
+    proc = getattr(ad, 'proc', None)
+    if proc is not None and proc.poll() is None:
+        rewind.reattach(sid, sr, lambda: sid in SESSIONS)
+        raise RuntimeError('Emulator process is still running; stop was not confirmed')
+    SESSIONS.pop(sid, None)
+    track_emulator(ctx.config, sid, None, add=False)
+    t = time.monotonic()
+    timings['teardown_done'] = _teardown(sid, sr)
+    timings['teardown_s'] = round(time.monotonic() - t, 3)
+    timings['total_s'] = round(time.monotonic() - t0, 3)
+    out = dict(res) if isinstance(res, dict) else {'value': str(res)[:200]}
+    out['timings'] = timings
+    if saved is not None:
+        out['save'] = saved
+    return {'result': out, 'session_id': sid, 'ended': True}
 
 
 @tool("launch_game", "1.2", LaunchIn, LaunchOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=900,
@@ -784,6 +860,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
         return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
+    if inp.op == "stop_game":
+        return _stop_session(inp.session_id, inp.args or {}, ctx)
     if inp.op == "send_input":                                       # controller glyph shows gBox's presses
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
@@ -807,16 +885,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
             res["frame"] = sha256(png)
         except Exception:
             pass
-    if inp.op == "stop_game":
-        proc = getattr(ad, 'proc', None)
-        if proc is not None and proc.poll() is None:
-            raise RuntimeError('Emulator process is still running; stop was not confirmed')
-        rewind.stop(inp.session_id)
-        ring_record.stop(inp.session_id)
-        SESSIONS.pop(inp.session_id, None)
-        track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
-            "ended": inp.op == "stop_game"}
+            "ended": False}
 
 
 # --- background gameplay ring (#1084) -------------------------------------------------------

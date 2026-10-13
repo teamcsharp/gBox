@@ -82,6 +82,10 @@ def _checkpoint_slot(result: dict, adapter: str) -> int:
     return actual
 
 
+def _is_stop_job(job: dict) -> bool:
+    return job.get("tool") == "session_op" and (job.get("input") or {}).get("op") == "stop_game"
+
+
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
     token = config.token()
@@ -89,6 +93,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.store = store
     from .character_collection import AutoCollection
     auto_collection = AutoCollection(store, config)
+    stopping: dict[str, str] = {}                  # session id -> its pending stop job (GET /api/sessions "stopping")
 
     @app.on_event("startup")
     async def _more_threads():
@@ -1278,7 +1283,8 @@ def create_app(config: Config) -> FastAPI:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
-            for j in store.queued_jobs():
+            # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
+            for j in sorted(store.queued_jobs(), key=lambda j: not _is_stop_job(j)):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
@@ -1583,6 +1589,8 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
+            stopping[inp["session_id"]] = job.id
         if job.state == JobState.REJECTED and not job.parent_request_id and (
                 (t.name == "characters" and inp.get("op") in ("use", "live_use", "swap"))
                 or (t.name == "mod" and inp.get("op") == "apply")
@@ -2080,8 +2088,21 @@ def create_app(config: Config) -> FastAPI:
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
-            out.append(s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None})
+            row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
+            if s_.get("state") == "running" and _stopping(s_["session_id"]):
+                row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
+            out.append(row)
         return out
+
+    def _stopping(sid: str) -> bool:
+        """A stop job for this session is queued or running (the record turns 'ended' when the worker confirms)."""
+        jid = stopping.get(sid)
+        if not jid:
+            return False
+        if (store.get("job", jid) or {}).get("state") in (JobState.QUEUED, JobState.RUNNING):
+            return True
+        stopping.pop(sid, None)
+        return False
 
     @app.get("/api/sessions/{sid}/observers")
     def session_observers(sid: str, actor=Depends(auth)):

@@ -71,14 +71,16 @@ class Adapter:
 
 
 def _kill_tree(proc: subprocess.Popen | None):
+    """Kill the emulator's own process tree now (#1504): taskkill /T /F on the emulator's PID only (TerminateProcess
+    for it and the children it started), SIGTERM on Linux; nothing else on the machine is touched."""
     if not proc or proc.poll() is not None:
         return
     if HOST_OS == "windows":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10)
     else:
         proc.terminate()
     try:
-        proc.wait(10)
+        proc.wait(3)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(5)  # No successful stop until the native process has actually exited.
@@ -757,6 +759,8 @@ class RetroArchAdapter(CommandAdapter):
                 "cache_directory": d["extract"],
                 "screenshot_directory": d["screenshots"], "network_cmd_enable": "true", "network_cmd_port": self.addr[1],
                 "config_save_on_exit": "false", "pause_nonactive": "false",
+                # in-game saves (SRAM) reach the disk every 5 s while playing, so Stop can kill RetroArch at once (#1504)
+                "autosave_interval": "5",
                 # network gamepad: gBox presses buttons over UDP, so input works whatever window has focus (docked on Windows,
                 # DirectInput ignores injected keys because the emulator isn't the top-level foreground window)
                 "network_remote_enable": "true", "network_remote_enable_user_p1": "true", "network_remote_base_port": self._remote_port(),
@@ -1065,17 +1069,18 @@ class RetroArchAdapter(CommandAdapter):
             return ""
 
     def stop_game(self) -> dict:
+        # Killed at once (#1504). The old QUIT + wait(5) never ended a Windows session by itself (exit code 1 = the kill
+        # that followed, median stop 5.5 s) and left the checkpoint ring time to start a save into a quitting RetroArch.
+        # In-game saves are not lost: the session cfg flushes SRAM every few seconds (autosave_interval).
         if self.stream:
             self.stream.close()
-        try:
-            self.cmd("QUIT")
-            self.proc and self.proc.wait(5)
-        except Exception:
-            pass
         _kill_tree(self.proc)
         if self.display:
             self.display.close()
         return {"returncode": self.proc.poll() if self.proc else None}
+
+    def _exited(self) -> bool:
+        return bool(self.proc is not None and self.proc.poll() is not None)
 
     def cmd(self, text: str, reply: bool = False, timeout: float = 2.0) -> str | None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -1166,6 +1171,8 @@ class RetroArchAdapter(CommandAdapter):
             previous = None
             validation_error = None
             while time.monotonic() < deadline:
+                if self._exited():                         # stopped meanwhile: no file is coming, don't hold the stop
+                    raise RuntimeError('RetroArch exited before the save state was written')
                 with self.log_path.open('rb') as stream:
                     stream.seek(max(offset, self.log_path.stat().st_size - 65536))
                     text = stream.read(65536).decode('utf-8', 'replace')
