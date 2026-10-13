@@ -4,6 +4,7 @@ These tests run on the Linux build host using synthetic Steam installs; they nev
 need a real Windows Steam client because every path can be passed through a Config.
 """
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -199,3 +200,114 @@ def test_ue_steam_tool_status_not_installed(tmp_path: Path):
     from gbox.registry import REGISTRY
     out = REGISTRY["ue_steam"].fn(ue_steam.UESteamIn(op="status", appid="12345"), ctx)
     assert out["result"]["installed"] is False
+
+
+# ---------------------------------------------------------------------- pak ops (synthetic paks, no game data)
+
+@pytest.fixture
+def pak_game(tmp_path: Path):
+    import ue_synth as S
+    gd = _make_steam_root(tmp_path, "4242", "SynthGame")
+    paks = gd / "Game" / "Content" / "Paks"
+    paks.mkdir(parents=True)
+    (paks / "Game-WindowsNoEditor.pak").write_bytes(S.build_pak(S.game_files(), 11, "Zlib", block_size=0x800))
+    # A patch pak overriding the ini, and a non-Unreal Chromium resources.pak that must be skipped.
+    (paks / "Game-WindowsNoEditor_P.pak").write_bytes(S.build_pak({"Game/Config/DefaultGame.ini": b"patched"}, 11))
+    (gd / "resources.pak").write_bytes(b"\x05\x00\x00\x00" + b"\0" * 200)
+    (gd / "Engine" / "Build").mkdir(parents=True)
+    (gd / "Engine" / "Build" / "Build.version").write_text(json.dumps({"MajorVersion": 4, "MinorVersion": 27, "PatchVersion": 2}))
+    cfg = config.Config(steam_root=tmp_path / "steam", data_dir=tmp_path / "data")
+    return gd, cfg
+
+
+def _op(cfg, **kw):
+    ctx = Ctx(cfg)
+    return ue_steam.ue_steam_tool(ue_steam.UESteamIn(appid="4242", title="Synth", **kw), ctx)["result"], ctx
+
+
+def test_inventory_manifest(pak_game):
+    gd, cfg = pak_game
+    r, ctx = _op(cfg, op="inventory")
+    assert r["safe"] and r["engine"]["minor"] == 27
+    assert {p["status"] for p in r["paks"]} == {"ok"}                   # resources.pak dropped as not_unreal
+    assert r["counts"]["skeletal_mesh"] == 1 and r["counts"]["skeleton"] == 1 and r["counts"]["animation"] == 1
+    assert r["counts"]["pawn_actors"] == 2                                # BP_Hero (Character) and BP_Villain (BP_Hero)
+    hero = next(a for a in r["actors"] if a["class"] == "BP_Hero_C")
+    assert hero["pawn_base"] == "Character" and hero["skeletal_meshes"] == ["/Game/Char/SK_Test.SK_Test"]
+    man = json.loads(Path(r["manifest"]).read_text())
+    assert man["schema"] == "gbox.ue_inventory/1" and man["assets"]["animation"][0]["export"] == "Run_Fwd"
+    assert Path(r["manifest"]).is_relative_to(cfg.data_dir)
+    assert [a[0] for a in ctx.artifacts] == ["ue_inventory.json"]
+
+
+def test_list_files_and_patch_override(pak_game):
+    gd, cfg = pak_game
+    r, _ = _op(cfg, op="list_files", paths=["*.ini"])
+    assert r["matched"] == 1 and r["entries"][0]["size"] == len(b"patched")
+
+
+def test_extract_writes_outside_the_install_only(pak_game):
+    gd, cfg = pak_game
+    before = sorted(p.relative_to(gd).as_posix() for p in gd.rglob("*"))
+    r, _ = _op(cfg, op="extract", paths=["SK_Test"])
+    got = sorted(Path(x["path"]).name for x in r["extracted"])
+    assert got == ["SK_Test.uasset", "SK_Test.uexp"]
+    for x in r["extracted"]:
+        assert Path(x["file"]).is_file() and not Path(x["file"]).resolve().is_relative_to(gd.resolve())
+    assert sorted(p.relative_to(gd).as_posix() for p in gd.rglob("*")) == before     # install untouched
+    r, _ = _op(cfg, op="extract")
+    assert "paths" in r["error"]
+    with pytest.raises(ValueError, match="game install"):
+        _op(cfg, op="extract", paths=["SK_Test"], out_dir=str(gd / "out"))
+
+
+def test_export_glb_and_skeleton(pak_game):
+    gd, cfg = pak_game
+    r, ctx = _op(cfg, op="export", paths=["Char/SK_Test"])
+    assert r["glb_count"] == 1 and r["skeleton_count"] == 1
+    mesh = next(x for x in r["results"] if x.get("glb"))
+    assert mesh["vertices"] == 4 and mesh["bones"] == 3 and Path(mesh["glb"]).read_bytes()[:4] == b"glTF"
+    assert [a[0] for a in ctx.artifacts] == ["SK_Test.glb"]
+    r, _ = _op(cfg, op="export", paths=["Char/SK_Test"], engine="4.21")
+    assert any("SerializeRenderItem_Legacy" in b for b in r["blockers"])
+
+
+def test_pak_ops_refuse_anticheat_before_opening_archives(pak_game, monkeypatch):
+    gd, cfg = pak_game
+    be = gd / "Game" / "Binaries" / "Win64" / "BattlEye"
+    be.mkdir(parents=True)
+    (be / "BEClient_x64.dll").write_bytes(b"MZ")
+
+    def _boom(*a, **k):
+        raise AssertionError("archives must not be opened for an anti-cheat game")
+
+    monkeypatch.setattr(ue_steam, "GameArchive", _boom)
+    for op in ("list_files", "inventory", "extract", "export"):
+        r, _ = _op(cfg, op=op, paths=["x"])
+        assert r["safe"] is False and any("BattlEye" in p for p in r["anticheat_files"])
+
+
+def test_encrypted_game_reports_key_needed(tmp_path):
+    import ue_synth as S
+    gd = _make_steam_root(tmp_path, "4242", "Locked")
+    (gd / "Locked.pak").write_bytes(S.build_pak(S.game_files(), 11, encrypt_index=True))
+    cfg = config.Config(steam_root=tmp_path / "steam", data_dir=tmp_path / "data")
+    r, _ = _op(cfg, op="inventory")
+    assert r["paks"][0]["status"] == "encrypted" and "AES" in r["paks"][0]["error"]
+    assert "no readable" in r["error"]
+
+
+def test_engine_version_from_launcher_release_string(tmp_path):
+    gd = tmp_path / "G"
+    gd.mkdir()
+    blob = b"MZ" + b"\0" * 64 + "++UE4+Release-4.26".encode("utf-16-le") + b"\0" * 8
+    blob += "VS_VERSION_INFO".encode("utf-16-le") + b"\0" * 4 + b"\xbd\x04\xef\xfe" + struct.pack("<IIII", 0x10000, (4 << 16) | 26, 2 << 16, 0)
+    (gd / "G.exe").write_bytes(blob)
+    v = ue_steam.engine_version(gd)
+    assert (v["major"], v["minor"], v["patch"]) == (4, 26, 2) and "release string" in v["source"]
+
+
+def test_resolve_engine_falls_back_to_pak_version(tmp_path):
+    e = ue_steam.resolve_engine(tmp_path, "", [{"status": "ok", "version": 4}])
+    assert (e["major"], e["minor"]) == (4, 19) and "guessed" in e["source"]
+    assert ue_steam.resolve_engine(tmp_path, "4.25")["minor"] == 25
