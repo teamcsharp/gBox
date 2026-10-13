@@ -98,6 +98,8 @@ class _Bits:
 
     def _fill(self, need: int):
         while self.n < need:
+            if self.pos >= len(self.words):
+                raise EDLError("bit stream ends before the end-of-stream bit")
             self.buf |= self.words[self.pos] << self.n
             self.pos += 1
             self.n += 32
@@ -153,7 +155,10 @@ def decompress_method1(data: bytes, unpacked: int, start: int = 0xC) -> bytes:
     lit = dist = None
     while True:
         if bits.get(1) == 0:
-            for _ in range(bits.get(15)):
+            n = bits.get(15)
+            if len(out) + n > unpacked:
+                raise EDLError(f"stored block of {n} overruns unpacked size {unpacked}")
+            for _ in range(n):
                 out.append(bits.get(8))
         else:
             for which in ("lit", "dist"):
@@ -186,6 +191,8 @@ def decompress_method1(data: bytes, unpacked: int, start: int = 0xC) -> bytes:
                 if d >= len(DIST_BASE):
                     raise EDLError(f"distance symbol {d}")
                 back = DIST_BASE[d] + (bits.get(DIST_EXTRA[d]) if DIST_EXTRA[d] else 0) + 1
+                if len(out) + length > unpacked:
+                    raise EDLError(f"match overruns unpacked size {unpacked}")
                 if back > len(out):
                     raise EDLError(f"distance {back} before start of output ({len(out)})")
                 p = len(out) - back
