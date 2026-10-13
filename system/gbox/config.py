@@ -4,6 +4,7 @@ import platform
 import secrets
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -69,7 +70,7 @@ class AudioCppConfig(BaseModel):
     tts_family: str = "kokoro_tts"
     tts_model: str | None = None      # path; unset = the Kokoro GGUF found under models_dir
     tts_voice: str = "af_heart"       # the voice used when a request names none
-    tts_language: str = "en-us"
+    tts_language: str = ""            # "" = from the voice prefix (Kokoro: af_/am_ en-us, bf_/bm_ en-gb ...)
     stt_family: str = "qwen3_asr"
     stt_model: str | None = None      # path; unset = the Qwen3-ASR package found under models_dir
     stt_language: str = "en"
@@ -84,7 +85,7 @@ class AudioCppConfig(BaseModel):
 
 class VoiceConfig(BaseModel):
     """[voice] which speech assistant answers first and what happens when it is busy (docs/audio_cpp.md)."""
-    default_assistant: str = "director"   # director (Pine Box Voice Director + Wyoming whisper) | audio_cpp
+    default_assistant: Literal["director", "audio_cpp"] = "director"   # director = Pine Box Voice Director + Wyoming whisper
     fallback: bool = True                 # the other assistant takes a request when the default is busy or down
     director_slots: int = 1               # requests the Director serves at once; further ones go to audio.cpp in parallel
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long

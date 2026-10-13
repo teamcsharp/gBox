@@ -3042,6 +3042,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "sprite_capture",   # sprite_capture: a 2D sprite's animation (PNG sequence, sheet, preview, MP4) from the live game
                               "mk64_items",    # mk64_items: Mario Kart 64 items (always have / infinite items per player)
                               "gta_mods_tool",   # gta_mods_tool: PS2 GTAs (car jump, ped rain, ...)
+                              "audio_cpp",     # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "stranglehold")):   # stranglehold: PS3 bullet-time interception systems and chat driver
     import importlib
     import subprocess
