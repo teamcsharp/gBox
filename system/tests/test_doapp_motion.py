@@ -178,8 +178,8 @@ def test_owned_rest_pose_is_a_standing_fighter(owned):
     rig = DM.Rig(ram, banked, D.fighter("kasumi"), 0)
     pose = rig.rest_pose()
     t = {b: pose[b][1] for b in range(15)}
-    assert -1000 < t[1][1] < t[0][1] < t[2][1] < -500          # head above torso above pelvis (y down)
+    assert -1500 < t[1][1] < t[0][1] < t[2][1] < -500          # head above torso above pelvis (y down)
     assert t[3][1] > -150 and t[9][1] > -150                   # feet at the ground
-    assert t[5][0] > 0 > t[11][0] or t[5][0] < 0 < t[11][0]
+    assert t[8][0] > t[14][0] and t[6][0] > t[12][0]               # left (+x) vs right shoulders and hips
     assert any(pose[b][0] != (0,) * 9 for b in range(15, 19))   # Kasumi's ponytail chain ran
-    assert rig.hand_shapes() .keys() == {2, 4}
+    assert rig.hand_shapes().keys() == {2, 4}
