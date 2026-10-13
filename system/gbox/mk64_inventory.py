@@ -4,8 +4,8 @@ The favorite is "Mario Kart 64 (USA)" (game 7f5c674909d63b5f): a hyperspin zip h
 byteswapped .n64 (v64 halfword order) ROM whose z64-normalized sha1 579c48e2... is No-Intro
 "Mario Kart 64 (USA)" and the n64decomp/mk64 `mk64.us.z64` (the single US revision).
 Header: image "MARIOKART64", manufacturer 'N', cart id "KT", country 'E' (USA), revision 0.
-The stored boot CRC pair is (0x00001446, 0x3E5055B6); the CIC-6102 algorithm over
-0x1000..0x101000 reproduces the stored CRC2, so CIC = 6102.
+The header (0x0C) records libultra release 0x1446; the boot CRC pair sits at 0x10/0x14 and the
+CIC-6102 checksum over 0x1000..0x101000 reproduces it, so CIC = 6102.
 
 Container layout: zip -> one 12 MiB .n64 ROM; there is no inner filesystem. Assets are
 sixteen link-time segments 0x0..0xF (mk64 wiki: seg 0 code, seg 1 gfx pool, seg 2 fonts/UI/
@@ -56,11 +56,13 @@ SEGMENTS = {
 def identify(rom: bytes) -> dict:
     """Header identity on big-endian ROM bytes."""
     from .sm64_writer import crc6102
-    crc = struct.unpack_from(">II", rom, 0x0C)
+    if len(rom) < 0x40:
+        raise ValueError("N64 ROM shorter than its 0x40-byte header")
+    release = struct.unpack_from(">I", rom, 0x0C)[0]
+    crc = struct.unpack_from(">II", rom, 0x10)          # CRC1, CRC2 (0x0C is the libultra release)
     country = rom[0x3E:0x3F].decode("ascii", "replace")
     cic = "unknown"
-    # MK64 stores CRC2 = crc6102 over 0x1000..0x101000; CRC1 (0x1446) is the boot block sum.
-    if len(rom) >= 0x101004 and crc6102(rom)[0] == crc[1]:
+    if len(rom) >= 0x101000 and crc6102(rom) == crc:
         cic = "6102"
     return {
         "size": len(rom),
@@ -70,6 +72,7 @@ def identify(rom: bytes) -> dict:
         "country": COUNTRY.get(country, country),
         "version": rom[0x3F],
         "entry": hex(struct.unpack_from(">I", rom, 8)[0]),
+        "libultra_release": hex(release),
         "header_crc": [hex(crc[0]), hex(crc[1])],
         "cic": cic,
         "md5": hashlib.md5(rom).hexdigest(),
