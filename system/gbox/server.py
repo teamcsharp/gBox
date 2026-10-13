@@ -90,7 +90,10 @@ def _is_stop_job(job: dict) -> bool:
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
     token = config.token()
+    from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
+    cache_tiers.install(config)
     app = FastAPI(title="gBox", version="0.1.0")
+    app.add_middleware(cache_tiers.TouchMiddleware)   # API traffic naming a game keeps it off the demotion list
     app.state.store = store
     from .character_collection import AutoCollection
     auto_collection = AutoCollection(store, config)
@@ -119,6 +122,7 @@ def create_app(config: Config) -> FastAPI:
     asset_library.routes(app, store, config, auth)
     from . import built_mods                      # built mod folders in the cache, joined with their mod cards
     built_mods.routes(app, store, config, auth)
+    cache_tiers.routes(app, config, auth)         # GET /api/cache/tiers, POST /api/cache/tiers/pin
 
     # --- shell ---
     @app.get("/")
@@ -553,6 +557,10 @@ def create_app(config: Config) -> FastAPI:
                 "reference": {"slug": best["slug"], "name": best["name"],
                               "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
                               "roles": (best.get("rig") or {}).get("roles") or {}}}
+
+    # replacement readiness (gbox/replacement_readiness.py): who can replace a slot, where a donor fits, gaps per game
+    from . import replacement_readiness
+    replacement_readiness.routes(app, auth, _chars, catalog=store.catalog_get)
 
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
@@ -2624,6 +2632,7 @@ def create_app(config: Config) -> FastAPI:
     def modfiles(gid: str, name: str, actor=Depends(auth)):
         """The central mod collection (this Spark): any gBox machine fetches a built mod from here before launching it."""
         from . import filemods
+        cache_tiers.touch(gid, queue=True)        # cold: answered from the HDD now (sidecar), moved up when idle
         d = _mod_root(gid, name)
         if not (d / ".gbox-mod.json").exists():
             raise HTTPException(404, "not in the collection")
@@ -2644,6 +2653,8 @@ def create_app(config: Config) -> FastAPI:
     @app.put("/api/modfiles/{gid}/{name}/file/{path:path}")
     async def modfile_put(gid: str, name: str, path: str, request: Request, actor=Depends(auth)):
         """A machine that built a mod hands it to the collection (streamed to disk; .part until complete)."""
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(cache_tiers.ensure_hot, gid)   # new writes land on the hot tier
         d = _mod_root(gid, name)
         from . import filemods
         try:

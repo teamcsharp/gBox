@@ -172,6 +172,11 @@ def read_folder(folder: Path, st: os.stat_result | None = None) -> dict | None:
     return rec
 
 
+def _tier_link(path: str) -> bool:
+    from . import cache_tiers
+    return cache_tiers.is_tier_link(path)
+
+
 def _mod_dirs(root: Path):
     """(game_id, mod, path, marker stat) of every candidate build: two directory levels and one marker stat each."""
     try:
@@ -180,8 +185,8 @@ def _mod_dirs(root: Path):
         return
     for g in games:
         try:
-            if not _safe_component(g.name) or not g.is_dir(follow_symlinks=False):
-                continue
+            if not _safe_component(g.name) or not (g.is_dir(follow_symlinks=False) or _tier_link(g.path)):
+                continue                                             # (a game demoted to the cold tier is a symlink)
             mods = sorted(os.scandir(g.path), key=lambda e: e.name)
         except OSError:
             yield g.name, None, None, None                         # this game's folder could not be listed
@@ -832,7 +837,7 @@ def image_path(config, game_id: str, mod: str, name: str) -> Path:
         raise ValueError("bad mod")
     root = mods_root(config).resolve()
     folder = (root / game_id / mod)
-    if not folder.resolve().is_relative_to(root / game_id) or not (folder / MARKER).is_file() or (folder / STAGED_MARK).exists():
+    if not folder.resolve().is_relative_to((root / game_id).resolve()) or not (folder / MARKER).is_file() or (folder / STAGED_MARK).exists():
         raise ValueError("no such built mod")
     parts = name.split("/") if isinstance(name, str) else []
     if not parts or len(parts) > 2 or any(not _safe_component(p) for p in parts) or (len(parts) == 2 and parts[0] not in PREVIEW_DIRS):
