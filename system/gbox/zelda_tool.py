@@ -3,7 +3,10 @@
 ops: games | list | give (item, count) | equip (item, button) | remove (item) | all_items | noclip (on) | unrestrict (alias any_age /
      any_form: 'let me use/equip anything') | hearts (count) | rupees (count) | max (full hearts, rupees, ammo) |
      skip_text (alias skip / skip_talk / talk / text: press the advance button until the current text box or
-     cutscene ends; count = max seconds, default 90, capped below the tool timeout).
+     cutscene ends; count = max seconds, default 90, capped below the tool timeout) |
+     catalog (alias screen / equip_screen: the game's whole item table grouped into inventory / equipment / upgrades,
+     which items can go on a button, plus the live save values when a save is loaded; the desktop client draws it as the
+     Equip screen card, #212).
 Items are taken by NAME ("hook shot", "bow", "the master sword", "bombs", "bottle"...), fuzzy-matched per game.
 Games, tables and sources: gbox/zelda_games.py. Ocarina of Time delegates to gbox/oot.py (v1.2 SaveContext).
 Every item op returns before/after bytes of what it touched and verified = read-back equals what was written.
@@ -749,6 +752,90 @@ def _skip_text(ad, m: Mem, g: dict, max_s: float = 0, hold: float = 0.1, gap: fl
     return out
 
 
+# --- item catalog: the Equip screen (#212) -----------------------------------------------------------------------------------
+# The whole item table of the running game, grouped for a scrolling card, with the live save values when a save is loaded.
+# Needs no gameplay state (the card opens on the title screen too); ops are dispatched by the client through give / equip /
+# unrestrict afterwards.
+
+CATALOG_OPS = ("catalog", "screen", "equip_screen", "item_screen", "items_screen", "table")
+CATALOG_GROUPS = ("inventory", "equipment", "upgrades")
+_GEAR_NAME = re.compile(r"sword|shield|tunic|mail|boots|bracelet|glove|mitt|gauntlet|ring\b|flippers|pearl|cape|armor|raft|ladder|"
+                        r"power|scale\b|necklace")
+_UPGRADE_NAME = re.compile(r"upgrade|wallet|quiver|bomb bag|^magic$|half magic|double magic|heart|container|pendant|crystal|"
+                           r"medallion|song|instrument|^all |full inventory|triforce|^max ")
+
+
+def catalog_group(name: str, sp: dict) -> str:
+    """inventory (button items, bottles, trade goods) | equipment (worn gear) | upgrades (capacities, quest progress)."""
+    if sp.get("gear") or sp["k"] == "nib":
+        return "equipment"
+    if _UPGRADE_NAME.search(name):
+        return "upgrades"
+    if _GEAR_NAME.search(name):
+        return "equipment"
+    return "inventory"
+
+
+def _button_item(g: dict, sp: dict) -> bool:
+    """True when `equip` can put this item on one of the game's item buttons (mirrors _equip's accepted shapes)."""
+    kinds = {k for k, _ in g.get("equip", {}).values()}
+    if sp.get("gear") or sp["k"] == "nib":
+        return False
+    if "oot_c" in kinds:
+        return bool(sp.get("c"))
+    if "slotidx" in kinds:
+        return "slot" in sp
+    if "menu" in kinds:
+        return "menu" in sp
+    if "slot" in kinds:
+        return sp["k"] == "slot"
+    if "id" in kinds:
+        return (sp["k"] == "inv2" and sp.get("id", sp.get("v", 0)) <= 0x1F) or (sp["k"] == "fn" and sp["fn"] == "mc_bottle")
+    return False
+
+
+def catalog_equip(g: dict, sp: dict, group: str):
+    """'button' (goes on an item button) | 'worn' (owning it equips it) | None (passive: Give is all there is)."""
+    if not g.get("equip"):
+        return None
+    if sp.get("gear") or sp["k"] == "nib":
+        return "worn"
+    if _button_item(g, sp):
+        return "button"
+    worn_kinds = any(k in ("menu", "slotidx") for k, _ in g["equip"].values())
+    return "worn" if group == "equipment" and worn_kinds else None
+
+
+def _default_count(sp: dict):
+    for s in [sp] + list(sp.get("also", [])):
+        if s["k"] == "cnt":
+            return s["d"]
+    return None
+
+
+def catalog(ad, g: dict, platform: str) -> dict:
+    items = []
+    for name, sp in g["items"].items():
+        if sp.get("dx") and platform != "gbc":
+            continue
+        group = catalog_group(name, sp)
+        items.append({"name": name, "group": group, "equip": catalog_equip(g, sp, group), "count": _default_count(sp)})
+    out = {"catalog": {"game": g["name"], "groups": list(CATALOG_GROUPS), "items": items, "buttons": list(g.get("equip", {})),
+                       "default_button": g.get("default_button"), "unrestrict": bool(g.get("unrestrict")),
+                       "noclip": bool(g.get("noclip")), "all_items": bool(g.get("all")),
+                       "hearts": "hearts" in g, "rupees": "rupees" in g},
+           "state": None}
+    try:                                                   # live values: only with a save loaded and Link on screen
+        m = Mem(ad, platform)
+        m.base = g.get("base", 0)
+        m.remap = g["remap"](ad) if g.get("remap") else None
+        _ready(m, g)
+        out["state"] = _listing(m, g)
+    except Exception as e:
+        out["note"] = f"live values unavailable until a save is loaded: {e}"
+    return out
+
+
 def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: int = 0, button: str = "",
         on: bool = True) -> dict:
     """Engine entry (also used by tests through a shim adapter)."""
@@ -762,6 +849,8 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
     if op == "games":
         return {"games": {k: {"name": g["name"], "platforms": g["platforms"]} for k, g in GAMES.items()}}
     key, g = detect(title, platform)
+    if op in CATALOG_OPS:
+        return {"game": g["name"], "op": "catalog", **catalog(ad, g, platform)}
     if g.get("delegate"):
         return g["delegate"](ad, g, op, item, count, button)
     m = Mem(ad, platform)
@@ -853,7 +942,7 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
     elif op == "skip_text":
         res.update(_skip_text(ad, m, g, count))
     elif op != "noclip":
-        raise ValueError("op: games | list | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip | skip_text")
+        raise ValueError("op: games | list | catalog | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip | skip_text")
     if g.get("hud_refresh") and m.log:
         m.poke(g["hud_refresh"][0], bytes([m.u8(g["hud_refresh"][0]) | g["hud_refresh"][1]]))
     res["changes"] = m.changes()
@@ -865,7 +954,7 @@ def run(ad, title: str, platform: str, op: str = "list", item: str = "", count: 
 
 class ZeldaIn(BaseModel):
     session_id: str
-    op: str = "list"           # games | list | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip | skip_text
+    op: str = "list"           # games | list | catalog | give | equip | remove | all_items | unrestrict | hearts | rupees | max | noclip | skip_text
     item: str = ""             # by name: "hookshot", "hook shot", "master sword", "bombs", "bottle", "fire arrows"...
     count: int = 0             # give: ammo/amount; hearts: how many; rupees: how many
     button: str = ""           # equip: b | a | y | x | c-left | c-down | c-right (default: the game's main item button)

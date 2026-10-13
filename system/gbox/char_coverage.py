@@ -20,6 +20,9 @@ WRITERS = [
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
+    ("gta_vc_swap", ["player", "ped:<dff name>", "peds:all", "all"],
+     "Tommy (player.dff/.txd), one ped or every ped on his skeleton in a rebuilt models/gta3.img (classic RenderWare PC "
+     "port only; the owned install is the UE4 Definitive Edition, which use() detects and reports as a gap)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
@@ -28,12 +31,17 @@ WRITERS = [
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
-    ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
+    ("pso_player", ["player", "enemy:<name>", "enemies"],
+     "a PSO class (Ninja node tree, not drawn by the game yet); enemy:booma / gobooma / gigobooma / boomas or any BM_ENE "
+     "pack on the enemy's own motions (gbox.pso_enemy, unverified in game)"),
     ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
      "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
     ("crazy_taxi", ["player"], "Crazy Taxi GC: Axel the driver (15 rigid .shp parts + hand/head variants and sl_ LODs)"),
+    ("clayfighter_swap", ["fighter:<name>", "player"],
+     "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
+     "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
@@ -75,6 +83,26 @@ def writer_for(game: dict) -> dict | None:
     if o is not None and getattr(o, "is_oot", None) and o.is_oot(game):
         return {"writer": "gbox.oot_swap", "routed": "oot_swap.tool(" in src, "slots": SPECIAL[1][2], "replaces": SPECIAL[1][3]}
     return None
+
+
+def cast_slots(game: dict) -> list[dict]:
+    """The slots a game's writer can put a collection character into, for the cast menu (characters op=collect
+    "slots"): the writer module's own list (cast_slots(): PSO's enemies, gbox.pso_enemy.slots) plus the fixed slot
+    names from WRITERS (placeholders like enemy:<family> are left to the module)."""
+    w = writer_for(game)
+    if not w or not w["routed"]:
+        return []
+    out: list[dict] = []
+    m = _mod(w["writer"].split(".")[-1])
+    if m is not None and callable(getattr(m, "cast_slots", None)):
+        try:
+            out += [dict(s, writer=s.get("writer", w["writer"])) for s in m.cast_slots()]
+        except Exception:                                  # noqa: BLE001 - a writer that can't list keeps its fixed slots
+            pass
+    for s in w["slots"]:
+        if "<" not in s and not any(o.get("slot") == s for o in out):
+            out.append({"slot": s, "name": s, "kind": "player" if s == "player" else "slot", "writer": w["writer"]})
+    return out
 
 
 def extractor_for(game: dict) -> tuple[str | None, list[dict]]:

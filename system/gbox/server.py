@@ -989,7 +989,10 @@ def create_app(config: Config) -> FastAPI:
     # --- tools & workers ---
     def workers() -> list[dict]:
         now = time.time()
-        return [w | {"online": now - w["last_seen"] < WORKER_TTL} for w in store.all("worker")]
+        from . import background_testing
+        ex = background_testing.excluded(store)
+        return [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex)}
+                for w in store.all("worker")]
 
     @app.get("/api/tools")
     def list_tools(actor=Depends(auth)):
@@ -1060,8 +1063,10 @@ def create_app(config: Config) -> FastAPI:
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
         online = [w for w in workers() if w["online"] and w["os"] == "windows"]
-        capable = [w for w in online if tool in (w.get("tools") or [])]
+        capable = [w for w in online if tool in (w.get("tools") or []) and w.get("background_testing", True)]
         if len(online) < 2 or not capable:
+            if online and not any(w.get("background_testing", True) for w in online):
+                raise HTTPException(409, "No PC is marked available for background testing (right-click the Tasks icon)")
             raise HTTPException(409, "Two online Windows workers and the requested tool are needed for other-PC testing")
         running = [s for s in store.all("session") if s.get("state") == "running"]
         newest = max(running, key=lambda s: s.get("started") or 0, default={})
@@ -1085,6 +1090,24 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/workers/idle")
     def get_idle_worker(tool: str = "launch_game", actor=Depends(auth)):
         return idle_worker(tool)
+
+    # --- which PCs background testing may use (#1383): ticked in the Tasks icon menu, keyed by worker name ---
+    class TestingIn(BaseModel):
+        available: bool
+
+    @app.get("/api/testing/workers")
+    def testing_workers(actor=Depends(auth)):
+        from . import background_testing
+        return {"excluded": sorted(background_testing.excluded(store)),
+                "workers": [{k: w.get(k) for k in ("id", "name", "os", "online", "background_testing")} for w in workers()]}
+
+    @app.post("/api/testing/workers/{wid}")
+    def testing_worker_set(wid: str, body: TestingIn, actor=Depends(auth)):
+        from . import background_testing
+        w = store.get("worker", _wid(wid)) or next((x for x in workers() if x.get("name") == wid), None) or _404()
+        background_testing.set_available(store, w["name"], body.available)
+        store.audit(actor, "worker.background_testing", w["id"], {"name": w["name"], "available": body.available})
+        return testing_workers(actor)
 
     class WorkerActivity(BaseModel):
         idle_seconds: float | None = None
@@ -1791,7 +1814,19 @@ def create_app(config: Config) -> FastAPI:
             hit = art_dirs[str(d)] = (time.time(), names)
         return hit[1]
 
+    art_dir = config.data_dir / "art"                 # covers fetched online (#1067): art/<game_id>/<kind>.<ext> wins over the library
+
+    def _local_art(gid: str, kind: str) -> Path | None:
+        d = art_dir / gid
+        if gid and d.is_dir():
+            for f in sorted(d.glob(f"{kind}.*")):
+                return f
+        return None
+
     def _resolve_art(e: dict, kinds) -> Path | None:
+        for kind in kinds:
+            if local := _local_art(e.get("game_id") or "", kind):
+                return local
         root = config.library(e["library"]).root() if e.get("library") else None
         if not root:
             return None
@@ -1865,6 +1900,39 @@ def create_app(config: Config) -> FastAPI:
             art_hits[key] = _resolve_art(e, BEST if kind == "best" else (kind,))
         f = art_hits[key]
         return FileResponse(f, headers={"cache-control": "max-age=86400"}) if f else _404()
+
+    class CoverIn(BaseModel):
+        url: str = ""              # a picture the operator chose; empty = look it up online by platform + title
+        kind: str = "boxart"       # boxart | snap | wheel
+
+    @app.post("/api/catalog/{gid}/cover")
+    def catalog_cover(gid: str, body: CoverIn, actor=Depends(auth)):
+        """Attach cover art to a game (#1067): libretro-thumbnails by platform + title, or the given picture URL."""
+        from . import cover_art
+        e = store.catalog_get(gid) or _404()
+        kind = body.kind if body.kind in cover_art.KINDS else "boxart"
+        if body.url:
+            try:
+                data, src, tried = cover_art.fetch(body.url), body.url, []
+            except Exception as exc:                  # noqa: BLE001
+                raise HTTPException(400, f"could not fetch that picture: {exc}") from exc
+        else:
+            src, data, tried = cover_art.find(e.get("title") or "", e.get("platform") or "", kind)
+            if not data:
+                raise HTTPException(404, {"error": "no online cover found for this title", "title": e.get("title"),
+                                          "platform": e.get("platform"), "tried": tried})
+        d = art_dir / gid
+        d.mkdir(parents=True, exist_ok=True)
+        for old in d.glob(f"{kind}.*"):
+            old.unlink()
+        f = d / f"{kind}.{cover_art.image_type(data)}"
+        f.write_bytes(data)
+        for key in [k for k in art_hits if k[0] == gid]:
+            art_hits.pop(key, None)
+        for t in (thumbs / gid[:2]).glob(f"{gid}-*"):
+            t.unlink(missing_ok=True)
+        store.audit(actor, "catalog.cover", gid, {"kind": kind, "source": src, "bytes": len(data)})
+        return {"ok": True, "kind": kind, "source": src, "bytes": len(data), "file": str(f)}
 
     @app.get("/api/thumbs/stats")
     def thumb_stats(actor=Depends(auth)):
@@ -2250,6 +2318,22 @@ def create_app(config: Config) -> FastAPI:
     def hermes_task_mode_state(actor=Depends(auth)):
         from . import hermes_task_mode
         return hermes_task_mode.status()
+
+    class QueuePriorityIn(BaseModel):
+        ids: list[str] = []            # game ids and/or request ids (or numbers), most important first
+
+    @app.get("/api/hermes/queue/priority")
+    def hermes_queue_priority(actor=Depends(auth)):
+        from . import hermes_work_queue
+        return {"priority": hermes_work_queue.get_priority()}
+
+    @app.post("/api/hermes/queue/priority")
+    def hermes_queue_priority_set(body: QueuePriorityIn, actor=Depends(auth)):
+        """Operator priority for the Hermes queue: these games/requests are worked first in their lane."""
+        from . import hermes_work_queue
+        ids = hermes_work_queue.set_priority(body.ids)
+        store.audit(actor, "hermes.queue_priority", "", {"ids": ids})
+        return {"priority": ids}
 
     class TaskModeIn(BaseModel):
         enabled: bool
