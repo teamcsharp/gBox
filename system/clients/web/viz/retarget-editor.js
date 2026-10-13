@@ -251,7 +251,7 @@
     function schedule() { if (!raf && !dead) raf = requestAnimationFrame(() => { raf = 0; redraw(); }); }
 
     // ---- scene data (filled once the models load) ----
-    let THREE = null, donor = null, target = null, R = null, donorPos = {}, fit = null, pivots = {}, tPos = {}, tGround = 0;
+    let THREE = null, Loader = null, donor = null, target = null, R = null, donorPos = {}, fit = null, pivots = {}, tPos = {}, tGround = 0;
     let previewMeshes = [], drag = null;
     function rolePositions(model, roles, rot) {
       const out = {};
@@ -450,14 +450,14 @@
     // ---- load: profile, then the modules and both models ----
     (async () => {
       await c.load();
-      try { const m = await loadThree(io); THREE = m.THREE; THREE.GLTFLoader = m.GLTFLoader; }
+      try { const m = await loadThree(io); THREE = m.THREE; Loader = m.GLTFLoader; }
       catch (err) { ui.status("3D view unavailable (" + String(err.message || err).slice(0, 80) + "); the role list and sliders still work"); }
       if (dead) return;
       views.donor = makeView("donor"); views.target = makeView("target"); pointer("donor"); pointer("target");
       if (ro) { ro.observe(views.donor.stage); ro.observe(views.target.stage); }
       const url = u => (io.url ? io.url(u) : u);
       const load = async u => { const r = await fetch(url(u)); if (!r.ok) throw new Error(`model download returned ${r.status}`);
-        return new THREE.GLTFLoader().parseAsync(await r.arrayBuffer(), ""); };
+        return new Loader().parseAsync(await r.arrayBuffer(), ""); };
       // target: the slot's stock model when the collection has one, else a standard skeleton
       const ref = c.state.reference;
       q('[data-rt="target-name"]').textContent = ref ? ref.name : "standard skeleton";
@@ -473,7 +473,7 @@
             let gmin = Infinity; for (const m of target.meshes) for (let i = 0; i < m.pos.length; i += 3) gmin = Math.min(gmin, H.rotate(Rt, [m.pos[i], m.pos[i + 1], m.pos[i + 2]])[1]);
             tGround = Number.isFinite(gmin) ? gmin : 0;
             const holder = new THREE.Group(); holder.add(g.scene);
-            holder.matrixAutoUpdate = false; holder.matrix.set(...Rt[0], 0, ...Rt[1], 0, ...Rt[2], 0, 0, 0, 0, 1);
+            holder.matrixAutoUpdate = false; holder.matrix.set(...Rt[0], 0, ...Rt[1], 0, ...Rt[2], 0, 0, 0, 0, 1); holder.matrixWorldNeedsUpdate = true;
             g.scene.traverse(o => { if (o.isMesh) { o.material = new THREE.MeshStandardMaterial({ color: 0x5b6472, transparent: true, opacity: 0.35, depthWrite: false }); } });
             views.target.group.add(holder);
           }
@@ -492,7 +492,7 @@
             views.target.group.add(mesh); previewMeshes.push({ src: m, geo, attr, mesh });
           }
           refit();
-          if (R) { const d = views.donor.group; d.matrixAutoUpdate = false; d.matrix.set(...R[0], 0, ...R[1], 0, ...R[2], 0, 0, 0, 0, 1); }
+          if (R) { const d = views.donor.group; d.matrixAutoUpdate = false; d.matrix.set(...R[0], 0, ...R[1], 0, ...R[2], 0, 0, 0, 0, 1); d.matrixWorldNeedsUpdate = true; }
         } catch (err) { ui.status("✗ donor model: " + String(err.message || err).slice(0, 200)); }
       }
       schedule();
