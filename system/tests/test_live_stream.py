@@ -59,6 +59,29 @@ def test_long_silent_source_eventually_ends_for_client_reconnect():
     assert out[0] == part(lv["frame"]) and 5 <= len(out) <= 12
 
 
+def test_never_framed_session_returns_to_the_server_every_wait_and_ends_after_the_first_frame_limit():
+    # No frame yet (loading, or a source that never uploads): each wait hands control back with b"" so a closed or
+    # reattached view frees its server thread, and the response ends after 30 s instead of the 600 s idle limit.
+    clock, lv = Clock(), live()
+    lv["cond"].wait_for = lambda pred, timeout: (setattr(clock, "t", clock.t + timeout), pred())[1]
+    out = list(mjpeg_parts(lv, keepalive=2.0, idle_limit=600.0, first_frame_limit=30.0, clock=clock))
+    assert out and set(out) == {b""} and clock.t <= 31.0
+
+
+def test_session_row_is_checked_at_most_once_per_second():
+    clock, lv, checks = Clock(), live(b"\xff\xd8E\xff\xd9", 1), []
+
+    def wait_for(pred, timeout):
+        clock.t += 0.01                                  # a 100 fps source
+        lv["seq"] += 1
+        return pred()
+    lv["cond"].wait_for = wait_for
+    gen = mjpeg_parts(lv, alive=lambda: checks.append(clock.t) or True, clock=clock)
+    for _ in range(300):
+        next(gen)
+    assert 2 <= len(checks) <= 5
+
+
 def test_web_client_loads_stream_watchdog():
     html = (ROOT / "clients/web/index.html").read_text(encoding="utf-8")
     assert '<script src="/viz/stream-watchdog.js"></script>' in html
