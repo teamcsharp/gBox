@@ -155,6 +155,7 @@ Per slot and per stage that carries one of its models:
 5. **Disc.** The base ISO is unpacked once per game (`cache/modbase/<game>/`, 6.4 GB, ~9 min) and copied into the mod
    folder. Every written stage is read back from the image (archive, header, pages, file bytes).
 
+`/api/whip/identify` adds `slot` to an MGS2 target, so the menu and agent can name the slot.
 `characters op=use character=<slug> game_id=cb7aae71edb10cd3 slot=<slot>`, `op=match pairs=[...]`, and
 `op=cast_swap target_game=cb7aae71edb10cd3 source=sonic` (pairs builder `mgs2_swap.build_cast`) all build one mod:
 `cache/mods/cb7aae71edb10cd3/<mod>/Metal Gear Solid 2 - Substance (USA).iso`.
@@ -187,15 +188,31 @@ collection `meta.json`).
 * Identity, both layers, both TOCs, every stage header and page of both archives (scan of 294 stages in 48 s from
   the ISO).
 * Reader: the 19 roster entries verified, with previews rendered.
-* Writer, full builds on the unpacked base ISO, with donors fetched read-only from the live collection
-  (`sonic`, `sa2_shadow`, `sa2_knuckles`, `sa1_e102`, `sa2_rouge`, `sa1_tails`, `sa2_dr_eggman`).
-  * snake <- Sonic: 62 models in 33 stages (1,369 triangles, no clustering, 512 or 256 atlas).
-  * raiden <- Shadow: 46 models (1,543 triangles).
-  * soldier_tanker <- Knuckles, soldier_plant <- E-102: every built stage fit its sectors, and every written file
-    read back.
-  * Previews of the read-back models, rendered from the patched image's own kms + texture pack, show Sonic / Shadow /
-    Knuckles / E-102 textured on the Snake / Raiden / soldier skeletons.
-* Tests: `tests/test_mgs2.py` (17, synthetic two-layer DVD; the owned-disc test runs when the ISO / CHD is reachable).
+* **Writer: one full build** on the unpacked base ISO (`mgs2_swap.build_disc`; donors fetched read-only from the
+  live collection). It took 18 min on this PC's HDD, 4 min of that copying 6 GB. The pairs were:
+  * snake <- `sonic`, raiden <- `sa2_shadow`
+  * soldier_tanker <- `sa2_knuckles`, soldier_tanker_heavy <- `sa2_rouge`
+  * soldier_plant <- `sa1_e102`, soldier_plant_heavy <- `sa1_tails`, soldier_hightech <- `sa2_dr_eggman`
+  * seal <- `sa2_knuckles`, tengu <- `sa1_e102`, olga <- `sa2_rouge`, ocelot <- `sa2_dr_eggman`
+* **Build results:**
+  * 543 of 549 model copies were rebuilt in 197 stages, and 1,578 accessory copies (bandana, hair, soldier hands / eyes) were collapsed.
+  * Every rebuilt stage fit its sectors, and every written file read back from the image.
+  * Sizes were 970 to 1,543 triangles, with no clustering needed. The atlases were 512 / 256 / 128 / 64.
+  * Kept as the original (reported per stage): gbs_def in `d036p03`, `tsp03a`, `sp03a`; the SEAL in `d010p01`; Ocelot
+    in both `w51a` copies. Their packs leave no free PSMT8 region, or no texture of their own, once the textures shared
+    with models that stay are protected.
+  * The shadow models (`sna_shadow` 3 of 4 copies, `rai_shadow` all 20) are about 30 KB and do not fit the donor even
+    at the coarsest clustering. They keep the original silhouette (status `kept`).
+* **Collateral check.** For every rebuilt stage, every texture used by a model the build did not replace was decoded
+  from both the base and the patched image: 1,663 textures, 0 changed.
+* **Read-back previews.** Rendered from the patched image's own kms + texture pack (stages `r_tnk0`, `r_plt0`, `w00a`,
+  `w12a`, `r_plt6`, `w11c`, `w41a`, `w00b`). They show Sonic, Shadow, Knuckles, Rouge, E-102, Tails, Eggman and Rouge,
+  textured and upright on the Snake / Raiden / soldier / Olga skeletons.
+* **Catalog path.** `characters.extract_dedicated` against the catalog CHD over SMB (temporary library): Snake, Raiden
+  and a Tanker soldier were extracted and passed `verify_entry`. The first model takes ~17 s (stage index); later ones
+  take ~2 s.
+* **Tests:** `tests/test_mgs2.py` (18, on a synthetic two-layer DVD; the owned-disc test runs when the ISO or CHD is
+  reachable).
 
 ## Live check (operator, on the PC that plays it)
 
@@ -214,8 +231,9 @@ collection `meta.json`).
 
 * In-game verification (PCSX2): drawing, lighting, the atlas TEX0 / CLAMP changes, the second-texture flags (parts are
   written as plain `0x48` / `0x49`), the stencil shadow models, and memory.
-* Some soldier stages fail atlas placement: the pack's other textures (gear, other soldier types) leave no 64 x 64
-  PSMT8 region. Those stages keep their original model (reported per stage).
+* 6 of 549 model copies keep their original model: no free 64 x 64 PSMT8 region or CLUT is left once the textures
+  shared with models that stay are protected (see above). Placing the atlas by growing the pack, or merging it into the
+  slot's existing rects, would cover them.
 * The hull files (type 0x02) and motion banks are not rewritten. The donor uses the game's animations and the original
   hull.
 * `current_stage` (EE RAM `0x1b9300`) was derived from the ELF and is not yet checked on a running session. If it reads
