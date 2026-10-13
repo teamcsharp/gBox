@@ -222,7 +222,12 @@ def stripify(tris: list[tuple[int, int, int]]) -> list[list[int]]:
 # ---------------------------------------------------------------- encode one costume model
 
 class BudgetError(ValueError):
-    """The donor does not fit the stock model's room (rows + strips, vertex counts or compressed size)."""
+    """The donor does not fit the stock model's room (rows + strips, vertex counts or compressed size). need / room
+    (when known) are the measured amount and the stock room in the same unit, so the LOD ladder can aim at the room."""
+
+    def __init__(self, message: str, need: int | None = None, room: int | None = None):
+        super().__init__(message)
+        self.need, self.room = need, room
 
 
 def _stock_gloss(model: dict) -> int:
@@ -336,7 +341,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         corners.append(slots)
     npos = len(P)
     if npos > min(stock_pos, D.SLOT_MASK + 1):
-        raise BudgetError(f"donor has {npos} distinct vertices; the stock model has room for {stock_pos}")
+        raise BudgetError(f"donor has {npos} distinct vertices; the stock model has room for {stock_pos}",
+                          npos, min(stock_pos, D.SLOT_MASK + 1))
     for inf in infl:
         for j in inf:
             if not 0 <= j < nb:
@@ -370,7 +376,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         nslot[s] = nkey[key]
     nnrm = len(nkey)
     if nnrm > min(stock_nrm, D.SLOT_MASK + 1):
-        raise BudgetError(f"donor has {nnrm} distinct normals; the stock model has room for {stock_nrm}")
+        raise BudgetError(f"donor has {nnrm} distinct normals; the stock model has room for {stock_nrm}",
+                          nnrm, min(stock_nrm, D.SLOT_MASK + 1))
 
     def row(vec, wbits):
         return struct.pack("<3fI", *np.asarray(vec, np.float32), wbits)
@@ -437,7 +444,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         rows_b = sum(len(b["raw"]) for b in bones_out)
         strips_b = sum(4 + 8 * len(s["raw"]) for sec in sections for s in sec) + 4 * len(sections) + 4
         raise BudgetError(f"donor needs {rows_b + strips_b} bytes of rows + strips; the stock model has "
-                          f"{stock_end - 0x20 - 32 * nb} before its tail ({error})") from error
+                          f"{stock_end - 0x20 - 32 * nb} before its tail ({error})", rows_b + strips_b,
+                          stock_end - 0x20 - 32 * nb) from error
     check = D.parse_model(out)
     if check["counts"] != (npos, nnrm):
         raise AssertionError(f"slot counts {check['counts']} != {(npos, nnrm)}")
@@ -508,7 +516,7 @@ def build_costume(entry: bytes, prims: list[dict], *, progress=lambda p, m: None
     packed = D.lz_compress(enc["model"])
     room = len(cp["bank"][0])
     if len(packed) > room:
-        raise BudgetError(f"compressed model is {len(packed)} bytes; the stock entry has {room}")
+        raise BudgetError(f"compressed model is {len(packed)} bytes; the stock entry has {room}", len(packed), room)
     pages = list(cp["pages"])
     for i, img in enumerate(at["images"]):
         pages[usable[i]] = D.page_encode(img)
@@ -524,12 +532,36 @@ def build_costume(entry: bytes, prims: list[dict], *, progress=lambda p, m: None
     return new_entry, report
 
 
+LOD_ATTEMPTS = 8
+LOD_MARGIN = 0.9                         # aim this far under the measured room (decimation lands near, not on, a budget)
+LOD_STEP = 0.8                           # a budget without a measured room shrinks by this
+LOD_MAX_RATIO = 0.95                     # a near miss still drops at least 5%
+
+
+def lod_budget(triangles: int, error: BudgetError, step: float = LOD_STEP) -> int:
+    """The next decimation budget after `triangles` did not fit: scaled by the room the error measured (vertices,
+    normals, row bytes and compressed bytes all grow about linearly with the triangle count), with a margin, and at
+    least 5% below (LOD_STEP when nothing was measured). A 24,000-triangle HD donor on a 1,584-vertex costume goes
+    straight to ~2,800 triangles instead of creeping down by 0.8 per attempt and running out of attempts at 4,000."""
+    need, room = getattr(error, "need", None), getattr(error, "room", None)
+    ratio = step
+    if need and room and need > 0:
+        ratio = min(LOD_MAX_RATIO, LOD_MARGIN * room / need)
+    return max(200, int(triangles * ratio))
+
+
+def _tri_count(prims: list[dict]) -> int:
+    return int(sum(len(np.asarray(p["tris"]).reshape(-1, 3)) for p in prims))
+
+
 def fit_and_build(entry: bytes, character_dir: Path, slot_key: str, work: Path, *, progress=lambda p, m: None):
-    """fit_donor + build_costume, with bounded Blender LOD attempts when the donor does not fit."""
+    """fit_donor + build_costume, with bounded Blender LOD attempts when the donor does not fit: every attempt aims
+    at the room the previous one measured (lod_budget), so high-detail donors (the HD Mario models, 5k-42k
+    triangles) reach the costume's budget in a few attempts."""
     from . import fit_events as FE
     stock = D.costume_parts(entry)["model"]
     prims, fit = fit_donor(stock, character_dir, slot_key)
-    source = sum(len(np.asarray(p["tris"]).reshape(-1, 3)) for p in prims)
+    source = _tri_count(prims)
     attempts = []
     FE.stage("encode", "running", {"triangles": source})
     try:
@@ -539,15 +571,20 @@ def fit_and_build(entry: bytes, character_dir: Path, slot_key: str, work: Path, 
         attempts.append({"triangles": source, "result": str(error)})
         tgt = target(D.parse_model(stock))
         new = None
-        for k in range(1, 9):
-            budget = max(200, int(source * 0.8 ** k))
+        tris, last = source, error
+        for _k in range(LOD_ATTEMPTS):
+            budget = lod_budget(tris, last)
+            if attempts and attempts[-1].get("budget") == budget:
+                break                                     # the floor: nothing smaller to try
             try:
                 lod = _decimated(prims, tgt, budget, Path(work))
+                tris = _tri_count(lod) or budget
                 new, report = build_costume(entry, lod, progress=progress)
             except BudgetError as again:
-                attempts.append({"budget": budget, "result": str(again)})
+                attempts.append({"budget": budget, "triangles": tris, "result": str(again)})
+                tris, last = min(tris, budget), again
                 continue
-            attempts.append({"budget": budget, "result": "fits"})
+            attempts.append({"budget": budget, "triangles": tris, "result": "fits"})
             FE.stage("decimate", data={"from": source, "to": report["triangles"], "attempts": len(attempts)})
             break
         if new is None:
@@ -557,8 +594,6 @@ def fit_and_build(entry: bytes, character_dir: Path, slot_key: str, work: Path, 
     report.update(fit=fit, source_triangles=source, lod_attempts=attempts)
     return new, report
 
-
-# ---------------------------------------------------------------- HUMAN.DAT
 
 def replace_entries(human: bytes, changes: dict[int, bytes]) -> bytes:
     """New entries written into their own olnk slots (sizes must not grow; offsets never move)."""

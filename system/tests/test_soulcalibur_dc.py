@@ -373,6 +373,62 @@ def test_encode_budget_errors():
         W.encode_model(stock, [many], [1])
 
 
+
+def test_budget_errors_measure_need_and_room():
+    stock = synthetic_model()
+    many = _donor_prims(stock)[0]
+    k = 40
+    many = {**many, "pos": np.random.default_rng(1).random((k, 3)), "nrm": np.tile([0, 0, 1.0], (k, 1)),
+            "uv": np.zeros((k, 2)), "tris": np.array([[i, i + 1, i + 2] for i in range(k - 2)]),
+            "J": np.tile([1, 0, 0, 0], (k, 1)), "W": np.tile([1.0, 0, 0, 0], (k, 1)), "_page": 1}
+    many["_uv"] = [np.zeros((3, 2))] * (k - 2)
+    with pytest.raises(W.BudgetError) as info:
+        W.encode_model(stock, [many], [1])
+    assert info.value.need and info.value.room and info.value.need > info.value.room
+
+
+def test_lod_budget_aims_at_the_measured_room():
+    # 24k triangles, 12,302 vertices against a 1,584-vertex costume: one step to ~2,800, not 0.8 per attempt
+    assert W.lod_budget(23992, W.BudgetError("x", 12302, 1584)) == int(23992 * 0.9 * 1584 / 12302)
+    assert W.lod_budget(2758, W.BudgetError("x", 1651, 1584)) == int(2758 * 0.9 * 1584 / 1651)
+    assert W.lod_budget(1000, W.BudgetError("x", 1001, 1000)) == 899          # a near miss: the margin
+    assert W.lod_budget(1000, W.BudgetError("x", 1000, 1100)) == 950          # never less than 5% down
+    assert W.lod_budget(1000, W.BudgetError("no measurement")) == 800        # unmeasured: the fixed step
+    assert W.lod_budget(150, W.BudgetError("x", 300, 100)) == 200            # the floor
+
+
+def test_fit_and_build_reaches_a_high_detail_donors_budget(monkeypatch, tmp_path):
+    """An HD donor (24k triangles) on a costume with room for ~1.6k vertices: the ladder aims at the measured room
+    and fits within a few decimations (the fixed 0.8^k ladder stopped at 4,025 triangles and left the costume stock)."""
+    room = 1584
+
+    def tris(n):
+        return [{"tris": np.zeros((n, 3), int)}]
+
+    def build(entry, prims, progress=None):
+        n = sum(len(p["tris"]) for p in prims)
+        verts = n // 2 + 300                              # about what the HD Peach decimations measured
+        if verts > room:
+            raise W.BudgetError("too many", verts, room)
+        return b"new", {"triangles": n, "positions": verts, "compressed": 1, "compressed_room": 2}
+
+    calls = []
+
+    def decimated(prims, tgt, budget, work):
+        calls.append(budget)
+        return tris(budget)
+
+    monkeypatch.setattr(W.D, "costume_parts", lambda entry: {"model": b"m"})
+    monkeypatch.setattr(W.D, "parse_model", lambda m: {})
+    monkeypatch.setattr(W, "fit_donor", lambda stock, d, slot: (tris(23992), {}))
+    monkeypatch.setattr(W, "target", lambda model: {})
+    monkeypatch.setattr(W, "build_costume", build)
+    monkeypatch.setattr(W, "_decimated", decimated)
+    new, rep = W.fit_and_build(b"entry", tmp_path, "fighter:IVY", tmp_path)
+    assert new == b"new" and len(calls) <= 3
+    assert rep["lod_attempts"][-1]["result"] == "fits" and rep["triangles"] // 2 + 300 <= room
+    assert rep["triangles"] > 2000                         # most of the room is used
+
 def test_stripify_keeps_every_oriented_triangle():
     rng = np.random.default_rng(3)
     grid = [(r * 6 + c, r * 6 + c + 1, (r + 1) * 6 + c) for r in range(5) for c in range(5)] + \
