@@ -563,6 +563,33 @@ def test_owned_build_reads_back_and_rebuilds_the_set(owned, tmp_path):
 
 
 @needs_roms
+def test_owned_build_mod_folder(owned, tmp_path, monkeypatch):
+    """characters op=use's build: a collection entry -> cache/mods/<game>/doapp_<slug>_<slot> with doapp.zip +
+    coh1002m.zip and the marker that makes it launchable."""
+    from types import SimpleNamespace
+    from gbox import characters as C, doapp_chars as R, filemods
+    banked, ram = owned
+    lib = tmp_path / "characters"
+    (lib / "tube").mkdir(parents=True)
+    roles = humanoid(lib / "tube" / "tube.gltf")
+    meta = {"slug": "tube", "name": "Tube", "model": "tube.gltf", "rig": {"roles": roles}, "source": {}}
+    (lib / "tube" / "meta.json").write_text(json.dumps(meta))
+    monkeypatch.setenv("GBOX_CHARACTERS", str(lib))
+    monkeypatch.setattr(R, "source_dir", lambda ctx, game: Path(OWNED))
+    monkeypatch.setattr(R, "_program", lambda ctx, src: (ram, D.merge_parent(str(Path(OWNED) / "doapp.zip"))))
+    monkeypatch.setattr(C, "_blender", lambda cfg: None)
+    ctx = SimpleNamespace(config=SimpleNamespace(cache=str(tmp_path / "cache")))
+    game = {"game_id": D.GAME_ID_JP, "title": "Dead Or Alive ++ (Japan)"}
+    out = W.build_mod(ctx, meta, game, "tina:1")
+    assert out["mod"] == "doapp_tube_tina1" and out["chips"]["doapp-1.217"]["changed"]
+    d = filemods.mod_dir(ctx.config, D.GAME_ID_JP, out["mod"])
+    assert (d / "doapp.zip").is_file() and (d / "coh1002m.zip").is_file()
+    mj = json.loads((d / ".gbox-mod.json").read_text())
+    assert mj["image"] == "doapp.zip" and mj["slot"] == "tina:1" and mj["reports"]["49"]["read_back"]["ok"]
+    assert filemods.launch_path(ctx.config, D.GAME_ID_JP, Path(OWNED) / "doapp.zip", out["mod"]) == d / "doapp.zip"
+
+
+@needs_roms
 def test_owned_player_two_expansion(owned, tmp_path):
     """The same built file expanded for player 2 by the game (a0 = 1) and by the port agree."""
     from gbox import zn_tps_boot as Z

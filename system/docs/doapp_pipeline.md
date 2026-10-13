@@ -324,7 +324,9 @@ Writer, in MAME (not done by an agent: it launches the game):
 ```
 python -m gbox.doapp_swap build %TEMP%\doapp <collection>\cloud %TEMP%\doapp_mod kasumi
     -> %TEMP%\doapp_mod\doapp.zip + coh1002m.zip; the JSON lists the 4 costumes with "read_back": {"ok": true, ...}
-       and doapp-1.217 / doapp-2.218 as the changed chips (Kasumi's models are files 79-82)
+       and doapp-1.217 as the changed chip (Kasumi's models are files 79-82; Bass costumes 2-4 and Ayane's live in
+       doapp-2.218)
+       (checked: Cloud as Kasumi 1-4, 781-784 triangles, 22 seams each, ~99 KB of ~120 KB, ~2 min)
 mame doapp -rompath %TEMP%\doapp_mod -skip_gameinfo
     (MAME names the two rebuilt chips "INCORRECT CHECKSUM": expected, the set still runs; without -skip_gameinfo
      press a key on the warning screen)
