@@ -108,3 +108,38 @@ def test_use_roster_resolves_donors_registers_targets_and_launches(tmp_path, mon
     missing = SimpleNamespace(slot="roster", pairs=[{"character": "nobody"}], rebuild=False, launch=False, title="")
     with pytest.raises(ValueError, match="Not in the collection"):
         S.use(ctx, {"slug": "sonic"}, {"game_id": "1de2e7634f3161ff"}, missing)
+
+
+def test_use_roster_without_a_local_collection_builds_on_the_linux_control_plane(tmp_path, monkeypatch):
+    """#1361: a Windows worker has no character library, so every SA2 donor read 'Not in the collection'."""
+    monkeypatch.setenv("GBOX_CHARACTERS", str(tmp_path / "absent"))
+    import gbox.characters as C
+    workers = [{"id": "win", "os": "windows", "online": True, "tools": ["characters"]},
+               {"id": "off", "os": "linux", "online": False, "tools": ["characters"]},
+               {"id": "plane", "os": "linux", "online": True, "tools": ["characters"]}]
+    monkeypatch.setattr(C, "_api", lambda ctx, method, path, **kw: workers if path == "/api/workers" else None)
+    jobs = []
+
+    def job(ctx, tool, inp, worker=None, limit=900):
+        jobs.append((tool, inp, worker))
+        return {"id": "j1", "state": "succeeded", "output": {"result": {"mod": "doa2_roster_abc", "status": "built_unverified"}}}
+    monkeypatch.setattr(C, "_job", job)
+    monkeypatch.setattr(C, "_launch", lambda ctx, gid, mod, node: {"launched": mod, "node": node})
+    monkeypatch.setattr(S, "build_roster", lambda *a, **k: pytest.fail("must not build without the collection"))
+
+    class Inp(SimpleNamespace):
+        def model_dump(self):
+            return dict(vars(self))
+    inp = Inp(slot="roster", pairs=[{"character": "sonic", "slot": "RYU"}, {"character": "sa2_rouge"}],
+              rebuild=False, launch=True, title="", session_id="sess")
+    out = S.use(SimpleNamespace(config=None, progress=lambda p, m: None), {"slug": "sonic"},
+                {"game_id": "1de2e7634f3161ff"}, inp)
+    tool, sent, worker = jobs[0]
+    assert (tool, worker) == ("characters", "plane")
+    assert sent["launch"] is False and sent["session_id"] == "" and sent["game_id"] == "1de2e7634f3161ff"
+    assert sent["slot"] == "roster" and sent["pairs"] == inp.pairs
+    assert out["mod"] == "doa2_roster_abc" and out["built_by"] == "j1" and out["launch"]["launched"] == "doa2_roster_abc"
+
+    monkeypatch.setattr(C, "_job", lambda *a, **k: {"state": "failed", "error": "ValueError: boom"})
+    with pytest.raises(RuntimeError, match="boom"):
+        S.use(SimpleNamespace(config=None, progress=lambda p, m: None), {"slug": "sonic"}, {"game_id": "1de2e7634f3161ff"}, inp)
