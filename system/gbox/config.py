@@ -119,6 +119,9 @@ class Config(BaseModel):
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
     runtime_dirs: dict[str, str] = {}        # os -> local disk for emulators/cores (never run binaries off a network share)
     stage_min_mb: int = 32            # stage library files larger than this (disc images) onto the local cache before launch
+    stage_wait_s: float = 45.0        # a launch waits for a cache copy only if it will finish within this; else the game
+                                      # plays from the share and the copy finishes in the background (#1506; 0 = always wait)
+    stage_background_mb_s: float = 6.0   # background copy speed cap while a game plays on this PC (0 = no cap)
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     public_url: str | None = None     # how other machines (Blender add-on, clients) reach the control plane
