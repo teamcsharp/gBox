@@ -494,3 +494,117 @@ class ChdDisc:
                 if progress and i % 4096 == 0:
                     progress(done, n)
         return out
+
+
+# ---------------------------------------------------------------- GD-ROM / multi-track CHD -> GDI (no chdman needed)
+
+def _meta_tracks(f, meta_offset: int) -> list[dict]:
+    """CHT2 / CHTR / CHGD track records (v4 and v5 share the metadata entry layout)."""
+    out, o, seen = [], meta_offset, 0
+    while o and seen < 512:
+        f.seek(o)
+        m = f.read(16)
+        if len(m) < 16:
+            break
+        tag, ln, nxt = m[:4], int.from_bytes(m[5:8], "big"), struct.unpack_from(">Q", m, 8)[0]
+        data = f.read(ln)
+        if tag in (b"CHT2", b"CHTR", b"CHGD"):
+            rec = dict(re.findall(r"(\w+):(\S+)", data.rstrip(b"\0").decode("ascii", "replace")))
+            rec["_tag"] = tag.decode("ascii")
+            out.append(rec)
+        o, seen = nxt, seen + 1
+    return sorted(out, key=lambda r: int(r.get("TRACK", 0)))
+
+
+def track_layout(path) -> list[dict]:
+    """[{track, type, frames, first_frame}] of a CD / GD-ROM CHD (v4 or v5). chdman pads every track to a multiple of
+    4 frames (CD_TRACK_PADDING; CHGD records name it as PAD), so track N starts after the padded tracks before it."""
+    with open(path, "rb") as f:
+        b = f.read(124)
+        if b[:8] != b"MComprHD":
+            raise ChdError("not a CHD")
+        ver = struct.unpack_from(">I", b, 12)[0]
+        meta = struct.unpack_from(">Q", b, 36 if ver == 4 else 48)[0]
+        records = _meta_tracks(f, meta)
+    out, first = [], 0
+    for r in records:
+        frames = int(r.get("FRAMES", 0))
+        pad = int(r["PAD"]) if "PAD" in r else (-frames) % 4
+        out.append({"track": int(r.get("TRACK", len(out) + 1)), "type": r.get("TYPE", "MODE1_RAW"),
+                    "frames": frames, "first_frame": first})
+        first += frames + pad
+    if not out:
+        raise ChdError("CHD has no CD track metadata")
+    return out
+
+
+class _FrameSource:
+    """Raw 2352-byte frames of a CD CHD whatever its version: v5 through Chd, v4 through gbox.psxdisc.CHD."""
+
+    def __init__(self, path):
+        with open(path, "rb") as f:
+            ver = struct.unpack_from(">I", f.read(16), 12)[0]
+        if ver == 5:
+            self._c = Chd(path)
+            self.read = lambda n: self._c.frame(n)[:SECTOR]
+        elif ver == 4:
+            from .psxdisc import CHD as V4
+            self._c = V4(path)
+            self.read = self._c.sector
+        else:
+            raise ChdError(f"CHD v{ver}: no reader")
+        self.version = ver
+
+
+def _msf_lba(head: bytes) -> int | None:
+    """LBA a raw Mode 1/2 sector header addresses (BCD minute/second/frame), None without a sync pattern."""
+    if head[:12] != b"\x00" + b"\xff" * 10 + b"\x00":
+        return None
+    m, s, f = ((x >> 4) * 10 + (x & 15) for x in head[12:15])
+    return (m * 60 + s) * 75 + f - 150
+
+
+def write_gdi(path, out_dir, *, gdi_name: str = "disc.gdi", progress=None) -> Path:
+    """Unpack a GD-ROM CHD to a GDI set (what chdman extractcd writes), in pure Python.
+
+    Track 1 sits at LBA 0, the high-density data track at LBA 45000 (checked: the Mode 1 header of its first sector
+    must address 45000), and an audio track between them at the LBA after the first track. Audio frames are stored big
+    endian in a CHD and written little endian, as chdman does. Files go to ``*.part`` names first and are renamed once
+    complete, so an interrupted run never leaves a set that looks finished."""
+    layout = track_layout(path)
+    src = _FrameSource(path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lines, lba, done, total = [str(len(layout))], 0, 0, sum(t["frames"] for t in layout)
+    names = []
+    for i, t in enumerate(layout):
+        audio = t["type"].upper() == "AUDIO"
+        if i == len(layout) - 1 and len(layout) >= 3 and not audio:
+            lba = 45000                                   # the GD-ROM high-density area
+        name = f"disc{t['track']:02d}.{'raw' if audio else 'bin'}"
+        part = out_dir / (name + ".part")
+        with open(part, "wb") as f:
+            for k in range(t["frames"]):
+                fr = src.read(t["first_frame"] + k)
+                if audio:
+                    a = bytearray(fr)
+                    a[0::2], a[1::2] = fr[1::2], fr[0::2]
+                    fr = bytes(a)
+                f.write(fr)
+                done += 1
+                if progress and done % 20000 == 0:
+                    progress(done, total)
+        if not audio:
+            with open(part, "rb") as f:
+                got = _msf_lba(f.read(16))
+            if got is not None and got != lba:
+                part.unlink()
+                raise ChdError(f"track {t['track']}: first sector addresses LBA {got}, expected {lba}")
+        names.append((part, out_dir / name))
+        lines.append(f"{t['track']} {lba} {0 if audio else 4} 2352 {name} 0")
+        lba += t["frames"]
+    for part, final in names:
+        part.replace(final)
+    gdi = out_dir / gdi_name
+    gdi.write_text("\n".join(lines) + "\n")
+    return gdi
