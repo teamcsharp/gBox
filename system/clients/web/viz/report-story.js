@@ -244,12 +244,12 @@
       <div class="rs-hint">drag to orbit \u00b7 wheel to zoom \u00b7 click a card to pause on it</div>`;
     const $ = sel => container.querySelector(sel), canvas = $(".rs-canvas");
     const S = { playing: !still, clock: still ? stillTime(tl) : 0, visible: true, raf: 0, last: 0, disposed: false, focus: null, shown: new Set(), reels: [], totalsShown: false,
-                lastPhase: -1, detachedSince: 0, dirty: true };
+                lastPhase: -1, detachedSince: 0, dirty: true, now: 0 };
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "low-power" });
     renderer.setPixelRatio(Math.min(env.devicePixelRatio || 1, opts.full ? 2 : 1.5));
     renderer.setClearColor(0x000000, 0);
     const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(50, 2, 0.1, 400);
-    const orbit = { yaw: 0, pitch: 0.1, dist: 17, target: new THREE.Vector3(0, 0.3, 0), goal: new THREE.Vector3(0, 0.3, 0), goalDist: 17, drag: null, touched: -1e9 };
+    const orbit = { yaw: 0, pitch: 0.1, dist: 12.5, home: 12.5, target: new THREE.Vector3(0, 0.7, 0), goal: new THREE.Vector3(0, 0.7, 0), goalDist: 12.5, drag: null, touched: -1e9 };
     const disposables = [];
     const keep = o => { disposables.push(o); return o; };
 
@@ -445,7 +445,7 @@
     const target = hasTree || tl.merged;
     if (target) {
       const m = tl.merged || { label: "Code changes", sha: null };
-      node(3.4, 1.35, cardTex(3.4, 1.35, { bg: "#0a3a26", edge: "#7cffb8", icon: "\u2714", title: m.label, sub: m.sha ? `as ${m.sha}` : (m.state === "merged" ? "merged" : "not merged yet"),
+      node(4.2, 1.35, cardTex(4.2, 1.35, { bg: "#0a3a26", edge: "#7cffb8", icon: "\u2714", title: m.label, sub: m.sha ? `as ${m.sha}` : (m.state === "merged" ? "merged" : "not merged yet"),
         sub2: [tl.fileCount ? `${tl.fileCount} files` : "", pm(story.totals?.added, story.totals?.deleted)].filter(Boolean).join(" \u00b7 ") }),
         { kind: "Merged result", title: m.label, rows: [["Commit", m.sha || DASH], ["State", m.state || DASH], ["Link", m.url || DASH], ["Files", String(tl.fileCount)],
           ["Lines", pm(story.totals?.added, story.totals?.deleted) || "line counts unavailable"]] },
@@ -462,7 +462,7 @@
     }), { kind: "Resolution", title: tl.done ? "Resolved" : `Status: ${tl.doc.status}`, rows: [["Final message", story.resolution?.final_message || DASH],
           ["Verified", story.resolution?.verified ? "yes (solver credited)" : "no solver credit"], ["Total time", fmtTime(tl.totals.time) + (tl.totals.elapsed ? " so far" : "")]] },
       t => { const at = rA + 0.5; if (t < at) return null; const k = clamp((t - at) / 0.3, 0, 1);
-        return P(0.9, target ? 0.0 : -0.1, target ? 2.35 : 1.1, lerp(3, 1, E.out(k)), k * fade(t), 0, -0.14); });
+        return P(target ? 1.6 : 0.9, target ? -0.45 : -0.1, target ? 2.35 : 1.1, lerp(3, 1, E.out(k)), k * fade(t), 0, -0.14); });
 
     // --- overlays: banner, ledger with reels, totals
     const list = $(".rs-list"), ledger = $(".rs-ledger");
@@ -471,7 +471,8 @@
       el.innerHTML = `<span class="rs-l">${esc(totals ? "Total" + (tl.totals.elapsed ? " (so far)" : "") : e.label)}${!totals && e.detail ? ` <span style="opacity:.7">\u00b7 ${esc(e.detail)}</span>` : ""}</span>${reelsHtml()}`;
       (totals ? ledger : list).append(el);
       const m = totals ? tl.totals : e.metrics;
-      for (const [k] of REELS) S.reels.push({ el: el.querySelector(`[data-reel="${k}"]`), target: reelText(k, m[k]), start: S.clock, seed: S.reels.length + 1, done: false });
+      // reels run on wall time, so a pause (a clicked card) still lets a spinning reel land
+      for (const [k] of REELS) S.reels.push({ el: el.querySelector(`[data-reel="${k}"]`), target: reelText(k, m[k]), start: S.now, seed: S.reels.length + 1, done: false });
       while (list.children.length > (opts.full ? 12 : 4)) list.firstElementChild.remove();
     }
     function resetOverlays() { list.innerHTML = ""; ledger.querySelector(".rs-total")?.remove(); S.reels = []; S.shown.clear(); S.totalsShown = false; }
@@ -481,7 +482,7 @@
       if (!S.totalsShown && tE >= tl.totals.at) { S.totalsShown = true; addEntry(null, true); }
       for (const r of S.reels) {
         if (r.done) continue;
-        const f = still ? reelFace(r.target, Infinity) : reelFace(r.target, (S.clock - r.start) * 1000, { seed: r.seed });
+        const f = still ? reelFace(r.target, Infinity) : reelFace(r.target, S.now - r.start, { seed: r.seed });
         if (r.el.textContent !== f.text) r.el.textContent = f.text;
         r.el.classList.toggle("rs-spin", !f.landed);
         r.el.classList.toggle("rs-none", f.missing);
@@ -491,8 +492,9 @@
       const at = phaseAt(tl, t);
       if (at.index !== S.lastPhase) {
         S.lastPhase = at.index;
-        const ph = at.phase, visible = tl.phases.filter(p => !p.hold), n = visible.indexOf(ph);
-        $(".rs-n").textContent = ph.hold ? "" : `stage ${n + 1} / ${visible.length}`;
+        const ph = at.phase, counted = p => !p.hold && !(p.part && p.part !== "fly" && p.part !== "none");   // the code's sub-steps share a stage
+        const total = tl.phases.filter(counted).length, n = tl.phases.slice(0, at.index + 1).filter(counted).length;
+        $(".rs-n").textContent = ph.hold ? "" : `stage ${n} / ${total}`;
         $(".rs-banner b").textContent = ph.hold ? "" : ph.label; $(".rs-banner .rs-sub").textContent = ph.hold ? "" : ph.sub;
       }
     }
@@ -514,7 +516,7 @@
     function focus(n) {
       S.focus = n || null;
       if (n) { S.playing = false; const w = n.mesh.getWorldPosition(new THREE.Vector3()); orbit.goal.copy(w); orbit.goalDist = 7.5; }
-      else { orbit.goal.set(0, 0.3, 0); orbit.goalDist = 17; }
+      else { orbit.goal.set(0, 0.7, 0); orbit.goalDist = orbit.home; }
       for (const k of nodes) k.dim = !!n && k !== n;
       showCard(S.focus); playLabel(); S.dirty = true;
     }
@@ -565,10 +567,11 @@
       if (!container.isConnected) {                      // the list re-rendered without this row: give up after 2 s
         S.detachedSince = S.detachedSince || now; if (now - S.detachedSince > 2000) { api.dispose(); return; }
       } else S.detachedSince = 0;
-      const dt = S.last ? Math.min(0.1, (now - S.last) / 1000) : 0; S.last = now;
+      const dt = S.last ? Math.min(0.1, (now - S.last) / 1000) : 0; S.last = now; S.now = now;
       if (S.playing) { S.clock += dt; if (S.clock >= tl.length) { S.clock -= tl.length; resetOverlays(); S.lastPhase = -1; } }
       const w = canvas.clientWidth, h = canvas.clientHeight;
-      if (w && h && (canvas.width !== Math.floor(w * renderer.getPixelRatio()) || canvas.height !== Math.floor(h * renderer.getPixelRatio()))) { renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+      if (w && h && (canvas.width !== Math.floor(w * renderer.getPixelRatio()) || canvas.height !== Math.floor(h * renderer.getPixelRatio()))) { renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix();
+        orbit.home = 12.5 * Math.max(1, 2.4 / cam.aspect); if (!S.focus) orbit.goalDist = orbit.home; }   // a narrow panel steps back to keep the whole scene
       const o = orbit, idle = !still && !o.drag && S.clock - o.touched > 4;
       o.target.lerp(o.goal, 0.08); o.dist += (o.goalDist - o.dist) * 0.08;
       const yaw = o.yaw + (idle && S.playing ? Math.sin(now / 9000) * 0.14 : 0);
