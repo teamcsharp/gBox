@@ -2221,11 +2221,45 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/observers")
     def session_observers(sid: str, actor=Depends(auth)):
-        store.get('session', sid) or _404()
+        session = store.get('session', sid) or _404()
         runtime = store.get('setting', 'session_observers_runtime') or {}
-        return (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
+        view = (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
             'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
             'service_error': runtime.get('error'), 'interval_seconds': 30}
+        view.setdefault('title', session.get('title'))
+        view['goals'] = _session_agent_goals(view, view.get('game_id') or session.get('game_id') or '')
+        return view
+
+    def _session_agent_goals(view: dict, gid: str) -> dict:
+        """What each session agent is trying to do, from the observer state, the game's Hermes work-queue stage and
+        the inbox requests / jobs targeting the game (session_observers.agent_goals). Never fails the panel."""
+        from .session_observers import agent_goals
+        queue = None
+        try:
+            from . import hermes_work_queue
+            queue = next(iter(hermes_work_queue.snapshot(gid).get('games') or []), None) if gid else None
+        except Exception:
+            queue = None                     # no queue file on this host (or unreadable): no stage to explain
+        requests = store.game_requests(gid) if gid else []
+        jobs = [j for j in store.jobs(states=('queued', 'running')) if gid and gid in (
+            (j.get('input') or {}).get('game_id'), ((j.get('input') or {}).get('game') or {}).get('game_id'))]
+        try:
+            return agent_goals(view, queue=queue, requests=requests, jobs=jobs)
+        except Exception as exc:             # an odd stored row must not hide the observations themselves
+            return {'agents': [], 'ask': None, 'error': f'{type(exc).__name__}: {exc}'[:300]}
+
+    @app.post("/api/sessions/{sid}/observers/look")
+    def session_observers_look(sid: str, actor=Depends(auth)):
+        """"Done, look now": the operator set up what an agent is seeking. The observer samples this session on its
+        next tick (within 5 s) with a fresh frame even if the screen looks unchanged, and re-checks model
+        collection. It reads one frame; it never sends input, pauses or relaunches."""
+        store.get('session', sid) or _404()
+        with store.lock:
+            row = store.get('session_observer', sid) or {'session_id': sid}
+            store.put('session_observer', sid, row | {'look_requested': time.time(), 'next_sample': 0,
+                                                      'frame_digest': None, 'models_checked': 0})
+        store.audit(actor, 'session.observers.look', sid, {})
+        return session_observers(sid, actor)
 
     class ObserverIn(BaseModel):
         enabled: StrictBool
