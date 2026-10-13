@@ -172,7 +172,7 @@ def test_retroarch_capture_session_writes_only_its_own_files(tmp_path, monkeypat
     assert 'video_driver = "vulkan"' in text and 'audio_enable = "false"' in text
     assert f'savestate_directory = "{work / "states"}"' in text
     assert f'core_options_path = "{work / "core-options.cfg"}"' in text
-    assert 'input_joypad_driver = "null"' in text and 'config_save_on_exit = "false"' in text
+    assert 'input_player1_joypad_index = "15"' in text and 'config_save_on_exit = "false"' in text
     opts = (work / "core-options.cfg").read_text()
     assert 'beetle_psx_hw_renderer = "hardware_vk"' in opts and 'reicast_internal_resolution = "1280x960"' in opts
     assert shared.read_text() == before                         # the operator's core options are untouched

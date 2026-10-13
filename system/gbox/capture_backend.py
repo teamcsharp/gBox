@@ -45,12 +45,17 @@ HLE_GL_CORE_OPTIONS = {
     "mupen64plus_next": {"mupen64plus-rdp-plugin": "gliden64", "mupen64plus-rsp-plugin": "hle"},
 }
 # cores whose Vulkan capture was run end to end on the test PC (docs/examine_emulators.md, live checks)
-LIVE_CHECKED: set[str] = set()
+LIVE_CHECKED = {"flycast"}
 
 # RetroArch settings for every capture session: no sound, no pad, no shader presets (GL .glslp), no rewind ring,
 # a normal (not minimized) window that gBox parks off-screen, and nothing written back on exit.
 RA_CAPTURE_CFG = {
-    "audio_enable": "false", "audio_driver": "null", "input_joypad_driver": "null", "input_autodetect_enable": "false",
+    "audio_enable": "false", "audio_driver": "null", "input_autodetect_enable": "false",
+    # the operator's pads are not this session's: RetroArch on Windows has no null joypad driver and reads XInput
+    # without focus, so every player is bound to a pad slot that doesn't exist and no pad combo/hotkey is bound
+    **{f"input_player{n}_joypad_index": "15" for n in range(1, 5)},
+    "input_menu_toggle_gamepad_combo": "0", "input_enable_hotkey_btn": "nul", "input_rewind_axis": "nul",
+    "input_hold_fast_forward_axis": "nul", "input_rewind": "nul", "input_hold_fast_forward": "nul",
     "network_remote_enable": "false", "video_shader_enable": "false", "rewind_enable": "false",
     "video_fullscreen": "false", "video_windowed_fullscreen": "false", "pause_nonactive": "false",
     "config_save_on_exit": "false", "savestate_auto_load": "false", "savestate_auto_save": "false",

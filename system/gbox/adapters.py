@@ -1251,9 +1251,29 @@ class RetroArchAdapter(CommandAdapter):
         return MemoryDebugger(self, CPUS[self.platform])
 
     def get_frame(self) -> bytes:
+        if getattr(self, "capture_backend", None) and getattr(self, "states_override", None):
+            return self._screenshot(Path(self.states_override).parent / "shots")
         if HOST_OS == "windows":
             return win_grab(self.proc.pid if self.proc else 0)
         return grab_png(self.display.name if self.display else None)
+
+    def _screenshot(self, shots: Path, timeout: float = 6.0) -> bytes:
+        """A capture session's window is parked off-screen (a desktop grab is black): RetroArch's own SCREENSHOT reads
+        the frame from the GPU into the session's shots folder."""
+        before = set(shots.glob("*.png")) if shots.exists() else set()
+        self.cmd("SCREENSHOT")
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            new = (set(shots.glob("*.png")) if shots.exists() else set()) - before
+            if new:
+                f = max(new, key=lambda p: p.stat().st_mtime)
+                size = -1
+                while size != f.stat().st_size:                  # written asynchronously
+                    size = f.stat().st_size
+                    time.sleep(0.2)
+                return f.read_bytes()
+            time.sleep(0.1)
+        raise RuntimeError("RetroArch did not write a screenshot")
 
     def stream_session(self) -> MjpegStream:
         if not self.stream:

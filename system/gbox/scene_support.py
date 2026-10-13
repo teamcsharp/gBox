@@ -43,7 +43,7 @@ SOFTWARE_CORES = {"snes9x", "snes9x2010", "bsnes", "bsnes_hd_beta", "mesen", "me
                   "pcsx_rearmed", "neocd", "opera", "4do", "virtualjaguar", "desmume", "desmume2015", "bluemsx",
                   "fmsx", "puae", "vice_x64", "dosbox_pure", "quasi88", "np2kai", "pokemini", "o2em", "freechaf",
                   "gearsystem", "smsplus", "potator", "atari800", "cap32", "tgbdual", "gpsp", "meteor"}
-LIVE_CHECKED: set[tuple[str, str]] = set()   # (adapter, core) captured end to end on the test PC
+LIVE_CHECKED = {("retroarch", "flycast")}   # (adapter, core) captured end to end on the test PC
 
 _WIN_ONLY = "3D draw-call capture runs on a Windows node (RenderDoc)."
 _RELAY = (" Capture again saves your moment, captures it in a separate agent-owned capture session (test PC first, "

@@ -679,6 +679,9 @@ try:
         elif draws and all(el(d, "TEXCOORD", 0, 4) and el(d, "TEXCOORD", 2, 4) and el(d, "COLOR", 0, 4) for d in draws[:50]):
             ws = [w for d in draws[:200] for w in array.array("f", d["vb"])[3::d["s"]]]
             mode = "pcsx2" if ws and max(abs(x - 1.0) for x in ws) < 1e-4 else "generic"
+        elif draws and all(el(d, "VTX_UV", 0, 3) and el(d, "VTX_BASE", 0, 4) for d in draws[:50]):
+            ws = [w for d in draws[:200] for w in array.array("f", d["vb"])[3::d["s"]]]
+            mode = "flycast" if ws and max(abs(x - 1.0) for x in ws) < 1e-4 else "generic"
         else:
             mode = "generic"
     flip = api == "Vulkan"
@@ -741,6 +744,22 @@ try:
             cs = 1.0 / (128.0 if tex is not None else 255.0)
             C = [(min(2.0, r * cs), min(2.0, g * cs), min(2.0, b * cs), min(1.0, a_ / 128.0))
                  for r, g, b, a_ in zip(f[c0::s], f[c0 + 1::s], f[c0 + 2::s], f[c0 + 3::s])]
+            XY_CLIP = False
+        elif mode == "flycast":
+            # Flycast (Vulkan / GL4) draws the PVR's screen-space vertices: gl_Position = (x_ndc, y_ndc, 0, 1) and the
+            # interpolants are pre-multiplied by q = 1/w for its own perspective correction: vtx_uv = (u*q, v*q, q),
+            # vtx_base = colour*q. View depth w = 1/q; a draw with one q for every vertex is flat 2D (HUD, sprites).
+            tu, cb_ = el(d, "VTX_UV", 0, 3)[0], el(d, "VTX_BASE", 0, 4)[0]
+            Q = f[tu + 2::s]
+            okq = [q for q in Q if q > 1e-9 and math.isfinite(q)]
+            flat = not okq or len(okq) < len(Q) or max(okq) - min(okq) <= 1e-6 * max(okq)
+            W = [None] * nv if flat else [1.0 / q for q in Q]
+            iq = [(1.0 / q) if q > 1e-9 and math.isfinite(q) else 0.0 for q in Q]
+            if tex is not None:
+                UV = [((u * k, v * k) if math.isfinite(u) and math.isfinite(v) else (0.0, 0.0))
+                      for u, v, k in zip(f[tu::s], f[tu + 1::s], iq)]
+            C = [tuple(max(0.0, min(1.0, x * k)) if math.isfinite(x) else 1.0 for x in (r, g, b, a_))
+                 for r, g, b, a_, k in zip(f[cb_::s], f[cb_ + 1::s], f[cb_ + 2::s], f[cb_ + 3::s], iq)]
             XY_CLIP = False
         else:
             W = [w if abs(w - 1.0) > 1e-5 else None for w in Wc]
