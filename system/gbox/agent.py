@@ -178,7 +178,10 @@ How to work:
   (pick whip "Extract X's model ...") -> characters op=extract character=X kind=character|vehicle|object|environment
   session_id, x/y = X's position on the frame as fractions ("45% across, 60% down" -> x=0.45 y=0.6). "Play as X",
   "replace A / me with B", pick-whip swaps -> characters op=use character=B session_id (not in the collection: op=extract first;
-  RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri). OoT pick whip
+  RE4 "make the enemies X": slot=enemies; OoT: x/y or slot=<NPC> replaces whoever is there, e.g. a Kokiri; MGS VR
+  Missions: slot=player (Snake) | enemy:soldier (every soldier) | enemy:ninja | enemies | all, or op=live_use session_id
+  x/y: the figure there, swapped into the running game at the same moment); Twin Snakes
+  GC: slot=player (Snake) | enemies (the Genome soldiers) | bosses | model:<key> | x/y + target=<what is there>). OoT pick whip
   "Play as B" -> op=swap a=link b=<B point "x,y" or name> one_way=true; "Swap A <-> B" -> op=swap a=<A> b=<B> (START = A,
   ARROW = B). "Put a X statue here / next to Y" -> op=place character=X session_id [near=Y | x y]. WHOLE CAST: "replace
   everyone in PSO with wrestlers", "the entire cast of JGR as SA2 characters" -> characters op=cast_swap target_game=<game>
@@ -756,7 +759,9 @@ def tool_specs() -> list[dict]:
            "the player | unplace (OoT; session_id, optional character) | overlay (character, session_id, "
            "optional x/y = the target's point 0..1): any game, now: the model tracks and covers the player on screen in the "
            "desktop app (an overlay, not in-engine) | add (character = new name, from_clipboard=true): store a "
-           "model edited in Blender | cast_swap (target_game, source = a game or a group like 'wrestlers', mapping = "
+           "model edited in Blender | readiness (optional game_id / character, rebuild=true to recompute all): replacement "
+           "readiness of every collected character (roles, bind pose, proportions, budgets) and which game slots each can "
+           "replace; returns the per-game gap report | cast_swap (target_game, source = a game or a group like 'wrestlers', mapping = "
            "auto|random|by_role, seed, slots = all|main|enemies, plan_only, launch): replace the ENTIRE cast of one game "
            "with the cast of another in one mod ('replace everyone in PSO with wrestlers'). game = title or catalog "
            "game_id (default: the chat's game); extract needs a running session only when the thing has to be cut from the frame.",
@@ -1899,7 +1904,8 @@ def _modifies_game(name: str, args: dict) -> bool:
             op == "time" and (args.get("hours") is not None or args.get("minutes") is not None) or \
             op == "wanted" and args.get("level") is not None
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages",
+                      "readiness"}
 
 
 class ChatHub:
