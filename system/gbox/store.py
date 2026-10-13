@@ -304,6 +304,16 @@ class Store:
             row = self.db.execute("SELECT body FROM docs WHERE kind=? AND id=?", (kind, id)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def digest(self, kind: str) -> str:
+        """A validator for all documents of a kind: it changes whenever one is added, changed or removed (any writer of
+        this database, including scripts). Hashing the stored text is ~50x cheaper than decoding it (#712)."""
+        h = hashlib.sha1()
+        with self.lock:
+            for (body,) in self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid", (kind,)):
+                h.update(body.encode("utf-8", "surrogatepass"))
+                h.update(b"\0")
+        return h.hexdigest()
+
     def all(self, kind: str, *, reverse: bool = False) -> list[dict]:
         with self.lock:
             rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "
@@ -354,6 +364,34 @@ class Store:
                                    + " ORDER BY COALESCE(json_extract(body,'$.created'),0) DESC,rowid ASC LIMIT ?",
                                    (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def game_requests(self, game_id: str, statuses=("open", "in_progress", "blocked"), limit: int = 20) -> list[dict]:
+        """Unfinished inbox requests targeting a game (context.game_id, or the Hermes favorite child request), newest
+        first, as small rows: no body, thread or image is decoded (the session panel polls this every 5 s)."""
+        marks = ",".join("?" for _ in statuses)
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT json_extract(body,'$.id'), json_extract(body,'$.number'), json_extract(body,'$.title'), "
+                "json_extract(body,'$.status'), json_extract(body,'$.context') FROM docs WHERE kind='request' AND "
+                "(json_extract(body,'$.context.game_id')=? OR json_extract(body,'$.context.hermes_favorite_game')=?) "
+                "AND json_extract(body,'$.status') IN (" + marks + ") ORDER BY rowid DESC LIMIT ?",
+                (game_id, game_id, *statuses, limit)).fetchall()
+        return [{"id": i, "number": n, "title": t, "status": s, "context": json.loads(c) if c else {}}
+                for i, n, t, s, c in rows]
+    def request_jobs(self, rid: str, limit: int = 200) -> list[dict]:
+        """Jobs an inbox request started (parent_request_id or input.request_id), oldest first, for its story."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM (SELECT rowid,body FROM docs WHERE kind='job' AND "
+                                   "(json_extract(body,'$.parent_request_id')=? OR json_extract(body,'$.input.request_id')=?) "
+                                   "ORDER BY rowid DESC LIMIT ?) ORDER BY rowid", (rid, rid, limit)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def audit_for(self, subject: str, limit: int = 200) -> list[dict]:
+        """Audit entries about one subject (a request id), oldest first."""
+        with self.lock:
+            rows = self.db.execute("SELECT seq,ts,actor,action,data FROM audit WHERE subject=? ORDER BY seq LIMIT ?",
+                                   (subject, limit)).fetchall()
+        return [dict(seq=r[0], ts=r[1], actor=r[2], action=r[3], data=json.loads(r[4])) for r in rows]
 
     def running_job_counts(self) -> dict[str, int]:
         """Running jobs per claiming worker id, so a worker whose reported slots don't match is visible (#1294)."""

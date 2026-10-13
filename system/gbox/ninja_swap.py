@@ -62,14 +62,28 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
     src_tris = sum(len(p["tris"]) for p in prims)
     rep["source_triangles"] = src_tris
     last = None
-    for budget in budgets:
+    from . import fit_events as FE
+    if FE.active():                                        # every vertex rides one node (the game's own tree)
+        collapse = tgt.get("collapse") or {}
+        names = {int(n): f"{r} (node {n})" for r, n in (tgt.get("roles") or {}).items()}
+        counts = FE.per_limb(prims, names, owner=lambda j: int(collapse.get(j, j)))
+        FE.stage("weights", data={"mode": "rigid per node (one node per vertex)", "nodes": len(counts),
+                                  "skeleton_nodes": tgt.get("joints"), "vertices": int(sum(counts.values())),
+                                  "per_limb": counts})
+    for k, budget in enumerate(budgets):
         src = rigged
+        if src_tris <= budget and k == 0:
+            FE.stage("decimate", "skipped", {"from": src_tris, "triangles": src_tris, "budget": budget})
         if src_tris > budget:
             if not blender:
                 raise ValueError(f"{src_tris} triangles (budget {budget}) and no Blender on this node to decimate")
             progress(40, f"Decimating {name} to {budget} triangles (Blender)")
+            FE.stage("decimate", "running", {"from": src_tris, "to": budget})
             src = decimate(rigged, work / f"dec_{budget}.glb", float(budget), blender)
         rp = S.read_rigged(src)
+        if src is not rigged:
+            FE.stage("decimate", data={"from": src_tris, "to": budget,
+                                       "triangles": int(sum(len(p["tris"]) for p in rp))}, prims=rp)
         _dedupe_textures(rp)
         for p in rp:
             p["J"] = np.asarray(p["jid"])[:, None] if np.ndim(p["jid"]) == 1 else np.asarray(p["jid"])
@@ -81,8 +95,11 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
             data = encode(geo)
         except ValueError as e:
             last = e
+            FE.stage("encode", "running", {"budget": budget, "result": str(e)[:120]})
             continue
         tris = sum(len(g[2]) for g in geo.values())
+        FE.stage("encode", data={"budget": budget, "triangles": tris, "nodes": len(geo),
+                                 "bytes": len(data) if isinstance(data, (bytes, bytearray)) else None})
         return {"data": data, "atlas": img, "rigged": rigged, "geometry": geo,
                 "report": rep | {"triangles": tris, "budget": budget, "nodes": sorted(int(k) for k in geo)}}
     raise last or ValueError("no triangle budget fits")
@@ -90,8 +107,11 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
 
 def split_nodes(prims: list[dict], tgt: dict) -> dict:
     """Un-indexed prims (world positions in the bind pose, joint per vertex in J[:, 0]) -> {node: (pos, nrm,
-    [((i0, i1, i2), ((u, v) x3))])} in node space, one vertex per position within a node."""
+    [((i0, i1, i2), ((u, v) x3))])} in node space, one vertex per position within a node. tgt["collapse"] {joint:
+    node}: geometry fitted to a joint the game can't draw from (a marker node, a virtual limb end: gbox.pso_enemy)
+    is stored on that node instead."""
     inv = [np.linalg.inv(w) for w in tgt["W"]]
+    collapse = tgt.get("collapse") or {}
     out: dict = {}
     keys: dict = {}
     for p in prims:
@@ -99,6 +119,7 @@ def split_nodes(prims: list[dict], tgt: dict) -> dict:
         J = np.asarray(p["J"]).reshape(len(P), -1)[:, 0]
         for t in np.asarray(p["tris"]).reshape(-1, 3):
             j = int(np.bincount(J[t]).argmax())
+            j = int(collapse.get(j, j))
             M = inv[j]
             pos, nrm, tris = out.setdefault(j, ([], [], []))
             kk = keys.setdefault(j, {})

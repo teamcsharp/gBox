@@ -20,6 +20,7 @@ from __future__ import annotations
 import struct
 
 import numpy as np
+from .formats.lz import yaz0_decompress  # noqa: F401  (shared codec, moved to gbox.formats)
 
 # version -> dmadata offset + DMA indices (segments.csv line - 2) of the files gBox reads. N64 retail + GameCube ports.
 VERSIONS = {
@@ -40,39 +41,6 @@ OBJECT_LINK_BOY, OBJECT_LINK_CHILD, OBJECT_GAMEPLAY_KEEP = 0x14, 0x15, 0x01
 
 # ---------------------------------------------------------------- Yaz0
 
-def yaz0_decompress(src: bytes) -> bytes:
-    assert src[:4] == b"Yaz0", "not Yaz0"
-    size = struct.unpack_from(">I", src, 4)[0]
-    dst = bytearray(size)
-    s, d = 16, 0
-    while d < size:
-        code = src[s]
-        s += 1
-        for bit in range(8):
-            if d >= size:
-                break
-            if code & (0x80 >> bit):
-                dst[d] = src[s]
-                d += 1
-                s += 1
-            else:
-                b1, b2 = src[s], src[s + 1]
-                s += 2
-                dist = ((b1 & 0x0F) << 8 | b2) + 1
-                n = b1 >> 4
-                if n == 0:
-                    n = src[s] + 0x12
-                    s += 1
-                else:
-                    n += 2
-                c = d - dist
-                if dist >= n:
-                    dst[d:d + n] = dst[c:c + n]
-                else:
-                    for i in range(n):
-                        dst[d + i] = dst[c + i]
-                d += n
-    return bytes(dst)
 
 
 # ---------------------------------------------------------------- CRC (CIC-6105)
@@ -359,8 +327,9 @@ def run_dl(segs: dict, addr: int, on_tri=None, st=None, depth=0, init: dict | No
         elif cmd == 0xE3:
             ln = (w0 & 0xFF) + 1
             sh = 32 - ((w0 >> 8) & 0xFF) - ln
-            mask = ((1 << ln) - 1) << sh
-            st["omh"] = (st["omh"] & ~mask) | (w1 & mask)
+            if sh >= 0:                                  # (a data word that only looks like a list: ignored)
+                mask = ((1 << ln) - 1) << sh
+                st["omh"] = (st["omh"] & ~mask) | (w1 & mask)
         elif cmd == 0xF5 and (w1 >> 24) & 7 == 0:
             st["tile0"] = (w0, w1)
         elif cmd == 0xF2 and (w1 >> 24) & 7 == 0:

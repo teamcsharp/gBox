@@ -10,27 +10,12 @@ class GCDisc:
         self.game_id = h[:6].decode("ascii", "replace")
         self.title = h[0x20:0x60].split(b"\0")[0].decode("latin-1")
         fst_off, fst_size = struct.unpack(">II", self._r(0x424, 8))
-        fst = self._r(fst_off, fst_size)
-        n = struct.unpack_from(">I", fst, 8)[0]
-        names = fst[n * 12:]
+        from .formats.gcfst import parse_fst              # the shared FST walk (gbox.formats)
         self.files: dict[str, tuple[int, int]] = {}
         self.entries: dict[str, int] = {}                  # file -> disc offset of its FST entry (size at +8)
-        # walk directory entries: (is_dir, name_off, offset/parent, size/next)
-        stack = [("", n)]
-        i = 1
-        while i < n:
-            while stack and i >= stack[-1][1]:
-                stack.pop()
-            flags_name, a, b = struct.unpack_from(">III", fst, i * 12)
-            is_dir, name_off = flags_name >> 24, flags_name & 0xFFFFFF
-            name = names[name_off:names.index(b"\0", name_off)].decode("latin-1")
-            prefix = stack[-1][0] if stack else ""
-            if is_dir:
-                stack.append((f"{prefix}{name}/", b))
-            else:
-                self.files[f"{prefix}{name}"] = (a, b)
-                self.entries[f"{prefix}{name}"] = fst_off + i * 12
-            i += 1
+        for path, a, b, entry in parse_fst(self._r(fst_off, fst_size), fst_off):
+            self.files[path] = (a, b)
+            self.entries[path] = entry
 
     def _r(self, off, n):
         self.f.seek(off)

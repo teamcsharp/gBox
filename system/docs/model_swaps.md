@@ -21,6 +21,7 @@ Licensing: every source model here (Nintendo, SEGA, Capcom, Rockstar) is copyrig
 | Any library character as Aya (all 5 outfits, field + battle) | Parasite Eve (PS1) | **Done in gBox** | `characters op=use` builds `pe_<character>` (gbox/pe_swap.py, section 10). Mario checked on the Spark. |
 | Any library character as Cloud (field + battle models) | Final Fantasy VII (PS1) | **Done in gBox** | `characters op=use` builds `ff7_<character>` (gbox/ff7_swap.py, section 11). Mario checked on the Spark. |
 | Which games can rip / reimport, and the fallback | every studied game | **Done in gBox** | `characters op=coverage` (section 12). No writer: overlay + a gap report. |
+| The entire cast of one game as another game's cast ("everyone in PSO as wrestlers") | PSO enemies, DOA2, Def Jam, SmackDown! 2, No Mercy, JGR, Crazy Taxi, Vice City PC | **Done in gBox** | `characters op=cast_swap` / right-click a game -> "Replace entire cast with..." builds one mod (docs/cast_swap.md). |
 | Leon/Mario/Sonic as player | RE4 2005 UHD (PC) | **Medium** | JADERLINK BIN/TPL tools: SMD/OBJ in, `.bin/.tpl` back into `pl*.udas`. Leon-replacement mods exist. |
 | Mario/Sonic as Chris/Jill/Leon/Claire | RE1/2/3 classic PC | **Hard** | RE2MV/RE3MV with OBJ per body part. Very low-poly rigid segments, mostly manual. |
 | OoT characters as PSO Boomas (keeping Booma animations) | PSO BB (PC) | **Hard** | pso-blender (jtuu) `.xj` export into the Booma `.bml` via PSOBMLExtract. The model must match the Booma bone hierarchy. |
@@ -54,6 +55,14 @@ Licensing: every source model here (Nintendo, SEGA, Capcom, Rockstar) is copyrig
 ### Source assets
 - OoT Ganondorf (`object_gnd` for the Ganondorf boss, `object_ganon`/`object_ganon2`) can be viewed and exported with **Z64Utils**: https://github.com/zeldaret/Z64Utils. Reference rips (view only): https://models.spriters-resource.com/nintendo_64/thelegendofzeldaocarinaoftime/
 - The OoT decomp plus Fast64 can import the decomp's objects into Blender (https://github.com/Fast-64/fast64).
+
+---
+
+### Live size changes: `zelda_oot op=scale_link / scale_sword` (`gbox/oot_scale.py`, 2026-10-12, #213 / #216)
+- **`scale_link factor=N`** ("make Link 2x bigger"): writes 0.01 x N to the player actor's `Actor.scale` (+0x50; the actor is `play->actorCtx.actorLists[ACTORCAT_PLAYER].head`, accepted only with id 0 / category 2). The game sets 0.01 again whenever Link is re-created (every scene change), so the session's hold thread re-resolves him and rewrites it until `factor=1`.
+- **`scale_sword factor=N`** ("make my sword three times bigger"): scales only the equipped sword. Link's loaded object (`object_link_boy` / `object_link_child`, found through `play->objectCtx.slots[]`) is read once, the display lists that draw that sword are walked (hand lists `sPlayerLeftHandSwordDLs` / `gPlayerLeftHandBgsDLs`, sheath lists `D_80125E78` / `D_80125D28` / `D_80125E88` / `D_80125D88`; offsets from the decomp's `object_link_boy.xml` / `object_link_child.xml`), and the vertices of triangles drawn with the sword's textures (pommel / guard / emblem, the gameplay_keep metal texture for the blade in hand, sheath + band on the back) are scaled about the pommel; the hand and the shield share those Vtx arrays and keep their vertices. s16 overflow is refused up front (`max_factor` in the result: 7.99 Master Sword, 5.12 Biggoron's, 15.95 Kokiri), the original 16-byte Vtx records are kept so `factor=1` restores, and the sword's hit range (`sMeleeWeaponLengths`, verified by content in `code`) follows unless `reach=false`. The object is reloaded from ROM on every scene change (usually at another address), so the same hold thread re-resolves it and re-applies only where it reads the ROM's vertices, following age and equipment changes; a half-written load or a model that is not the ROM's is skipped and reported.
+- Why not `freeze_memory`: a freeze keeps writing raw bytes at one fixed address; Link's actor and his object move between scenes, so the freeze would hit whatever the game allocates there next. The hold (same pattern as the statue watcher in `oot_live.watch`) re-resolves every 0.5 s and only ever writes over the game's own default values.
+- `scale_status` reports what is held and how often it was re-applied; `scale_release` restores everything and stops the hold. Tests: `tests/test_oot_scale.py`. Revisions: NTSC 1.0 / 1.1 / 1.2 (bases from `gbox.oot.layout`; the two Link objects are byte-identical in the retail 1.0 and 1.2 ROMs, which the EXPECT table in `oot_scale.py` was checked against).
 
 ---
 
@@ -139,6 +148,9 @@ table contents, struct layouts and enums.
   `object_kw1` with Fado's head from `object_fa`. A group gets the same data at the same offset in every object of the
   group, and the constant head list is branched to the new head.
 - Writing the object changes every actor that uses it (all Kokiri boys).
+
+**The whole cast** (`characters op=cast_swap target_game=<OoT>`): 85 catalogued slots (Link, NPCs, sages, enemies,
+bosses) rebuilt in one ROM, with object growth shared out per room. See `docs/oot_cast.md`.
 
 **Extract / swap / play as**
 - `op=extract` takes a picture point or a name (Link, Saria, a Kokiri girl, En_Sa, object_sa). It writes the
@@ -235,6 +247,7 @@ Feasibility: **Hard.** The exporter is experimental, the skeletons are different
 - Rig: the stock PC III/VC peds are **segmented, rigid hierarchies**. Frame names and order must match the original ped (for example the root, pelvis, spine, head and limb frames). Vertices are rigid per frame. Smooth skinned peds need the **Skin and Bones** plugin (aap) for III: https://gtaforums.com/topic/815077-skin-and-bones/ and https://www.mixmods.com.br/2018/08/iii-skin-and-bones-3-0-xbox-peds-claude-corpo-suave/. re3/reVC also support skinned (Xbox/mobile) peds: https://github.com/GTAmodding/re3
 - **Player**: replace `player.dff/player.txd` (VC) in the IMG.
 - **Replace all pedestrians**: copy or rename the same `.dff/.txd` over every ped entry in the IMG. Alternatively, point each `default.ide` ped line at one model and txd. Scripting this is trivial.
+- **Built into gBox (2026-10-12, classic VC PC port)**: `gbox/gta_vc_models.py` (reader: IMG v1, HAnim/Skin, D3D8 geometry + rasters, rigged GLB) and `gbox/gta_vc_swap.py` (writer: slots `player`, `ped:<dff>`, `peds:all`, `all`; rebuilt `gta3.img/.dir` in a filemods mod dir). Routed for both windows_native ids. The owned install is the **Definitive Edition** (UE4 pak, no `gta3.img`), which `op=use` detects and reports as a gap; see `docs/gta_vc_pc_swap.md` for the facts, the bone-tag role map and the live check.
 
 ### Existing skins
 - VC Mario player model (ripped from SM64): https://www.modland.net/gta-vice-city-mods/skins/mario-player-model.html. Thread: https://gtaforums.com/topic/289934-trying-to-use-the-mario-skin-mod/
@@ -602,6 +615,7 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 |---|---|---|---|---|
 | Final Fantasy VII (Discs 1-3) | psx | ff7 (battle LZS + field BCX) | cloud (+2 variants), ff7_tifa, 9 field models (7 with roles); not ripped: battle models of Barret, Aerith, Red XIII, Cid, Yuffie, Vincent, Cait Sith (no auto roles yet) | **gbox.ff7_swap**: player (Cloud field + battle) |
 | Parasite Eve (Discs 1-2) | psx | parasite_eve | aya + all 4 other outfits | **gbox.pe_swap**: player (Aya, all outfits) |
+| Parasite Eve II (Discs 1-2) | psx | pe2 | pe2_aya + 4 other outfits (19 bones, roles) | **gbox.pe2_swap**: player (Aya, every outfit file); built + read back, in-game check pending (docs/pe2_pipeline.md) |
 | Super Mario 64 (USA / Europe) | n64 | sm64 | mario | **gbox.sm64_swap**: player |
 | Resident Evil 4 (GC, Discs 1-2) / Wii Edition | gamecube / wii | re4gc | leon | **build_re4 (+ re4wii)**: player (+ enemies via re4gc_enemies by hand) |
 | Resident Evil 6 | xbox360 | re6_models | re6_leon, re6_helena | **gbox.re6_tool**: player, enemies, enemy:<family> |
@@ -610,11 +624,13 @@ Snapshot 2026-10-07: 33 games, 20 with an extractor, 19 with a routed writer, 15
 | WWF No Mercy (USA; EU Rev A reader) / WCW Revenge / World Tour | n64 | nomercy | nm_kane, nm_mankind, nm_steve_austin, nm_the_rock, nm_undertaker; not ripped: the rest of the roster | **gbox.aki_wrestling**: any wrestler, player |
 | GTA: Liberty City Stories | ps2 | gta_lcs | lcs_toni, toni_cipriani; not ripped: the other Toni outfits | **gbox.gta_stories_models**: player (every outfit) |
 | Sonic Adventure 2 | dreamcast | sa2 | sonic, sa2_shadow, sa2_tails, sa2_knuckles, sa2_rouge, sa2_dr_eggman, sa2_amy_rose, sa2_metal_sonic, sa2_tikal, sa2_chaos_0 | **gbox.sa2_chars**: player (Sonic; section 13) |
-| Phantasy Star Online Ver. 2 | dreamcast | pso | hucast; not ripped: the other 8 classes | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
+| Clay Fighter: Sculptor's Cut (USA) | n64 | clayfighter (sprite sheets of the 16 fighters) | (op=collect) | **gbox.clayfighter_swap**: fighter:<name>, player (sprites donor re-draws every frame; docs/clayfighter_swap.md) |
+| Dead Or Alive ++ (Japan, arcade) | arcade | doapp (11 fighters x 4 costumes, rigged, roles) | (op=collect) | **gbox.doapp_swap**: <fighter>[:<costume>], player (all 44 costume models; rebuilt doapp set, read back through the game's skeleton build; MAME check pending, docs/doapp_pipeline.md) |
+| Phantasy Star Online Ver. 2 | dreamcast | pso | all 9 classes (hucast, pso_humar ... pso_fonewearl), each with body roles | overlay only (gbox.pso_player builds the files, the game doesn't draw them yet: section 14) |
 | Super Smash Bros. Melee | gamecube | melee | 27 fighters | overlay only |
 | Shenmue (Disc 1) | dreamcast | shenmue | ryo | overlay only |
 | Resident Evil 4 (2023, Steam) | pc | re4r | re4r_leon, re4r_ashley (no roles) | overlay only |
-| RE Director's Cut, RE3 Nemesis, Parasite Eve II, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
+| RE Director's Cut, RE3 Nemesis, FF8, GTA III, GTA VCS, RE4 PS2, Mario Kart 64, Mercenaries 3D | various | - | - | overlay only (gap report on first op=use) |
 
 Regenerate it with `characters op=coverage`: `char_coverage.markdown()` prints this table from the live data. A new
 writer counts as soon as its module has `GAME_IDS` + `use()`, is listed in `char_coverage.WRITERS`, and
@@ -671,6 +687,31 @@ Findings from the Spark (offline mode only, never online):
   for the body file / why it needs the weighted chunks (Ghidra on 1ST_READ.BIN: the player model loader), or write the
   character as weighted chunks in the original slots (0x2C vertices with Ninja-flag weights), keeping the original
   vertex counts per chunk.
+
+**Class body role maps** (#1485, read off the owned 2OEF disc). The native collection holds all nine classes
+(`characters op=collect`, extractor `pso`). It used to report 1 of 9 retargetable, because only the hand-mapped HUcast had
+`rig.roles`. All nine bodies `PSO/PL<x>BDY00.NJ` (x = A..I: HUmar, HUnewearl, HUcast, RAmar, RAcast, RAcaseal, FOmarl,
+FOnewm, FOnewearl) are **one 64-node tree**: every node has the same parent in every class, because the game drives
+them all with one motion set. They differ only in bone lengths (hip at y 14.3 for HUcast, 10.5 for HUnewearl) and in
+flag bits of nodes that no role uses. So every class has the same map (`pso_player.CLASS_ROLES`, node index, joint
+`nodeNNN` in the collection model):
+
+| role | node | | role | node | | role | node |
+|---|---|---|---|---|---|---|---|
+| hip | 2 (pelvis) | | l_upper / l_fore / l_hand | 28 / 29 / 34 | | l_thigh / l_shin / l_foot | 4 / 5 / 8 |
+| chest | 25 (torso) | | r_upper / r_fore / r_hand | 41 / 42 / 47 | | r_thigh / r_shin / r_foot | 13 / 14 / 17 |
+| head | 56 | | | | | | |
+
+- `pso_player.check_roles` checks the map against a class's own tree. It must be the player tree (`PLAYER_PARENTS`),
+  every role node must draw vertices, left limbs must be at +X, each limb must chain below the chest or hip, and the
+  heights must go head > chest > hip > feet.
+- `body_roles` runs that check on extraction: `_pso_run` reports the roles, which become `rig.roles`.
+- Entries collected before this get the roles from their `manifest.json` (`ROLE_BACKFILL["pso"]` →
+  `pso_player.model_roles`, checked on the exported bind pose).
+- A stored partial collection result is re-checked against the library (`characters.refresh_collection`, called by
+  `AutoCollection.status`). The session observer then sees it as complete and stops filing the models gap, and the
+  roster job isn't queued again.
+- The enemy roster entries (`kind` enemy, `gbox.pso_enemy`) aren't part of the collection count.
 
 ## 15. RE6 Leon (`re6_leon`) in other games, and fixes found on the way (2026-10-07)
 

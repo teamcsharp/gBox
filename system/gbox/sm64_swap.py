@@ -152,7 +152,8 @@ def load_rig(path: Path, roles: dict[str, str], props=()) -> dict:
                           "prop": nd.get("name") in props, "wrap": wrap})
     if not prims:
         raise ValueError(f"{Path(path).name}: no triangles")
-    return {"joints": np.array([Wn[j][:3, 3] for j in jn]), "parent": parent, "roles": ri, "prims": prims, "names": names}
+    return {"joints": np.array([Wn[j][:3, 3] for j in jn]), "parent": parent, "roles": ri, "prims": prims, "names": names,
+            "source": str(path)}
 
 
 def _snap(v, skip=-1) -> np.ndarray:
@@ -310,6 +311,29 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
            "shoulder_widen": round(sx, 2), "head_scale": round(head_k, 2), "head_scale_user": float((scale or {}).get("head", 1.0)),
            "limb_stretch": stretch,
            "roles_used": sorted(ri), "facing": B.astype(int).tolist()}
+    return _profiled(rig, tgt, out, rep, scale, T, MARIO)
+
+
+def _profiled(rig, tgt, out, rep, scale, T, jmap):
+    """The fit's stages for the live Fitting pop-up (gbox.fit_events) and the operator's retarget profile
+    (gbox.retarget_profile, rig.scale["profile"]) applied in target space."""
+    from . import fit_events as FE, retarget_profile as RP
+    prof = RP.profile_of(scale)
+    if FE.active():
+        FE.auto_model(rig.get("source"))
+        basis = rep.get("facing")                         # the donor as loaded, stood upright: its original height
+        th = tgt.get("height") or (float(np.asarray(T)[:, 1].max()) - float(tgt["ground"]) if "ground" in tgt else None)
+        FE.stage("scale", data=FE.fit_numbers(rep) | FE.donor_numbers(rig, basis, fitted_height=FE.height(out),
+                                                                       target_height=th),
+                 prims=FE.donor(rig, basis))
+        FE.stage("retarget", data={"limb_stretch": rep.get("limb_stretch"), "roles": len(rep.get("roles_used") or []),
+                                   "vertices": int(sum(len(p["pos"]) for p in out)),
+                                   "triangles": int(sum(len(p["tris"]) for p in out))}, prims=out)
+    if prof is not None:
+        out, rep["profile"] = RP.apply_jmap(out, T, jmap, prof, tgt.get("ground"))
+        FE.stage("proportion", data=rep["profile"], prims=out)
+    else:
+        FE.stage("proportion", "skipped", {"profile": "none"})
     return out, rep
 
 

@@ -35,6 +35,9 @@ FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
 # Keep rendered textures in emulated VRAM, so future states can include them.
 # Unthreaded rendering also keeps serialization size stable between query/write.
 FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+# Flycast save states are ~27 MB and stall the game while they serialize: gBox's checkpoint ring takes one at most every
+# 20 s there (#1489, 2 fps in PSO with a checkpoint every 2 s); the ring's frame-rate budget can stretch it further.
+FLYCAST_CHECKPOINT_MIN_S = 20.0
 # Windows N64 (docked, resizable window) uses parallel_n64's software angrylion RDP, whose output scales with the window.
 # angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
 # angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
@@ -51,6 +54,10 @@ def _set_core_opts(path: Path, values: dict[str, str]) -> None:
 class Adapter:
     name = "base"
     supported: set[str] = set()
+    # gBox's checkpoint rewind (gbox/rewind.py): "path" = save_state reports the file it wrote (the operator's slot,
+    # borrowed and given back), "dir" = checkpoint_save writes a private slot found under state_dir() / state_glob,
+    # False = the save state does not work in place (checkpoint_reason says why), None = no save state file to copy.
+    checkpoint_state: str | bool | None = None
 
     def get_capabilities(self) -> dict[str, str]:
         return {op: ("supported" if op in self.supported else "unsupported") for op in OPS}
@@ -63,15 +70,83 @@ class Adapter:
         raise AttributeError(op)
 
 
+def _win_descendants(pid: int) -> list[int]:
+    """PIDs started (transitively) by `pid`, from one Toolhelp snapshot: what taskkill /T walks, without its startup."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)                     # TH32CS_SNAPPROCESS
+    if snap in (None, wintypes.HANDLE(-1).value):
+        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+    children: dict[int, list[int]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            children.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    out, todo = [], [pid]
+    while todo:
+        for child in children.get(todo.pop(), []):
+            if child not in out and child != pid:
+                out.append(child)
+                todo.append(child)
+    return out
+
+
+def _win_terminate_tree(proc: subprocess.Popen) -> None:
+    """TerminateProcess on the emulator (gBox started it: its own handle) and every process it started; nothing else."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = ctypes.c_void_p
+
+    def created(handle) -> int | None:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(ctypes.c_void_p(handle), *(ctypes.byref(t) for t in times)):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    root = created(int(proc._handle))
+    if root is None:
+        raise OSError(ctypes.get_last_error(), "GetProcessTimes failed")
+    kids = _win_descendants(proc.pid)                                # before the parent goes (its children re-parent)
+    proc.kill()                                                      # Popen.kill = TerminateProcess on our handle
+    for pid in kids:
+        h = k32.OpenProcess(0x0001 | 0x1000, False, pid)             # PROCESS_TERMINATE | QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        try:
+            born = created(h)
+            if born is not None and born >= root:                    # a reused parent PID: older, not ours, untouched
+                k32.TerminateProcess(ctypes.c_void_p(h), 1)
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(h))
+
+
 def _kill_tree(proc: subprocess.Popen | None):
+    """Kill the emulator's own process tree now (#1504): TerminateProcess on the emulator gBox started and on the
+    processes it started (taskkill /T /F on its PID as the fallback), SIGTERM on Linux; nothing else is touched."""
     if not proc or proc.poll() is not None:
         return
     if HOST_OS == "windows":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        try:
+            _win_terminate_tree(proc)          # ~10 ms; taskkill itself took 1-1.3 s here, ~5 s on a busy PC
+        except Exception:                      # noqa: BLE001 - no Toolhelp / access: the system tool does the same
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10)
     else:
         proc.terminate()
     try:
-        proc.wait(10)
+        proc.wait(3)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(5)  # No successful stop until the native process has actually exited.
@@ -211,6 +286,9 @@ _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
                                                                      0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
                                                                      0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32])}}
+# function keys and Tab: emulator hotkeys (Dolphin's save / load state slots and its speed limit); they were dropped before
+_SCAN.update({f"F{i + 1}": (sc, 0) for i, sc in enumerate([0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58])})
+_SCAN["Tab"] = (0x0F, 0)
 
 
 def _pid_window(pid: int):
@@ -442,9 +520,10 @@ def _pad_binds() -> dict:
     return out
 
 
-def _examine_driver_ok(argv) -> bool:
+def _examine_driver_ok(argv, also: tuple = ()) -> bool:
     """RenderDoc injection only for Direct3D/Vulkan renderers: under it RetroArch's OpenGL driver can't create its window
-    ("win32_set_video_mode failed", the game never starts: N64 parallel_n64 and the other GL cores)."""
+    ("win32_set_video_mode failed", the game never starts: N64 parallel_n64 and the other GL cores). `also` adds
+    drivers a capture session may inject into (core-profile "glcore", #971)."""
     import re
     if "--config" not in argv:
         return True                                   # standalone emulators here (Dolphin D3D12) are Direct3D
@@ -453,24 +532,40 @@ def _examine_driver_ok(argv) -> bool:
     except (OSError, IndexError):
         return False
     m = re.search(r'^video_driver\s*=\s*"([^"]*)"', cfg, re.M)
-    return bool(m) and m.group(1) in ("d3d11", "d3d12", "vulkan")
+    return bool(m) and m.group(1) in ("d3d11", "d3d12", "vulkan", *also)
 
 
 def _popen(ad, argv, **kw) -> subprocess.Popen:
     """Start a local-window emulator; with Examine 3D on (ad.examine) RenderDoc is loaded into it from the first
-    instruction, so the frame on screen can be captured as a 3D scene later (gbox.scene_capture)."""
+    instruction, so the frame on screen can be captured as a 3D scene later (gbox.scene_capture).
+    An agent-owned capture session (ad.capture_backend, #971) with a Vulkan backend gets RenderDoc through its Vulkan
+    layer instead (environment only, no injection), and its window stays parked off-screen for its whole life."""
+    cap = getattr(ad, "capture_backend", None)
     if HOST_OS == "windows":
         from .graphics import prefer_gpu
         prefer_gpu(argv[0])                                # the discrete GPU, never a virtual display / iGPU
-        kw.setdefault("startupinfo", hidden_start())
-    if HOST_OS == "windows" and getattr(ad, "examine", False) and _examine_driver_ok(argv):
+        kw.setdefault("startupinfo", capture_start() if cap else hidden_start())
+    cap_dir = ad.config.runtime / "scene_capture" / "rdc" if getattr(ad, "config", None) else None
+    if HOST_OS == "windows" and getattr(ad, "examine", False) and (cap or {}).get("attach") == "layer":
         from . import scene_capture
-        p = scene_capture.popen_hooked(argv, cap_dir=ad.config.runtime / "scene_capture" / "rdc" if ad.config else None, **kw)
+        p = scene_capture.popen_layer(argv, cap_dir, **kw)
+    elif HOST_OS == "windows" and getattr(ad, "examine", False) and _examine_driver_ok(argv, ("glcore",) if cap else ()):
+        from . import scene_capture
+        p = scene_capture.popen_hooked(argv, cap_dir=cap_dir, **kw)
     else:
         p = subprocess.Popen(argv, **kw)
     if HOST_OS == "windows":
-        keep_offscreen(p.pid)
+        keep_offscreen(p.pid, **({"limit_s": 1800.0, "give_up_s": float("inf")} if cap else {}))
     return p
+
+
+def capture_start():
+    """Windows: a capture session's window is shown normally but never activated (a minimized Vulkan/GL window has
+    no swapchain to present, so RenderDoc would never see a frame); keep_offscreen parks it off-screen as it opens."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 4                                     # SW_SHOWNOACTIVATE
+    return si
 
 
 def hidden_start():
@@ -637,8 +732,13 @@ def win_resume_threads(tids: list[int]) -> int:
     return n
 
 
-def _examine_ok(proc) -> bool:
+def _examine_ok(proc, wait_s: float = 0.0) -> bool:
+    """RenderDoc is inside the emulator: injected at launch, or (Vulkan layer) loaded once the game made its Vulkan
+    device; wait_s gives the layer that long to show up."""
     info = getattr(proc, "renderdoc", None)
+    if isinstance(info, dict) and info.get("attach") == "layer" and "error" not in info:
+        from .scene_capture import layer_check
+        return bool(layer_check(proc, wait_s))
     return bool(info) and "error" not in info
 
 
@@ -714,6 +814,8 @@ class RetroArchAdapter(CommandAdapter):
     name = "retroarch"
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "save_state",
                  "load_state", "step_frames", "query_runtime", "get_frame", "send_input", "stream_session", "rewind", "fast_forward"}
+    checkpoint_state = "path"                            # NO_REWIND cores: gBox's checkpoint ring behind Select+L2
+    ff_on = False                                        # gBox's view of RetroArch's fast-forward toggle
 
     def __init__(self, cfg: EmulatorConfig, config: Config | None = None, platform: str | None = None,
                  port: int | None = None, host: str = "127.0.0.1"):
@@ -726,6 +828,7 @@ class RetroArchAdapter(CommandAdapter):
         self.addr, self.display, self.stream, self.log_path = (host, port), None, None, None
         self._state_lock = threading.RLock()
         self.rewind_on = (platform or "") not in NO_REWIND
+        self.checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S if (platform or "") in FLYCAST_PLATFORMS else 0.0
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
         if HOST_OS == "windows":
@@ -744,6 +847,8 @@ class RetroArchAdapter(CommandAdapter):
                 "cache_directory": d["extract"],
                 "screenshot_directory": d["screenshots"], "network_cmd_enable": "true", "network_cmd_port": self.addr[1],
                 "config_save_on_exit": "false", "pause_nonactive": "false",
+                # in-game saves (SRAM) reach the disk every 5 s while playing, so Stop can kill RetroArch at once (#1504)
+                "autosave_interval": "5",
                 # network gamepad: gBox presses buttons over UDP, so input works whatever window has focus (docked on Windows,
                 # DirectInput ignores injected keys because the emulator isn't the top-level foreground window)
                 "network_remote_enable": "true", "network_remote_enable_user_p1": "true", "network_remote_base_port": self._remote_port(),
@@ -758,6 +863,13 @@ class RetroArchAdapter(CommandAdapter):
                 "gamemode_enable": "false",          # GameMode needs a D-Bus session bus; services have none (abort -6)
                 "suspend_screensaver_enable": "false", "video_font_enable": "false"}
         co = d["retroarch"] / "core-options.cfg"              # Flycast: threaded rendering lets the state grow between the size
+        cap = getattr(self, "capture_backend", None)          # agent-owned capture session (#971): its own files only,
+        if cap:                                               # the operator's retroarch/core options are only read
+            from . import capture_backend
+            work = rt / "capture_sessions" / f"ra-{self.addr[1]}"
+            for sub in ("states", "saves", "shots"):
+                (work / sub).mkdir(parents=True, exist_ok=True)
+            co = capture_backend.core_options_file(co, {}, work)
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") in FLYCAST_PLATFORMS:
@@ -802,6 +914,11 @@ class RetroArchAdapter(CommandAdapter):
                                             Path(provision.retroarch_exe(self.config)).parent)
         if HOST_OS == "windows" and (self.platform or "") == "ps2":
             opts["video_shader_enable"] = "false"            # the .glslp post-AA presets don't load under d3d11
+        if cap:                                              # the capture backend: vulkan (layer) or glcore (injected)
+            _set_core_opts(co, cap.get("core_options") or {})
+            opts = capture_backend.retroarch_cfg(opts, cap, work)
+            self.states_override = work / "states"
+            cfg = work / "retroarch.cfg"
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))
         return cfg
 
@@ -968,13 +1085,12 @@ class RetroArchAdapter(CommandAdapter):
         if self.config is not None:
             rom = self._from_lst_zip(self._from_lst(self._from_gme(self._from_old_chd(self._from_7z(rom)))))
         argv = self._argv(rom)
+        from .scene_support import video_driver
+        self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
+        self.core_path = argv[argv.index("-L") + 1] if "-L" in argv else None
+        # an OpenGL session can't hold RenderDoc; the capability matrix (scene_support) names the capture session that
+        # captures its moment instead (#971), so there is no blanket "unavailable" reason here any more
         self.examine_unavailable_reason = None
-        if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
-            self.examine_unavailable_reason = (
-                "3D draw-call capture is unavailable for this OpenGL RetroArch session. "
-                "RenderDoc injection prevents this core from opening its game window; "
-                "relaunching with Examine 3D would not fix it. The game remains playable and can be paused."
-            )
         if "-L" in argv:
             try:
                 n = len(self.install_cheats(argv[argv.index("-L") + 1], rom))
@@ -1020,7 +1136,7 @@ class RetroArchAdapter(CommandAdapter):
                     return {"pid": self.proc.pid, "display": self.display and self.display.name, "port": self.addr[1],
                             "local_window": HOST_OS == "windows", "worker_name": __import__("platform").node(),
                             "core": argv[argv.index("-L") + 1], "status": st, "log": str(self.log_path),
-                            "renderer": self.renderer(), "examine": _examine_ok(self.proc)}
+                            "renderer": self.renderer(), "examine": _examine_ok(self.proc, 5.0)}
             except RuntimeError:
                 pass
             time.sleep(0.2)
@@ -1049,17 +1165,19 @@ class RetroArchAdapter(CommandAdapter):
             return ""
 
     def stop_game(self) -> dict:
+        # Killed at once (#1504). The old QUIT + wait(5) never ended a Windows session by itself (exit code 1 = the kill
+        # that followed, median stop 5.5 s) and left the checkpoint ring time to start a save into a quitting RetroArch.
+        # In-game saves are not lost: the session cfg flushes SRAM every few seconds (autosave_interval).
         if self.stream:
             self.stream.close()
-        try:
-            self.cmd("QUIT")
-            self.proc and self.proc.wait(5)
-        except Exception:
-            pass
         _kill_tree(self.proc)
         if self.display:
             self.display.close()
         return {"returncode": self.proc.poll() if self.proc else None}
+
+    def _exited(self) -> bool:
+        proc = self.__dict__.get("proc")                 # __getattr__ answers op names only; no proc = not ours to judge
+        return bool(proc is not None and proc.poll() is not None)
 
     def cmd(self, text: str, reply: bool = False, timeout: float = 2.0) -> str | None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -1116,9 +1234,15 @@ class RetroArchAdapter(CommandAdapter):
         return {"rewound_s": seconds, "steps": steps}
 
     def fast_forward(self, on: bool | None = None) -> dict:
-        """Toggle fast-forward (4x)."""
+        """Fast-forward (fastforward_ratio, 16x in the session cfg): a toggle, or on / off as gBox last set it."""
+        if on is not None and bool(on) == self.ff_on:
+            return {"fast_forward": "on" if self.ff_on else "off"}
         self.cmd("FAST_FORWARD")
-        return {"fast_forward": "toggled"}
+        self.ff_on = (not self.ff_on) if on is None else bool(on)
+        return {"fast_forward": "toggled", "on": self.ff_on}
+
+    def state_dir(self) -> Path:
+        return getattr(self, "states_override", None) or self.config.runtime / "states"
 
     def step_frames(self, n: int = 1) -> dict:
         for _ in range(n):
@@ -1144,6 +1268,8 @@ class RetroArchAdapter(CommandAdapter):
             previous = None
             validation_error = None
             while time.monotonic() < deadline:
+                if self._exited():                         # stopped meanwhile: no file is coming, don't hold the stop
+                    raise RuntimeError('RetroArch exited before the save state was written')
                 with self.log_path.open('rb') as stream:
                     stream.seek(max(offset, self.log_path.stat().st_size - 65536))
                     text = stream.read(65536).decode('utf-8', 'replace')
@@ -1166,7 +1292,7 @@ class RetroArchAdapter(CommandAdapter):
                                 time.sleep(.1)
                                 continue
                             actual = int(match[1] or 0)
-                            self.slot = actual
+                            self.slot, self._last_state_path = actual, path
                             result = {'slot': actual, 'requested_slot': requested,
                                       'path': str(path), 'bytes': stat.st_size,
                                       'verified': True, 'slot_verified': actual == requested}
@@ -1178,6 +1304,14 @@ class RetroArchAdapter(CommandAdapter):
                 time.sleep(.1)
             detail = f'; last container validation: {validation_error}' if validation_error else ''
             raise RuntimeError('RetroArch did not produce a verified save file; capture was not completed' + detail)
+
+    def checkpoint_target(self) -> Path | None:
+        """The file the next SAVE_STATE writes (the current slot), named after the last verified save: the checkpoint
+        ring protects that slot before saving into it (#1488). None until a save has shown RetroArch's state folder."""
+        last, slot = getattr(self, "_last_state_path", None), int(getattr(self, "slot", 0) or 0)
+        if last is None or slot < 0:
+            return None
+        return last.with_name(re.sub(r'\.state(-?\d+)?$', '.state' + (str(slot) if slot else ''), last.name))
 
     def load_state(self, slot: int | None = None) -> dict:
         slot = self._slot(slot)
@@ -1191,9 +1325,29 @@ class RetroArchAdapter(CommandAdapter):
         return MemoryDebugger(self, CPUS[self.platform])
 
     def get_frame(self) -> bytes:
+        if getattr(self, "capture_backend", None) and getattr(self, "states_override", None):
+            return self._screenshot(Path(self.states_override).parent / "shots")
         if HOST_OS == "windows":
             return win_grab(self.proc.pid if self.proc else 0)
         return grab_png(self.display.name if self.display else None)
+
+    def _screenshot(self, shots: Path, timeout: float = 6.0) -> bytes:
+        """A capture session's window is parked off-screen (a desktop grab is black): RetroArch's own SCREENSHOT reads
+        the frame from the GPU into the session's shots folder."""
+        before = set(shots.glob("*.png")) if shots.exists() else set()
+        self.cmd("SCREENSHOT")
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            new = (set(shots.glob("*.png")) if shots.exists() else set()) - before
+            if new:
+                f = max(new, key=lambda p: p.stat().st_mtime)
+                size = -1
+                while size != f.stat().st_size:                  # written asynchronously
+                    size = f.stat().st_size
+                    time.sleep(0.2)
+                return f.read_bytes()
+            time.sleep(0.1)
+        raise RuntimeError("RetroArch did not write a screenshot")
 
     def stream_session(self) -> MjpegStream:
         if not self.stream:
@@ -1272,7 +1426,9 @@ class RetroArchAdapter(CommandAdapter):
     # (verified with Flycast: rcheevos registers 16MB SYSTEM RAM at $0); GameCube/Wii MEM1 at 0x80000000/0xC0000000.
     RAM_WINDOWS = {"dreamcast": (0x1F000000, 0x0C000000, 0x00FFFFFF), "naomi": (0x1F000000, 0x0C000000, 0x00FFFFFF),
                    "gamecube": (0x3E000000, 0x00000000, 0x01FFFFFF), "wii": (0x3E000000, 0x00000000, 0x01FFFFFF),
-                   "n64": (0x1F800000, 0x00000000, 0x007FFFFF)}
+                   "n64": (0x1F800000, 0x00000000, 0x007FFFFF),
+                   # NDS main RAM: 4 MiB at 0x02000000 (mirrored to 0x02FFFFFF); melonDS registers it as SYSTEM_RAM at $0
+                   "nds": (0xFF000000, 0x02000000, 0x003FFFFF)}
 
     def _ram_offset(self, address: int) -> int:
         w = self.RAM_WINDOWS.get(self.platform or "")
@@ -1489,6 +1645,7 @@ class DolphinAdapter(StandaloneAdapter):
     name = "dolphin"
     flatpak = "org.DolphinEmu.dolphin-emu"
     screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
+    checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
     # gBox pad -> keys; GCPadNew.ini binds the same keys to the GameCube pad (Dolphin names letter keys in upper case)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
             "l": "q", "r": "w", "l2": "q", "r2": "w", "select": "e", "z": "e", "start": "Return",
@@ -1594,13 +1751,25 @@ D-Pad/Right = `H`
         from .debug import GdbDebugger
         return GdbDebugger("127.0.0.1", self.port, "ppc", connect_timeout=60)
 
+    # gBox's checkpoint ring (Select+L2 on the streamed pad, gbox/rewind.py): Dolphin's slot 8, the operator keeps slot 1
+    def state_dir(self) -> Path:
+        return Path.home() / ".var" / "app" / self.flatpak / "data" / "dolphin-emu" / "StateSaves"
+
+    def checkpoint_save(self) -> dict:
+        self._xdo("key", "shift+F8")
+        return {"slot": 8}
+
+    def checkpoint_load(self) -> dict:
+        self._xdo("key", "F8")
+        return {"slot": 8}
+
 
 class DolphinWinAdapter(DolphinAdapter):
     """GameCube / Wii on standalone Dolphin on Windows (portable copy in the runtime folder, same release as the Spark's
     flatpak so save states move between them). Docked in the app like RetroArch; the operator's Xbox pad drives the
     GameCube pad; memory + breakpoints through Dolphin's GDB stub, exactly like on the Spark."""
     name = "dolphin"
-    supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window"}   # native window, frames via get_frame
+    supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window", "fast_forward"}   # native window, frames via get_frame
     # XInput pad (positional, like RetroArch's autoconfig) with the keyboard keys gBox sends as an alternative
     PAD_INI_WIN = """[GCPad1]
 Device = XInput/0/Gamepad
@@ -1659,6 +1828,9 @@ D-Pad/Right = `Pad E`
                 # a raw memory card file keeps its serial between boots; the GCI-folder card's changes, and games that
                 # bind saves to the card (RE4) then call every save "corrupted" on the next boot
                 "Dolphin.Core.SlotA": "1", "Dolphin.Core.MemcardAPath": str(user / "GC" / "MemoryCardA.USA.raw")}
+        if getattr(self, "capture_backend", None):                  # agent-owned capture session (#971): Vulkan via -C,
+            opts["Dolphin.Core.GFXBackend"] = "Vulkan"              # Dolphin's command-line layer is never saved
+            opts["Dolphin.DSP.Backend"] = "No Audio Output"
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
@@ -1677,6 +1849,8 @@ D-Pad/Right = `Pad E`
         si = subprocess.STARTUPINFO()                                # minimized, no focus: no boot window on screen;
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW                # the app docks (and restores) the game window
         si.wShowWindow = 7                                           # SW_SHOWMINNOACTIVE
+        if getattr(self, "capture_backend", None):
+            si = capture_start()                                     # a minimized window presents no frames to capture
         self.proc = _popen(self, argv, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=str(Path(argv[0]).parent),
                            startupinfo=si)
         self._p(70, "Dolphin started; releasing the boot hold")
@@ -1697,7 +1871,7 @@ D-Pad/Right = `Pad E`
             self._p(95, f"running without memory access (no memory mods): {e}")
         return {"pid": self.proc.pid, "local_window": True, "debug_port": self.port, "debugger": bool(self.dbg),
                 "worker_name": __import__("platform").node(), "emulator": "dolphin (Windows)", "log": str(self.log_path),
-                "examine": _examine_ok(self.proc)}
+                "examine": _examine_ok(self.proc, 10.0)}
 
     def stop_game(self) -> dict:
         if self.paused_tids:
@@ -1744,6 +1918,32 @@ D-Pad/Right = `Pad E`
     def load_state(self, slot: int | None = None) -> dict:
         win_send_keys(self.proc.pid, [{"key": "F1", "down": True}, {"key": "F1", "down": False}])
         return {"slot": 1}
+
+    # gBox's checkpoint ring (Select+L2 rewind, gbox/rewind.py) uses Dolphin's slot 8: the operator's slot 1 is untouched.
+    # Its hotkeys are keystrokes into the game window (win_send_keys focuses it): checkpoints only while the pad is in use.
+    checkpoint_when_playing = True
+
+    def state_dir(self) -> Path:
+        return self._exe().parent / "User" / "StateSaves"
+
+    def checkpoint_save(self) -> dict:
+        win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F8", "down": True},
+                                      {"key": "F8", "down": False}, {"key": "Shift_R", "down": False}])
+        return {"slot": 8}
+
+    def checkpoint_load(self) -> dict:
+        win_send_keys(self.proc.pid, [{"key": "F8", "down": True}, {"key": "F8", "down": False}])
+        return {"slot": 8}
+
+    ff_on = False
+
+    def fast_forward(self, on: bool | None = None) -> dict:
+        """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (Tab, its default) while gBox wants fast-forward."""
+        want = (not self.ff_on) if on is None else bool(on)
+        if want != self.ff_on:
+            win_send_keys(self.proc.pid, [{"key": "Tab", "down": want}])
+            self.ff_on = want
+        return {"fast_forward": "on" if self.ff_on else "off"}
 
 
 class MgbaAdapter(StandaloneAdapter):
@@ -1859,7 +2059,7 @@ class YuzuAdapter(Adapter):
         self.proc = None
         self.bridge_proc = None
         self.paused_tids = []
-        self.examine_unavailable_reason = "3D draw-call capture is not integrated with the Yuzu window yet."
+        self.video_driver = None                       # Yuzu's renderer (qt-config.ini), for the Examine 3D matrix
 
     def launch_game(self, rom: str) -> dict:
         exe = self.config.library("hyperspin").root() / "emulators" / "yuzu" / "yuzu.exe"
@@ -1873,8 +2073,16 @@ class YuzuAdapter(Adapter):
             gamepads.enable_yuzu_mouse_touch(controller_config)
         if bridge:
             gamepads.bind_yuzu_xinput_bridge(controller_config)
-        self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(),
-                                     env=gamepads.emulator_environment(os.environ))
+        from .capture_backend import yuzu_backend
+        self.video_driver = yuzu_backend(exe.parent / "user" / "config" / "qt-config.ini")
+        env = gamepads.emulator_environment(os.environ)
+        if getattr(self, "examine", False) and self.video_driver == "vulkan":
+            # Examine 3D (#971): RenderDoc's Vulkan layer for this process only (no injection, Yuzu's config untouched)
+            from . import scene_capture
+            self.proc = scene_capture.popen_layer([str(exe), "-g", rom], self.config.runtime / "scene_capture" / "rdc",
+                                                  cwd=exe.parent, startupinfo=hidden_start(), env=env)
+        else:
+            self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(), env=env)
         keep_offscreen(self.proc.pid)
         for _ in range(60):
             if self.proc.poll() is not None:
@@ -1890,7 +2098,8 @@ class YuzuAdapter(Adapter):
                                                 stdin=subprocess.PIPE, startupinfo=hidden_start())
         return {"pid": self.proc.pid, "rom": rom, "local_window": True, "controller_guid": guid,
                 "controller_mode": "xinput_keyboard_bridge" if bridge else "sdl",
-                "worker_name": __import__("platform").node(), "emulator": "yuzu"}
+                "worker_name": __import__("platform").node(), "emulator": "yuzu", "renderer": self.video_driver,
+                "examine": _examine_ok(self.proc, 10.0)}
 
     def stop_game(self) -> dict:
         if self.paused_tids:
@@ -1999,6 +2208,9 @@ class RPCS3Adapter(Adapter):
     # GPU-rendered game made it stutter (same reason RetroArch native windows aren't streamed)
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "read_memory", "write_memory", "pause", "resume",
                  "save_state", "load_state"}
+    # save state = F2 "save and continue" (RPCS3 reloads the game from it), load = a relaunch: no in-place checkpoint
+    # every two seconds; Select+L2 reports itself unsupported here (gbox/rewind.py)
+    checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
 
     def __init__(self, config: Config):
         self.config, self.proc, self.stream, self.base, self.paused = config, None, None, None, False
@@ -2027,9 +2239,25 @@ class RPCS3Adapter(Adapter):
         gui.write_text(ini, encoding="utf-8")
         self.home = home
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
-        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", rom], cwd=home, startupinfo=hidden_start())
-        keep_offscreen(self.proc.pid)
-        return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node()}
+        argv = [str(home / "rpcs3.exe"), "--no-gui"]
+        cap = getattr(self, "capture_backend", None)
+        if cap:                                            # agent-owned capture session (#971): Vulkan in a config file of
+            from .capture_backend import rpcs3_renderer_yaml      # its own, passed with --config (never the shared one)
+            own = self.config.runtime / "capture_sessions" / f"rpcs3-{int(time.time() * 1000)}.yml"
+            own.parent.mkdir(parents=True, exist_ok=True)
+            base = cc.read_text(encoding="utf-8") if getattr(self, "serial", None) and cc.exists() else ""
+            own.write_text(rpcs3_renderer_yaml(base, "Vulkan"), encoding="utf-8")
+            argv += ["--config", str(own)]
+        if getattr(self, "examine", False):
+            # Examine 3D (#971): RPCS3 renders with Vulkan by default; RenderDoc's Vulkan layer for this process only
+            from . import scene_capture
+            self.proc = scene_capture.popen_layer([*argv, rom], self.config.runtime / "scene_capture" / "rdc", cwd=home,
+                                                  startupinfo=capture_start() if cap else hidden_start())
+        else:
+            self.proc = subprocess.Popen([*argv, rom], cwd=home, startupinfo=hidden_start())
+        keep_offscreen(self.proc.pid, **({"limit_s": 1800.0, "give_up_s": float("inf")} if cap else {}))
+        return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node(),
+                "examine": _examine_ok(self.proc, 15.0) if getattr(self, "examine", False) else False}
 
     def stop_game(self) -> dict:
         if self.stream:

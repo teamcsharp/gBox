@@ -90,10 +90,17 @@ def families(files: dict[str, tuple[int, int]]) -> dict[str, list[str]]:
 
 
 def build(gdi: str | Path, *, chd: str | Path | None = None, chd_sha256: str | None = None,
-          hash_tracks: bool = True, deep: bool = True, progress=None) -> dict:
-    """Inventory manifest for the disc at ``gdi`` (read-only)."""
+          hash_tracks: bool = True, deep: bool = True, progress=None,
+          game_id: str | None = None, title: str | None = None,
+          source_archive: str | Path | None = None, source_archive_sha256: str | None = None) -> dict:
+    """Inventory manifest for the disc at ``gdi`` (read-only).
+
+    Identity defaults to the USA entry (game 5f08ad9a86ebcc9a); another catalog
+    entry owning the same US build passes its own game_id/title/source archive."""
     from .gdrom import GDRom
     from .doa2_chars import parse_chr, parse_sup, parse_mot_table
+    gid = game_id or GAME_ID
+    ttl = title or TITLE
     gdi = Path(gdi)
     disc = GDRom(gdi)
     say = progress or (lambda *_: None)
@@ -185,12 +192,16 @@ def build(gdi: str | Path, *, chd: str | Path | None = None, chd_sha256: str | N
     stages = sorted(n for n in disc.files if re.match(r"^DOA2/STAGE\d+\.(?:CHR|BIN)$", n))
     return {
         "schema": "gbox.doa2usa_inventory/1",
-        "game_id": GAME_ID,
-        "title": TITLE,
+        "game_id": gid,
+        "title": ttl,
         "platform": "dreamcast",
         "source": {"chd": str(chd) if chd else None,
                    "chd_bytes": Path(chd).stat().st_size if chd and Path(chd).exists() else None,
-                   "chd_sha256": chd_sha256, "gdi": str(gdi), "tracks": tracks},
+                   "chd_sha256": chd_sha256,
+                   "archive": str(source_archive) if source_archive else None,
+                   "archive_bytes": Path(source_archive).stat().st_size if source_archive and Path(source_archive).exists() else None,
+                   "archive_sha256": source_archive_sha256 or (sha256_file(source_archive) if source_archive else None),
+                   "gdi": str(gdi), "tracks": tracks},
         "ip": ip,
         "build_matches": ip["product"] == PRODUCT and first_sha == FIRST_READ_SHA256,
         "executable": {"file": "1ST_READ.BIN", "bytes": len(first), "sha256": first_sha,
@@ -223,9 +234,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--chd", help="owned source CHD path")
     ap.add_argument("--out", default="doa2usa_manifest.json")
     ap.add_argument("--no-deep", action="store_true", help="skip per-file decode/hashing")
+    ap.add_argument("--game-id", help="override the recorded game_id (another entry owning this build)")
+    ap.add_argument("--title", help="override the recorded title")
+    ap.add_argument("--source-archive", help="owned .7z the disc set was extracted from (hashed)")
+    ap.add_argument("--source-archive-sha256")
     args = ap.parse_args(argv)
     chd_sha = sha256_file(args.chd) if args.chd else None
     manifest = build(args.gdi, chd=args.chd, chd_sha256=chd_sha,
+                     game_id=args.game_id, title=args.title,
+                     source_archive=args.source_archive,
+                     source_archive_sha256=args.source_archive_sha256,
                      deep=not args.no_deep, progress=lambda *a: print(*a, file=sys.stderr))
     with open(args.out, "w") as f:
         json.dump(manifest, f, indent=1)

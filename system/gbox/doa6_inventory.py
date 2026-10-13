@@ -181,31 +181,156 @@ def read_loose_file(path: Path, limit: int | None = None, read_all: bool = False
 
 
 def sniff_magic(data: bytes) -> str:
-    """Best-effort content classification from the first bytes."""
+    """Best-effort content classification from the first bytes.
+
+    KT-engine assets are stored little-endian, so the on-disk ASCII for a magic
+    like ``G1TG`` (0x47315447) reads as ``GT1G``.  We accept both spellings.
+    """
     if data[:8] == RNK_MAGIC:
         return "rnk"
     if data[:8] == DRK_MAGIC:
         return "drk"
-    if data[:4] == b"G1M\x00" or data[:4] == b"G1MX":
+    if data[:4] in (b"_RNK", b"_RGK"):
+        return "rnk"
+    if data[:4] in (b"G1M\x00", b"G1MX", b"G1M_", b"_M1G"):
         return "g1m"
-    if data[:4] in (b"G1TG", b"G1T\x00", b"KTID"):
-        return "g1t/ktid"
-    if data[:4] in (b"G1AG", b"G1A\x00"):
+    if data[:4] == b"KTID":
+        return "ktid"
+    if data[:4] in (b"G1TG", b"G1T\x00", b"GT1G"):
+        return "g1t"
+    if data[:4] in (b"G1AG", b"G1A\x00", b"G1A_", b"_A1G"):
         return "g1a"
-    if data[:4] == b"KSCL":
+    if data[:4] in (b"KSCL", b"_LSC"):
         return "kscl"
+    if data[:4] in (b"G1CO", b"OC1G", b"_C1G"):
+        return "g1co"
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "png"
     if data[:4] == b"RIFF":
         return "riff"
     if data[:4] == b"OggS":
         return "ogg"
+    if data[:4] == b"DDS ":
+        return "dds"
     if data[:2] == b"PK":
         return "zip"
+    if data[:4] == b"%PDF":
+        return "pdf"
+    if data[:4] == b"#EXT" or data[:1] == b"#":
+        return "text"
+    if data[:4].isalpha() and b"\n" in data[:64]:
+        return "text"
     return "unknown"
 
 
-def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None) -> dict:
+def _header_length(head: bytes) -> int:
+    """Compute the payload offset inside an IDRK entry from its 56-byte header."""
+    if head[:8] != IDRK_MAGIC:
+        raise ValueError(f"not an IDRK header (magic {head[:8]!r})")
+    if len(head) < 56:
+        raise ValueError(f"truncated IDRK header ({len(head)} of 56 bytes)")
+    num1, num2 = struct.unpack_from("<II", head, 32)[0], struct.unpack_from("<I", head, 52)[0]
+    hlen = 56 + 12 * num2 + num1
+    return (hlen + 3) & ~3
+
+
+def read_bin_entry(path: str | Path, offset: int, limit: int | None = 8) -> bytes:
+    """Read and decompress the start of a packed-bin IDRK entry.
+
+    Only enough compressed data for ``limit`` decompressed bytes is read from
+    disk, so multi-gigabyte bins can be sampled quickly.
+    """
+    path = Path(path)
+    with open(path, "rb") as f:
+        f.seek(offset)
+        head = f.read(56)
+        hlen = _header_length(head)
+        entry_size = struct.unpack_from("<Q", head, 8)[0]
+        size = struct.unpack_from("<Q", head, 24)[0]
+        payload_len = entry_size - hlen
+        if payload_len < 0:
+            raise ValueError(f"IDRK entry at {path}:{offset:#x}: entry_size {entry_size} is smaller than its header ({hlen})")
+        # Position at the start of the compressed payload.
+        f.seek(offset + hlen)
+        # Read enough for the first chunk; a chunk never exceeds CHUNK_SIZE.
+        buf = f.read(min(payload_len, CHUNK_SIZE + 4))
+        out = bytearray()
+        p = 0
+        while p < len(buf) and len(out) < size and (limit is None or len(out) < limit):
+            if p + 4 > len(buf):
+                need = p + 4 - len(buf)
+                extra = f.read(min(need, payload_len - len(buf)))
+                if not extra:
+                    break
+                buf += extra
+                continue
+            zsize = struct.unpack_from("<I", buf, p)[0]
+            p += 4
+            if p + zsize > len(buf):
+                need = p + zsize - len(buf)
+                extra = f.read(min(need, payload_len - len(buf)))
+                if not extra:
+                    break
+                buf += extra
+                continue
+            try:
+                chunk = zlib.decompress(buf[p:p + zsize])
+            except zlib.error as exc:
+                raise ValueError(f"zlib error at {path}:{offset:#x}: {exc}")
+            p += zsize
+            out += chunk
+            if len(chunk) < CHUNK_SIZE:
+                break
+        return bytes(out[:limit]) if limit is not None else bytes(out)
+
+
+def classify_bin_entries(rdb: Rdb, sample: int | None = 200,
+                         initial_chunk: int = 8 * 1024 * 1024) -> dict:
+    """Return a per-bin magic-classification summary for packed entries.
+
+    Reads at most ``sample`` entries from the start of each bin by scanning for
+    ``IDRK0000`` headers in an in-memory window.  This avoids assuming a fixed
+    inter-entry gap (real DOA6 bins append an 8-byte trailer after each entry).
+    """
+    summary: dict[str, dict] = {}
+    for bin_path in rdb.bins():
+        counts: dict[str, int] = {}
+        examined = 0
+        offsets: list[int] = []
+        with open(bin_path, "rb") as f:
+            window = f.read(initial_chunk)
+            # If we need more entries than fit in the first window, keep reading.
+            search_from = 0
+            while (sample is None) or examined < sample:
+                i = window.find(IDRK_MAGIC, search_from)
+                if i < 0:
+                    # No more magics in current window: extend it.
+                    extra = f.read(initial_chunk)
+                    if not extra:
+                        break
+                    search_from = max(0, len(window) - (len(IDRK_MAGIC) - 1))  # a magic may straddle the edge
+                    window += extra
+                    continue
+                # Skip overlapping re-detections: move past this magic.
+                search_from = i + 1
+                offsets.append(i)
+                examined += 1
+        for offset in offsets:
+            try:
+                data = read_bin_entry(bin_path, offset, limit=16)
+                kind = sniff_magic(data)
+            except (ValueError, struct.error, zlib.error, OSError):
+                kind = "unreadable"
+            counts[kind] = counts.get(kind, 0) + 1
+        summary[bin_path.name] = {
+            "sampled": len(offsets),
+            "content": counts,
+        }
+    return summary
+
+
+def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None,
+             classify_bins: bool = False, bin_sample: int | None = 200) -> dict:
     """Enumerate the owned DOA6 PC build and return a JSON-able manifest."""
     root = Path(game_dir)
     exe = root / "DOA6.exe"
@@ -227,7 +352,7 @@ def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None) -> 
         idx = root / (stem + ".rdb")
         if idx.exists():
             rdb = Rdb(idx)
-            manifest["rdbs"][stem] = {
+            entry: dict = {
                 "index_sha256": sha256_file(idx),
                 "mount_path": rdb.mount_path,
                 "file_count": rdb.file_count,
@@ -235,6 +360,9 @@ def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None) -> 
                 "parses_clean": rdb.end_offset == len(rdb.raw),
                 "bins": [{"name": b.name, "size": b.stat().st_size} for b in rdb.bins()],
             }
+            if classify_bins:
+                entry["bin_content"] = classify_bin_entries(rdb, sample=bin_sample)
+            manifest["rdbs"][stem] = entry
     data_dir = root / "data"
     if data_dir.is_dir():
         loose = sorted(data_dir.glob("0x*.file"))
@@ -272,8 +400,11 @@ def main() -> None:
     parser.add_argument("game_dir")
     parser.add_argument("--out", default=None, help="write the manifest to this JSON file")
     parser.add_argument("--bins-manifest", default=None)
+    parser.add_argument("--classify-bins", action="store_true", help="sniff packed bin contents")
+    parser.add_argument("--bin-sample", type=int, default=200, help="entries to sample per bin")
     args = parser.parse_args()
-    m = inventory(args.game_dir, args.bins_manifest)
+    m = inventory(args.game_dir, args.bins_manifest,
+                  classify_bins=args.classify_bins, bin_sample=args.bin_sample)
     text = json.dumps(m, indent=2, default=str)
     if args.out:
         Path(args.out).write_text(text)

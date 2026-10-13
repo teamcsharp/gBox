@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import padstate
+from . import fit_events
 from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
@@ -81,6 +83,10 @@ def _checkpoint_slot(result: dict, adapter: str) -> int:
     return actual
 
 
+def _is_stop_job(job: dict) -> bool:
+    return job.get("tool") == "session_op" and (job.get("input") or {}).get("op") == "stop_game"
+
+
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
     token = config.token()
@@ -88,12 +94,19 @@ def create_app(config: Config) -> FastAPI:
     app.state.store = store
     from .character_collection import AutoCollection
     auto_collection = AutoCollection(store, config)
+    stopping: dict[str, str] = {}                  # session id -> its pending stop job (GET /api/sessions "stopping")
 
     @app.on_event("startup")
     async def _more_threads():
         # every live stream viewer and worker input long-poll holds a worker thread
         import anyio.to_thread
         anyio.to_thread.current_default_thread_limiter().total_tokens = 256
+
+    @app.on_event("startup")
+    async def _audio_cpp_autostart():
+        # audio.cpp runs beside the control plane when its binary is on this machine (docs/audio_cpp.md); absent = no-op
+        from . import audio_cpp
+        threading.Thread(target=audio_cpp.autostart, args=(config,), name="audio_cpp-autostart", daemon=True).start()
 
     def auth(request: Request) -> str:
         # ?token= is accepted so <img>/<video> tags can load frames and artwork
@@ -104,6 +117,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import asset_library
     asset_library.routes(app, store, config, auth)
+    from . import built_mods                      # built mod folders in the cache, joined with their mod cards
+    built_mods.routes(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")
@@ -274,8 +289,11 @@ def create_app(config: Config) -> FastAPI:
                 except Exception:
                     pass                                     # no picture is fine; the card offers 📷
             threading.Thread(target=_shoot, daemon=True).start()
+        from . import built_mods
+        doc = built_mods.supersede(store, doc)          # a writer's own card replaces the gallery's stand-in for its build
         store.put("mod", mid, doc)
         store.audit(actor, "mod.save", m.title, {"game": gid, "calls": len(doc["calls"])})
+        app.state.built_mods_invalidate()
         return doc
 
     def _session_png(sid: str) -> bytes:
@@ -311,10 +329,12 @@ def create_app(config: Config) -> FastAPI:
         return m
 
     @app.post("/api/mods/{mid}/thumb")
-    async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, actor=Depends(auth)):
-        """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one."""
+    async def mod_thumb(mid: str, request: Request, session_id: str = "", force: bool = False, append: bool = False,
+                        actor=Depends(auth)):
+        """Set a mod's picture: an image in the body, or what the session shows right now. Without force, keeps an existing one.
+        append=true adds the picture to the card's in-game shots (the Mods gallery); it becomes the thumb only if none."""
         m = _mod_picture(store.get("mod", mid) or _404())
-        if m.get("thumb") and not force:
+        if m.get("thumb") and not force and not append:
             return m
         body = await request.body()
         if not (body.startswith(b"\x89PNG") or body.startswith(b"\xff\xd8\xff")):
@@ -325,9 +345,14 @@ def create_app(config: Config) -> FastAPI:
             body = await asyncio.to_thread(_session_png, session_id)
         kind = "image/png" if body[:4] == b"\x89PNG" else "image/jpeg"
         ref = store.put_artifact(body, f"mod-{mid}.{kind[6:]}", kind, {"mod": mid, "session": session_id})
-        m["thumb"] = ref.sha256
+        if append:
+            m["shots"] = [ref.sha256, *[x for x in m.get("shots") or [] if x != ref.sha256]][:24]
+            m["thumb"] = m["thumb"] if m.get("thumb") and not force else ref.sha256
+        else:
+            m["thumb"] = ref.sha256
         store.put("mod", mid, m)
-        store.audit(actor, "mod.thumb", mid, {"artifact": ref.sha256})
+        store.audit(actor, "mod.thumb", mid, {"artifact": ref.sha256, "append": append})
+        app.state.built_mods_invalidate()
         return m
 
     @app.get("/api/mods")
@@ -340,6 +365,7 @@ def create_app(config: Config) -> FastAPI:
     def mod_del(mid: str, actor=Depends(auth)):
         store.delete("mod", mid)
         store.audit(actor, "mod.delete", mid, {})
+        app.state.built_mods_invalidate()
         return {"deleted": mid}
 
     # --- character library (gbox/characters.py): models extracted from the operator's games, reusable in any game ---
@@ -347,19 +373,35 @@ def create_app(config: Config) -> FastAPI:
         from . import characters
         return characters, characters.library_root(config)
 
+    _CHAR_STATS: dict = {}
+    try:                                                  # warm the HDD character library in the background at startup
+        from . import characters as _ck
+        _ck.warm_list(_ck.library_root(config))
+    except Exception:
+        pass
+
     @app.get("/api/characters")
-    def chars_list(game_id: str = "", actor=Depends(auth)):
-        """Library characters (+ ready swap mods for game_id) with preview URLs."""
+    def chars_list(game_id: str = "", fresh: bool = False, actor=Depends(auth)):
+        """Library characters (+ ready swap mods for game_id) with preview URLs. fresh=1 re-reads the library."""
         K, root = _chars()
+        if fresh:
+            K.refresh_list(root)
         def model_bytes(m):
             try:
                 return (Path(root) / m["slug"] / m["model"]).stat().st_size
             except OSError:
                 return 0
         tf = lambda slug: sorted("targets/" + f.name for f in (Path(root) / slug / "targets").glob("*") if f.is_file())             if (Path(root) / slug / "targets").is_dir() else []          # game-fitted models (Blender copy of a swap mod)
+        entries = K.list_all(root, game_id)
+        stats = _CHAR_STATS.setdefault(str(root), {})     # file stats cached per (slug, model) (thousands of HDD stats per call)
+        for m in entries:
+            k = (m["slug"], m.get("model"), len(m.get("targets") or {}))
+            if k not in stats:
+                stats[k] = (tf(m["slug"]), model_bytes(m))
+        stats_for = {m["slug"]: stats[(m["slug"], m.get("model"), len(m.get("targets") or {}))] for m in entries}
         return [m | {"preview_url": f"/api/characters/{m['slug']}/preview", "model_url": f"/api/characters/{m['slug']}/file/{m['model']}",
-                     "target_files": tf(m["slug"]), "model_bytes": model_bytes(m)}
-                for m in K.list_all(root, game_id)]
+                     "target_files": stats_for[m["slug"]][0], "model_bytes": stats_for[m["slug"]][1]}
+                for m in entries]
 
     @app.get("/api/characters/{slug}")
     def chars_get(slug: str, actor=Depends(auth)):
@@ -412,6 +454,106 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "character.target", slug, t.model_dump())
         return m
 
+    # --- retarget profiles (gbox/retarget_profile.py): the Retarget editor's per (donor, game[, slot]) adjustments ---
+    def _profile_view(K, root, slug: str, game_id: str, slot: str) -> dict:
+        from . import retarget_profile as RP
+        try:
+            m = K.get(root, slug)
+        except KeyError:
+            _404()
+        key = RP.slot_key(slot)
+        saved = RP.stored(m, game_id) if game_id else {}
+        return {"slug": slug, "name": m.get("name"), "game_id": game_id, "slot": slot or "*", "key": key,
+                "profile": saved.get(key), "game_wide": saved.get("*"), "saved_slots": sorted(saved),
+                "resolved": RP.resolve(m, game_id, slot) if game_id else None,
+                "defaults": RP.DEFAULT, "roles": RP.ROLES, "rig_roles": (m.get("rig") or {}).get("roles") or {},
+                "model_url": f"/api/characters/{slug}/file/{m['model']}" if m.get("model") else None,
+                "source": m.get("source") or {}}
+
+    @app.get("/api/characters/{slug}/retarget_profile")
+    def chars_profile_get(slug: str, game_id: str = "", slot: str = "", actor=Depends(auth)):
+        """The donor's saved profile for game_id (+ slot), the merged one the writers will use, and its rig roles."""
+        K, root = _chars()
+        return _profile_view(K, root, slug, game_id, slot)
+
+    class ProfileIn(BaseModel):
+        game_id: str
+        slot: str = ""
+        profile: dict | None = None         # None / reset=true removes the saved profile of that slot
+        reset: bool = False
+
+    @app.put("/api/characters/{slug}/retarget_profile")
+    @app.post("/api/characters/{slug}/retarget_profile")
+    def chars_profile_put(slug: str, inp: ProfileIn, actor=Depends(auth)):
+        """Save (or reset) a retarget profile; the donor's built mods for that game are marked for rebuild so the next
+        build (single slot or whole cast) fits with it."""
+        from . import retarget_profile as RP
+        K, root = _chars()
+        if not re.fullmatch(r"[0-9a-f]{16}", inp.game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        try:
+            clean = None if inp.reset or inp.profile is None else RP.normalize(inp.profile)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        key = RP.slot_key(inp.slot)
+        with store.lock:
+            try:
+                m = K.get(root, slug)
+            except KeyError:
+                _404()
+            games = m.setdefault("retarget_profiles", {})
+            entry = games.setdefault(inp.game_id, {})
+            if clean is None:
+                entry.pop(key, None)
+            else:
+                entry[key] = clean | {"updated": time.time(), "by": str(actor)[:80]}
+            if not entry:
+                games.pop(inp.game_id, None)
+            if not games:
+                m.pop("retarget_profiles", None)
+            for t in (m.get("targets") or {}).get(inp.game_id, []):
+                if key == "*" or RP.slot_key(t.get("slot")) in (key, "*"):
+                    t["needs_rebuild"] = True
+            K.put_meta(root, m)
+        store.audit(actor, "character.retarget_profile", slug, {"game_id": inp.game_id, "slot": key,
+                                                                 "reset": clean is None})
+        return _profile_view(K, root, slug, inp.game_id, inp.slot)
+
+    @app.get("/api/retarget/reference")
+    def retarget_reference(game_id: str, slot: str = "", actor=Depends(auth)):
+        """The target slot's stock model for the Retarget editor: the collection entry extracted from that game whose
+        name best matches the slot (Kasumi for fighter:KAS), else the game's first collected character, else none
+        (the editor then draws a standard humanoid skeleton at the game's proportions)."""
+        K, root = _chars()
+        if not re.fullmatch(r"[0-9a-f]{16}", game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        own = [m for m in K.list_all(root) if (m.get("source") or {}).get("game_id") == game_id
+               and (m.get("kind") or "character") == "character" and not m.get("variant_of") and m.get("model")]
+        words = set(re.findall(r"[a-z0-9]+", str(slot).lower())) - {"fighter", "wrestler", "player", "enemy", "driver",
+                                                                    "character", "ped", "all", "slot"}
+        name = slot
+        try:
+            from . import cast_swap
+            g = store.catalog_get(game_id)
+            row = next((r for r in cast_swap.slot_rows(g) if r.get("slot") == slot), None) if g else None
+            if row and row.get("name"):
+                name = row["name"]
+                words |= set(re.findall(r"[a-z0-9]+", row["name"].lower()))
+        except Exception:                                    # noqa: BLE001 - the slot name only sharpens the match
+            pass
+
+        def score(m):
+            hay = set(re.findall(r"[a-z0-9]+", " ".join([m["slug"], m.get("name", ""), *m.get("aliases", [])]).lower()))
+            return len(words & hay)
+        best = max(own, key=score, default=None)
+        if best is None:
+            return {"game_id": game_id, "slot": slot, "slot_name": name, "reference": None}
+        exact = score(best) > 0
+        return {"game_id": game_id, "slot": slot, "slot_name": name, "exact": exact,
+                "reference": {"slug": best["slug"], "name": best["name"],
+                              "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
+                              "roles": (best.get("rig") or {}).get("roles") or {}}}
+
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
@@ -449,6 +591,53 @@ def create_app(config: Config) -> FastAPI:
     def envs_file(slug: str, rel: str, actor=Depends(auth)):
         f = _env_file(slug, rel)
         return FileResponse(f, filename=f.name)
+
+    # --- bevy: the gBox Bevy viewer's scenes, renders and live sessions (the desktop app's Bevy tab) ---
+    def _bevy_render(name: str) -> Path:
+        import re as _re
+        if not _re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name):
+            _404()
+        f = (config.data_dir / "bevy" / f"{name}.png").resolve()
+        if not f.is_file():
+            _404()
+        return f
+
+    @app.get("/api/bevy")
+    def bevy_status(actor=Depends(auth)):
+        """Bevy support & offerings: viewer build state, saved scenes and renders, live windows on this node."""
+        from .tools import BEVY
+        sdir = config.data_dir / "bevy"
+
+        def _items(f: Path) -> int:
+            try:
+                return len(json.loads(f.read_text()).get("items", []))
+            except Exception:
+                return 0
+
+        def _src(f: Path) -> list:
+            try:
+                return json.loads(f.read_text()).get("_src", [])
+            except Exception:
+                return []
+
+        scenes = [{"name": f.stem, "mtime": f.stat().st_mtime, "items": _items(f), "src": _src(f)}
+                  for f in sorted(sdir.glob("*.json"), key=lambda p: p.name)]
+        renders = [{"name": f.stem, "mtime": f.stat().st_mtime} for f in sorted(sdir.glob("*.png"), key=lambda p: p.name)]
+        live = [{"name": n, "pid": s["proc"].pid, "items": len(s["spec"]["items"])}
+                for n, s in BEVY.items() if s["proc"].poll() is None]
+        exe = config.runtime / "bevy-target" / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
+        try:
+            from . import characters
+            n_char = len(characters.list_all(characters.library_root(config)))
+            n_env = len(characters.list_all(characters.env_root(config)))
+        except Exception:
+            n_char, n_env = None, None
+        return {"viewer_built": exe.exists(), "scenes": scenes, "renders": renders, "live": live,
+                "characters": n_char, "environments": n_env}
+
+    @app.get("/api/bevy/render/{name}.png")
+    def bevy_render_png(name: str, actor=Depends(auth)):
+        return FileResponse(_bevy_render(name), media_type="image/png")
 
     class NotifyIn(BaseModel):
         title: str
@@ -766,6 +955,74 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(503, reason) from exc
         return job
 
+    def relay_job(inp: dict, actor: str) -> Job:
+        """Examine 3D Capture again through a capture session (gbox/scene_relay.py), as an in-server job polled like
+        scene_capture (output: glb, summary, paused=False). One relay per session at a time."""
+        from . import scene_relay
+        sid = inp["session_id"]
+        with store.lock:
+            for existing in store.all('job'):
+                if (existing.get('tool') == scene_relay.TOOL and existing.get('state') in ('queued', 'running')
+                        and (existing.get('input') or {}).get('session_id') == sid):
+                    return Job.model_validate(existing)
+            job = Job(tool=scene_relay.TOOL, input=inp | {"relay": True}, state=JobState.RUNNING, started=time.time(),
+                      agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
+            store.put("job", job.id, job.model_dump())
+            _server_job_threads.add(job.id)
+
+        def prog(pct, msg):
+            with store.lock:
+                j = store.get("job", job.id)
+                j["progress"] = {"pct": round(float(pct), 1), "msg": msg, "ts": time.time()}
+                j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+                store.put("job", job.id, j)
+
+        def end_session(nsid):
+            with store.lock:
+                s_ = store.get("session", nsid)
+                if s_ and s_.get("state") != "ended":
+                    store.put("session", nsid, s_ | {"state": "ended", "ended": time.time(),
+                                                     "exit": {"by": actor, "via": "examine_capture_session"}})
+
+        def go():
+            sess = store.get("session", sid) or {}
+            try:
+                game = store.catalog_get(sess.get("game_id") or "") or {}
+                if not game:
+                    raise scene_relay.RelayError("This game is no longer in the library, so no capture session can "
+                                                 "start it. Your game keeps running.")
+                out = scene_relay.relay(
+                    sid, sess, game,
+                    run_job=lambda tool, i, w, wait, progress=None: _run_job(tool, i, actor, worker=w, wait=wait,
+                                                                             progress=progress),
+                    workers=workers, live_sessions=lambda: store.all("session"),
+                    label=lambda nsid, l: store.put("slabel", nsid, l | {"session_id": nsid, "ts": time.time()}),
+                    end_session=end_session, preferred=config.examine_capture_worker,
+                    frames=max(1, min(int(inp.get("frames") or 2), 4)), fovy=inp.get("fovy") or 0,
+                    aspect=inp.get("aspect") or 0, say=prog,
+                    should_stop=lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                    worker_of=lambda s: _wid(s.split("-")[0]))
+                state, err = JobState.SUCCEEDED, None
+            except scene_relay.RelayError as e:
+                out, state, err = None, JobState.FAILED, f"Unsupported: {e}"
+            except Exception as e:                             # noqa: BLE001
+                out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            with store.lock:
+                store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(),
+                                                                     "output": out, "error": err})
+                _server_job_threads.discard(job.id)
+            store.audit(actor, "examine.capture_session", sid, {"job": job.id, "state": state, "error": err,
+                        "capture_session": (out or {}).get("capture_session")})
+        try:
+            threading.Thread(target=go, daemon=True, name=f"scene-relay-{job.id}").start()
+        except Exception as exc:
+            with store.lock:
+                _server_job_threads.discard(job.id)
+                store.put('job', job.id, store.get('job', job.id) | {
+                    'state': JobState.FAILED, 'finished': time.time(), 'error': 'capture session task could not start'})
+            raise HTTPException(503, 'capture session task could not start') from exc
+        return job
+
     # --- reverse-engineering library (gbox/re_lab.py): playbooks + per-title dossiers the agent reads and writes ---
     class LessonIn(BaseModel):
         lesson: str
@@ -840,6 +1097,47 @@ def create_app(config: Config) -> FastAPI:
                                                       for e in C.dedicated_entries(config, g, name, roster)],
                         "collection": auto_collection.status(gid)}
         return {"extractor": None, "roster": [], "collection": auto_collection.status(gid)}
+
+    # whole-cast swap (gbox/cast_swap.py): the "Replace entire cast with..." menu's sources and plan; the build is a
+    # characters op=cast_swap job on the Spark
+    def _cast_chars():
+        from . import characters as C
+        root = C.library_root(config)
+        return [m | {"preview_url": f"/api/characters/{m['slug']}/preview"} for m in C.list_all(root)], root
+
+    @app.get("/api/cast_swap/sources")
+    def cast_swap_sources(game_id: str = "", actor=Depends(auth)):
+        """Source games / groups of the collection (usable donors after the costume dedupe) and, for game_id, the
+        target's replaceable slots."""
+        from . import cast_swap
+        chars, _root = _cast_chars()
+        out = {"sources": cast_swap.source_groups(chars)}
+        if game_id:
+            g = store.catalog_get(game_id) or _404()
+            out["slots"] = cast_swap.slot_rows(g)
+        return out
+
+    class CastPlanIn(BaseModel):
+        game_id: str
+        source: str = ""
+        mapping: str = "auto"
+        seed: str = ""
+        slots: str = "all"
+        assignments: list[dict] = []
+
+    @app.post("/api/cast_swap/plan")
+    def cast_swap_plan(inp: CastPlanIn, actor=Depends(auth)):
+        """The planned assignments (target slot -> donor) without building; stale donors are flagged, not re-read."""
+        from . import cast_swap
+        g = store.catalog_get(inp.game_id) or _404()
+        chars, root = _cast_chars()
+        if not inp.source:
+            return {"status": "needs_source", "sources": cast_swap.source_groups(chars), "slots": cast_swap.slot_rows(g)}
+        try:
+            return cast_swap.plan(g, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments,
+                                  root if root.is_dir() else None)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
 
     @app.get("/api/character-collection/policy")
     def collection_policy(actor=Depends(auth)):
@@ -969,6 +1267,12 @@ def create_app(config: Config) -> FastAPI:
         if root not in f.parents or not f.is_file():
             raise HTTPException(404, "not found")
         return FileResponse(f, headers={"cache-control": "no-cache"})
+
+    @app.get("/live-poll.js")
+    def live_poll_js():
+        """The shared cached polling helper (clients/desktop/live-poll.js, #712) for the web client: static, no secrets."""
+        return FileResponse(WEB.parent.parent / "desktop" / "live-poll.js", media_type="text/javascript",
+                            headers={"cache-control": "no-cache"})
 
     @app.get("/brand/{name}")
     def brand(name: str):
@@ -1224,7 +1528,8 @@ def create_app(config: Config) -> FastAPI:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
-            for j in store.queued_jobs():
+            # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
+            for j in sorted(store.queued_jobs(), key=lambda j: not _is_stop_job(j)):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
@@ -1498,15 +1803,19 @@ def create_app(config: Config) -> FastAPI:
             session = store.get("session", inp["session_id"])
             if not session or session.get("state") != "running":
                 raise HTTPException(409, "This game session has ended. Open the running game in Sessions to examine it.")
+            from . import scene_relay
+            if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
+                return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
                   parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes"))
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
-        elif t.name == "re_executable":
+        elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
+            # assimilate fingerprints the owned files where the library and the analysis cache live.
             job.require_worker, job.require_os = None, "linux"
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
@@ -1529,6 +1838,8 @@ def create_app(config: Config) -> FastAPI:
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
         store.put("job", job.id, job.model_dump())
+        if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
+            stopping[inp["session_id"]] = job.id
         if job.state == JobState.REJECTED and not job.parent_request_id and (
                 (t.name == "characters" and inp.get("op") in ("use", "live_use", "swap"))
                 or (t.name == "mod" and inp.get("op") == "apply")
@@ -1550,6 +1861,11 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.rejected" if missing else "job.submit", job.id, {"tool": t.name, "input": inp, "missing": missing})
         return job
 
+    from . import special_builds                  # the game menu's "Special builds": grouped builds, launch + rebuild
+    special_builds.routes(app, store, config, auth, workers=workers,
+                          submit=lambda tool, inp, require_os, actor: submit(
+                              JobRequest(tool=tool, input=inp, require_os=require_os), actor))
+
     class Progress(BaseModel):
         pct: float
         msg: str
@@ -1560,10 +1876,56 @@ def create_app(config: Config) -> FastAPI:
             j = store.get("job", jid) or _404()
             if j["state"] != JobState.RUNNING:
                 return {"ok": False, "cancel": bool(j.get("cancel"))}
-            j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": p.msg, "ts": time.time()}
-            j["progress_log"] = (j.get("progress_log") or [])[-49:] + [p.msg]
+            msg, event = fit_events.split(p.msg)              # a writer's fitting stage (gbox.fit_events)
+            if event is not None:
+                j["fitting"] = fit_events.fold(j.get("fitting"), event)
+            j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": msg, "ts": time.time()}
+            j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
             store.put("job", jid, j)
         return {"ok": True, "cancel": bool(j.get("cancel"))}
+
+    def _fitting_dir(jid: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", jid):
+            raise HTTPException(400, "bad job id")
+        return Path(config.cache) / "fitting-jobs" / jid
+
+    @app.post("/api/jobs/{jid}/fitting/files/{name}")
+    async def job_fitting_upload(jid: str, name: str, request: Request, actor=Depends(auth)):
+        """A worker's fitting snapshot (GLB) or preview image for the live Fitting pop-up; served back below."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name) or not name.lower().endswith((".glb", ".png", ".jpg", ".webp")):
+            raise HTTPException(400, "bad file name")
+        with store.lock:
+            j = store.get("job", jid) or _404()
+            if j["state"] != JobState.RUNNING:
+                raise HTTPException(409, "job is not running")
+        data = await request.body()
+        if len(data) > 8 << 20:
+            raise HTTPException(413, "fitting snapshot too large")
+        d = _fitting_dir(jid)
+        if not d.is_dir():                                   # a new job's snapshots: drop those older than 3 days
+            import shutil
+            for old in (d.parent.iterdir() if d.parent.is_dir() else []):
+                try:
+                    if old.is_dir() and time.time() - old.stat().st_mtime > 3 * 86400:
+                        shutil.rmtree(old, ignore_errors=True)
+                except OSError:
+                    pass
+        d.mkdir(parents=True, exist_ok=True)
+        if sum(f.stat().st_size for f in d.iterdir() if f.is_file()) + len(data) > 256 << 20:
+            raise HTTPException(413, "this job's fitting snapshots are over 256 MB")
+        (d / name).write_bytes(data)
+        return {"url": f"/api/jobs/{jid}/fitting/files/{name}"}
+
+    @app.get("/api/jobs/{jid}/fitting/files/{name}")
+    def job_fitting_file(jid: str, name: str, actor=Depends(auth)):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name):
+            _404()
+        f = _fitting_dir(jid) / name
+        if not f.is_file():
+            _404()
+        media = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+        return FileResponse(f, media_type=media.get(f.suffix.lower(), "application/octet-stream"),
+                            headers={"cache-control": "max-age=86400"})
 
     @app.post("/api/jobs/{jid}/cancel")
     def job_cancel(jid: str, actor=Depends(auth)):
@@ -1641,7 +2003,10 @@ def create_app(config: Config) -> FastAPI:
         meta, data = store.get("artifact", digest), store.read_artifact(digest)
         if not meta or data is None:
             _404()
-        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"])})
+        # content-addressed (the URL is the SHA-256), so a client may keep it: the desktop inbox re-renders screenshots
+        # and attachments every few seconds and re-downloaded each one without this (#712)
+        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"]),
+                                                                      "cache-control": "private, max-age=31536000, immutable"})
 
     @app.post("/api/artifacts")
     async def upload_artifact(request: Request, name: str, media_type: str = "application/octet-stream",
@@ -2026,16 +2391,63 @@ def create_app(config: Config) -> FastAPI:
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
-            out.append(s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None})
+            row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
+            if s_.get("state") == "running" and _stopping(s_["session_id"]):
+                row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
+            out.append(row)
         return out
+
+    def _stopping(sid: str) -> bool:
+        """A stop job for this session is queued or running (the record turns 'ended' when the worker confirms)."""
+        jid = stopping.get(sid)
+        if not jid:
+            return False
+        if (store.get("job", jid) or {}).get("state") in (JobState.QUEUED, JobState.RUNNING):
+            return True
+        stopping.pop(sid, None)
+        return False
 
     @app.get("/api/sessions/{sid}/observers")
     def session_observers(sid: str, actor=Depends(auth)):
-        store.get('session', sid) or _404()
+        session = store.get('session', sid) or _404()
         runtime = store.get('setting', 'session_observers_runtime') or {}
-        return (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
+        view = (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
             'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
             'service_error': runtime.get('error'), 'interval_seconds': 30}
+        view.setdefault('title', session.get('title'))
+        view['goals'] = _session_agent_goals(view, view.get('game_id') or session.get('game_id') or '')
+        return view
+
+    def _session_agent_goals(view: dict, gid: str) -> dict:
+        """What each session agent is trying to do, from the observer state, the game's Hermes work-queue stage and
+        the inbox requests / jobs targeting the game (session_observers.agent_goals). Never fails the panel."""
+        from .session_observers import agent_goals
+        queue = None
+        try:
+            from . import hermes_work_queue
+            queue = next(iter(hermes_work_queue.snapshot(gid).get('games') or []), None) if gid else None
+        except Exception:
+            queue = None                     # no queue file on this host (or unreadable): no stage to explain
+        requests = store.game_requests(gid) if gid else []
+        jobs = [j for j in store.jobs(states=('queued', 'running')) if gid and gid in (
+            (j.get('input') or {}).get('game_id'), ((j.get('input') or {}).get('game') or {}).get('game_id'))]
+        try:
+            return agent_goals(view, queue=queue, requests=requests, jobs=jobs)
+        except Exception as exc:             # an odd stored row must not hide the observations themselves
+            return {'agents': [], 'ask': None, 'error': f'{type(exc).__name__}: {exc}'[:300]}
+
+    @app.post("/api/sessions/{sid}/observers/look")
+    def session_observers_look(sid: str, actor=Depends(auth)):
+        """"Done, look now": the operator set up what an agent is seeking. The observer samples this session on its
+        next tick (within 5 s) with a fresh frame even if the screen looks unchanged, and re-checks model
+        collection. It reads one frame; it never sends input, pauses or relaunches."""
+        store.get('session', sid) or _404()
+        with store.lock:
+            row = store.get('session_observer', sid) or {'session_id': sid}
+            store.put('session_observer', sid, row | {'look_requested': time.time(), 'next_sample': 0,
+                                                      'frame_digest': None, 'models_checked': 0})
+        store.audit(actor, 'session.observers.look', sid, {})
+        return session_observers(sid, actor)
 
     class ObserverIn(BaseModel):
         enabled: StrictBool
@@ -2098,18 +2510,15 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
+        from .live_stream import mjpeg_parts
         lv = _live(sid)
 
-        def gen():                                   # wakes on every new frame: stream fps = source fps
-            seq, idle = -1, time.time()
-            while time.time() - idle < 30:
-                with lv["cond"]:
-                    lv["cond"].wait_for(lambda: lv["seq"] != seq and lv["frame"] is not None, 1.0)
-                    if lv["seq"] == seq or lv["frame"] is None:
-                        continue
-                    seq, frame, idle = lv["seq"], lv["frame"], time.time()
-                yield b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=f",
+        def alive() -> bool:                         # stop streaming once the session has ended or was replaced
+            s = store.get("session", sid)
+            return s is None or s.get("state") != "ended"
+        # Wakes on every new frame (stream fps = source fps) and repeats the newest frame while the source pauses,
+        # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
+        return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
     class InputEvents(BaseModel):
@@ -2318,6 +2727,22 @@ def create_app(config: Config) -> FastAPI:
     def hermes_task_mode_state(actor=Depends(auth)):
         from . import hermes_task_mode
         return hermes_task_mode.status()
+
+    class QueuePriorityIn(BaseModel):
+        ids: list[str] = []            # game ids and/or request ids (or numbers), most important first
+
+    @app.get("/api/hermes/queue/priority")
+    def hermes_queue_priority(actor=Depends(auth)):
+        from . import hermes_work_queue
+        return {"priority": hermes_work_queue.get_priority()}
+
+    @app.post("/api/hermes/queue/priority")
+    def hermes_queue_priority_set(body: QueuePriorityIn, actor=Depends(auth)):
+        """Operator priority for the Hermes queue: these games/requests are worked first in their lane."""
+        from . import hermes_work_queue
+        ids = hermes_work_queue.set_priority(body.ids)
+        store.audit(actor, "hermes.queue_priority", "", {"ids": ids})
+        return {"priority": ids}
 
     class TaskModeIn(BaseModel):
         enabled: bool
@@ -2604,13 +3029,21 @@ def create_app(config: Config) -> FastAPI:
         items.sort(key=lambda x: (score(x["text"]) if ql else 0, {"mod": 0, "history": 1}.get(x["kind"], 2)))
         return items[:max(1, min(limit, 30))]
 
+    def voice_default() -> str:
+        """[voice] default_assistant, unless the operator picked another one at runtime (PUT /api/voice/default)."""
+        return (store.get("setting", "voice") or {}).get("default_assistant") or config.voice.default_assistant
+
     @app.get("/api/voice/voices")
     def voice_list(actor=Depends(auth)):
-        from . import speech
-        return {"engine": agent_cfg.get("tts_engine", "xtts"),
-                "groups": [{"label": "XTTS v2 · cloned voices (Pine Box library)",
-                            "voices": [{"id": f"xtts:{v['id']}", "name": v["name"]} for v in speech.voices(agent_cfg.get("voice_library", ""))]},
-                           {"label": "Kokoro · fast", "voices": [{"id": f"kokoro:{vid}", "name": n} for vid, n in speech.KOKORO_VOICES]}]}
+        from . import audio_cpp, speech
+        groups = [{"label": "XTTS v2 · cloned voices (Pine Box library)",
+                   "voices": [{"id": f"xtts:{v['id']}", "name": v["name"]} for v in speech.voices(agent_cfg.get("voice_library", ""))]},
+                  {"label": "Kokoro · fast", "voices": [{"id": f"kokoro:{vid}", "name": n} for vid, n in speech.KOKORO_VOICES]}]
+        if audio_cpp.available(config) is None:     # audio.cpp on this machine: its voices, always served by audio.cpp
+            ids = audio_cpp.voices(config) or ([v for v, _ in speech.KOKORO_VOICES] if config.audio_cpp.tts_family == "kokoro_tts" else [])
+            names = dict(speech.KOKORO_VOICES)
+            groups.append({"label": "audio.cpp · local", "voices": [{"id": f"audio_cpp:{v}", "name": names.get(v, v)} for v in ids]})
+        return {"engine": agent_cfg.get("tts_engine", "xtts"), "default_assistant": voice_default(), "groups": groups}
 
     class TtsIn(BaseModel):
         text: str
@@ -2619,25 +3052,61 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/tts")
     async def text_to_speech(t: TtsIn, actor=Depends(auth)):
-        """Speak a reply: Pine Box Voice Director (XTTS v2 voice clones) with Piper as the fallback."""
+        """Speak a reply: the default speech assistant (Voice Director or audio.cpp), the other one when it is busy, Piper last."""
         from . import speech
-        wav, used = await asyncio.to_thread(speech.tts, t.text, agent_cfg.get("voice_director", "http://127.0.0.1:8090"),
-                                            t.engine or agent_cfg.get("tts_engine", "xtts"), t.voice)
+        wav, used = await asyncio.to_thread(speech.route_tts, config, t.text, t.engine, t.voice, voice_default())
         return Response(wav, media_type="audio/wav", headers={"x-gbox-tts-engine": used})
 
     @app.post("/api/stt")
     async def speech_to_text(request: Request, language: str = "en", actor=Depends(auth)):
-        """Dictation: browser audio -> Spark faster-whisper (Wyoming :10300) -> text."""
+        """Dictation: browser audio -> the default assistant (Spark faster-whisper over Wyoming, or audio.cpp) -> text."""
         from . import speech
         audio = await request.body()
         if not audio:
             raise HTTPException(422, "no audio")
         try:
-            text = await asyncio.to_thread(speech.transcribe, audio, agent_cfg.get("stt_host", "127.0.0.1"),
-                                           int(agent_cfg.get("stt_port", 10300)), language or None)
+            text, used = await asyncio.to_thread(speech.route_stt, config, audio, language or None, voice_default())
         except Exception as e:
             raise HTTPException(502, f"speech service: {e}")
-        return {"text": text}
+        return {"text": text, "assistant": used}
+
+    @app.get("/api/voice/assistants")
+    def voice_assistants(actor=Depends(auth)):
+        """Both speech assistants, which one is the default, and how requests were routed (docs/audio_cpp.md)."""
+        from . import speech
+        return speech.assistants(config, voice_default())
+
+    class VoiceDefaultIn(BaseModel):
+        assistant: Literal["director", "audio_cpp"] | None = None   # None = back to gbox.toml [voice] default_assistant
+
+    @app.put("/api/voice/default")
+    def voice_set_default(v: VoiceDefaultIn, actor=Depends(auth)):
+        """Make audio.cpp (or the Voice Director) the default speech assistant without editing gbox.toml."""
+        from . import audio_cpp
+        if v.assistant == "audio_cpp" and (why := audio_cpp.available(config)):
+            raise HTTPException(409, f"audio.cpp can't be the default here: {why}")
+        store.put("setting", "voice", (store.get("setting", "voice") or {}) | {"default_assistant": v.assistant, "by": actor,
+                                                                                "ts": time.time()})
+        return {"default_assistant": voice_default()}
+
+    @app.get("/api/audio_cpp/status")
+    def audio_cpp_status(actor=Depends(auth)):
+        from . import audio_cpp
+        return audio_cpp.service(config).status()
+
+    @app.post("/api/audio_cpp/{op}")
+    async def audio_cpp_control(op: Literal["start", "stop"], actor=Depends(auth)):
+        """Start (and keep alive) or stop the control plane's own audiocpp_server."""
+        from . import audio_cpp
+        svc = audio_cpp.service(config)
+        if op == "stop":
+            return await asyncio.to_thread(svc.stop)
+        try:
+            st = await asyncio.to_thread(svc.start, True)
+        except audio_cpp.Down as e:
+            raise HTTPException(409, str(e))
+        svc.keep_alive()
+        return st
 
     @app.get("/api/llm/models")
     def llm_models(actor=Depends(auth)):
@@ -2779,6 +3248,13 @@ def create_app(config: Config) -> FastAPI:
     def _attach(rid: str, items: list[dict]) -> list[dict]:
         out = []
         for a in items[:20]:
+            if a.get("sha256") and not a.get("b64"):        # an artifact gBox already holds (a replay clip, #1084)
+                meta = store.get("artifact", str(a["sha256"]))
+                if not meta:
+                    raise HTTPException(422, f"unknown artifact {str(a['sha256'])[:12]}")
+                out.append({"sha256": meta["sha256"], "name": a.get("name") or meta.get("name"),
+                            "type": a.get("type") or meta.get("media_type"), "size": meta.get("size")})
+                continue
             name = a.get("name") or "image.png"
             mt = a.get("type") or ("image/png" if name.lower().endswith(".png") else "application/octet-stream")
             ref = store.put_artifact(base64.b64decode(a["b64"]), name, mt, {"request": rid, "attachment": True})
@@ -3345,10 +3821,17 @@ def create_app(config: Config) -> FastAPI:
                                  headers={"content-disposition": 'attachment; filename="gbox-request-history.md"'})
 
     @app.get("/api/requests")
-    def req_list(status: str = "", source: str = "", actor=Depends(auth)):
+    def req_list(request: Request, status: str = "", source: str = "", actor=Depends(auth)):
+        # The desktop inbox polls this every few seconds and it is the whole history (~8 MB, ~1 s to build). An unchanged
+        # inbox answers 304 from a hash of the stored rows, without decoding, organizing or sending them (#712).
+        import hashlib
+        from fastapi.responses import JSONResponse
+        tag = f'"{store.digest("request")}:{hashlib.sha1(f"{status}|{source}".encode()).hexdigest()[:8]}"'
+        if request.headers.get("if-none-match") == tag:
+            return Response(status_code=304, headers={"etag": tag})
         from . import inbox
         rs = [r for r in inbox.organize(store.all("request")) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
-        return _clean(sorted(rs, key=lambda r: r["created"], reverse=True))
+        return JSONResponse(_clean(sorted(rs, key=lambda r: r["created"], reverse=True)), headers={"etag": tag})
 
     def _clean(o):
         """Lone surrogates (bad clipboard/dictation text) can't be sent as UTF-8 JSON: replace them, don't fail the list."""
@@ -3363,6 +3846,14 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/requests/{rid}")
     def req_get(rid: str, actor=Depends(auth)):
         return _clean(_req(rid))
+
+    @app.get("/api/requests/{rid}/story")
+    def req_story(rid: str, actor=Depends(auth)):
+        """The request's resolution story in order, for the Detailed report: triage, identification (tool calls), each
+        run with its recorded tokens and an estimated cost, jobs, the linked PRs with files and +/- lines (local git),
+        replies and the resolution. Unrecorded values are null and listed in `missing` (gbox/request_story.py)."""
+        from . import request_story
+        return _clean(request_story.assemble(store, config, _req(rid)))
 
     class ParentIn(BaseModel):
         parent_request_id: str

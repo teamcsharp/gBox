@@ -204,14 +204,37 @@ def candidates(data, requests, native, owned, on_main, *, now):
     return [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
 
 
+def priority_rank(item, data) -> int:
+    """Position of this item's game or request in the operator's priority list; past the end when not listed."""
+    order = [str(x) for x in (data.get('priority') or [])]
+    for key in (item.get('game_id'), item.get('request_id'), str(item.get('number') or '')):
+        if key and key in order:
+            return order.index(key)
+    return len(order)
+
+
+def set_priority(ids) -> list[str]:
+    """Operator priority: game ids and/or request ids (or numbers) worked first in their lane; saved in the queue data."""
+    data = _read()
+    data['priority'] = [str(x).strip() for x in ids if str(x).strip()]
+    _save(data)
+    return data['priority']
+
+
+def get_priority() -> list[str]:
+    return list(_read().get('priority') or [])
+
+
 def choose(options, data):
-    """Alternate lanes and first attempts/follow-ups so acceptance is not postponed indefinitely."""
+    """Alternate lanes and first attempts/follow-ups so acceptance is not postponed indefinitely; inside a lane the
+    operator's priority list (games or requests) comes first."""
     preferred = 'favorite' if data.get('last_lane') == 'inbox' else 'inbox'
     lane = [v for v in options if v[1]['lane'] == preferred] or options
     if lane and len({v[1]['lane'] for v in lane}) == 1:
         followup = data.get('last_' + lane[0][1]['lane'] + '_kind') == 'new'
         lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
     return min(lane, key=lambda v: (
+        priority_rank(v[1], data),
         0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') or v[1].get('session_observer') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
         v[1].get('last_dispatched', 0),
         v[1].get('created', 0), v[0])) if lane else None
@@ -247,9 +270,32 @@ def _prompt(item):
         return header + mode._handoff()
     stage = next_stage(item)
     template = Path(__file__).resolve().parents[1] / 'hermes/gbox/FAVORITE_WORK.md'
+    fp = item.get('fingerprint') or {}
+    hint = ''
+    if stage in ('inventory', 'analysis'):
+        hint = ('\nAssimilation fingerprint attached to this ticket: ' + fp['summary']
+                + (f" Start from {fp.get('start_from') or fp.get('engine_reader')}."
+                   if fp.get('start_from') or fp.get('engine_reader') else '')
+                if fp.get('summary') and fp.get('source') != 'error' else
+                '\nNo fingerprint yet: run assimilate op=fingerprint for this game_id first (start_job).')
     return header + f"\nGame: {item['title']} ({item['platform']}), game_id={item['game_id']}. " + (
         f"Next unfinished stage: {stage}. Preserved checkpoint: " + json.dumps(item.get('stages', {}))
-        + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+        + hint + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+
+
+FINGERPRINT = None  # (game_id, title, platform, api=) -> compact dict; None = gbox.assimilate.ticket_fingerprint
+
+
+def _fingerprint(item):
+    """Step one of readiness: the assimilate fingerprint (engine, containers, codecs, nearest assimilated titles,
+    reader to start from). Best effort: a ticket is never blocked on it."""
+    try:
+        from .assimilate import ticket_fingerprint
+        fn = FINGERPRINT or ticket_fingerprint
+        return fn(item['game_id'], item.get('title') or '', item.get('platform') or '', api=lambda p: _api(p),
+                  max_files=1500)
+    except Exception as e:  # noqa: BLE001
+        return {'source': 'error', 'error': f'{type(e).__name__}: {e}'[:200], 'summary': 'fingerprint unavailable'}
 
 
 def _ensure_request(data, item, requests):
@@ -258,18 +304,23 @@ def _ensure_request(data, item, requests):
     parent = data.get('parent_request_id')
     if not parent or not any(r['id'] == parent for r in requests):
         raise ValueError('Favorites queue requires its existing operator parent request')
+    if not item.get('fingerprint'):
+        item['fingerprint'] = _fingerprint(item)
+    fp = item['fingerprint']
     # Persist before POST. Lost responses are recovered by the context marker on the next scan.
     item['request_uncertain'] = True
     _save(data)
     r = _api('/api/requests', {
         'title': f"Character replacement readiness: {item['title']}", 'source': 'automation',
         'author': 'agent', 'automated': True, 'parent_request_id': parent,
-        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id']},
+        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id'],
+                    'assimilation_fingerprint': fp},
         'body': (f"Persistent work for favorite game {item['game_id']} ({item['platform']}). "
                  "Inventory the owned build, analyze executable/asset loaders, implement and test native "
                  "character extraction and replacement, then verify the rebuilt game. Preserve hash-identified "
                  "artifacts, reusable Ghidra projects and exact pending job IDs. Each run advances one bounded "
-                 "stage; a report, extracted binary or preview alone is not a working character replacement.")})
+                 "stage; a report, extracted binary or preview alone is not a working character replacement."
+                 f"\n\nFingerprint (gbox.assimilate, step one of inventory): {fp.get('summary', '')}")})
     if not ID.fullmatch(str(r.get('id', ''))):
         raise ValueError('Request creation was not acknowledged')
     item.update(request_id=r['id'], number=r['number'])

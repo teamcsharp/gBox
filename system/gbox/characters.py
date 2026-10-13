@@ -15,6 +15,7 @@ Every model here was extracted from the operator's own copy of the game, for loc
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
 import re
@@ -49,15 +50,94 @@ def slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+_LIST_CACHE: dict = {}            # str(root) -> {"at": built_at, "entries": {slug: meta}, "refreshing": bool}
+LIST_TTL_S = 600.0               # full re-read at most this often, in the background (writes elsewhere show up then)
+import threading as _threading
+_LIST_LOCK = _threading.Lock()
+
+
+def _invalidate_list(root=None, meta=None):
+    """A write through put_meta updates the cached entry in place: no full re-read of the HDD library."""
+    with _LIST_LOCK:
+        for key, c in _LIST_CACHE.items():
+            if root is not None and key != str(root):
+                continue
+            if meta and meta.get("slug"):
+                c["entries"][meta["slug"]] = json.loads(json.dumps(meta))
+            else:
+                c["at"] = 0
+
+
+def _refresh_list(root):
+    key = str(root)
+    try:
+        entries = {m["slug"]: m for m in _list_all_uncached(root) if m.get("slug")}
+        try:
+            rmt = Path(root).stat().st_mtime
+        except OSError:
+            rmt = None
+        with _LIST_LOCK:
+            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False, "root_mtime": rmt}
+    except Exception:
+        with _LIST_LOCK:
+            if key in _LIST_CACHE:
+                _LIST_CACHE[key]["refreshing"] = False
+
+
 def list_all(root: Path, game_id: str = "") -> list[dict]:
+    """Every character entry. Cached: the library lives on an NTFS HDD where reading 645 meta.json files takes
+    13-80 s, which made /api/characters (and every menu waiting on it) time out (2026-10-13). Only the very first
+    call reads synchronously; afterwards a stale cache is served while a background thread refreshes it."""
+    import copy
+    import time as _t
+    key = str(root)
+    try:
+        rmt = Path(root).stat().st_mtime                  # a new entry folder (another process collected) changes this
+    except OSError:
+        rmt = 0
+    with _LIST_LOCK:
+        c = _LIST_CACHE.get(key)
+        if c is not None and c.get("root_mtime") not in (None, rmt) and c.get("entries"):
+            c["root_mtime"] = rmt                         # re-read now: callers right after a collect must see it
+            c = None
+        stale = c is not None and _t.time() - c["at"] > LIST_TTL_S and not c.get("refreshing")
+        if stale:
+            c["refreshing"] = True
+    if c is None:
+        _refresh_list(root)
+        c = _LIST_CACHE[key]
+    elif stale:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+    with _LIST_LOCK:
+        out = copy.deepcopy(list(c["entries"].values()))
+    out = [m for m in out if isinstance(m, dict) and m.get("name")]
+    out.sort(key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
+    if game_id:
+        for m in out:
+            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
+    return out
+
+
+def refresh_list(root: Path) -> None:
+    """Force a synchronous re-read (after a collect in another process, or ?fresh=1)."""
+    _refresh_list(root)
+
+
+def warm_list(root: Path) -> None:
+    """Fill the cache in the background at startup so the first menu doesn't pay the HDD read."""
+    if str(root) not in _LIST_CACHE:
+        _threading.Thread(target=_refresh_list, args=(root,), daemon=True).start()
+
+
+def _list_all_uncached(root: Path) -> list[dict]:
     out = []
     for p in sorted(Path(root).glob("*/meta.json")):
         try:
             m = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
-        if game_id:
-            m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
+        if not isinstance(m, dict) or not m.get("name"):
+            continue                    # a bookkeeping folder (e.g. "shared": slug + targets only) is not a character
         out.append(m)
     return sorted(out, key=lambda m: (m.get("source", {}).get("game_title", ""), m["name"]))
 
@@ -86,18 +166,27 @@ def find(chars: list[dict], query: str) -> dict | None:
 
 
 def put_meta(root: Path, meta: dict) -> dict:
+    """Write an entry's meta.json. Only a character (a slug AND a name) is written: a bookkeeping record (the
+    'shared' folder holding just slug + targets, 2026-10-13) is not a library entry and made /api/characters 500."""
+    if not isinstance(meta, dict) or not str(meta.get("slug") or "").strip() or not str(meta.get("name") or "").strip():
+        raise ValueError("not a character library entry (meta.json needs a slug and a name): "
+                         + json.dumps(meta, default=str)[:200])
     d = Path(root) / meta["slug"]
     d.mkdir(parents=True, exist_ok=True)
     import uuid
     tmp = d / f"meta.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(d / "meta.json")
+    _invalidate_list(root, meta)
     return meta
 
 
 def set_target(root: Path, slug: str, game_id: str, entry: dict) -> dict:
-    """Record a built swap mod (or a retargeted rig) for a target game; merges by (slot, mod)."""
+    """Record a built swap mod (or a retargeted rig) for a target game; merges by (slot, mod). Only on an existing
+    character: a nameless folder is bookkeeping, not an entry (KeyError, the route answers 404)."""
     m = get(root, slug)
+    if not m.get("name"):
+        raise KeyError(slug)
     lst = m.setdefault("targets", {}).setdefault(game_id, [])
     for t in lst:
         if t.get("slot") == entry.get("slot") and (t.get("mod") == entry.get("mod") or not t.get("mod")):
@@ -124,18 +213,52 @@ def add(root: Path, slug: str, name: str, files: list[Path], source: dict, tool:
         elif f.resolve() != (d / f.name).resolve():
             shutil.copy2(f, d / f.name)
     model = d / Path(files[0]).name
-    st = model_stats(model)
-    render_preview(model, d / "preview.png", **(preview or {}))
+    # 2D sprite sheets (PNG) are valid "models" for sprite-based games; skip glTF stats/render.
+    if str(model).lower().endswith('.png'):
+        kind = 'sprites'
+        preview_path = d / "preview.png"
+        _sprite_preview(model, preview_path, size=preview.get('size', 384) if preview else 384)
+        st = {"triangles": 0, "vertices": 0, "textures": 1, "meshes": 0}
+        rig_out = rig or {}
+    else:
+        st = model_stats(model)
+        render_preview(model, d / "preview.png", **(preview or {}))
+        rig_out = {**st.pop("rig"), **(rig or {})}
     meta = {"slug": slug, "name": name, "kind": kind, "aliases": list(aliases), "source": source, "extraction_tool": tool,
-            "model": model.name, "preview": "preview.png", "rig": {**st.pop("rig"), **(rig or {})}, "stats": st,
+            "model": model.name, "preview": "preview.png", "rig": rig_out, "stats": st,
             "licence": LICENCE, "notes": notes, "targets": targets or {}, "added": time.time(), **(extra or {})}
+    if kind != "sprites":                                  # clips the reader embedded in the model + ones it wrote beside it
+        from . import anim_clips
+        meta["animations"] = anim_clips.embedded_entries(model) + list((extra or {}).get("animations") or [])
     old = d / "meta.json"
     if old.exists():                                       # keep targets recorded by earlier builds
         prev = json.loads(old.read_text())
         for gid, lst in prev.get("targets", {}).items():
             meta["targets"].setdefault(gid, [])
             meta["targets"][gid] += [t for t in lst if t not in meta["targets"][gid]]
+        if kind != "sprites":                              # and clips attached later (doa2_assets op=motion_clips)
+            files = {a.get("file") for a in meta["animations"]} | {model.name}
+            kept = [a for a in prev.get("animations") or [] if a.get("file") and a["file"] not in files
+                    and not ("clip" in a or "sheet" in a) and (d / a["file"]).is_file()]
+            meta["animations"] += kept
+            if kept and not meta.get("anims_file") and prev.get("anims_file"):
+                meta["anims_file"] = prev["anims_file"]
     return put_meta(root, meta)
+
+
+def _sprite_preview(src: Path, out: Path, size: int = 384) -> Path:
+    """Use the sprite sheet itself as the collection preview, fitted to a square."""
+    from PIL import Image
+    im = Image.open(src).convert("RGBA")
+    if im.width and im.height and max(im.size) < size:
+        # a handful of 8x8 tiles would cover <1% of the canvas: enlarge pixel-exact so check_preview judges the sprites
+        f = size // max(im.size)
+        im = im.resize((im.width * f, im.height * f), Image.NEAREST)
+    im.thumbnail((size, size))
+    canvas = Image.new("RGBA", (size, size), (38, 40, 48, 255))
+    canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
+    canvas.save(out, "PNG")
+    return out
 
 
 # ---------------------------------------------------------------- glTF helpers
@@ -358,7 +481,10 @@ def verify_entry(root: Path, meta: dict) -> dict:
     out = {"model": str(model), "model_bytes": model.stat().st_size if model.is_file() else 0,
            "triangles": meta.get("stats", {}).get("triangles", 0), "textures": meta.get("stats", {}).get("textures", 0)}
     out["preview"] = check_preview(prev) if prev.is_file() else {"ok": False, "error": "no preview"}
-    out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
+    if meta.get("kind") == "sprites":
+        out["ok"] = bool(out["model_bytes"] and out["preview"].get("ok"))
+    else:
+        out["ok"] = bool(out["model_bytes"] and out["triangles"] and out["preview"].get("ok"))
     return out
 
 
@@ -518,16 +644,18 @@ from .registry import HOST_OS, tool  # noqa: E402
 
 
 class CharIn(BaseModel):
-    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage
+    op: str = "list"                       # list | get | collect | use | live_use | overlay | extract | add | blender | environments | swap | place | unplace | coverage | cast_swap
     character: str = Field(default="", description="Required for use, live_use, overlay and place: exact collection slug or name. Copy the character supplied in the request; use list to find a name. Optional for list, collect and extraction.")
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only) | roster (DOA2: every fighter, see pairs)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index) | Dead Or Alive ++ (arcade doapp): <fighter>[:<costume 1-4>] (zack, tina, jann lee, hayabusa, kasumi, gen fu, bayman, bass, raidou, lei fang, ayane; no costume = all 4) | player (every fighter, all 44 costumes)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
-                                 description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
+                                 description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
-    launch: bool = True                    # use: launch after building
+    strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
+    launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
@@ -547,8 +675,16 @@ class CharIn(BaseModel):
     near: str = ""                         # place: next to this actor ("Saria", "Deku Tree")
     yaw: float | None = None               # place: facing, degrees (default: towards the player)
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
-    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
+    pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest; use slot=cast (007 Agent Under Fire GC): [{target?, donor}] (target = a body, model:<body>, player/enemies/bosses/npcs/bots/all), untargeted donors dealt over every other body
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+    # cast_swap (gbox.cast_swap): the entire cast of target_game replaced by the cast of source, one mod
+    target_game: str = ""                  # cast_swap: the game whose cast is replaced (catalog id or title; default game/game_id)
+    source: str = ""                       # cast_swap: the donor cast: a game id / title / abbreviation (JGR, SA2) or a group (wrestlers, fighters), comma-joined
+    mapping: str = "auto"                  # cast_swap: auto | random | by_role (lead on the player, body size on the rest)
+    seed: str = ""                         # cast_swap: the same seed builds the same plan
+    slots: str = "all"                     # cast_swap: all | main | enemies | pedestrians | ... | a comma list of slot names
+    assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
+    plan_only: bool = False                # cast_swap: return the plan without building
 
     @model_validator(mode="after")
     def require_named_character(self):
@@ -811,8 +947,36 @@ def _dc_gdi(ctx, game) -> Path:
     rom = _rom(ctx, game)
     if rom.suffix.lower() in (".gdi", ".cdi"):
         return rom
+    if rom.is_dir():                                     # an already-extracted disc set
+        gdi = next(rom.glob("*.gdi"), None)
+        if gdi is None:
+            raise ValueError(f"{rom.name}: extracted Dreamcast disc has no .gdi descriptor")
+        return gdi
     d = Path(ctx.config.cache) / "dc" / game["game_id"]
     if (d / "disc.gdi").exists():
+        return d / "disc.gdi"
+    if rom.suffix.lower() == ".7z":                      # archived GDI set: extract once, flatten,
+        exe = next((p for n in ("7z", "7zz") if (p := shutil.which(n))), None)
+        if exe is None:
+            raise ValueError(f"{rom.name}: reading an archived Dreamcast disc needs the 7z CLI on this node")
+        tmp = d.with_name(d.name + ".part")              # keep tracks beside disc.gdi (GDRom resolves
+        shutil.rmtree(tmp, ignore_errors=True)           # track paths relative to the descriptor)
+        tmp.mkdir(parents=True)
+        ctx.progress(5, f"Unpacking the GD-ROM archive {rom.name} (7z, once per game)")
+        subprocess.run([exe, "x", "-y", f"-o{tmp}", str(rom)], check=True,
+                       capture_output=True, timeout=1800)
+        for p in [p for p in tmp.rglob("*") if p.is_file() and p.parent != tmp]:
+            p.rename(tmp / p.name)
+        for sub in sorted((p for p in tmp.rglob("*") if p.is_dir()), reverse=True):
+            sub.rmdir()
+        gdi = next(tmp.glob("*.gdi"), None)
+        if gdi is None:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise ValueError(f"{rom.name}: archive contains no .gdi descriptor")
+        if gdi.name != "disc.gdi":
+            shutil.copyfile(gdi, tmp / "disc.gdi")
+        shutil.rmtree(d, ignore_errors=True)
+        tmp.rename(d)
         return d / "disc.gdi"
     if rom.suffix.lower() != ".chd" or not shutil.which("chdman"):
         raise ValueError(f"{rom.name}: reading a Dreamcast disc needs a GDI, or a CHD plus chdman on this node")
@@ -1048,17 +1212,28 @@ def _pe_run(ctx, game, e, work):
 
 
 def _pso_roster():
+    from . import pso_enemy
     from .pso_player import CLASSES
     return [{"key": "ABCDEFGHI"[i], "slug": "hucast" if c == "HUcast" else f"pso_{c.lower()}", "name": c, "kind": "character",
-             "aliases": [f"PSO {c}", f"Phantasy Star Online {c}"]} for i, c in enumerate(CLASSES)]
+             "aliases": [f"PSO {c}", f"Phantasy Star Online {c}"]} for i, c in enumerate(CLASSES)] + pso_enemy.roster_entries()
 
 
 def _pso_run(ctx, game, e, work):
-    from . import pso_player
-    glb = pso_player.export(str(_dc_gdi(ctx, game)), str(work), e["key"])
+    from . import pso_enemy, pso_player
+    if e.get("kind") == "enemy":                               # an enemy body (slot enemy:<name>) off its pack
+        key = e["key"].split(":", 1)[1]
+        glb = pso_enemy.export(str(_dc_gdi(ctx, game)), str(work), key)
+        return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.pso_enemy",
+                "source_files": [f"{e['file']}:{e['entry']}"], "roles": pso_enemy.export_roles(key),
+                "notes": "an enemy body on its own node tree; the game's motions (.njm in the same pack) aren't exported"}
+    from .gdrom import GDRom
+    gdi = _dc_gdi(ctx, game)
+    glb = pso_player.export(str(gdi), str(work), e["key"])
     k = e["key"]
+    # every class body is the same 64-node tree: the role map, checked against this class's own PL<x>BDY00.NJ (#1485)
+    roles = pso_player.joint_roles(pso_player.body_roles(GDRom(str(gdi)).read(f"PSO/PL{k}BDY00.NJ"), k))
     return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.pso_player (head 0, colour 0)",
-            "source_files": [f"PSO/PL{k}BDY00.NJ", f"PSO/PL{k}HED00.NJ", f"PSO/PL{k}TEX.AFS"],
+            "source_files": [f"PSO/PL{k}BDY00.NJ", f"PSO/PL{k}HED00.NJ", f"PSO/PL{k}TEX.AFS"], "roles": roles,
             "notes": "" if k == "C" else "this class's texture layout isn't mapped yet (gbox.pso_player): colours may be wrong"}
 
 
@@ -1127,13 +1302,39 @@ def _doa2_run(ctx, game, e, work):
     r = doa2_chars.export(str(_dc_gdi(ctx, game)), str(work), e["key"], (e.get("costumes") or ["0"])[0],
                          native_cache=cache if (cache / 'verification.json').is_file() else None)
     m = r["manifest"]
-    return {"files": [work / f for f in r["files"]], "tool": "gbox.doa2_chars native NaomiLib decoder",
+    files, extra = [work / f for f in r["files"]], {"native_source_assembly": r["assembly"]}
+    extra.update(doa2_motion_extra(work, e["slug"], [Path(f).name for f in r["files"]]))
+    if extra.get("anims_file"):
+        files.append(work / extra["anims_file"])
+    return {"files": files, "tool": "gbox.doa2_chars native NaomiLib decoder",
             "source_files": m["source"]["resource_ids"], "roles": r.get("roles", {}),
-            "extra": {"native_source_assembly": r["assembly"]},
+            "extra": extra,
             "notes": f"{m['container_facts']['n_models']} native mesh parts and "
                      f"{m['container_facts']['n_textures']} textures decoded. Assembly: {r['assembly']}. "
                      "Complete source includes native accessory, chain and cloth draws when its verified cache is available. "
                      "SUP source skin approximates curved deformation; motion and procedural limits are in core-report.json."}
+
+
+def doa2_motion_extra(work: Path, slug: str, names: list[str]) -> dict:
+    """The fighter's MOT bank (doa2_chars.export copies it into work) as <slug>.anims.glb control clips (#1384):
+    meta extras {anims_file, animations, anims_report}; an unsupported bank leaves a reason instead of clips, a fighter
+    without a mapped bank (doa2_chars.MOT_FILES) adds nothing."""
+    from . import anim_clips
+    mot = next((n for n in names if n.upper().endswith(".MOT")), None)
+    if mot is None:
+        return {}
+    try:
+        nodes, clips, report = anim_clips.doa2_clips((Path(work) / mot).read_bytes(), f"DOA2/{mot}")
+        if not clips:
+            return {"anims_report": {"status": "unsupported", "reason": "no decodable clip"}}
+        file = f"{slug}.anims.glb"
+        (Path(work) / file).write_bytes(anim_clips.build_glb(
+            nodes, clips, name=f"{slug} clips",
+            extras={"source": f"DOA2/{mot}", "drives": "controls", "fps_assumed": report["fps_assumed"], "note": report["note"]}))
+    except (OSError, ValueError) as err:                   # MotionFormatError is a ValueError
+        return {"anims_report": {"status": "unsupported", "reason": str(err)[:300]}}
+    return {"anims_file": file, "animations": anim_clips.entries_for(clips, file, f"DOA2/{mot}", "controls"),
+            "anims_report": {k: v for k, v in report.items() if k != "skipped"} | {"skipped": len(report["skipped"])}}
 
 
 def _doa2_needs_refresh(ctx, game, meta):
@@ -1244,9 +1445,26 @@ def _mgs_vr_run(ctx, game, entry, work):
                      'the fixed KMD object map (characters.MGS_VR_SNAKE_OBJECTS), checked against the decoded tree.'}
 
 
+def _auf_run(ctx, game, e, work):
+    """One AUF body (gbox.auf_chars): body + head of its representative level as a rigged, textured GLB with roles."""
+    from . import auf_chars
+    return auf_chars.extract_run(ctx, game, e, work)
+
+
+def _sonic2d(key):
+    """A DEDICATED row for one Sonic Mega Drive title (gbox.sonic2d_sprites), imported only when used."""
+    def mod():
+        return __import__("gbox.sonic2d_sprites", fromlist=["x"])
+    return (f"sonic2d_{key}", lambda t, p: mod().title_test(key)(t, p), lambda: mod().roster(key),
+            lambda ctx, game, e, work: mod().extract_run(ctx, game, e, work))
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
-    ('mgs_vr', lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
+    ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
+     lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("mgs_vr", lambda t, p: 'metal gear solid' in t and 'vr missions' in t and p == 'psx',
      _one('SNAKE', 'mgs_vr_snake', 'Solid Snake (VR Missions)', ['Snake', 'MGS VR Snake']), _mgs_vr_run),
     ('oot', lambda t, p: 'ocarina of time' in t and p == 'n64',
      lambda: [{'key': f'{age} link', 'slug': f'oot_link_{age}', 'name': label,
@@ -1256,10 +1474,18 @@ DEDICATED = [
     ("sa2", lambda t, p: "sonic adventure 2" in t and p == "dreamcast",
      lambda: [{"key": k, "slug": "sonic" if k == "SONIC" else f"sa2_{slugify(n)}", "name": n, "aliases": a, "kind": kd}
               for k, n, a, kd in SA2_CHARS], _sa2_run),
+    # Sonic Adventure (DC): basic-model trees in 1ST_READ.BIN (+ Super Sonic / Tikal overlays), gbox.sa1_chars
+    ("sa1", lambda t, p: re.match(r"sonic adventure(?!\s*2)\b", t) is not None and p == "dreamcast",
+     lambda: __import__("gbox.sa1_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sa1_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("ff7", lambda t, p: re.search(r"final fantasy vii\b", t) is not None and p == "psx",
      lambda: [{"key": k, "slug": "cloud" if k == "HICLOUD" else f"ff7_{k.lower()}", "name": n, "aliases": a, "kind": "character"}
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
+    # Parasite Eve II (both discs): Aya's five field outfits, STAGE0.CDF class-1 files (gbox.pe2_inventory / pe2_models)
+    ("pe2", lambda t, p: re.match(r"parasite eve ii\b", t) is not None and p == "psx",
+     lambda: __import__("gbox.pe2_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.pe2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
     ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
      lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
@@ -1274,6 +1500,11 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
+    # 007 Agent Under Fire GC: every body model of the cast (Bond's outfits, henchmen, bosses, npcs, the 16 multiplayer
+    # characters) as a rigged GLB from its representative level (gbox.auf_chars); the writer's slots stay in
+    # gbox.auf_swap (roster / cast_slots, characters op=use slot=...)
+    ("auf", lambda t, p: "agent under fire" in t and p == "gamecube",
+     lambda: __import__("gbox.auf_chars", fromlist=["x"]).roster(), _auf_run),
     ("crazy_taxi", lambda t, p: "crazy taxi" in t and p == "gamecube",
      lambda: __import__("gbox.crazy_taxi", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.crazy_taxi", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1282,6 +1513,12 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
+    # GTA Vice City, classic RenderWare PC port (models/gta3.img): Tommy + peds. The owned windows_native entries
+    # (5eacc9f11d9a5956, 1fd42f50b10252e6) are HyperSpin launchers; gta_vc_models.locate_install tells the classic
+    # port from the UE4 Definitive Edition (no gta3.img) and from the PS2 .chd the first entry points at.
+    ("gta_vc_pc", lambda t, p: "vice city" in t and "stories" not in t and p == "windows_native",
+     lambda: __import__("gbox.gta_vc_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta_vc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1294,12 +1531,37 @@ DEDICATED = [
     ("revenge", lambda t, p: "revenge" in t and "wcw" in t and p == "n64",
      lambda: __import__("gbox.aki_wcw", fromlist=["x"]).revenge_roster(),
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Clay Fighter: Sculptor's Cut (N64): the 16 fighters' sprite frames as sprites entries; slots fighter:<name>
+    ("clayfighter", lambda t, p: ("clay fighter" in t or "clayfighter" in t) and "sculptor" in t and p == "n64",
+     lambda: __import__("gbox.clayfighter_swap", fromlist=["x"]).roster_entries(),
+     lambda ctx, game, e, work: __import__("gbox.clayfighter_swap", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta (GDTE69 rev 0): static model-space meshes from data/sNNNx/*.gpl; rig not decoded yet
     ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Def Jam: Vendetta PS2 (SLUS_206.39 v1.00): the 58 data.bin WRS wrestlers, BODY + FACE + hands on one rigged
+    # skeleton with body roles and the fighter's texture page (#1305; formats in docs/defjam_pipeline.md)
+    ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
+     lambda: __import__("gbox.defjam_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.defjam_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Dead Or Alive ++ (arcade, Tecmo TPS; MAME doapp / doappk): 11 fighters x 4 costumes, rigged with the game's own
+    # stance-frame bone matrices (motion player + skeleton build run on the decoded program; #1340,
+    # docs/doapp_pipeline.md). Needs doapp.zip + coh1002m.zip beside the catalog's zip.
+    ("doapp", lambda t, p: t.startswith("dead or alive ++") and p == "arcade",
+     lambda: __import__("gbox.doapp_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.doapp_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Enter the Matrix (USA): the windows_native entry 3f43b79a68a60b41 is the PS2 disc SLUS-20454 (HyperSpin CHD,
+    # read in place by gbox.chd): actors\*.dcn Bezier-patch models on the shared 89-joint skeleton, tessellated to
+    # rigged GLBs with body roles (docs/matrix_pipeline.md). The GameCube discs are not read yet.
+    ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
+    # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
+    # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
+    *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
 ]
 
 
@@ -1327,8 +1589,42 @@ def dedicated_entries(config, game, name, roster):
     return entries
 
 
+# extractor -> (module with READER_VERSION [and needs_refresh(meta)], the meta field its entries record the version in;
+# entries without the field were made by version 1). A newer reader re-extracts older entries (extract_dedicated,
+# the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
+# AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
+# stored collection made by an older reader is collected again at the next launch (character_collection).
+READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader")}
+
+
+def reader_version(extractor: str | None) -> int | None:
+    """The current READER_VERSION of a versioned DEDICATED reader, else None."""
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    return int(getattr(importlib.import_module(spec[0]), "READER_VERSION", 1))
+
+
+def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
+    """{extractor, entry, current, stale} for an entry whose DEDICATED reader is versioned, else None."""
+    if extractor is None:
+        s = meta.get("source") or {}
+        t, plat = (s.get("game_title") or "").lower(), s.get("platform") or ""
+        extractor = next((n for n, test, _r, _run in DEDICATED if test(t, plat)), None)
+    spec = READER_VERSIONS.get(extractor or "")
+    if not spec:
+        return None
+    import importlib
+    mod = importlib.import_module(spec[0])
+    current, have = int(getattr(mod, "READER_VERSION", 1)), int(meta.get(spec[1]) or 1)
+    stale = mod.needs_refresh(meta) if callable(getattr(mod, "needs_refresh", None)) else have < current
+    return {"extractor": extractor, "entry": have, "current": current, "stale": bool(stale)}
+
+
 # extractor -> body roles read from an entry's stored model, for entries collected before the reader reported roles
-ROLE_BACKFILL = {"sm64": sm64_mario_roles}
+ROLE_BACKFILL = {"sm64": sm64_mario_roles,
+                 "pso": lambda path: __import__("gbox.pso_player", fromlist=["x"]).model_roles(path)}
 
 
 def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
@@ -1360,6 +1656,8 @@ def collect(ctx, inp):
     # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
     entries = [e for e in dedicated_entries(ctx.config, game, name, roster)
                if e.get('kind', 'character') == 'character' or e.get('collect') is True]
+    from . import fit_events as FE                        # the pop-up: every character, then each as it comes out
+    FE.plan([(e['slug'], e['slug'], e['name']) for e in entries], kind="collect")
     results = []
     for i, e in enumerate(entries):
         total = max(1, len(entries))
@@ -1380,23 +1678,101 @@ def collect(ctx, inp):
             checked = verify_entry(root, meta)
             roles = (meta.get('rig') or {}).get('roles') or {}
             ready = checked['ok'] and bool(roles)
-            kind = e.get('kind', 'character')
+            kind = meta.get('kind', e.get('kind', 'character'))
             done = ready or (kind != 'character' and checked['ok'])
             results.append({'slug': meta['slug'], 'name': meta['name'], 'kind': kind, 'status': res['status'],
                             'verified': checked['ok'], 'retargetable': ready,
                             'message': '' if done else ('Model needs verification.' if kind != 'character' else
                                                         'Model or mapped rig needs verification before retargeting.')})
         except Exception as exc:
+            try:
+                FE.model(e['slug'], e['name'])
+                FE.stage("preview", "failed", {"error": str(exc)[:150]})
+            except Exception:                              # noqa: BLE001 - the row is reported below either way
+                pass
             results.append({'slug': e['slug'], 'name': e['name'], 'kind': e.get('kind', 'character'),
                             'status': 'failed', 'verified': False, 'retargetable': False, 'error': str(exc)})
     chars = [r for r in results if r['kind'] == 'character']
     noun = 'characters' if len(chars) == len(entries) else 'models'
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
-    good = sum(r['verified'] for r in results)
-    mapped = sum(r['retargetable'] for r in chars)
-    return {'status': 'complete' if entries and good == len(entries) and mapped == len(chars) else 'partial',
-            'game_id': game['game_id'], 'extractor': name, 'collected': good, 'total': len(entries),
-            'retargetable': mapped, 'characters': len(chars), 'entries': results}
+    from . import char_coverage
+    return collection_status(results) | {
+        'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
+        # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
+        'slots': char_coverage.cast_slots(game)}
+
+
+def collection_status(results: list[dict]) -> dict:
+    """A roster's collection summary from its entry rows: complete when every entry is verified and every character
+    (kind 'character'; props, vehicles and sprite sets don't need a rig) is retargetable (verified + body roles)."""
+    chars = [r for r in results if r.get('kind', 'character') == 'character']
+    good = sum(bool(r.get('verified')) for r in results)
+    mapped = sum(bool(r.get('retargetable')) for r in chars)
+    return {'status': 'complete' if results and good == len(results) and mapped == len(chars) else 'partial',
+            'collected': good, 'total': len(results), 'retargetable': mapped, 'characters': len(chars),
+            'entries': results}
+
+
+def refresh_collection(root: Path, result: dict) -> dict:
+    """A stored partial collect() result re-checked against the collection as it is now: entries whose model was
+    verified but lacked body roles get them from the extractor's role backfill (backfill_roles: e.g. PSO classes
+    collected before extraction reported roles, #1485), so a fixed reader turns the status complete without
+    re-extracting or re-queueing the roster. Failed / missing entries stay as they were."""
+    if not result or result.get('status') != 'partial' or not result.get('entries'):
+        return result
+    rows = []
+    for r in result['entries']:
+        r = dict(r)
+        p = Path(root) / str(r.get('slug') or '') / 'meta.json'
+        if r.get('slug') and r.get('status') != 'failed' and p.is_file():
+            try:
+                meta = backfill_roles(root, result.get('extractor') or '', get(root, r['slug']))
+                checked = verify_entry(root, meta)
+            except (OSError, KeyError, ValueError):
+                rows.append(r)
+                continue
+            kind = meta.get('kind') or r.get('kind') or 'character'
+            ready = checked['ok'] and bool((meta.get('rig') or {}).get('roles'))
+            r.update(kind=kind, verified=checked['ok'], retargetable=ready)
+            if ready or (kind != 'character' and checked['ok']):
+                r['message'] = ''
+        rows.append(r)
+    return result | collection_status(rows)
+
+
+def _collect_stages(model: Path, meta: dict, state: str, data: dict, preview: bool = True):
+    """The Fitting pop-up's extract stage for one collected character: the decoded model as the reader wrote it (its
+    own bind pose, coloured from its textures, <= 3000 triangles), or a sprite reader's sheet PNG; then (preview) the
+    collection's preview render. Never fails the collection."""
+    from . import fit_events as FE
+    if not FE.active():
+        return
+    model = Path(model)
+    try:
+        if model.suffix.lower() == ".png":
+            FE.stage("extract", state, data | {"kind": "sprites"}, preview=model)
+        else:
+            prims = FE.model_prims(model)
+            FE.stage("extract", state, data | {"triangles": FE.triangles(prims),
+                                               "vertices": int(sum(len(p["pos"]) for p in prims)),
+                                               "meshes": len(prims), "height": FE.height(prims),
+                                               "roles": len((meta.get("rig") or {}).get("roles") or {})},
+                     prims=prims)
+    except Exception as e:                                 # noqa: BLE001 - an unreadable model: still a row
+        if type(e).__name__ == "Cancelled":
+            raise
+        FE.stage("extract", state, data | {"snapshot": f"unavailable: {str(e)[:80]}"})
+    if preview:
+        _preview_stage(model.parent, meta)
+
+
+def _preview_stage(d: Path, meta: dict):
+    from . import fit_events as FE
+    p = Path(d) / (meta.get("preview") or "preview.png")
+    FE.stage("preview", data={"slug": meta.get("slug"), "kind": meta.get("kind"),
+                              "triangles": (meta.get("stats") or {}).get("triangles"),
+                              "roles": len((meta.get("rig") or {}).get("roles") or {})},
+             preview=p if p.is_file() else None)
 
 
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
@@ -1410,21 +1786,29 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
         refresh = False
+        from . import fit_events as FE                    # the pop-up: this character as it comes out of the game
+        FE.model(e["slug"], e["name"])
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            refresh = _doa2_needs_refresh(ctx, game, existing)
+            refresh = _doa2_needs_refresh(ctx, game, existing) or bool(
+                (reader_status(existing, name) or {}).get("stale"))           # an older reader made it (JGR v1, #1396)
             if verify_entry(root, existing)['ok'] and not refresh:
+                _collect_stages(Path(root) / e["slug"] / existing["model"], existing, "skipped",
+                                {"reason": "already in the collection"})
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
         ctx.progress(20, f"Extracting {e['name']} from {game['title']} (gBox's {name} extractor)")
         r = run(ctx, game, e, work)
+        _collect_stages(Path(r["files"][0]), {"rig": {"roles": r.get("roles") or {}}}, "done",
+                        {"extractor": name, "files": len(r["files"])}, preview=False)
         ctx.progress(85, "Adding it to the collection (preview render)")
         meta = add(root, e["slug"], e["name"], r["files"],
                    {"game_title": game["title"], "game_id": game["game_id"], "platform": plat, "files": r["source_files"]},
                    r["tool"], rig={"roles": r["roles"]} if r.get("roles") else None, aliases=e["aliases"],
                    notes=r.get("notes", ""), kind=e.get("kind", "character"), extra=r.get('extra'))
+        _preview_stage(Path(root) / e["slug"], meta)
         if refresh:
             for targets in meta.get('targets', {}).values():
                 for target in targets:
@@ -1918,16 +2302,12 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
-@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
-      artifacts=["preview.png"],
-      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
-                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
-                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard"])
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
     collect game_id: extract the native reader's character roster, reuse verified files, report individual failures
-    and mapped rig readiness; unsupported games return unsupported without capture or an LLM call. |
+    and mapped rig readiness, and list the writer's slots (PSO Ver.2: enemy:booma, enemy:gobooma, enemy:gigobooma,
+    enemy:boomas, the other BM_ENE packs); unsupported games return unsupported without capture or an LLM call. |
     live_use character=<name> session_id [x,y|slot]: bounded in-engine OoT NTSC 1.2 single-object NPC swap,
     preserving the session and pause state. Changes all loaded actors sharing that model until object reload.
     Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay. |
@@ -1936,13 +2316,17 @@ def characters_tool(inp: CharIn, ctx):
     out of a RenderDoc capture of the frame (environment = the whole scene minus the HUD), else says what's missing
     and files a request | use character=<name> session_id|game: launch/build the swap mod (RE4 GC replaces Leon, SM64 Mario, GTA LCS
     PS2 every Toni outfit, OoT Link both ages or [x, y | slot=<NPC name>] the NPC there, Parasite Eve Aya (all outfits),
-    FF7 Cloud (field + battle)), else the overlay (when the game runs) + a gap report so the writer gets built |
+    FF7 Cloud (field + battle), Clay Fighter SC slot=fighter:<name> (a sprites entry re-draws that fighter), Dead Or Alive ++ (arcade) slot=<fighter>[:<costume 1-4>] | player (every fighter: a rebuilt doapp set)), else the overlay (when the game runs) + a gap report so the writer gets built |
+    FF7 Cloud (field + battle), Jet Grind Radio slot=player (Beat unless active_id) | character:<name>), else the overlay (when the game runs) + a gap report so the writer gets built |
     coverage: per studied game, can gBox rip its characters and reimport any character into it (slots) | swap a=<who> b=<who> session_id (OoT; who = "link", an NPC name or a picture point
     "x,y"): A gets B's model and B gets A's (one_way=true: only A <- B, "play as B") | place character=<name>
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
-    add character=<new name> from_clipboard=true|artifact|path: store an edited model."""
+    add character=<new name> from_clipboard=true|artifact|path: store an edited model. |
+    cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role] [seed]
+    [slots=all|main|enemies] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
+    another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
     if inp.op == "mgs_vr_decode":                    # internal Windows handoff for the native reader
         from . import mgs_vr_swap
         game = _game(ctx, inp)
@@ -1956,6 +2340,9 @@ def characters_tool(inp: CharIn, ctx):
         return {"result": {"status": "decoded", "model": "Solid Snake (VR Missions)", "bytes": len(data)}}
     if inp.op == "collect":
         return {"result": collect(ctx, inp)}
+    if inp.op == "cast_swap":                                 # the whole cast of one game as another's (gbox.cast_swap)
+        from . import cast_swap
+        return {"result": cast_swap.run(ctx, inp)}
     if inp.op in ("extract", "add", "blender"):
         res = {"extract": extract, "add": add_model, "blender": to_blender}[inp.op](ctx, inp)
         return {"result": _finish(ctx, res) if inp.op != "blender" else res}
@@ -1973,11 +2360,15 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
+        mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
+        from . import retarget_profile as _RP                # game-wide Retarget editor profiles
+        chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2024,6 +2415,16 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"unknown op {inp.op} (list | get | use | overlay | extract | add | blender | environments | coverage)")
     game = _game(ctx, inp)
     gid = game["game_id"]
+    from . import retarget_profile as _RP, fit_events as _FE   # the operator's Retarget editor profile + Fitting pop-up
+    profiled = _RP.apply_to_meta(meta, gid, inp.slot)
+    if profiled is not meta:
+        sk = _RP.slot_key(inp.slot)
+        if not inp.rebuild and any(t.get("needs_rebuild") and (sk == "*" or _RP.slot_key(t.get("slot")) in (sk, "*"))
+                                   for t in (meta.get("targets") or {}).get(gid, [])):
+            inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
+        meta = profiled
+    _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
+                      meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
@@ -2039,6 +2440,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import gta3_swap
     if gid in gta3_swap.GAME_IDS and inp.slot == "player":         # GTA III (PS2): Claude -> gta3_<slug> (disc image)
         return {"result": out | gta3_swap.use(ctx, meta, game, inp)}
+    from . import gta_vc_swap
+    if gid in gta_vc_swap.GAME_IDS and (inp.slot in ("player", "peds:all", "all") or inp.slot.startswith("ped:")):
+        # GTA Vice City (classic PC port): Tommy / one ped / every ped -> gtavc_<slug>[_<slot>] (rebuilt gta3.img);
+        # a Definitive Edition install gets the overlay fallback + gap report from inside use()
+        return {"result": out | gta_vc_swap.use(ctx, meta, game, inp)}
     from . import re6_tool
     if gid in re6_tool.GAME_IDS and (inp.slot in ("player", "enemies") or inp.slot.startswith("enemy:")):
         # RE6 (X360, Xenia): player = Leon's every costume -> re6_<slug>; enemies / enemy:<family> -> zombies, J'avo
@@ -2049,24 +2455,49 @@ def characters_tool(inp: CharIn, ctx):
     from . import sa2_chars
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
-    from . import jgr
-    if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
-        return {"result": out | jgr.use(ctx, meta, game, inp)}
+    from . import jgr_swap
+    if gid in jgr_swap.GAME_IDS:            # JGR: player (Beat unless active_id) | character:<name> | id:N | NN
+        return {"result": out | jgr_swap.use(ctx, meta, game, inp)}
     from . import pso_player
-    if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
+    if gid in pso_player.GAME_IDS and (inp.slot == "player" or pso_player.is_enemy_slot(inp.slot)):
+        # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>; enemy:<name> | enemies -> pso_<slug>_as_<name>
+        # (gbox.pso_enemy: the character on the enemy's node tree and motions)
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
-    from . import crazy_taxi
-    if gid in crazy_taxi.GAME_IDS and inp.slot == "player":    # Crazy Taxi GC: Axel the driver -> ct_<slug>
-        return {"result": out | crazy_taxi.use(ctx, meta, game, inp)}
+    from . import auf_swap
+    if gid in auf_swap.GAME_IDS and auf_swap.is_slot(inp.slot):
+        # 007 Agent Under Fire GC: player | enemies | bosses | npcs | bots | all | model:<body> | cast (+pairs
+        # [{target, donor}]) -> auf_<slot>_<plan hash> (every level's .ngc rebuilt in a disc-image copy)
+        return {"result": out | auf_swap.use(ctx, meta, game, inp)}
+    from . import crazy_taxi_swap
+    if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
+        # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
+        return {"result": out | crazy_taxi_swap.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}
     from . import yukes_sd
     if gid in yukes_sd.GAME_IDS or gid in yukes_sd.SD1_IDS:   # Yuke's SmackDown! 2 (PS1): slot = a wrestler (The Rock)
         return {"result": out | yukes_sd.use(ctx, meta, game, inp)}
+    from . import defjam_writer
+    if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
+        return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
+    from . import etm_swap
+    if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
+        return {"result": out | etm_swap.use(ctx, meta, game, inp)}
+    from . import doapp_swap
+    if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
+        # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)
+        return {"result": out | doapp_swap.use(ctx, meta, game, inp)}
+    from . import clayfighter_swap
+    if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
+        # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>
+        return {"result": out | clayfighter_swap.use(ctx, meta, game, inp)}
     from . import pe_swap
     if gid in pe_swap.GAME_IDS and inp.slot == "player":         # Parasite Eve (PS1): Aya, all 5 outfits -> pe_<slug>
         return {"result": out | pe_swap.use(ctx, meta, game, inp)}
+    from . import pe2_swap
+    if gid in pe2_swap.GAME_IDS and inp.slot == "player":        # Parasite Eve II (PS1): Aya, every outfit -> pe2_<slug>
+        return {"result": out | pe2_swap.use(ctx, meta, game, inp)}
     from . import ff7_swap
     if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
         return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
@@ -2103,3 +2534,19 @@ def characters_tool(inp: CharIn, ctx):
         need = needs_for(game)
     from . import char_coverage                               # no writer: overlay now (if the game runs) + a gap report
     return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
+
+
+@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
+      artifacts=["preview.png"],
+      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
+                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
+                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard",
+                    "use/match/cast_swap: records the rebuild recipe in the built mod's .gbox-mod.json"])
+@functools.wraps(characters_tool)
+def characters_recorded(inp: CharIn, ctx):
+    """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
+    out = characters_tool(inp, ctx)
+    from . import special_builds
+    special_builds.record_call(ctx, inp, out)
+    return out

@@ -205,24 +205,11 @@ def patch_dol(f, dol_base: int, patches: list[dict]) -> list[dict]:
 # ================================================================ ISO9660 (PS2, PS1 data tracks, ...)
 
 def _iso_walk(f, lba: int, size: int, prefix: str, out: dict):
-    f.seek(lba * 2048)
-    buf, i = f.read(size), 0
-    while i < len(buf):
-        n = buf[i]
-        if n == 0:                                         # records don't cross sectors: skip to the next one
-            i = (i // 2048 + 1) * 2048
-            continue
-        rec = buf[i:i + n]
-        elba, esize, flags, nl = struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0], rec[25], rec[32]
-        name = rec[33:33 + nl]
-        if name not in (b"\0", b"\1"):
-            nm = name.decode("latin-1").split(";")[0].rstrip(".")
-            path = prefix + nm
-            if flags & 2:
-                _iso_walk(f, elba, esize, path + "/", out)
-            else:
-                out[path.upper()] = (lba * 2048 + i, elba, esize)
-        i += n
+    from .formats import iso9660                          # the shared ISO9660 walk (gbox.formats)
+    for parts, rec, dlba in iso9660.walk(iso9660.file_reader(f), lba, size):
+        if not rec.is_dir:
+            path = prefix + "".join(p.rstrip(".") + "/" for p in parts) + rec.name.rstrip(".")
+            out[path.upper()] = (dlba * 2048 + rec.offset, rec.lba, rec.size)
 
 
 def iso_files(f) -> dict:
