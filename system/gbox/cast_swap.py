@@ -53,7 +53,7 @@ ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr":
           "pe2": "parasite eve ii", "sm64": "super mario 64", "oot": "ocarina of time", "wcw": "wcw"}
 AGGREGATE = {"enemies", "enemy", "enemy:all", "drivers", "pedestrians", "passengers", "peds", "peds:all", "all",
              "roster", "cast", "fares"}
-MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver"}
+MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver", "sage"}
 STOP = {"the", "a", "of", "in", "usa", "europe", "japan", "ver", "disc", "and", "with", "as", "game", "games"}
 
 
@@ -312,7 +312,8 @@ def filter_slots(rows: list[dict], which: str = "all") -> list[dict]:
     if w == "main":
         return [r for r in rows if r["kind"] in MAIN_KINDS]
     kinds = {"enemies": "enemy", "npcs": "npc", "pedestrians": "pedestrian", "passengers": "passenger",
-             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character"}
+             "drivers": "driver", "fighters": "fighter", "wrestlers": "wrestler", "characters": "character",
+             "bosses": "boss", "sages": "sage"}
     if w in kinds or w in {r["kind"] for r in rows}:
         k = kinds.get(w, w)
         return [r for r in rows if r["kind"] == k]
@@ -408,6 +409,8 @@ STRATEGIES = {
     "gbox.yukes_sd": ("pairs", "SmackDown! 2: op=match (every wrestler in one disc)"),
     "gbox.aki_wrestling": ("pairs", "No Mercy / WCW: op=match (every wrestler in one ROM)"),
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
+    "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
+                               "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
 }
@@ -475,7 +478,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     chosen = filter_slots(all_slots, slots)
     for s in chosen:
         if s.get("status") == "not_working":
-            s["skip"] = "the game doesn't draw this writer's output yet (status not_working); left as it is"
+            s["skip"] = s.get("reason") or "the game doesn't draw this writer's output yet (status not_working); left as it is"
     if strategy(w["writer"])[0] == "single":               # one slot per mod: the player (or the first slot) only
         first = next((s for s in chosen if not s.get("skip") and s["kind"] == "player"),
                      next((s for s in chosen if not s.get("skip")), None))
@@ -755,6 +758,12 @@ def _gta_vc(ctx, game, pairs, name, inp):
     return gta_vc_swap.build_cast(ctx.config, game, C._rom(ctx, game), pairs, name, ctx.progress)
 
 
+def _oot(ctx, game, pairs, name, inp):
+    from . import oot_swap
+    return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
+                               strict_cutscenes=bool(getattr(inp, "strict_cutscenes", False)))
+
+
 def _jgr(ctx, game, pairs, name, inp):
     from . import characters as C, filemods, jgr, jgr_swap
     from .gdrom import GDRom, patch_gdi
@@ -817,6 +826,7 @@ BUILDERS = {
     "gbox.yukes_sd": _match_builder("yukes_sd"),
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
+    "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
 }

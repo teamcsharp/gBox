@@ -666,6 +666,27 @@ def slot_spec(rom: OW.Rom, slot: str) -> dict:
     return spec
 
 
+def check_object(obj: bytes, off: int, segs: dict | None = None) -> list[str]:
+    """A rebuilt object read back: every limb list of the skeleton at `off` must lie in the object, end, and load
+    vertices / textures / sub-lists only from inside it. -> problems (empty = fine)."""
+    sk = OW.skeleton(obj, off)
+    out = []
+    for i, lb in enumerate(sk["limbs"]):
+        for d in lb["dls"]:
+            if not d:
+                continue
+            if d >> 24 != 6 or (d & 0xFFFFFF) + 8 > len(obj):
+                out.append(f"limb {i}: list {d:#010x} outside the object ({len(obj):#x} bytes)")
+                continue
+            st = OW.run_dl({**(segs or {}), 6: obj}, d)
+            for _a, w0, w1 in st["cmds"]:
+                if w0 >> 24 in (0x01, 0xDE, 0xFD) and w1 >> 24 == 6 and (w1 & 0xFFFFFF) >= len(obj):
+                    out.append(f"limb {i}: {w0 >> 24:#04x} reads {w1:#010x} past the object's end")
+            if not st["cmds"] or st["cmds"][-1][1] >> 24 not in (0xDF, 0xDE):
+                out.append(f"limb {i}: list {d:#010x} runs off the object without an end")
+    return out[:20]
+
+
 # ---------------------------------------------------------------- the snapshot
 
 def snapshot(rom: OW.Rom, mapping: bool = True) -> dict:

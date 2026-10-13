@@ -962,7 +962,12 @@ def _fit_into(rom: OW.Rom, objects: list[int], allow: int, reclaim: int, attempt
     last = None
     for _ in range(4):
         saved = dict(rom.changed)
-        f, w = attempt(budget)
+        try:
+            f, w = attempt(budget)
+        except ValueError as e:
+            rom.changed = saved
+            raise ValueError(f"the model doesn't fit: {e} - the old model frees {reclaim // 1024} KB and its rooms' "
+                             f"object space lets the object grow {allow // 1024} KB") from None
         grew = {o: len(rom.object(o)) - before[o] for o in objects}
         over = max(grew.values()) - allow - slack
         if over <= 0:
@@ -1073,6 +1078,10 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
                        else [sp["group"]["skel"]]):
             sk = OW.skeleton(check.object(o), off)
             assert sk["count"] == OW.skeleton(orig.object(o), off)["count"], f"{slot}: skeleton changed"
+            bad = OC.check_object(check.object(o), off, {4: check.object(OW.OBJECT_GAMEPLAY_KEEP)})
+            if bad:
+                raise RuntimeError(f"{slot}: the rebuilt {NAMES['objects'].get(hex(o), hex(o))} reads outside "
+                                   f"itself: {bad[0]}")
     hard = [r for r in over if not r["cutscene"]]
     soft = sorted({(r["scene"], r["layer"]) for r in over if r["cutscene"]})
     detail = {"version": rom.version, "rom_bytes": len(out), "growth": plan,

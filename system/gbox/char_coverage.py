@@ -53,8 +53,9 @@ WRITERS = [
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
-    ("oot", "oot_swap.tool(", ["player (Link, both ages)", "npc:<name> / x,y", "swap a<->b", "place (statue)"],
-     "Link or any NPC"),
+    ("oot", "oot_swap.tool(", ["player", "<cast slot: saria, mido, goron, stalfos... (gbox.oot_cast)>",
+                               "npc:<name> / x,y", "swap a<->b", "place <statue>"],
+     "Link (both ages) or any NPC / enemy; the whole cast in one ROM (characters op=cast_swap)"),
 ]
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
 DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
