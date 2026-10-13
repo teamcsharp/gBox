@@ -3,8 +3,13 @@ that are queued or running.
 
 GET   /api/builds                               every build: the Spark's central collection (the built-mods index) plus
                                                 each PC's own builds (its heartbeat's local_builds; staged copies map to
-                                                the build they mirror), newest first; ?q= &game_id= &kind= filters
-PATCH /api/builds/{game_id}/{name}              {display_name}: the operator's own name for a build ("" clears it)
+                                                the build they mirror), favorites first, then newest first; ?q=
+                                                &game_id= &kind= &favorite=true filters
+PATCH /api/builds/{game_id}/{name}              {display_name}: the operator's own name for a build ("" clears it);
+                                                POST works too (the desktop app's IPC api posts every body)
+PUT   /api/builds/{game_id}/{name}/favorite     {favorite: true|false}: ★ a build (POST works too); DELETE un-stars it.
+                                                Favorites list first, head the game's Special builds and are never
+                                                evicted by a disk budget (gbox.built_mods.protected)
 GET   /api/builds/{game_id}/{name}/details      modifications, characters inserted (slot <- donor, with the models for the
                                                 360 viewers and the fitting's preview picture), codes / cheats / hacks, compile changes, build recipe, jobs
                                                 and receipts, verification + launch history
@@ -17,6 +22,7 @@ Requests read the built-mods index (memory), the store and the workers' heartbea
 stat only the files a build's marker names). Display names live in the store (gbox.built_mods.NAME_KIND), never in
 the folder name or the marker (the marker is part of the build's pinned manifest: changing it would make every PC
 stage the whole build again); gbox.built_mods joins them so the Mods page, Special builds and notifications show them.
+Favorites live in the store too (gbox.built_mods.FAV_KIND), keyed the same way.
 """
 from __future__ import annotations
 
@@ -25,6 +31,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import Body, Depends, HTTPException
@@ -183,10 +190,11 @@ def build_row(item: dict, meta: dict, card: dict | None, pcs: list[dict], here: 
             "where": where, "local_only": False, "tickets": item.get("tickets") or [], "last_launch": item.get("last_launch"),
             "card_id": item.get("card_id") or "", "state_slot": item.get("state_slot"),
             "launch_options": SB.launch_options(item, pcs), "has_recipe": bool(recipe), "recipe_recorded": recorded,
-            "job_id": meta.get("job_id") or ""}
+            "job_id": meta.get("job_id") or "", "favorite": bool(item.get("favorite")),
+            "what": item.get("what") or BM.what_of(item | {"meta": meta}), "reported": item.get("reported")}
 
 
-def local_only_row(key: str, here: list[dict], names: dict, titles: dict) -> dict:
+def local_only_row(key: str, here: list[dict], names: dict, titles: dict, favs: set | frozenset = frozenset()) -> dict:
     """A build only a PC has (not in the Spark's collection yet: it uploads when that PC's worker starts)."""
     from . import special_builds as SB
     gid, name = key.split("/", 1)
@@ -200,6 +208,8 @@ def local_only_row(key: str, here: list[dict], names: dict, titles: dict) -> dic
             "summary": "only on " + ", ".join(h["node"] for h in here) + " (not in the Spark collection yet)",
             "changes": [], "slots": 0, "local_only": True, "tickets": [], "last_launch": None, "card_id": "",
             "state_slot": None, "launch_options": opts, "has_recipe": False, "recipe_recorded": False, "job_id": "",
+            "favorite": key in favs, "reported": None,
+            "what": BM.what_of({"name": name, "game_id": gid, "meta": {}}),
             "where": [{"where": "pc", "node": h["node"], "online": h["online"], "label": f"{h['node']} (local only)"}
                       for h in here]}
 
@@ -212,10 +222,11 @@ def facets(rows: list[dict]) -> dict:
         for k in r["kinds"]:
             kinds[k] = kinds.get(k, 0) + 1
     return {"games": sorted(games.values(), key=lambda g: g["title"].lower()),
-            "kinds": [{"kind": k, "label": KINDS[k], "count": kinds[k]} for k in PRIMARY if k in kinds]}
+            "kinds": [{"kind": k, "label": KINDS[k], "count": kinds[k]} for k in PRIMARY if k in kinds],
+            "favorites": sum(1 for r in rows if r.get("favorite"))}
 
 
-def select(rows: list[dict], q: str = "", game_id: str = "", kind: str = "") -> list[dict]:
+def select(rows: list[dict], q: str = "", game_id: str = "", kind: str = "", favorite: bool = False) -> list[dict]:
     words = [w for w in str(q or "").lower().split() if w]
 
     def hay(r):
@@ -223,12 +234,13 @@ def select(rows: list[dict], q: str = "", game_id: str = "", kind: str = "") -> 
                          " ".join(KINDS[k] for k in r["kinds"]), *(f"{c.get('donor')} {c.get('slot')}" for c in r["changes"]),
                          *(f"#{t.get('number')}" for t in r["tickets"])]).lower()
     return [r for r in rows if (not game_id or r["game_id"] == game_id) and (not kind or kind in r["kinds"])
-            and all(w in hay(r) for w in words)]
+            and (not favorite or r.get("favorite")) and all(w in hay(r) for w in words)]
 
 
 def listing(items: list[dict], records: list[dict], cards: dict, workers: list[dict], names: dict,
-            titles: dict | None = None) -> list[dict]:
-    """Every build, newest first: the index's builds with where they live, then builds only a PC has."""
+            titles: dict | None = None, favs: set | frozenset = frozenset()) -> list[dict]:
+    """Every build, favorites first, then newest first: the index's builds with where they live, then builds only a
+    PC has."""
     metas = {f"{r['game_id']}/{r['name']}": r.get("meta") or {} for r in records}
     pcs = sorted(({"name": w.get("name"), "os": w.get("os")} for w in workers if w.get("online") and w.get("name")),
                  key=lambda w: str(w["name"]).lower())
@@ -239,8 +251,8 @@ def listing(items: list[dict], records: list[dict], cards: dict, workers: list[d
     titles = dict(titles or {})
     for r in rows:
         titles.setdefault(r["game_id"], r["game_title"])
-    rows += [local_only_row(k, v, names, titles) for k, v in here.items() if k not in known]
-    rows.sort(key=lambda r: -(r["built"] or 0))
+    rows += [local_only_row(k, v, names, titles, favs) for k, v in here.items() if k not in known]
+    rows.sort(key=lambda r: (not r.get("favorite"), -(r["built"] or 0)))
     return rows
 
 
@@ -461,6 +473,7 @@ def details(store, config, item: dict, meta: dict, card: dict | None, lib: dict,
     return {
         "key": item["key"], "name": name, "game_id": gid, "label": item.get("mod_title") or name,
         "display_name": item.get("display_name") or "", "original_title": item.get("original_title") or name,
+        "favorite": bool(item.get("favorite")), "what": item.get("what"), "reported": item.get("reported"),
         "kinds": kinds_of(item, meta, card), "writer": item.get("writer") or "", "built": item.get("built"),
         "built_on": meta.get("built_on") or None, "folder": str(folder),
         "size": item.get("size"), "own_size": item.get("own_size"), "files_count": item.get("files"),
@@ -723,6 +736,140 @@ def edit(store, jid: str, edits: dict, submit, actor: str) -> dict:
 
 # ------------------------------------------------------------------------------------------------- routes
 
+# ------------------------------------------------------------------------------------------------- delete (#1656)
+
+DELETED_KIND = "build_deleted"       # store kind: the "recently deleted" log (marker facts of each deleted build)
+REPORT_KIND = BM.REPORT_KIND
+DELETED_KEEP = 200
+SCOPES = ("all", "node")
+
+
+def users_of(sessions: list[dict], gid: str, name: str, node_wid: str = "") -> list[dict]:
+    """Running sessions that use this build (the collection name or one of its staged copies), on one PC when given."""
+    out = []
+    for s in sessions:
+        if s.get("state") != "running" or s.get("game_id") != gid:
+            continue
+        mods = {str(s.get("collection_mod") or ""), str(s.get("mod") or "")}
+        if not any(m == name or m.startswith(name + BM.STAGED_SEP) for m in mods if m):
+            continue
+        if node_wid and str(s.get("session_id") or "").split("-")[0] != node_wid:
+            continue
+        out.append({"session_id": s.get("session_id"), "title": s.get("title") or gid})
+    return out
+
+
+def spark_copies(config, gid: str, name: str) -> list[str]:
+    """The collection build folder and its staged copies here (<name>~<build>, or a folder marked as staged of it);
+    only folders of this game's mods/ that hold a build marker or a staging mark, never the base copy or other builds."""
+    from . import filemods
+    root = BM.mods_root(config) / gid
+    out = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return out
+    for e in entries:
+        if not e.is_dir(follow_symlinks=False):
+            continue
+        mark = Path(e.path) / filemods.STAGED_MARK
+        try:
+            staged_of = mark.read_text(encoding="utf-8").strip() if mark.is_file() else ""
+        except OSError:
+            staged_of = ""
+        if e.name == name and (Path(e.path) / BM.MARKER).is_file() or e.name.startswith(name + BM.STAGED_SEP) or staged_of == name:
+            out.append(e.name)
+    return sorted(out, key=lambda n: (n != name, n))
+
+
+def delete_spark(config, gid: str, name: str) -> dict:
+    """Remove the collection copy and its staged copies (filemods.remove) with their hash sidecars."""
+    import shutil
+    from . import filemods
+    removed, errors, freed = [], [], 0
+    for n in spark_copies(config, gid, name):
+        folder = filemods.mod_dir(config, gid, n)            # validates: one component under mods/<gid>/
+        got = BM.folder_size(folder)
+        try:
+            if not filemods.remove(config, gid, n):
+                continue
+        except OSError as e:
+            errors.append(f"{n}: {e}")
+            shutil.rmtree(folder, ignore_errors=True)
+            if folder.exists():
+                continue
+        removed.append(n)
+        freed += (got or (0, 0, 0))[1]
+        try:
+            filemods._hash_sidecar(folder).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"removed": removed, "errors": errors, "own_bytes": freed}
+
+
+# ------------------------------------------------------------------------------------------------- report (#1656)
+
+REASONS = {"no_change": "doesn't show the expected change", "broken": "character looks broken or garbled",
+           "crash": "game crashes or freezes", "other": "other"}
+REPORT_PICTURES = 4
+REPORT_PICTURE_MAX = 4 << 20
+
+
+def report_of(item: dict, meta: dict, reason: str, note: str, read_artifact, read_picture) -> tuple[dict, str]:
+    """-> (the /api/requests/issue body, the details the investigation is dispatched with) for a build report:
+    the build's facts in the body, its newest in-game frame as the screenshot and the fit previews attached."""
+    import base64
+    from . import special_builds as SB
+    name, gid = item.get("name") or "", item.get("game_id") or ""
+    label = item.get("mod_title") or name
+    game = item.get("title") or item.get("game_title") or gid
+    why = REASONS.get(reason, reason)
+    what = item.get("what") or BM.what_of({"name": name, "game_id": gid, "meta": meta, "diff": item.get("diff")})
+    rows = item.get("changes") or BM.changes_of(meta)
+    recipe, recorded = SB.recipe_for(meta, gid)
+    last = item.get("last_launch")
+    lines = [f"Game: {game} (game_id {gid})", f"Build: {label}" + (f" (folder {name})" if label != name else ""),
+             f"Writer: {item.get('writer') or BM.writer_of(meta, name)}"]
+    if rows:
+        lines.append("Slots and donors: " + "; ".join(f"{r.get('donor') or '?'} -> {r.get('slot') or '?'}"
+                                                       + (f" [{r['status']}]" if r.get("status") else "") for r in rows[:40]))
+    lines.append("What this changes" + (" (inferred)" if what.get("inferred") else "") + ": "
+                 + ("; ".join(what.get("lines") or []) or what.get("badge") or "not recorded"))
+    if what.get("where"):
+        lines.append(f"Where to look in game: {what['where']}")
+    lines.append("Build recipe: " + (json.dumps(recipe) + ("" if recorded else " (inferred from the marker)") if recipe else "none recorded"))
+    lines.append("Last launch: " + (json.dumps(last, default=str) if last else "never launched"))
+    details = "\n".join(lines)
+    shots = [s.get("sha256") for s in (item.get("shots") or []) if s.get("sha256")] + \
+            [f.get("sha256") for f in (item.get("frames") or []) if f.get("sha256")]
+    frame_b64, atts = None, []
+    for sha in shots[:1]:
+        try:
+            data = read_artifact(sha)
+        except Exception:                                        # noqa: BLE001 - a missing picture never stops a report
+            data = None
+        if data and len(data) <= REPORT_PICTURE_MAX:
+            frame_b64 = base64.b64encode(data).decode()
+            atts.append({"name": "in-game-frame.png", "type": "image/png", "b64": frame_b64})
+    pics = [i.get("name") for i in (item.get("images") or []) if i.get("name")]
+    pics = sorted(pics, key=lambda n: (not re.search(r"fit|preview", n, re.I), n))[:REPORT_PICTURES]
+    for pic in pics:
+        try:
+            data = read_picture(pic)
+        except Exception:                                        # noqa: BLE001
+            continue
+        if data and len(data) <= REPORT_PICTURE_MAX:
+            ext = Path(pic).suffix.lower().lstrip(".") or "png"
+            atts.append({"name": "build-" + Path(pic).name, "type": f"image/{'jpeg' if ext == 'jpg' else ext}",
+                         "b64": base64.b64encode(data).decode()})
+    title = f"Build report: {name} ({game}): {why}"
+    issue = {"session_id": "", "save_state": False, "what": f"Build {label}: {why}", "detail": details, "note": note,
+             "title": title[:140], "image_b64": frame_b64, "attachments": atts,
+             "context": {"game_id": gid, "game": game, "build": f"{gid}/{name}", "mod": name, "reason": reason,
+                         "build_report": True, "view": "build report"}}
+    return issue, f"Build report on {label} ({game}): {why}.{(' Operator: ' + note) if note else ''}\n{details}"
+
+
 def clean_name(v) -> str:
     if v is None:
         return ""
@@ -734,7 +881,7 @@ def clean_name(v) -> str:
     return v
 
 
-def routes(app, store, config, auth, *, submit, workers):
+def routes(app, store, config, auth, *, submit, workers, file_report=None):
     """submit({tool, input, require_os, require_worker, parent_request_id, agent_use}, actor) -> job (the server's own
     POST /api/jobs); workers() -> [worker + online]."""
     cache = {"titles": {}, "lock": threading.Lock()}
@@ -773,20 +920,35 @@ def routes(app, store, config, auth, *, submit, workers):
         return key, item, meta
 
     @app.get("/api/builds")
-    def builds_list(q: str = "", game_id: str = "", kind: str = "", fresh: bool = False, actor=Depends(auth)):
-        """Every custom build, newest first: the Spark's collection + each PC's own builds (deduped), with kinds,
-        where it lives and its launch options."""
+    def builds_list(q: str = "", game_id: str = "", kind: str = "", favorite: bool = False, fresh: bool = False,
+                    actor=Depends(auth)):
+        """Every custom build, favorites first, then newest first: the Spark's collection + each PC's own builds
+        (deduped), with kinds, where it lives and its launch options. favorite=true: only the starred ones."""
         items, records, status = gallery(fresh)
         ws = workers()
         rows = listing(items, records, cards(), ws, BM.display_names(store),
-                       {it["game_id"]: it.get("title") or "" for it in items})
-        picked = select(rows, q, game_id, kind)
+                       {it["game_id"]: it.get("title") or "" for it in items}, BM.favorites(store))
+        picked = select(rows, q, game_id, kind, favorite)
         return {"items": picked, "total": len(picked), "all": len(rows), **facets(rows),
                 "kinds_all": [{"kind": k, "label": v} for k, v in KINDS.items()],
                 "pcs": [{"name": w.get("name"), "os": w.get("os")} for w in ws if w.get("online") and w.get("name")],
                 **status}
 
-    @app.patch("/api/builds/{game_id}/{name}")
+    def known(game_id: str, name: str):
+        if not (BM._safe_component(game_id) and BM._safe_component(name)):
+            raise HTTPException(422, "bad build")
+        key, item, _meta = find(game_id, name)
+        if item is None and key not in local_index(workers()):
+            raise HTTPException(404, f"no build {key}")
+        return key, item
+
+    def changed():
+        inv = getattr(app.state, "built_mods_invalidate", None)
+        if inv:
+            inv()
+
+    # POST too: the desktop app's IPC api() sends a body as POST (same handler, same path)
+    @app.api_route("/api/builds/{game_id}/{name}", methods=["PATCH", "POST"])
     def builds_rename(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
         """{display_name}: the operator's name for a build, shown wherever builds are listed ("" restores the
         writer's title). The folder and its marker are never renamed."""
@@ -796,18 +958,39 @@ def routes(app, store, config, auth, *, submit, workers):
             v = clean_name(body.get("display_name"))
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
-        key, item, _meta = find(game_id, name)
-        if item is None and key not in local_index(workers()):
-            raise HTTPException(404, f"no build {key}")
+        key, item = known(game_id, name)
         if v:
             store.put(BM.NAME_KIND, key, {"key": key, "display_name": v, "by": actor, "ts": time.time()})
         else:
             store.delete(BM.NAME_KIND, key)
         store.audit(actor, "build.rename", key, {"display_name": v})
-        inv = getattr(app.state, "built_mods_invalidate", None)
-        if inv:
-            inv()
+        changed()
         return {"key": key, "display_name": v, "label": v or ((item or {}).get("original_title") or name)}
+
+    def set_favorite(game_id: str, name: str, on: bool, actor: str) -> dict:
+        key, _item = known(game_id, name)
+        if on:
+            store.put(BM.FAV_KIND, key, {"key": key, "by": actor, "ts": time.time()})
+        else:
+            store.delete(BM.FAV_KIND, key)
+        store.audit(actor, "build.favorite" if on else "build.unfavorite", key, {})
+        changed()
+        return {"key": key, "favorite": on}
+
+    # PUT {favorite: true | false} (default true) / DELETE; POST = PUT for the desktop app's IPC api()
+    @app.api_route("/api/builds/{game_id}/{name}/favorite", methods=["PUT", "POST"])
+    def builds_favorite(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        """★ a build: listed first on the Mods page and in Builds, a Favorites group at the top of the game's Special
+        builds, never evicted by a disk budget. {favorite: false} un-stars it (as DELETE does)."""
+        on = body.get("favorite", True) if isinstance(body, dict) else True
+        if not isinstance(on, bool):
+            raise HTTPException(422, "favorite: true or false")
+        return set_favorite(game_id, name, on, actor)
+
+    @app.delete("/api/builds/{game_id}/{name}/favorite")
+    def builds_unfavorite(game_id: str, name: str, actor=Depends(auth)):
+        """Un-star a build."""
+        return set_favorite(game_id, name, False, actor)
 
     @app.get("/api/builds/scheduled")
     def builds_scheduled(actor=Depends(auth)):
@@ -857,5 +1040,118 @@ def routes(app, store, config, auth, *, submit, workers):
         out = details(store, config, item, meta, card, library(config), ws)
         out["where"] = build_row(item, meta, card, [], here)["where"]
         return out
+
+    # ---------------------------------------------------------------------------------------------- delete (#1656)
+    def delete_build(game_id: str, name: str, scope: str, node: str, actor: str) -> dict:
+        if scope not in SCOPES:
+            raise HTTPException(422, "scope: all (the Spark collection and every PC's copy) or node (one PC's copy)")
+        key, item = known(game_id, name)
+        ws = workers()
+        here = local_index(ws).get(key, [])
+        by_name = {w.get("name"): w for w in ws if w.get("name")}
+        sessions = BM._fields(store, "session", ("session_id", "game_id", "mod", "collection_mod", "state", "title"))
+        target = by_name.get(node) if scope == "node" else None
+        if scope == "node" and not target:
+            raise HTTPException(422, f"node: the PC whose copy to delete ({node or 'none given'} is not a known PC)")
+        spark_side = scope == "all" or (target or {}).get("os") == "linux"
+        busy = users_of(sessions, game_id, name, "" if scope == "all" else str((target or {}).get("id") or ""))
+        if busy:
+            raise HTTPException(409, f"{(item or {}).get('mod_title') or name} is in use by a running game "
+                                     f"({', '.join(s['session_id'] for s in busy)}): stop that game first, then delete it")
+        meta = next((r.get("meta") or {} for r in (gallery()[1]) if f"{r['game_id']}/{r['name']}" == key), {})
+        spark = delete_spark(config, game_id, name) if spark_side else {"removed": [], "errors": [], "own_bytes": 0}
+        jobs, skipped = [], []
+        for h in here:
+            w = by_name.get(h["node"]) or {}
+            if w.get("os") == "linux" or (scope == "node" and h["node"] != node):
+                continue
+            if not h.get("online"):
+                skipped.append({"node": h["node"], "reason": "offline: delete it there when the PC is back (Builds ▸ Delete)"})
+                continue
+            try:
+                j = submit({"tool": "file_mod", "input": {"op": "delete_build", "game_id": game_id, "name": name},
+                            "require_worker": w.get("id") or h["node"], "agent_use": False}, actor)
+                j = j.model_dump(mode="json") if hasattr(j, "model_dump") else dict(j)
+                jobs.append({"node": h["node"], "job_id": j.get("id"), "state": j.get("state")})
+            except Exception as e:                               # noqa: BLE001 - one PC never stops the rest
+                skipped.append({"node": h["node"], "reason": str(getattr(e, "detail", "") or e)[:200]})
+        cleared = []
+        if scope == "all":
+            for kind in (BM.NAME_KIND, BM.FAV_KIND, REPORT_KIND):
+                if store.get(kind, key) is not None:
+                    store.delete(kind, key)
+                    cleared.append(kind)
+            for c in store.all("mod"):                           # the stand-in cards the gallery registered for it
+                if c.get("auto_registered") and c.get("game_id") == game_id and BM.card_mod(c) == name:
+                    store.delete("mod", c["id"])
+                    cleared.append(f"mod card {c['id']}")
+            sc = store.get("showcase", game_id)
+            if isinstance(sc, dict) and sc.get("mod") == name:   # the Sonic showcase's record of this build
+                store.put("showcase", game_id, sc | {"stage": "deleted", "message": "deleted by the operator"})
+                cleared.append("showcase record")
+            index = getattr(app.state, "built_mods", None)
+            if index is not None and spark["removed"]:
+                index.forget(game_id, name)
+        did = uuid.uuid4().hex[:16]
+        entry = {"id": did, "key": key, "game_id": game_id, "name": name, "scope": scope, "node": node if scope == "node" else "",
+                 "label": (item or {}).get("mod_title") or name, "game_title": (item or {}).get("title") or "",
+                 "writer": (item or {}).get("writer") or "", "size": (item or {}).get("size"), "own_size": (item or {}).get("own_size"),
+                 "built": (item or {}).get("built"),
+                 "meta": {k: v for k, v in meta.items() if len(json.dumps(v, default=str)) <= 4000},   # the marker, small fields
+                 "spark": spark, "jobs": jobs, "skipped": skipped, "cleared": cleared, "by": actor, "ts": time.time()}
+        store.put(DELETED_KIND, did, entry)
+        old = sorted(store.all(DELETED_KIND), key=lambda d: d.get("ts") or 0)
+        for d in old[:-DELETED_KEEP]:
+            store.delete(DELETED_KIND, d["id"])
+        store.audit(actor, "build.delete", key, {"scope": scope, "node": node, "spark_removed": spark["removed"],
+                                                  "jobs": [j["job_id"] for j in jobs], "skipped": skipped})
+        changed()
+        return {k: entry[k] for k in ("id", "key", "scope", "node", "label", "spark", "jobs", "skipped", "cleared")}
+
+    @app.delete("/api/builds/{game_id}/{name}")
+    def builds_delete(game_id: str, name: str, scope: str = "all", node: str = "", actor=Depends(auth)):
+        """Delete a build: scope=all removes the Spark collection copy (folder, staged copies, hash sidecars, index
+        entry, display name, favorite, stand-in mod card, showcase record) and queues file_mod op=delete_build on every
+        PC that has a copy; scope=node&node=<PC> removes only that PC's copy. Refused (409) while a running game uses
+        it. Never the base copy or another build. Logged in the audit and the recently deleted list."""
+        return delete_build(game_id, name, scope, node, actor)
+
+    @app.post("/api/builds/{game_id}/{name}/delete")
+    def builds_delete_post(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        """DELETE for clients whose api() only posts (the desktop app's IPC before it took a method): {scope, node}."""
+        return delete_build(game_id, name, str(body.get("scope") or "all"), str(body.get("node") or ""), actor)
+
+    @app.get("/api/builds/deleted")
+    def builds_deleted(limit: int = 50, actor=Depends(auth)):
+        """Recently deleted builds, newest first (their marker facts; undo is not offered)."""
+        rows = sorted(store.all(DELETED_KIND), key=lambda d: -(d.get("ts") or 0))
+        return {"items": rows[:max(1, min(limit, DELETED_KEEP))], "total": len(rows)}
+
+    # ---------------------------------------------------------------------------------------------- report (#1656)
+    @app.post("/api/builds/{game_id}/{name}/report")
+    def builds_report(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        """⚑ Report a build that doesn't do what it should: {reason, note}. Files the report through the issue flow
+        (POST /api/requests/issue) with the build's facts (game, mod, writer, slots and donors, What this changes,
+        recipe, last launch) and its newest in-game frame and fit previews attached, then routes it to the
+        investigation queue the launch-failure auto reports use. The card shows "Reported #N"."""
+        if file_report is None:
+            raise HTTPException(503, "reports are not available on this server")
+        reason = str(body.get("reason") or "other")
+        if reason not in REASONS:
+            raise HTTPException(422, f"reason: one of {', '.join(REASONS)}")
+        note = str(body.get("note") or "")[:4000]
+        key, item = known(game_id, name)
+        meta = next((r.get("meta") or {} for r in gallery()[1] if f"{r['game_id']}/{r['name']}" == key), {})
+        issue, details = report_of(item or {"key": key, "name": name, "game_id": game_id}, meta, reason, note,
+                                   lambda sha: store.read_artifact(sha),
+                                   lambda pic: BM.image_path(config, game_id, name, pic).read_bytes())
+        report = file_report(issue, details, actor)
+        store.put(REPORT_KIND, key, {"key": key, "number": report.get("number"), "id": report.get("id"), "reason": reason,
+                                     "by": actor, "ts": time.time()})
+        store.audit(actor, "build.report", key, {"request": report.get("id"), "reason": reason})
+        changed()
+        return {"key": key, "number": report.get("number"), "id": report.get("id"), "title": report.get("title"),
+                "dispatch": (report.get("context") or {}).get("resolution_dispatch")
+                or ("agent" if (report.get("context") or {}).get("resolution_chat_id") else "")}
 
     return builds_list, builds_rename, builds_details, builds_scheduled

@@ -29,7 +29,7 @@ def swap_route(tmp_path, monkeypatch):
     swap = enclosed(enclosed(route.endpoint, 'swap_job').cell_contents, 'session_swap').cell_contents
     # Synchronous HTTP execution avoids creating a real dispatch thread; it
     # still exercises the actual body validation/authentication and swap logic.
-    enclosed(route.endpoint, 'swap_job').cell_contents = lambda sid, mod, to, actor, keep: swap(sid, mod, to, actor, keep)
+    enclosed(route.endpoint, 'swap_job').cell_contents = lambda sid, mod, to, actor, keep, **_: swap(sid, mod, to, actor, keep)
     monkeypatch.setattr(server.time, 'sleep', lambda _: None)
     return cfg, app, store, swap, checkpoint
 
@@ -113,7 +113,7 @@ def test_missing_or_malformed_result_is_unknown_without_recovery(swap_route, out
 
 def test_no_checkpoint_request_does_not_claim_restore(swap_route):
     calls, launches = transport(swap_route, {'result': {'loaded': True, 'load_verified': True}})
-    response = invoke(swap_route, keep_state=False)
+    response = invoke(swap_route, keep_state=False, intent='reset_model')
     assert response.status_code == 200
     result = response.json()
     assert result['state_loaded'] is False and result['load_requested'] is False and result['load_verified'] is None
