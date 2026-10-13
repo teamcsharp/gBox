@@ -155,6 +155,12 @@ def execute(name: str, raw_input: dict, ctx: Ctx) -> dict:
     if reason := t.unavailable_reason(ctx.config):
         raise ToolUnavailable(reason)
     inp = t.In.model_validate(raw_input)
+    from . import cache_tiers                    # two-tier cache: busy while it runs; named units come up first
+    with cache_tiers.job_scope(name, raw_input, ctx):
+        return _execute(t, inp, ctx)
+
+
+def _execute(t, inp, ctx: Ctx) -> dict:
     last = None
     for attempt in range(t.retries + 1):
         ctx.artifacts.clear()
