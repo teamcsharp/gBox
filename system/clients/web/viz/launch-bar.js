@@ -8,6 +8,9 @@
    - the job's console lines scroll across it right to left, newest appended; hover pauses; reduced motion shows the
      latest line still
    - success fades out; failure turns it into a red line with the reason (click for details, x closes)
+   - a failure's launch failure report (gbox/launch_failures.py stamps job.launch_report) shows as "Reported as #N, being
+     investigated" / "Fixed, verified (#N)"; the bar asks for the job again a few times until the report is filed, and a
+     click on it opens the request (opts.onReport)
    Desktop app: ../web/viz/launch-bar.js. Node tests load the factory (tests/test_launch_bar.cjs). */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory;
@@ -88,6 +91,12 @@
     // mod: the operator's name for the build when it has one (the server puts mod_title on the launch), else its folder
     return { id: String(i.game_id || g.game_id || g.id || ""), title: String(g.title || i.title || ""), mod: String(i.mod_title || i.mod || "") };
   }
+  // the launch failure ticket a failed launch filed (docs/launch-failure-reports.md)
+  function reportText(r) {
+    if (!r || !r.number) return "";
+    return r.verified ? `Fixed, verified (#${r.number})` : `Reported as #${r.number}, being investigated`;
+  }
+  const REPORT_RETRY_MS = [2500, 6000, 15000];                 // the server files the report a moment after the failure
   const startedAt = j => j.created || j.started || 0;
   const activityAt = j => (j.progress && typeof j.progress === "object" && j.progress.ts) || j.started || j.created || 0;
 
@@ -169,6 +178,7 @@
       const gs = groups().filter(g => !dismissed.has(g.key));
       if (outcome && outcome.kind === "error" && now() - outcome.at < ERROR_MS)
         return { state: "error", title: outcome.title.replace(/^(Launching|Swapping) /, ""), reason: outcome.reason, job: outcome.job,
+                 report: (outcome.job && outcome.job.launch_report) || null,
                  pct: 100, determinate: true, lines: [outcome.reason], count: gs.length + 1 };
       if (gs.length) {
         const g = gs[0], prog = groupProgress(g), lines = [].concat(...g.jobs.map(linesOf));
@@ -206,7 +216,12 @@
       const v = view(); if (v.state === "running") dismissed.add(v.key);
     }
     const clearOutcome = kind => { if (outcome && (!kind || outcome.kind === kind)) outcome = null; };
-    return { remote, observe, view, drain, dismiss, clearOutcome, get outcome() { return outcome; }, live };
+    // a later answer for the failed job (its launch failure report was filed): the outcome on show picks it up
+    function refresh(j) {
+      if (!j || !outcome || outcome.kind !== "error" || !outcome.job || outcome.job.id !== j.id) return false;
+      outcome = { ...outcome, job: { ...outcome.job, ...j } }; onChange(); return true;
+    }
+    return { remote, observe, view, drain, dismiss, clearOutcome, refresh, get outcome() { return outcome; }, live };
   }
 
   // ---- the bar ----------------------------------------------------------------------------------------------------
@@ -234,6 +249,9 @@
 #launchbar .lb-count { flex:none; background:rgba(0,0,0,.6); border-radius:8px; padding:0 6px; line-height:14px; }
 #launchbar .lb-x { flex:none; background:none; border:0; color:#fff; cursor:pointer; font:16px/16px sans-serif; padding:0 6px; text-shadow:${OUTLINE}; }
 #launchbar.err { background:#7f1d1d; } #launchbar.err .lb-fill { width:100% !important; background:#b91c1c !important; box-shadow:none !important; }
+#launchbar .lb-rep { flex:none; display:none; background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.35); border-radius:9px; color:#fff;
+  font:600 11px/14px "Segoe UI", system-ui, sans-serif; padding:0 8px; cursor:pointer; text-shadow:none; white-space:nowrap; }
+#launchbar .lb-rep.ok { background:#14532d; border-color:#22c55e; } #launchbar.err .lb-rep.on { display:inline-block; }
 #launchbar.done .lb-fill { width:100% !important; }
 @media (prefers-reduced-motion: reduce) {
   #launchbar .lb-sweep { animation:none; background-size:100% 100%; background-position:0 0; opacity:.45; }
@@ -256,6 +274,7 @@
     const fill = part("div", "lb-fill", el); part("div", "lb-sweep", el);
     const row = part("div", "lb-row", el), title = part("span", "lb-title", row), view = part("span", "lb-view", row);
     const track = part("span", "lb-track", view), still = part("span", "lb-static", view);
+    const rep = part("button", "lb-rep", row); rep.type = "button";
     const pctEl = part("span", "lb-pct", row), count = part("span", "lb-count", row), close = part("button", "lb-x", row);
     close.type = "button"; close.textContent = "×"; close.title = "Hide this bar (the launch keeps going)";
     close.setAttribute("aria-label", "Hide the launch bar");
@@ -354,14 +373,34 @@
         }
       } else if (v.state === "error") {
         title.textContent = "✕ Launch failed: " + v.title;
-        still.textContent = v.reason; el.title = `${title.textContent}: ${v.reason} · click for details · × closes`;
+        const said = reportText(v.report);
+        rep.textContent = said; rep.className = "lb-rep" + (said ? " on" : "") + (v.report && v.report.verified ? " ok" : "");
+        rep.title = said ? `Open request #${v.report.number}: the automatic report for this failure` : "";
+        still.textContent = v.reason; el.title = `${title.textContent}: ${v.reason}${said ? " · " + said : ""} · click for details · × closes`;
         el.setAttribute("aria-valuetext", el.title);
         if (outcomeShown !== model.outcome) {
-          outcomeShown = model.outcome; const mine = outcomeShown;
-          schedule(() => { if (model.outcome === mine) { model.clearOutcome("error"); render(); } }, ERROR_MS);
+          const was = outcomeShown; outcomeShown = model.outcome; const mine = outcomeShown;
+          if (!was || was.at !== mine.at) {          // a new failure (refresh() keeps `at`: the same one, now with its report)
+            schedule(() => { if (model.outcome && model.outcome.at === mine.at) { model.clearOutcome("error"); render(); } }, ERROR_MS);
+            if (!said && opts.fetchJob && mine.job && mine.job.id) followReport(mine.job.id, mine.at);
+          }
         }
-      }
+      } else rep.className = "lb-rep";
     }
+    // ask for the failed job again until its launch failure report is filed (a few tries, then give up quietly)
+    function followReport(id, at) {
+      REPORT_RETRY_MS.forEach(ms => schedule(async () => {
+        const o = model.outcome;
+        if (!o || o.at !== at || reportText(o.job && o.job.launch_report)) return;
+        let j = null; try { j = await opts.fetchJob(id); } catch { j = null; }
+        if (j && j.launch_report && model.refresh(j)) render();
+      }, ms));
+    }
+    rep.addEventListener("click", e => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      if (current.report && opts.onReport) opts.onReport(current.report, current.job);
+      else if (current.job && opts.onDetails) opts.onDetails(current.job, current);
+    });
     el.addEventListener("mouseenter", () => { mq.paused = true; });
     el.addEventListener("mouseleave", () => { mq.paused = false; kick(); });
     el.addEventListener("click", e => {
@@ -379,5 +418,5 @@
     };
   }
 
-  return { mount, createModel, colorAt, rgb, fillGradient, fraction, progressOf, linesOf, isLaunch, gameOf, keyOf, STOPS };
+  return { mount, createModel, colorAt, rgb, fillGradient, fraction, progressOf, linesOf, isLaunch, gameOf, keyOf, reportText, STOPS };
 });

@@ -103,9 +103,37 @@
       + item("delete", "🗑 Delete…", "Delete this build (asks first: everywhere or only this PC)") + "</div>";
   }
 
+  // the launch failure ticket of this build (gbox/launch_failures.py, docs/launch-failure-reports.md)
+  function reportText(r) {
+    if (!r || !r.number) return "";
+    return r.verified ? `Fixed, verified (#${r.number})` : `Reported as #${r.number}, being investigated`;
+  }
+  function reportHTML(r) {
+    const said = reportText(r);
+    if (!said) return "";
+    const why = [r.label, r.count > 1 ? `${r.count} failures` : "", r.status ? `request ${String(r.status).replace("_", " ")}` : ""].filter(Boolean).join(" · ");
+    return `<div class="mg-lfr"><button class="act mg-lf ${r.verified ? "mg-lf-ok" : "mg-lf-bad"}" type="button" data-mg="request" data-n="${ESC(r.number)}"
+      title="${ESC("Open request #" + r.number + (why ? ": " + why : ""))}">${r.verified ? "✓" : "⚠"} ${ESC(said)}</button></div>`;
+  }
+
+  // the ⚑ build report filed on this build (#1656: POST /api/builds/{game}/{name}/report), next to the launch failure
+  // ticket in one badge row: "⚠ Reported as #12, being investigated" (launch failure) · "⚑ Build report #14"
+  function buildReportHTML(r) {
+    if (!r || !r.number) return "";
+    return `<button class="act mg-lf mg-br" type="button" data-mg="request" data-n="${ESC(r.number)}"
+      title="${ESC(`Open request #${r.number}: the build report you filed (it doesn't do what it should)`)}">⚑ Build report #${ESC(r.number)}</button>`;
+  }
+  function reportsHTML(lfr, rep) {
+    const a = reportHTML(lfr), b = buildReportHTML(rep);
+    if (!b) return a;
+    return `<div class="mg-lfr">${a ? a.replace(/^<div class="mg-lfr">/, "").replace(/<\/div>$/, "") : ""}${b}</div>`;
+  }
+
   function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "" } = {}) {
     const imgs = imagesOf(m, url), i = imgs.length ? ((idx % imgs.length) + imgs.length) % imgs.length : 0, cur = imgs[i];
-    const tickets = m.tickets || [];
+    const lfr = m.launch_report && m.launch_report.number ? m.launch_report : null;
+    const tickets = (m.tickets || []).filter(t => (!lfr || String(t.number) !== String(lfr.number))
+      && (!m.reported || String(t.number) !== String(m.reported.number)));
     return `<article class="mg-card${m.favorite ? " mg-fav" : ""}" data-key="${ESC(m.key)}">${menu ? menuHTML(m) : ""}
       <div class="mg-pic">${cur ? `<img class="mg-img" loading="lazy" decoding="async" alt="${ESC(cur.name)}" data-i="${i}" src="${ESC(cur.src)}">
         ${imgs.length > 1 ? `<button class="mg-nav" data-mg="prev" type="button" title="Previous picture">‹</button><button class="mg-nav" data-mg="next" type="button" title="Next picture">›</button>` : ""}
@@ -113,7 +141,7 @@
         : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}</div>
       <div class="mg-body">
         <div class="mg-h"><span class="mg-tt">${starHTML(m)}${titleHTML(m, renaming)}</span>
-          <span class="mg-hr">${BA()?.reportedHTML(m.reported, "mg-badge ba-rep") || ""}<span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
+          <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
         ${m.display_name && m.original_title && m.original_title !== m.display_name ? `<div class="mg-was mut">was “${ESC(m.original_title)}”</div>` : ""}
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
           <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}</div>
@@ -121,6 +149,7 @@
         ${changesHTML(m)}
         <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
+        ${reportsHTML(lfr, m.reported)}
         ${tickets.length ? `<div class="mg-tk">${tickets.map(t => `<button class="act mg-req" type="button" data-mg="request" data-n="${t.number}" title="${ESC(t.title || "Open request #" + t.number)}">Open request #${t.number}${t.status ? " · " + ESC(t.status.replace("_", " ")) : ""}</button>`).join("")}</div>` : ""}
         <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
           ${m.state_slot != null && m.card_id ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
@@ -171,7 +200,9 @@
     .mg-star{font-size:15px;color:#c9a43a;opacity:.8}.mg-star.on{opacity:1}.mg-was{font-size:11px;margin-top:-3px}
     .mg-favf{display:flex;gap:4px;align-items:center;font-size:12.5px;white-space:nowrap}
     .mg-menu{position:absolute;z-index:5;top:8px;right:8px;display:flex;flex-direction:column;gap:3px;padding:6px;border:1px solid var(--line,#444);border-radius:8px;background:var(--bg,#16161a);box-shadow:0 8px 24px #000a;min-width:190px}
-    .mg-menu .act{text-align:left}.mg-acts{margin-left:auto;display:flex;gap:4px}.mg-del:hover{background:#7a2b2b;color:#fff}`;
+    .mg-menu .act{text-align:left}.mg-acts{margin-left:auto;display:flex;gap:4px}.mg-del:hover{background:#7a2b2b;color:#fff}
+    .mg-lfr{display:flex}.mg-lfr .mg-lf{font-size:12px;font-weight:600;border-radius:9px;padding:2px 9px;color:#fff}.mg-lfr .mg-lf.mg-lf-bad{background:#7a2b2b;border-color:#c0504d}.mg-lfr .mg-lf.mg-lf-ok{background:#1f6f3f;border-color:#2f9a5a}
+    .mg-lfr{gap:6px;flex-wrap:wrap}.mg-lfr .mg-lf.mg-br{background:#5a3f8a;border-color:#7d5cc0}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -444,7 +475,8 @@
     return api;
   }
 
-  const api = { filterMods, facets, imagesOf, cardHTML, titleHTML, menuHTML, buildPath, toolbarHTML, changesHTML, requestHTML, fmtSize, fmtAge, launchText, summaryText, mount, PAGE, TICK };
+  const api = { filterMods, facets, imagesOf, cardHTML, titleHTML, menuHTML, buildPath, toolbarHTML, changesHTML, requestHTML,
+                fmtSize, fmtAge, launchText, reportText, reportHTML, reportsHTML, summaryText, mount, PAGE, TICK };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxModsGallery = api;
 })(typeof window !== "undefined" ? window : globalThis);

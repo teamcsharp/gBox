@@ -296,9 +296,27 @@ class XeniaAdapter:
         flags = {"fullscreen": "false", "gpu": self.info["gpu"], "hid": "any", "keyboard_mode": "1",
                  "keyboard_user_index": str(self.pad_slot), "discord": "false", "log_file": str(self.log_path),
                  "mount_cache": "true"} | {_KEYBIND[k]: f"0x{vk:02X}" for k, vk in PAD_VK.items() if k in _KEYBIND}
+        # sound (gbox/game_audio.py): no active output -> apu=nop (its xaudio2 init would wait on nothing)
+        from . import game_audio
+        from .adapters import _audio_selection
+        self.audio_sel = _audio_selection(self, 1.0)
+        if apu := game_audio.xenia_apu(self.audio_sel):
+            flags["apu"] = apu
+        self.audio_backend = flags.get("apu") or "default (xaudio2)"
         return [exe, rom, *[f"--{k}={v}" for k, v in flags.items() if cvar_known(exe, k)]]
 
+    def prepare_audio(self):
+        from .adapters import _audio_prefetch
+        _audio_prefetch(self)
+
     def launch_game(self, rom: str) -> dict:
+        from .adapters import _audio_release
+        try:
+            return self._launch_game(rom)
+        finally:
+            _audio_release(self)
+
+    def _launch_game(self, rom: str) -> dict:
         self._p(6, "Checking Xenia")
         self.info = ensure_xenia(self.config, getattr(self, "progress", None))
         self._p(60, f"Xenia {self.info.get('version')} ready · GPU {self.info['gpu']}")
@@ -319,7 +337,9 @@ class XeniaAdapter:
         self._p(90, "Xenia window open; title booting")
         return {"pid": self.proc.pid, "local_window": True, "worker_name": platform.node(), "emulator": "xenia_canary",
                 "version": self.info.get("version"), "gpu": self.info["gpu"], "keyboard_pad_slot": self.pad_slot,
-                "log": str(self.log_path)}
+                "log": str(self.log_path),
+                "audio": __import__("gbox.game_audio", fromlist=["x"]).session_detail(
+                    getattr(self, "audio_sel", None) or {}, getattr(self, "audio_backend", None))}
 
     def log_tail(self, n: int = 1500) -> str:
         try:

@@ -206,7 +206,9 @@ def test_worker_delete_build_removes_staged_copies_and_refuses_in_use(tmp_path):
 def test_report_files_through_the_issue_flow_with_the_build_facts_and_pictures(tmp_path, monkeypatch):
     from gbox import hermes_task_mode
     from gbox.agent import ChatHub
-    monkeypatch.setattr(hermes_task_mode, "_job", lambda: {"no_agent": True, "enabled": False})
+    monkeypatch.setenv("GBOX_HERMES_DISPATCH_STATE", str(tmp_path / "dispatch"))     # the work queue lives here
+    monkeypatch.setenv("GBOX_HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(hermes_task_mode, "_job", lambda: {"no_agent": True, "enabled": True})
     monkeypatch.setattr(ChatHub, "post", lambda *a: (_ for _ in ()).throw(AssertionError("queued for Hermes, not a chat")))
     cfg, app, store, h = fixture(tmp_path)
     shot = store.put_artifact(b"\x89PNG in-game frame", "frame.png", "image/png", {})
@@ -221,6 +223,9 @@ def test_report_files_through_the_issue_flow_with_the_build_facts_and_pictures(t
         out = r.json()
         assert out["title"] == "Build report: g1_patch (g1): character looks broken or garbled"
         assert out["dispatch"] == "hermes_queue"
+        from gbox import hermes_work_queue                       # the launch failure reports' investigation queue (#318)
+        assert hermes_work_queue.get_priority()[0] == out["id"], "the report goes to the top of the Hermes work queue"
+        assert any("Build report queued for Hermes" in m.get("text", "") for m in store.get("request", out["id"])["messages"])
         req = store.get("request", out["id"])
         assert req["context"]["build_report"] and req["context"]["build"] == f"{GID}/g1_patch" and req["context"]["reason"] == "broken"
         assert req["image"], "the newest in-game frame is the report's screenshot"

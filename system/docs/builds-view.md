@@ -133,9 +133,11 @@ garbled", "Game crashes or freezes", "Other") and a text field.
 (`/api/requests/issue`, no game session involved). The report is titled "Build report: `<name>` (`<game>`): `<reason>`".
 Its body holds the game, the build, the writer, the slots and donors, What this changes and where to look, the build
 recipe and the last launch. The card's newest in-game frame is the report's screenshot, and that frame plus the build's
-preview / fit pictures are attached. The report is then routed to the investigation queue that the launch-failure auto
-reports use (`_dispatch_resolution`): the durable Hermes queue when Hermes runs the tasks, else a resolution agent. The
-card shows **Reported #N** (store kind `build_report`).
+preview / fit pictures are attached. The report is then sent to the investigation queue that the launch failure reports
+use (`_lf_investigate`, docs/launch-failure-reports.md): it goes to the top of the Hermes work queue and, in Hermes task
+mode, is dispatched at once as "gBox build report #N". The card shows a purple **⚑ Build report #N** badge (store kind
+`build_report`). It sits in the same badge row as a launch failure's "⚠ Reported as #N, being investigated" or "✓ Fixed,
+verified" badge, and both open their request.
 
 ## Details ▸
 

@@ -836,6 +836,10 @@ const loader = {
     if (msg && $("#ldcon").firstChild?.textContent !== msg) $("#ldcon").innerHTML = `<div>${esc(msg)}</div>`;
   },
   fail(msg) { $("#ldcon").innerHTML = `<div class="err">${esc(msg)}</div>`; $("#ldback").style.display = "block"; },
+  report(r) {                                                 // the launch failure ticket the server filed for it
+    const said = launchReportText(r), line = $("#ldcon .err"); if (!said || !line || line.querySelector(".lfr")) return;
+    line.insertAdjacentHTML("afterbegin", `<b class="lfr" title="${esc(r.label || "")}">${esc(said)}</b> · `);   // first: the line ellipsizes
+  },
   hide() { const generation = this.generation, el = $("#loader"); el.classList.add("out"); setTimeout(() => {
     if (generation !== this.generation) return;
     el.classList.remove("on", "out"); this.three?.viz?.stop(); this.mods?.clear();
@@ -1335,7 +1339,7 @@ function card(g) {
   return `<div class="card" data-gid="${esc(g.game_id)}" data-title="${esc(g.title)}">${bootBadgeHTML(g.game_id)}<button class="fav" title="${g.favorite ? "Remove from favorites" : "Add to favorites"}" onclick='toggleFav(${JSON.stringify(g.game_id)}, this)'>${g.favorite ? "★" : "☆"}</button><div class="art">${art}</div><div class="meta">
     <div class="t">${esc(g.title)}</div>
     <div class="s">${esc(g.system || g.platform)}${g.year ? " · " + esc(g.year) : ""}${g.manufacturer ? " · " + esc(g.manufacturer) : ""}</div>
-    <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span></div>
+    <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span>${launchReportBadge(g)}</div>
     <div class="row"><button class="act pri" title="${window.GBOX_LOCAL?.worker && g.core ? "Play natively on this PC (full FPS)" : "Play"}" onclick='play(${JSON.stringify(g.game_id)})'>Play</button>
       ${g.core && window.GBOX_LOCAL?.worker ? (WHERE === "local"
           ? `<button class="act" title="Run on the DGX Spark GPU and stream it here" onclick='play(${JSON.stringify(g.game_id)},"linux")'>Spark</button>`
@@ -1478,12 +1482,32 @@ async function play(id, node, debug, boot) {
         setTimeout(() => runJob({ tool: "session_op", input: { session_id: nsid, op: "load_state", args: { slot: +boot.slot } }, require_worker: nsid.split("-")[0] }).catch(() => {}), 12000);
       return show("Sessions", nsid); }
     if (!["queued", "running"].includes(j.state)) { launch.error = `Launch ${j.state}: ${j.error || "unknown error"}`;
-      return loader.fail(launch.error); }
+      loader.fail(launch.error);
+      return launchReportFollow(j, r => { if (LAST_LAUNCH === launch && !LOADING) loader.report(r); }); }
     await new Promise(r => setTimeout(r, 400));
   }
   launch.error = waitNote ? `Launch job ${job.id} is still queued after five minutes. ${waitNote}`
     : `Launch job ${job.id} has not finished after five minutes`;
   loader.fail(`${launch.error}. Press Esc to cancel the pending launch, or capture this screen to file its diagnostics.`);
+}
+// Launch failure reports (docs/launch-failure-reports.md): a failed launch files an inbox request on the server; the job
+// and the catalog entry carry launch_report = {number, verified, status, label}. The words match the desktop launch bar.
+function launchReportText(r) {
+  if (!r || !r.number) return "";
+  return r.verified ? `Fixed, verified (#${r.number})` : `Reported as #${r.number}, being investigated`;
+}
+async function launchReportFollow(j, show) {               // the report is filed a moment after the failure: ask a few times
+  if (j?.launch_report?.number) return show(j.launch_report);
+  for (const ms of [2500, 6000, 15000]) {
+    await new Promise(r => setTimeout(r, ms));
+    const again = await api("/api/jobs/" + j.id).catch(() => null);
+    if (again?.launch_report?.number) return show(again.launch_report);
+  }
+}
+function launchReportBadge(g) {
+  const r = g.launch_report; if (!r?.number) return "";
+  if (r.verified && !/failed/.test(g.playable || "")) return ` · <span class="ok lfr" title="${esc(r.label || "")}">${esc(launchReportText(r))}</span>`;
+  return r.verified ? "" : ` · <span class="bad lfr" title="${esc((r.mod ? r.mod + ": " : "") + (r.label || ""))}">${esc(launchReportText(r))}</span>`;
 }
 async function details(id) {
   const p = await api("/api/profiles/" + id);

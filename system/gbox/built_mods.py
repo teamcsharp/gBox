@@ -725,7 +725,8 @@ def session_frames(store, sessions: list[dict], limit: int = FRAME_LIMIT) -> dic
 
 
 def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | None, requests: dict, library,
-          frames: list[dict] | None = None, display_name: str = "", favorite: bool = False, reported: dict | None = None) -> dict:
+          frames: list[dict] | None = None, display_name: str = "", launch_report: dict | None = None,
+          favorite: bool = False, reported: dict | None = None) -> dict:
     meta, gid, name = rec.get("meta") or {}, rec["game_id"], rec["name"]
     changes = changes_of(meta)
     built = meta.get("built")
@@ -735,6 +736,8 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
     if card and card.get("thumb") and card["thumb"] not in shots:
         shots.insert(0, card["thumb"])
     tickets = tickets_of(meta, card)
+    if launch_report and launch_report.get("number") and launch_report["number"] not in tickets:
+        tickets = tickets + [launch_report["number"]]       # its "Open request" lookup finds the launch failure ticket
     title = game_title_of(gid, meta, card, catalog)
     original = meta.get("title") or (card or {}).get("title") or name
     return {
@@ -759,6 +762,8 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
         "video": (card or {}).get("video") or "",
         "tickets": [{"number": n, **({k: requests[n].get(k) for k in ("id", "title", "status")} if n in requests else {})}
                     for n in tickets],
+        # the launch failure ticket for this build (gbox/launch_failures.py): "Reported as #N" / "Fixed, verified"
+        "launch_report": launch_report or None,
     }
 
 
@@ -877,7 +882,7 @@ FAV_KIND = "build_favorite"                # store kind: "game_id/mod" -> {key, 
 REPORT_KIND = "build_report"               # store kind: "game_id/mod" -> {key, number, id, reason, ts}: "Reported #N"
 
 
-def reports(store) -> dict:
+def build_reports(store) -> dict:
     """"game_id/mod" -> {number, id, reason} of the newest ⚑ report filed on that build."""
     try:
         rows = _fields(store, REPORT_KIND, ("key", "number", "id", "reason"))
@@ -953,7 +958,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                 pass
     launches = launch_index(sessions, _failed_launches(store))
     names = display_names(store)
-    favs, reported = favorites(store), reports(store)
+    favs, reported = favorites(store), build_reports(store)
     try:
         frames = session_frames(store, sessions)
     except Exception:                                            # noqa: BLE001 - frames are a convenience
@@ -962,6 +967,11 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
     for r in _fields(store, "request", ("id", "number", "title", "status")):
         if isinstance(r.get("number"), int):
             requests[r["number"]] = r
+    try:
+        from . import launch_failures
+        reports = launch_failures.index(store)
+    except Exception:                                            # noqa: BLE001 - the badge is a convenience
+        reports = {}
     catalogs: dict = {}
     items = []
     for rec in records:
@@ -969,6 +979,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
         items.append(entry(rec, cards.get((gid, rec["name"])), launches.get((gid, rec["name"])),
                            catalog_of(store, gid, rec.get("meta") or {}, catalogs), requests, library,
                            frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", ""),
+                           launch_report=reports.get((gid, rec["name"])),
                            favorite=f"{gid}/{rec['name']}" in favs, reported=reported.get(f"{gid}/{rec['name']}")))
     items.sort(key=lambda m: -(m["built"] or 0))
     return {"items": items, "registered": made, "cache_dir": str(root)}

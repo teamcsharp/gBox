@@ -918,7 +918,7 @@ TITLE_FACTS = [
 ]
 
 # Bump when TITLE_FACTS gain facts: dossiers seeded by an older version merge the new documented facts (re_lab.dossier).
-FACTS_VERSION = 2
+FACTS_VERSION = 3                  # 3: Super Mario 64 DS (assimilate_kb sm64ds_nds)
 
 
 def _kb_title_facts() -> list[dict]:

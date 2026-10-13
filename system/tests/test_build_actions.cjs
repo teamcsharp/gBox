@@ -127,7 +127,17 @@ test('Mods card: What this changes under the title, ⚑ Report and 🗑 bottom r
   assert.match(html, /<span class="mg-acts"><button class="act" type="button" data-mg="report"[^>]*>⚑ Report<\/button><button class="act mg-del" type="button" data-mg="delete"[^>]*>🗑<\/button><\/span><\/div><\/div><\/article>$/);
   const menu = MG.cardHTML(CARD, { menu: true });
   assert.match(menu, /data-mg="report"[^>]*>⚑ Report a problem…<\/button><button[^>]*data-mg="delete"[^>]*>🗑 Delete…</);
-  assert.match(MG.cardHTML({ ...CARD, reported: { number: 9, id: 'r9' } }, {}), /<span class="mg-badge ba-rep" title="[^"]*">Reported #9<\/span>/);
+  // the ⚑ build report mark: its own badge in the report row (opens the request)
+  const rep = MG.cardHTML({ ...CARD, reported: { number: 9, id: 'r9' } }, {});
+  assert.match(rep, /<div class="mg-lfr"><button class="act mg-lf mg-br" type="button" data-mg="request" data-n="9"[^>]*>⚑ Build report #9<\/button><\/div>/);
+  // with #318's launch failure ticket too: both badges side by side in one row, the ticket buttons not repeated
+  const both = MG.cardHTML({ ...CARD, reported: { number: 9, id: 'r9' }, launch_report: { number: 7, status: 'in_progress', label: 'boot hang' },
+                             tickets: [{ number: 7 }, { number: 9 }, { number: 5, title: 'other' }] }, {});
+  assert.match(both, /<div class="mg-lfr"><button class="act mg-lf mg-lf-bad" type="button" data-mg="request" data-n="7"[\s\S]*?>⚠ Reported as #7, being investigated<\/button><button class="act mg-lf mg-br" type="button" data-mg="request" data-n="9"[\s\S]*?>⚑ Build report #9<\/button><\/div>/);
+  assert.equal((both.match(/class="mg-lfr"/g) || []).length, 1, 'one badge row');
+  assert.ok(!/class="act mg-req"[^>]*data-n="(7|9)"/.test(both) && /class="act mg-req"[^>]*data-n="5"/.test(both));
+  assert.equal(MG.reportsHTML(null, null), '');
+  assert.equal(MG.reportsHTML({ number: 3, verified: true }, null), MG.reportHTML({ number: 3, verified: true }));
 });
 
 function mgHost() {
@@ -156,7 +166,7 @@ test('Mods controller: 🗑 asks where it lives, deletes everywhere (the card go
   try {
     await ctl.onClick({ target: mgTarget(CARD.key, 'report'), preventDefault() {} });
     assert.deepEqual(seen[0], ['report', CARD.key, 0]);
-    assert.match(h.parts['[data-mg-grid]'].innerHTML, /Reported #12/);
+    assert.match(h.parts['[data-mg-grid]'].innerHTML, /⚑ Build report #12/);
     assert.match(h.parts['[data-mg-grid]'].innerHTML, /⚑ Reported: request #12/);
     answer = { scope: 'node', node: 'MYPC', spark: { removed: [] }, jobs: [{ node: 'MYPC' }], skipped: [] };
     await ctl.onClick({ target: mgTarget(CARD.key, 'delete'), preventDefault() {} });
