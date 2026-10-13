@@ -197,6 +197,10 @@ CAST = [
        "King Dodongo skeleton (ROM scan)", typ="normal", size=3.0),
     _s("bongo_bongo_head", "Bongo Bongo (head)", "boss", ["Boss_Sst"], "object_sst", 0x16840, "gBongoHeadSkel",
        size=2.5),
+    _s("hylian_townsfolk", "Market and Kakariko townsfolk (En_Hy: 21 types, 8 bodies, 16 heads)", "npc", ["En_Hy"],
+       "object_aob", 0xF0, "gHylianWoman1Skel", size=1.0, group=("En_Hy", "object_aob"),
+       objects_also=["object_bob", "object_boj", "object_ahg", "object_bba", "object_cne", "object_bji", "object_cob"],
+       note="one compound slot: every townsperson's legs, torso and head objects get the same new model"),
     # not replaceable by an object rebuild (kept in the catalogue so the reason is on record)
     {"slot": "epona", "name": "Epona", "kind": "npc", "actors": ["En_Horse"], "object": "object_horse", "skel": 0x9D74,
      "skel_name": "gEponaSkel", "type": "normal", "limb_type": "skin", "size": 2.0,
@@ -209,11 +213,6 @@ CAST = [
     {"slot": "like_like", "name": "Like Like", "kind": "enemy", "actors": ["En_Rr"], "object": "object_rr",
      "skel": None, "skel_name": None, "type": None, "limb_type": None, "size": 1.2,
      "refuse": "Like Like has no skeleton (En_Rr builds its body from display lists and matrices in code)"},
-    {"slot": "hylian_townsfolk", "name": "Market and Kakariko townsfolk (En_Hy)", "kind": "npc", "actors": ["En_Hy"],
-     "object": "object_aob", "skel": 0xF0, "skel_name": "gHylianWoman1Skel", "type": "flex", "limb_type": "standard",
-     "size": 1.0,
-     "refuse": "En_Hy draws a head from one object on a body from another, per townsperson type (object_aob, ahg, "
-               "boj, bba, bji, cne, cob + object_os_anime): the per-type head / body table isn't catalogued yet"},
 ]
 # creatures: paired wings / legs / leaves read as arms by the limb-tree guess -> the donor rides the body whole
 CREATURES = {"kaepora_gaebora", "skulltula", "octorok", "keese", "tektite", "peahat", "dodongo", "wallmaster",
@@ -245,11 +244,31 @@ def actor_id(name: str) -> int | None:
 
 # ---------------------------------------------------------------- the snapshot (facts measured on the owned ROM)
 
+# slots catalogued after the last `--write` snapshot, with their facts from the decomp; the next ROM refresh re-derives
+# them (a snapshot row that already has a mapping wins)
+PENDING = {
+    "hylian_townsfolk": {
+        "object": "object_aob", "skeleton": "gHylianWoman1Skel",
+        "objects": ["object_aob", "object_bob", "object_boj", "object_ahg", "object_bba", "object_cne", "object_bji",
+                    "object_cob"],
+        "skeleton_facts": {"offset": 0xF0, "limbs": 15, "lod": False, "type": "flex"},
+        "mapping": {"mode": "retarget", "roles": {"hip": 0, "l_thigh": 1, "l_shin": 2, "l_foot": 3, "r_thigh": 4,
+                                                  "r_shin": 5, "r_foot": 6, "chest": 7, "l_upper": 8, "l_fore": 9,
+                                                  "l_hand": 10, "r_upper": 11, "r_fore": 12, "r_hand": 13, "head": 14},
+                    "source": "z_en_hy.h limb enum; refresh with python -m gbox.oot_cast ROM --write"}},
+}
+
+
 def load_snapshot() -> dict:
     try:
-        return json.loads(SNAPSHOT.read_text())
+        snap = json.loads(SNAPSHOT.read_text())
     except (OSError, ValueError):
         return {}
+    slots = snap.setdefault("slots", {})
+    for slot, row in PENDING.items():
+        if not (slots.get(slot, {}).get("mapping") or {}).get("mode"):
+            slots[slot] = row
+    return snap
 
 
 def cast_slots(game: dict | None = None) -> list[dict]:
@@ -654,6 +673,8 @@ def slot_spec(rom: OW.Rom, slot: str) -> dict:
     if c.get("group"):                                    # En_Ko: the head list the actor swaps in, Fado's head object
         from .oot_swap import GROUPS
         g = GROUPS[(c["group"][0], oid)]
+        if g.get("compound"):                             # En_Hy: legs, torso and head from different objects
+            return compound_spec(rom, spec, g, oid, c["skel"])
         mine_heads = [(o, off) for o, off in g["head_dls"] if o == oid]
         group |= {"head_limb": g["head_limb"], "head_dls": mine_heads, "anim_objects": list(g["anim_objects"]),
                   "extra_heads": [(o, off) for o, off in g["head_dls"] if o != oid], "note": g.get("note", "")}
@@ -664,6 +685,29 @@ def slot_spec(rom: OW.Rom, slot: str) -> dict:
     spec |= {"group": group, "regions": r["regions"], "reclaim": {k: r[k] for k in ("lists", "textures")},
              "objects": [oid] + [o for o, _off in group.get("extra_heads", [])]}
     return spec
+
+
+def compound_spec(rom: OW.Rom, spec: dict, g: dict, oid: int, off: int) -> dict:
+    """A compound group (En_Hy): the actor switches segment 6 between several objects per limb, so every object gets
+    the same new data appended at the same offset (oot_swap.write_group) - nothing of the old models is reused. Every
+    skeleton of the group must have the primary's limb count (one animation set drives them all) and every head list
+    must start a display list. Raises ValueError with the first mismatch."""
+    count = OW.skeleton(rom.object(oid), off)["count"]
+    for o, so in g["skels"]:
+        obj = rom.object(o)
+        if so + 8 > len(obj):
+            raise ValueError(f"object {o:#x} ({len(obj):#x} bytes) has no skeleton at {so:#x} in this ROM")
+        n = OW.skeleton(obj, so)["count"]
+        if n != count:
+            raise ValueError(f"object {o:#x}: its skeleton at {so:#x} has {n} limbs, the group's has {count}")
+    for o, ho in g["head_dls"]:
+        obj = rom.object(o)
+        if ho + 8 > len(obj) or obj[ho] not in DL_OPS:
+            raise ValueError(f"object {o:#x}: no head display list at {ho:#x} in this ROM")
+    group = {"objects": list(g["objects"]), "skels": list(g["skels"]), "skel": (oid, off), "head_limb": g["head_limb"],
+             "head_dls": list(g["head_dls"]), "anim_objects": list(g["anim_objects"]), "branch_dls": [],
+             "note": g.get("note", "")}
+    return spec | {"group": group, "regions": [], "reclaim": {"lists": 0, "textures": 0}, "objects": list(g["objects"])}
 
 
 def check_object(obj: bytes, off: int, segs: dict | None = None) -> list[str]:

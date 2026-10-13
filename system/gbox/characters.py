@@ -54,11 +54,14 @@ _LIST_CACHE: dict = {}            # str(root) -> {"at": built_at, "entries": {sl
 LIST_TTL_S = 600.0               # full re-read at most this often, in the background (writes elsewhere show up then)
 import threading as _threading
 _LIST_LOCK = _threading.Lock()
+LIST_GENERATION = 0              # bumped by every library write in this process (the asset index watches it)
 
 
 def _invalidate_list(root=None, meta=None):
     """A write through put_meta updates the cached entry in place: no full re-read of the HDD library."""
+    global LIST_GENERATION
     with _LIST_LOCK:
+        LIST_GENERATION += 1
         for key, c in _LIST_CACHE.items():
             if root is not None and key != str(root):
                 continue
@@ -692,6 +695,8 @@ class CharIn(BaseModel):
     props: list[dict] = []                 # add base=...: [{object, bone}] the Blender add-on bound
     rig_roles: dict[str, str] = {}         # add: semantic body role -> joint node name in the imported model
     scale: dict = {}                       # add base=...: {"head": k} head-bone scale
+    auto_rig: bool = True                  # add (from Blender): a model without a skeleton gets the humanoid auto rig
+    derived_ok: bool = False               # add: bones changed vs the base -> a new character derived from it (else blocked)
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
     b: str = ""                            # swap: whose looks: a name ("Saria", "kokiri boy") | "x,y" picture point
@@ -1611,6 +1616,12 @@ DEDICATED = [
     ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
      lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Metal Gear Solid 2: Substance (USA): the catalog's cb7aae71edb10cd3 (filed windows_native by HyperSpin's "Microsoft
+    # XBOX" list) is the PS2 DVD-9 SLUS-20554 (CHD, both layers read in place): stage kms models + texture packs
+    # (encrypted, zlib pages) -> rigged GLBs; Snake, Raiden, the soldier variants and main cast (docs/mgs2.md)
+    ("mgs2", lambda t, p: "metal gear solid 2" in t and p in ("windows_native", "ps2"),
+     lambda: __import__("gbox.mgs2_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.mgs2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
@@ -2278,6 +2289,13 @@ def add_model(ctx, inp: CharIn) -> dict:
     if not name:
         raise ValueError("add needs character=<name for the new entry>")
     data, _src = _model_bytes(ctx, inp)
+    if inp.kind in ("", "character"):
+        # the Blender round trip (gbox.blender_roundtrip): a variant when the model names a collection character (base=, or
+        # the gBox extras of an exported GLB) with the same skeleton, else a new character: detected / auto-rigged body
+        # roles, attachments as props
+        from . import blender_roundtrip
+        game = _game(ctx, inp) if (inp.session_id or inp.game_id or inp.game) else None
+        return blender_roundtrip.import_model(ctx, inp, data, name, game)
     if inp.base:                                           # a variant (Blender Live Link): base rig, props, scale
         from . import variants
         root = library_root(ctx.config)
@@ -2323,20 +2341,15 @@ def to_blender(ctx, inp: CharIn) -> dict:
     if not m:
         raise ValueError(f"nothing in the collection matches {inp.character!r}")
     base = next(r for x, r in pool if x is m)
-    f = base / m["slug"] / m["model"]
-    data = f.read_bytes()
-    if f.suffix == ".gltf":                                # one self-contained file: external buffers/images inlined
-        gl = json.loads(data)
-        for coll, mt in (("buffers", "application/octet-stream"), ("images", "image/png")):
-            for it in gl.get(coll, []):
-                if it.get("uri") and not it["uri"].startswith("data:"):
-                    it["uri"] = f"data:{mt};base64," + base64.b64encode((f.parent / it["uri"]).read_bytes()).decode()
-        data = json.dumps(gl).encode()
+    from . import blender_roundtrip                        # one self-contained GLB + rig role names / props as extras
+    data = blender_roundtrip.export_glb(base, m["slug"])
     item = _api(ctx, "POST", "/api/clipboard", json={"kind": "gltf", "name": m["slug"], "b64": base64.b64encode(data).decode(),
-                                                     "meta": {"character": m["slug"], "model": m["model"]}}, timeout=300)
+                                                     "meta": {"character": m["slug"], "model": m["model"], "roundtrip": 1,
+                                                              "base": m.get("variant_of") or m["slug"]}}, timeout=300)
     return {"status": "on_clipboard", "entry": _brief(m), "clipboard_seq": item.get("seq"),
-            "message": f"{m['name']} is on the gBox clipboard: in Blender press Ctrl+Shift+V (gBox add-on). After editing, "
-                       "use the gBox panel's 'Send to gBox', then characters op=add from_clipboard=true character=<new name>."}
+            "message": f"{m['name']} is on the gBox clipboard: in Blender press Ctrl+Shift+V (gBox add-on; the bones keep "
+                       "their role names). After editing, the gBox panel's 'Send to gBox' stores it back as a variant of "
+                       f"{m['name']} (attachments bound to bones included)."}
 
 
 def _finish(ctx, res: dict) -> dict:
@@ -2416,7 +2429,10 @@ def characters_tool(inp: CharIn, ctx):
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
-    add character=<new name> from_clipboard=true|artifact|path: store an edited model. |
+    add character=<new name> from_clipboard=true|artifact|path: store a model from Blender (gbox.blender_roundtrip): a
+    variant of the collection character it came from (base=, or the GLB's gBox extras; skeleton unchanged), else a new
+    character (derived_ok=true when bones changed) with its rig recognised (Mixamo, Rigify, VRM, UE, biped) or
+    auto-rigged (auto_rig); objects parented to bones become attachments every writer carries. |
     cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role] [seed]
     [slots=all|main|enemies] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
     another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
@@ -2457,13 +2473,14 @@ def characters_tool(inp: CharIn, ctx):
                                            "targets": sorted(m.get("targets", {}))}
                                           for m in chars if inp.kind in ("", "character") or m.get("kind", "character") == inp.kind]}}
     if inp.op == "match":                                     # wrestling games: several characters, one ROM / disc
-        from . import aki_wrestling, defjam_writer, etm_swap, yukes_sd
+        from . import aki_wrestling, defjam_writer, etm_swap, mgs2_swap, yukes_sd
         pr = [(p.get("character", ""), p.get("slot", "")) for p in inp.pairs] or \
             [(inp.character, "" if inp.slot == "player" else inp.slot), (inp.b, inp.a)]
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
         mod = etm_swap if g["game_id"] in etm_swap.GAME_IDS else mod             # Enter the Matrix (PS2 disc)
+        mod = mgs2_swap if g["game_id"] in mgs2_swap.GAME_IDS else mod           # Metal Gear Solid 2 (PS2 DVD)
         from . import retarget_profile as _RP                # game-wide Retarget editor profiles
         chars = [_RP.apply_to_meta(m, g["game_id"], "*") for m in chars]
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
@@ -2482,11 +2499,13 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
         game = _game(ctx, inp)
-        from . import mgs_vr_swap, twin_snakes_swap
+        from . import mgs2_swap, mgs_vr_swap, twin_snakes_swap
         if game["game_id"] in mgs_vr_swap.GAME_IDS:          # VR Missions: rebuild + session_swap at the same moment
             return {"result": mgs_vr_swap.live_use(ctx, meta, game, inp)}
         if game["game_id"] in twin_snakes_swap.GAME_IDS:    # Twin Snakes GC: mod + session swap + loaded-stage write
             return {"result": twin_snakes_swap.live_use(ctx, meta, game, inp)}
+        if game["game_id"] in mgs2_swap.GAME_IDS:          # MGS2: build the slot the whip landed on, swap it in place
+            return {"result": mgs2_swap.use(ctx, meta, game, inp)}
         from . import oot_hot_swap
         return {"result": oot_hot_swap.use(ctx, meta, game, inp)}
     if inp.op == "use" and inp.head_scale and abs(inp.head_scale - 1) > 0.01:   # sidebar "Head size": a variant
@@ -2592,6 +2611,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import etm_swap
     if gid in etm_swap.GAME_IDS:                              # Enter the Matrix (PS2 disc): slot = a cast slot | player
         return {"result": out | etm_swap.use(ctx, meta, game, inp)}
+    from . import mgs2_swap
+    if gid in mgs2_swap.GAME_IDS and (mgs2_swap.is_slot(inp.slot) or inp.session_id):
+        # Metal Gear Solid 2 Substance (PS2 DVD): snake | raiden | player | soldiers | soldier_* | olga ... -> a
+        # patched STAGE.DAT image; with a session id it replaces the running game through session_swap
+        return {"result": out | mgs2_swap.use(ctx, meta, game, inp)}
     from . import doapp_swap
     if gid in doapp_swap.GAME_IDS and doapp_swap.is_slot(inp.slot):
         # Dead Or Alive ++ (arcade): <fighter>[:<costume>] | player (all 44) -> doapp_<slug>_<slot> (rebuilt doapp set)
@@ -2655,8 +2679,15 @@ def characters_tool(inp: CharIn, ctx):
 @functools.wraps(characters_tool)
 def characters_recorded(inp: CharIn, ctx):
     """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
-    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
-    out = characters_tool(inp, ctx)
-    from . import special_builds
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer). The result carries
+    "attachments" when Blender props went through a writer: kept / simplified / dropped for the game's budget."""
+    from . import attachments, special_builds
+    with attachments.ledger() as led:
+        out = characters_tool(inp, ctx)
+    rep = attachments.summary(led)
+    if rep and isinstance(out, dict) and isinstance(out.get("result"), dict):
+        out["result"]["attachments"] = rep
+        if rep["dropped"] and isinstance(out["result"].get("message"), str):
+            out["result"]["message"] += f" Attachments dropped for the budget: {', '.join(rep['dropped'])}."
     special_builds.record_call(ctx, inp, out)
     return out

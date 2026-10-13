@@ -132,6 +132,7 @@ def sync(data, favorites, requests, *, now):
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
                     session_observer=bool(context.get('session_observer')),
+                    launch_failure=bool(context.get('launch_failure')),
                     operator_requested=bool(context.get('replacement_requested')),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
@@ -246,7 +247,15 @@ def _prompt(item):
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
     if item['lane'] == 'inbox':
-        if item.get('session_observer'):
+        if item.get('launch_failure'):
+            # gbox/launch_failures.py: a game failed to load; the control plane verifies and closes it after the merge
+            header += ('This is a launch failure report: a game failed to load. The request holds the error, logs, '
+                       'timings, staging and the automatic remedy results. Find the root cause, fix it in gBox code '
+                       'with a focused test and publish it (draft PR) with screenshots of the game loading after the '
+                       'fix (evidence_capture on an idle node). Never stop, pause or replace a game the operator is '
+                       'playing. Leave the request in_progress: the control plane verifies the fix with a launch of '
+                       'the same game and mod after the PR merges and deploys, then closes or reopens it. ')
+        elif item.get('session_observer'):
             header += ('This task supports passive observation of an operator gameplay session. '
                        'Read its observations, capture evidence and exact game build. Repair the native '
                        'model reader or read-only observation capability. Never send input, pause, stop, '
