@@ -237,6 +237,9 @@ class LaunchIn(BaseModel):
     capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
                                            # its own config files, RenderDoc inside, no rewind/recording, window off-screen
     capture_for: str = ""                  # the operator session this capture session captures (scene_relay)
+    boot_timeout_s: float | None = Field(default=None, ge=10, le=600)   # how long the emulator may take to report the
+                                           # game running (None = the adapter's default, 30 s for RetroArch); the
+                                           # launch failure remedy relaunches a slow boot with a longer one
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -425,7 +428,40 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
 def launch_game(inp: LaunchIn, ctx: Ctx):
     """Launch a cataloged game on this node; missing cores/BIOS are installed automatically. Streams to the UI."""
     with _LAUNCH_LOCK:
-        return _launch_game(inp, ctx)
+        diag: dict = {}
+        _LAUNCH_DIAG.d = diag                                  # _launch_game records how far it got (one launch at a time)
+        try:
+            return _launch_game(inp, ctx)
+        except Exception as exc:
+            _launch_failure_evidence(inp, ctx, diag, exc)
+            raise
+        finally:
+            _LAUNCH_DIAG.d = None
+
+
+_LAUNCH_DIAG = threading.local()
+
+
+def _launch_failure_evidence(inp: LaunchIn, ctx: Ctx, diag: dict, exc: BaseException):
+    """A failed launch leaves its evidence on the job: launch-failure.json (adapter, core, stage reached, timings,
+    staging) and the emulator's own log tail, for the launch failure report (gbox/launch_failures.py)."""
+    try:
+        ad = diag.pop("_adapter", None)
+        log = ""
+        if ad is not None and callable(getattr(type(ad), "log_tail", None)):
+            try:
+                log = ad.log_tail(60000) or ""
+            except Exception:                                  # noqa: BLE001 - the log may be gone with the process
+                log = ""
+        info = {k: v for k, v in diag.items() if not k.startswith("_")} | {
+            "error": f"{type(exc).__name__}: {exc}"[:4000], "game_id": inp.game.game_id, "mod": inp.mod,
+            "boot_timeout_s": inp.boot_timeout_s, "host_os": HOST_OS, "worker_name": __import__("platform").node()}
+        ctx.artifact("launch-failure.json", json.dumps(info, default=str, indent=1).encode(), "application/json",
+                     game=inp.game.game_id)
+        if log:
+            ctx.artifact("emulator-log.txt", log.encode("utf-8", "replace"), "text/plain", game=inp.game.game_id)
+    except Exception:                                          # noqa: BLE001 - evidence never hides the real error
+        pass
 
 
 def _capture_plan(ad, g, want: str, ctx) -> dict:
@@ -450,6 +486,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
     timings, staging = {}, None
+    diag = getattr(_LAUNCH_DIAG, "d", None)
+    diag = {} if diag is None else diag
+    diag["timings"] = timings                                 # filled as the stages pass (a failure shows how far it got)
     t_start = mark = time.monotonic()
 
     def lap(name):
@@ -457,14 +496,26 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         now = time.monotonic()
         timings[name] = round(timings.get(name, 0) + now - mark, 3)
         mark = now
+    ctx.nowait = True                                     # progress lines never wait on the control plane (registry.Ctx)
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
+    diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
     ad.progress = ctx.progress
+    diag.update(_adapter=ad, adapter=ad.name, core=getattr(getattr(ad, "cfg", None), "core", None) or g.core,
+                stage="prepare")
+    if inp.boot_timeout_s:
+        ad.boot_timeout_s = float(inp.boot_timeout_s)
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
     ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
     if inp.capture_backend:
         ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
         ad.examine = True
+    try:                                                  # Windows: pick + wake the output device while we stage
+        prepare = getattr(ad, "prepare_audio", None)
+        if prepare:
+            prepare()
+    except Exception as e:                                 # noqa: BLE001 - never block the launch
+        print(f"gBox: audio device prefetch failed: {e}", flush=True)
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     lap("runtime_s")
     if g.launch.get("kind") == "steam":
@@ -502,6 +553,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
             ctx.progress(28, f"Mod: {launch_mod}")
+            diag["staged_mod"] = launch_mod
         lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
@@ -512,6 +564,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             receipt = _stage_for_launch(src, g, ctx, must_wait=bool(emu and emu.stage_local))
             staging = {k: receipt[k] for k in ("copied", "hashed", "seconds", "mb_s", "resumed_from", "background",
                                                 "eta_s", "size") if k in receipt}
+            diag["staging"] = staging
             if receipt.get("background"):
                 left = f"~{receipt['eta_s'] / 60:,.0f} min at {receipt['mb_s']} MB/s" if receipt.get("eta_s") else "share not answering yet"
                 ctx.progress(70, f"Playing {src.name} from the library share; the cache copy continues in the background "
@@ -527,9 +580,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
             lap("unpack_s")
+        diag["stage"] = "close the previous game"
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         lap("close_previous_s")
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
+        diag["stage"] = "start the emulator"
         detail = ad.launch_game(str(src))
     lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
     timings["total_s"] = round(time.monotonic() - t_start, 3)
@@ -839,7 +894,14 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     pid = now
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
-                    c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
+                    rc = getattr(getattr(ad, "proc", None), "returncode", None)
+                    end = {"returncode": rc}
+                    if rc not in (None, 0) and callable(getattr(type(ad), "log_tail", None)):
+                        try:                                   # a crash report (gbox/launch_failures.py) wants the log
+                            end["log_tail"] = (ad.log_tail(20000) or "")[-20000:]
+                        except Exception:                      # noqa: BLE001
+                            pass
+                    c.post(f"/api/sessions/{sid}/ended", json=end)
                     rewind.stop(sid)
                     ring_record.stop(sid)
                     SESSIONS.pop(sid, None)

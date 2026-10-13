@@ -92,6 +92,20 @@ class VoiceConfig(BaseModel):
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
 
 
+class GameAudioConfig(BaseModel):
+    """[game_audio] where emulators send their sound on a Windows node, and what a slow sound device may cost a launch
+    (gbox/game_audio.py). A sleeping or switching output (wireless headset) can hold an emulator's audio init for many
+    seconds; RetroArch's main loop, and with it the launch, waits on it."""
+    device: str = ""                  # output device name; "" = the default playback device when active, else the first active one
+    retroarch_drivers: list[str] = ["xaudio", "wasapi", "null"]   # tried in order; the next one when audio init stalls
+    init_grace_s: float = 3.0         # audio init this long without returning -> relaunch with the next driver
+    stall_s: float = 6.0              # audio opened slowly, then the core's loop still not answering for this long -> next driver
+    boot_wait_s: float = 30.0         # content running within this long (no audio trouble seen)
+    extended_wait_s: float = 120.0    # content loaded and audio still opening: wait up to this long instead of failing
+    warm_device: bool = True          # open a silent stream on the chosen device while the launch prepares (wakes it)
+    remember_driver_h: float = 24.0   # a driver that took over from a stalled one starts first on that device for this long
+
+
 class RecordingConfig(BaseModel):
     """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
     operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
@@ -203,6 +217,7 @@ class Config(BaseModel):
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
     hermes: HermesConfig = HermesConfig()            # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
+    game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -305,6 +320,12 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # [hermes.grunt]                  # Spark helper chores at idle priority (GET /api/grunt)
 # disabled = []                   # e.g. ["verify_launch_fixes"]
 # verify_nodes = ["i9-NUC", "spark"]
+# [game_audio]                    # emulator sound on a Windows node (gbox/game_audio.py)
+# device = ""                     # output device name; "" = default playback device if active, else the first active one
+# retroarch_drivers = ["xaudio", "wasapi", "null"]   # next driver when audio init stalls past init_grace_s
+# init_grace_s = 3.0
+# extended_wait_s = 120.0         # content loaded, audio still opening: the launch waits this long instead of failing
+
 # [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
 # enabled = true                  # records only while the pad was used in the last idle_s seconds
 # seconds = 120                   # how far back a clip can reach

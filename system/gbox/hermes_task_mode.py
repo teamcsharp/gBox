@@ -233,16 +233,17 @@ def set_enabled(enabled: bool) -> dict:
         return result
 
 
-def dispatch_request(request_id: str, number: int) -> str:
-    """Queue a cloud investigation after the incident's immediate recovery finishes."""
+def dispatch_request(request_id: str, number: int, *, task: str | None = None, name: str | None = None) -> str:
+    """Queue a cloud investigation after the incident's immediate recovery finishes. `task` replaces the emulation
+    incident instructions (a launch failure report, gbox/launch_failures.py) and `name` the job name."""
     from . import hermes_local
     if hermes_local.active():
-        # A root-cause emulation investigation is too big for the Spark's local model: the open report stays in the
-        # work queue (a repair item, dispatched on a paid route once one recovers).
+        # A root-cause investigation (emulation incident or launch failure) is too big for the Spark's local model:
+        # the open report stays in the work queue and is dispatched on a paid route once one recovers.
         raise RuntimeError('Hermes is on the local model while the paid routes are out of credit; '
                            'the investigation stays queued for a paid route')
     with _LOCK:
-        name = f"gBox emulation investigation #{number}"
+        name = name or f"gBox emulation investigation #{number}"
         jobs = _jobs()
         existing = next((j for j in reversed(jobs) if j.get('name') == name
                          or j.get('name', '').startswith(name + ' retry ')), None)
@@ -269,7 +270,7 @@ def dispatch_request(request_id: str, number: int) -> str:
             # identifiable replacement occurrence for the same report.
             previous = existing['id']
             name += ' retry ' + previous
-        prompt = (f"Investigate and resolve gBox emulation report #{number}, request_id={request_id}. "
+        prompt = task or (f"Investigate and resolve gBox emulation report #{number}, request_id={request_id}. "
                   "Your first substantive action is mcp_gbox_get_request for this request ID. "
                   "If the report is already done, verify its completion reply and finish without reopening it. "
                   "Read the attached emulation-diagnostics Markdown, screenshots, save state and recovery results. Identify the "

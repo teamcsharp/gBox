@@ -966,14 +966,10 @@ def create_app(config: Config) -> FastAPI:
                                                                      "error": err})
                 _server_job_threads.discard(job.id)
             if state == JobState.FAILED and err and err.startswith('cancelled by the operator'):
-                return                                         # the operator stopped it: not a mod failure to report
-            if state == JobState.FAILED and mod:
-                try:
-                    req_auto_mod_failure(AutoFailureIn(session_id=sid, game=sess.get("title") or "", model=mod,
-                        action="apply model mod to running game", target="player", moment="current game moment",
-                        detail=err or "session swap failed", job_id=job.id), "gbox-auto")
-                except Exception as exc:
-                    store.audit("gbox-auto", "request.auto_mod_failure.error", job.id, {"error": str(exc)[:500]})
+                return                                         # the operator stopped it: not a failure to report
+            if state == JobState.FAILED:
+                # the mod could not be loaded into the game: a launch failure report (gbox/launch_failures.py)
+                _lf_observe_later(job.id)
         try:
             threading.Thread(target=go, daemon=True).start()
         except Exception as exc:
@@ -1923,10 +1919,13 @@ def create_app(config: Config) -> FastAPI:
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
+        if t.name == "launch_game" and state != JobState.SUCCEEDED:
+            # a failed launch (modded or stock) files / updates its launch failure report (gbox/launch_failures.py);
+            # it is no longer also an "Auto report: launch_game failed" mod report
+            _lf_observe_later(j["id"])
         mod_attempt = ((t.name == "characters" and op in ("use", "live_use", "swap"))
                        or (t.name == "mod" and op == "apply")
                        or (t.name == "file_mod" and op == "build")
-                       or (t.name == "launch_game" and bool(attempt.get("mod")))
                        or (t.name.endswith("_mods") and op in ("apply", "build", "use", "enable", "swap")))
         if mod_attempt:
             outcome = (r.output or {}).get("result") or {}
@@ -3559,10 +3558,31 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/sessions/{sid}/ended")
     def ended(sid: str, info: dict, actor=Depends(auth)):
         s_ = store.get("session", sid)
+        log_tail = info.pop("log_tail", None) if isinstance(info, dict) else None   # kept for a crash report only
         if s_:
-            store.put("session", sid, s_ | {"state": "ended", "ended": time.time(), "exit": info})
+            was_running = s_.get("state") != "ended"
+            s_ = s_ | {"state": "ended", "ended": time.time(), "exit": info}
+            store.put("session", sid, s_)
+            if was_running and isinstance(info, dict) and info.get("returncode") not in (None, 0):
+                # a game that crashed right after it started failed to load: launch failure report
+                ended_session, stop = dict(s_), sid in stopping or _stop_requested(sid)
+                def _crash():
+                    try:
+                        launch_ledger.observe_session_end(ended_session, info | {"log_tail": log_tail or ""},
+                                                          stop_requested=stop, label=store.get("slabel", sid))
+                    except Exception as exc:                  # noqa: BLE001 - the report never blocks the session end
+                        store.audit("gbox-auto", "launch_failure.error", sid, {"error": str(exc)[:500]})
+                threading.Thread(target=_crash, daemon=True, name=f"launch-crash-{sid[-8:]}").start()
         store.audit(actor, "session.ended", sid, info)
         return {"ok": True}
+
+    def _stop_requested(sid: str) -> bool:
+        """Any stop_game job for this session (an intentional stop, not a crash)."""
+        with store.lock:
+            return bool(store.db.execute(
+                "SELECT 1 FROM docs WHERE kind='job' AND json_extract(body,'$.tool')='session_op' "
+                "AND json_extract(body,'$.input.op')='stop_game' AND json_extract(body,'$.input.session_id')=? LIMIT 1",
+                (sid,)).fetchone())
 
     # --- requests inbox: operator reports (screenshot / eyedropper / chat) <-> agent, with per-request metrics ---
     class RequestIn(BaseModel):
@@ -3905,6 +3925,23 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/requests/auto-mod-failure")
     def req_auto_mod_failure(f: AutoFailureIn, actor=Depends(auth)):
         """File visual evidence, preserve the current moment, and dispatch an agent to resolve a failed swap."""
+        failed_launch = store.get("job", f.job_id) if f.job_id else None
+        if failed_launch and failed_launch.get("tool") in ("launch_game", "session_swap") \
+                and failed_launch.get("state") in ("failed", "invalid", "rejected"):
+            # a client reporting a failed launch / swap: the launch failure report for it (one ticket per failure
+            # signature, gbox/launch_failures.py) gets the client's words and screenshot instead of a second ticket
+            rec = launch_ledger.observe_job(failed_launch)
+            if rec:
+                rid = rec["request_id"]
+                atts = _attach(rid, [{"name": "client-screenshot.png", "type": "image/png", "b64": f.image_b64}]) \
+                    if f.image_b64 else []
+                with store.lock:
+                    cur = store.get("request", rid) or {}
+                    cur.setdefault("messages", []).append({"author": "agent", "text": "Reported by the app: "
+                        + (f.detail or f.action)[:2000], "ts": time.time(), "attachments": atts})
+                    store.put("request", rid, cur)
+                store.audit(actor, "request.auto_mod_failure.launch", rid, {"job": f.job_id})
+                return _clean(store.get("request", rid))
         s_ = store.get("session", f.session_id) or {} if f.session_id else {}
         game = f.game or s_.get("title") or s_.get("game_title") or "unknown game"
         details = (f"Action: {f.action}\nGame: {game} (game_id: {s_.get('game_id') or '?'})\n"
@@ -4082,6 +4119,175 @@ def create_app(config: Config) -> FastAPI:
 
     emulation_issue.routes(app, store, auth, lambda body, actor: req_create(RequestIn(**body), actor),
                            _incident_job, _incident_dispatch)
+
+    # --- launch failure reports (gbox/launch_failures.py, docs/launch-failure-reports.md) ---
+    from . import launch_failures as LF
+
+    def _lf_submit(tool, inp, worker_id):
+        return submit(JobRequest(tool=tool, input=inp, require_worker=worker_id), "gbox-auto").model_dump(mode="json")
+
+    def _lf_priority(change):
+        """Edit the Hermes work queue's operator priority list under its lock (the cron pump holds it while it runs)."""
+        from . import hermes_delivery, hermes_work_queue
+        for _ in range(30):
+            try:
+                with hermes_delivery.locked("work-queue"):
+                    return hermes_work_queue.set_priority(change(hermes_work_queue.get_priority()))
+            except OSError:
+                time.sleep(2)
+        raise RuntimeError("the Hermes work queue stayed locked for a minute")
+
+    def _lf_investigate(rid, number, task, attempt=1):
+        from . import hermes_task_mode
+        ids = _lf_priority(lambda cur: [rid] + [x for x in cur if x != rid])
+        controller = hermes_task_mode._job() or {}
+        if controller.get("no_agent") or not controller.get("enabled"):
+            # the managed work queue dispatches it on its next tick; with Hermes task mode off it waits there first
+            return {"mode": "queue", "job_id": None, "priority": ids.index(rid)}
+        # a reopened ticket is a new attempt: a finished job of the same name would otherwise be returned as is
+        jid = hermes_task_mode.dispatch_request(rid, number, task=task, name=f"gBox launch failure #{number}"
+                                                + (f" attempt {attempt}" if attempt > 1 else ""))
+        return {"mode": "dispatch", "job_id": jid, "priority": ids.index(rid)}
+
+    def _lf_queue_job(rid):
+        from . import hermes_work_queue
+        try:
+            item = (hermes_work_queue._read().get("items") or {}).get("inbox:" + rid) or {}
+        except (OSError, ValueError):
+            return None
+        return item.get("job_id") if item.get("dispatch_state") in ("queued", "finished") else None
+
+    def _lf_verify(rec, node):
+        from . import evidence_capture as EC
+        inp = EC.EvidenceIn.model_validate({
+            "game_id": rec["game_id"], "mod": rec.get("mod") or "", "node": node, "inputs": [], "load_moment": "none",
+            "shots": [{"label": "verification", "at_s": 20}], "compare_stock": False, "boot_s": 10}).model_dump(mode="json")
+        try:
+            return evidence_job(inp, "gbox-launch-verify").model_dump(mode="json")
+        except HTTPException as e:
+            raise RuntimeError(str(e.detail)) from e
+
+    def _lf_deployed(sha):
+        """True when the Spark's deployed main (scripts/deploy_main.sh) contains the commit and no restart is pending;
+        None when this machine keeps no deploy record."""
+        head_file = Path(config.data_dir) / "deployed-main.txt"
+        if not sha or not head_file.is_file():
+            return None
+        if (Path(config.data_dir) / "deploy-restart-pending").exists():
+            return False                             # on the share, but the service still runs the old code
+        head = head_file.read_text().strip()
+        if head.startswith(sha):
+            return True
+        from . import hermes_delivery
+        for repo in (Path.home() / "gBox-src", hermes_delivery.repository()):
+            if (repo / ".git").exists():
+                r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, head],
+                                   capture_output=True, timeout=30)
+                if r.returncode in (0, 1):
+                    return r.returncode == 0
+        return None
+
+    def _lf_last_frame(sid):
+        from .session_images import as_png
+        lv = live.get(sid) or {}
+        if lv.get("frame"):
+            try:
+                return as_png(lv["frame"])
+            except Exception:                         # noqa: BLE001
+                pass
+        with store.lock:
+            row = store.db.execute(
+                "SELECT json_extract(body,'$.sha256') FROM docs WHERE kind='artifact' AND "
+                "(json_extract(body,'$.provenance.session')=? OR json_extract(body,'$.provenance.session_id')=?) "
+                "AND json_extract(body,'$.media_type') LIKE 'image/%' ORDER BY rowid DESC LIMIT 1", (sid, sid)).fetchone()
+        return store.read_artifact(row[0]) if row and row[0] else None
+
+    def _lf_swap_parent(job):
+        gid = (((job.get("input") or {}).get("game")) or {}).get("game_id")
+        t = job.get("created") or 0
+        with store.lock:
+            rows = store.db.execute(
+                "SELECT json_extract(body,'$.id'), json_extract(body,'$.finished') FROM docs WHERE kind='job' "
+                "AND json_extract(body,'$.tool')='session_swap' AND json_extract(body,'$.input.game_id')=? "
+                "AND COALESCE(json_extract(body,'$.started'),json_extract(body,'$.created'),0) <= ?", (gid, t + 1)).fetchall()
+        return next((jid for jid, fin in rows if fin is None or fin >= t - 1), None)
+
+    launch_ledger = LF.Ledger(store, LF.Hooks(
+        create_request=lambda body: req_create(RequestIn(**body), "gbox-auto"), workers=workers, submit_job=_lf_submit,
+        investigate=_lf_investigate, queue_job_of=_lf_queue_job,
+        unprioritize=lambda rid: _lf_priority(lambda cur: [x for x in cur if x != rid]),
+        verify_launch=_lf_verify, deploy_contains=_lf_deployed, last_frame=_lf_last_frame, swap_parent=_lf_swap_parent))
+    app.state.launch_ledger = launch_ledger
+
+    def _lf_observe_later(jid):
+        def go():
+            try:
+                job = store.get("job", jid)
+                if job:
+                    launch_ledger.observe_job(job)
+            except Exception as exc:                  # noqa: BLE001 - a report never breaks result handling
+                store.audit("gbox-auto", "launch_failure.error", jid, {"error": f"{type(exc).__name__}: {exc}"[:500]})
+        threading.Thread(target=go, daemon=True, name=f"launch-failure-{jid[:8]}").start()
+
+    @app.on_event("startup")
+    async def _launch_failure_loop():
+        if os.environ.get("GBOX_LAUNCH_FAILURES", "1") == "0":
+            return
+
+        def loop():
+            time.sleep(90)                            # workers re-register first; a test server is long gone by then
+            while True:
+                try:
+                    launch_ledger.scan(time.time() - 3600)    # failures no hook saw (worker restart, timeouts, retired)
+                    launch_ledger.tick()
+                except Exception as exc:              # noqa: BLE001
+                    print(f"gBox: launch failure loop: {type(exc).__name__}: {exc}", flush=True)
+                time.sleep(60)
+        threading.Thread(target=loop, daemon=True, name="launch-failures").start()
+
+    @app.get("/api/launch-failures")
+    def launch_failures_list(game_id: str = "", job_id: str = "", actor=Depends(auth)):
+        """Launch failure tickets (newest first) with the badge each client shows; ?job_id= the one for a launch job."""
+        if job_id:
+            mark = store.get(LF.JOB_KIND, job_id) or {}
+            rec = store.get(LF.KIND, mark.get("signature") or "")
+            return {"job_id": job_id, "report": launch_ledger.summary(rec) if rec else None,
+                    "skipped": mark.get("skipped")}
+        recs = [r for r in store.all(LF.KIND) if not game_id or r.get("game_id") == game_id]
+        recs.sort(key=lambda r: -(r.get("last_seen") or 0))
+        return {"settings": launch_ledger.settings(), "items": [launch_ledger.summary(r) | {
+            k: r.get(k) for k in ("game_id", "title", "mod", "adapter", "worker", "first_seen", "remedies", "hermes",
+                                  "pr", "verify", "verified")} for r in recs]}
+
+    class LaunchBackfillIn(BaseModel):
+        days: float = Field(default=7.0, gt=0, le=60)
+        dry_run: bool = False
+
+    @app.post("/api/launch-failures/backfill")
+    def launch_failures_backfill(b: LaunchBackfillIn, actor=Depends(auth)):
+        """File the failed launches of the last `days` days, grouped by signature, as live failures are filed (no
+        automatic relaunches for old failures). dry_run lists the groups without filing."""
+        if b.dry_run:
+            return {"days": b.days, "dry_run": True, "groups": launch_ledger.preview(b.days)}
+        out = launch_ledger.backfill(b.days)
+        store.audit(actor, "launch_failure.backfill", "", out)
+        return out
+
+    @app.post("/api/launch-failures/tick")
+    def launch_failures_tick(actor=Depends(auth)):
+        """Run one pass of the verify-and-resolve loop now (it also runs every minute)."""
+        return {"changes": launch_ledger.tick()}
+
+    class LaunchSettingsIn(BaseModel):
+        auto_remedy: bool | None = None
+        investigate: bool | None = None
+        verify: bool | None = None
+
+    @app.post("/api/launch-failures/settings")
+    def launch_failures_settings(s: LaunchSettingsIn, actor=Depends(auth)):
+        out = launch_ledger.set_settings(**s.model_dump())
+        store.audit(actor, "launch_failure.settings", "", out)
+        return out
 
     class ImportItem(BaseModel):
         text: str

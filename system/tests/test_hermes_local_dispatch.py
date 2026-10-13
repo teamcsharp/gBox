@@ -15,6 +15,7 @@ def test_dispatch_size_policy():
     assert size({'lane': 'favorite', 'stages': {'inventory': {'status': 'verified'}}}) == 'large'   # analysis
     assert size({'lane': 'inbox', 'repair': True}, {'title': 'Fix typo'}) == 'large'
     assert size({'lane': 'inbox', 'session_observer': True}, {'title': 'Fix typo'}) == 'large'
+    assert size({'lane': 'inbox', 'launch_failure': True}, {'title': 'Fix typo'}) == 'large'
     assert size({'lane': 'inbox'}, {'title': 'Fix the typo in the Tasks tooltip'}) == 'small'
     assert size({'lane': 'inbox'}, {'title': 'Run the flaky test_cache test and fix it'}) == 'small'
     assert size({'lane': 'inbox'}, {'title': 'Write the GTA3 model writer'}) == 'large'

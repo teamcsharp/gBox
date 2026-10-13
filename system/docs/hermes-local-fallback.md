@@ -65,11 +65,16 @@ but they are weaker tool callers.
 
 ### Hermes config the supervisor sets
 
-The supervisor changes these keys with `hermes config set`, the existing route mechanism, and only when they differ:
+The supervisor changes the route keys with `hermes config set`, the existing route mechanism, and only when they
+differ. `custom_providers` is the exception: it is never passed to `hermes config set`, because the whole list,
+including every other provider's `api_key`, would then appear on a command line. Instead the supervisor edits
+`~/.hermes/config.yaml` in-process (`hermes_local.register_provider`): it re-reads the file, changes only
+`custom_providers`, checks the YAML round trip, and atomically replaces the file with the same mode. This happens
+once, before the first switch to the local route.
 
 | Mode | Key | Value |
 |---|---|---|
-| local | `custom_providers` | The existing list plus `{name: "spark-local", base_url: "http://127.0.0.1:8765/api/llm/local/v1", api_key: "gbox-local", model: "gpt-oss:20b"}`. An existing EhmBird entry is used as the shape template, without its key. Other entries are kept unchanged. This is set once. |
+| local | `custom_providers` (in-process file edit) | The existing list plus `{name: "spark-local", base_url: "http://127.0.0.1:8765/api/llm/local/v1", model: "gpt-oss:20b", models: ["gpt-oss:20b"], api_key: "gbox-local"}`. An existing EhmBird entry is used as the shape template, without its key, `models` or `models_discovered`. Other entries (EhmBird, `10.89.1.246:11434`) are kept unchanged. |
 | local | `cron.model_provider` | `spark-local` |
 | local | `cron.model` | `gpt-oss:20b` |
 | local | `fallback_providers` | `[]` |

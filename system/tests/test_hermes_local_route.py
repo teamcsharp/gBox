@@ -89,16 +89,30 @@ def test_openrouter_credit_ends_a_scheduler_backoff_but_not_a_measured_reset():
 
 @pytest.fixture
 def supervisor(monkeypatch, tmp_path):
-    """adjust_routes with Hermes's CLI and config replaced: `config` is what `hermes config set` changed."""
+    """adjust_routes against a real Hermes config.yaml; `hermes config set` is replaced by an edit of that file, and
+    every command line the supervisor ran is kept in `argv` (no provider key may appear there)."""
+    import yaml
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
     monkeypatch.setenv('GBOX_CONFIG', str(tmp_path / 'missing.toml'))
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path / 'hermes'))
     monkeypatch.delenv('GBOX_HERMES_EXCLUDED_PROVIDERS', raising=False)
-    config = {'cron': {'model_provider': 'nous', 'model': OPUS}, 'fallback_providers': [ROUTER],
-              'custom_providers': [{'name': 'EhmBird', 'base_url': 'http://localhost:11434/v1', 'api_key': 'ollama',
-                                    'model': 'qwen3.8:27b-mtp-q4_K_M'}]}
+    home = tmp_path / 'hermes'
+    home.mkdir()
+    config_path = home / 'config.yaml'
+    # The Spark's shape (2026-10-13): name, base_url, model, models, models_discovered, api_key.
+    config_path.write_text(yaml.safe_dump({
+        'model': {'default': 'x'}, 'cron': {'model_provider': 'nous', 'model': OPUS}, 'fallback_providers': [ROUTER],
+        'custom_providers': [
+            {'name': 'EhmBird', 'base_url': 'http://localhost:11434/v1', 'model': 'gemma4:e4b',
+             'models': ['gemma4:e4b', 'qwen3:8b'], 'models_discovered': True, 'api_key': 'sk-secret-ehmbird'},
+            {'name': '10.89.1.246:11434', 'base_url': 'http://10.89.1.246:11434/v1', 'model': 'qwen3:8b',
+             'models': ['qwen3:8b'], 'models_discovered': True, 'api_key': 'sk-secret-lan'}]}, sort_keys=False))
     data = {'routes': [NOUS, ROUTER], 'cooldowns': {}, 'cooldown_details': {}, 'new_lessons': 0}
     path = tmp_path / 'feedback.json'
-    sets = []
+    sets, argv = [], []
+
+    def read():
+        return yaml.safe_load(config_path.read_text())
 
     def scan():
         saved = json.loads(path.read_text()) if path.exists() else {}
@@ -106,23 +120,31 @@ def supervisor(monkeypatch, tmp_path):
         return dict(data)
 
     def run(args, **_):
+        argv.append(list(args))
         key, value = args[-2:]
         sets.append(key)
+        config = read()
         if '.' in key:
             config['cron'][key.split('.')[1]] = value
         else:
             config[key] = json.loads(value)
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(hermes_feedback, 'scan', scan)
     for name in ('finalize_usage', 'finalize_merges', 'finalize_cap', 'finalize_summaries', 'finalize_cleanup'):
         monkeypatch.setattr(hermes_feedback, name, lambda: {})
-    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_config', lambda: config)
+    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_config', read)
     monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [])
     monkeypatch.setattr(hermes_feedback.subprocess, 'run', run)
     monkeypatch.setattr(hermes_feedback, '_lift_recovered_credit', lambda data: [])
     from gbox import hermes_recovery
     monkeypatch.setattr(hermes_recovery, 'recover', lambda saved: {'status': 'no_pending_recovery'})
-    return SimpleNamespace(config=config, data=data, path=path, sets=sets)
+
+    class View(SimpleNamespace):
+        @property
+        def config(self):
+            return read()
+    return View(data=data, path=path, sets=sets, argv=argv, config_path=config_path)
 
 
 def test_supervisor_switches_to_local_and_back(supervisor):
@@ -132,15 +154,24 @@ def test_supervisor_switches_to_local_and_back(supervisor):
     assert out['mode'] == 'local' and out['route'] == LOCAL
     assert sv.config['cron'] == {'model_provider': 'spark-local', 'model': 'gpt-oss:20b'}
     assert sv.config['fallback_providers'] == []
-    entry = next(p for p in sv.config['custom_providers'] if p['name'] == 'spark-local')
-    assert entry['base_url'].endswith('/api/llm/local/v1') and entry['api_key'] == 'gbox-local'
+    assert out['local_provider_registered'] is True
+    providers = sv.config['custom_providers']
+    assert [p['name'] for p in providers] == ['EhmBird', '10.89.1.246:11434', 'spark-local']
+    assert providers[0]['api_key'] == 'sk-secret-ehmbird' and providers[1]['api_key'] == 'sk-secret-lan'  # kept
+    assert providers[2] == {'name': 'spark-local', 'base_url': 'http://127.0.0.1:8765/api/llm/local/v1',
+                            'model': 'gpt-oss:20b', 'models': ['gpt-oss:20b'], 'api_key': 'gbox-local'}
+    assert 'custom_providers' not in sv.sets                    # never through `hermes config set` ...
+    assert not any('sk-secret' in arg for args in sv.argv for arg in args)   # ... so no key on a command line
+    assert sv.config['model'] == {'default': 'x'}               # the rest of config.yaml is unchanged
     saved = json.loads(sv.path.read_text())
     assert saved['local_mode']['active'] and saved['current_route'] == LOCAL
     assert LOCAL in saved['routes']                             # listed for the Providers view
     since = saved['local_mode']['since']
     sv.sets.clear()
-    hermes_feedback.adjust_routes()                             # steady: nothing re-set
+    mtime = sv.config_path.stat().st_mtime_ns
+    assert hermes_feedback.adjust_routes()['local_provider_registered'] is False   # steady: nothing re-set
     assert sv.sets == [] and json.loads(sv.path.read_text())['local_mode']['since'] == since
+    assert sv.config_path.stat().st_mtime_ns == mtime
     sv.data['cooldowns'] = {'nous/' + OPUS: 9e12}               # OpenRouter recovered
     out = hermes_feedback.adjust_routes()
     assert out['mode'] == 'paid' and out['route'] == ROUTER

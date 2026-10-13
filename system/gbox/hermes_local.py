@@ -161,8 +161,14 @@ def provider_entry(s=None, template: dict | None = None) -> dict:
     """The custom_providers entry Hermes needs for the local route (OpenAI-compatible, pointed at gBox's proxy).
     The proxy answers loopback clients without the gBox token, so no secret is written into Hermes's config."""
     s = s or settings()
-    entry = {k: v for k, v in (template or {}).items() if k not in ('api_key', 'key_env', 'api_key_env')}
-    entry.update(name=s.provider, base_url=s.proxy_url, api_key='gbox-local', model=s.model)
+    # Shape from the template (Hermes on the Spark: name, base_url, model, models, models_discovered, api_key), but
+    # never its key or what Hermes discovered from the template's own server.
+    entry = {k: v for k, v in (template or {}).items()
+             if k not in ('api_key', 'key_env', 'api_key_env', 'models', 'models_discovered')}
+    entry.update(name=s.provider, base_url=s.proxy_url, model=s.model)
+    if template and 'models' in template:
+        entry['models'] = [s.model]
+    entry['api_key'] = 'gbox-local'
     return entry
 
 
@@ -179,6 +185,37 @@ def merged_providers(existing, s=None):
     out = [x for x in rows if x is not mine]
     out.append(want)
     return out
+
+
+def register_provider(config_path: Path, s=None) -> bool:
+    """Put the local entry into Hermes's custom_providers by editing config.yaml in this process (an atomic replace
+    that keeps the file's mode), never through `hermes config set`: that would put every other provider's api_key on
+    a command line. Re-reads the file first, so only custom_providers changes. True when the file was written."""
+    import yaml
+    s = s or settings()
+    text = config_path.read_text(encoding='utf-8')
+    data = yaml.safe_load(text) or {}
+    if not isinstance(data, dict):
+        raise RuntimeError('Hermes config.yaml is not a mapping; the local provider was not registered')
+    merged = merged_providers(data.get('custom_providers'), s)
+    if merged is None:
+        return False
+    data['custom_providers'] = merged
+    out = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    if (yaml.safe_load(out) or {}).get('custom_providers') != merged:
+        raise RuntimeError('Hermes config.yaml round trip failed; the local provider was not registered')
+    mode = config_path.stat().st_mode & 0o777
+    tmp = config_path.with_name(config_path.name + '.gbox-tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode or 0o600)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(out)
+        os.chmod(tmp, mode or 0o600)
+        os.replace(tmp, config_path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return True
 
 
 # ---------------------------------------------------------------------------------------------- dispatch size
@@ -213,6 +250,8 @@ def dispatch_size(item: dict, request: dict | None = None) -> dict:
         return {'size': 'large', 'reason': f'favorite {stage} stage needs a paid model'}
     if item.get('repair') or item.get('session_observer') or item.get('operator_requested'):
         return {'size': 'large', 'reason': 'native character or session work'}
+    if item.get('launch_failure'):
+        return {'size': 'large', 'reason': 'launch failure investigation (gbox/launch_failures.py)'}
     if item.get('attempts', 0) >= 3:
         return {'size': 'large', 'reason': f"{item['attempts']} earlier attempts"}
     text = ' '.join(str(x or '') for x in (item.get('title'), request.get('title'), request.get('body'))).lower() + ' '

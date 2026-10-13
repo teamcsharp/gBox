@@ -3000,6 +3000,10 @@ async function jobWait(j, what, ms = 500, max = Infinity) {   // poll until the 
   }
   return j;
 }
+// A failed launch as an error that keeps its job id: the auto report (POST /api/requests/auto-mod-failure) then lands on
+// the launch failure ticket the server filed for that job ("Reported as #N, being investigated", docs/launch-failure-reports.md).
+function launchError(j) { const err = new Error(j.error || "launch failed"); err.jobId = j.id; return err; }
+const launchReportText = r => window.GBoxLaunchBar?.reportText?.(r) || (r?.number ? `Reported as #${r.number}, being investigated` : "");
 async function modSession(m, launch) {
   const ss = (await liveSessions(0)).data || [];
   const run = ss.find(x => x.state === "running" && x.game_id === m.game_id);
@@ -3009,7 +3013,7 @@ async function modSession(m, launch) {
   const started = await gbox.api(`/api/games/${m.game_id}/launch?node=${encodeURIComponent(S.workerName || "windows")}&mod=${encodeURIComponent(bootMod)}`, {});   // this PC
   const what = `Launch of ${m.game_title || m.game_id}`;
   const j = await jobWait(jobOf(started, what, "game launch request failed"), what, 1000);
-  if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
+  if (j.state !== "succeeded") throw launchError(j);
   await new Promise(r => setTimeout(r, 8000));                       // let the core boot before loading a state
   if (!j.output?.session_id) throw new Error(`Launch completed without a game session for ${m.game_title || m.game_id}`);
   return { sid: j.output.session_id, bootApplied: !!bootMod };
@@ -3041,7 +3045,9 @@ async function modPlay(m, how) {
     const report = await gbox.api("/api/requests/auto-mod-failure", { session_id: attemptedSid, game: m.game_title || "",
       model: m.title || "", action: "apply mod", target: how, moment: "current game moment",
       detail: `${why}\n${String(err?.stack || "").slice(0, 1600)}`, job_id: err?.jobId || "", image_b64: shot?.split(",")[1] || null }).catch(() => null);
-    toast("⚠ " + why + (report?.ok && report.data?.number ? ` · auto report #${report.data.number}` : ""), 12000);
+    const filed = report?.ok && report.data?.number ? report.data : null;
+    toast("⚠ " + why + (filed ? " · " + (filed.context?.launch_failure ? launchReportText({ number: filed.number, verified: false })
+      : `auto report #${filed.number}`) : ""), 12000);
   }
 }
 // What went wrong, in words (#993): a guard's own message passes through; an unexpected TypeError (a field missing from an
@@ -3084,7 +3090,7 @@ async function modsGalleryPlay(m, { node, moment }) {
   }
   const what = `Launch of ${m.mod_title || m.name}`;
   const j = await jobWait(jobOf(await gbox.api("/api/jobs", { tool: "@launch", input: { game_id: m.game_id, mod: m.name, node } }), what), what, 1000);
-  if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
+  if (j.state !== "succeeded") throw launchError(j);
   const sid = j.output?.session_id;
   if (moment && m.state_slot != null && sid) {
     await new Promise(r => setTimeout(r, 8000));                     // let the core boot before loading a state
@@ -5230,7 +5236,7 @@ async function specialBuildLaunch(gid, x) {
     if (!x.debug) return await modsGalleryPlay(m, { node: x.node === "auto" ? (S.workerName || "windows") : x.node, moment: m.state_slot != null });
     const what = `Debug launch of ${b.mod_title || x.mod}`;
     const j = await jobWait(jobOf(await gbox.api(`/api/games/${encodeURIComponent(gid)}/launch?node=linux&debug=true&mod=${encodeURIComponent(x.mod)}`, {}), what), what, 1000);
-    if (j.state !== "succeeded") throw new Error(j.error || "launch failed");
+    if (j.state !== "succeeded") throw launchError(j);
     const sid = j.output?.session_id;
     if (m.state_slot != null && sid) {
       await new Promise(r => setTimeout(r, 8000));                   // let the core boot before loading a state
@@ -6203,7 +6209,8 @@ $("#sb-audit").before(activityHost); activity = new TaskActivity(activityHost);
 try {
   globalThis.GBOX_LAUNCH_BAR = window.GBoxLaunchBar?.mount({ bottom: 28,
     fetchJob: async id => { const r = await gbox.api(`/api/jobs/${encodeURIComponent(id)}`); return r.ok ? r.data : null; },
-    onDetails: job => tvOpen(job.id, "job") }) || null;
+    onDetails: job => tvOpen(job.id, "job"),
+    onReport: r => modsGalleryRequest({ id: r.request_id, number: r.number }) }) || null;
 } catch (e) { console.error("Launch bar:", e); }
 const AU_ACTOR = [[/agent|gbox-chat/, "🤖"], [/claude/, "🧠"], [/operator|desktop|web/, "🧑"], [/worker|lilspark|nuc|jaybuilt/i, "🖥️"], [/.*/, "⚙️"]];
 const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], [/^request/, "📥"], [/^catalog|^scan/, "📚"], [/^artifact/, "📦"],

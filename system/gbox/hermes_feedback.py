@@ -316,13 +316,13 @@ def adjust_routes() -> dict:
                 'new_lessons': data['new_lessons'], 'providers': provider_status(data, config),
                 'completed_usage': accounting, 'credit_recovered': lifted}
     chosen = pick['route']
-    changes = {}
-    if pick['mode'] == 'local':
-        providers = hermes_local.merged_providers(config.get('custom_providers'), local)
-        if providers is not None:
-            changes['custom_providers'] = providers
-    changes.update({'cron.model_provider': chosen['provider'], 'cron.model': chosen['model'],
-                    'fallback_providers': pick['fallbacks']})
+    registered = False
+    if pick['mode'] == 'local' and hermes_local.merged_providers(config.get('custom_providers'), local) is not None:
+        # In-process edit of config.yaml: `hermes config set custom_providers` would put every provider's api_key
+        # on a command line. Done before the route switch, so Hermes never runs on an unknown provider.
+        registered = hermes_local.register_provider(hermes_task_mode._home() / 'config.yaml', local)
+    changes = {'cron.model_provider': chosen['provider'], 'cron.model': chosen['model'],
+               'fallback_providers': pick['fallbacks']}
     for key, value in changes.items():
         old = config.get(key) if '.' not in key else cron.get(key.split('.')[1])
         if old != value:
@@ -350,7 +350,7 @@ def adjust_routes() -> dict:
             'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
             'completed_usage': accounting, 'merges': merges, 'summaries': summaries,
-            'capped': capped, 'cleanup': cleanup, 'credit_recovered': lifted,
+            'capped': capped, 'cleanup': cleanup, 'credit_recovered': lifted, 'local_provider_registered': registered,
             'repairs': ['canonical_mcp_workspace'] if repaired else []}
 
 
