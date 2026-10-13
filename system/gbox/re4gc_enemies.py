@@ -210,7 +210,8 @@ def _profiled(rig, out, scale, T, joint_role, s, sy_up, sy_dn):
     from . import fit_events as FE, retarget_profile as RP
     if FE.active():
         FE.auto_model(rig.get("source"))
-        FE.stage("scale", data={"scale": float(s), "torso_up": float(sy_up / s), "torso_down": float(sy_dn / s)})
+        FE.stage("scale", data={"scale": float(s), "torso_up": float(sy_up / s), "torso_down": float(sy_dn / s)}
+                 | FE.donor_numbers(rig, fitted_height=FE.height(out)), prims=FE.donor(rig))   # the donor as loaded
         FE.stage("retarget", data={"roles": len(rig["roles"]), "vertices": int(sum(len(p["pos"]) for p in out))},
                  prims=out)
     prof = RP.profile_of(scale)
