@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import attachments
 from . import sm64_mario as sm
 from . import sm64_writer as W
 from . import n64_rom
@@ -68,10 +69,12 @@ def load_rig(path: Path, roles: dict[str, str], props=()) -> dict:
     """A skinned glTF + {role: joint name} -> {joints (J,3), parent, roles {role: index}, prims [{pos, nrm, uv, tris,
     owner, tex, color, prop}]}, every vertex in the pose its joint nodes are in (skin applied with the strongest joint).
     props: node names of extra meshes (a hat bound to the head bone): rigid on their nearest joint ancestor, flagged so
-    the fit ignores them (head size, ground) and the budget keeps them whole when it can."""
-    props = set(props or ())
+    the fit ignores them (head size, ground) and the budget keeps them whole when it can. Nodes the Blender add-on
+    marked (glTF extras gbox_prop / gbox_bone, gbox.attachments) are props too, whether or not the caller lists them."""
+    from . import attachments
     from .re4gc_models import _gltf_load, _node_world
     gl, acc, image = _gltf_load(path)
+    props = attachments.prop_nodes(gl, props)
     Wn = _node_world(gl)
     skins = gl.get("skins") or []
     if not skins:
@@ -148,10 +151,12 @@ def load_rig(path: Path, roles: dict[str, str], props=()) -> dict:
                     si = gl["textures"][bct["index"]].get("sampler")
                     settings = sampler[si] if si is not None else {}
                     wrap = (settings.get("wrapS",10497), settings.get("wrapT",10497))
+            isprop = sk is None and nd.get("name") in props
             prims.append({"pos": P, "nrm": N, "uv": UV, "tris": tris, "owner": owner, "tex": tex, "color": color,
-                          "prop": nd.get("name") in props, "wrap": wrap})
+                          "prop": isprop, "wrap": wrap, **({"prop_node": nd.get("name")} if isprop else {})})
     if not prims:
         raise ValueError(f"{Path(path).name}: no triangles")
+    attachments.note("loaded", prims, source=path)
     return {"joints": np.array([Wn[j][:3, 3] for j in jn]), "parent": parent, "roles": ri, "prims": prims, "names": names,
             "source": str(path)}
 
@@ -300,12 +305,18 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
             else:                                          # hip, chest, neck, clavicles, anything unmapped
                 P[m] = torso(p["pos"][m])
                 J[m] = np.where(P[m][:, 1] >= split, chestj, hipj)
+        if p.get("prop") and len(J):                       # an attachment stays rigid on ONE joint (its bone's)
+            J[:] = int(np.bincount(J).argmax())
         Jv = np.zeros((len(P), 4), np.int64)
         Jv[:, 0] = J
         Wv = np.zeros((len(P), 4))
         Wv[:, 0] = 1
+        pn = p.get("prop_node") if p.get("prop") else None
         out.append({"pos": P, "nrm": N, "uv": p["uv"], "tris": p["tris"], "J": Jv, "W": Wv, "tex": p["tex"],
-                    "color": p["color"], "wrap": p.get("wrap",(10497,10497)), "name": f"m{len(out)}", "prop": bool(p.get("prop"))})
+                    "color": p["color"], "wrap": p.get("wrap",(10497,10497)),
+                    "name": attachments.material_name(pn or "prop", len(out)) if p.get("prop") else f"m{len(out)}",
+                    "prop": bool(p.get("prop")), **({"prop_node": pn} if pn else {})})
+    attachments.note("fitted", out)
     rep_flip = _orient(out)
     rep = {"normals_flipped": rep_flip, "scale": round(float(s), 4), "torso_up": round(sy_up / s, 2), "torso_down": round(sy_dn / s, 2),
            "shoulder_widen": round(sx, 2), "head_scale": round(head_k, 2), "head_scale_user": float((scale or {}).get("head", 1.0)),
@@ -405,7 +416,10 @@ def read_rigged(path: Path) -> list[dict]:
                     si = gl["textures"][bct["index"]].get("sampler")
                     settings = sampler[si] if si is not None else {}
                     wrap = (settings.get("wrapS",10497), settings.get("wrapT",10497))
-            out.append({"pos": P, "nrm": N, "uv": UV, "tris": tris, "jid": jid[k], "tex": tex, "color": color, "wrap": wrap})
+            pn = attachments.node_of_material(gl["materials"][mi].get("name") if mi is not None else None)
+            out.append({"pos": P, "nrm": N, "uv": UV, "tris": tris, "jid": jid[k], "tex": tex, "color": color, "wrap": wrap,
+                        **({"prop": True, "prop_node": pn} if pn else {})})
+    attachments.note("budget", out, file=Path(path).name)
     return out
 
 

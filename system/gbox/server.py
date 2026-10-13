@@ -572,6 +572,11 @@ def create_app(config: Config) -> FastAPI:
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
 
+    # Blender round trip (gbox/blender_roundtrip.py): a character out as one GLB with its rig role names / props,
+    # copy to the clipboard (the picker's right-click), import back as a variant / new donor (a characters job)
+    from . import blender_roundtrip
+    blender_roundtrip.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
+
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:
         from . import characters
