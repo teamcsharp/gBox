@@ -365,6 +365,19 @@ class Store:
                                    (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def game_requests(self, game_id: str, statuses=("open", "in_progress", "blocked"), limit: int = 20) -> list[dict]:
+        """Unfinished inbox requests targeting a game (context.game_id, or the Hermes favorite child request), newest
+        first, as small rows: no body, thread or image is decoded (the session panel polls this every 5 s)."""
+        marks = ",".join("?" for _ in statuses)
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT json_extract(body,'$.id'), json_extract(body,'$.number'), json_extract(body,'$.title'), "
+                "json_extract(body,'$.status'), json_extract(body,'$.context') FROM docs WHERE kind='request' AND "
+                "(json_extract(body,'$.context.game_id')=? OR json_extract(body,'$.context.hermes_favorite_game')=?) "
+                "AND json_extract(body,'$.status') IN (" + marks + ") ORDER BY rowid DESC LIMIT ?",
+                (game_id, game_id, *statuses, limit)).fetchall()
+        return [{"id": i, "number": n, "title": t, "status": s, "context": json.loads(c) if c else {}}
+                for i, n, t, s, c in rows]
     def request_jobs(self, rid: str, limit: int = 200) -> list[dict]:
         """Jobs an inbox request started (parent_request_id or input.request_id), oldest first, for its story."""
         with self.lock:
