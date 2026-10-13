@@ -2246,8 +2246,8 @@ def characters_tool(inp: CharIn, ctx):
                                    for t in (meta.get("targets") or {}).get(gid, [])):
             inp = inp.model_copy(update={"rebuild": True})    # the profile changed since that mod was built
         meta = profiled
-    _FE.model(inp.slot or "player", f"{meta['name']} → {game.get('title', gid)} ({inp.slot or 'player'})",
-              meta["slug"])
+    _FE.default_model(inp.slot or "player", f"{meta['name']} -> {game.get('title', gid)} ({inp.slot or 'player'})",
+                      meta["slug"])
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}

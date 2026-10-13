@@ -362,7 +362,7 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
     meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
     from . import fit_events as FE, retarget_profile as RP
     meta = RP.apply_to_meta(meta, GAME_IDS, f"fighter:{family}")     # the operator's Retarget editor profile
-    FE.model(f"fighter:{family}", f"{meta.get('name', directory.name)} → {family} (costume {costume})",
+    FE.model(f"fighter:{family}", f"{meta.get('name', directory.name)} -> {family} (costume {costume})",
              meta.get("slug") or directory.name)
     roles = (meta.get("rig") or {}).get("roles") or {}
     if not {"hip", "head"} <= roles.keys():

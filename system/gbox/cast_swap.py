@@ -636,7 +636,7 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
             inp = _rebuild(inp)                           # a profile changed in the Retarget editor since the build
         except (OSError, ValueError):
             pass
-    FE.plan([(s, m["slug"], f"{m.get('name', m['slug'])} → {_slot_name(p, s)}") for s, m in pairs])
+    FE.plan([(s, m["slug"], f"{m.get('name', m['slug'])} -> {_slot_name(p, s)}") for s, m in pairs])
     strat = p["strategy"]
     builder = BUILDERS.get(p["writer"])
     if builder is None:

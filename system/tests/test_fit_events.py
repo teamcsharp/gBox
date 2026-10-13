@@ -100,6 +100,21 @@ def test_plan_and_auto_model_assign_fits_to_planned_slots(tmp_path):
     assert [e["model"] for e in evs if e.get("stage") == "retarget"] == ["enemy:rappy", "enemy:booma", "enemy:gobooma"]
 
 
+def test_the_jobs_default_model_starts_only_when_no_writer_names_one(tmp_path):
+    lines, sink = collect()
+    with FE.job(sink, tmp_path):
+        FE.default_model("player", "Amy -> RE4 (player)", "amy")
+        assert not events(lines)                          # nothing until a fit happens
+        FE.stage("scale")
+        assert FE.current() == "player"
+    lines2, sink2 = collect()
+    with FE.job(sink2, tmp_path):
+        FE.default_model("fighter:KAS:all", "Amy -> DOA2", "amy")
+        FE.model("fighter:KAS", "Amy -> KAS (costume 00)", "amy")          # DOA2 names its own model
+        FE.stage("retarget")
+    assert {e.get("model") for e in events(lines2)} == {"fighter:KAS"}
+
+
 # ---------------------------------------------------------------- emission by the fits
 
 def _fixture():

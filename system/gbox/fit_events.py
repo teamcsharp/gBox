@@ -190,6 +190,14 @@ def model(key: str, label: str | None = None, slug: str | None = None, explicit:
     return key
 
 
+def default_model(key: str, label: str | None = None, slug: str | None = None):
+    """The model a job is about (characters op=use: one donor into one slot), started lazily by the first fit that
+    no writer named itself - a writer that names its models (DOA2 per fighter) leaves no empty row behind."""
+    sk = _sink.get()
+    if sk is not None:
+        sk["default"] = (str(key), label, slug)
+
+
 def auto_model(source: str | Path | None = None) -> str | None:
     """The model a shared retarget is fitting: the writer's explicit model, or the current one when it is the same
     donor (a refit) and not written yet, else the donor's next planned slot, else a new one named after the donor's
@@ -209,6 +217,9 @@ def auto_model(source: str | Path | None = None) -> str | None:
     if queue:
         key, label = queue[0]
         return model(key, label, slug, explicit=False)
+    if sk.get("default"):
+        key, label, dslug = sk.pop("default")
+        return model(key, label, dslug)
     sk["m"] += 1
     name = slug or f"model {sk['m']}"
     return model(name if sk["m"] == 1 else f"{name} #{sk['m']}", name, slug, explicit=False)
