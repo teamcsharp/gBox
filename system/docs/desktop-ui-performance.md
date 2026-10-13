@@ -37,6 +37,7 @@ created for itself.
 | "Update ready" logo: two endless `filter`/`background-position` animations from a deploy until the next relaunch | probe: GPU process 6 -> 39.5 %, renderers 34 -> 75 %, 10,857 style recalcs/min; live: 175 % app CPU (GPU process 73 %) with an update pending, 68 % (GPU 5 %) after a relaunch | three pulses, then a still highlight (pulses on hover) |
 | Main process: settings file read and parsed 2-3x per API call; a synchronous ~25 ms tree walk every 20 s | measured walk 24-30 ms | settings cached by mtime; asynchronous walk |
 | Graphics panel started `nvidia-smi` per read, with a console window from the windowless worker | | cached a minute, `CREATE_NO_WINDOW` |
+| Extract tab's three.js loop requested a frame at the display rate from app start, even if never opened | probe `--profile`: `frame extract.js` in an idle Play view | loop only while the tab is open |
 
 ### Results (60 s windows, same probe, `origin/main` clients vs this branch)
 
@@ -86,6 +87,8 @@ Probe, synthetic docked game (12 pop-ups, median / max, renderer side; the nativ
   removes that: the GPU game surface (capture of the emulator window presented as a Chromium video layer), which
   exists for RetroArch but fails with `NotReadableError` on the operator's PC, or rendering pop-ups in a separate
   always-on-top transparent window. Neither was changed here.
+- The embedded view's controller loop (`padLoop`, `getGamepads` every frame, ~0.8 s/min in a session view) is left
+  as is: it forwards pad input to streamed games and is latency-bound.
 - Dolphin, Yuzu and RPCS3 stay on the native dock (their input bridges need the native window focused).
 - The ETag on `/api/requests` and the artifact cache header take effect when the Spark runs this code; the desktop
   changes when the app is relaunched.
