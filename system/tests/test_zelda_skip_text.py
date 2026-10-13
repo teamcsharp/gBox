@@ -178,6 +178,6 @@ def test_game_without_detector_is_refused(clock):
 def test_no_save_loaded_still_refused_before_input(clock):
     ad = FakeN64(flags=TALKING, boxes=1)
     ad.put(oot.SAVE + 0x1C, b"\0" * 6)
-    with pytest.raises(RuntimeError, match="no OoT v1.2 save"):
+    with pytest.raises(RuntimeError, match="no OoT save loaded"):
         _run(clock, ad)
     assert ad.events == []

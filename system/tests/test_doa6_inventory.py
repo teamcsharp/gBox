@@ -9,6 +9,8 @@ from __future__ import annotations
 import struct
 import zlib
 
+import pytest
+
 from gbox import doa6_inventory as d6
 
 
@@ -21,16 +23,22 @@ def build_idrk_entry(name: str | None, crc1: int, data: bytes, size: int | None 
     """
     flags = flags if flags is not None else (0x00120000 if name else 0x00100000)
     num1 = 0
-    hlen = 56 + 12 * 0 + num1 + (len(name.encode()) + 1 if name else 0)
-    payload = struct.pack("<I", 0) if not data else struct.pack("<I", len(zlib.compress(data))) + zlib.compress(data)
-    entry_size = hlen + len(payload) + (4 if data else 0)  # loose files carry a 4-byte trailer
+    raw_hlen = 56 + 12 * 0 + num1 + (len(name.encode()) + 1 if name else 0)
+    hlen = (raw_hlen + 3) & ~3
+    if data:
+        compressed = zlib.compress(data)
+        payload = struct.pack("<I", len(compressed)) + compressed + b"\0" * 4
+    else:
+        payload = struct.pack("<I", 0)
+    entry_size = (hlen + len(payload) + 3) & ~3
     header = d6.IDRK_MAGIC
     header += struct.pack("<QQQI", entry_size, 0, len(data) if size is None else size, num1)
     header += struct.pack("<5I", crc1, 0x1234ABCD, flags, 0, 0)
     if name:
         header += name.encode("latin1") + b"\0"
+    header += b"\0" * (hlen - len(header))
     assert len(header) == hlen, (len(header), hlen)
-    return header + payload + (b"\0" * 4 if data else b"")
+    return header + payload + b"\0" * (entry_size - hlen - len(payload))
 
 
 def build_rdb(entries: list[tuple[str | None, int, bytes]]) -> bytes:
@@ -93,6 +101,8 @@ def test_sniff():
     assert d6.sniff_magic(b"_RNK0000\x18\x00") == "rnk"
     assert d6.sniff_magic(b"_DRK0000\x20\x00") == "drk"
     assert d6.sniff_magic(b"G1MX....") == "g1m"
+    assert d6.sniff_magic(b"GT1G....") == "g1t"
+    assert d6.sniff_magic(b"KTID....") == "ktid"
     assert d6.sniff_magic(b"\x89PNG\r\n\x1a\n....") == "png"
     assert d6.sniff_magic(b"\x00\x01\x02") == "unknown"
 
@@ -115,3 +125,60 @@ def test_inventory_synthetic():
         assert m["rdbs"]["RRPreview"]["parses_clean"]
         assert m["loose"]["files"] == 1
         assert m["loose"]["content"] == {"rnk": 1}
+
+
+def test_read_bin_entry_and_classify():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "DOA6.exe").write_bytes(b"MZ" + b"\0" * 10)
+        idx = root / "RRPreview.rdb"
+        idx.write_bytes(build_rdb([
+            ("tex", 1, b""),
+            ("mdl", 2, b""),
+            ("rnk", 3, b""),
+        ]))
+        rdb = d6.Rdb(idx)
+        bin_path = root / "RRPreview.rdb.bin"
+        # build a bin from three IDRK entries with different payloads
+        bin_path.write_bytes(
+            build_idrk_entry(None, 1, b"GT1G0600" + b"\0" * 20)
+            + build_idrk_entry(None, 2, b"_M1G7300" + b"\0" * 20)
+            + build_idrk_entry(None, 3, b"_RNK0000" + b"\0" * 20)
+        )
+        assert d6.sniff_magic(d6.read_bin_entry(bin_path, 0, limit=8)) == "g1t"
+        summary = d6.classify_bin_entries(rdb, sample=None)
+        assert summary[bin_path.name]["sampled"] == 3
+        assert summary[bin_path.name]["content"] == {"g1t": 1, "g1m": 1, "rnk": 1}
+
+
+def test_read_bin_entry_rejects_truncated_header(tmp_path):
+    first = build_idrk_entry(None, 1, b"GT1G0600" + b"\0" * 20)
+    bad = tmp_path / "RRPreview.rdb.bin"
+    bad.write_bytes(first + d6.IDRK_MAGIC + b"\0" * 10)      # the last magic has 18 of its 56 header bytes
+    with pytest.raises(ValueError):
+        d6._header_length(d6.IDRK_MAGIC + b"\0" * 10)
+    with pytest.raises(ValueError):
+        d6.read_bin_entry(bad, len(first), limit=8)
+
+
+def test_read_bin_entry_rejects_entry_size_smaller_than_header(tmp_path):
+    head = d6.IDRK_MAGIC + struct.pack("<QQQI", 10, 0, 100, 0) + struct.pack("<5I", 1, 2, 0x100000, 0, 0)
+    bad = tmp_path / "RRPreview.rdb.bin"
+    bad.write_bytes(head + b"\xAB" * 4096)                   # entry_size 10 < its 56-byte header: never read on
+    with pytest.raises(ValueError):
+        d6.read_bin_entry(bad, 0, limit=8)
+
+
+def test_classify_counts_window_straddling_magic_and_survives_truncated_tail(tmp_path):
+    (tmp_path / "DOA6.exe").write_bytes(b"MZ" + b"\0" * 10)
+    idx = tmp_path / "RRPreview.rdb"
+    idx.write_bytes(build_rdb([("tex", 1, b""), ("mdl", 2, b"")]))
+    first = build_idrk_entry(None, 1, b"GT1G0600" + b"\0" * 20)
+    second = build_idrk_entry(None, 2, b"_M1G7300" + b"\0" * 20)
+    (tmp_path / "RRPreview.rdb.bin").write_bytes(first + second + d6.IDRK_MAGIC + b"\0" * 10)
+    # a window edge 4 bytes into the second magic, and a magic at the tail with no header behind it
+    summary = d6.classify_bin_entries(d6.Rdb(idx), sample=None, initial_chunk=len(first) + 4)
+    assert summary["RRPreview.rdb.bin"]["sampled"] == 3
+    assert summary["RRPreview.rdb.bin"]["content"] == {"g1t": 1, "g1m": 1, "unreadable": 1}

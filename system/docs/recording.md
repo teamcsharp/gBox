@@ -1,7 +1,9 @@
 # Application and gameplay recordings
 
 Click the title-bar recording icon to record the application. Click it again to stop.
-Right-click the icon and choose **Record gameplay only + audio** to record the visible game picture without the surrounding application or emulator window. Start a game first and keep its picture visible. The adjacent arrow also opens these choices and the existing size/compression options.
+Open the adjacent arrow (▾) and choose **Record gameplay only + audio** to record the visible game picture without the surrounding application or emulator window. Start a game first and keep its picture visible. The arrow also holds the existing size/compression options.
+
+Right-click the icon for **Replay**: export the last 30 s to 2 min of play after the fact, from the background gameplay ring that records while the controller is in use ([ring_recording.md](ring_recording.md)).
 
 Both choices capture PC playback audio, including audible gameplay, through Electron's system loopback. They do not capture the microphone. Other audio playing on the PC is included. Compression retains an AAC audio track and reserves 128 kbps for it within the file-size budget.
 

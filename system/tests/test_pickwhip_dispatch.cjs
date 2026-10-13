@@ -9,7 +9,7 @@ function fixture() {
   const menu = { style: {}, classList: { add() {}, remove() {} }, insertAdjacentHTML() {},
     querySelector: () => input, contains: () => true };
   const ctx = { EMB: { sid: 'worker-game', title: 'GTA III', rect: { x: 100, y: 100, w: 800, h: 600 } },
-    innerWidth: 1500, innerHeight: 950, $: () => menu, esc: String,
+    innerWidth: 1500, innerHeight: 950, $: () => menu, esc: String, fitMenu() {}, dragAnywhere() {},   // layout helpers: no-ops on the fake menu
     toast: text => toasts.push(text), refreshInbox() {},
     gbox: { api: async (url, body) => { calls.push({ url, body });
       return url === '/api/whip/identify' ? { ok: true, data: { b: { name: 'Claude', kind: 'player' } } } :

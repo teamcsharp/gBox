@@ -115,16 +115,113 @@ def export(gdi: str, out_dir: str, cls: str = "C", head: int = 0, colour: int = 
 # ---------------------------------------------------------------- writer: a collection character as the player's class
 
 GAME_IDS = {"daba7a3b195dcf6b": "Phantasy Star Online Ver. 2 (USA)"}
-# Body roles per class letter = node indices of PL<x>BDY00.NJ (HUcast and HUmar share the 64-node layout). The
-# character replaces the body; the head, hair and cap files (PL<x>HED / HAI / CAP*.NJ, loose and in PL<x>NJ.BML)
+# Body roles per class letter = node indices of PL<x>BDY00.NJ. All nine bodies (PLABDY00..PLIBDY00.NJ, read off the
+# owned 2OEF disc, #1485) are one 64-node tree: every node has the same parent in every class (the game drives them all
+# with one motion set); they differ only in bone lengths (HUcast hip at y 14.3, HUnewearl 10.5) and in flag bits of
+# nodes no role uses (ignore-position on zero-offset joints, ignore-scale on the hands). So each class gets the same
+# map, and check_roles verifies a map against a class's own tree (role nodes draw vertices, left limbs at +X, limbs
+# chained below the chest / hip, head above chest above hip above the feet).
+#   0 root   1 hip joint  2 pelvis mesh (hip)   24 / 25 chest joint / torso mesh (chest)   55 / 56 neck / head mesh
+#   3 / 4 / 5 / 7 / 8 left thigh joint / thigh / shin / ankle / foot   12 / 13 / 14 / 16 / 17 the right leg
+#   26 / 27 / 28 / 29 / 31 / 32 / 34 left shoulder / upper arm / forearm / wrist / hand   39-47 the right arm
+#   the rest: hidden markers (flags 0x1c / 0x1e: weapon, effect and head mounts, no vertices)
+# The character replaces the body; the head, hair and cap files (PL<x>HED / HAI / CAP*.NJ, loose and in PL<x>NJ.BML)
 # become an invisible speck so the class head doesn't sit on top. Its textures are one atlas, written into EVERY
 # texture of PL<x>TEX.AFS in that texture's own size and format (which AFS entry the game binds depends on the
 # costume / colour, mapped for HUcast only), so the AFS keeps its layout.
-_HU_ROLES = {"hip": 2, "chest": 25, "head": 56, "l_upper": 28, "l_fore": 29, "l_hand": 34, "r_upper": 41,
-                     "r_fore": 42, "r_hand": 47, "l_thigh": 4, "l_shin": 5, "l_foot": 8, "r_thigh": 13, "r_shin": 14,
-                     "r_foot": 17}
-CLASS_ROLES = {"A": _HU_ROLES, "C": _HU_ROLES}
+PLAYER_PARENTS = [-1, 0, 1, 2, 3, 4, 5, 5, 7, 8, 5, 3, 2, 12, 13, 14, 14, 16, 17, 14, 12, 2, 2, 2, 2, 24, 25, 26, 27, 28,
+                  29, 29, 31, 32, 32, 32, 29, 28, 27, 25, 39, 40, 41, 42, 42, 44, 45, 45, 45, 42, 41, 40, 25, 52, 53, 25,
+                  55, 56, 56, 56, 25, 25, 25, 25]
+PLAYER_ROLES = {"hip": 2, "chest": 25, "head": 56, "l_upper": 28, "l_fore": 29, "l_hand": 34, "r_upper": 41,
+                "r_fore": 42, "r_hand": 47, "l_thigh": 4, "l_shin": 5, "l_foot": 8, "r_thigh": 13, "r_shin": 14,
+                "r_foot": 17}
+CLASS_ROLES = {c: dict(PLAYER_ROLES) for c in "ABCDEFGHI"}
+ROLE_CHAINS = [("hip", "chest", "head"), ("chest", "l_upper", "l_fore", "l_hand"), ("chest", "r_upper", "r_fore", "r_hand"),
+               ("hip", "l_thigh", "l_shin", "l_foot"), ("hip", "r_thigh", "r_shin", "r_foot")]
 PSO_BUDGETS = (900, 750, 600, 480, 400)
+
+
+def check_roles(parents: list[int], world: list, roles: dict[str, int], drawn: dict[int, int] | None = None) -> list[str]:
+    """What's wrong with a role map on a player body tree ([] = usable). parents: parent node per node (-1 = root);
+    world: bind-pose position per node (model faces +Z, left at +X); drawn: {node: drawn vertices} when known."""
+    parents = [-1 if p is None else int(p) for p in parents]
+    if parents != PLAYER_PARENTS:
+        return [f"not the PSO player body tree ({len(parents)} nodes)"]
+    bad = [f"{r}: no node {j}" for r, j in roles.items() if not 0 <= j < len(parents)]
+    missing = sorted({r for ch in ROLE_CHAINS for r in ch} - set(roles))
+    if bad or missing:
+        return bad + [f"no {r}" for r in missing]
+
+    def below(a, b):                                       # is node b a descendant of node a?
+        k = parents[b]
+        while k >= 0 and k != a:
+            k = parents[k]
+        return k == a
+    for ch in ROLE_CHAINS:
+        for a, b in zip(ch, ch[1:]):
+            if not below(roles[a], roles[b]):
+                bad.append(f"{b} (node {roles[b]}) isn't below {a} (node {roles[a]})")
+    for r, j in roles.items():
+        x = float(world[j][0])
+        if r[:2] in ("l_", "r_") and (x > 0) != (r[0] == "l"):
+            bad.append(f"{r} (node {j}) is on the {'left' if x > 0 else 'right'} (x {x:.2f})")
+        if drawn is not None and not drawn.get(j):
+            bad.append(f"{r} (node {j}) draws no vertices")
+    y = {r: float(world[roles[r]][1]) for r in ("head", "chest", "hip", "l_foot", "r_foot")}
+    if not y["head"] > y["chest"] > y["hip"] > max(y["l_foot"], y["r_foot"]):
+        bad.append(f"heights out of order (head {y['head']:.2f}, chest {y['chest']:.2f}, hip {y['hip']:.2f})")
+    return bad
+
+
+def body_roles(body_file: bytes, cls: str) -> dict[str, int]:
+    """The class's role map, checked against its own PL<x>BDY00.NJ (raises ValueError when it doesn't fit)."""
+    from .pso_enemy import vertex_owners
+    cls = cls.upper()
+    if cls not in CLASS_ROLES:
+        raise ValueError(f"unknown PSO class letter {cls!r} (A..I)")
+    data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
+    nodes = ninja.tree_nodes(data, 0)
+    nj = ninja.NJ(body_file)
+    world = [[b["m"][k][3] for k in range(3)] for b in nj.bones]
+    bad = check_roles([nd["parent"] for nd in nodes], world, CLASS_ROLES[cls], vertex_owners(nj))
+    if bad:
+        raise ValueError(f"PL{cls}BDY00.NJ ({CLASSES['ABCDEFGHI'.index(cls)]}): " + "; ".join(bad))
+    return dict(CLASS_ROLES[cls])
+
+
+def joint_roles(roles: dict[str, int]) -> dict[str, str]:
+    """Node-index roles -> the joint names of the exported model (gbox.ninja.to_manifest names nodes nodeNNN)."""
+    return {r: f"node{j:03d}" for r, j in roles.items()}
+
+
+def model_roles(path: Path) -> dict[str, str]:
+    """Body roles of a collection entry exported by export() (backfill for entries collected before extraction reported
+    roles): its manifest.json (next to the model) names the class; the model's skeleton must be the player body tree
+    and pass check_roles in its bind pose. {} when the model isn't a player class body."""
+    import json
+    import numpy as np
+    man = json.loads((Path(path).parent / "manifest.json").read_text())
+    cls = str((man.get("source") or {}).get("class") or "").upper()
+    sk = man.get("skeleton") or []
+    if (man.get("source") or {}).get("extraction_method") != "gbox.pso_player" or cls not in CLASS_ROLES:
+        return {}
+    if [b.get("name") for b in sk] != [f"node{j:03d}" for j in range(len(sk))]:
+        return {}
+    world = []
+    for b in sk:                                            # local TRS -> bind-pose world matrices
+        x, y, z, w = b.get("rotation") or (0, 0, 0, 1)
+        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        M = np.eye(4)
+        M[:3, :3] = R * np.asarray(b.get("scale") or (1, 1, 1), float)
+        M[:3, 3] = b.get("translation") or (0, 0, 0)
+        p = b.get("parent")
+        world.append(M if p is None else world[p] @ M)
+    parents = [-1 if b.get("parent") is None else b["parent"] for b in sk]
+    if check_roles(parents, [w[:3, 3] for w in world], CLASS_ROLES[cls]):
+        return {}
+    return joint_roles(CLASS_ROLES[cls])
 
 
 def bml_files(data: bytes) -> list[dict]:
@@ -144,21 +241,26 @@ def bml_files(data: bytes) -> list[dict]:
     return out
 
 
-def bml_build(data: bytes, replace: dict[str, bytes]) -> bytes:
-    """The BML with entries {lower-case name: new decompressed file} recompressed (PRS); the rest kept as is."""
+def bml_build(data: bytes, replace: dict[str, bytes], textures: dict[str, bytes] | None = None) -> bytes:
+    """The BML with entries {lower-case name: new decompressed file} recompressed (PRS); the rest kept as is.
+    textures: {lower-case entry name: new decompressed texture archive} for entries that carry one (enemy packs)."""
     ents = bml_files(data)
     head = bytearray(data[:0x800])
     body = bytearray()
+    textures = textures or {}
     for i, e in enumerate(ents):
         nm = e["name"].split(b"\0")[0].decode("latin-1").lower()
-        raw, f = e["raw"], list(e["fields"])
+        raw, f, tex = e["raw"], list(e["fields"]), e["tex"]
         if nm in replace:
             raw = ninja.prs_compress(replace[nm])
             f[0], f[2] = len(raw), len(replace[nm])
+        if nm in textures and tex is not None:
+            tex = ninja.prs_compress(textures[nm])
+            f[3], f[4] = len(tex), len(textures[nm])
         struct.pack_into("<5I", head, 0x40 + 0x40 * i + 0x20, *f)
         body += raw + bytes((-len(raw)) % 0x20)
-        if e["tex"] is not None:
-            body += e["tex"] + bytes((-len(e["tex"])) % 0x20)
+        if tex is not None:
+            body += tex + bytes((-len(tex)) % 0x20)
     return bytes(head + body)
 
 
@@ -183,13 +285,14 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     from . import ninja_swap as NS
     cls = cls.upper()
     if cls not in CLASS_ROLES:
-        raise ValueError(f"class {CLASSES['ABCDEFGHI'.index(cls)]} has no body roles yet (HUmar, HUcast)")
+        raise ValueError(f"unknown PSO class letter {cls!r} (A..I)")
     bpath, mpath, tpath = f"PSO/PL{cls}BDY00.NJ", f"PSO/PL{cls}NJ.BML", f"PSO/PL{cls}TEX.AFS"
     body_file = disc.read(bpath)
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
     nodes = ninja.tree_nodes(data, 0)
     nj = ninja.NJ(body_file)
-    tgt = NS.target_from_nj(nj, CLASS_ROLES[cls], set(range(CLASS_ROLES[cls]["head"], len(nodes))))
+    class_roles = body_roles(body_file, cls)
+    tgt = NS.target_from_nj(nj, class_roles, set(range(class_roles["head"], len(nodes))))
     mat, tiny_fl, tex_fl, strip_fl = b"", 0x34, 0x4000, 0x12
     for nd in nodes:                                         # the body's own render state (first material + texture)
         if nd["model"] and struct.unpack_from("<I", data, nd["model"] + 4)[0]:
@@ -276,6 +379,20 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     return {"files": files, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
 
+def is_enemy_slot(slot: str | None) -> bool:
+    """characters op=use slot values the enemy writer (gbox.pso_enemy) takes: enemies | enemy:<name>."""
+    s = (slot or "").strip().lower()
+    return s in ("enemies", "enemy") or s.startswith("enemy:")
+
+
+def cast_slots() -> list[dict]:
+    """The slots this writer offers the cast menu (characters op=collect "slots"): the player classes it can build
+    for, then every enemy slot of gbox.pso_enemy."""
+    from . import pso_enemy
+    return [{"slot": "player", "name": "the player (HUmar; slot=hucast: HUcast)", "kind": "player",
+             "writer": "gbox.pso_player", "status": "not_working"}] + pso_enemy.slots()
+
+
 def build_mod(cfg, meta: dict, game: dict, gdi: Path, cls: str = "A", progress=lambda p, m: None,
               root: Path | None = None, name: str | None = None) -> dict:
     import json
@@ -310,8 +427,13 @@ def build_mod(cfg, meta: dict, game: dict, gdi: Path, cls: str = "A", progress=l
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
     """characters op=use for PSO Ver.2 (DC): the character replaces the body of the operator's class (HUmar: their
-    character GBOX; slot=hucast for HUcast), offline play only; built on the control plane (pso_<slug>), launched."""
+    character GBOX; slot=hucast for HUcast), offline play only; built on the control plane (pso_<slug>), launched.
+    slot=enemy:<name> | enemies: an enemy's body on its own motions instead (gbox.pso_enemy: booma, gobooma,
+    gigobooma, boomas, any BM_ENE pack)."""
     from . import characters as C, filemods
+    if is_enemy_slot(inp.slot):
+        from . import pso_enemy
+        return pso_enemy.use(ctx, meta, game, inp)
     if not getattr(inp, "rebuild", False) or (inp.slot or "") != "experimental":
         return {"status": "not_working", "mod": None,
                 "message": "The PSO Ver.2 writer (gbox.pso_player.build_swap) builds the files, but the game doesn't draw "
