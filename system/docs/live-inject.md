@@ -82,6 +82,34 @@ Output `result`:
 | `build` | the prepared mod, the swap job, the new `session_id`, `ram_refresh` |
 | `session_id` | the session that shows the character now (a new one after a swap) |
 
+### Saved picks
+
+Some picks are saved so that later tools can hand them back to `pick_replace` unchanged:
+
+- a deep `pick_identify` that found a slot (`status: "identified"`; hovers with `deep=false` are never saved)
+- a `pick_replace` that ended `live` or `swapped`
+
+The Blender round trip in `gbox/live_link.py` reads the saved pick from either place, in this order: the session's
+`live_pick` / `pick` / `last_pick`, then the profile's `picks[slot]` / `last_pick`.
+
+Where a pick is saved:
+
+- in the learned profile, as `picks[slot]` and `last_pick` (`POST /api/profiles/{game_id}/pick`). Each save replaces
+  the previous pick whole; it never merges into it.
+- on the session record, as `live_pick` (`POST /api/sessions/{sid}/live-pick`). After a swap it goes on the new
+  session.
+
+What a saved pick contains (`pick_tool.compact_pick`):
+
+- `entity`, `game_id`, `slot`, `model`, `backend`, `replaceable`, `click`, `session_id`, `confidence`, `slot_guess`
+- the `ram` addresses, minus the walk listings (`structures`, `texture_owners`)
+- `signatures`: the writer's model signatures
+- after a replace: `ram.model_images` (where the live write landed) and `replaced`
+  `{character, slug, status, mode_used, mod, at}`
+- one-line `evidence`
+
+RAM and image bytes, draw lists and timings are dropped.
+
 ## How identify works
 
 1. **Entity.** The game's own view of the point:

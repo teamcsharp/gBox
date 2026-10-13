@@ -829,7 +829,64 @@ def identify(ad, g: dict, inp: PickIdentifyIn, ctx) -> dict:
                 rec[key] = {"path": [_hex(o) for o in b["path"]], "kind": b["kind"]}
         L.record(ctx, gid, {"classes": {cls: {k: v for k, v in rec.items() if v is not None}}})
     out["seconds"] = round(time.time() - t0, 2)
+    if gid and slot and inp.deep:                            # a hover (deep=false) never replaces a clicked pick
+        sig = ((learned.get("assets") or {}).get(slot) or {}).get("signatures")
+        save_pick(ctx, out, inp.session_id, signatures=sig, status="identified")
     return out
+
+
+PICK_KEEP = ("entity", "game_id", "slot", "model", "ram", "confidence", "replaceable", "backend", "session_id", "title",
+             "platform", "click", "slot_guess", "signatures", "replaced", "status")
+RAM_DROP = ("structures", "texture_owners")              # walk listings: volatile, rebuilt by the next identify
+
+
+def compact_pick(pick: dict, **extra) -> dict:
+    """A pick result small and stable enough to keep (learned profile picks[slot] / last_pick, session live_pick) and
+    hand back to pick_replace unchanged: identity, slot, replaceable, the RAM addresses + learned model signatures a
+    live write needs, one-line evidence. Dropped: RAM / image bytes, per-draw lists, walk listings, timings."""
+    def small(v, depth=0):
+        if isinstance(v, (bytes, bytearray)):
+            return None
+        if isinstance(v, dict):
+            return {k: s for k, x in v.items() if not str(k).startswith("_") and k not in ("rgba", "png", "image")
+                    and (s := small(x, depth + 1)) is not None}
+        if isinstance(v, (list, tuple)):
+            return [s for x in list(v)[:32] if (s := small(x, depth + 1)) is not None]
+        if isinstance(v, str):
+            return v[:400]
+        if hasattr(v, "tolist"):
+            return v.tolist()
+        return v
+    out = {k: small(pick[k]) for k in PICK_KEEP if k in pick and pick[k] is not None}
+    out["ram"] = {k: v for k, v in (out.get("ram") or {}).items() if k not in RAM_DROP}
+    out["evidence"] = [{k: str(e.get(k))[:200] if k == "detail" else e.get(k) for k in ("step", "ok", "detail", "source")}
+                       for e in (pick.get("evidence") or [])[:24] if isinstance(e, dict)]
+    out.update({k: small(v) for k, v in extra.items() if v is not None})
+    out["saved"] = time.time()
+    return out
+
+
+def save_pick(ctx, pick: dict, session_id: str | None = None, **extra) -> dict | None:
+    """Keep a pick for later tools: learned profile picks[slot] + last_pick (replaced whole, not merged) and the
+    session's live_pick. Best effort; -> the saved pick."""
+    gid, slot = pick.get("game_id"), pick.get("slot")
+    if not gid or not slot:
+        return None
+    c = compact_pick(pick, **extra)
+    if session_id:
+        c["session_id"] = session_id
+    try:
+        L.record(ctx, gid, {"picks": {slot: None}, "last_pick": None})       # replace, never merge into an older pick
+        L.record(ctx, gid, {"picks": {slot: c}, "last_pick": c})
+    except Exception:                                        # noqa: BLE001
+        pass
+    sid = c.get("session_id")
+    if sid and getattr(ctx, "server", None):
+        try:
+            _api(ctx, "POST", f"/api/sessions/{sid}/live-pick", json=c, timeout=10)
+        except Exception:                                    # noqa: BLE001 - an ended session keeps nothing
+            pass
+    return c
 
 
 def _pause(ad) -> bool:
@@ -1228,8 +1285,10 @@ def replace(inp: PickReplaceIn, ctx) -> dict:
         prepared = lv.get("prepared")
         res["live"] = {k: v for k, v in lv.items() if k != "prepared"}
         if lv.get("ok"):
-            return res | {"status": "live", "mode_used": "live", "message": f"{meta['name']} replaces {slot} in the "
-                          f"running game ({lv.get('method')}); same session, same moment"}
+            res |= {"status": "live", "mode_used": "live", "message": f"{meta['name']} replaces {slot} in the "
+                    f"running game ({lv.get('method')}); same session, same moment"}
+            keep_pick(ctx, pick, res, prepared, lv)
+            return res
         if not inp.fallback:
             return res | {"status": "live_failed", "mode_used": "live", "message": f"live replacement not possible: "
                           f"{lv.get('reason')}"}
@@ -1241,10 +1300,32 @@ def replace(inp: PickReplaceIn, ctx) -> dict:
     if not bd.get("ok"):
         return res | {"status": "failed", "mode_used": "build", "message": bd.get("reason")}
     rr = bd.get("ram_refresh") or {}
-    return res | {"status": "swapped", "mode_used": "build", "session_id": bd.get("session_id"),
-                  "message": f"{meta['name']} is in {bd['prepared'].get('mod')}; the session was swapped at the same "
-                             "moment" + ("; the loaded model was refreshed in RAM" if rr.get("ok") else
-                                         f"; RAM refresh: {rr.get('reason')}" if rr else "")}
+    res |= {"status": "swapped", "mode_used": "build", "session_id": bd.get("session_id"),
+            "message": f"{meta['name']} is in {bd['prepared'].get('mod')}; the session was swapped at the same "
+                       "moment" + ("; the loaded model was refreshed in RAM" if rr.get("ok") else
+                                   f"; RAM refresh: {rr.get('reason')}" if rr else "")}
+    keep_pick(ctx, pick, res, bd.get("prepared") or prepared, rr)
+    return res
+
+
+def keep_pick(ctx, pick: dict, res: dict, prepared: dict | None, applied: dict | None) -> dict | None:
+    """After a replace that put the character in (live / swapped): the pick as it now stands, saved for later tools
+    (learned picks[slot] / last_pick, the session's live_pick - the new session after a swap). The RAM addresses the
+    write used and the writer's model signatures go with it, so a later pick_replace (the Blender round trip) can
+    locate the model again."""
+    p = dict(pick)
+    ram = dict(p.get("ram") or {})
+    inst = [{"name": a["name"], "base": i["base"], "bytes": a.get("new_bytes")}
+            for a in ((applied or {}).get("plan") or {}).get("assets") or [] for i in a.get("instances") or []]
+    if inst:
+        ram["model_images"] = inst
+        ram.setdefault("model", inst[0]["base"])
+    p["ram"] = ram                                          # a swap restores the same state: same addresses
+    sig = (prepared or {}).get("signatures")
+    replaced = {"character": res.get("character"), "slug": res.get("slug"), "status": res.get("status"),
+                "mode_used": res.get("mode_used"), "mod": (prepared or {}).get("mod"), "at": time.time()}
+    return save_pick(ctx, p, res.get("session_id"), signatures=sig or pick.get("signatures"), replaced=replaced,
+                     status=res.get("status"))
 
 
 @tool("pick_replace", "1.0", PickReplaceIn, PickReplaceOut, capabilities=["mod", "runtime", "memory"],

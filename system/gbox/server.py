@@ -2497,6 +2497,18 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "session.live_model", sid, {"mod": model.mod})
         return {"session_id": sid, "live_mod": model.mod}
 
+    @app.post("/api/sessions/{sid}/live-pick")
+    def live_pick(sid: str, pick: dict, actor=Depends(auth)):
+        """The pick whip's last saved pick for this session (gbox.pick_tool.compact_pick): what pick_identify found /
+        pick_replace put in. The Blender round trip (gbox.live_link) passes it back to pick_replace unchanged."""
+        session = store.get("session", sid) or _404()
+        if len(json.dumps(pick, default=str)) > 256 << 10:
+            raise HTTPException(413, "pick too large (save the compact pick)")
+        session["live_pick"] = pick | {"saved": time.time()}
+        store.put("session", sid, session)
+        store.audit(actor, "session.live_pick", sid, {"slot": pick.get("slot"), "status": pick.get("status")})
+        return {"session_id": sid, "slot": pick.get("slot")}
+
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
         lv, body = _live(sid), await request.body()
