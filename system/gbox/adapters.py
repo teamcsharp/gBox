@@ -289,6 +289,10 @@ _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 
 # function keys and Tab: emulator hotkeys (Dolphin's save / load state slots and its speed limit); they were dropped before
 _SCAN.update({f"F{i + 1}": (sc, 0) for i, sc in enumerate([0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58])})
 _SCAN["Tab"] = (0x0F, 0)
+# F13-F15 (DirectInput DIK_F13..F15 = these scan codes): keys no keyboard in use here has, so gBox's emulator hotkeys bound
+# to them never collide with what the operator types (Dolphin's gBox Hotkeys.ini, DolphinWinAdapter.HOTKEYS_INI)
+_SCAN.update({"F13": (0x64, 0), "F14": (0x65, 0), "F15": (0x66, 0),
+              "Control_L": (0x1D, 0), "Control_R": (0x1D, 1), "Shift_L": (0x2A, 0)})
 
 
 def _pid_window(pid: int):
@@ -1796,6 +1800,79 @@ D-Pad/Down = `Pad S`
 D-Pad/Left = `Pad W`
 D-Pad/Right = `Pad E`
 """
+    # gBox's Dolphin hotkeys (Hotkeys.ini, written at every launch): one base key per running Dolphin ("lane": F13, F14 or
+    # F15; Dolphin reads Hotkeys.ini only when it starts, so two Dolphins on this PC - a reset's replacement, an Examine 3D
+    # capture session - never answer each other's keys) plus right/left Ctrl and right Shift. Hotkeys work without focus
+    # (HotkeysRequireFocus False), so nothing else is bound: Esc, F1-F12, Tab... stay the game's / the operator's.
+    LANES = ("F13", "F14", "F15")
+    HOTKEY_MODS = ("RCONTROL", "RSHIFT", "LCONTROL")
+    HOTKEYS = {                                 # Dolphin hotkey -> modifiers held with the lane key (exactly these)
+        "Emulation Speed/Disable Emulation Speed Limit": (),          # held while gBox fast-forwards
+        "General/Reset": ("RSHIFT",),
+        "Load State/Load State Slot 1": ("RCONTROL",),
+        "Save State/Save State Slot 1": ("RCONTROL", "RSHIFT"),
+        "Load State/Load State Slot 8": ("LCONTROL",),                 # gBox's checkpoint ring (gbox/rewind.py)
+        "Save State/Save State Slot 8": ("LCONTROL", "RSHIFT"),
+    }
+    _MOD_KEY = {"RCONTROL": "Control_R", "RSHIFT": "Shift_R", "LCONTROL": "Control_L"}   # win_send_keys names
+    _lanes: dict[str, object] = {}              # lane key -> the adapter holding it (this worker process)
+    _lanes_lock = threading.Lock()
+    lane = "F13"
+    STATE_WAIT_S = 20.0                         # Dolphin compresses and writes a state on its own thread
+
+    @classmethod
+    def hotkeys_ini(cls, lane: str) -> str:
+        dev = "DInput/0/Keyboard Mouse"
+        key = lambda k: f"`{dev}:{k}`"
+        lines = ["[Hotkeys]", f"Device = {dev}"]
+        for name, mods in cls.HOTKEYS.items():
+            expr = " & ".join([key(lane), *[key(m) for m in mods], *[f"!{key(m)}" for m in cls.HOTKEY_MODS if m not in mods]])
+            lines.append(f"{name} = {expr}")
+        return "\n".join(lines) + "\n"
+
+    def _claim_lane(self) -> str:
+        with self._lanes_lock:
+            for k, holder in list(self._lanes.items()):     # launches are serialised (tools._LAUNCH_LOCK): another
+                proc = getattr(holder, "proc", None)          # holder without a process is a launch that failed
+                if holder is self or proc is None or proc.poll() is not None:
+                    self._lanes.pop(k, None)
+            free = [k for k in self.LANES if k not in self._lanes]
+            lane = free[0] if free else self.LANES[0]       # a 4th Dolphin on one PC shares the first lane
+            self._lanes[lane] = self
+            return lane
+
+    def _release_lane(self):
+        with self._lanes_lock:
+            if self._lanes.get(self.lane) is self:
+                self._lanes.pop(self.lane, None)
+
+    def _hotkey(self, name: str) -> list[dict]:
+        """The key presses for one gBox Dolphin hotkey on this Dolphin's lane (fast-forward held stays held)."""
+        mods = [self._MOD_KEY[m] for m in self.HOTKEYS[name]]
+        seq = [*({"key": m, "down": True} for m in mods), {"key": self.lane, "down": True}, {"key": self.lane, "down": False},
+               *({"key": m, "down": False} for m in reversed(mods))]
+        if self.ff_on:                                     # the lane key alone = no speed limit: press it again
+            seq.append({"key": self.lane, "down": True})
+        return win_send_keys(self.proc.pid, seq)
+
+    def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
+        """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""
+        folder, pattern = self.state_dir(), f"*.s{slot:02d}"
+        deadline = time.time() + (self.STATE_WAIT_S if timeout is None else timeout)
+        last = None
+        while time.time() < deadline:
+            try:
+                fresh = [f for f in folder.glob(pattern) if f.is_file() and f.stat().st_mtime >= t0 - 1]
+            except OSError:
+                fresh = []
+            f = max(fresh, key=lambda p: p.stat().st_mtime) if fresh else None
+            size = f.stat().st_size if f else 0
+            if f and size > 0 and last == (f, size):
+                return f
+            last = (f, size) if f else None
+            time.sleep(0.3)
+        raise RuntimeError(f"Dolphin did not write a save state (slot {slot}) within "
+                           f"{self.STATE_WAIT_S if timeout is None else timeout:g} s in {folder}")
 
     def _exe(self) -> Path:
         for c in (self.config.runtime / "dolphin" / "Dolphin-x64" / "Dolphin.exe", Path("D:/gBox/runtime/dolphin/Dolphin-x64/Dolphin.exe")):
@@ -1812,8 +1889,15 @@ D-Pad/Right = `Pad E`
         (exe.parent / "portable.txt").touch()
         (user / "Config").mkdir(parents=True, exist_ok=True)
         (user / "Config" / "GCPadNew.ini").write_text(self.PAD_INI_WIN)
+        self.lane = self._claim_lane()
+        (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
         self._gecko_setup(user, rom)
         opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "D3D12", "Dolphin.Core.EnableCheats": "True",
+                # Docked in gBox, Dolphin's render window is a child window: on Windows Dolphin counts it focused only
+                # when it is the foreground window, which a child never is, so every hotkey (save / load state, speed
+                # limit) was dropped and StateSaves stayed empty. Hotkeys.ini binds only F13-F15 chords, so no key a
+                # person presses reaches them (state_transfer "the emulator didn't write a save state", 2026-10-13).
+                "Dolphin.General.HotkeysRequireFocus": "False",
                 "Dolphin.Display.Fullscreen": "False", "Dolphin.Display.RenderToMain": "False",   # batch mode hides the main window
                 "Dolphin.Interface.ConfirmStop": "False", "Dolphin.Interface.ShowToolbar": "False", "Dolphin.Interface.ShowStatusbar": "False",
                 "Dolphin.Analytics.PermissionAsked": "True", "Dolphin.Analytics.Enabled": "False",
@@ -1876,12 +1960,19 @@ D-Pad/Right = `Pad E`
     def stop_game(self) -> dict:
         if self.paused_tids:
             self.resume()
+        if self.ff_on:                                     # never leave the lane key held down after the game is gone
+            try:
+                win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}])
+            except Exception:
+                pass
+            self.ff_on = False
         if self.dbg:
             try:
                 self.dbg.close()
             except Exception:
                 pass
         _kill_tree(self.proc)
+        self._release_lane()
         return {"returncode": self.proc.poll() if self.proc else None}
 
     def get_frame(self) -> bytes:
@@ -1911,37 +2002,50 @@ D-Pad/Right = `Pad E`
         return win_send_keys(self.proc.pid, [{**e, "key": keymap.get(e["key"], e["key"])} for e in events])
 
     def save_state(self, slot: int | None = None) -> dict:
-        win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F1", "down": True},
-                                      {"key": "F1", "down": False}, {"key": "Shift_R", "down": False}])
-        return {"slot": 1}
+        """Dolphin's slot 1 (gBox's Save state / state_transfer). Confirmed by the file Dolphin writes, or it raises."""
+        t0 = time.time()
+        self._hotkey("Save State/Save State Slot 1")
+        f = self._wait_state(1, t0)
+        return {"slot": 1, "path": str(f), "bytes": f.stat().st_size, "verified": True}
 
     def load_state(self, slot: int | None = None) -> dict:
-        win_send_keys(self.proc.pid, [{"key": "F1", "down": True}, {"key": "F1", "down": False}])
+        self._hotkey("Load State/Load State Slot 1")
         return {"slot": 1}
+
+    def reset(self) -> dict:
+        """The console's reset button (Dolphin's Reset hotkey on this Dolphin's lane): the game restarts in place, same
+        disc, same mod, same window; the session and its view stay."""
+        if self.ff_on:                                     # a reset leaves fast-forward off
+            win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}])
+            self.ff_on = False
+        self._hotkey("General/Reset")
+        return {"reset": True, "via": f"Dolphin hotkey ({self.lane} lane)"}
 
     # gBox's checkpoint ring (Select+L2 rewind, gbox/rewind.py) uses Dolphin's slot 8: the operator's slot 1 is untouched.
     # Its hotkeys are keystrokes into the game window (win_send_keys focuses it): checkpoints only while the pad is in use.
     checkpoint_when_playing = True
+    # The ring's hotkeys never reached a docked Dolphin before HotkeysRequireFocus=False, so it never saved. Now that they
+    # land, a save state (which stalls the game while Dolphin serialises it) is taken at most every 20 s, like Flycast.
+    checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S
 
     def state_dir(self) -> Path:
         return self._exe().parent / "User" / "StateSaves"
 
     def checkpoint_save(self) -> dict:
-        win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F8", "down": True},
-                                      {"key": "F8", "down": False}, {"key": "Shift_R", "down": False}])
+        self._hotkey("Save State/Save State Slot 8")
         return {"slot": 8}
 
     def checkpoint_load(self) -> dict:
-        win_send_keys(self.proc.pid, [{"key": "F8", "down": True}, {"key": "F8", "down": False}])
+        self._hotkey("Load State/Load State Slot 8")
         return {"slot": 8}
 
     ff_on = False
 
     def fast_forward(self, on: bool | None = None) -> dict:
-        """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (Tab, its default) while gBox wants fast-forward."""
+        """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (this Dolphin's lane key alone) while gBox fast-forwards."""
         want = (not self.ff_on) if on is None else bool(on)
         if want != self.ff_on:
-            win_send_keys(self.proc.pid, [{"key": "Tab", "down": want}])
+            win_send_keys(self.proc.pid, [{"key": self.lane, "down": want}])
             self.ff_on = want
         return {"fast_forward": "on" if self.ff_on else "off"}
 
@@ -1974,6 +2078,11 @@ class MgbaAdapter(StandaloneAdapter):
         from .debug import GdbDebugger
         time.sleep(3)          # mGBA opens its GDB port before the ROM is loaded; a 'continue' sent that early is lost
         return GdbDebugger("127.0.0.1", self.port, "arm", connect_timeout=30)
+
+    def reset(self) -> dict:
+        """mGBA's own Reset (Ctrl+R in its window on the session's private display): the session and its stream stay."""
+        self._xdo("key", "ctrl+r")
+        return {"reset": True, "via": "mGBA Ctrl+R"}
 
 
 class DuckStationAdapter(StandaloneAdapter):
@@ -2043,6 +2152,11 @@ class MameAdapter(StandaloneAdapter):
     def _debugger(self):
         from .debug import GdbDebugger
         return GdbDebugger("127.0.0.1", self.port, "m68k", connect_timeout=60)
+
+    def reset(self) -> dict:
+        """MAME's soft reset (F3, its default UI key) on the session's private display: the session and its stream stay."""
+        self._xdo("key", "F3")
+        return {"reset": True, "via": "MAME soft reset (F3)"}
 
 
 # platforms whose "debug" launch uses a standalone emulator with a full debug server
