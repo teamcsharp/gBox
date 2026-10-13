@@ -28,6 +28,9 @@ import numpy as np
 
 MARK = " #fit"
 STAGES = ["scale", "retarget", "proportion", "weights", "decimate", "encode", "write"]
+COLLECT_STAGES = ["extract", "preview"]                  # characters op=collect: each character as it comes out
+LAST = ("write", "preview")                              # a model's last stage: done there = the model is done
+KINDS = ("fit", "collect")
 STATES = {"running", "done", "skipped", "failed"}
 MAX_MODELS = 80
 SNAPSHOT_TRIS = 3000
@@ -88,6 +91,8 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
     st.setdefault("order", [])
     st.setdefault("models", {})
     ts = now if now is not None else time.time()
+    if event.get("kind") in KINDS:                          # "collect": a reader's roster, not a writer's fits
+        st["kind"] = event["kind"]
     for row in event.get("plan") or []:                     # the cast build announces every model up front
         key = str(row.get("model") or "")[:120]
         if key and key not in st["models"] and len(st["order"]) < MAX_MODELS:
@@ -115,7 +120,7 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
             s["text"] = str(event["text"])[:200]
         s["ts"] = ts
         m["current"] = str(stage)[:24]
-        m["state"] = "failed" if s["state"] == "failed" else ("done" if stage == "write" and s["state"] == "done"
+        m["state"] = "failed" if s["state"] == "failed" else ("done" if stage in LAST and s["state"] == "done"
                                                               else "running")
     for k in ("snapshot", "preview"):
         v = event.get(k)
@@ -162,7 +167,7 @@ def _send(event: dict, text: str):
             raise
 
 
-def plan(rows: list[tuple[str, str, str]]):
+def plan(rows: list[tuple[str, str, str]], kind: str = "fit"):
     """The cast build's models before any of them is fitted: [(model key, donor slug, label)]. auto_model(slug)
     then takes the next planned key of that donor. A key already planned keeps its row (the cast swap plans every
     model, then the writer's own build_cast plans the same ones again when it runs alone)."""
@@ -176,7 +181,10 @@ def plan(rows: list[tuple[str, str, str]]):
     for key, slug, label in rows:
         sk["plan"].setdefault(str(slug), []).append((key, label))
         labels[key] = label
-    _send({"plan": [{"model": k, "label": lab} for k, _s, lab in rows]}, f"Fitting {len(rows)} models")
+    ev = {"plan": [{"model": k, "label": lab} for k, _s, lab in rows]}
+    if kind != "fit":
+        ev["kind"] = kind
+    _send(ev, f"{'Collecting' if kind == 'collect' else 'Fitting'} {len(rows)} models")
 
 
 def model(key: str, label: str | None = None, slug: str | None = None, explicit: bool = True) -> str | None:
@@ -262,7 +270,7 @@ def stage(name: str, state: str = "done", data: dict | None = None, text: str | 
         ev["preview"] = str(preview)
     if name == "retarget" and state == "done":
         cur["fitted"] = True
-    if name == "write" and state in ("done", "failed"):
+    if name in LAST and state in ("done", "failed"):
         cur["closed"] = True
         sk.setdefault("written", set()).add(cur["key"])
     label = cur.get("label") or cur["key"]
@@ -324,6 +332,47 @@ def weights(prims, jmap: dict | None = None, mode: str = "rigid per bone (one bo
     counts = per_limb(prims, nm, owner)
     stage("weights", data={"mode": mode, "limbs": len(counts), "skeleton_limbs": skeleton,
                            "vertices": int(sum(counts.values())), "per_limb": counts, **extra})
+
+
+def model_prims(path: str | Path) -> list[dict]:
+    """A collection model (glTF / GLB) as snapshot prims: every triangle primitive in its node's world transform (the
+    model as the reader posed it - its own bind pose), coloured per vertex from its base-colour texture x factor."""
+    from .re4gc_models import _gltf_load, _node_world
+    gl, acc, image = _gltf_load(Path(path))
+    wn = _node_world(gl)
+    cache, out = {}, []
+    for ni, nd in enumerate(gl.get("nodes") or []):
+        if "mesh" not in nd:
+            continue
+        M = wn[ni]
+        for pr in gl["meshes"][nd["mesh"]]["primitives"]:
+            if pr.get("mode", 4) != 4 or "POSITION" not in pr["attributes"]:
+                continue
+            a = pr["attributes"]
+            P = acc(a["POSITION"]).astype(float) @ M[:3, :3].T + M[:3, 3]
+            F = acc(pr["indices"]).reshape(-1, 3).astype(int) if "indices" in pr else \
+                np.arange(len(P) // 3 * 3).reshape(-1, 3)
+            col = np.ones((len(P), 4))
+            if (mi := pr.get("material")) is not None:
+                pbr = gl["materials"][mi].get("pbrMetallicRoughness", {})
+                col *= np.asarray(pbr.get("baseColorFactor", [1, 1, 1, 1]), float)
+                bct = pbr.get("baseColorTexture")
+                if bct is not None and "TEXCOORD_0" in a:
+                    if bct["index"] not in cache:
+                        try:
+                            cache[bct["index"]] = image(bct["index"])
+                        except Exception:                    # noqa: BLE001 - a missing image: the factor alone
+                            cache[bct["index"]] = None
+                    tex = cache[bct["index"]]
+                    if tex is not None:
+                        uv = acc(a["TEXCOORD_0"]).astype(float)
+                        h, w = tex.shape[:2]
+                        x = (np.floor(np.mod(uv[:, 0], 1.0) * w).astype(int)) % w
+                        y = (np.floor(np.mod(uv[:, 1], 1.0) * h).astype(int)) % h
+                        t = np.asarray(tex, float)[y, x] / 255.0
+                        col[:, :t.shape[1]] *= t
+            out.append({"pos": P, "tris": F, "rgba": col})
+    return out
 
 
 def image(name: str, rgba) -> str | None:
@@ -409,7 +458,12 @@ def snapshot_glb(prims, path: str | Path, max_tris: int = SNAPSHOT_TRIS) -> Path
             continue
         P_all.append(P)
         F_all.append(F + base)
-        C_all.append(np.tile(np.array(palette[i % len(palette)] + (1.0,), np.float32), (len(P), 1)))
+        rgba = p.get("rgba")                               # the model's own colours (texture sampled per vertex)
+        if rgba is not None and len(rgba) == len(P):
+            c = np.asarray(rgba, np.float32).reshape(len(P), -1)
+            C_all.append(np.c_[c[:, :3], np.ones(len(P), np.float32)])
+        else:
+            C_all.append(np.tile(np.array(palette[i % len(palette)] + (1.0,), np.float32), (len(P), 1)))
         base += len(P)
     if not P_all:
         raise ValueError("no geometry to snapshot")

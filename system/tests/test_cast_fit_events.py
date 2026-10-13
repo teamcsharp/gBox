@@ -511,3 +511,81 @@ def test_clayfighter_sprites_show_the_donor_frames_then_the_fitted_ones(tmp_path
     enc = last(evs, "fighter:taffy", "encode")["data"]
     assert enc["relocated"] is True and rep[0]["relocated"] and enc["bitmap_bytes"] == rep[0]["bitmap_bytes"]
     assert "was 0x" in enc["where"]
+
+
+# ---------------------------------------------------------------- characters op=collect (any DEDICATED reader)
+
+def _textured_gltf(path):
+    """A small skinned glTF with a red 2x2 texture (as a reader writes one): two triangles on two joints."""
+    import numpy as np
+    from gbox.melee_models import write_gltf
+    joints = []
+    for parent, y in ((-1, 0.0), (0, 1.0)):
+        w = np.eye(4)
+        w[1, 3] = y
+        joints.append({"parent": parent, "world": w})
+    P = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 2, 0], [1, 2, 0]], float)
+    J, W = np.zeros((6, 4), int), np.zeros((6, 4))
+    J[3:, 0], W[:, 0] = 1, 1
+    tex = np.zeros((2, 2, 4), np.uint8)
+    tex[..., 0], tex[..., 3] = 255, 255
+    prim = {"pos": P, "nrm": np.tile([0, 0, 1.0], (6, 1)), "uv": np.full((6, 2), 0.25), "tris": np.array([[0, 1, 2], [3, 4, 5]]),
+            "J": J, "W": W, "tex": tex, "color": (255, 255, 255, 255), "wrap": (10497, 10497)}
+    return write_gltf(path, joints, [prim], joint_names=["hip", "head"])
+
+
+def test_collect_shows_each_character_as_it_comes_out_of_the_game(tmp_path, monkeypatch):
+    import numpy as np
+    from PIL import Image
+    game = {"game_id": "fixture", "title": "Sonic Adventure (fixture)", "platform": "test"}
+    entries = [{"slug": "fx_sonic", "name": "Sonic", "aliases": []}, {"slug": "fx_tikal", "name": "Tikal", "aliases": []},
+               {"slug": "fx_sheet", "name": "Sheet", "aliases": []}, {"slug": "fx_broken", "name": "Broken", "aliases": []}]
+
+    def run(ctx, game, e, work):
+        if e["slug"] == "fx_broken":
+            raise ValueError("corrupt native model")
+        if e["slug"] == "fx_sheet":                       # a sprite reader hands over its sheet
+            Image.fromarray(np.full((16, 32, 4), 200, np.uint8)).save(work / "sheet.png")
+            return {"files": [work / "sheet.png"], "source_files": [], "tool": "fixture"}
+        return {"files": [_textured_gltf(work / f"{e['slug']}.gltf")], "source_files": [], "tool": "fixture",
+                "roles": {"hip": "hip", "head": "head"}}
+    monkeypatch.setattr(C, "DEDICATED", [("fixture", lambda t, p: True, lambda: entries, run)])
+    monkeypatch.setattr(C, "_game", lambda ctx, inp: game)
+    monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path / "lib")
+    monkeypatch.setattr(C, "render_preview", lambda model, out, **kw: Image.fromarray(
+        np.random.default_rng(0).integers(0, 255, (64, 64, 3), np.uint8)).save(out) or out)
+    monkeypatch.setattr(C, "verify_entry", lambda root, meta: {"ok": True})
+    ctx = SimpleNamespace(config=SimpleNamespace(cache=tmp_path / "cache"), progress=lambda *a: None)
+    lines, sink = collect()
+    ctx.progress = sink
+    with FE.job(sink, tmp_path / "snaps"):
+        r = C.collect(ctx, C.CharIn(op="collect"))
+        again = []                                        # a second collect: entries already in the collection
+        ctx.progress = lambda p, m: again.append((p, m))
+        with FE.job(ctx.progress, tmp_path / "snaps2"):
+            C.collect(ctx, C.CharIn(op="collect"))
+    assert r["collected"] == 3
+    evs = events(lines)
+    assert evs[0]["kind"] == "collect" and [x["model"] for x in evs[0]["plan"]] == [e["slug"] for e in entries]
+    assert FE.split(lines[0][1])[0] == "Collecting 4 models"
+    for slug in ("fx_sonic", "fx_tikal"):
+        assert order(evs, slug) == ["extract", "preview"]
+        ex = last(evs, slug, "extract")
+        assert ex["data"]["triangles"] == 2 and ex["data"]["roles"] == 2 and ex["data"]["height"] == 2.0
+        gl = __import__("tests.test_fit_events", fromlist=["x"]).read_glb(ex["snapshot"])
+        assert gl["accessors"][0]["count"] == 6                         # the decoded model, in its own pose
+        blob = open(ex["snapshot"], "rb").read()
+        js = 20 + __import__("struct").unpack_from("<I", blob, 12)[0]
+        col = np.frombuffer(blob[js + 8:], np.float32, 6 * 4, 6 * 12).reshape(6, 4)
+        assert np.allclose(col[:, :3], [1, 0, 0])                       # coloured from its texture
+        assert last(evs, slug, "preview")["preview"].endswith("preview.png")
+    sheet = last(evs, "fx_sheet", "extract")
+    assert sheet["data"]["kind"] == "sprites" and sheet["preview"].endswith("sheet.png") and "snapshot" not in sheet
+    assert last(evs, "fx_broken", "preview")["state"] == "failed"
+    st = None
+    for e in evs:
+        st = FE.fold(st, e)
+    assert st["kind"] == "collect" and [st["models"][e["slug"]]["state"] for e in entries] == \
+        ["done", "done", "done", "failed"]
+    ev2 = events(again)
+    assert last(ev2, "fx_sonic", "extract")["state"] == "skipped" and last(ev2, "fx_sonic", "extract").get("snapshot")

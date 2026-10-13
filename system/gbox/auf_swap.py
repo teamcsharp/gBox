@@ -948,8 +948,8 @@ def level_path(level: str) -> str:
 
 
 def _swap_job(args):
-    data, assign, lv, snap = args
-    return swap_level(data, assign, lv, snap=snap)
+    data, assign, lv, *rest = args                        # (data, assign, level[, snap])
+    return swap_level(data, assign, lv, snap=bool(rest and rest[0]))
 
 
 def _report_fits(plan: dict, donors: dict[str, Donor], reports: list[dict], mod: str, image: str, files: dict):
@@ -1023,7 +1023,7 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
     src = _disc_reader(image)
     try:
         levels = sorted(by_level)
-        jobs = [(src(level_path(lv)), by_level[lv], lv, snap) for lv in levels]
+        jobs = [(src(level_path(lv)), by_level[lv], lv) + ((True,) if snap else ()) for lv in levels]
     finally:
         getattr(src, "close", lambda: None)()
     progress(5, f"Rebuilding {len(levels)} level(s) with {workers} worker(s)")
@@ -1036,10 +1036,10 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
                 progress(5 + 80 * (i + 1) / len(jobs), f"Rebuilt {levels[i]} ({i + 1}/{len(jobs)})")
     else:
         results = []
-        for i, (data, assign, lv, sn) in enumerate(jobs):
+        for i, (data, assign, lv, *sn) in enumerate(jobs):
             base = 5 + 80 * i / len(jobs)
             results.append(swap_level(data, assign, lv, lambda p, m, base=base: progress(base + 80 / len(jobs) * p / 100, m),
-                                      snap=sn))
+                                      snap=bool(sn)))
     for lv, (out, rep) in zip(levels, results):
         if rep.get("replaced"):
             changes[level_path(lv)] = {"bytes": out}

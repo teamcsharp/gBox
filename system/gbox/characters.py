@@ -1555,6 +1555,8 @@ def collect(ctx, inp):
     # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
     entries = [e for e in dedicated_entries(ctx.config, game, name, roster)
                if e.get('kind', 'character') == 'character' or e.get('collect') is True]
+    from . import fit_events as FE                        # the pop-up: every character, then each as it comes out
+    FE.plan([(e['slug'], e['slug'], e['name']) for e in entries], kind="collect")
     results = []
     for i, e in enumerate(entries):
         total = max(1, len(entries))
@@ -1582,6 +1584,11 @@ def collect(ctx, inp):
                             'message': '' if done else ('Model needs verification.' if kind != 'character' else
                                                         'Model or mapped rig needs verification before retargeting.')})
         except Exception as exc:
+            try:
+                FE.model(e['slug'], e['name'])
+                FE.stage("preview", "failed", {"error": str(exc)[:150]})
+            except Exception:                              # noqa: BLE001 - the row is reported below either way
+                pass
             results.append({'slug': e['slug'], 'name': e['name'], 'kind': e.get('kind', 'character'),
                             'status': 'failed', 'verified': False, 'retargetable': False, 'error': str(exc)})
     chars = [r for r in results if r['kind'] == 'character']
@@ -1632,6 +1639,41 @@ def refresh_collection(root: Path, result: dict) -> dict:
     return result | collection_status(rows)
 
 
+def _collect_stages(model: Path, meta: dict, state: str, data: dict, preview: bool = True):
+    """The Fitting pop-up's extract stage for one collected character: the decoded model as the reader wrote it (its
+    own bind pose, coloured from its textures, <= 3000 triangles), or a sprite reader's sheet PNG; then (preview) the
+    collection's preview render. Never fails the collection."""
+    from . import fit_events as FE
+    if not FE.active():
+        return
+    model = Path(model)
+    try:
+        if model.suffix.lower() == ".png":
+            FE.stage("extract", state, data | {"kind": "sprites"}, preview=model)
+        else:
+            prims = FE.model_prims(model)
+            FE.stage("extract", state, data | {"triangles": FE.triangles(prims),
+                                               "vertices": int(sum(len(p["pos"]) for p in prims)),
+                                               "meshes": len(prims), "height": FE.height(prims),
+                                               "roles": len((meta.get("rig") or {}).get("roles") or {})},
+                     prims=prims)
+    except Exception as e:                                 # noqa: BLE001 - an unreadable model: still a row
+        if type(e).__name__ == "Cancelled":
+            raise
+        FE.stage("extract", state, data | {"snapshot": f"unavailable: {str(e)[:80]}"})
+    if preview:
+        _preview_stage(model.parent, meta)
+
+
+def _preview_stage(d: Path, meta: dict):
+    from . import fit_events as FE
+    p = Path(d) / (meta.get("preview") or "preview.png")
+    FE.stage("preview", data={"slug": meta.get("slug"), "kind": meta.get("kind"),
+                              "triangles": (meta.get("stats") or {}).get("triangles"),
+                              "roles": len((meta.get("rig") or {}).get("roles") or {})},
+             preview=p if p.is_file() else None)
+
+
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
     """The game's own extractor, when it has one: None = no extractor for this game."""
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
@@ -1643,22 +1685,29 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
         refresh = False
+        from . import fit_events as FE                    # the pop-up: this character as it comes out of the game
+        FE.model(e["slug"], e["name"])
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
             refresh = _doa2_needs_refresh(ctx, game, existing) or bool(
                 (reader_status(existing, name) or {}).get("stale"))           # an older reader made it (JGR v1, #1396)
             if verify_entry(root, existing)['ok'] and not refresh:
+                _collect_stages(Path(root) / e["slug"] / existing["model"], existing, "skipped",
+                                {"reason": "already in the collection"})
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
         ctx.progress(20, f"Extracting {e['name']} from {game['title']} (gBox's {name} extractor)")
         r = run(ctx, game, e, work)
+        _collect_stages(Path(r["files"][0]), {"rig": {"roles": r.get("roles") or {}}}, "done",
+                        {"extractor": name, "files": len(r["files"])}, preview=False)
         ctx.progress(85, "Adding it to the collection (preview render)")
         meta = add(root, e["slug"], e["name"], r["files"],
                    {"game_title": game["title"], "game_id": game["game_id"], "platform": plat, "files": r["source_files"]},
                    r["tool"], rig={"roles": r["roles"]} if r.get("roles") else None, aliases=e["aliases"],
                    notes=r.get("notes", ""), kind=e.get("kind", "character"), extra=r.get('extra'))
+        _preview_stage(Path(root) / e["slug"], meta)
         if refresh:
             for targets in meta.get('targets', {}).values():
                 for target in targets:

@@ -61,6 +61,8 @@
   const STAGES = ["scale", "retarget", "proportion", "weights", "decimate", "encode", "write"];
   const STAGE_NAMES = { scale: "scale", retarget: "retarget", proportion: "proportion", weights: "weights",
     decimate: "decimate", encode: "encode", write: "write" };
+  const COLLECT_STAGES = ["extract", "preview"];                          // characters op=collect (a reader's roster)
+  const isCollect = job => ((job && job.fitting) || {}).kind === "collect";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const isSnapshot = p => typeof p === "string" && p.includes("/fitting/files/");
 
@@ -89,12 +91,12 @@
     const any = rows.filter(r => r.snapshot).sort((a, b) => b.updated - a.updated)[0];
     return any ? any.snapshot : null;
   }
-  // a sprite writer's preview image (donor frames, fitted frames, the read-back sheet): shown over the 3D view when
-  // the model being fitted has one newer than its mesh snapshot
+  // a preview image (a sprite writer's donor / fitted frames, a sprite reader's sheet): shown over the 3D view when the
+  // model being fitted has no mesh snapshot of its own (a mesh snapshot always wins: the operator sees the 3D model)
   function previewOf(job) {
     const rows = fittingRows(job), cur = (job.fitting || {}).current;
     const r = rows.find(x => x.key === cur) || rows.filter(x => x.preview).sort((a, b) => b.updated - a.updated)[0];
-    return r && r.preview && (!r.snapshot || r.previewTs >= r.snapshotTs) ? r.preview : null;
+    return r && r.preview && !r.snapshot ? r.preview : null;
   }
   const n2 = v => (typeof v === "number" ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString("en-US") : String(+v.toFixed(2))) : "");
   function stageNumbers(stage, d) {                                         // the stage's numbers, short
@@ -117,17 +119,20 @@
     if (stage === "encode") return (d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
       : d.triangles != null ? `${n2(d.triangles)} tris` : "") + (d.grew ? ` · +${n2(d.grew / 1024)} KB` : "") + moved;
     if (stage === "write") return (d.mod || d.image || "") + (d.vrom ? ` · ${d.vrom}` : "");
+    if (stage === "extract") return d.kind === "sprites" ? "sprite sheet" : d.reason ? String(d.reason)
+      : [d.triangles != null ? `${n2(d.triangles)} tris` : "", d.roles ? `${d.roles} roles` : ""].filter(Boolean).join(" · ");
+    if (stage === "preview") return d.roles ? `${d.roles} roles` : (d.kind || "");
     return "";
   }
   function fittingHTML(job) {
     const rows = fittingRows(job);
     if (!rows.length) return "";
-    const s = fittingSummary(job);
-    const head = `<div class="pp-fh"><b>Fitting</b> ${s.done}/${s.total} models${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
+    const s = fittingSummary(job), collect = isCollect(job), chips = collect ? COLLECT_STAGES : STAGES;
+    const head = `<div class="pp-fh"><b>${collect ? "Collecting" : "Fitting"}</b> ${s.done}/${s.total} ${collect ? "characters" : "models"}${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
     return head + rows.map(r => `<div class="pp-fr ${ESC(r.state)}${s.current && s.current.key === r.key ? " cur" : ""}" title="${ESC(r.key)}">
-      <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${STAGES.map(name => {
+      <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${chips.map(name => {
         const st = r.stages.find(x => x.name === name);
-        return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name])}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
+        return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name] || name)}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
       }).join("")}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span></div>`).join("");
   }
 
@@ -434,7 +439,7 @@
         group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
         if (isSnapshot(path)) {                                             // the writer's own fitted mesh, this stage
           const s = fittingSummary(current || job), r = s.current || fittingRows(current || job).find(x => x.snapshot === path);
-          footEl.textContent = `Fitted mesh · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
+          footEl.textContent = `${isCollect(current || job) ? "Extracted model" : "Fitted mesh"} · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
         } else footEl.textContent = "Donor model preview · stage effects illustrate reported progress";
         fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
       };
