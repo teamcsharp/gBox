@@ -86,8 +86,8 @@ def test_kinds_and_driver_names():
     assert c2.kind_of("POLPPTST.BIN") == "test driver" and c2.kind_of("POLPSG0.BIN") == "passengers"
     assert c2.kind_of("POLPC1A1.BIN") == "cab" and c2.kind_of("POLDC0.BIN") == "city"
     row = c2.summary("POLPP2AH.BIN", _model())
-    assert (row["driver"], row["detail"], row["slots"], row["drawn"], row["triangles"]) == ("Axel", "high", 2, 1, 3)
-    assert list(c2.DRIVERS.values()) == ["Slash", "Iceman", "Cinnamon", "Hot-D", "Axel", "B.D. Joe", "Gena", "Gus"]
+    assert (row["driver"], row["detail"], row["slots"], row["drawn"], row["triangles"]) == ("Slash", "high", 2, 1, 3)
+    assert list(c2.DRIVERS.values()) == ["Axel", "B.D. Joe", "Gena", "Gus", "Slash", "Iceman", "Cinnamon", "Hot-D"]
 
 
 @pytest.mark.skipif(not _exists(CDI), reason="owned Crazy Taxi 2 CDI not present")
