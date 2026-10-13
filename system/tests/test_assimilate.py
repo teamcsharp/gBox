@@ -143,6 +143,18 @@ def test_metadata_fingerprint_and_ticket_fingerprint_never_raise():
     assert c["nearest_titles"][0]["id"].startswith("doa2") and c["summary"].startswith("[metadata]")
 
 
+def test_ticket_fingerprint_reads_the_owned_files_when_this_host_can(tmp_path):
+    from tests.test_formats import build_gc_disc
+    from gbox.config import Config
+    p = tmp_path / "pso.iso"
+    p.write_bytes(build_gc_disc({"PLAYERNJ.bml": bytes(8) + b"NJCM" + bytes(8), "pltex.gvm": b"GVMH" + bytes(28)}))
+    game = {"game_id": G, "title": "Phantasy Star Online Episode I & II", "platform": "gamecube", "source_paths": [str(p)],
+            "format": "iso", "profile_id": "x", "launch": {"path": str(p)}}
+    c = A.ticket_fingerprint(G, api=lambda path: game, config=Config())
+    assert c["source"] == "disc" and c["engines"][0]["engine"] == "ninja"
+    assert c["nearest_titles"][0]["id"] == "pso_gc" and c["start_from"] == "gbox.pso_gc"
+
+
 def test_tool_is_registered_and_runs(tmp_path):
     import gbox.tools  # noqa: F401  (loads the tool modules)
     from gbox.registry import REGISTRY, Ctx

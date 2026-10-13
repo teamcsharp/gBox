@@ -512,7 +512,7 @@ def fingerprint_listing(L, platform: str = "", title: str = "", known: list[dict
     exe = getattr(L, "executable", b"") or b""
     ev = evidence(L.files, exe_strings(exe), elf_symbols(exe), platform, title, getattr(L, "executable_name", ""))
     fp = fingerprint_evidence(ev, known)
-    fp.update(source=L.source, kind=L.kind, executable=L.executable_name, notes=list(L.notes))
+    fp.update(source="disc", path=L.source, kind=L.kind, executable=L.executable_name, notes=list(L.notes))
     return fp
 
 
@@ -593,9 +593,10 @@ def ticket_fingerprint(game_id: str, title: str = "", platform: str = "", api=No
             title, platform = game.get("title") or title, game.get("platform") or platform
             from .models import CatalogEntry
             from .tools import rom_path
-            if config is None:
+            if config is None:                           # the queue runs from cron: find gbox.toml next to the package
+                import os
                 from .config import load
-                config = load()
+                config = load(os.environ.get("GBOX_CONFIG") or Path(__file__).resolve().parents[1] / "gbox.toml")
             p = rom_path(CatalogEntry.model_validate(game), config)
             if p.exists():
                 fp = fingerprint_path(p, platform, title, max_files=max_files, deep=6, deep_bytes=1 << 19)
