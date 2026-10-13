@@ -235,3 +235,6 @@ exclude_files = ["*bios*", "*[[]0100F2C0115B6800[]]*"] # title update, not a sta
 mount = "//10.89.1.125/QuickSwap2"
 mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/_switch", windows = "//10.89.1.125/QuickSwap2/Emulation/_switch" }
+
+[rewind]
+checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not to stall Flycast/Dolphin (operator saw 2 fps, #1489)
