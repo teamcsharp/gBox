@@ -85,7 +85,8 @@
   const isLaunch = job => !!job && LAUNCH_TOOLS.has(job.tool);
   function gameOf(job) {
     const i = (job && job.input) || {}, g = i.game && typeof i.game === "object" ? i.game : {};
-    return { id: String(i.game_id || g.game_id || g.id || ""), title: String(g.title || i.title || ""), mod: String(i.mod || "") };
+    // mod: the operator's name for the build when it has one (the server puts mod_title on the launch), else its folder
+    return { id: String(i.game_id || g.game_id || g.id || ""), title: String(g.title || i.title || ""), mod: String(i.mod_title || i.mod || "") };
   }
   const startedAt = j => j.created || j.started || 0;
   const activityAt = j => (j.progress && typeof j.progress === "object" && j.progress.ts) || j.started || j.created || 0;

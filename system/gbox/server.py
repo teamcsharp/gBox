@@ -363,6 +363,14 @@ def create_app(config: Config) -> FastAPI:
     def mod_list(game_id: str = "", actor=Depends(auth)):
         out = [m for m in store.all("mod") if not game_id or m["game_id"] == game_id]
         out = [_mod_picture(m) for m in out]
+        # a card that boots a built mod shows under the operator's name for that build (Mods card ✎ / Builds view);
+        # `title` stays the card's own, so a card saved back never bakes the display name in
+        from . import built_mods
+        names, favs = built_mods.display_names(store), built_mods.favorites(store)
+        for i, m in enumerate(out):
+            key = f"{m.get('game_id')}/{built_mods.card_mod(m)}"
+            if key in names or key in favs:
+                out[i] = m | {"display_name": names.get(key, ""), "favorite": key in favs}
         return sorted(out, key=lambda m: -m.get("ts", 0))
 
     @app.delete("/api/mods/{mid}")
@@ -911,7 +919,10 @@ def create_app(config: Config) -> FastAPI:
                     raise HTTPException(409, 'A replacement is already being prepared for this game. Wait for it to finish before selecting another model.')
             if keep_state and sess.get('state') != 'running':
                 raise HTTPException(409, 'This session has ended. Open the running game before replacing its models.')
-            job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
+            from . import built_mods                      # the operator's name for the build: the launch bar shows it
+            named = built_mods.label_of(store, sess.get("game_id") or "", mod, "") if mod else ""
+            job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state,
+                                                  **({"mod_title": named} if named and named != mod else {})},
                       state=JobState.RUNNING, started=time.time())
             store.put("job", job.id, job.model_dump())
             _server_job_threads.add(job.id)
@@ -2514,7 +2525,10 @@ def create_app(config: Config) -> FastAPI:
             if running:
                 current = max(running, key=lambda s: s.get('started') or 0)
                 return swap_job(current['session_id'], mod, '', actor)
-        req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})},
+        from . import built_mods                          # the operator's name for the build: the launch bar shows it
+        named = built_mods.label_of(store, gid, mod, "") if mod else ""
+        req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {}),
+                                                    **({"mod_title": named} if named and named != mod else {})},
                          agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
         if debug:
             node = "linux"
@@ -2557,11 +2571,16 @@ def create_app(config: Config) -> FastAPI:
     def sessions(actor=Depends(auth), include_ended: bool = True):
         out = []
         now = time.time()
+        from . import built_mods
+        names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
         for s_ in store.all("session", reverse=True):
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
+            named = names.get(f"{s_.get('game_id')}/{s_.get('collection_mod') or s_.get('mod') or ''}")
+            if named:
+                row["mod_title"] = named
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
             out.append(row)

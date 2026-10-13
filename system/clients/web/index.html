@@ -1376,7 +1376,8 @@ async function play(id, node, debug, boot) {
   if (debug) node = "linux";
   Object.assign(launch, { title: g.title, core: g.core || "", node: node || "auto" });
   const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";
-  loader.show(g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
+  // a build launched from Mods / Builds / Special builds: the launch screen names it as the operator named it
+  loader.show(boot.label ? `${g.title} · ${boot.label}` : g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
   $("#ldcancel").onclick = cancelLoad;
   const canLocal = node === "linux" && window.GBOX_LOCAL?.worker && g.core;
   $("#ldlocal").style.display = canLocal ? "inline-block" : "none";
@@ -2535,7 +2536,8 @@ const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}?${tq()}`, work
   play: (gid, go) => play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined),
   // "Special builds ▸" (gbox/special_builds.py): launch a build (this PC / a PC / saved moment / debugger) through the
   // usual launch + loader, open it or its request in the Mods page, rebuilds followed in the process pop-up
-  launch: (gid, x) => play(gid, x.node === "auto" ? undefined : x.node, !!x.debug, { disc: x.mod, slot: x.slot === "" || x.slot == null ? "" : String(x.slot), character: "" }),
+  launch: (gid, x) => play(gid, x.node === "auto" ? undefined : x.node, !!x.debug, { disc: x.mod, slot: x.slot === "" || x.slot == null ? "" : String(x.slot), character: "",
+                                                                                     label: x.build?.mod_title || x.build?.label || "" }),
   openMods: (gid, b) => { MODSG.focus = { q: b?.name || "", game: gid }; show("Mods"); },
   openRequest: t => { MODSG.focus = { q: "#" + t.number, game: "" }; show("Mods"); },
   progress: jobs => window.GBOX_PROCESS_POPUP?.sync(jobs) });

@@ -3,8 +3,13 @@ that are queued or running.
 
 GET   /api/builds                               every build: the Spark's central collection (the built-mods index) plus
                                                 each PC's own builds (its heartbeat's local_builds; staged copies map to
-                                                the build they mirror), newest first; ?q= &game_id= &kind= filters
-PATCH /api/builds/{game_id}/{name}              {display_name}: the operator's own name for a build ("" clears it)
+                                                the build they mirror), favorites first, then newest first; ?q=
+                                                &game_id= &kind= &favorite=true filters
+PATCH /api/builds/{game_id}/{name}              {display_name}: the operator's own name for a build ("" clears it);
+                                                POST works too (the desktop app's IPC api posts every body)
+PUT   /api/builds/{game_id}/{name}/favorite     {favorite: true|false}: ★ a build (POST works too); DELETE un-stars it.
+                                                Favorites list first, head the game's Special builds and are never
+                                                evicted by a disk budget (gbox.built_mods.protected)
 GET   /api/builds/{game_id}/{name}/details      modifications, characters inserted (slot <- donor, with the models for the
                                                 360 viewers), codes / cheats / hacks, compile changes, build recipe, jobs
                                                 and receipts, verification + launch history
@@ -17,6 +22,7 @@ Requests read the built-mods index (memory), the store and the workers' heartbea
 stat only the files a build's marker names). Display names live in the store (gbox.built_mods.NAME_KIND), never in
 the folder name or the marker (the marker is part of the build's pinned manifest: changing it would make every PC
 stage the whole build again); gbox.built_mods joins them so the Mods page, Special builds and notifications show them.
+Favorites live in the store too (gbox.built_mods.FAV_KIND), keyed the same way.
 """
 from __future__ import annotations
 
@@ -183,10 +189,10 @@ def build_row(item: dict, meta: dict, card: dict | None, pcs: list[dict], here: 
             "where": where, "local_only": False, "tickets": item.get("tickets") or [], "last_launch": item.get("last_launch"),
             "card_id": item.get("card_id") or "", "state_slot": item.get("state_slot"),
             "launch_options": SB.launch_options(item, pcs), "has_recipe": bool(recipe), "recipe_recorded": recorded,
-            "job_id": meta.get("job_id") or ""}
+            "job_id": meta.get("job_id") or "", "favorite": bool(item.get("favorite"))}
 
 
-def local_only_row(key: str, here: list[dict], names: dict, titles: dict) -> dict:
+def local_only_row(key: str, here: list[dict], names: dict, titles: dict, favs: set | frozenset = frozenset()) -> dict:
     """A build only a PC has (not in the Spark's collection yet: it uploads when that PC's worker starts)."""
     from . import special_builds as SB
     gid, name = key.split("/", 1)
@@ -200,7 +206,7 @@ def local_only_row(key: str, here: list[dict], names: dict, titles: dict) -> dic
             "summary": "only on " + ", ".join(h["node"] for h in here) + " (not in the Spark collection yet)",
             "changes": [], "slots": 0, "local_only": True, "tickets": [], "last_launch": None, "card_id": "",
             "state_slot": None, "launch_options": opts, "has_recipe": False, "recipe_recorded": False, "job_id": "",
-            "where": [{"where": "pc", "node": h["node"], "online": h["online"], "label": f"{h['node']} (local only)"}
+            "favorite": key in favs, "where":[{"where": "pc", "node": h["node"], "online": h["online"], "label": f"{h['node']} (local only)"}
                       for h in here]}
 
 
@@ -212,10 +218,11 @@ def facets(rows: list[dict]) -> dict:
         for k in r["kinds"]:
             kinds[k] = kinds.get(k, 0) + 1
     return {"games": sorted(games.values(), key=lambda g: g["title"].lower()),
-            "kinds": [{"kind": k, "label": KINDS[k], "count": kinds[k]} for k in PRIMARY if k in kinds]}
+            "kinds": [{"kind": k, "label": KINDS[k], "count": kinds[k]} for k in PRIMARY if k in kinds],
+            "favorites": sum(1 for r in rows if r.get("favorite"))}
 
 
-def select(rows: list[dict], q: str = "", game_id: str = "", kind: str = "") -> list[dict]:
+def select(rows: list[dict], q: str = "", game_id: str = "", kind: str = "", favorite: bool = False) -> list[dict]:
     words = [w for w in str(q or "").lower().split() if w]
 
     def hay(r):
@@ -223,12 +230,13 @@ def select(rows: list[dict], q: str = "", game_id: str = "", kind: str = "") -> 
                          " ".join(KINDS[k] for k in r["kinds"]), *(f"{c.get('donor')} {c.get('slot')}" for c in r["changes"]),
                          *(f"#{t.get('number')}" for t in r["tickets"])]).lower()
     return [r for r in rows if (not game_id or r["game_id"] == game_id) and (not kind or kind in r["kinds"])
-            and all(w in hay(r) for w in words)]
+            and (not favorite or r.get("favorite")) and all(w in hay(r) for w in words)]
 
 
 def listing(items: list[dict], records: list[dict], cards: dict, workers: list[dict], names: dict,
-            titles: dict | None = None) -> list[dict]:
-    """Every build, newest first: the index's builds with where they live, then builds only a PC has."""
+            titles: dict | None = None, favs: set | frozenset = frozenset()) -> list[dict]:
+    """Every build, favorites first, then newest first: the index's builds with where they live, then builds only a
+    PC has."""
     metas = {f"{r['game_id']}/{r['name']}": r.get("meta") or {} for r in records}
     pcs = sorted(({"name": w.get("name"), "os": w.get("os")} for w in workers if w.get("online") and w.get("name")),
                  key=lambda w: str(w["name"]).lower())
@@ -239,8 +247,8 @@ def listing(items: list[dict], records: list[dict], cards: dict, workers: list[d
     titles = dict(titles or {})
     for r in rows:
         titles.setdefault(r["game_id"], r["game_title"])
-    rows += [local_only_row(k, v, names, titles) for k, v in here.items() if k not in known]
-    rows.sort(key=lambda r: -(r["built"] or 0))
+    rows += [local_only_row(k, v, names, titles, favs) for k, v in here.items() if k not in known]
+    rows.sort(key=lambda r: (not r.get("favorite"), -(r["built"] or 0)))
     return rows
 
 
@@ -459,6 +467,7 @@ def details(store, config, item: dict, meta: dict, card: dict | None, lib: dict,
     return {
         "key": item["key"], "name": name, "game_id": gid, "label": item.get("mod_title") or name,
         "display_name": item.get("display_name") or "", "original_title": item.get("original_title") or name,
+        "favorite": bool(item.get("favorite")),
         "kinds": kinds_of(item, meta, card), "writer": item.get("writer") or "", "built": item.get("built"),
         "built_on": meta.get("built_on") or None, "folder": str(folder),
         "size": item.get("size"), "own_size": item.get("own_size"), "files_count": item.get("files"),
@@ -771,20 +780,35 @@ def routes(app, store, config, auth, *, submit, workers):
         return key, item, meta
 
     @app.get("/api/builds")
-    def builds_list(q: str = "", game_id: str = "", kind: str = "", fresh: bool = False, actor=Depends(auth)):
-        """Every custom build, newest first: the Spark's collection + each PC's own builds (deduped), with kinds,
-        where it lives and its launch options."""
+    def builds_list(q: str = "", game_id: str = "", kind: str = "", favorite: bool = False, fresh: bool = False,
+                    actor=Depends(auth)):
+        """Every custom build, favorites first, then newest first: the Spark's collection + each PC's own builds
+        (deduped), with kinds, where it lives and its launch options. favorite=true: only the starred ones."""
         items, records, status = gallery(fresh)
         ws = workers()
         rows = listing(items, records, cards(), ws, BM.display_names(store),
-                       {it["game_id"]: it.get("title") or "" for it in items})
-        picked = select(rows, q, game_id, kind)
+                       {it["game_id"]: it.get("title") or "" for it in items}, BM.favorites(store))
+        picked = select(rows, q, game_id, kind, favorite)
         return {"items": picked, "total": len(picked), "all": len(rows), **facets(rows),
                 "kinds_all": [{"kind": k, "label": v} for k, v in KINDS.items()],
                 "pcs": [{"name": w.get("name"), "os": w.get("os")} for w in ws if w.get("online") and w.get("name")],
                 **status}
 
-    @app.patch("/api/builds/{game_id}/{name}")
+    def known(game_id: str, name: str):
+        if not (BM._safe_component(game_id) and BM._safe_component(name)):
+            raise HTTPException(422, "bad build")
+        key, item, _meta = find(game_id, name)
+        if item is None and key not in local_index(workers()):
+            raise HTTPException(404, f"no build {key}")
+        return key, item
+
+    def changed():
+        inv = getattr(app.state, "built_mods_invalidate", None)
+        if inv:
+            inv()
+
+    # POST too: the desktop app's IPC api() sends a body as POST (same handler, same path)
+    @app.api_route("/api/builds/{game_id}/{name}", methods=["PATCH", "POST"])
     def builds_rename(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
         """{display_name}: the operator's name for a build, shown wherever builds are listed ("" restores the
         writer's title). The folder and its marker are never renamed."""
@@ -794,18 +818,39 @@ def routes(app, store, config, auth, *, submit, workers):
             v = clean_name(body.get("display_name"))
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
-        key, item, _meta = find(game_id, name)
-        if item is None and key not in local_index(workers()):
-            raise HTTPException(404, f"no build {key}")
+        key, item = known(game_id, name)
         if v:
             store.put(BM.NAME_KIND, key, {"key": key, "display_name": v, "by": actor, "ts": time.time()})
         else:
             store.delete(BM.NAME_KIND, key)
         store.audit(actor, "build.rename", key, {"display_name": v})
-        inv = getattr(app.state, "built_mods_invalidate", None)
-        if inv:
-            inv()
+        changed()
         return {"key": key, "display_name": v, "label": v or ((item or {}).get("original_title") or name)}
+
+    def set_favorite(game_id: str, name: str, on: bool, actor: str) -> dict:
+        key, _item = known(game_id, name)
+        if on:
+            store.put(BM.FAV_KIND, key, {"key": key, "by": actor, "ts": time.time()})
+        else:
+            store.delete(BM.FAV_KIND, key)
+        store.audit(actor, "build.favorite" if on else "build.unfavorite", key, {})
+        changed()
+        return {"key": key, "favorite": on}
+
+    # PUT {favorite: true | false} (default true) / DELETE; POST = PUT for the desktop app's IPC api()
+    @app.api_route("/api/builds/{game_id}/{name}/favorite", methods=["PUT", "POST"])
+    def builds_favorite(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        """★ a build: listed first on the Mods page and in Builds, a Favorites group at the top of the game's Special
+        builds, never evicted by a disk budget. {favorite: false} un-stars it (as DELETE does)."""
+        on = body.get("favorite", True) if isinstance(body, dict) else True
+        if not isinstance(on, bool):
+            raise HTTPException(422, "favorite: true or false")
+        return set_favorite(game_id, name, on, actor)
+
+    @app.delete("/api/builds/{game_id}/{name}/favorite")
+    def builds_unfavorite(game_id: str, name: str, actor=Depends(auth)):
+        """Un-star a build."""
+        return set_favorite(game_id, name, False, actor)
 
     @app.get("/api/builds/scheduled")
     def builds_scheduled(actor=Depends(auth)):

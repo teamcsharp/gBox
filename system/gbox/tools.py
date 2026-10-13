@@ -231,7 +231,8 @@ class LaunchIn(BaseModel):
     game: CatalogEntry
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
-    examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    mod_title: str = ""                    # the operator's name for that build (labels only: launch bar, loader)
+    examine:bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
     capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,

@@ -11,7 +11,8 @@
 // localStorage) listing the builds made to test or confirm the operator's requests, cast swaps, character swaps and
 // the rest (GET /api/games/{id}/special_builds, gbox/special_builds.py). Drawn at once with placeholder rows, filled when
 // the answer comes; each build: Quick launch (this PC) + an options submenu (Play on <PC>, saved moment, debugger,
-// Open in Mods page, Open request #n, Rebuild), and "Rebuild all confirmation builds" on top (Spark jobs, followed in
+// ✎ Rename… (inline: Enter saves, Esc cancels, empty restores), ★ favorite, Open in Mods page, Open request #n, Rebuild),
+// the operator's ★ builds in a Favorites group at the top (#1656), and "Rebuild all confirmation builds" on top (Spark jobs, followed in
 // the process pop-up). mountSpecial() puts the same section into another menu (the desktop app's game chip menu).
 (function (root) {
   "use strict";
@@ -83,7 +84,10 @@
   const sbBuilds = sp => (sp && Array.isArray(sp.groups) ? sp.groups : []).flatMap(g => Array.isArray(g.builds) ? g.builds : []);
   const sbFind = (st, key) => sbBuilds(st.special).find(b => b.key === key);
   const sbDefault = b => (b.launch_options || []).find(o => o.default) || (b.launch_options || [])[0];
-  const sbConfirm = sp => ((sp && sp.groups || []).find(g => g.key === "confirmation")?.builds || []).filter(b => b.rebuild_recipe);
+  // a favorited confirmation build sits in Favorites (home: "confirmation"); "Rebuild all" still counts it
+  const sbConfirm = sp => sbBuilds(sp).filter(b => b.rebuild_recipe && ((b.home || "") === "confirmation"
+    || (!b.home && ((sp.groups || []).find(g => g.key === "confirmation")?.builds || []).includes(b))));
+  const buildPath = (b, gid) => `/api/builds/${encodeURIComponent(b.game_id || gid)}/${encodeURIComponent(b.name)}`;
   function sbOptLabel(o, st) {
     if (o.target === "here" && !o.moment && !o.debug) return `Play on this PC${st.worker ? ` (${st.worker})` : ""}`;
     return o.label || o.id;
@@ -93,6 +97,8 @@
     const k = `data-key="${ESC(b.key)}"`;
     return `<div class="gm-sbo" role="menu" data-gm-sbo="${ESC(b.key)}" style="margin:4px 0 6px 10px;padding-left:6px;border-left:2px solid var(--line,#444)">` +
       (b.launch_options || []).map(o => btn(`data-gm-sb="launch" ${k} data-opt="${ESC(o.id)}"`, `▶ ${ESC(sbOptLabel(o, st))}`)).join("") +
+      btn(`data-gm-sb="rename" ${k}`, "✎ Rename…", "Give this build your own name (the folder keeps its name)") +
+      btn(`data-gm-sb="fav" ${k}`, b.favorite ? "☆ Remove from favorites" : "★ Add to favorites", "Favorites head this menu, list first on the Mods page and in Builds, and are never evicted") +
       btn(`data-gm-sb="mods" ${k}`, "Open in Mods page") +
       (b.tickets || []).map(t => btn(`data-gm-sb="request" ${k} data-n="${ESC(t.number)}"`, `Open request #${ESC(t.number)}${t.title ? " · " + ESC(t.title) : ""}`)).join("") +
       (b.rebuild_recipe ? btn(`data-gm-sb="rebuild" ${k}`, "⟳ Rebuild", "Build it again on the Spark from its recipe (never launches)")
@@ -101,8 +107,11 @@
   function sbRow(b, st) {
     const d = sbDefault(b), open = st.sbOpts === b.key;
     const tickets = (b.tickets || []).map(t => `<span class="mut" title="${ESC(t.title || "")}">#${ESC(t.number)}${t.title ? " " + ESC(t.title) : ""}</span>`).join(" · ");
+    const name = st.sbRenaming === b.key
+      ? `<input data-gm-sbrename="${ESC(b.key)}" value="${ESC(b.mod_title || b.name)}" maxlength="120" aria-label="Build name" placeholder="${ESC(b.original_title || b.name)}" title="Enter saves · Esc cancels · empty restores the original name" style="flex:1;min-width:0;font:inherit" data-nomic>`
+      : `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ESC(b.display_name && b.original_title ? `${b.mod_title} (was “${b.original_title}”, folder ${b.name})` : b.name)}">${b.favorite ? '<span class="gm-fav" title="Favorite">★</span> ' : ""}${ESC(b.mod_title || b.name)}</span>`;
     return `<div class="gm-sbr" data-gm-sbkey="${ESC(b.key)}" style="margin:3px 0">
-      <div style="display:flex;gap:4px;align-items:center"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ESC(b.name)}">${ESC(b.mod_title || b.name)}</span>
+      <div style="display:flex;gap:4px;align-items:center">${name}
       <button class="act pri" type="button" data-gm-sb="quick" data-key="${ESC(b.key)}" title="Quick launch: ${ESC(d ? sbOptLabel(d, st) : "")}" ${d ? "" : "disabled"}>▶</button>
       <button class="act" type="button" data-gm-sb="opts" data-key="${ESC(b.key)}" aria-haspopup="menu" aria-expanded="${open}" title="Options">⋯</button></div>
       ${tickets ? `<div style="font-size:11px">${tickets}</div>` : ""}${b.summary ? `<div class="mut" style="font-size:11px">${ESC(b.summary)}</div>` : ""}
@@ -155,8 +164,40 @@
       } catch (err) { st.sbStatus = "✗ " + String(err && err.message || err).slice(0, 160); }
       finally { st.sbBusy = false; repaint(); }
     }
+    // ✎ Rename… (the same PATCH as the Builds view and the Mods cards) and ★ favorites: the menu regroups from the server
+    const changed = () => { cache.mods.delete(gid); return fetch(true); };
+    async function rename(b, value) {
+      st.sbRenaming = null;
+      const v = String(value ?? "").trim();
+      if (!b || v === (b.display_name || "") || (!b.display_name && v === (b.mod_title || b.name))) { repaint(); return; }
+      try {
+        const r = await io.api(buildPath(b, gid), { display_name: v }, "PATCH");
+        b.display_name = r.display_name; b.mod_title = r.label;
+        st.sbStatus = v ? `✓ renamed “${r.label}” (the folder stays ${b.name})` : `✓ original name restored: ${r.label}`;
+        repaint(); await changed();
+      } catch (err) { st.sbStatus = "✗ rename failed: " + String(err && err.message || err).slice(0, 160); repaint(); }
+    }
+    async function favorite(b) {
+      if (!b) return;
+      const on = !b.favorite;
+      try {
+        await io.api(buildPath(b, gid) + "/favorite", { favorite: on }, "PUT");
+        b.favorite = on; st.sbOpts = null;
+        st.sbStatus = on ? `★ ${b.mod_title || b.name} is a favorite` : `☆ ${b.mod_title || b.name} removed from favorites`;
+        repaint(); await changed();
+      } catch (err) { st.sbStatus = "✗ " + String(err && err.message || err).slice(0, 160); repaint(); }
+    }
+    // Enter saves, Esc cancels (the rename field of a Special builds row) -> handled?
+    function key(ev) {
+      const inp = ev && ev.target && ev.target.closest && ev.target.closest("[data-gm-sbrename]");
+      if (!inp) return false;
+      if (ev.key === "Enter") { ev.preventDefault && ev.preventDefault(); rename(sbFind(st, inp.dataset.gmSbrename), inp.value); }
+      else if (ev.key === "Escape") { ev.preventDefault && ev.preventDefault(); ev.stopPropagation && ev.stopPropagation(); st.sbRenaming = null; repaint(); }
+      return true;
+    }
     function click(t) {
       const at = s => t && t.closest && t.closest(s);
+      if (at("[data-gm-sbrename]")) return true;             // clicks inside the rename field stay in it
       const again = at("[data-gm-retry]");
       if (again && again.dataset.gmRetry === "special") { st.specialErr = null; repaint(); fetch(true); return true; }
       const a = at("[data-gm-sb]"); if (!a) return false;
@@ -165,23 +206,30 @@
       else if (act === "opts") { st.sbOpts = st.sbOpts === a.dataset.key ? null : a.dataset.key; repaint(); }
       else if (act === "quick") launch(b, b && sbDefault(b));
       else if (act === "launch") launch(b, b && (b.launch_options || []).find(o => o.id === a.dataset.opt));
+      else if (act === "rename" && b) {
+        st.sbRenaming = b.key; st.sbOpts = null; repaint();
+        const scope = st.host || io.el, inp = scope && scope.querySelector && scope.querySelector(`[data-gm-sbrename]`);
+        if (inp) { try { inp.focus(); inp.select && inp.select(); } catch {} }
+      }
+      else if (act === "fav") favorite(b);
       else if (act === "mods") { close(); io.openMods && io.openMods(gid, b); }
       else if (act === "request") { close(); const n = a.dataset.n; io.openRequest && io.openRequest((b?.tickets || []).find(x => String(x.number) === String(n)) || { number: +n }, b); }
       else if (act === "rebuild" && b?.rebuild_recipe) rebuild({ recipes: [b.rebuild_recipe] }, b.mod_title || b.name);
       else if (act === "rebuild-all") rebuild({ recipes: "all", group: "confirmation" }, "every confirmation build");
       return true;
     }
-    return { fetch, click, launch, rebuild };
+    return { fetch, click, key, launch, rebuild, rename, favorite };
   }
   // The section on its own, in another menu (the desktop app's game chip menu): host = an element; io as above
   function mountSpecial(io, host, { gid, title = "" }) {
     const st = { gid, title, worker: io.worker || "", special: cache.special.get(gid)?.list || null, specialErr: null,
-                 specialOpen: specialOpenGet(io), sbOpts: null, sbBusy: false, sbStatus: "" };
+                 specialOpen: specialOpenGet(io), sbOpts: null, sbBusy: false, sbStatus: "", sbRenaming: null, host };
     const repaint = () => { try { host.innerHTML = specialHTML(st); } catch (err) { host.innerHTML = `<p class="mut">Special builds could not be shown: ${ESC(String(err && err.message || err).slice(0, 120))}</p>`; }
                             if (io.refit) { try { io.refit(host); } catch {} } };
     const acts = specialActions(io, st, repaint, () => { try { io.close && io.close(); } catch {} });
     repaint();
     host.onclick = ev => { if (acts.click(ev.target)) { ev.stopPropagation && ev.stopPropagation(); } };
+    host.onkeydown = ev => { acts.key(ev); };
     const settled = acts.fetch(false);
     return { host, state: st, settled, actions: acts, repaint };
   }
@@ -201,7 +249,9 @@
     const chars = Array.isArray(st.chars) ? st.chars : [], mods = Array.isArray(st.mods) ? st.mods : [];
     const ready = chars.filter(ch => readyMod(ch, gid)), other = chars.filter(ch => !readyMod(ch, gid) && !ch.variant_of);
     const charMods = new Set(ready.map(ch => readyMod(ch, gid)));
-    const disc = mods.filter(m => isLaunch(m) && !charMods.has(launchOf(m))), patch = mods.filter(m => !isLaunch(m));
+    const disc = mods.filter(m => isLaunch(m) && !charMods.has(launchOf(m)))          // ★ builds first (stable)
+      .map((m, i) => [m, i]).sort((a, b) => (+!!b[0].favorite - +!!a[0].favorite) || a[1] - b[1]).map(x => x[0]);
+    const patch = mods.filter(m => !isLaunch(m));
     const selectedChar = ready.find(ch => ch.slug === b.character && readyMod(ch, gid) === b.disc)
       || (!b.character && b.disc ? ready.find(ch => readyMod(ch, gid) === b.disc) : null);
     return { ready, other, disc, patch, selectedChar };
@@ -236,7 +286,7 @@
       const saved = loading && b.disc ? `<label><input type="radio" name="gmd" value="${ESC(b.disc)}" checked> ${ESC(b.disc)}</label>` : "";
       return `<div class="gms"><b>Boot with a mod</b>
       <label><input type="radio" name="gmd" value="" ${!b.disc ? "checked" : ""}> Original game</label>${saved}
-      ${d.disc.map(m => `<label><input type="radio" name="gmd" value="${ESC(launchOf(m))}" ${b.disc === launchOf(m) ? "checked" : ""}> ${ESC(m.title)}</label>`).join("")}
+      ${d.disc.map(m => `<label><input type="radio" name="gmd" value="${ESC(launchOf(m))}" ${b.disc === launchOf(m) ? "checked" : ""}> ${m.favorite ? "★ " : ""}${ESC(m.display_name || m.title)}</label>`).join("")}
       ${d.patch.length ? `<div class="mut" style="margin-top:6px">Switched on once the game is running:</div>` +
         d.patch.map(m => `<label><input type="checkbox" data-keep="${ESC(m.id)}" ${kept.includes(m.id) ? "checked" : ""}> ${ESC(m.title)}</label>`).join("") : ""}
       ${loading ? (st.modsErr ? failed("mods", "Mods didn't load: " + st.modsErr) : '<p class="mut" data-gm-loading="mods">loading mods…</p>')
@@ -379,6 +429,7 @@
       const g = at("[data-go]"); if (!g) return;
       close(); io.play(gid, g.dataset.go);
     };
+    el.onkeydown = ev => { if (current()) special.key(ev); };   // Special builds ✎ Rename: Enter saves, Esc cancels
     return { el, state: st, settled, paint, special };
   }
 

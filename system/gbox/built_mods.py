@@ -641,7 +641,7 @@ def session_frames(store, sessions: list[dict], limit: int = FRAME_LIMIT) -> dic
 
 
 def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | None, requests: dict, library,
-          frames: list[dict] | None = None, display_name: str = "") -> dict:
+          frames: list[dict] | None = None, display_name: str = "", favorite: bool = False) -> dict:
     meta, gid, name = rec.get("meta") or {}, rec["game_id"], rec["name"]
     changes = changes_of(meta)
     built = meta.get("built")
@@ -656,8 +656,9 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
     return {
         "key": f"{gid}/{name}", "name": name, "game_id": gid, "title": title, "game_title": title,
         "platform": (catalog or {}).get("platform") or "",
-        # the operator's own name for the build (Builds view, double-click) wins everywhere a build is listed
+        # the operator's own name for the build (Builds view, the Mods card ✎) wins everywhere a build is listed
         "mod_title": display_name or original, "display_name": display_name, "original_title": original,
+        "favorite": bool(favorite),                # ☆/★ on the Mods page and in Builds (FAV_KIND): listed first
         "writer": writer_of(meta, name), "changes": changes, "cast": isinstance(meta.get("cast"), list),
         "report": meta.get("cast") if isinstance(meta.get("cast"), list) else None,
         "cast_source": meta.get("cast_source") or "",
@@ -786,6 +787,44 @@ def display_names(store) -> dict:
             and r["display_name"].strip()}
 
 
+FAV_KIND = "build_favorite"                # store kind: "game_id/mod" -> {key, by, ts} (gbox.builds): the operator's ★
+
+
+def favorites(store) -> set[str]:
+    """The "game_id/mod" keys the operator starred: listed first, a Favorites group at the top of Special builds, and
+    never evicted by a disk budget (protected())."""
+    try:
+        return {r["key"] for r in _fields(store, FAV_KIND, ("key",)) if isinstance(r.get("key"), str) and r["key"]}
+    except Exception:                                            # noqa: BLE001
+        return set()
+
+
+def is_favorite(store, game_id: str, mod: str) -> bool:
+    try:
+        return store.get(FAV_KIND, f"{game_id}/{mod}") is not None
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
+def label_of(store, game_id: str, mod: str, fallback: str = "") -> str:
+    """The name a build shows under (launch bar, loader, sessions, Mini window title): the operator's display name,
+    else `fallback`, else the folder name."""
+    if not mod:
+        return fallback
+    try:
+        doc = store.get(NAME_KIND, f"{game_id}/{mod}") or {}
+    except Exception:                                            # noqa: BLE001
+        doc = {}
+    v = doc.get("display_name") if isinstance(doc.get("display_name"), str) else ""
+    return v.strip() or fallback or mod
+
+
+def protected(store, game_id: str, mod: str) -> str:
+    """Why a disk budget (the Sonic showcase's LRU eviction, any later sweep of built mods) must never remove this
+    build, else ''. The cache's own eviction (catalog.evict) never touches mods/ at all (catalog.EVICT_KEEP)."""
+    return "the operator favorited it" if is_favorite(store, game_id, mod) else ""
+
+
 def gallery(store, config, records: list[dict] | None = None, *, register: bool = True) -> dict:
     """The whole gallery, newest build first: the index's records (or a marker scan) joined with the store. Touches
     no mod folder when records are given."""
@@ -805,6 +844,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                 pass
     launches = launch_index(sessions, _failed_launches(store))
     names = display_names(store)
+    favs = favorites(store)
     try:
         frames = session_frames(store, sessions)
     except Exception:                                            # noqa: BLE001 - frames are a convenience
@@ -819,12 +859,13 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
         gid = rec["game_id"]
         items.append(entry(rec, cards.get((gid, rec["name"])), launches.get((gid, rec["name"])),
                            catalog_of(store, gid, rec.get("meta") or {}, catalogs), requests, library,
-                           frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", "")))
+                           frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", ""),
+                           favorite=f"{gid}/{rec['name']}" in favs))
     items.sort(key=lambda m: -(m["built"] or 0))
     return {"items": items, "registered": made, "cache_dir": str(root)}
 
 
-def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "") -> list[dict]:
+def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", favorite: bool = False) -> list[dict]:
     words = [w for w in q.lower().split() if w]
 
     def hay(m):
@@ -832,7 +873,7 @@ def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "") 
                          *(f"{r.get('donor')} {r.get('slot')}" for r in m["changes"]),
                          *(f"#{t['number']}" for t in m["tickets"])]).lower()
     return [m for m in items if (not game_id or m["game_id"] == game_id) and (not writer or m["writer"] == writer)
-            and all(w in hay(m) for w in words)]
+            and (not favorite or m.get("favorite")) and all(w in hay(m) for w in words)]
 
 
 def facets(items: list[dict]) -> dict:
@@ -885,7 +926,7 @@ def routes(app, store, config, auth):
 
     @app.get("/api/mods/built")
     def built_list(game_id: str = "", writer: str = "", q: str = "", offset: int = 0, limit: int = 0,
-                   fresh: bool = False, actor=Depends(auth)):
+                   fresh: bool = False, favorite: bool = False, actor=Depends(auth)):
         """Every built mod folder in this node's cache, newest first, joined with its mod card (filters + pages).
         Answers from the index at once; `indexing` while a marker pass is due, `sizing` = folders still being sized
         (size: null). fresh=true rejoins the cards now and asks for an incremental pass in the background."""
@@ -894,7 +935,7 @@ def routes(app, store, config, auth):
             index.ask()
         data = current(fresh)
         items = data["items"]
-        picked = select(items, game_id, writer, q)
+        picked = select(items, game_id, writer, q, favorite)
         offset = max(0, offset)
         page = picked[offset:offset + limit] if limit > 0 else picked[offset:]
         return {"total": len(picked), "all": len(items), "offset": offset, "limit": limit, "items": page,

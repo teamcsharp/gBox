@@ -4,6 +4,10 @@
 // texture pop-up to zoom - what changed (donor -> slot, the per-slot report of a cast swap), verified / unverified,
 // and Play (this PC or a chosen PC, the mod cards' @launch path), Play from saved moment, Open request and Screenshot
 // after launch (get_frame of the running game -> the mod card's in-game shots).
+// #1656: a card's name renames in place (click it or ✎; Enter saves, Esc cancels, empty restores the writer's title:
+// PATCH /api/builds/{game}/{name}, a display name only, the folder never changes) and ☆/★ stars it (PUT .../favorite:
+// favorites list first, a ★ Favorites filter, the game's Special builds show them on top). ⋯ or a right-click on the card
+// opens its options (Rename…, favorite, restore the original name, Play).
 // The server answers from its index of the build folders: while it is still indexing (`indexing`) or walking folder
 // sizes (`sizing`: folders left, size null on those cards) the view says so and polls faster through the shared cached
 // read, so sizes appear as they arrive; Refresh asks for an incremental pass (POST /api/mods/built/refresh).
@@ -15,24 +19,29 @@
   const PAGE = 24;
   const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
-  function filterMods(items, { game = "", writer = "", q = "" } = {}) {
+  // favorites (★) first, then newest; fav: only the favorites
+  function filterMods(items, { game = "", writer = "", q = "", fav = false } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
     const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
-    return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && words.every(w => hay(m).includes(w)))
-      .sort((a, b) => (b.built || 0) - (a.built || 0));
+    return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && (!fav || m.favorite) && words.every(w => hay(m).includes(w)))
+      .sort((a, b) => (+!!b.favorite - +!!a.favorite) || (b.built || 0) - (a.built || 0));
   }
 
   function facets(items) {
     const games = new Map(), writers = new Map();
+    let favorites = 0;
     for (const m of items || []) {
       const g = games.get(m.game_id) || { game_id: m.game_id, title: m.title || m.game_id, count: 0 };
       g.count++; games.set(m.game_id, g);
       writers.set(m.writer, (writers.get(m.writer) || 0) + 1);
+      if (m.favorite) favorites++;
     }
     return { games: [...games.values()].sort((a, b) => a.title.localeCompare(b.title)),
-             writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })) };
+             writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })), favorites };
   }
+  // the build's own endpoints (gbox/builds.py): PATCH {display_name} renames, PUT {favorite} stars
+  const buildPath = m => `/api/builds/${encodeURIComponent(m.game_id)}/${encodeURIComponent(m.name)}`;
 
   // in-game shots first (what the build looks like running: card shots, then frames captured from sessions of the build),
   // then the writer's previews, then the donors
@@ -73,17 +82,36 @@
       + (r.reason ? ` <span class="mut">${ESC(r.reason)}</span>` : "") + "</li>").join("")}</ul>`;
   }
 
-  function cardHTML(m, { url = u => u, idx = 0, now } = {}) {
+  // the card's name: click it (or ✎) to rename inline; Enter saves, Esc cancels, empty restores the writer's title.
+  // data-nomic: the web shell wraps text fields with a dictation button, which moves (and so blurs) the field
+  function titleHTML(m, renaming) {
+    if (renaming) return `<input class="mg-rename" data-mg-rename="${ESC(m.key)}" value="${ESC(m.mod_title || m.name)}" maxlength="120" aria-label="Build name"
+      placeholder="${ESC(m.original_title || m.name)}" title="Enter saves · Esc cancels · empty restores “${ESC(m.original_title || m.name)}”" data-nomic>`;
+    return `<b class="mg-title" data-mg="rename" role="button" tabindex="0" title="Click to rename · folder ${ESC(m.name)}${m.display_name && m.original_title ? ` · was “${ESC(m.original_title)}”` : ""}">${ESC(m.mod_title || m.name)}</b>`
+      + `<button class="mg-ico" type="button" data-mg="rename" title="Rename this build (the folder keeps its name)" aria-label="Rename">✎</button>`;
+  }
+  const starHTML = m => `<button class="mg-ico mg-star${m.favorite ? " on" : ""}" type="button" data-mg="fav" aria-pressed="${!!m.favorite}" title="${m.favorite ? "Remove from favorites" : "Add to favorites: listed first, at the top of the game's Special builds, never evicted"}" aria-label="Favorite">${m.favorite ? "★" : "☆"}</button>`;
+  // the card's options (⋯ or right-click): Rename…, favorite, Play, restore the original name
+  function menuHTML(m) {
+    const item = (act, text, title = "") => `<button class="act" type="button" role="menuitem" data-mg="${act}"${title ? ` title="${ESC(title)}"` : ""}>${text}</button>`;
+    return `<div class="mg-menu" role="menu" data-mg-menu="${ESC(m.key)}">${item("rename", "✎ Rename…", "Give this build your own name (the folder keeps its name)")}`
+      + item("fav", m.favorite ? "☆ Remove from favorites" : "★ Add to favorites")
+      + (m.display_name ? item("unname", `↺ Restore “${ESC(m.original_title || m.name)}”`) : "")
+      + item("play", "▶ Play") + "</div>";
+  }
+
+  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "" } = {}) {
     const imgs = imagesOf(m, url), i = imgs.length ? ((idx % imgs.length) + imgs.length) % imgs.length : 0, cur = imgs[i];
     const tickets = m.tickets || [];
-    return `<article class="mg-card" data-key="${ESC(m.key)}">
+    return `<article class="mg-card${m.favorite ? " mg-fav" : ""}" data-key="${ESC(m.key)}">${menu ? menuHTML(m) : ""}
       <div class="mg-pic">${cur ? `<img class="mg-img" loading="lazy" decoding="async" alt="${ESC(cur.name)}" data-i="${i}" src="${ESC(cur.src)}">
         ${imgs.length > 1 ? `<button class="mg-nav" data-mg="prev" type="button" title="Previous picture">‹</button><button class="mg-nav" data-mg="next" type="button" title="Next picture">›</button>` : ""}
         <span class="mg-count">${cur.kind === "shot" ? "in-game · " : cur.kind === "donor" ? "donor · " : ""}${i + 1} / ${imgs.length}</span>`
         : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}</div>
       <div class="mg-body">
-        <div class="mg-h"><b title="${ESC(m.name)}">${ESC(m.mod_title || m.name)}</b>
-          <span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span></div>
+        <div class="mg-h"><span class="mg-tt">${starHTML(m)}${titleHTML(m, renaming)}</span>
+          <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
+        ${m.display_name && m.original_title && m.original_title !== m.display_name ? `<div class="mg-was mut">was “${ESC(m.original_title)}”</div>` : ""}
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
           <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}</div>
         ${changesHTML(m)}
@@ -93,7 +121,7 @@
         <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
           ${m.state_slot != null && m.card_id ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
           <button class="act" type="button" data-mg="shot" title="Once the mod is running, capture a frame and add it to this mod's pictures"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
-          <span class="mg-msg mut"></span></div></div></article>`;
+          <span class="mg-msg mut">${ESC(note)}</span></div></div></article>`;
   }
 
   // a request's thread (GET /api/requests/{id}) shown under the card when the client has no inbox view of its own
@@ -110,6 +138,7 @@
       <input type="search" data-mg-f="q" placeholder="Search mod, game, donor, slot, #request" value="${ESC(st.q)}">
       <select data-mg-f="game">${opt("", "All games", st.game)}${f.games.map(g => opt(g.game_id, `${g.title} (${g.count})`, st.game)).join("")}</select>
       <select data-mg-f="writer">${opt("", "All writers", st.writer)}${f.writers.map(w => opt(w.writer, `${w.writer} (${w.count})`, st.writer)).join("")}</select>
+      <label class="mg-favf" title="Only the builds you starred (★)"><input type="checkbox" data-mg-f="fav"${st.fav ? " checked" : ""}> ★ Favorites${f.favorites ? ` (${f.favorites})` : ""}</label>
       <label class="mut">Play on <select data-mg-f="node">${opt("", "This PC", st.node)}${nodes.map(n => opt(n.name, `${n.name} (${n.os})`, st.node)).join("")}</select></label>
       <button class="act" type="button" data-mg="refresh" title="Rescan the build folders">Refresh</button><span class="mut" data-mg-sum></span></div>
       <div class="mg-grid" data-mg-grid></div><div data-mg-more></div>`;
@@ -130,7 +159,14 @@
     .mg-ch{margin:0;padding-left:16px;max-height:110px;overflow:auto;font-size:12px}.mg-st{font-size:10.5px;padding:0 5px;border-radius:7px;background:#444;color:#fff}
     .mg-st.mg-built{background:#1f6f3f}.mg-st.mg-failed{background:#7a2b2b}.mg-st.mg-partial,.mg-st.mg-skipped{background:#6f5a1f}
     .mg-rq{border-top:1px solid var(--line,#333);padding-top:5px;font-size:12px;max-height:220px;overflow:auto}.mg-rqm{margin:4px 0;white-space:pre-wrap}
-    .mg-meta{font-size:11.5px}.mg-sizing{font-style:italic}.mg-bad{color:#e66}.mg-btns,.mg-tk{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.mg-msg{font-size:11.5px}`;
+    .mg-meta{font-size:11.5px}.mg-sizing{font-style:italic}.mg-bad{color:#e66}.mg-btns,.mg-tk{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.mg-msg{font-size:11.5px}
+    .mg-card{position:relative}.mg-card.mg-fav{border-color:#c9a43a}.mg-tt{display:flex;gap:2px;align-items:flex-start;min-width:0;flex:1}.mg-hr{display:flex;gap:4px;align-items:center}
+    .mg-title{cursor:text;border-radius:3px;padding:0 2px}.mg-title:hover{background:#ffffff14}.mg-rename{flex:1;min-width:0;font:inherit;font-weight:600}
+    .mg-ico{background:none;border:0;color:inherit;cursor:pointer;padding:0 3px;font-size:13px;opacity:.65;line-height:1.4}.mg-ico:hover{opacity:1}
+    .mg-star{font-size:15px;color:#c9a43a;opacity:.8}.mg-star.on{opacity:1}.mg-was{font-size:11px;margin-top:-3px}
+    .mg-favf{display:flex;gap:4px;align-items:center;font-size:12.5px;white-space:nowrap}
+    .mg-menu{position:absolute;z-index:5;top:8px;right:8px;display:flex;flex-direction:column;gap:3px;padding:6px;border:1px solid var(--line,#444);border-radius:8px;background:var(--bg,#16161a);box-shadow:0 8px 24px #000a;min-width:190px}
+    .mg-menu .act{text-align:left}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -138,7 +174,8 @@
   //   openImages(list, i, [x, y]), poll (GBoxLivePoll), here (this PC's worker name), visible() -> bool,
   //   play?(mod, {node, moment}), openRequest?(ticket), toast?(text), wait?(ms) }
   function mount(host, env) {
-    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "" };
+    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", fav: !!env.fav, page: 1, idx: new Map(), data: null, nodes: [], sig: "",
+                 renaming: null, menu: null, notes: new Map() };
     const poll = env.poll || root.GBoxLivePoll;
     const read = poll ? poll.cachedRead(() => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), { ttl: 15000 })
       : { get: () => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), invalidate() {} };
@@ -156,8 +193,10 @@
       if (!built) shell();
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
-      if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0 })).join("")
-        || `<p class="mut">${st.data ? (st.data.items.length ? "No built mod matches these filters." : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
+      if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0, renaming: st.renaming === m.key, menu: st.menu === m.key,
+                                                                note: st.notes.get(m.key) || "" })).join("")
+        || `<p class="mut">${st.data ? (st.data.items.length ? (st.fav && !st.data.items.some(m => m.favorite) ? "No favorites yet: ☆ on a card stars it." : "No built mod matches these filters.") : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
+      if (st.renaming) { const inp = grid?.querySelector?.("[data-mg-rename]"); try { inp?.focus?.(); inp?.select?.(); } catch {} }
       if (sum) sum.textContent = summaryText(list.length, st.data);
       if (moreEl) moreEl.innerHTML = more > 0 ? `<button class="act" type="button" data-mg="more" style="width:100%;margin:10px 0">Show ${Math.min(more, PAGE)} more (${more} not shown)</button>` : "";
     }
@@ -169,6 +208,7 @@
       const refacet = !st.data || JSON.stringify(facets(st.data.items)) !== JSON.stringify(facets(r.data.items || []));
       st.data = { items: r.data.items || [], cache_dir: r.data.cache_dir, indexing: !!r.data.indexing, sizing: r.data.sizing || 0 };
       st.sig = sig;
+      if (st.renaming) return st;                           // never redraw under the operator's typing (the rename field)
       const typing = host.contains?.(root.document?.activeElement) && root.document.activeElement.matches?.("input, select");
       if (refacet && !typing) built = false;                 // new game / writer options; never under the operator's cursor
       draw();
@@ -234,14 +274,58 @@
       return x;
     }
 
+    // ✎ rename (PATCH /api/builds/{game}/{name}: a display name, the folder never changes; "" restores the writer's
+    // title) and ★ favorites (PUT .../favorite): the card changes at once, the next read brings the server's view
+    let renameBusy = false;
+    const note = (key, text) => { if (text) st.notes.set(key, text); else st.notes.delete(key); };
+    const startRename = m => { st.menu = null; st.renaming = m.key; draw(); };
+    async function rename(key, value) {
+      const m = find(key); if (!m || renameBusy) return;
+      st.renaming = null;
+      const v = String(value ?? "").trim();
+      if (v === (m.display_name || "") || (!m.display_name && v === (m.mod_title || m.name))) { draw(); return; }
+      renameBusy = true;
+      try {
+        const r = await env.api(buildPath(m), { display_name: v }, "PATCH");
+        m.display_name = r.display_name; m.mod_title = r.label;
+        note(key, v ? `Renamed (the folder stays ${m.name})` : `Original name restored: ${r.label}`);
+        read.invalidate(); st.sig = "";
+        toast(v ? `Renamed: ${r.label}` : `${r.label}: original name restored`);
+      } catch (err) { note(key, "⚠ rename failed: " + (err?.message || err)); }
+      finally { renameBusy = false; }
+      draw();
+      return m;
+    }
+    async function favorite(m, on = !m.favorite) {
+      st.menu = null;
+      try {
+        await env.api(buildPath(m) + "/favorite", { favorite: on }, "PUT");
+        m.favorite = on; note(m.key, on ? "★ Favorite: listed first and kept" : "Removed from favorites");
+        read.invalidate(); st.sig = ""; built = false;      // the toolbar's ★ Favorites count changes
+      } catch (err) { note(m.key, "⚠ " + (err?.message || err)); }
+      draw();
+      return m;
+    }
+
     async function onClick(e) {
       const t = e.target, card = t.closest?.(".mg-card"), m = card && find(card.dataset.key);
       const act = t.closest?.("[data-mg]")?.dataset.mg;
+      if (t.closest?.("[data-mg-rename]")) return;          // clicks inside the rename field stay in it
+      if (st.menu && act !== "menu" && !t.closest?.("[data-mg-menu]")) { st.menu = null; draw(); if (!act) return; }
       if (act === "more") { st.page++; draw(); return; }
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} read.invalidate(); st.sig = ""; await load(0); return; }
       const chipG = t.closest?.("[data-mg-game]"), chipW = t.closest?.("[data-mg-writer]");
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
+      if (act === "rename") { e.preventDefault?.(); startRename(m); return; }
+      if (act === "fav") { e.preventDefault?.(); await favorite(m); return; }
+      if (act === "menu") { st.menu = st.menu === m.key ? null : m.key; draw(); return; }
+      if (act === "unname") { st.menu = null; await rename(m.key, ""); return; }
+      if (act === "play" && t.closest?.("[data-mg-menu]")) {  // ▶ Play in the options: the card's own Play button
+        st.menu = null; draw();
+        const b = host.querySelector?.(`.mg-card[data-key="${String(m.key).replace(/"/g, '\\"')}"] .mg-btns [data-mg="play"]`);
+        return b ? onClick({ target: b, preventDefault() {}, stopPropagation() {} }) : undefined;
+      }
       const imgs = imagesOf(m, url);
       if (act === "prev" || act === "next") { st.idx.set(m.key, (st.idx.get(m.key) || 0) + (act === "next" ? 1 : -1)); draw(); return; }
       if (t.closest?.(".mg-img")) {
@@ -273,11 +357,36 @@
     }
     function onInput(e) {
       const f = e.target?.dataset?.mgF; if (!f) return;
-      st[f] = e.target.value; if (f !== "node") { st.page = 1; draw(); }
+      st[f] = e.target.type === "checkbox" ? !!e.target.checked : e.target.value; if (f !== "node") { st.page = 1; draw(); }
+    }
+    // the rename field: Enter saves, Esc cancels; the title (a button) renames on Enter; Esc closes the options menu
+    function onKey(e) {
+      const inp = e.target?.closest?.("[data-mg-rename]");
+      if (inp) {
+        if (e.key === "Enter") { e.preventDefault?.(); rename(inp.dataset.mgRename, inp.value); }
+        else if (e.key === "Escape") { e.preventDefault?.(); e.stopPropagation?.(); st.renaming = null; draw(); }
+        return;
+      }
+      const ttl = e.target?.closest?.(".mg-title"), card = e.target?.closest?.(".mg-card");
+      if (ttl && card && (e.key === "Enter" || e.key === "F2")) { e.preventDefault?.(); const m = find(card.dataset.key); if (m) startRename(m); return; }
+      if (e.key === "Escape" && st.menu) { st.menu = null; draw(); }
+    }
+    function onFocusOut(e) {                                 // leaving the field keeps what was typed (as the Builds view does)
+      const inp = e.target?.closest?.("[data-mg-rename]");
+      if (inp && st.renaming === inp.dataset.mgRename) rename(inp.dataset.mgRename, inp.value);
+    }
+    // right-click a card: its options (Rename…, favorite, Play); runs before the app's "file a request" menu
+    function onContext(e) {
+      const card = e.target?.closest?.(".mg-card"); if (!card || e.target.closest?.("input, textarea")) return;
+      e.preventDefault?.(); e.stopPropagation?.();
+      st.menu = card.dataset.key; draw();
     }
     host.addEventListener("click", onClick);
     host.addEventListener("input", onInput);
     host.addEventListener("change", onInput);
+    host.addEventListener("keydown", onKey);
+    host.addEventListener("focusout", onFocusOut);
+    host.addEventListener("contextmenu", onContext);
     async function start() {
       shell(); draw();
       await nodes(); await load(0);
@@ -288,15 +397,19 @@
     // one cached read per tick at most: every few seconds while the index is still working, else every 30 s
     function busy() { return !!(st.data && (st.data.indexing || st.data.sizing)); }
     function tick() { if (!env.visible || env.visible()) return load(busy() ? TICK - 500 : 30000); }
-    function stop() { clearInterval(timer); host.removeEventListener?.("click", onClick); host.removeEventListener?.("input", onInput); host.removeEventListener?.("change", onInput); }
+    function stop() {
+      clearInterval(timer);
+      for (const [ev, fn] of [["click", onClick], ["input", onInput], ["change", onInput], ["keydown", onKey], ["focusout", onFocusOut], ["contextmenu", onContext]])
+        host.removeEventListener?.(ev, fn);
+    }
     // show one build / request: the game menu's "Open in Mods page" (search + game filter set, the toolbar redrawn)
     function focus({ q, game } = {}) { if (q != null) st.q = String(q); if (game != null) st.game = String(game); st.page = 1; built = false; draw(); }
-    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, tick, busy, focus, ready: null };
+    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, onKey, onFocusOut, onContext, rename, favorite, tick, busy, focus, ready: null };
     api.ready = start();
     return api;
   }
 
-  const api = { filterMods, facets, imagesOf, cardHTML, toolbarHTML, changesHTML, requestHTML, fmtSize, fmtAge, launchText, summaryText, mount, PAGE, TICK };
+  const api = { filterMods, facets, imagesOf, cardHTML, titleHTML, menuHTML, buildPath, toolbarHTML, changesHTML, requestHTML, fmtSize, fmtAge, launchText, summaryText, mount, PAGE, TICK };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxModsGallery = api;
 })(typeof window !== "undefined" ? window : globalThis);

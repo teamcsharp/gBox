@@ -47,6 +47,38 @@ Mods page, the game menu's Special builds and build notifications all show the n
 manifest (`gbox.filemods.stage` compares every file). Changing it would make every PC stage the whole build (a full
 disc image) again.
 
+Since #1656 a build can also be renamed from:
+
+* the **Mods page** card: click the name or ✎, or ⋯ / right-click the card and pick Rename…;
+* the **Builds** tab: ✎ next to the name, or ▾ / right-click the row and pick Rename…;
+* the game's right-click **Special builds** section: ⋯ on a build, then ✎ Rename….
+
+Every one of these opens an inline field: Enter saves, Escape cancels, and an empty name restores the writer's title.
+The field carries `data-nomic` because the web shell's dictation wrapper moves text fields, which blurs them, and a
+blur saves and closes the field. `POST` to the same path renames too, since the desktop app's IPC `api()` used to post
+every body.
+
+The display name is the build's "official name" everywhere it shows: the Mods page, Builds, Special builds, the
+game menu's "Boot with a mod" (`GET /api/mods` adds `display_name` next to the card's own `title`, and the saved card is
+never rewritten), the launch screen, the launch bar (`launch_game` / `session_swap` jobs carry `mod_title`),
+notifications, and the desktop Mini window title (`GET /api/sessions` adds `mod_title`).
+
+## Favorites
+
+☆ / ★ on each Mods card and Builds row stars a build: `PUT /api/builds/{game_id}/{name}/favorite` `{favorite: true |
+false}` (POST does the same), and `DELETE` un-stars it. The star is kept in the store (kind `build_favorite`, key
+`game_id/name`) and the folder is never touched.
+
+* Favorites list first on the Mods page and in Builds. A **★ Favorites** checkbox filters to them, and
+  `GET /api/builds?favorite=true` / `GET /api/mods/built?favorite=true` do the same.
+* The game's Special builds section puts them in a **Favorites** group at the top. The group is shown only when there
+  are favorites. Each build keeps a `home` group, so "Rebuild all confirmation builds" still includes a favorited
+  confirmation build.
+* The game menu's "Boot with a mod" lists ★ builds first.
+* Favorites are never evicted. `gbox.built_mods.protected(store, game_id, mod)` names the reason, and a disk-budget
+  sweep (the Sonic showcase's LRU eviction on the `sonic-showcase` branch) must skip any build it names. The cache's
+  own eviction (`catalog.evict`) never touches `mods/` at all.
+
 ## Details ▸
 
 `GET /api/builds/{game_id}/{name}/details` loads when the row opens:
