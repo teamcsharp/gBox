@@ -69,6 +69,11 @@ class Config(BaseModel):
     blender_path: str | None = None
     blender_search: list[str] = []    # dirs searched for the newest blender executable when blender_path is unset
     ghidra_home: str | None = None
+    ida_home: str | None = None           # IDA Pro install folder (idat64.exe / idat.exe) for the `ida` tool
+    n64recomp_path: str | None = None     # N64Recomp executable or its folder for the `n64recomp` tool
+    decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
+    decomp_me_url: str = "https://decomp.me/api"
+    ninja_ripper: dict = {}               # path, dll, launcher_args, hotkey, output_dir (docs/rip_and_decomp_tools.md)
     rea_env: dict[str, str] = {}      # explicit REA provider environment (GHIDRA_INSTALL_DIR, REA_IDA_MCP_CONFIG, etc.)
     retroarch_bios: dict[str, str] = {}   # os -> BIOS source dir (copied per core on demand)
     display: str = ":90"              # linux: Xvfb display used for headless emulator sessions
