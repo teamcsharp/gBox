@@ -130,3 +130,21 @@ glcore cores, Citra/SwanStation/Beetle PSX HW.
 4. 2D fallback for software cores, Xenia and ParaLLEl N64: the panel labels these rows 2D-only and shows the live
    frame. Frame dump / free-look integration is **not started**.
 5. Open: PS2 (LRPS2) GS draws missing from the D3D11 capture; Dolphin Vulkan capture holding only the XFB present.
+   Both now come back labelled 2D-only with the reason instead of as an empty 3D scene (see *Empty frames* below),
+   and every capture attempt is listed in `summary.capture_attempts`, so the next live check shows whether the
+   running-game retry reaches the game's draws.
+
+## Empty frames: retry, then 2D-only
+
+A rebuilt frame with no 3D draw and at most `EMPTY_SCENE_MAX_DRAWS` (6) draw calls is the emulator's own present,
+not the game: the cached frame a paused RetroArch re-presents without running the core, a 30 fps game's duplicate
+frame, Dolphin's XFB-only frames (movies, logos, attract), or a renderer drawing outside the device RenderDoc
+captures (LRPS2 on D3D11 so far). `scene_capture` then captures `RETRY_FRAMES` (4) more frames once with the game
+running (after `RETRY_SETTLE_S` = 1 s), keeps the busier rebuild and pauses the game again. In a relay this runs in
+the capture session, so the operator's game is still untouched; on a session captured directly it moves that game
+on by about a second, and only when the first frame was empty.
+
+If the kept frame still has no 3D draw, the result carries `fallback: "frame_2d"`, `scene_empty` (true: present
+blits only; false: a real 2D screen with HUD draws) and a `note` with the reason (plus the known PS2 / Dolphin gap).
+The Examine panel shows a "3D scene: none (2D-only)" row with that note and, after a retry, the draw counts of each
+attempt. Tests: `tests/test_scene_capture_empty.py`.

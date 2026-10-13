@@ -1761,12 +1761,14 @@ function examineInfo(c) {
   $("#ex_blall").disabled = false;
   const dl = $("#ex_dl"); dl.href = `/api/artifacts/${c.glb}?${tq()}`; dl.style.display = "";
   const row = (k, v) => v == null ? "" : `<b>${k}</b><span>${esc(String(v))}</span>`;
-  el.className = "kv"; el.innerHTML = row("Draw calls", `${s.draws_exported} of ${s.draws_total} (${s.scene_draws} 3D · ${s.hud_draws} HUD)`)
+  el.className = "kv"; el.innerHTML = row("3D scene", s.fallback === "frame_2d" ? `none (2D-only): ${s.note || "this frame has no 3D draw calls"}` : null)
+    + row("Draw calls", `${s.draws_exported} of ${s.draws_total} (${s.scene_draws} 3D · ${s.hud_draws} HUD)`)
     + row("Triangles", s.triangles?.toLocaleString()) + row("Vertices", s.vertices?.toLocaleString()) + row("Textures", s.textures)
     + row("Graphics API", `${s.api} · ${s.mode}`) + row("Field of view", s.fovy_deg && `${s.fovy_deg.toFixed(1)}° (${s.projection_source})`)
     + row("Depth range", s.near != null && `${(+s.near).toPrecision(3)} – ${(+s.far).toPrecision(3)}`)
     + row("Took", s.timings && `${s.timings.capture_s}s capture + ${s.timings.extract_s}s rebuild`)
-    + row("Captured in", c.capture && `capture session on ${c.capture.worker} (${c.capture.where}) · ${c.capture.driver} · your game kept running`);
+    + row("Captured in", c.capture && `capture session on ${c.capture.worker} (${c.capture.where}) · ${c.capture.driver} · your game kept running`)
+    + row("Captures", (s.capture_attempts || []).length > 1 ? s.capture_attempts.map(a => a.error ? `${a.frames} frames (${a.how}): failed` : `${a.frames} frames (${a.how}): ${a.draws_total} draws, ${a.scene_draws} 3D`).join(" · ") : null);
 }
 function examinePicked(info) {
   EXAM.picked = info ? info.name : null;

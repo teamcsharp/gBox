@@ -1001,6 +1001,104 @@ def extract(rdc, out_dir: Path, fovy: float = 0, aspect: float = 0, mode: str = 
 
 # ------------------------------------------------------------------------------------------------ session flow
 
+# A rebuilt frame with no 3D draw and only a handful of draw calls is the emulator's own present, not the game: the
+# cached frame a paused RetroArch re-presents without running the core, a 30 fps game's duplicate, Dolphin's XFB-only
+# frames (movies, logos, attract), or a renderer that draws outside the device RenderDoc captures (LRPS2 on D3D11 so
+# far). Such a capture is retried once over more frames with the game running; a frame that still has no 3D draw is
+# returned labelled 2D-only (fallback frame_2d) with the reason, instead of as an empty 3D scene (#971).
+EMPTY_SCENE_MAX_DRAWS = 6
+RETRY_FRAMES = 4
+RETRY_SETTLE_S = 1.0
+_PS2_HINT = ("PS2 (LRPS2) on Direct3D 11 has so far left its GS draws out of RetroArch's captured frame on the test PC "
+             "(open item in docs/examine_emulators.md).")
+EMPTY_HINTS = {
+    "pcsx2": _PS2_HINT, "lrps2": _PS2_HINT,
+    "dolphin": "Dolphin shows movies, logos and attract screens as a bare XFB with no 3D draws: capture again during "
+               "3D gameplay.",
+}
+
+
+def scene_empty(summary: dict | None) -> bool:
+    """True when a rebuilt frame holds no 3D draw and at most EMPTY_SCENE_MAX_DRAWS draw calls (present blits only).
+    A 2D screen with many HUD draws is not empty: it is a real 2D moment."""
+    s = summary or {}
+    return not int(s.get("scene_draws") or 0) and int(s.get("draws_total") or 0) <= EMPTY_SCENE_MAX_DRAWS
+
+
+def _attempt(s: dict, frames: int, how: str) -> dict:
+    return {"frames": frames, "how": how, "draws_total": int(s.get("draws_total") or 0),
+            "scene_draws": int(s.get("scene_draws") or 0), "hud_draws": int(s.get("hud_draws") or 0)}
+
+
+def _busier(a: dict, b: dict) -> bool:
+    def key(s):
+        return int(s.get("scene_draws") or 0), int(s.get("draws_total") or 0)
+    return key(a) > key(b)
+
+
+def _adopt(src: Path, dst: Path) -> None:
+    """Replace dst's rebuilt scene (scene.glb, scene.json, extract.log, tex_*.png) with the one in src."""
+    for f in dst.glob("tex_*.png"):
+        f.unlink(missing_ok=True)
+    for f in list(src.iterdir()):
+        target = dst / f.name
+        if target.exists():
+            target.unlink()
+        shutil.move(str(f), str(target))
+    shutil.rmtree(src, ignore_errors=True)
+
+
+def _retry_empty(ad, proc, out_dir: Path, fovy: float, aspect: float, say, first: dict, attempts: list):
+    """The first capture held only present blits: capture RETRY_FRAMES more frames with the game running, then pause
+    it again, and keep the busier rebuild. -> (summary, rdc paths of the retry, adopted). A failed retry keeps the
+    first capture (the error is recorded in attempts)."""
+    out_dir = Path(out_dir)
+    say(38, f"The captured frame held {int(first.get('draws_total') or 0)} draw call(s) and no 3D scene; capturing "
+            f"{RETRY_FRAMES} more frames with the game running")
+    rdcs, retry_dir = [], out_dir / "retry"
+    try:
+        ad.resume()
+        try:
+            time.sleep(RETRY_SETTLE_S)
+            rdcs = capture_rdc(proc.pid, RETRY_FRAMES)
+        finally:
+            ad.pause()
+        shutil.rmtree(retry_dir, ignore_errors=True)
+        second = extract(rdcs, retry_dir, fovy, aspect)
+    except Exception as e:                                               # noqa: BLE001
+        attempts.append({"frames": RETRY_FRAMES, "how": "game running", "error": str(e)[-300:]})
+        shutil.rmtree(retry_dir, ignore_errors=True)
+        return first, rdcs, False
+    attempts.append(_attempt(second, len(rdcs), "game running"))
+    if _busier(second, first):
+        _adopt(retry_dir, out_dir)
+        return second, rdcs, True
+    shutil.rmtree(retry_dir, ignore_errors=True)
+    return first, rdcs, False
+
+
+def _no_scene_note(ad, s: dict, attempts: list) -> str:
+    """Why this result is 2D-only (shown in the Examine panel)."""
+    hud = int(s.get("hud_draws") or 0)
+    if not scene_empty(s):
+        return (f"No 3D draws at this moment ({hud} 2D/HUD draw calls): the game is showing a 2D screen. Labelled "
+                "2D-only; capture again during 3D gameplay for a 3D scene.")
+    keys = []
+    try:
+        from . import scene_support as _ss
+        row = _ss.session_support(ad, "windows") or {}
+        keys = [str(row.get("core") or ""), str(row.get("adapter") or "")]
+    except Exception:                                                    # noqa: BLE001
+        pass
+    keys.append(str(getattr(ad, "name", "") or ""))
+    hint = next((EMPTY_HINTS[k] for k in keys if k in EMPTY_HINTS), "")
+    frames = sum(int(a.get("frames") or 0) for a in attempts if not a.get("error"))
+    return (f"No 3D scene in {frames} captured frame(s) over {len(attempts)} attempt(s): the kept frame held only "
+            f"{int(s.get('draws_total') or 0)} draw call(s), the emulator's own present, and no game geometry. The "
+            "game was showing a 2D or movie frame, or this renderer draws outside the frame RenderDoc captures."
+            + (f" {hint}" if hint else "") + " Labelled 2D-only; the 2D frame is kept.")
+
+
 def capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect: float = 0, progress=None) -> dict:
     """Keep a successful scene paused; restore the original pause state if capture fails."""
     from .registry import Unsupported
@@ -1054,19 +1152,37 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
         finally:
             ad.pause()
     times["capture_s"] = round(time.time() - t0, 2)
-    try:
-        if getattr(ad, "capture_backend", None) and not hasattr(ad, "_screenshot"):
-            raise RuntimeError("a capture session's window is parked off-screen: a desktop grab would be black")
-        frame = ad.get_frame()
-        (out_dir / "frame.png").write_bytes(frame)
-    except Exception:
-        frame = None
+
+    def grab():
+        try:
+            if getattr(ad, "capture_backend", None) and not hasattr(ad, "_screenshot"):
+                raise RuntimeError("a capture session's window is parked off-screen: a desktop grab would be black")
+            data = ad.get_frame()
+            (out_dir / "frame.png").write_bytes(data)
+            return data
+        except Exception:
+            return None
+    frame = grab()
     say(35, f"Rebuilding the 3D scene from {len(rdcs)} captured frame(s)")
     t1 = time.time()
     summary = extract(rdcs, out_dir, fovy, aspect)
     times["extract_s"] = round(time.time() - t1, 2)
+    ra = hasattr(ad, "cmd") and hasattr(ad, "addr")
+    attempts = [_attempt(summary, len(rdcs), "paused, frame step" if ra else "next frames")]
+    used = list(rdcs)
+    if scene_empty(summary):                    # only the emulator's present blit(s): more frames, game running
+        t2 = time.time()
+        summary, more, adopted = _retry_empty(ad, proc, out_dir, fovy, aspect, say, summary, attempts)
+        used += more
+        times["retry_s"] = round(time.time() - t2, 2)
+        if adopted:                             # the kept frame is the retry's: grab the frame the game is paused on
+            (out_dir / "frame.png").unlink(missing_ok=True)
+            frame = grab()
+    if not int(summary.get("scene_draws") or 0):    # no 3D draw: labelled 2D-only with the reason, never a blank scene
+        summary.update(fallback="frame_2d", scene_empty=scene_empty(summary), note=_no_scene_note(ad, summary, attempts))
+    summary["capture_attempts"] = attempts
     keep = Path(summary["capture"])
-    for r in rdcs:                                                       # keep only the frame used (open it in RenderDoc)
+    for r in used:                                                       # keep only the frame used (open it in RenderDoc)
         try:
             if Path(r) != keep:
                 Path(r).unlink()
