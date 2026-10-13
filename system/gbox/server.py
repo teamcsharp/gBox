@@ -558,6 +558,10 @@ def create_app(config: Config) -> FastAPI:
                               "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
                               "roles": (best.get("rig") or {}).get("roles") or {}}}
 
+    # replacement readiness (gbox/replacement_readiness.py): who can replace a slot, where a donor fits, gaps per game
+    from . import replacement_readiness
+    replacement_readiness.routes(app, auth, _chars, catalog=store.catalog_get)
+
     # overlay swap (gbox/overlay_swap.py): a collection model drawn over the player in the desktop app, any game
     from . import overlay_swap
     overlay_swap.register(app, auth, store, lambda slug: _chars()[0].get(_chars()[1], slug)["name"])
