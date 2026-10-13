@@ -344,6 +344,30 @@ def test_level_rebuild_offsets_textures_and_models(donor):
     assert S.swap_level(data, {"nobody": donor}, "synthetic")[0] == data
 
 
+def test_static_t_pose_donor_is_rigged_to_the_slot(tmp_path):
+    """An unskinned T-pose donor (like the Def Jam Vendetta GC wrestlers) twice the slot's size lands on the slot's
+    proportions, each limb on its own bones."""
+    body = _model(("body_mat",))
+    m = N.mesh(body)
+    P = np.asarray(m["positions"]) * 2.0
+    glb = tmp_path / "static.glb"
+    N.to_glb(m | {"positions": P.tolist()}, glb, "static")
+    d = S.load_donor("static_wrestler", glb, {})
+    assert d.rig.get("static") and d.atlas.shape == (S.ATLAS, S.ATLAS, 4)
+    fit = S.fit_static(d, body, None)
+    X = fit["P"]
+    src = np.asarray(m["positions"])
+    assert np.abs(X[:, 2].min() - src[:, 2].min()) < 1.0 and np.abs(X[:, 2].max() - src[:, 2].max()) < 1.0
+    assert np.abs(np.abs(X[:, 1]).max() - np.abs(src[:, 1]).max()) < 1.0
+    roles = fit["roles"]
+    hand = X[:, 1] > 30
+    assert set(fit["J"][hand, 0]) <= {roles["l_fore"], roles["l_hand"]}
+    foot = (X[:, 2] < 10) & (X[:, 1] < 0)
+    assert set(fit["J"][foot, 0]) <= {roles["r_shin"], roles["r_foot"]}
+    out, rep = S.swap_level(level_package(), {"body": d}, "synthetic")
+    assert rep["replaced"][0]["fit"]["static"] is True and N.texture_check(N.NgcPackage(out)) == []
+
+
 def test_decimate_reaches_the_budget_without_flips():
     P, Nn, UV, J, Wt, F = body_mesh()
     P2, F2 = S.decimate(P, F, len(F) // 2)
