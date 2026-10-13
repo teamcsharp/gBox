@@ -54,6 +54,8 @@ def parse_psx_exe(data: bytes) -> dict:
     """Parse a PS-X EXE header. Raises ValueError on a bad magic."""
     if data[:8] != b"PS-X EXE":
         raise ValueError("not a PS-X EXE")
+    if len(data) < EXE_HEADER:
+        raise ValueError("PS-X EXE header truncated")
     (pc0, gp0, t_addr, t_size, d_addr, d_size, b_addr, b_size, s_addr,
      s_size) = struct.unpack_from("<10I", data, 0x10)
     if t_size > len(data) - EXE_HEADER:
@@ -73,11 +75,17 @@ class Exe:
         self.text = data[EXE_HEADER:EXE_HEADER + self.hdr["t_size"]]
         self.end = self.base + len(self.text)
 
+    def _off(self, va: int, n: int) -> int:
+        off = va - self.base
+        if off < 0 or off + n > len(self.text):
+            raise ValueError(f"VA {va:#x} outside the text image {self.base:#x}..{self.end:#x}")
+        return off
+
     def u32(self, va: int) -> int:
-        return struct.unpack_from("<I", self.text, va - self.base)[0]
+        return struct.unpack_from("<I", self.text, self._off(va, 4))[0]
 
     def u16(self, va: int) -> int:
-        return struct.unpack_from("<H", self.text, va - self.base)[0]
+        return struct.unpack_from("<H", self.text, self._off(va, 2))[0]
 
     def words(self):
         for off in range(0, len(self.text) - 3, 4):
@@ -164,6 +172,8 @@ def find_file_table(exe: Exe, entries: list[dict]) -> dict:
     where ``count`` is the table length (records matching the directory).
     """
     ordered = sorted(entries, key=lambda e: e["lba"])
+    if not ordered:
+        raise ValueError("no directory entries to match")
     first = ordered[0]
     key = struct.pack("<I", first["size"])
     text = exe.text
@@ -197,7 +207,7 @@ def find_file_table(exe: Exe, entries: list[dict]) -> dict:
 
 
 def table_record(exe: Exe, table_base: int, index: int) -> dict:
-    size, pos = struct.unpack_from("<II", exe.text, table_base - exe.base + 8 * index)
+    size, pos = exe.u32(table_base + 8 * index), exe.u32(table_base + 8 * index + 4)
     return {"index": index, "size": size, "lba": pos & 0xFFFFFF, "tag": pos >> 24}
 
 

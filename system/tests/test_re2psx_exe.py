@@ -125,3 +125,21 @@ def test_owned_plds_fit_resident_gap(owned):
         offs = struct.unpack_from("<%dI" % count, d, dir_off)
         assert count == 4 and list(offs) == sorted(offs), s["name"]
         assert R.forward_copy_safe(offs[3]), (s["name"], hex(offs[3]))
+
+
+def test_truncated_inputs_raise_valueerror():
+    exe_bytes = _exe(b"\0" * 16)
+    for n in (8, 0x20, 0x7FF):
+        with pytest.raises(ValueError):
+            R.parse_psx_exe(exe_bytes[:n])
+    with pytest.raises(ValueError):
+        R.parse_psx_exe(exe_bytes[:-1])          # t_size exceeds file
+    exe = R.Exe(exe_bytes)
+    with pytest.raises(ValueError):
+        exe.u32(0x80010010)
+    with pytest.raises(ValueError):
+        exe.u16(0x8000FFFE)
+    with pytest.raises(ValueError):
+        R.table_record(exe, 0x80010008, 1)
+    with pytest.raises(ValueError):
+        R.find_file_table(exe, [])
