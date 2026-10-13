@@ -171,7 +171,7 @@ def test_registered_for_ps2_only():
 @pytest.mark.skipif(not ISO.exists(), reason="owned SLUS_206.39 ISO not staged")
 def test_owned_iso_briggs_and_dmx(tmp_path):
     disc = I.Iso(ISO)
-    for idx, tris in ((198, (1194, 410, 150, 151)), (239, None)):
+    for idx, tris in ((198, (1277, 432, 161, 161)), (239, None)):
         r = M.extract_index(disc, idx, tmp_path / f"{idx}.glb")
         parts = {p["part"]: p for p in r["parts"]}
         assert r["verified"] and r["joints"] == 79 and r["texture_error"] is None
@@ -179,3 +179,27 @@ def test_owned_iso_briggs_and_dmx(tmp_path):
         if tris:
             assert tuple(parts[k]["triangles"] for k in ("body", "face", "left_hand", "right_hand")) == tris
         assert parts["body"]["winding"] >= 0.98 and abs(r["height"] - 20.711) < 0.01
+    b = I.read_entry(disc, I.entries(disc)[198])
+    w = I.parse_wrs(b)
+    for slot in (1, 2, 3, 4, 5):                                          # the codec rebuilds every model slot exactly
+        blk = b[w["slots"][slot]["start"]:w["slots"][slot]["end"]]
+        d = M.decode_batches(blk)
+        npal = sum(p >= 0 for p in M.parse_nodes(blk)["palette"])
+        assert M.encode_model(d["nodes"], d["count"], d["batches"], npal) == blk
+
+
+def test_loose_triangles_follow_the_strips_and_the_codec_round_trips():
+    raw = _model()
+    nodes = raw[0x10:0x10 + 3 * M.NODE_SIZE]
+    v = [{"st": [0.5, -0.25, 1.0], "n": [0, 0, 1, 1], "p": [*p, 1], "mtx": 64} for p in ((0, 0, 0), (1, 0, 0), (0, 1, 0))]
+    v.append({"st": [0.5, -0.5, 1.0], "stw": 1.0, "n": [0, 0, 1, 1], "p": [1, 1, 0, 1], "w": (64, 0.25, 72, 0.75)})
+    d = {"nodes": nodes, "count": 3, "batches": [{"verts": v, "strips": [[0x201, 0x204, 0x207, 0x20A]], "loose": []}]}
+    d["batches"][0]["loose"] = [[0x201, 0x20A, 0x204]]                     # one extra triangle (v0, v3, v1)
+    enc = M.encode_model(d["nodes"], d["count"], d["batches"], 2)
+    m = M.parse_model(enc)
+    assert m["loose"] == 1 and m["tris"].tolist()[-1] == [0, 3, 1]
+    d2 = M.decode_batches(enc)
+    assert M.encode_model(d2["nodes"], d2["count"], d2["batches"], 2) == enc
+    big = {**d["batches"][0], "verts": d["batches"][0]["verts"] * 30}
+    with pytest.raises(M.FormatError):
+        M.encode_batch(big)

@@ -11,10 +11,12 @@ docs/defjam_pipeline.md):
   facing +Z, the wrestler's left = +X). The parent tree is the same in all 58 containers.
 * Geometry: a VIF stream; one UNPACK V4-32 without FLG first writes 159 qwords at VU address 0x39 (a GIF tag
   template and a zeroed matrix palette: 8 qwords per palette slot from qword 64), then batches of UNPACK V4-32 with
-  FLG separated by FLUSH/MSCALF. Batch: header qword {n_single, n_weighted, n_strips, 0x8000 | k}, n_single x
-  {ST (u32 matrix address in w), N, P}, n_weighted x {ST, N, P, (u32 matrix a, f32 weight a, u32 matrix b,
+  FLG separated by FLUSH/MSCALF. Batch: header qword {n_single, n_weighted, n_strips, 0x8000 | n_loose}, n_single
+  x {ST (u32 matrix address in w), N, P}, n_weighted x {ST, N, P, (u32 matrix a, f32 weight a, u32 matrix b,
   f32 weight b)}, then u32 strips {length, length x VU qword address (double-buffer base 0/0x100/0x200/0x300 +
-  qword offset)}. Matrix address = 64 + 8 * palette slot; the node whose record holds that slot is the joint.
+  qword offset of the vertex's ST)}, then n_loose triangles of 3 addresses. Matrix address = 64 + 8 * palette
+  slot; the node whose record holds that slot is the joint. decode_batches/encode_model rebuild all 290 model
+  slots on the disc byte for byte.
   BODY/BODY2 positions are model space (bind pose). FACE and the hands are in the space of their own root node,
   which the game attaches to BODY node 7 (head) and nodes 13 / 19 (left / right wrist): placed there they close
   the neck and wrist seams (checked on all 58).
@@ -153,11 +155,15 @@ def _batch(data: bytes, n: int, acc: dict, pal2node: dict):
             raise FormatError(f"bad strip length {ln}")
         strips.append([int(x) for x in words[pos:pos + ln]])
         pos += ln
-    addrs = {a for s in strips for a in s}
+    nlist = flags & 0x7FFF                                   # then n loose triangles, 3 addresses each
+    if pos + 3 * nlist > len(words):
+        raise FormatError(f"{nlist} loose triangles run past the batch")
+    loose = [[int(x) for x in words[pos + 3 * t:pos + 3 * t + 3]] for t in range(nlist)]
+    addrs = {a for s in strips + loose for a in s}
     base = next((bb for bb in (0, 0x100, 0x200, 0x300) if all(a - bb in offs for a in addrs)), None)
     if base is None:
         raise FormatError("strip addresses do not map onto the batch's vertices")
-    for s in strips:
+    for s in strips + loose:
         for i in range(len(s) - 2):
             a, b_, c = (offs[x - base] for x in s[i:i + 3])
             if i & 1:
@@ -165,6 +171,7 @@ def _batch(data: bytes, n: int, acc: dict, pal2node: dict):
             if a != b_ and b_ != c and a != c:
                 acc["tris"].append((a, b_, c))
     acc["weighted"] += nw
+    acc["loose"] += nlist
     acc["single"] += ns
 
 
@@ -172,7 +179,7 @@ def parse_model(blk: bytes) -> dict:
     """One model slot -> skeleton + skinned vertices (joint = node index of this slot's tree) + triangles."""
     sk = parse_nodes(blk)
     geo, gsz = sk["geometry"]
-    acc = {"P": [], "N": [], "T": [], "J": [], "W": [], "tris": [], "weighted": 0, "single": 0}
+    acc = {"P": [], "N": [], "T": [], "J": [], "W": [], "tris": [], "weighted": 0, "single": 0, "loose": 0}
     o, end, batches = geo, geo + gsz, 0
     while o + 4 <= end:
         w = struct.unpack_from("<I", blk, o)[0]
@@ -207,7 +214,7 @@ def parse_model(blk: bytes) -> dict:
             "uvs": np.array(acc["T"], np.float64).reshape(-1, 2),
             "joints": np.array(acc["J"], np.int64).reshape(-1, 2), "weights": np.array(acc["W"], np.float64).reshape(-1, 2),
             "tris": np.array(acc["tris"], np.int64).reshape(-1, 3), "batches": batches,
-            "weighted": acc["weighted"], "single": acc["single"]}
+            "weighted": acc["weighted"], "single": acc["single"], "loose": acc["loose"]}
 
 
 def winding(P: np.ndarray, N: np.ndarray, t: np.ndarray) -> float:
@@ -541,6 +548,102 @@ def extract_wrs(b: bytes, out: Path, name: str, body_slot: int = 1, extras: dict
             "triangles": sum(r.get("triangles", 0) for r in parts)}
 
 
+# --- geometry codec (round trip; the writer's encoder) -------------------------------------------------------------
+STATIC_GIF = bytes.fromhex("0000000000400e3112040000000000000080000000c00d911224411204000000"
+                           "00000000040000200700000000000000")     # same 3 qwords in all 290 model slots on the disc
+STATIC_AT = 0x39
+MAX_BATCH_QW = 256
+
+
+def decode_batches(blk: bytes) -> dict:
+    """Model slot -> {nodes (raw records), batches [{verts [{st, n, p, mtx | w}], strips, loose}]}: every field the
+    encoder needs to rebuild the slot byte for byte (addresses stay VU qword addresses)."""
+    nn = struct.unpack_from("<3I", blk, 0)[2]
+    parse_nodes(blk)                                         # validates the tree/geometry header
+    geo, gsz = struct.unpack_from("<2I", blk, 0)
+    batches, statics, o, end = [], [], geo, geo + gsz
+    while o + 4 <= end:
+        w = struct.unpack_from("<I", blk, o)[0]
+        o += 4
+        cmd, num, imm = (w >> 24) & 0x7F, (w >> 16) & 0xFF, w & 0xFFFF
+        if cmd & 0x60 != 0x60:
+            continue
+        n = num or 256
+        if cmd != 0x6C or o + n * 16 > end:
+            raise FormatError(f"UNPACK 0x{cmd:x} at 0x{o - 4:x} is not a V4-32 inside the geometry")
+        d = blk[o:o + n * 16]
+        o += n * 16
+        if not imm & 0x8000:
+            statics.append((imm & 0x3FF, n))
+            continue
+        q = np.frombuffer(d, "<f4").reshape(n, 4)
+        qi = np.frombuffer(d, "<u4").reshape(n, 4)
+        ns, nw, nst, flags = (int(x) for x in qi[0])
+        verts, k = [], 1
+        for j in range(ns + nw):
+            v = {"st": q[k, :3].tolist(), "n": q[k + 1].tolist(), "p": q[k + 2].tolist()}
+            if j < ns:
+                v["mtx"] = int(qi[k, 3])
+                k += 3
+            else:
+                v["w"] = (int(qi[k + 3, 0]), float(q[k + 3, 1]), int(qi[k + 3, 2]), float(q[k + 3, 3]))
+                v["stw"] = float(q[k, 3])
+                k += 4
+            verts.append(v)
+        words, pos, strips = qi[k:].reshape(-1), 0, []
+        for _ in range(nst):
+            ln = int(words[pos])
+            strips.append([int(x) for x in words[pos + 1:pos + 1 + ln]])
+            pos += 1 + ln
+        loose = [[int(x) for x in words[pos + 3 * t:pos + 3 * t + 3]] for t in range(flags & 0x7FFF)]
+        batches.append({"verts": verts, "strips": strips, "loose": loose, "flg": flags & 0x8000})
+    if statics != [(STATIC_AT, 7 + MATRIX_STRIDE * len([1 for p in parse_nodes(blk)["palette"] if p >= 0]))]:
+        raise FormatError(f"static VU upload {statics} is not the GIF template + matrix palette")
+    return {"nodes": blk[0x10:0x10 + nn * NODE_SIZE], "count": nn, "batches": batches}
+
+
+def encode_batch(b: dict) -> bytes:
+    """Batch -> UNPACK V4-32 payload (header, vertices, strips, loose triangles; padded to a qword)."""
+    verts = b["verts"]
+    ns = sum("mtx" in v for v in verts)
+    if any("mtx" in v for v in verts[ns:]):
+        raise FormatError("rigid vertices must come before weighted ones")
+    out = [struct.pack("<4I", ns, len(verts) - ns, len(b["strips"]), b.get("flg", 0x8000) | len(b["loose"]))]
+    for v in verts:
+        if "mtx" in v:
+            out.append(struct.pack("<3fI", *v["st"], v["mtx"]))
+        else:
+            out.append(struct.pack("<4f", *v["st"], v.get("stw", 1.0)))
+        out += [struct.pack("<4f", *v["n"]), struct.pack("<4f", *v["p"])]
+        if "w" in v:
+            out.append(struct.pack("<IfIf", *v["w"]))
+    words = [x for s in b["strips"] for x in [len(s), *s]] + [x for t in b["loose"] for x in t]
+    words += [0] * (-len(words) % 4)
+    data = b"".join(out) + struct.pack(f"<{len(words)}I", *words)
+    if len(data) // 16 > MAX_BATCH_QW:
+        raise FormatError(f"batch of {len(data) // 16} qwords exceeds the VU buffer ({MAX_BATCH_QW})")
+    return data
+
+
+def encode_model(nodes: bytes, count: int, batches: list[dict], npal: int) -> bytes:
+    """Node records + batches -> a model slot laid out like the game's (VIF: BASE/OFFSET, static upload, MSCALF 0,
+    then UNPACK/FLUSH/MSCALF 0xb/NOP per batch, a trailing FLUSH; slot padded to 0x80)."""
+    static = STATIC_GIF + bytes(16 * (7 + MATRIX_STRIDE * npal) - len(STATIC_GIF))
+    n_static = len(static) // 16
+    vif = struct.pack("<3I", 0x03000100, 0x02000100, 0) + struct.pack("<I", 0x6C000000 | (n_static << 16) | STATIC_AT)
+    vif += static + struct.pack("<3I", 0x11000000, 0x15000000, 0)
+    for k, b in enumerate(batches):
+        d = encode_batch(b)
+        n = len(d) // 16
+        vif += struct.pack("<I", 0x6C008000 | ((n & 0xFF) << 16)) + d
+        vif += struct.pack("<2I", 0x11000000, 0x1500000B) + (struct.pack("<I", 0) if k < len(batches) - 1 else
+                                                             struct.pack("<2I", 0x11000000, 0))
+    geo = (0x20 + count * NODE_SIZE + 0x7F) & ~0x7F
+    head = struct.pack("<3I", geo, len(vif), count).ljust(0x10, b"\0")
+    blk = (head + nodes).ljust(geo, b"\0") + vif
+    return blk + bytes(-len(blk) % 0x80)
+
+
 # --- roster, collection hook, CLI ----------------------------------------------------------------------------------
 NAMES = {198: "BRIGGS", 199: "BRIGGS", 200: "BRIGGS", 201: "TANK", 202: "TANK", 203: "TANK", 204: "PROOF",
          205: "PROOF", 206: "PROOF", 207: "SPIDER", 208: "SPIDER", 209: "SPIDER", 210: "CRUZ", 211: "STEEL",
@@ -554,7 +657,8 @@ NAMES = {198: "BRIGGS", 199: "BRIGGS", 200: "BRIGGS", 201: "TANK", 202: "TANK", 
 
 
 def _title(n: str) -> str:
-    return " ".join(w if w in ("DMX", "WC", "NORE", "G") else w.capitalize() for w in n.split(" "))
+    return " ".join(w if w in ("DMX", "WC", "NORE", "G") else "-".join(x.capitalize() for x in w.split("-"))
+                    for w in n.split(" "))
 
 
 def roster() -> list[dict]:
