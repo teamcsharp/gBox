@@ -41,12 +41,16 @@ GROUPS = {
                   "aliases": ["wrestlers", "wrestler", "wrestling", "wrestling games", "the wrestlers"]},
     "fighters": {"label": "Fighters (DOA2, DOA++, MvC2, Melee)", "extractors": ["doa2", "doapp", "mvc2", "melee"],
                  "aliases": ["fighters", "fighting games", "fighting game characters"]},
-    "sega": {"label": "Dreamcast Sega casts (JGR, SA2, PSO, Shenmue)", "extractors": ["jgr", "sa2", "pso", "shenmue"],
-             "aliases": ["sega", "dreamcast"]},
+    "sega": {"label": "Dreamcast Sega casts (JGR, SA1, SA2, PSO, Shenmue)",
+             "extractors": ["jgr", "sa1", "sa2", "pso", "shenmue"], "aliases": ["sega", "dreamcast"]},
+    "sonic": {"label": "Sonic characters (Sonic Adventure 1 + 2)", "extractors": ["sa1", "sa2"],
+              "aliases": ["sonic", "sonic characters", "sonic games", "sonic adventures", "sonic adventure 1 and 2",
+                          "sonic adventure 1 + 2", "sa1 + sa2", "sa1 and sa2"]},
 }
 # Short names the operator uses for games (target and source).
 ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr": "jet grind radio",
-          "jet set radio": "jet grind radio", "sa2": "sonic adventure 2", "doa2": "dead or alive 2",
+          "jet set radio": "jet grind radio", "sa2": "sonic adventure 2", "sa1": "sonic adventure",
+          "sonic adventure 1": "sonic adventure", "doa2": "dead or alive 2",
           "doa": "dead or alive 2", "sd2": "smackdown! 2", "smackdown 2": "smackdown! 2", "def jam": "def jam vendetta",
           "djv": "def jam vendetta", "no mercy": "wwf no mercy", "ct": "crazy taxi", "gta vc": "grand theft auto vice city",
           "vice city": "grand theft auto vice city", "mvc2": "marvel vs. capcom 2", "ff7": "final fantasy vii",
@@ -54,6 +58,7 @@ ABBREV = {"pso": "phantasy star online ver. 2", "jgr": "jet grind radio", "jsr":
 AGGREGATE = {"enemies", "enemy", "enemy:all", "drivers", "pedestrians", "passengers", "peds", "peds:all", "all",
              "roster", "cast", "fares"}
 MAIN_KINDS = {"player", "character", "fighter", "wrestler", "driver"}
+SEQUEL = re.compile(r"\d+|ii|iii|iv|vi|vii|viii|ix")
 STOP = {"the", "a", "of", "in", "usa", "europe", "japan", "ver", "disc", "and", "with", "as", "game", "games"}
 
 
@@ -152,6 +157,11 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
                 best = max(titles.values(), default=0)
                 if want and best >= max(1, len(want) - 1):
                     keep = {t for t, s in titles.items() if s == best}
+                    # "Sonic Adventure" is not "Sonic Adventure 2": a title whose extra words carry a sequel number
+                    # loses to an equally matching one without, unless the request names a number itself
+                    sequel = {t for t in keep if any(SEQUEL.fullmatch(w) for w in _words(t) - want)}
+                    if keep - sequel:
+                        keep -= sequel
                     hits = [m for m in pool if m["source"]["game_title"] in keep]
                     labels.append(" / ".join(sorted(keep)))
         if not hits:
@@ -293,13 +303,17 @@ def slot_rows(game: dict, rows: list[dict] | None = None) -> list[dict]:
     """The target's replaceable slots: the writer's cast_slots(), aggregates and aliases dropped (each model once)."""
     from . import char_coverage as CC
     rows = CC.cast_slots(game) if rows is None else rows
+    lead = {str(r["alias_of"]) for r in rows if r.get("slot") == "player" and r.get("alias_of")}
     out, seen = [], set()
     for r in rows:
         s = str(r.get("slot") or "")
         if not s or s in seen or r.get("aggregate") or r.get("alias_of") or s.lower() in AGGREGATE:
             continue
         seen.add(s)
-        out.append(dict(r, kind=r.get("kind") or ("player" if s == "player" else "slot")))
+        row = dict(r, kind=r.get("kind") or ("player" if s == "player" else "slot"))
+        if s in lead:                                      # the slot the game's `player` alias names (Axel)
+            row["lead_slot"] = True
+        out.append(row)
     return out
 
 
@@ -352,8 +366,8 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
     leads = sorted([d for d in donors if d.get("lead")], key=lambda d: tie[d["slug"]])
     rest = sorted([d for d in donors if not d.get("lead")], key=lambda d: (-(d.get("size") or 1.0), tie[d["slug"]]))
     order = leads + rest
-    players = [s for s in todo if s["kind"] == "player"]
-    others = sorted([s for s in todo if s["kind"] != "player"],
+    players = [s for s in todo if s["kind"] == "player" or (s.get("lead_slot") and leads)]
+    others = sorted([s for s in todo if s not in players],
                     key=lambda s: (-float(s.get("size") or 1.0), todo.index(s)))
     out = []
     deck = list(order)
@@ -364,6 +378,8 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
         d = deck.pop(0)
         if s["kind"] == "player" and d.get("lead"):
             why = "lead character on the player slot"
+        elif s.get("lead_slot") and d.get("lead"):
+            why = "lead character on the game's own player (the slot its player alias names)"
         elif s.get("size") and d.get("size"):
             why = f"body size: slot x{float(s['size']):g}, donor x{d['size']:g} of its cast"
         else:

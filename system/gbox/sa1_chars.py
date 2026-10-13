@@ -316,26 +316,35 @@ def _qmat(q) -> np.ndarray:
 def overlay_key(blob: bytes, pvm_name: str | None = None) -> int:
     """Load address of a PRS overlay module: from its PVM table ({char *name, NJS_TEXLIST *} with `pvm_name`) when it
     has one, else the 4 KB-aligned base under which most of its 0x0C / 0x8C words point inside the module."""
-    w = struct.unpack_from("<%dI" % (len(blob) // 4), blob)
+    w = np.frombuffer(blob, "<u4", len(blob) // 4)
+    hi = (w >> 24 == 0x0C) | (w >> 24 == 0x8C)
+    srt = np.sort(w[hi])
+
+    def inside(key):                                       # how many of its pointers land inside the module
+        return int(np.searchsorted(srt, key + len(blob)) - np.searchsorted(srt, key))
     if pvm_name:
-        s = blob.find(pvm_name.encode() + b"\0")
-        while s > 0 and blob[s - 1] != 0:
-            s = blob.find(pvm_name.encode() + b"\0", s + 1)
-        if s > 0:
-            votes = collections.Counter((x - s) for x in w if (x >> 24) in (0x0C, 0x8C) and (x - s) % 0x1000 == 0)
-            for key, _n in votes.most_common(4):
-                for i, x in enumerate(w[:-1]):
-                    if x == key + s and key <= w[i + 1] < key + len(blob) - 8:
-                        tp, cnt = struct.unpack_from("<II", blob, w[i + 1] - key)
-                        if 0 < cnt < 512 and key <= tp < key + len(blob):
-                            return key
-    pages = collections.Counter(x & 0xFFFFF000 for x in w if (x >> 24) in (0x0C, 0x8C))
+        s, pat = -1, pvm_name.encode() + b"\0"
+        while True:
+            s = blob.find(pat, s + 1)
+            if s <= 0 or blob[s - 1] == 0:
+                break
+        if s > 0:                                          # a word w[i] = key + s followed by a valid NJS_TEXLIST *
+            keys = set()
+            for i in np.nonzero(hi[:-1] & ((w[:-1] - s) % 0x1000 == 0))[0]:
+                key, tl = int(w[i]) - s, int(w[i + 1])
+                if key <= tl < key + len(blob) - 8:
+                    tp, cnt = struct.unpack_from("<II", blob, tl - key)
+                    if 0 < cnt < 512 and key <= tp < key + len(blob):
+                        keys.add(key)
+            if keys:
+                return max(sorted(keys), key=inside)
+    pages = collections.Counter((int(x) & 0xFFFFF000) for x in srt)
     best = (0, -1)
     for page, _n in pages.most_common(8):
         for key in range(max(0, page - 0x40000), page + 0x1000, 0x1000):
-            inside = sum(1 for x in w if key <= x < key + len(blob))
-            if inside > best[1]:
-                best = (key, inside)
+            n = inside(key)
+            if n > best[1]:
+                best = (key, n)
     return best[0]
 
 
