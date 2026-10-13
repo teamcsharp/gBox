@@ -225,7 +225,10 @@ def move(x, y, w, h, holes=()):
     # emulators recreate their window on a video-mode change (RetroArch's PS2 core after boot, fullscreen toggles): the
     # docked child is gone or replaced by a new top-level one. A docked window isn't top-level, so any visible top-level
     # window of the game's process is a fresh one: dock it instead of leaving it loose on the desktop.
-    if state.get("pid") and state.get("parent"):
+    # At most once a second (#1081): the scan (process snapshot + every top-level window) takes ~50 ms, and a pop-up
+    # opening over the game must be cut out now, not after it.
+    if state.get("pid") and state.get("parent") and time.monotonic() >= state.get("fresh_check", 0):
+        state["fresh_check"] = time.monotonic() + 1.0
         fresh = find_window(state["pid"])
         if fresh and fresh != state["hwnd"]:
             pid, parent = state["pid"], state["parent"]

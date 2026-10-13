@@ -1695,7 +1695,10 @@ def create_app(config: Config) -> FastAPI:
         meta, data = store.get("artifact", digest), store.read_artifact(digest)
         if not meta or data is None:
             _404()
-        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"])})
+        # content-addressed (the URL is the SHA-256), so a client may keep it: the desktop inbox re-renders screenshots
+        # and attachments every few seconds and re-downloaded each one without this (#712)
+        return Response(data, media_type=meta["media_type"], headers={"x-gbox-provenance": json.dumps(meta["provenance"]),
+                                                                      "cache-control": "private, max-age=31536000, immutable"})
 
     @app.post("/api/artifacts")
     async def upload_artifact(request: Request, name: str, media_type: str = "application/octet-stream",
@@ -3463,10 +3466,17 @@ def create_app(config: Config) -> FastAPI:
                                  headers={"content-disposition": 'attachment; filename="gbox-request-history.md"'})
 
     @app.get("/api/requests")
-    def req_list(status: str = "", source: str = "", actor=Depends(auth)):
+    def req_list(request: Request, status: str = "", source: str = "", actor=Depends(auth)):
+        # The desktop inbox polls this every few seconds and it is the whole history (~8 MB, ~1 s to build). An unchanged
+        # inbox answers 304 from a hash of the stored rows, without decoding, organizing or sending them (#712).
+        import hashlib
+        from fastapi.responses import JSONResponse
+        tag = f'"{store.digest("request")}:{hashlib.sha1(f"{status}|{source}".encode()).hexdigest()[:8]}"'
+        if request.headers.get("if-none-match") == tag:
+            return Response(status_code=304, headers={"etag": tag})
         from . import inbox
         rs = [r for r in inbox.organize(store.all("request")) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
-        return _clean(sorted(rs, key=lambda r: r["created"], reverse=True))
+        return JSONResponse(_clean(sorted(rs, key=lambda r: r["created"], reverse=True)), headers={"etag": tag})
 
     def _clean(o):
         """Lone surrogates (bad clipboard/dictation text) can't be sent as UTF-8 JSON: replace them, don't fail the list."""
