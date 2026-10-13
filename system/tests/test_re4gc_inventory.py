@@ -150,3 +150,14 @@ def test_owned_disc_manifest():
                                           "triangles": 2519}
     assert ["em/pl00.drs", "em/pl08.drs", "em/pl09.drs"] in [f[:3] for f in m["motion_families"]]
     assert "St3" not in m["layout"] and {"St1", "St2", "St4"} <= set(m["layout"])
+
+
+def test_truncated_udas_and_dat_raise_valueerror():
+    head = b"\xff" * 0x20 + struct.pack(">IIII", 0, 0x10, 0, 0x400)
+    for n in range(0x20, len(head)):
+        with pytest.raises(ValueError):
+            ri.udas_entries(head[:n])
+    dat = struct.pack(">II8x", 2, 0) + struct.pack(">II", 0x20, 0x28) + b"BIN\0TPL\0" + bytes(16)
+    for n in range(len(dat) - 16):
+        with pytest.raises(ValueError):
+            ri.dat_entries(dat[:n])

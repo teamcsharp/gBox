@@ -71,6 +71,8 @@ def udas_entries(data: bytes) -> list[dict]:
             raise ValueError("UDAS table has no 0xFFFFFFFF terminator inside 0x400 bytes")
         if struct.unpack_from(">I", data, o)[0] == 0xFFFFFFFF:
             return out
+        if o + 16 > len(data):
+            raise ValueError(f"UDAS entry {len(out)} truncated")
         t, size, _zero, off = struct.unpack_from(">IIII", data, o)
         if off < 0x400 or off + size > len(data):
             raise ValueError(f"UDAS entry {len(out)} ({off:#x}+{size:#x}) is outside the file")
