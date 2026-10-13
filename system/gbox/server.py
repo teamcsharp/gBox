@@ -2818,17 +2818,23 @@ def create_app(config: Config) -> FastAPI:
         from starlette.concurrency import run_in_threadpool
         await run_in_threadpool(cache_tiers.ensure_hot, gid)   # new writes land on the hot tier
         d = _mod_root(gid, name)
+        import uuid
         from . import filemods
         try:
             f = filemods._file_path(d, path)
-            tmp = filemods._file_path(d, path + ".part")
+            # one .part per upload: a worker pushing the same build at startup (push_missing) can race an operator
+            # upload; a shared .part made the second os.replace fail with FileNotFoundError (500) after a full transfer
+            tmp = filemods._file_path(d, f"{path}.{uuid.uuid4().hex[:12]}.part")
         except ValueError as error:
             raise HTTPException(400, "bad path") from error
         f.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "wb") as fh:
-            async for chunk in request.stream():
-                fh.write(chunk)
-        os.replace(tmp, f)
+        try:
+            with open(tmp, "wb") as fh:
+                async for chunk in request.stream():
+                    fh.write(chunk)
+            os.replace(tmp, f)
+        finally:
+            tmp.unlink(missing_ok=True)                  # an aborted upload leaves nothing behind
         return {"stored": path, "size": f.stat().st_size}
 
     # --- Export ROM hack (gbox/romexport.py): bootable modded image of the operator's own game + shareable patch ---
