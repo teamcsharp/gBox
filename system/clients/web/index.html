@@ -1630,7 +1630,9 @@ async function examineAfter(sid) {
     examineFallback(sid, worker.unavailable?.scene_capture || "This worker does not support 3D frame capture."); return;
   }
   const support = examineSupport(sid);
-  if (support && support.status !== "supported" && !EXAM.cache[sid]) { examineFallback(sid, support.reason, support); return; }
+  // relay rows (#971): the moment is captured in a separate capture session, so they go on to the viewer like a
+  // supported session; everything else that can't be captured here shows the live 2D frame with the matrix's reason
+  if (support && support.status !== "supported" && !examineRelay(support) && !EXAM.cache[sid]) { examineFallback(sid, support.reason, support); return; }
   try {
     EXAM.mod = EXAM.mod || await import("/viz/examine3d.js");
   } catch (e) { if (current()) examineFallback(sid, "3D viewer unavailable: " + e.message); return; }
@@ -1661,8 +1663,11 @@ async function examineAfter(sid) {
   }
   else if (c) examineInfo(c);
   if (!current()) return;
-  if (c && !c.stale) { done(); return; }   // same frame: instant
+  if (c && (!c.stale || c.relay)) { done(); return; }   // same frame: instant; a capture-session scene waits for Capture again
   examineCapture(sid, say, done);
+}
+function examineRelay(support) {                            // Capture again runs a capture session at this moment
+  return !!(support && support.relay && support.status === "relaunch_under_capture");
 }
 function examineSupport(sid) {
   const el = $("#exam");
@@ -1676,7 +1681,8 @@ function examineFallback(sid, message, support) {
   $("#exv").innerHTML = `<div style="padding:16px"><p>${esc(message)}</p><p class="mut">Live game view. Inspect remains available for this game; a 3D scene requires a supported graphics capture.</p><img style="max-width:100%;max-height:55vh" alt="Live game frame" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}"><p><button class="act pri" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect this game</button><button class="act" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Retry 3D capture</button></p></div>`;
   if (support && support.status !== "supported") {
     const label = support.status === "unsupported" ? "2D-only: no 3D capture path for this emulator yet"
-      : support.driver ? `3D capture needs a capture session on ${support.driver} (not started automatically yet)` : "Relaunch under capture to examine in 3D";
+      : examineRelay(support) ? `3D capture runs in a separate capture session (${support.driver || "auto"}) at this moment; your game keeps running`
+      : "Relaunch with Examine 3D on to examine in 3D";
     $("#exv").firstElementChild.insertAdjacentHTML("afterbegin", `<p class="mut" id="ex_support" data-status="${esc(support.status)}">${esc(label)}</p>`);
   }
   if (/without Examine 3D/.test(message) && !(support && support.driver)) {
@@ -1694,15 +1700,18 @@ async function examineCapture(sid, say, done) {
     return;
   }
   let finish; EXAM.busy.set(sid, new Promise(resolve => { finish = resolve; }));
-  say(2, "Pausing the game and capturing the frame…");
+  const relay = examineRelay(examineSupport(sid));
+  say(2, relay ? "Saving this moment for a capture session (your game keeps running)…" : "Pausing the game and capturing the frame…");
   try {
-    let j = await api("/api/jobs", { tool: "scene_capture", input: { session_id: sid } });
+    let j = await api("/api/jobs", { tool: "scene_capture", input: relay ? { session_id: sid, relay: true } : { session_id: sid } });
     while (/queued|running/.test(j.state)) {
       await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id);
       if (current() && j.progress) say(j.progress.pct, j.progress.msg);
     }
     if (j.state !== "succeeded") throw new Error(j.error || j.state);
-    const c = EXAM.cache[sid] = { glb: j.output.glb, summary: j.output.summary, resume: j.output.resume_on_leave !== false, stale: false, shown: null };
+    const cs = j.output.capture_session || null;            // captured in a capture session: the game never paused
+    const c = EXAM.cache[sid] = { glb: j.output.glb, summary: j.output.summary, resume: !cs && j.output.resume_on_leave !== false,
+                                  stale: false, shown: null, relay: !!cs, capture: cs };
     if (current()) { say(96, `Loading ${c.summary.draws_exported} draw calls…`); await examineShow(sid, c); done(); }
   } catch (e) {
     if (!current()) return;
@@ -1733,7 +1742,8 @@ function examineInfo(c) {
     + row("Triangles", s.triangles?.toLocaleString()) + row("Vertices", s.vertices?.toLocaleString()) + row("Textures", s.textures)
     + row("Graphics API", `${s.api} · ${s.mode}`) + row("Field of view", s.fovy_deg && `${s.fovy_deg.toFixed(1)}° (${s.projection_source})`)
     + row("Depth range", s.near != null && `${(+s.near).toPrecision(3)} – ${(+s.far).toPrecision(3)}`)
-    + row("Took", s.timings && `${s.timings.capture_s}s capture + ${s.timings.extract_s}s rebuild`);
+    + row("Took", s.timings && `${s.timings.capture_s}s capture + ${s.timings.extract_s}s rebuild`)
+    + row("Captured in", c.capture && `capture session on ${c.capture.worker} (${c.capture.where}) · ${c.capture.driver} · your game kept running`);
 }
 function examinePicked(info) {
   EXAM.picked = info ? info.name : null;
