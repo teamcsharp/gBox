@@ -484,7 +484,7 @@ def test_cast_swap_plans_the_whole_oot_cast_as_pairs():
     assert p["status"] == "planned" and p["strategy"] == "pairs" and p["writer"] == "gbox.oot_swap"
     planned = {a["slot"] for a in p["assignments"]}
     skipped = {s["slot"]: s["reason"] for s in p["skipped"]}
-    assert {"epona", "navi", "like_like", "hylian_townsfolk"} == set(skipped) and "skinned" in skipped["epona"]
+    assert {"epona", "navi", "like_like"} == set(skipped) and "skinned" in skipped["epona"]
     assert planned == set(slots) - set(skipped) and "player" in planned
     assert p == CS.plan(OOT, SA2, "SA2", seed="kf")                  # deterministic
 
