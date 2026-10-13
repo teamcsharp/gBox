@@ -61,8 +61,11 @@ OUTFIT_TABLE_RAM = 0x800938CC                             # in the file-0 overla
 AYA_OUTFITS = {1: 10400, 2: 10300, 3: 10200, 4: 10500, 5: 10600}
 AYA_OUTFIT_NAMES = {1: "purple_jacket_jeans", 2: "blue_jacket_shorts", 3: "tshirt_jeans", 4: "tshirt_jeans_headphones",
                     5: "outfit_5"}
+DEFAULT_OUTFIT = 1                                       # field-overlay events store 1 (0x800BC4C4) and 2 (0x800BC4EC)
 AYA_MODEL_RAM = 0x80115770                               # type-0 destination of every outfit file
 AYA_HEADER_RAM = 0x8011C210                              # the EXE's pointer (SLUS_010.42 offset 0x58144)
+# the EXE's table of outfit body headers (SLUS_010.42 offset 0x58124, every 12 bytes: 0x500001, 0x801014E8, header)
+AYA_HEADERS = {10400: 0x8011B078, 10300: 0x8011ACE8, 10200: 0x8011C210, 10500: 0x8011C2E4, 10600: 0x8011C2E4}
 AYA_RAM_LIMIT = 0x8011D1C0                               # weapon overlay (10301..) loads here: the model must end below
 AYA_HEADER_PTR_OFFSET = 0x58144
 

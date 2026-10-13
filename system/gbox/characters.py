@@ -1297,6 +1297,10 @@ DEDICATED = [
      lambda: [{"key": k, "slug": "cloud" if k == "HICLOUD" else f"ff7_{k.lower()}", "name": n, "aliases": a, "kind": "character"}
               for k, n, a in FF7_CHARS] + _ff7_field_roster(), _ff7_run),
     ("parasite_eve", lambda t, p: re.match(r"parasite eve(?! ii)", t) is not None and p == "psx", _pe_roster, _pe_run),
+    # Parasite Eve II (both discs): Aya's five field outfits, STAGE0.CDF class-1 files (gbox.pe2_inventory / pe2_models)
+    ("pe2", lambda t, p: re.match(r"parasite eve ii\b", t) is not None and p == "psx",
+     lambda: __import__("gbox.pe2_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.pe2_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("pso", lambda t, p: "phantasy star online ver. 2" in t and p == "dreamcast", _pso_roster, _pso_run),
     ("jgr", lambda t, p: ("jet grind radio" in t or "jet set radio" in t) and "future" not in t and p == "dreamcast",
      lambda: __import__("gbox.jgr", fromlist=["x"]).roster(),
