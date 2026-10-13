@@ -4,7 +4,8 @@ The builds an operator's requests were tested or confirmed with (ticket numbers 
 whole-cast swaps, single character swaps and everything else a writer built for this game, each with the ways to
 launch it and the exact tool call that builds it again.
 
-GET  /api/games/{game_id}/special_builds           groups: Confirmation builds (newest first, with the ticket titles),
+GET  /api/games/{game_id}/special_builds           groups: Favorites (the operator's ★ builds, only when there are
+                                                   any), Confirmation builds (newest first, with the ticket titles),
                                                    Cast swaps (source group + per-slot summary), Character swaps, Other;
                                                    each build: launch_options + rebuild_recipe
 POST /api/games/{game_id}/special_builds/rebuild   {recipes: [recipe, ...] | "all", group?, keys?} -> Spark jobs
@@ -30,6 +31,7 @@ RECIPE_KEY = "recipe"
 RECIPE_OPS = ("use", "match", "cast_swap")
 GROUPS = (("confirmation", "Confirmation builds"), ("cast", "Cast swaps"), ("character", "Character swaps"),
           ("other", "Other"))
+FAVORITES = ("favorites", "Favorites")     # the operator's ★ builds, at the top when there are any (gbox.builds)
 # Sonic showcase builds (gbox/sonic_showcase.py: showcase_sonic_<title> folders whose marker carries the `showcase`
 # record) get their own group, listed after the confirmation builds when the game has any
 SHOWCASE = ("showcase", "Sonic showcase")
@@ -253,8 +255,11 @@ def kind_of(item: dict, meta: dict | None = None) -> str:
 def build_row(item: dict, meta: dict, pcs: list[dict]) -> dict:
     kind = kind_of(item, meta)
     recipe, recorded = recipe_for(meta, item["game_id"], item["name"] if kind == "showcase" else "")
-    row = {k: item.get(k) for k in ("key", "name", "game_id", "mod_title", "writer", "built", "verified", "card_id",
-                                    "state_slot", "last_launch", "tickets", "changes")}
+    row = {k: item.get(k) for k in ("key", "name", "game_id", "mod_title", "display_name", "original_title", "writer",
+                                    "built", "verified", "card_id", "state_slot", "last_launch", "tickets", "changes")}
+    row["favorite"] = bool(item.get("favorite"))
+    row["what"], row["reported"] = item.get("what"), item.get("reported")   # "What this changes", "Reported #N"
+    row["size"], row["own_size"] = item.get("size"), item.get("own_size")
     pic = (item.get("images") or [{}])[0].get("url") or ((item.get("shots") or [{}])[0].get("url"))
     row |= {"kind": kind, "image": pic or "", "launch_options": launch_options(item, pcs),
             "rebuild_recipe": recipe, "recipe_recorded": recorded,
@@ -280,12 +285,17 @@ def build_row(item: dict, meta: dict, pcs: list[dict]) -> dict:
 
 def group(items: list[dict], metas: dict, pcs: list[dict]) -> list[dict]:
     """The four groups, newest build first in each; a build linked to a ticket is a confirmation build. Sonic showcase
-    builds form a fifth group (after the confirmation builds), present only when the game has one."""
+    builds form a fifth group (after the confirmation builds), present only when the game has one. The operator's
+    favorites (★) move to a "Favorites" group at the top (only when there are some); `home` keeps the group a build
+    belongs to, so "rebuild every confirmation build" still includes a favorited one."""
     rows = {k: [] for k, _ in (*GROUPS, SHOWCASE)}
+    favs = []
     for it in sorted(items, key=lambda m: -(m.get("built") or 0)):
         row = build_row(it, metas.get(it["key"]) or {}, pcs)
-        rows["confirmation" if row["tickets"] else row["kind"]].append(row)
-    order = [GROUPS[0], *([SHOWCASE] if rows["showcase"] else []), *GROUPS[1:]]
+        row["home"] = "confirmation" if row["tickets"] else row["kind"]
+        (favs if row["favorite"] else rows[row["home"]]).append(row)
+    order = [*([FAVORITES] if favs else []), GROUPS[0], *([SHOWCASE] if rows["showcase"] else []), *GROUPS[1:]]
+    rows["favorites"] = favs
     return [{"key": k, "label": label, "count": len(rows[k]), "builds": rows[k]} for k, label in order]
 
 
@@ -320,7 +330,7 @@ def pick(groups: list[dict], recipes, group_key: str = "confirmation", keys=None
         want = set(keys or [])
         for g in groups:
             for b in g["builds"]:
-                if (keys and b["key"] in want) or (not keys and (group_key in ("all", g["key"]))):
+                if (keys and b["key"] in want) or (not keys and (group_key in ("all", g["key"], b.get("home")))):
                     if b.get("rebuild_recipe"):
                         todo.append({"key": b["key"], "label": b.get("mod_title") or b["name"], "recipe": b["rebuild_recipe"]})
                     else:

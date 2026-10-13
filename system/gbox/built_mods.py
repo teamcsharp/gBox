@@ -138,6 +138,72 @@ def folder_size(folder: Path, stop: threading.Event | None = None) -> tuple[int,
 
 _size = folder_size
 
+DIFF_SKIP = {MARKER, STAGED_MARK, *KNOWN_PREVIEWS}
+DIFF_BYTES = 8 << 20                       # equal-size files up to this are compared byte for byte
+DIFF_LIST = 20
+
+
+def base_diff(folder: Path, base: Path, stop: threading.Event | None = None) -> dict | None:
+    """What a build folder changes against its game's base copy (modbase/<game_id>, filemods): each file is the same
+    (a hard link to the base file, or equal bytes), changed (another size or other bytes), new (not in the base), or
+    unverified (the same size but too large to compare here). {"base": False} when there is no base copy to compare
+    with; None when stopped part way. The background sizer's walk (#1656: "What this changes" for builds whose marker
+    records nothing)."""
+    try:
+        if not base.is_dir():
+            return {"base": False}
+    except OSError:
+        return {"base": False}
+    out = {"base": True, "changed": [], "new": [], "unverified": [], "changed_n": 0, "new_n": 0, "unverified_n": 0, "same_n": 0}
+
+    def add(kind, rel):
+        out[f"{kind}_n"] += 1
+        if len(out[kind]) < DIFF_LIST:
+            out[kind].append(rel)
+    stack = [folder]
+    while stack:
+        if stop is not None and stop.is_set():
+            return None
+        d = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.is_symlink():
+                    continue
+                if e.is_dir(follow_symlinks=False):
+                    if not (d == folder and e.name in PREVIEW_DIRS):
+                        stack.append(Path(e.path))
+                    continue
+                rel = Path(e.path).relative_to(folder).as_posix()
+                if (d == folder and e.name in DIFF_SKIP) or e.name.endswith(".part"):
+                    continue
+                st = e.stat(follow_symlinks=False)
+                b = base / rel
+                try:
+                    bst = b.stat()
+                except OSError:
+                    add("new", rel)
+                    continue
+                if (st.st_ino, st.st_dev) == (bst.st_ino, bst.st_dev):
+                    out["same_n"] += 1
+                elif st.st_size != bst.st_size:
+                    add("changed", rel)
+                elif st.st_size > DIFF_BYTES:
+                    add("unverified", rel)
+                else:
+                    with open(e.path, "rb") as x, open(b, "rb") as y:
+                        same = x.read() == y.read()
+                    if same:
+                        out["same_n"] += 1
+                    else:
+                        add("changed", rel)
+            except (OSError, ValueError):
+                continue
+    return out
+
 _FOLDER_CACHE: dict = {}
 _FOLDER_LOCK = threading.Lock()
 
@@ -276,13 +342,28 @@ class Index:
                 self.error = f"index not saved: {e}"
 
     # -- readers (memory only)
+    def forget(self, game_id: str, name: str) -> list[str]:
+        """Drop a deleted build and its staged copies (<name>~<build>) from the index now (DELETE /api/builds);
+        -> the keys dropped. The next marker pass would find them gone anyway."""
+        with self.lock:
+            gone = [k for k, r in self.recs.items() if r.get("game_id") == game_id
+                    and (r.get("name") == name or str(r.get("name") or "").startswith(name + STAGED_SEP))]
+            for k in gone:
+                self.recs.pop(k, None)
+            if gone:
+                self.version += 1
+        if gone:
+            self.save()
+        return gone
+
     def records(self) -> list[dict]:
         with self.lock:
             return [r for r in self.recs.values() if not r.get("staged")]
 
     def unsized(self) -> list[tuple[str, dict]]:
         with self.lock:
-            todo = [(k, r) for k, r in self.recs.items() if not r.get("staged") and r.get("size_key") != r.get("marker")]
+            todo = [(k, r) for k, r in self.recs.items() if not r.get("staged")
+                    and (r.get("size_key") != r.get("marker") or r.get("diff_key") != r.get("marker"))]
         return sorted(todo, key=lambda kr: -(_built_of(kr[1]) or 0))      # newest builds get their size first
 
     def status(self) -> dict:
@@ -316,9 +397,9 @@ class Index:
         rec["marker"] = sig
         rec["donor_previews"] = donor_previews(changes_of(rec.get("meta") or {}), self.library)
         if old and old.get("size_key") == sig:     # same marker: the walked size still holds
-            rec.update({k: old.get(k) for k in ("size", "own_size", "files", "size_key")})
+            rec.update({k: old.get(k) for k in ("size", "own_size", "files", "size_key", "diff", "diff_key")})
         else:
-            rec.update(size=None, own_size=None, files=None, size_key=None)
+            rec.update(size=None, own_size=None, files=None, size_key=None, diff=None, diff_key=None)
         return rec
 
     def refresh(self) -> bool:
@@ -399,16 +480,19 @@ class Index:
             with self.lock:
                 self.sizing = key
             try:
-                got = folder_size(self.root / rec["game_id"] / rec["name"], self._stop)
+                folder = self.root / rec["game_id"] / rec["name"]
+                got = folder_size(folder, self._stop)
+                diff = base_diff(folder, self.root.parent / "modbase" / rec["game_id"], self._stop) if got else None
             finally:
                 with self.lock:
                     self.sizing = None
-            if got is None:
+            if got is None or (diff is None and self._stop.is_set()):
                 return
             with self.lock:
                 cur = self.recs.get(key)
                 if cur is not None and cur.get("marker") == rec.get("marker"):
-                    self.recs[key] = {**cur, "size": got[0], "own_size": got[1], "files": got[2], "size_key": cur["marker"]}
+                    self.recs[key] = {**cur, "size": got[0], "own_size": got[1], "files": got[2], "size_key": cur["marker"],
+                                      "diff": diff, "diff_key": cur["marker"]}
                     self.version += 1
                 else:                              # rebuilt or removed while walking: the next round sees it
                     continue
@@ -649,7 +733,8 @@ def session_frames(store, sessions: list[dict], limit: int = FRAME_LIMIT) -> dic
 
 
 def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | None, requests: dict, library,
-          frames: list[dict] | None = None, display_name: str = "", launch_report: dict | None = None) -> dict:
+          frames: list[dict] | None = None, display_name: str = "", launch_report: dict | None = None,
+          favorite: bool = False, reported: dict | None = None) -> dict:
     meta, gid, name = rec.get("meta") or {}, rec["game_id"], rec["name"]
     changes = changes_of(meta)
     built = meta.get("built")
@@ -670,8 +755,11 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
     return {
         "key": f"{gid}/{name}", "name": name, "game_id": gid, "title": title, "game_title": title,
         "platform": (catalog or {}).get("platform") or "",
-        # the operator's own name for the build (Builds view, double-click) wins everywhere a build is listed
+        # the operator's own name for the build (Builds view, the Mods card ✎) wins everywhere a build is listed
         "mod_title": display_name or original, "display_name": display_name, "original_title": original,
+        "favorite": bool(favorite),                # ☆/★ on the Mods page and in Builds (FAV_KIND): listed first
+        # "What this changes" (#1656): recorded facts, else the file comparison with the base copy, else inferred
+        "what": what_of(rec, card), "diff": rec.get("diff"), "reported": reported or None,
         "writer": writer_of(meta, name), "changes": changes, "cast": isinstance(meta.get("cast"), list),
         "report": meta.get("cast") if isinstance(meta.get("cast"), list) else None,
         "cast_source": meta.get("cast_source") or "",
@@ -804,6 +892,67 @@ def display_names(store) -> dict:
             and r["display_name"].strip()}
 
 
+FAV_KIND = "build_favorite"                # store kind: "game_id/mod" -> {key, by, ts} (gbox.builds): the operator's ★
+REPORT_KIND = "build_report"               # store kind: "game_id/mod" -> {key, number, id, reason, ts}: "Reported #N"
+
+
+def build_reports(store) -> dict:
+    """"game_id/mod" -> {number, id, reason} of the newest ⚑ report filed on that build."""
+    try:
+        rows = _fields(store, REPORT_KIND, ("key", "number", "id", "reason"))
+    except Exception:                                            # noqa: BLE001
+        return {}
+    return {r["key"]: {k: r.get(k) for k in ("number", "id", "reason")} for r in rows if isinstance(r.get("key"), str)}
+
+
+def favorites(store) -> set[str]:
+    """The "game_id/mod" keys the operator starred: listed first, a Favorites group at the top of Special builds, and
+    never evicted by a disk budget (protected())."""
+    try:
+        return {r["key"] for r in _fields(store, FAV_KIND, ("key",)) if isinstance(r.get("key"), str) and r["key"]}
+    except Exception:                                            # noqa: BLE001
+        return set()
+
+
+def is_favorite(store, game_id: str, mod: str) -> bool:
+    try:
+        return store.get(FAV_KIND, f"{game_id}/{mod}") is not None
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
+def label_of(store, game_id: str, mod: str, fallback: str = "") -> str:
+    """The name a build shows under (launch bar, loader, sessions, Mini window title): the operator's display name,
+    else `fallback`, else the folder name."""
+    if not mod:
+        return fallback
+    try:
+        doc = store.get(NAME_KIND, f"{game_id}/{mod}") or {}
+    except Exception:                                            # noqa: BLE001
+        doc = {}
+    v = doc.get("display_name") if isinstance(doc.get("display_name"), str) else ""
+    return v.strip() or fallback or mod
+
+
+def what_of(rec: dict, card: dict | None = None) -> dict:
+    """The build's "What this changes" summary (gbox.build_summary); never fails a listing."""
+    meta = rec.get("meta") or {}
+    try:
+        from . import build_summary
+        return build_summary.summarize(rec["name"], rec["game_id"], meta, card, rec.get("diff"),
+                                       writer_of(meta, rec["name"]),
+                                       meta.get("recipe") if isinstance(meta.get("recipe"), dict) else None)
+    except Exception as e:                                       # noqa: BLE001
+        return {"lines": [], "where": "", "status": "unknown", "badge": "Changes not recorded", "inferred": False,
+                "sources": [], "error": str(e)[:200]}
+
+
+def protected(store, game_id: str, mod: str) -> str:
+    """Why a disk budget (the Sonic showcase's LRU eviction, any later sweep of built mods) must never remove this
+    build, else ''. The cache's own eviction (catalog.evict) never touches mods/ at all (catalog.EVICT_KEEP)."""
+    return "the operator favorited it" if is_favorite(store, game_id, mod) else ""
+
+
 def gallery(store, config, records: list[dict] | None = None, *, register: bool = True) -> dict:
     """The whole gallery, newest build first: the index's records (or a marker scan) joined with the store. Touches
     no mod folder when records are given."""
@@ -823,6 +972,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                 pass
     launches = launch_index(sessions, _failed_launches(store))
     names = display_names(store)
+    favs, reported = favorites(store), build_reports(store)
     try:
         frames = session_frames(store, sessions)
     except Exception:                                            # noqa: BLE001 - frames are a convenience
@@ -843,13 +993,15 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
         items.append(entry(rec, cards.get((gid, rec["name"])), launches.get((gid, rec["name"])),
                            catalog_of(store, gid, rec.get("meta") or {}, catalogs), requests, library,
                            frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", ""),
-                           launch_report=reports.get((gid, rec["name"]))))
+                           launch_report=reports.get((gid, rec["name"])),
+                           favorite=f"{gid}/{rec['name']}" in favs, reported=reported.get(f"{gid}/{rec['name']}")))
     items.sort(key=lambda m: -(m["built"] or 0))
     return {"items": items, "registered": made, "cache_dir": str(root)}
 
 
-def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", kind: str = "") -> list[dict]:
-    """kind=showcase: only the Sonic showcase builds; kind=other: everything else."""
+def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", kind: str = "",
+           favorite: bool = False) -> list[dict]:
+    """kind=showcase: only the Sonic showcase builds; kind=other: everything else; favorite: only the ★ ones."""
     words = [w for w in q.lower().split() if w]
     if kind in ("showcase", "other"):
         items = [m for m in items if bool(m.get("showcase")) == (kind == "showcase")]
@@ -859,7 +1011,7 @@ def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", 
                          *(f"{r.get('donor')} {r.get('slot')}" for r in m["changes"]),
                          *(f"#{t['number']}" for t in m["tickets"])]).lower()
     return [m for m in items if (not game_id or m["game_id"] == game_id) and (not writer or m["writer"] == writer)
-            and all(w in hay(m) for w in words)]
+            and (not favorite or m.get("favorite")) and all(w in hay(m) for w in words)]
 
 
 def facets(items: list[dict]) -> dict:
@@ -913,7 +1065,7 @@ def routes(app, store, config, auth):
 
     @app.get("/api/mods/built")
     def built_list(game_id: str = "", writer: str = "", q: str = "", offset: int = 0, limit: int = 0,
-                   fresh: bool = False, kind: str = "", actor=Depends(auth)):
+                   fresh: bool = False, kind: str = "", favorite: bool = False, actor=Depends(auth)):
         """Every built mod folder in this node's cache, newest first, joined with its mod card (filters + pages).
         Answers from the index at once; `indexing` while a marker pass is due, `sizing` = folders still being sized
         (size: null). fresh=true rejoins the cards now and asks for an incremental pass in the background."""
@@ -922,7 +1074,7 @@ def routes(app, store, config, auth):
             index.ask()
         data = current(fresh)
         items = data["items"]
-        picked = select(items, game_id, writer, q, kind)
+        picked = select(items, game_id, writer, q, kind, favorite)
         offset = max(0, offset)
         page = picked[offset:offset + limit] if limit > 0 else picked[offset:]
         return {"total": len(picked), "all": len(items), "offset": offset, "limit": limit, "items": page,

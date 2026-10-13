@@ -213,7 +213,7 @@ test('row: thumbnail, escaped name, game, kind chips, date, size, where, launch 
   assert.match(html, /data-bv-key="g1\/cast_g1"/);
   assert.match(html, /<img class="bv-thumb"[^>]*src="\/api\/characters\/kane\/preview\?token=t"/);
   assert.ok(html.includes('G1: cast as &#60;Wrestlers&#62;') && !html.includes('<Wrestlers>'));
-  assert.match(html, /data-bv="name" title="Double-click to rename · folder cast_g1"/);
+  assert.match(html, /data-bv="name" title="Double-click \(or ✎\) to rename · folder cast_g1"/);
   assert.match(html, /Game &#60;One&#62;/);
   assert.match(html, /<span class="bv-chip bv-k1">cast swap<\/span><span class="bv-chip">test<\/span>/);
   assert.match(html, /just now/); assert.match(html, /1\.0 MB/);
@@ -345,6 +345,66 @@ test('controller: list, rename by double-click (PATCH display_name), launch on t
     // filters
     ctl.onInput({ target: { dataset: { bvF: 'kind' }, value: 'cheats' } });
     assert.match(h.querySelector('[data-bv-list]').innerHTML, /g2_hack/); assert.doesNotMatch(h.querySelector('[data-bv-list]').innerHTML, /cast_g1/);
+  } finally { ctl.stop(); }
+});
+
+test('#1656 rows: ☆/★ and ✎ next to the name; ▾ options carry Rename…, favorite, restore; favorites first + ★ filter', () => {
+  const html = BV.rowHTML(CAST, {}, {});
+  assert.match(html, /<div class="bv-nm"><button class="bv-ico bv-star" type="button" data-bv="fav" aria-pressed="false"[^>]*>☆<\/button><span class="bv-name"/);
+  assert.match(html, /data-bv="rename" title="Rename this build \(the folder keeps its name\)" aria-label="Rename">✎</);
+  const fav = BV.rowHTML({ ...CAST, favorite: true, display_name: 'Best', label: 'Best' }, { opts: 'g1/cast_g1' }, { here: 'MYPC' });
+  assert.match(fav, /class="bv-row bv-fav" data-bv-key="g1\/cast_g1"/);
+  assert.match(fav, /data-bv="fav" aria-pressed="true"[^>]*>★</);
+  assert.match(fav, /data-bv="rename" data-key="g1\/cast_g1"[^>]*>✎ Rename…</);
+  assert.match(fav, /data-bv="fav" data-key="g1\/cast_g1">☆ Remove from favorites</);
+  assert.match(fav, /data-bv="unname" data-key="g1\/cast_g1">↺ Restore “G1: cast as &#60;Wrestlers&#62;”</);
+  const unnamed = { ...CAST, display_name: '', label: CAST.original_title };       // (earlier tests rename the shared CAST)
+  assert.match(BV.optionsHTML(unnamed, 'MYPC'), /★ Add to favorites/);
+  assert.match(BV.rowHTML(unnamed, { renaming: 'g1/cast_g1' }, {}), /<input class="bv-rename"[^>]* data-nomic>/,
+               'no dictation wrapper: moving the field would blur (so close) it in the web shell');
+  assert.ok(!BV.optionsHTML(unnamed, 'MYPC').includes('unname'), 'no display name: nothing to restore');
+  const all = [CAST, { ...PATCH, favorite: true }, HACK];
+  const plain = BV.filterBuilds([CAST, PATCH, HACK]).map(b => b.name);
+  assert.deepEqual(BV.filterBuilds(all).map(b => b.name), ['g1_patch', ...plain.filter(n => n !== 'g1_patch')], 'the favorite first, then newest');
+  assert.deepEqual(BV.filterBuilds(all, { fav: true }).map(b => b.name), ['g1_patch']);
+  assert.equal(BV.facets(all).favorites, 1);
+});
+
+test('#1656 controller: ☆ stars (PUT), the row moves first, ★ Favorites filters; right-click opens the options; Rename… / restore', async () => {
+  const env = fakeEnv({ routes: {
+    // copies: the controller updates the rows it shows, the shared fixtures stay as they are for the other tests
+    'GET /api/builds': () => ({ items: [{ ...CAST, display_name: '', label: CAST.original_title }, { ...PATCH }, { ...HACK }], indexing: false, sizing: 0 }),
+    'PUT /api/builds/g2/g2_hack/favorite': b => ({ key: 'g2/g2_hack', favorite: b.favorite }),
+    'PATCH /api/builds/g1/cast_g1': b => ({ key: 'g1/cast_g1', display_name: b.display_name, label: b.display_name || CAST.original_title }),
+  } }), h = host();
+  const ctl = BV.mount(h, env); await ctl.ready;
+  const list = () => h.querySelector('[data-bv-list]').innerHTML;
+  try {
+    assert.ok(list().indexOf('g1/cast_g1') < list().indexOf('g2/g2_hack'));
+    await ctl.onClick({ target: target({ bv: 'fav', key: 'g2/g2_hack' }) });
+    assert.deepEqual(env.calls.find(c => c[0] === 'PUT'), ['PUT', '/api/builds/g2/g2_hack/favorite', { favorite: true }]);
+    assert.ok(list().indexOf('g2/g2_hack') < list().indexOf('g1/cast_g1'), 'the favorite moves first');
+    assert.match(list(), /★ Favorite: listed first and kept/);
+    assert.match(h.innerHTML, /★ Favorites \(1\)/);
+    ctl.onInput({ target: { dataset: { bvF: 'fav' }, type: 'checkbox', checked: true } });
+    assert.match(list(), /g2_hack/); assert.doesNotMatch(list(), /cast_g1/);
+    ctl.onInput({ target: { dataset: { bvF: 'fav' }, type: 'checkbox', checked: false } });
+    // right-click a row: the options under it; Rename… from there opens the field
+    ctl.onContext({ target: target({ key: 'g1/cast_g1' }), preventDefault() {}, stopPropagation() {} });
+    assert.equal(ctl.st.opts, 'g1/cast_g1'); assert.match(list(), /data-bv-opts="g1\/cast_g1"/);
+    await ctl.onClick({ target: target({ bv: 'rename', dataset: { key: 'g1/cast_g1' } }) });
+    assert.equal(ctl.st.opts, null); assert.equal(ctl.st.renaming, 'g1/cast_g1');
+    await ctl.onKey({ key: 'Enter', target: target({ rename: 'g1/cast_g1', value: 'Sonic Full Cast' }) });
+    await flush();
+    assert.match(list(), /data-bv="name"[^>]*>Sonic Full Cast</);
+    // ✎ next to the name opens the field too; ↺ restores the original name ("")
+    await ctl.onClick({ target: target({ bv: 'rename', key: 'g1/cast_g1' }) });
+    assert.equal(ctl.st.renaming, 'g1/cast_g1');
+    ctl.onKey({ key: 'Escape', target: target({ rename: 'g1/cast_g1', value: '' }) });
+    await ctl.onClick({ target: target({ bv: 'unname', dataset: { key: 'g1/cast_g1' } }) });
+    await flush();
+    assert.deepEqual(env.calls.filter(c => c[0] === 'PATCH').map(c => c[2]), [{ display_name: 'Sonic Full Cast' }, { display_name: '' }]);
+    assert.match(list(), /Original name restored: G1: cast as &#60;Wrestlers&#62;/);
   } finally { ctl.stop(); }
 });
 

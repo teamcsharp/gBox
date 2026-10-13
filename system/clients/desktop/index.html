@@ -1194,6 +1194,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/launch-bar.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
+<script src="../web/viz/build-actions.js"></script>
 <script src="../web/viz/game-menu.js"></script>
 <script src="../web/viz/build-shot.js"></script>
 <script src="../web/viz/mods-gallery.js"></script>
@@ -1278,6 +1279,8 @@ const LIVE_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions?incl
 const ALL_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions"), { ttl: 30000 });
 const WORKERS = GBoxLivePoll.cachedRead(() => gbox.api("/api/workers"), { ttl: 4000 });
 const liveSessions = maxAge => LIVE_SESSIONS.get(maxAge);
+// a session's window title: the game, plus the operator's name for the build it runs (Mods card ✎ / Builds rename)
+const sessionTitle = s => s ? (s.mod_title ? `${s.title || s.game_id || "game"} · ${s.mod_title}` : (s.title || "")) : "";
 async function sessionById(sid) {                            // a running session from the live list; an ended one from the cached history
   if (!sid) return null;
   const live = await liveSessions();
@@ -3134,7 +3137,8 @@ const MODSG = { ctl: null };
 async function modsGalleryOpen() {
   if (MODSG.ctl) { MODSG.ctl.load(0); return MODSG.ctl; }
   const tok = encodeURIComponent(S.tok || await gbox.token());
-  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  // method: rename (PATCH) and ★ (PUT / DELETE) on the Mods cards; an older main process posts them (the server takes POST too)
+  const api = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: GBoxLivePoll, here: S.workerName || "windows",
     url: u => /^(https?|data|blob):/.test(u) ? u : `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
     visible: () => $("#mods").classList.contains("on"), openImages: (list, i, at) => texPopOpen(list, i, at),
@@ -3147,7 +3151,8 @@ async function modsGalleryPlay(m, { node, moment }) {
     const card = r.ok && r.data.find(c => c.id === m.card_id);
     if (card) {
       MODS.list = [...MODS.list.filter(x => x.id !== card.id), card];
-      return modPlay(card, moment && card.state_slot != null ? "moment" : "play");
+      // the notifications name the build as the operator named it (the card itself keeps its own title)
+      return modPlay(m.mod_title ? { ...card, title: m.mod_title } : card, moment && card.state_slot != null ? "moment" : "play");
     }
   }
   const what = `Launch of ${m.mod_title || m.name}`;
@@ -5402,7 +5407,7 @@ function chipMenu(chip, e) {                                   // a conversation
 // "Special builds" in the chip menu: launches go through the Mods view's play path (this PC via the mod card, another PC
 // via @launch) or the Spark's debugger; Open in Mods page / Open request use the Mods view; rebuilds show in the pop-up
 function chipSpecialIO(m) {
-  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
+  const api = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   return { api, worker: S.workerName || "", close: () => { m.style.display = "none"; }, refit: () => { if (m._fitXY) refitMenu(m); },
     launch: specialBuildLaunch,
     openMods: async (gid, b) => { document.querySelector('aside button[data-s="mods"]')?.click(); (await modsGalleryOpen()).focus({ q: b?.name || "", game: gid }); },
@@ -5970,11 +5975,11 @@ $("#tb-mini").onclick = async () => {
     const r = await liveSessions(0);
     const s = r.ok && r.data.find(x => x.state === "running" && !(x.detail && x.detail.local_window));
     if (!s) return alert("Mini mode shows a streamed game. Start one (or use the Spark button), then click Mini.");
-    sid = s.session_id; title = s.title;
+    sid = s.session_id; title = sessionTitle(s);
   } else {
     const s = await sessionById(sid);
     if (s && s.detail && s.detail.local_window) return alert("This game runs natively in its own RetroArch window — resize that window directly.");
-    title = s ? s.title : "";
+    title = s ? sessionTitle(s) : "";
   }
   miniPadTarget(sid);
   gbox.miniOpen(sid, title);

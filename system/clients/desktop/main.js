@@ -150,11 +150,12 @@ async function token() {
 
 // GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
 const ETAGS = new Map();                              // path -> { etag, data }
-async function api(p, body) {
+async function api(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
   const t = await token();
-  const known = !body && ETAGS.get(p);
+  method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(String(method || "").toUpperCase()) ? String(method).toUpperCase() : (body ? "POST" : "GET");
+  const known = method === "GET" && !body && ETAGS.get(p);
   const r = await fetch(settings().apiUrl + p, {
-    method: body ? "POST" : "GET", body: body && JSON.stringify(body),
+    method, body: body && method !== "GET" ? JSON.stringify(body) : undefined,
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
     signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
@@ -162,7 +163,7 @@ async function api(p, body) {
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  const data = await r.json(), etag = !body && r.headers.get("etag");
+  const data = await r.json(), etag = method === "GET" && r.headers.get("etag");
   if (etag) ETAGS.set(p, { etag, data }); else ETAGS.delete(p);
   return data;
 }
@@ -241,7 +242,7 @@ function pickHoldReleaseAll(why) {
   }
   PICK_HOLDS.clear();
 }
-ipcMain.handle("api", async (_e, p, body) => { try { pickHoldTrack(p, body); return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
+ipcMain.handle("api", async (_e, p, body, method) => { try { pickHoldTrack(p, body); return { ok: true, data: await api(p, body, method) }; } catch (e) { return { ok: false, error: e.message }; } });
 // a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
 ipcMain.handle("api:tagged", async (_e, p, have) => {
   try {

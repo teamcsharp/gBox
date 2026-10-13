@@ -258,6 +258,18 @@ def test_budget_eviction_picks_only_older_showcase_builds(env):
     assert kept.exists() and mid.exists() and new.exists() and other.exists() and fake.exists()
 
 
+def test_a_favorited_showcase_build_is_never_evicted(env):
+    """#1656: the operator's ★ (store kind build_favorite) protects a build from the disk budget."""
+    from gbox import built_mods as BM
+    old = make_build(env.mods, gid(1), "showcase_sonic_old", 4000, 100)
+    new = make_build(env.mods, gid(2), "showcase_sonic_new", 4000, 300)
+    env.store.put(BM.FAV_KIND, f"{gid(1)}/showcase_sonic_old", {"key": f"{gid(1)}/showcase_sonic_old", "by": "operator", "ts": 1})
+    assert env.svc.protected({"game_id": gid(1), "name": "showcase_sonic_old"}, [], [], set()) == "the operator favorited it"
+    out = env.svc.evict(5000, 6000, keep=set())
+    assert [e["mod"] for e in out["evicted"]] == ["showcase_sonic_new"], "the older build is a favorite: the newer one goes"
+    assert old.exists() and not new.exists()
+
+
 def test_usage_counts_bytes_only_showcase_builds_hold(env):
     root = env.mods
     base = env.tmp / "hdd" / "gbox-cache" / "modbase" / gid(1)

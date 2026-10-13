@@ -384,6 +384,14 @@ def create_app(config: Config) -> FastAPI:
     def mod_list(game_id: str = "", actor=Depends(auth)):
         out = [m for m in store.all("mod") if not game_id or m["game_id"] == game_id]
         out = [_mod_picture(m) for m in out]
+        # a card that boots a built mod shows under the operator's name for that build (Mods card ✎ / Builds view);
+        # `title` stays the card's own, so a card saved back never bakes the display name in
+        from . import built_mods
+        names, favs = built_mods.display_names(store), built_mods.favorites(store)
+        for i, m in enumerate(out):
+            key = f"{m.get('game_id')}/{built_mods.card_mod(m)}"
+            if key in names or key in favs:
+                out[i] = m | {"display_name": names.get(key, ""), "favorite": key in favs}
         return sorted(out, key=lambda m: -m.get("ts", 0))
 
     @app.delete("/api/mods/{mid}")
@@ -997,7 +1005,10 @@ def create_app(config: Config) -> FastAPI:
                     raise HTTPException(409, 'A replacement is already being prepared for this game. Wait for it to finish before selecting another model.')
             if keep_state and sess.get('state') != 'running':
                 raise HTTPException(409, 'This session has ended. Open the running game before replacing its models.')
-            job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
+            from . import built_mods                      # the operator's name for the build: the launch bar shows it
+            named = built_mods.label_of(store, sess.get("game_id") or "", mod, "") if mod else ""
+            job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state,
+                                                  **({"mod_title": named} if named and named != mod else {})},
                       state=JobState.RUNNING, started=time.time(), actor=actor,
                       agent_use=operator_guard.is_agent(actor),
                       origin={"via": "swap_job", **({"parent_job": origin["parent_job"]}
@@ -2486,7 +2497,9 @@ def create_app(config: Config) -> FastAPI:
                           submit=lambda tool, inp, require_os, actor: submit(
                               JobRequest(tool=tool, input=inp, require_os=require_os), actor))
     from . import builds                          # top bar "Builds": every custom build, details, scheduled build jobs
-    builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor))
+    # ⚑ build reports go through the issue flow and then the investigation queue (both defined further down)
+    builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor),
+                  file_report=lambda issue, details, actor: _build_report(issue, details, actor))
 
     class Progress(BaseModel):
         pct: float
@@ -2987,7 +3000,10 @@ def create_app(config: Config) -> FastAPI:
             if running:
                 current = max(running, key=lambda s: s.get('started') or 0)
                 return swap_job(current['session_id'], mod, '', actor, origin=origin)   # keep_state=True
-        req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})},
+        from . import built_mods                          # the operator's name for the build: the launch bar shows it
+        named = built_mods.label_of(store, gid, mod, "") if mod else ""
+        req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {}),
+                                                    **({"mod_title": named} if named and named != mod else {})},
                          agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin))
         if debug:
             node = "linux"
@@ -3050,11 +3066,16 @@ def create_app(config: Config) -> FastAPI:
     def sessions(actor=Depends(auth), include_ended: bool = True):
         out = []
         now = time.time()
+        from . import built_mods
+        names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
         for s_ in store.all("session", reverse=True):
             if not include_ended and s_.get('state') != 'running':
                 continue
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
+            named = names.get(f"{s_.get('game_id')}/{s_.get('collection_mod') or s_.get('mod') or ''}")
+            if named:
+                row["mod_title"] = named
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
             if s_.get("state") == "running":         # Hermes / observers keep heavy work off the operator's game
@@ -4410,6 +4431,30 @@ def create_app(config: Config) -> FastAPI:
             store.put("request", rid, report)
         return report
 
+    def _build_report(issue: dict, details: str, actor: str) -> dict:
+        """A ⚑ build report (gbox.builds): filed like any issue report, then sent to the investigation queue the launch
+        failure reports use (_lf_investigate: the top of the Hermes work queue, or dispatched now in task mode)."""
+        filed = req_issue(IssueIn(**issue), actor)
+        rid = filed["id"]
+        report = store.get("request", rid) or filed
+        try:
+            out = _lf_investigate(rid, report.get("number") or 0, details, name=f"gBox build report #{report.get('number')}")
+            report = store.get("request", rid) or report
+            report.setdefault("context", {})["resolution_dispatch"] = "hermes_queue" if out.get("mode") == "queue" else "hermes_dispatch"
+            if out.get("job_id"):
+                report["context"]["resolution_job_id"] = out["job_id"]
+            text = ("Build report queued for Hermes (work queue position %d): reproduce it on the agent test PC, find why the "
+                    "build doesn't do what it should, rebuild it or fix its writer, and verify in game." % ((out.get("priority") or 0) + 1))
+            report.setdefault("messages", []).append({"author": "agent", "text": text, "ts": time.time(), "attachments": [],
+                "task_step": {"action": "dispatch investigation", "attempt": "1", "result": out.get("mode") or "",
+                              "status": "queued" if out.get("mode") == "queue" else "running"}})
+        except Exception as exc:                                 # noqa: BLE001 - the report is filed either way
+            report = store.get("request", rid) or report
+            report.setdefault("messages", []).append({"author": "agent", "text": f"Investigation dispatch failed: {exc}",
+                                                      "ts": time.time(), "attachments": []})
+        store.put("request", rid, report)
+        return report
+
     class AutoFailureIn(BaseModel):
         session_id: str = ""
         game: str = ""
@@ -4642,7 +4687,9 @@ def create_app(config: Config) -> FastAPI:
                 time.sleep(2)
         raise RuntimeError("the Hermes work queue stayed locked for a minute")
 
-    def _lf_investigate(rid, number, task, attempt=1):
+    def _lf_investigate(rid, number, task, attempt=1, name=""):
+        """The investigation queue: the request goes to the top of the Hermes work queue and, in Hermes task mode, is
+        dispatched now. Launch failure reports (#318) and ⚑ build reports (#1656) use it."""
         from . import hermes_task_mode
         ids = _lf_priority(lambda cur: [rid] + [x for x in cur if x != rid])
         controller = hermes_task_mode._job() or {}
@@ -4650,7 +4697,7 @@ def create_app(config: Config) -> FastAPI:
             # the managed work queue dispatches it on its next tick; with Hermes task mode off it waits there first
             return {"mode": "queue", "job_id": None, "priority": ids.index(rid)}
         # a reopened ticket is a new attempt: a finished job of the same name would otherwise be returned as is
-        jid = hermes_task_mode.dispatch_request(rid, number, task=task, name=f"gBox launch failure #{number}"
+        jid = hermes_task_mode.dispatch_request(rid, number, task=task, name=(name or f"gBox launch failure #{number}")
                                                 + (f" attempt {attempt}" if attempt > 1 else ""))
         return {"mode": "dispatch", "job_id": jid, "priority": ids.index(rid)}
 

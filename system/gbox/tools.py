@@ -231,7 +231,8 @@ class LaunchIn(BaseModel):
     game: CatalogEntry
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
-    examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    mod_title: str = ""                    # the operator's name for that build (labels only: launch bar, loader)
+    examine:bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
     capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
@@ -2903,7 +2904,7 @@ def video_tool(inp: VideoIn, ctx: Ctx):
 
 class FileModIn(BaseModel):
     game_id: str
-    op: str = "list"                       # list | build | remove
+    op: str = "list"                       # list | build | remove | delete_build (this PC's copies + staged copies)
     name: str = ""
     # build: {"PS3_GAME/USRDIR/...": {"patch": [{"offset": "0x10", "hex": "ff"}]} | {"from": "<local file>"} | {"artifact": "<sha256>"}}
     changes: dict = {}
@@ -2916,8 +2917,22 @@ class FileModOut(BaseModel):
       side_effects=["copies the game once into the node cache", "writes mod folders (hard links + changed files)"])
 def file_mod(inp: FileModIn, ctx: Ctx):
     """File-replacement mods for folder games: build a modded copy (original untouched, unchanged files hard-linked to
-    one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>."""
+    one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>.
+    delete_build (Builds ▸ Delete): this PC's copies of a build, its staged copies included; refused while a running
+    game on this PC uses one."""
     from . import filemods
+    if inp.op == "delete_build":                       # no catalog / rom needed: the game may not be on this PC at all
+        if not inp.name:
+            raise ValueError("delete_build needs the build's name")
+        r = httpx.get(f"{ctx.server}/api/sessions?include_ended=false", headers=ctx.headers, timeout=30)
+        r.raise_for_status()
+        # (any running session of the build blocks it, wherever it runs: over-cautious beats a half-deleted copy)
+        in_use = [str(s.get(k) or "") for s in r.json() if s.get("state") == "running" and s.get("game_id") == inp.game_id
+                  for k in ("mod", "collection_mod")]
+        res = filemods.delete_build(ctx.config, inp.game_id, inp.name, [m for m in in_use if m])
+        if res["errors"]:
+            raise RuntimeError("some copies could not be deleted (open in another program?): " + "; ".join(res["errors"]))
+        return {"result": res}
     r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
     r.raise_for_status()
     g = CatalogEntry.model_validate(r.json())

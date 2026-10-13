@@ -431,8 +431,12 @@ class Showcase:
     def protected(self, f: dict, sessions: list[dict], cards: list[dict], keep: set) -> str:
         """Why a showcase build must not be evicted now, else ''."""
         from .built_mods import card_mod
+        from .built_mods import protected as build_protected
         if (f["game_id"], f["name"]) in keep:
             return "being built or just built"
+        why = build_protected(self.store, f["game_id"], f["name"])     # the operator's ★ (#1656): never evicted
+        if why:
+            return why
         for x in sessions:
             if x.get("state") == "running" and x.get("game_id") == f["game_id"] and \
                     f["name"] in (x.get("mod"), x.get("collection_mod")):
