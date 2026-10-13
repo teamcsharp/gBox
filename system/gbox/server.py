@@ -382,9 +382,11 @@ def create_app(config: Config) -> FastAPI:
         pass
 
     @app.get("/api/characters")
-    def chars_list(game_id: str = "", actor=Depends(auth)):
-        """Library characters (+ ready swap mods for game_id) with preview URLs."""
+    def chars_list(game_id: str = "", fresh: bool = False, actor=Depends(auth)):
+        """Library characters (+ ready swap mods for game_id) with preview URLs. fresh=1 re-reads the library."""
         K, root = _chars()
+        if fresh:
+            K.refresh_list(root)
         def model_bytes(m):
             try:
                 return (Path(root) / m["slug"] / m["model"]).stat().st_size
