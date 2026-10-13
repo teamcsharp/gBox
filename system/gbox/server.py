@@ -2941,10 +2941,20 @@ def create_app(config: Config) -> FastAPI:
 
     def hermes_runs(limit: int) -> list[dict]:
         """Recent Hermes runs, each naming the inbox tickets it confirmed work on."""
-        from . import hermes_tasks
+        from . import hermes_providers, hermes_tasks
         runs = hermes_tasks.list_runs(limit)
+        # The provider that served the run's last successful model call, from Hermes's agent log; the
+        # session's billing provider is only where the run started before falling through its routes.
+        try:
+            served = hermes_providers.session_providers()
+        except Exception:  # the Providers view is optional; never break the run list
+            served = {}
         titles: dict[str, dict | None] = {}
         for run in runs:
+            if (who := served.get(run.get("session_id") or "")):
+                run["billing_provider"] = run.get("provider")
+                run.update(provider=who["provider"], model=who["model"] or run.get("model"),
+                           provider_attribution=who["attribution"])
             tickets = []
             for rid in run.get("request_ids") or []:
                 if rid not in titles:
@@ -3020,6 +3030,18 @@ def create_app(config: Config) -> FastAPI:
         return {"machines": machines, "jobs": sorted(jobs, key=lambda j: -(j["created"] or 0)),
                 "recent": recent, "hermes": hermes_runs(max(1, min(hermes_limit, 100))),
                 "resolutions": resolutions}
+
+    @app.get("/api/hermes/providers")
+    def hermes_providers_view(window: Literal["today", "7d"] = "today", actor=Depends(auth)):
+        """Which Hermes provider did the work and which can still do it, for the Tasks window.
+
+        One row per route (feedback.json routes plus any other route that served calls in the
+        window) and per provider: status now, last error, runs served to completion, model calls,
+        tokens, wall time, OpenRouter credit (cached 5 min; the key never leaves the server) and a
+        one-line recommendation.
+        """
+        from . import hermes_providers
+        return hermes_providers.summary(window)
 
     @app.get("/api/tasks/resolutions/{rid}")
     def tasks_resolution(rid: str, actor=Depends(auth)):
