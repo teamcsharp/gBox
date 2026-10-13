@@ -272,6 +272,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/build-actions.js"></script>
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/build-shot.js"></script>
+<script src="/viz/build-local.js"></script>
 <script src="/viz/last-played.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/mods-gallery.js"></script>
@@ -1075,12 +1076,32 @@ const queryParams = (offset) => new URLSearchParams({ q: L.q, platform: L.plats.
 // ---- Mods: every modded build the Spark made (viz/mods-gallery.js over GET /api/mods/built; the desktop shell's Mods view too) ----
 // pictures open in the #lbox pop-up; Play launches through the mod cards' @launch path on this PC or the PC picked in the bar
 const MODSG = { ctl: null };
+// #1639 the download icon's Export… / Open folder inside the desktop app: its folder picker and Explorer, through the
+// GBOX: console bridge (the shell answers a pick with window.gboxFolderPicked); a plain browser types the folder instead
+const DESKF = { n: 0, wait: new Map() };
+window.gboxFolderPicked = (id, p) => { const f = DESKF.wait.get(id); DESKF.wait.delete(id); if (f) f(p || ""); };
+function deskFolders() {
+  if (!bnEmbedded() || !window.GBOX_LOCAL?.worker) return {};
+  const say = m => console.log("GBOX:" + JSON.stringify(m));
+  return { pickFolder: opts => new Promise(res => { const id = "f" + (++DESKF.n); DESKF.wait.set(id, res); say({ ev: "pickfolder", id, opts }); }),
+           showInFolder: p => say({ ev: "showinfolder", path: p }), openPath: p => say({ ev: "openpath", path: p }) };
+}
+// the Mods / Builds views' short notices (a download finished, an export failed...): bottom right, gone after 7 s
+function blToast(t) {
+  let el = $("#bltoast");
+  if (!el) {
+    document.body.insertAdjacentHTML("beforeend", '<div id="bltoast" role="status" style="position:fixed;right:16px;bottom:16px;z-index:2147483001;max-width:min(460px,calc(100vw - 32px));background:#16161aee;color:#e8e8ee;border:1px solid #444;border-radius:8px;padding:8px 12px;font-size:13px;box-shadow:0 8px 24px #000a"></div>');
+    el = $("#bltoast");
+  }
+  el.textContent = t; el.hidden = false;
+  clearTimeout(blToast.t); blToast.t = setTimeout(() => { el.hidden = true; }, 7000);
+}
 function modsView() { MODSG.ctl?.stop(); MODSG.ctl = null; return `<div id="modsgallery"></div>`; }
 modsView.after = () => {
   const focus = MODSG.focus || {}; MODSG.focus = null;      // "Open in Mods page" / "Open request #n" from the game menu
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto", q: focus.q, game: focus.game,
     url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
-    visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i) });
+    visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i), toast: blToast, ...deskFolders() });
 };
 // ---- Builds: every custom build + the scheduled / running build jobs (viz/builds.js over /api/builds; the desktop app shows this shell) ----
 // launches go through the game menu's Special builds path (this PC's worker, the loader); details load 360° viewers lazily
@@ -1090,7 +1111,7 @@ buildsView.after = () => {
   BUILDSV.ctl = GBoxBuilds.mount($("#buildsview"), { api, here: window.GBOX_LOCAL?.worker || "auto",
     url: u => /^(https?|data|blob):/.test(u) || /[?&]token=/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
     visible: () => cur === "Builds" && !!$("#buildsview"), launch: (gid, x) => gameMenuIO().launch(gid, x),
-    confirm: s => confirm(s) });
+    confirm: s => confirm(s), toast: blToast, ...deskFolders() });
 };
 async function library() {
   newLibraryPage(); L.jumping = false;

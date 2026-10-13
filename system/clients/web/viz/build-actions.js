@@ -4,6 +4,7 @@
 //     original game found" / "Changes not recorded" badges and "Where to look in game".
 //   * 🗑 Delete: a confirm dialog (name, size, where it lives; delete everywhere = the Spark collection + every PC's
 //     copy, or only this PC) -> POST /api/builds/{game}/{name}/delete {scope, node} (= DELETE ...?scope=&node=).
+//     onlyHere (the download icon's "Delete from this PC", viz/build-local.js, #1639): only this PC's copy is offered.
 //   * ⚑ Report: quick reasons + free text -> POST /api/builds/{game}/{name}/report {reason, note}; the server files it
 //     through the issue flow with the build's facts and pictures and routes it to the investigation queue.
 // Plain functions + open(kind, build, env) that renders a modal into env.document (node tests use a fake one).
@@ -33,14 +34,15 @@
 
   // ---------------------------------------------------------------- the dialogs
   function whereList(b) { return (b.where || []).map(w => w.label).filter(Boolean); }
-  function deleteDialogHTML(b, { here = "" } = {}) {
+  function deleteDialogHTML(b, { here = "", onlyHere = false } = {}) {
     const where = whereList(b), onHere = here && (b.where || []).some(w => w.node === here);
-    return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Delete build"><h3>🗑 Delete “${ESC(nameOf(b))}”?</h3>
+    return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Delete build"><h3>🗑 Delete “${ESC(nameOf(b))}”${onlyHere ? " from this PC" : ""}?</h3>
       <table class="ba-facts"><tr><th>Name</th><td>${ESC(nameOf(b))}</td></tr><tr><th>Folder</th><td><code>${ESC(b.name)}</code></td></tr>
         <tr><th>Game</th><td>${ESC(b.game_title || b.title || b.game_id)}</td></tr><tr><th>Size</th><td>${ESC(fmtSize(b.own_size || b.size))}${b.own_size && b.size > b.own_size ? ` (${ESC(fmtSize(b.size))} with files shared with the base game)` : ""}</td></tr>
         <tr><th>Lives on</th><td>${where.length ? where.map(ESC).join("<br>") : "the Spark collection"}</td></tr></table>
-      <label class="ba-opt"><input type="radio" name="ba-scope" value="all" checked> Delete everywhere (Spark collection + every PC's copy)</label>
-      <label class="ba-opt${onHere ? "" : " ba-dis"}"><input type="radio" name="ba-scope" value="node"${onHere ? "" : " disabled"}> Only this PC${here ? ` (${ESC(here)})` : ""}${onHere ? "" : " (no copy here)"}</label>
+      ${onlyHere ? "" : `<label class="ba-opt"><input type="radio" name="ba-scope" value="all" checked> Delete everywhere (Spark collection + every PC's copy)</label>`}
+      <label class="ba-opt${onHere ? "" : " ba-dis"}"><input type="radio" name="ba-scope" value="node"${onHere ? (onlyHere ? " checked" : "") : " disabled"}> Only this PC${here ? ` (${ESC(here)})` : ""}${onHere ? "" : " (no copy here)"}</label>
+      ${onlyHere ? `<p class="ba-note">Only this PC's copy is removed: the Spark collection and other PCs keep theirs, and ⬇ downloads it again.</p>` : ""}
       <p class="ba-note">The base game and other builds are never touched. A build a running game uses can't be deleted: stop the game first. Deleting can't be undone (the marker is kept in the recently deleted list).</p>
       <div class="ba-btns"><button class="act ba-danger" type="button" data-ba="go">🗑 Delete</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
@@ -97,7 +99,7 @@
         try {
           let r;
           if (kind === "delete") {
-            const scope = wrap.querySelector('input[name="ba-scope"]:checked')?.value || "all";
+            const scope = env.onlyHere ? "node" : wrap.querySelector('input[name="ba-scope"]:checked')?.value || "all";
             status("Deleting…");
             const c = deleteCall(b, scope, env.here || "");
             r = { ...(await env.api(c.path, c.body, "POST")), scope };
