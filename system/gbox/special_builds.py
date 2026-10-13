@@ -32,10 +32,15 @@ RECIPE_OPS = ("use", "match", "cast_swap")
 GROUPS = (("confirmation", "Confirmation builds"), ("cast", "Cast swaps"), ("character", "Character swaps"),
           ("other", "Other"))
 FAVORITES = ("favorites", "Favorites")     # the operator's ★ builds, at the top when there are any (gbox.builds)
-# the CharIn fields each op's recipe keeps (everything else is the CharIn default or session-bound)
+# Sonic showcase builds (gbox/sonic_showcase.py: showcase_sonic_<title> folders whose marker carries the `showcase`
+# record) get their own group, listed after the confirmation builds when the game has any
+SHOWCASE = ("showcase", "Sonic showcase")
+# the CharIn fields each op's recipe keeps (everything else is the CharIn default or session-bound); a showcase cast
+# keeps its fixed mod name and flag, so a rebuild lands in the same showcase_sonic_<title> folder
 KEEP = {"use": ("character", "game_id", "slot", "active_id", "pairs", "title", "strict_cutscenes"),
         "match": ("game_id", "pairs", "title"),
-        "cast_swap": ("target_game", "source", "mapping", "seed", "slots", "assignments", "strict_cutscenes")}
+        "cast_swap": ("target_game", "source", "mapping", "seed", "slots", "assignments", "strict_cutscenes",
+                      "mod_name", "showcase")}
 FAILED = ("failed", "error", "missing", "not_in_collection", "unsupported", "needs_source", "planned", "empty",
           "native", "overlay")
 REUSED = ("ready", "launched", "exists", "reused", "cached")
@@ -136,7 +141,10 @@ def source_spec(label: str) -> str:
     """A cast marker's source label -> a `source=` the planner resolves (group labels back to their key)."""
     from .cast_swap import GROUPS as CAST_GROUPS
     by_label = {g["label"]: k for k, g in CAST_GROUPS.items()}
-    parts = [p.strip() for p in str(label or "").split(" + ") if p.strip()]
+    text = str(label or "")
+    for lab, key in by_label.items():                             # a group label may itself hold " + " (SA1 + SA2)
+        text = text.replace(lab, key)
+    parts = [p.strip() for p in text.split(" + ") if p.strip()]
     return ", ".join(by_label.get(p, p.split(" / ")[0]) for p in parts)
 
 
@@ -149,9 +157,11 @@ def inferred_recipe(meta: dict, game_id: str) -> dict | None:
                 for r in meta["cast"] if isinstance(r, dict) and r.get("slot") and (r.get("character") or r.get("donor"))]
         if not rows or not meta.get("cast_source"):
             return None
+        showcase = showcase_of(meta)
         return {"tool": "characters", "input": _clean("cast_swap", {
             "target_game": gid, "source": source_spec(meta["cast_source"]), "mapping": meta.get("cast_mapping") or "auto",
-            "seed": meta.get("cast_seed") or "", "slots": ",".join(r["slot"] for r in rows), "assignments": rows})}
+            "seed": meta.get("cast_seed") or "", "slots": ",".join(r["slot"] for r in rows), "assignments": rows,
+            **({"mod_name": meta.get("name") or "", "showcase": True} if showcase else {})})}
     if isinstance(meta.get("roster"), list):                     # DOA2 roster: one disc, every fighter
         pairs = [{"character": r.get("character"), "slot": str(r.get("fighter") or r.get("slot") or "")}
                  for r in meta["roster"] if isinstance(r, dict) and r.get("character")]
@@ -172,12 +182,19 @@ def inferred_recipe(meta: dict, game_id: str) -> dict | None:
     return {"tool": "characters", "input": _clean("use", {"character": ch, "game_id": gid, "slot": slot})}
 
 
-def recipe_for(meta: dict, game_id: str) -> tuple[dict | None, bool]:
-    """(recipe, recorded): the marker's recorded recipe, else one inferred from the marker."""
+def showcase_of(meta: dict) -> dict | None:
+    """The Sonic showcase record of a build's marker (gbox.sonic_showcase), else None."""
+    sc = meta.get("showcase") if isinstance(meta, dict) else None
+    return sc if isinstance(sc, dict) else None
+
+
+def recipe_for(meta: dict, game_id: str, name: str = "") -> tuple[dict | None, bool]:
+    """(recipe, recorded): the marker's recorded recipe, else one inferred from the marker. name: the build's folder
+    (a showcase build's inferred recipe rebuilds into that same folder)."""
     r = meta.get(RECIPE_KEY)
     if isinstance(r, dict) and r.get("tool") == "characters" and isinstance(r.get("input"), dict):
         return {"tool": "characters", "input": dict(r["input"])}, True
-    return inferred_recipe(meta, game_id), False
+    return inferred_recipe(meta | ({"name": name} if name else {}), game_id), False
 
 
 # ------------------------------------------------------------------------------------------------- launching
@@ -227,15 +244,17 @@ def cast_summary(item: dict, meta: dict) -> dict:
                      for r in rows]}
 
 
-def kind_of(item: dict) -> str:
+def kind_of(item: dict, meta: dict | None = None) -> str:
+    if item.get("showcase") or (showcase_of(meta or {}) and str(item.get("name") or "").startswith("showcase_")):
+        return "showcase"
     if item.get("cast"):
         return "cast"
     return "character" if item.get("changes") else "other"
 
 
 def build_row(item: dict, meta: dict, pcs: list[dict]) -> dict:
-    recipe, recorded = recipe_for(meta, item["game_id"])
-    kind = kind_of(item)
+    kind = kind_of(item, meta)
+    recipe, recorded = recipe_for(meta, item["game_id"], item["name"] if kind == "showcase" else "")
     row = {k: item.get(k) for k in ("key", "name", "game_id", "mod_title", "display_name", "original_title", "writer",
                                     "built", "verified", "card_id", "state_slot", "last_launch", "tickets", "changes")}
     row["favorite"] = bool(item.get("favorite"))
@@ -245,7 +264,16 @@ def build_row(item: dict, meta: dict, pcs: list[dict]) -> dict:
     row |= {"kind": kind, "image": pic or "", "launch_options": launch_options(item, pcs),
             "rebuild_recipe": recipe, "recipe_recorded": recorded,
             **({"recipe_missing": "the marker records no character or cast plan to build it from"} if not recipe else {})}
-    if kind == "cast":
+    if kind == "showcase":
+        sc = showcase_of(meta) or {}
+        row["cast"] = cast_summary(item, meta)
+        row["showcase"] = {"plan": sc.get("plan") or meta.get("cast_plan") or "", "writer": sc.get("writer") or "",
+                           "previews": [p for p in item.get("fit_previews") or []][:6],
+                           **({"linked_from": sc["linked_from"]} if isinstance(sc.get("linked_from"), dict) else {})}
+        if not row["image"] and row["showcase"]["previews"]:
+            row["image"] = row["showcase"]["previews"][0].get("url") or ""
+        row["summary"] = f"Sonic Adventure cast · {row['cast']['summary']}"
+    elif kind == "cast":
         row["cast"] = cast_summary(item, meta)
         row["summary"] = f"{row['cast']['source'] or 'cast'} · {row['cast']['summary']}"
     elif kind == "character":
@@ -256,19 +284,19 @@ def build_row(item: dict, meta: dict, pcs: list[dict]) -> dict:
 
 
 def group(items: list[dict], metas: dict, pcs: list[dict]) -> list[dict]:
-    """The four groups, newest build first in each; a build linked to a ticket is a confirmation build. The operator's
+    """The four groups, newest build first in each; a build linked to a ticket is a confirmation build. Sonic showcase
+    builds form a fifth group (after the confirmation builds), present only when the game has one. The operator's
     favorites (★) move to a "Favorites" group at the top (only when there are some); `home` keeps the group a build
     belongs to, so "rebuild every confirmation build" still includes a favorited one."""
-    rows = {k: [] for k, _ in GROUPS}
+    rows = {k: [] for k, _ in (*GROUPS, SHOWCASE)}
     favs = []
     for it in sorted(items, key=lambda m: -(m.get("built") or 0)):
         row = build_row(it, metas.get(it["key"]) or {}, pcs)
         row["home"] = "confirmation" if row["tickets"] else row["kind"]
         (favs if row["favorite"] else rows[row["home"]]).append(row)
-    out = [{"key": k, "label": label, "count": len(rows[k]), "builds": rows[k]} for k, label in GROUPS]
-    if favs:
-        out.insert(0, {"key": FAVORITES[0], "label": FAVORITES[1], "count": len(favs), "builds": favs})
-    return out
+    order = [*([FAVORITES] if favs else []), GROUPS[0], *([SHOWCASE] if rows["showcase"] else []), *GROUPS[1:]]
+    rows["favorites"] = favs
+    return [{"key": k, "label": label, "count": len(rows[k]), "builds": rows[k]} for k, label in order]
 
 
 def for_game(items: list[dict], records: list[dict], game_id: str, pcs: list[dict]) -> dict:

@@ -603,6 +603,14 @@ def tickets_of(meta: dict, card: dict | None) -> list[int]:
     return sorted(out)
 
 
+def session_build(s: dict) -> str:
+    """The build a session shows now: a model hot-swapped into memory (live_mod), else the collection build it booted.
+    A staged copy (<mod>~<build>, launched while an older copy was held open) is that same build. "" = the original game.
+    The clients' twin: clients/web/viz/build-shot.js sessionBuild."""
+    mod = s.get("live_mod") or s.get("collection_mod") or s.get("mod") or ""
+    return str(mod).split(STAGED_SEP)[0]
+
+
 def card_mod(card: dict) -> str:
     """The file mod a card boots (its @launch call), if any."""
     for c in card.get("calls") or []:
@@ -739,6 +747,10 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
     if launch_report and launch_report.get("number") and launch_report["number"] not in tickets:
         tickets = tickets + [launch_report["number"]]       # its "Open request" lookup finds the launch failure ticket
     title = game_title_of(gid, meta, card, catalog)
+    sc = meta.get("showcase") if isinstance(meta.get("showcase"), dict) else None
+    fits = [{"slot": str(p.get("slot") or ""), "label": str(p.get("label") or p.get("slot") or ""), "url": p["preview"]}
+            for p in (sc or {}).get("previews") or []
+            if isinstance(p, dict) and isinstance(p.get("preview"), str) and p["preview"].startswith("/api/")]
     original = meta.get("title") or (card or {}).get("title") or name
     return {
         "key": f"{gid}/{name}", "name": name, "game_id": gid, "title": title, "game_title": title,
@@ -760,6 +772,8 @@ def entry(rec: dict, card: dict | None, launch: dict | None, catalog: dict | Non
         "frames": [f for f in frames or [] if f["sha256"] not in shots],
         "card_id": (card or {}).get("id") or "", "state_slot": (card or {}).get("state_slot"),
         "video": (card or {}).get("video") or "",
+        # a Sonic showcase test build (gbox.sonic_showcase): the Mods page's "Sonic showcase" filter
+        "showcase": bool(sc) and name.startswith("showcase_"), "fit_previews": fits[:MAX_IMAGES],
         "tickets": [{"number": n, **({k: requests[n].get(k) for k in ("id", "title", "status")} if n in requests else {})}
                     for n in tickets],
         # the launch failure ticket for this build (gbox/launch_failures.py): "Reported as #N" / "Fixed, verified"
@@ -985,8 +999,12 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
     return {"items": items, "registered": made, "cache_dir": str(root)}
 
 
-def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", favorite: bool = False) -> list[dict]:
+def select(items: list[dict], game_id: str = "", writer: str = "", q: str = "", kind: str = "",
+           favorite: bool = False) -> list[dict]:
+    """kind=showcase: only the Sonic showcase builds; kind=other: everything else; favorite: only the ★ ones."""
     words = [w for w in q.lower().split() if w]
+    if kind in ("showcase", "other"):
+        items = [m for m in items if bool(m.get("showcase")) == (kind == "showcase")]
 
     def hay(m):
         return " ".join([m["name"], m["game_id"], m["title"], m["mod_title"], m.get("original_title") or "", m["writer"],
@@ -1003,7 +1021,8 @@ def facets(items: list[dict]) -> dict:
         g["count"] += 1
         writers[m["writer"]] = writers.get(m["writer"], 0) + 1
     return {"games": sorted(games.values(), key=lambda g: g["title"].lower()),
-            "writers": [{"writer": w, "count": n} for w, n in sorted(writers.items())]}
+            "writers": [{"writer": w, "count": n} for w, n in sorted(writers.items())],
+            "showcase": sum(1 for m in items if m.get("showcase"))}
 
 
 # ------------------------------------------------------------------------------------------------- routes
@@ -1046,7 +1065,7 @@ def routes(app, store, config, auth):
 
     @app.get("/api/mods/built")
     def built_list(game_id: str = "", writer: str = "", q: str = "", offset: int = 0, limit: int = 0,
-                   fresh: bool = False, favorite: bool = False, actor=Depends(auth)):
+                   fresh: bool = False, kind: str = "", favorite: bool = False, actor=Depends(auth)):
         """Every built mod folder in this node's cache, newest first, joined with its mod card (filters + pages).
         Answers from the index at once; `indexing` while a marker pass is due, `sizing` = folders still being sized
         (size: null). fresh=true rejoins the cards now and asks for an incremental pass in the background."""
@@ -1055,7 +1074,7 @@ def routes(app, store, config, auth):
             index.ask()
         data = current(fresh)
         items = data["items"]
-        picked = select(items, game_id, writer, q, favorite)
+        picked = select(items, game_id, writer, q, kind, favorite)
         offset = max(0, offset)
         page = picked[offset:offset + limit] if limit > 0 else picked[offset:]
         return {"total": len(picked), "all": len(items), "offset": offset, "limit": limit, "items": page,

@@ -349,6 +349,7 @@ def _close_previous_games(ctx, keep: str = ""):
 
 
 STOP_SAVE_CAP_S = 2.0          # Save & stop (only when the operator asks for it) waits at most this long for the save
+STOP_MOMENT_CAP_S = 4.0        # Stop with moment (last played): the save + upload of the moment, then the game closes anyway
 STOP_TEARDOWN_WAIT_S = 1.0     # rewind / gameplay-ring teardown awaited at most this long; the rest ends in the background
 
 
@@ -389,7 +390,25 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
     ad, _ = SESSIONS[sid]
     t0 = time.monotonic()
-    timings, saved = {}, None
+    timings, saved, moment = {}, None, None
+    if args.get('moment'):
+        # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
+        # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
+
+        def keep_moment():
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            try:
+                png = ad.get_frame()
+                ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')
+                out['frame'] = sha256(png)
+            except Exception:                        # noqa: BLE001 - a moment without a picture still reloads
+                pass
+            return out
+        done, res, err = _within(keep_moment, cap, f'stop-moment-{sid}')
+        moment = res if done and err is None else {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else
+                                                   f'saving took longer than {cap:g} s'}
+        timings['moment_s'] = round(time.monotonic() - t0, 3)
     if args.get('save'):
         cap = float(args.get('save_cap_s') or STOP_SAVE_CAP_S)
 
@@ -420,6 +439,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     out['timings'] = timings
     if saved is not None:
         out['save'] = saved
+    if moment is not None:
+        out['moment'] = moment
     return {'result': out, 'session_id': sid, 'ended': True}
 
 
@@ -833,30 +854,85 @@ def _rpc_answerer(sid: str, client):
             pass
     return answer
 
+class _EmulatorLiveness:
+    """Whether the session's emulator process still runs, polled at most every `every` seconds (poll() per frame at
+    60 fps would be wasted work). Adapters without a process handle count as alive."""
+
+    def __init__(self, ad, every: float = 0.5, clock=time.monotonic):
+        self.ad, self.every, self.clock = ad, every, clock
+        self.at, self.alive = -1e9, True
+
+    def __call__(self) -> bool:
+        now = self.clock()
+        if now - self.at >= self.every:
+            self.at = now
+            proc = getattr(self.ad, "__dict__", {}).get("proc")
+            try:
+                self.alive = proc is None or proc.poll() is None
+            except Exception:                            # noqa: BLE001 - unknown means keep streaming
+                self.alive = True
+        return self.alive
+
+
+def _stream_event_reporter(sid: str, server: str, headers: dict):
+    """Encoder stalls/restarts go to the control plane (GET /api/sessions/{sid}/stream/health) from one background
+    thread with a bounded queue: reporting can never block or slow the frame path."""
+    import queue
+    q = queue.Queue(maxsize=50)
+
+    def run():
+        with httpx.Client(base_url=server, headers=headers, timeout=5) as c:
+            while sid in SESSIONS or not q.empty():
+                try:
+                    ev = q.get(timeout=5)
+                except queue.Empty:
+                    continue
+                try:
+                    c.post(f"/api/sessions/{sid}/stream/event", json=ev)
+                except httpx.HTTPError:
+                    pass
+    threading.Thread(target=run, daemon=True, name=f"stream-events-{sid}").start()
+
+    def report(ev: dict):
+        try:
+            q.put_nowait(ev)
+        except queue.Full:
+            pass
+    return report
+
+
 def _pump(sid: str, ad, server: str, headers: dict):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
     input   - long-polled from the control plane and applied immediately,
     status  - every 3 s; marks the session ended when the emulator exits."""
     stream = ad.stream_session() if "stream_session" in ad.supported else None
+    if stream is not None and hasattr(stream, "events"):
+        stream.label = sid
+        stream.on_event = _stream_event_reporter(sid, server, headers)
 
     def frames():
         if stream is None:                               # local native window: nothing to stream
             return
         # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
         def body():
-            last = -1
+            last, live = -1, _EmulatorLiveness(ad)
             while sid in SESSIONS:
                 if stream.wait(last, 1.0):
                     last, data = stream.seq, stream.latest
-                    yield len(data).to_bytes(4, "big") + data
+                    # An exited emulator leaves its virtual display empty (black). Those grabs are never sent: the
+                    # operator keeps the last real game frame until the session ends or the game comes back.
+                    yield (len(data).to_bytes(4, "big") + data) if live() else b"\0\0\0\0"
                 else:
                     yield b"\0\0\0\0"                     # keepalive (zero-length frame)
         while sid in SESSIONS:
             try:
                 with httpx.Client(base_url=server, headers=headers, timeout=httpx.Timeout(10, read=None, write=None)) as c:
                     c.post(f"/api/sessions/{sid}/stream", content=body(), headers={"content-type": "application/octet-stream"})
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                if sid in SESSIONS:
+                    print(f"gBox stream: upload of {sid} interrupted at {adapters._wall()} "
+                          f"({type(e).__name__}); reconnecting", flush=True)
                 time.sleep(1)
 
     answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10))
@@ -1059,7 +1135,10 @@ class SessionOut(BaseModel):
 
 def _session_accept(store, out: SessionOut, actor: str):
     if out.ended and (s := store.get("session", out.session_id)) and s.get("state") != "ended":
-        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result})
+        m = out.result.get("moment") if isinstance(out.result.get("moment"), dict) else {}
+        kept = {"checkpoint": m["artifact"], "moment_ts": time.time(), **({"moment_frame": m["frame"]} if m.get("frame") else {})} \
+            if m.get("artifact") else {}                     # last played: the moment saved as the game stopped
+        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result, **kept})
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
       on_accept=_session_accept)
@@ -1084,7 +1163,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
     if inp.op == "reset":                                            # restart the emulated console (the session stays)
         ad, _ = SESSIONS[inp.session_id]
         if not callable(getattr(type(ad), "reset", None)):
-            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset: relaunch the game instead")
+            raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset of its own (POST /api/sessions/{{sid}}/reset "
+                              "relaunches the same game and mod on this PC instead, the old copy closing only once it runs)")
         return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
@@ -3741,6 +3821,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
+                              "pickwhip",      # pickwhip: pick_name (local-LLM naming of a pick whip target)
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
                               "ninja_ripper",  # ninja_ripper: NinjaRipper launch/attach/rip on agent test PCs, .rip -> GLB
@@ -3938,7 +4019,8 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
             raise RuntimeError("the reported game moment has no matching saved checkpoint")
         data = f.read_bytes()
         _validate_state_container(data, kind)
-        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"), **details)
+        ctx.artifact(f.name, data, "application/octet-stream", note="state transfer", game=g.get("game_id"),
+                     session=inp.session_id, **details)          # last played finds the moment by session
         # artifacts upload with the job result and are stored by content: the digest is known now (ctx.artifact returns None)
         return {"result": {"artifact": sha256(data), "bytes": len(data), "file": f.name, **details}}
     if inp.op == "import":

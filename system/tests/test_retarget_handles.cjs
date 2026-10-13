@@ -144,3 +144,80 @@ test('the preview base fit matches figure heights and hips', () => {
   const s = H.standardSkeleton(1.7);
   assert.equal(Object.keys(s).length, 18); assert.ok(Math.abs(s.head[1] - 1.58) < 1e-9);
 });
+
+// ---- the Goals view: joint moves, re-segmentation, T-pose, numbered circles, the limb fit ---------------------------
+const ARM_X = [0.25, 0.3, 0.35, 0.4, 0.45, 0.52, 0.55, 0.58, 0.6, 0.65, 0.7, 0.72, 0.8, 0.85, 0.9];
+const armOwner = x => (x < 0.5 ? 'l_upper' : x < 0.75 ? 'l_fore' : 'l_hand');
+const armPts = () => ARM_X.flatMap(x => [x, 1.45, 0]);                        // float64: the joints sit on vertices
+
+test('joint moves: clamped to a quarter of the donor height, zero moves dropped, a moved joint is not identity', () => {
+  const p = H.normalize({ joints: { l_fore: [0.01, -2, 'x'], r_shin: [0, 0, 0], tail: [0, 1, 0], head: [0, 0.05, 0] } });
+  assert.deepEqual(p.joints, { l_fore: [0.01, -0.25, 0], head: [0, 0.05, 0] });   // = retarget_profile.normalize
+  assert.equal(H.isIdentity({ joints: { l_fore: [0, -0.02, 0] } }), false);
+  assert.equal(H.isIdentity({ joints: { l_fore: [0, 0, 0] } }), true);
+  let q = H.moveJoint({}, 'l_fore', [0, -0.02, 0]); q = H.moveJoint(q, 'l_fore', [0.01, 0, 0]);
+  assert.deepEqual(q.joints.l_fore, [0.01, -0.02, 0]);
+  assert.deepEqual(H.resetJoint(q, 'l_fore').joints, {});
+  const moved = H.movedPositions(POS, q, 2);                         // fractions of the donor height (2 here)
+  close(moved.l_fore, [0.52, 1.41, 0]); assert.deepEqual(moved.l_hand, POS.l_hand);
+});
+
+test('re-segmentation mirrors retarget_profile.resegment: only what the moved elbow / wrist swept changes', () => {
+  const roles = ARM_X.map(armOwner);
+  const elbow = H.movedPositions(POS, { joints: { l_fore: [0.05, 0, 0] } }, 2);         // elbow 0.5 -> 0.6
+  assert.deepEqual(H.resegment(armPts(), roles, POS, elbow), ARM_X.map(x => (x <= 0.6 ? 'l_upper' : armOwner(x))));
+  const wrist = H.movedPositions(POS, { joints: { l_hand: [-0.05, 0, 0] } }, 2);        // wrist 0.75 -> 0.65
+  assert.deepEqual(H.resegment(armPts(), roles, POS, wrist), ARM_X.map(x => (x > 0.65 && x < 0.75 ? 'l_hand' : armOwner(x))));
+  assert.deepEqual(H.resegment(armPts(), roles, POS, POS), roles);                     // nothing moved: nothing changes
+});
+
+test('the T-pose lays an A-posed arm out sideways and a bent leg straight down, about the rig\'s joints', () => {
+  const A = JSON.parse(JSON.stringify(POS));
+  A.l_fore = [0.2 + 0.3 * Math.SQRT1_2, 1.45 - 0.3 * Math.SQRT1_2, 0];             // upper arm 45 degrees down
+  A.l_hand = [A.l_fore[0], A.l_fore[1] - 0.25, 0];                                     // forearm hanging
+  A.l_foot = [0.3, 0.3, 0];                                                            // shin kicked out
+  const tp = H.tPose(A);
+  close(tp.pos.l_fore, [0.5, 1.45, 0]); close(tp.pos.l_hand, [0.75, 1.45, 0]);         // lengths kept, along +X
+  close(tp.pos.l_foot, [0.1, 0.5 - Math.hypot(0.2, 0.2), 0]);                          // straight under the knee
+  close(tp.pos.r_hand, POS.r_hand);                                                    // already a T: unchanged
+  const T = tp.roles.l_fore, mid = [0, 1, 2].map(i => (A.l_fore[i] + A.l_hand[i]) / 2);
+  close(T.A.map((r, i) => r[0] * mid[0] + r[1] * mid[1] + r[2] * mid[2] + T.t[i]), [0.625, 1.45, 0]);  // the mesh follows
+  const off = H.tPose(A, false);
+  close(off.pos.l_fore, A.l_fore);                                                     // the rest-pose option
+});
+
+test('goal circles: numbered and coloured the same on both sides; dragging one lands the joint under the pointer', () => {
+  const A = JSON.parse(JSON.stringify(POS));
+  A.l_fore = [0.2 + 0.3 * Math.SQRT1_2, 1.45 - 0.3 * Math.SQRT1_2, 0];
+  const donor = H.goalCircles(A, { ground: 0 }), target = H.goalCircles(POS, { ground: 0 });
+  assert.deepEqual(donor.map(g => [g.role, g.n]), target.map(g => [g.role, g.n]));
+  assert.equal(donor.length, 16); assert.deepEqual(donor.slice(0, 4).map(g => g.role), ['head', 'neck', 'chest', 'hip']);
+  assert.equal(donor.find(g => g.role === 'l_fore').label, 'Left elbow');
+  const elbow = donor.find(g => g.role === 'l_fore');
+  close(elbow.at, [0.5, 1.45, 0]);                                                     // shown T-posed
+  const to = [0.48, 1.40, 0], height = 2;
+  const prof = H.dragJoint({}, elbow, elbow.at, to, height);
+  const moved = H.movedPositions(A, prof, height);
+  const again = H.goalCircles(moved, { rest: A, ground: 0 }).find(g => g.role === 'l_fore');
+  close(again.at, to);                                                                 // the circle follows the pointer
+  const restMove = [0, 1, 2].map(i => (moved.l_fore[i] - A.l_fore[i]));
+  close(restMove, [0, 1, 2].map(i => prof.joints.l_fore[i] * height));                 // stored in the rest pose
+  const shoulder = donor.find(g => g.role === 'l_upper');                              // a root joint moves 1:1
+  close(H.dragJoint({}, shoulder, shoulder.at, [0.25, 1.45, 0], 2).joints.l_upper, [0.025, 0, 0]);
+});
+
+test('the limb fit mirrors sm64_swap.retarget: a moved elbow moves where the arm bends on the target', () => {
+  const bent = JSON.parse(JSON.stringify(POS)); bent.l_hand = [0.5, 1.2, 0];          // tests/test_retarget_profile.py
+  const at = (fit, x, role) => { const T = fit.roles[role]; return T.A.map((r, i) => r[0] * x + r[1] * 1.45 + T.t[i]); };
+  const base = H.limbFit(POS, 0, bent, 0);
+  close(at(base, 0.55, 'l_fore'), [0.5, 1.40, 0]);                                     // = the Python fit
+  const moved = H.movedPositions(POS, { joints: { l_fore: [0.05, 0, 0] } }, 2);
+  const fit = H.limbFit(moved, 0, bent, 0), roles = H.resegment(armPts(), ARM_X.map(armOwner), POS, moved);
+  const i = ARM_X.indexOf(0.55);
+  assert.equal(roles[i], 'l_upper');
+  close(at(fit, 0.55, roles[i]), [0.4625, 1.45, 0]);                                   // straight upper arm, stretched 0.75
+  close(at(fit, 0.6, 'l_upper'), [0.5, 1.45, 0]); close(fit.pivots.l_fore, [0.5, 1.45, 0]);
+  const both = H.compose(H.tPose(bent), fit);                                          // the target side: T-posed fit
+  const hand = both.roles.l_fore, p = [0.7, 1.45, 0];
+  close(hand.A.map((r, k) => r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + hand.t[k]), [0.5 + 0.1 * 0.25 / 0.15, 1.45, 0]);
+});

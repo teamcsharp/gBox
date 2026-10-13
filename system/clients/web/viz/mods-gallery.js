@@ -3,7 +3,8 @@
 // pictures (in-game shots, the writer's previews, the donors' collection previews) as a carousel - a click opens the
 // texture pop-up to zoom - what changed (donor -> slot, the per-slot report of a cast swap), verified / unverified,
 // and Play (this PC or a chosen PC, the mod cards' @launch path), Play from saved moment, Open request and Screenshot
-// after launch (get_frame of the running game -> the mod card's in-game shots).
+// after launch (get_frame of the running game -> the mod card's in-game shots; the rules for a game already running are
+// clients/web/viz/build-shot.js: this exact build = capture now, another build = ask, nothing = launch then capture).
 // #1656: a card's name renames in place (click it or ✎; Enter saves, Esc cancels, empty restores the writer's title:
 // PATCH /api/builds/{game}/{name}, a display name only, the folder never changes) and ☆/★ stars it (PUT .../favorite:
 // favorites list first, a ★ Favorites filter, the game's Special builds show them on top). ⋯ or a right-click on the card
@@ -16,17 +17,20 @@
 (function (root) {
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+  const BS = root.GBoxBuildShot || (typeof require === "function" ? require("./build-shot.js") : null);
   const PAGE = 24;
   // What this changes / Delete / Report (viz/build-actions.js; loaded before this file, or required by node tests)
   const BA = () => root.GBoxBuildActions || (typeof module === "object" && module.exports ? require("./build-actions.js") : null);
   const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
+  // kind: "" every build | "showcase" the Sonic showcase test builds (gbox/sonic_showcase.py) | "other" everything else;
   // favorites (★) first, then newest; fav: only the favorites
-  function filterMods(items, { game = "", writer = "", q = "", fav = false } = {}) {
+  function filterMods(items, { game = "", writer = "", q = "", kind = "", fav = false } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
     const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
-    return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && (!fav || m.favorite) && words.every(w => hay(m).includes(w)))
+    return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && (!fav || m.favorite)
+        && (!kind || (kind === "showcase") === !!m.showcase) && words.every(w => hay(m).includes(w)))
       .sort((a, b) => (+!!b.favorite - +!!a.favorite) || (b.built || 0) - (a.built || 0));
   }
 
@@ -40,7 +44,8 @@
       if (m.favorite) favorites++;
     }
     return { games: [...games.values()].sort((a, b) => a.title.localeCompare(b.title)),
-             writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })), favorites };
+             writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })),
+             showcase: (items || []).filter(m => m.showcase).length, favorites };
   }
   // the build's own endpoints (gbox/builds.py): PATCH {display_name} renames, PUT {favorite} stars
   const buildPath = m => `/api/builds/${encodeURIComponent(m.game_id)}/${encodeURIComponent(m.name)}`;
@@ -51,6 +56,7 @@
     return [...(m.shots || []).map(s => ({ src: url(s.url), name: `${m.mod_title}: in-game shot`, kind: "shot" })),
             ...(m.frames || []).map(f => ({ src: url(f.url), name: `${m.mod_title}: ${f.source || "frame"} (session ${String(f.session_id || "").slice(0, 8)})`, kind: "shot" })),
             ...(m.images || []).map(i => ({ src: url(i.url), name: `${m.mod_title}: ${i.name}`, kind: "build" })),
+            ...(m.fit_previews || []).map(p => ({ src: url(p.url), name: `${m.mod_title}: ${p.label || p.slot} (fitting)`, kind: "fit" })),
             ...(m.donor_previews || []).map(d => ({ src: url(d.url), name: `Donor ${d.slug} (collection preview)`, kind: "donor" }))];
   }
 
@@ -129,7 +135,7 @@
     return `<div class="mg-lfr">${a ? a.replace(/^<div class="mg-lfr">/, "").replace(/<\/div>$/, "") : ""}${b}</div>`;
   }
 
-  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "" } = {}) {
+  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "", choice = null } = {}) {
     const imgs = imagesOf(m, url), i = imgs.length ? ((idx % imgs.length) + imgs.length) % imgs.length : 0, cur = imgs[i];
     const lfr = m.launch_report && m.launch_report.number ? m.launch_report : null;
     const tickets = (m.tickets || []).filter(t => (!lfr || String(t.number) !== String(lfr.number))
@@ -144,7 +150,7 @@
           <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
         ${m.display_name && m.original_title && m.original_title !== m.display_name ? `<div class="mg-was mut">was “${ESC(m.original_title)}”</div>` : ""}
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
-          <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}</div>
+          <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}${m.showcase ? '<span class="mg-chip mg-sonic" data-mg-kind="showcase" title="A Sonic showcase test build (Settings &gt; Sonic showcase)">Sonic showcase</span>' : ""}</div>
         ${BA()?.whatHTML(m.what) || ""}
         ${changesHTML(m)}
         <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
@@ -153,9 +159,9 @@
         ${tickets.length ? `<div class="mg-tk">${tickets.map(t => `<button class="act mg-req" type="button" data-mg="request" data-n="${t.number}" title="${ESC(t.title || "Open request #" + t.number)}">Open request #${t.number}${t.status ? " · " + ESC(t.status.replace("_", " ")) : ""}</button>`).join("")}</div>` : ""}
         <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
           ${m.state_slot != null && m.card_id ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
-          <button class="act" type="button" data-mg="shot" title="Once the mod is running, capture a frame and add it to this mod's pictures"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
+          <button class="act" type="button" data-mg="shot" title="This build running now: capture a frame of it. Another build of the game running: you choose. Nothing running: launch it, then capture. The frame joins this mod's pictures (its thumbnail when it has none)"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
           <span class="mg-msg mut">${ESC(note)}</span>
-          <span class="mg-acts"><button class="act" type="button" data-mg="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…">⚑ Report</button><button class="act mg-del" type="button" data-mg="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></span></div></div></article>`;
+          <span class="mg-acts"><button class="act" type="button" data-mg="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…">⚑ Report</button><button class="act mg-del" type="button" data-mg="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></span></div>${choice && BS ? BS.choiceHTML(choice, "data-mg") : ""}</div></article>`;
   }
 
   // a request's thread (GET /api/requests/{id}) shown under the card when the client has no inbox view of its own
@@ -173,6 +179,7 @@
       <select data-mg-f="game">${opt("", "All games", st.game)}${f.games.map(g => opt(g.game_id, `${g.title} (${g.count})`, st.game)).join("")}</select>
       <select data-mg-f="writer">${opt("", "All writers", st.writer)}${f.writers.map(w => opt(w.writer, `${w.writer} (${w.count})`, st.writer)).join("")}</select>
       <label class="mg-favf" title="Only the builds you starred (★)"><input type="checkbox" data-mg-f="fav"${st.fav ? " checked" : ""}> ★ Favorites${f.favorites ? ` (${f.favorites})` : ""}</label>
+      <select data-mg-f="kind" title="Sonic showcase: the background test builds with the Sonic Adventure cast">${opt("", "All builds", st.kind || "")}${opt("showcase", `Sonic showcase (${f.showcase || 0})`, st.kind || "")}${opt("other", "Other builds", st.kind || "")}</select>
       <label class="mut">Play on <select data-mg-f="node">${opt("", "This PC", st.node)}${nodes.map(n => opt(n.name, `${n.name} (${n.os})`, st.node)).join("")}</select></label>
       <button class="act" type="button" data-mg="refresh" title="Rescan the build folders">Refresh</button><span class="mut" data-mg-sum></span></div>
       <div class="mg-grid" data-mg-grid></div><div data-mg-more></div>`;
@@ -202,7 +209,8 @@
     .mg-menu{position:absolute;z-index:5;top:8px;right:8px;display:flex;flex-direction:column;gap:3px;padding:6px;border:1px solid var(--line,#444);border-radius:8px;background:var(--bg,#16161a);box-shadow:0 8px 24px #000a;min-width:190px}
     .mg-menu .act{text-align:left}.mg-acts{margin-left:auto;display:flex;gap:4px}.mg-del:hover{background:#7a2b2b;color:#fff}
     .mg-lfr{display:flex}.mg-lfr .mg-lf{font-size:12px;font-weight:600;border-radius:9px;padding:2px 9px;color:#fff}.mg-lfr .mg-lf.mg-lf-bad{background:#7a2b2b;border-color:#c0504d}.mg-lfr .mg-lf.mg-lf-ok{background:#1f6f3f;border-color:#2f9a5a}
-    .mg-lfr{gap:6px;flex-wrap:wrap}.mg-lfr .mg-lf.mg-br{background:#5a3f8a;border-color:#7d5cc0}`;
+    .mg-lfr{gap:6px;flex-wrap:wrap}.mg-lfr .mg-lf.mg-br{background:#5a3f8a;border-color:#7d5cc0}
+    ${BS ? BS.CSS : ""}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -210,8 +218,9 @@
   //   openImages(list, i, [x, y]), poll (GBoxLivePoll), here (this PC's worker name), visible() -> bool,
   //   play?(mod, {node, moment}), openRequest?(ticket), toast?(text), wait?(ms) }
   function mount(host, env) {
-    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", fav: !!env.fav, page: 1, idx: new Map(), data: null, nodes: [], sig: "",
-                 renaming: null, menu: null, notes: new Map() };
+    const st = { q: env.q || "", game: env.game || "", writer: "", kind: env.kind || "", node: "", fav: !!env.fav, page: 1, idx: new Map(), data: null,
+                 nodes: [], sig: "", renaming: null, menu: null, notes: new Map(),
+                 choice: new Map() };                        // card key -> the screenshot choice it offers (another build runs)
     const poll = env.poll || root.GBoxLivePoll;
     const read = poll ? poll.cachedRead(() => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), { ttl: 15000 })
       : { get: () => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), invalidate() {} };
@@ -230,7 +239,7 @@
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
       if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0, renaming: st.renaming === m.key, menu: st.menu === m.key,
-                                                                note: st.notes.get(m.key) || "" })).join("")
+                                                                note: st.notes.get(m.key) || "", choice: st.choice.get(m.key) })).join("")
         || `<p class="mut">${st.data ? (st.data.items.length ? (st.fav && !st.data.items.some(m => m.favorite) ? "No favorites yet: ☆ on a card stars it." : "No built mod matches these filters.") : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
       if (st.renaming) { const inp = grid?.querySelector?.("[data-mg-rename]"); try { inp?.focus?.(); inp?.select?.(); } catch {} }
       if (sum) sum.textContent = summaryText(list.length, st.data);
@@ -274,27 +283,28 @@
       }
       return sid;
     }
-    async function runningSession(m) {
-      const ss = await env.api("/api/sessions?include_ended=false").catch(() => []);
-      return (ss || []).filter(s => s.state === "running" && s.game_id === m.game_id && (s.collection_mod || s.mod) === m.name)
-        .sort((a, b) => (b.started || 0) - (a.started || 0))[0] || null;
-    }
-    async function screenshot(m, card) {
+    // Screenshot after launch (build-shot.js): this build running = capture now; another build of the game running =
+    // the card asks (capture from that build / switch to this one); nothing running = launch (never a swap), capture.
+    // -> the session the frame came from, or null while the card waits for the operator's choice
+    async function screenshot(m, card, choice = "") {
       if (!m.card_id) throw new Error("this build has no mod card yet: refresh");
-      let s = await runningSession(m);
-      if (!s) {
-        msg(card, "Launching the mod…");
-        await play(m, { node: nodeOf(), moment: false });
-        for (let i = 0; i < 90 && !(s = await runningSession(m)); i++) await wait(2000);
-        if (!s) throw new Error("the mod did not start a game session");
-        msg(card, "Running: waiting for the picture to settle…");
-        await wait(12000);
+      const offered = st.choice.get(m.key);
+      const r = await BS.run({ api: env.api, wait, msg: t => msg(card, t), items: () => st.data?.items || [],
+        // nothing of this game runs: start it with swap off, so a game started meanwhile is never swapped silently
+        launch: async b => jobDone(await env.api("/api/jobs", { tool: "@launch", input: { game_id: b.game_id, mod: b.name, node: nodeOf(), swap: false } }),
+          "launch") }, m, { choice, expect: offered?.session_id });
+      if (r.choice) {
+        st.choice.set(m.key, r.choice); draw();
+        msg(host.querySelector?.(`.mg-card[data-key="${String(m.key).replace(/"/g, '\\"')}"]`) || card,
+          r.stale ? "The running game changed: choose again" : "Another build of this game is running: choose below");
+        return null;
       }
-      msg(card, "Capturing a frame…");
-      await env.api(`/api/mods/${encodeURIComponent(m.card_id)}/thumb?append=true&session_id=${encodeURIComponent(s.session_id)}`, {});
+      st.choice.delete(m.key);
       read.invalidate(); await env.api("/api/mods/built?fresh=true").catch(() => null);
       st.sig = ""; await load(0);
-      return s.session_id;
+      if (!st.sig) draw();
+      toast(`${r.into}: in-game picture added`);
+      return r.session_id;
     }
     async function openRequest(n, m, card) {
       const t = (m.tickets || []).find(x => String(x.number) === String(n)) || { number: +n };
@@ -379,7 +389,8 @@
       if (st.menu && act !== "menu" && !t.closest?.("[data-mg-menu]")) { st.menu = null; draw(); if (!act) return; }
       if (act === "more") { st.page++; draw(); return; }
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} read.invalidate(); st.sig = ""; await load(0); return; }
-      const chipG = t.closest?.("[data-mg-game]"), chipW = t.closest?.("[data-mg-writer]");
+      const chipG = t.closest?.("[data-mg-game]"), chipW = t.closest?.("[data-mg-writer]"), chipK = t.closest?.("[data-mg-kind]");
+      if (chipK) { st.kind = chipK.dataset.mgKind; st.page = 1; built = false; draw(); return; }
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
       if (act === "rename") { e.preventDefault?.(); startRename(m); return; }
@@ -410,7 +421,11 @@
         } else if (act === "shot") {
           if (btn) btn.disabled = true;
           await screenshot(m, card);
-          toast(`${m.mod_title}: in-game picture added`);
+        } else if (act === "shot-running" || act === "shot-switch") {     // the second, explicit click of a choice
+          if (btn) btn.disabled = true;
+          await screenshot(m, card, act === "shot-running" ? "running" : "switch");
+        } else if (act === "shot-cancel") {
+          st.choice.delete(m.key); draw(); msg(host.querySelector?.(`.mg-card[data-key="${String(m.key).replace(/"/g, '\\"')}"]`) || card, "Nothing changed");
         } else if (act === "request") {
           await openRequest(t.closest("[data-n]").dataset.n, m, card);
         } else if (act === "reqclose") {

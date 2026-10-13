@@ -18,6 +18,7 @@
 (function (root) {
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+  const BS = root.GBoxBuildShot || (typeof require === "function" ? require("./build-shot.js") : null);   // 📷 rules
   const KINDS = { cast: "cast swap", character: "character swap", file: "file mod", cheats: "cheats", romhack: "ROM hack",
                   compile: "decomp / compile", showcase: "showcase", test: "test", collect: "collect" };
   const TICK = 4000;                                        // scheduled jobs poll (ms) while the view is shown
@@ -105,8 +106,8 @@
       <div class="bv-date" title="${ESC(fmtDate(b.built))}">${ESC(fmtAge(b.built, now))}</div>
       <div class="bv-size">${b.local_only ? '<span class="mut" title="only on a PC: sized when it reaches the Spark">–</span>' : ESC(fmtSize(sizeOf(b)))}</div>
       <div class="bv-where">${whereHTML(b)}</div>
-      <div class="bv-launch"><button class="act pri" type="button" data-bv="launch" ${d ? "" : "disabled"} title="${ESC(d ? optLabel(d, env.here) : "no launch option")}">▶ Launch</button><button class="act" type="button" data-bv="opts" aria-haspopup="menu" aria-expanded="${st.opts === b.key}" title="Launch options">▾</button><button class="act bv-act" type="button" data-bv="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…" aria-label="Report">⚑</button><button class="act bv-act bv-del" type="button" data-bv="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></div>
-    </div>${st.opts === b.key ? optionsHTML(b, env.here) : ""}${open ? `<div class="bv-det" data-bv-det="${ESC(b.key)}">${detailsBody(st.details?.get?.(b.key), env)}</div>` : ""}`;
+      <div class="bv-launch"><button class="act pri" type="button" data-bv="launch" ${d ? "" : "disabled"} title="${ESC(d ? optLabel(d, env.here) : "no launch option")}">▶ Launch</button><button class="act" type="button" data-bv="opts" aria-haspopup="menu" aria-expanded="${st.opts === b.key}" title="Launch options">▾</button><button class="act" type="button" data-bv="shot" ${b.card_id ? "" : "disabled"} title="${b.card_id ? "Screenshot: this build running now = a frame of it; another build of the game running = you choose; nothing running = launch, then capture" : "No mod card for this build yet: nothing to add a picture to"}" aria-label="Screenshot">📷</button><button class="act bv-act" type="button" data-bv="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…" aria-label="Report">⚑</button><button class="act bv-act bv-del" type="button" data-bv="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></div>
+    </div>${st.shot?.get?.(b.key) && BS ? `<div class="bv-shot" data-bv-key="${ESC(b.key)}">${BS.choiceHTML(st.shot.get(b.key), "data-bv")}</div>` : ""}${st.opts === b.key ? optionsHTML(b, env.here) : ""}${open ? `<div class="bv-det" data-bv-det="${ESC(b.key)}">${detailsBody(st.details?.get?.(b.key), env)}</div>` : ""}`;
   }
   // ▾ (or a right-click on the row): the launch options, then ✎ Rename…, ★ favorite, restore the original name
   function optionsHTML(b, here) {
@@ -363,8 +364,9 @@
     .bv-edit,.bv-inv{margin:6px 0 4px 30px;padding:8px;border:1px solid var(--line,#333);border-radius:6px;font-size:12px}
     .bv-ef{display:flex;gap:6px;align-items:flex-start;margin:3px 0}.bv-ef span{min-width:110px}.bv-ef input,.bv-ef textarea{flex:1;font:12px monospace}
     .bv-ebtn{display:flex;gap:6px;align-items:center;margin-top:6px}.bv-inv-h{display:flex;gap:6px;align-items:center;justify-content:space-between}.bv-recent{margin:12px 0 4px}
+    .bv-shot{padding:2px 6px 8px 92px;border-bottom:1px solid var(--line,#2a2c33)}${BS ? BS.CSS : ""}
     @media (max-width:900px){.bv-head{display:none}.bv-row{grid-template-columns:22px 56px 1fr;grid-auto-rows:auto}.bv-row>.bv-game,.bv-row>.bv-kinds,.bv-row>.bv-date,.bv-row>.bv-size,.bv-row>.bv-where,.bv-row>.bv-launch{grid-column:3}
-      .bv-jrow{grid-template-columns:22px 1fr}.bv-jrow>*:nth-child(n+3){grid-column:1/-1}.bv-det{padding-left:8px}.bv-opts{padding-left:8px}}`;
+      .bv-jrow{grid-template-columns:22px 1fr}.bv-jrow>*:nth-child(n+3){grid-column:1/-1}.bv-det{padding-left:8px}.bv-opts{padding-left:8px}.bv-shot{padding-left:8px}}`;
 
   // ---------------------------------------------------------------- three.js loading (shared, injectable)
   function threeLoader(env) {
@@ -595,7 +597,7 @@
   function mount(host, env) {
     const st = { q: env.q || "", game: env.game || "", kind: env.kind || "", fav: !!env.fav, data: null, sched: null, open: new Set(), details: new Map(),
                  renaming: null, opts: null, msg: new Map(), jobOpen: new Set(), inv: new Map(), editing: null, jmsg: new Map(),
-                 listSig: "", schedSig: "", page: 1 };
+                 listSig: "", schedSig: "", page: 1, shot: new Map() };   // shot: row key -> the 📷 choice it offers
     const PAGE = 60;
     const three = threeLoader(env);
     const tts = createTurntables({ ...env, three }), flows = createFlows({ ...env, three });
@@ -687,6 +689,25 @@
         st.msg.set(b.key, `Launched: ${optLabel(o, env.here)}`);
       } catch (e) { st.msg.set(b.key, "⚠ " + (e.message || e)); toast("⚠ " + (e.message || e)); }
       drawList();
+    }
+    // 📷 (build-shot.js, the Mods gallery's rules): this build running = a frame now; another build of the game running =
+    // the row asks (capture from that build / switch to this one, a second click); nothing running = launch, capture
+    async function shot(b, choice = "") {
+      if (!b || !BS) return;
+      const say = t => { st.msg.set(b.key, t); drawList(); };
+      try {
+        const r = await BS.run({ api: env.api, wait, msg: say, items: fullItems,
+          launch: async x => {                               // never a swap of another session of the game
+            let j = await env.api("/api/jobs", { tool: "@launch", input: { game_id: x.game_id, mod: x.name, node: env.here || "auto", swap: false } });
+            for (let i = 0; i < 900 && j && ["queued", "running"].includes(j.state); i++) { await wait(1000); j = await env.api("/api/jobs/" + j.id); }
+            if (!j || j.state !== "succeeded") throw new Error(`launch: ${j?.error || j?.state || "no answer"}`);
+          } }, b, { choice, expect: st.shot.get(b.key)?.session_id });
+        if (r.choice) { st.shot.set(b.key, r.choice); say(r.stale ? "The running game changed: choose again" : "Another build of this game is running: choose below"); return r; }
+        st.shot.delete(b.key);
+        say(`📷 Picture added to ${r.into}'s card`); toast(`${r.into}: in-game picture added`);
+        st.listSig = ""; await loadList(true);
+        return r;
+      } catch (e) { say("⚠ " + (e.message || e)); toast("⚠ " + (e.message || e)); }
     }
     async function rename(key, value) {
       const b = find(key); if (!b || busyRename) return;
@@ -799,6 +820,9 @@
         if (act === "toggle") return toggle(b);
         if (act === "launch") return launch(b, defaultOption(b));
         if (act === "opts") { st.opts = st.opts === b.key ? null : b.key; drawList(); return; }
+        if (act === "shot") return shot(b);
+        if (act === "shot-running" || act === "shot-switch") return shot(b, act === "shot-running" ? "running" : "switch");
+        if (act === "shot-cancel") { st.shot.delete(b.key); st.msg.set(b.key, "Nothing changed"); drawList(); return; }
         return;
       }
       if (j) {
@@ -863,7 +887,7 @@
       tts.dispose(); flows.dispose();
     }
     function focus({ q, game, kind } = {}) { if (q != null) st.q = String(q); if (game != null) st.game = String(game); if (kind != null) st.kind = String(kind); st.page = 1; built = false; drawList(); drawSched(); }
-    const ctl = { st, tts, flows, loadList, loadSched, drawList, drawSched, onClick, onContext, onDblClick, onKey, onFocusOut, onInput, tick, stop, focus,
+    const ctl = { st, tts, flows, loadList, loadSched, drawList, drawSched, onClick, onContext, onDblClick, onKey, onFocusOut, onInput, tick, stop, focus, shot,
                   toggle, rename, favorite, report, remove, launch, investigate, ready: null, wait };
     ctl.ready = start();
     return ctl;

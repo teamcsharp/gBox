@@ -29,6 +29,7 @@ import random
 import re
 import statistics
 import struct
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -421,6 +422,8 @@ def apply_edits(plan: list[dict], edits: list[dict], donors: list[dict], slots: 
 STRATEGIES = {
     "gbox.pso_player": ("pairs", "PSO Ver.2: every enemy pack rebuilt with its donors in one GD-ROM (gbox.pso_enemy.build_cast)"),
     "gbox.doa2_swap": ("pairs", "DOA2: the roster build (doa2_swap.use_roster: every selectable fighter in one disc)"),
+    "gbox.soulcalibur_swap": ("pairs", "SoulCalibur DC: every fighter's costumes rebuilt in one HUMAN.DAT, one GD-ROM "
+                                       "(soulcalibur_swap.build_cast)"),
     "gbox.defjam_writer": ("pairs", "Def Jam Vendetta: op=match (every wrestler container in one data.bin)"),
     "gbox.yukes_sd": ("pairs", "SmackDown! 2: op=match (every wrestler in one disc)"),
     "gbox.aki_wrestling": ("pairs", "No Mercy / WCW: op=match (every wrestler in one ROM)"),
@@ -495,12 +498,53 @@ class StagedDisc:
         return self.staged[path] if path in self.staged else self.disc.read(path)
 
 
+def link_tree(src: Path, dst: Path) -> Path:
+    """dst = a copy of the built mod folder src made of hard links (no extra bytes); the marker is a real copy so the
+    new folder's record never writes through to the source. A file that can't be linked is copied."""
+    import os
+    import shutil
+    src, dst = Path(src), Path(dst)
+    if not (src / ".gbox-mod.json").is_file():
+        raise ValueError(f"{src.name} is not a built mod folder")
+    if dst.exists():
+        shutil.rmtree(dst)
+    for d, dirs, files in os.walk(src):
+        rel = Path(d).relative_to(src)
+        (dst / rel).mkdir(parents=True, exist_ok=True)
+        dirs[:] = [x for x in dirs if not (Path(d) / x).is_symlink()]
+        for f in files:
+            s, t = Path(d) / f, dst / rel / f
+            if s.is_symlink():
+                continue
+            if f == ".gbox-mod.json" and rel == Path("."):
+                shutil.copyfile(s, t)
+                continue
+            try:
+                os.link(s, t)
+            except OSError:
+                shutil.copy2(s, t)
+    return dst
+
+
+def plan_digest(plan: list[dict]) -> str:
+    """The plan hash: which donor goes on which slot. The same digest means the same build (cast_<...>_<digest> mods,
+    the Sonic showcase's rebuild check)."""
+    return hashlib.sha256(json.dumps([(r["slot"], r["character"]) for r in plan]).encode()).hexdigest()[:8]
+
+
 def mod_name(game: dict, source_label: str, plan: list[dict]) -> str:
     """cast_<game words>_<source words>_<digest of the plan>: the same plan reuses its mod."""
     def short(s, n):
         return "_".join(re.findall(r"[a-z0-9]+", str(s).lower()))[:n].strip("_")
-    digest = hashlib.sha256(json.dumps([(r["slot"], r["character"]) for r in plan]).encode()).hexdigest()[:8]
-    return f"cast_{short(expand(game.get('title', '')), 18)}_{short(source_label, 18)}_{digest}"
+    return f"cast_{short(expand(game.get('title', '')), 18)}_{short(source_label, 18)}_{plan_digest(plan)}"
+
+
+def _named(inp) -> str:
+    """mod_name= (the Sonic showcase's showcase_sonic_<title>): one folder name, else ''."""
+    n = str(getattr(inp, "mod_name", "") or "").strip()
+    if n and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", n):
+        raise ValueError(f"mod_name={n!r}: letters, digits, '_', '-', '.' only (one cache folder name)")
+    return n
 
 
 # ---------------------------------------------------------------- the tool
@@ -609,6 +653,8 @@ def run(ctx, inp) -> dict:
     if inp.plan_only or not local:
         p = plan(game, chars, inp.source, inp.mapping, inp.seed, inp.slots, inp.assignments, root if local else None,
                  live)
+        if p["status"] == "planned" and _named(inp):
+            p["mod"] = _named(inp)
         if inp.plan_only or p["status"] != "planned":
             return p
         return _on_control_plane(ctx, game, inp)
@@ -616,6 +662,8 @@ def run(ctx, inp) -> dict:
              refresh=_refresher(ctx, root))
     if p["status"] != "planned":
         return p
+    if _named(inp):                                        # a fixed name: the plan hash decides a rebuild instead
+        p["mod"] = _named(inp)
     launch = "launch" in getattr(inp, "model_fields_set", set()) and bool(inp.launch)
     return p | build(ctx, game, p, chars, root, inp, launch)
 
@@ -669,16 +717,22 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     pairs = [(r["slot"], RP.apply_to_meta(metas[r["character"]], gid, r["slot"])) for r in p["assignments"]]
     profiles = ",".join(sorted({f"{s}={m.get('retarget_profile_digest')}" for s, m in pairs
                                 if m.get("retarget_profile_digest")}))
+    digest = plan_digest(p["assignments"])
+    showcase = bool(getattr(inp, "showcase", False))
     have = filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json"
     if have.is_file() and not inp.rebuild:
         try:
             rec = json.loads(have.read_text())
             slots = rec.get("cast") or []
-            if rec.get("retarget_profiles", "") == profiles:
+            # cast_<...>_<digest> names carry the plan; a fixed name (mod_name=) compares the recorded plan hash
+            if rec.get("retarget_profiles", "") == profiles and rec.get("cast_plan") in (None, digest):
                 return _report(p, {s["slot"]: s for s in slots}, name, "ready", launch and _launch(ctx, gid, name))
-            inp = _rebuild(inp)                           # a profile changed in the Retarget editor since the build
+            inp = _rebuild(inp)                           # a profile (Retarget editor) or the plan changed since the build
         except (OSError, ValueError):
             pass
+    root_dir = filemods.mod_dir(ctx.config, gid, name).parent
+    before = {d.name for d in root_dir.iterdir()} if root_dir.is_dir() else set()
+    FE.target(gid)                                        # every Fitting row opens the Retarget editor on its slot
     FE.plan([(s, m["slug"], f"{m.get('name', m['slug'])} -> {_slot_name(p, s)}") for s, m in pairs])
     strat = p["strategy"]
     builder = BUILDERS.get(p["writer"])
@@ -694,6 +748,17 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     res = builder(ctx, game, pairs, name, inp)
     per = res.get("slots") or {}
     mod = res.get("mod")
+    linked_from = None
+    if mod and mod != name and _named(inp):
+        # a writer that names its own build (DOA2 roster, one-slot characters op=use): the fixed name gets a hard-linked
+        # copy of it (no extra bytes), the writer's build stays where characters op=use finds it
+        try:
+            link_tree(filemods.mod_dir(ctx.config, gid, mod), filemods.mod_dir(ctx.config, gid, name))
+            linked_from = {"mod": mod, "made_by_this_build": mod not in before}
+            mod = name
+        except (OSError, ValueError) as e:
+            per = {s: {"status": "failed", "reason": f"built as {mod}, not copied to {name}: {e}"[:500]} for s in per}
+            mod = None
     built = [s for s, r in per.items() if r.get("status") in ("built", "partial")]
     for s, _m in pairs:                                   # every model's last stage in the Fitting pop-up
         if FE.written(s):                                 # the writer reported its own write (bytes, new place)
@@ -712,7 +777,11 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
         rec |= {"cast": [{"slot": r["slot"], "character": r["character"], **per.get(r["slot"], {"status": "failed"})}
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
                 "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
-                "retarget_profiles": profiles}
+                "retarget_profiles": profiles, "cast_plan": digest, "built": time.time()}
+        if showcase:
+            rec["title"] = f"{game.get('title')}: Sonic showcase ({p['source']})"
+            rec["showcase"] = {"source": p["source"], "plan": digest, "writer": p["writer"], "strategy": p["strategy"],
+                               **({"linked_from": linked_from} if linked_from else {})}
         from . import build_record                       # who went where, by name (the Builds view's 360 pairs)
         rec = build_record.stamp(
             rec, kind="cast", slots=[{"slot": r["slot"], "slot_name": r.get("slot_name") or r["slot"],
@@ -720,9 +789,13 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
                                       "source": r.get("source") or ""} for r in p["assignments"]],
             **build_record.from_ctx(ctx))
         if rec_path.parent.is_dir():
+            if rec_path.is_file() and rec_path.stat().st_nlink > 1:
+                rec_path.unlink()                         # a hard-linked marker: never write through to the source
             rec_path.write_text(json.dumps(rec, default=str))
         for r in p["assignments"]:
-            if per.get(r["slot"], {}).get("status") in ("built", "partial"):
+            # a showcase build is a test version: the Mods page and the game's Special builds list it, Play-as doesn't
+            # (an evicted showcase mod leaves no character target pointing at a missing folder)
+            if not showcase and per.get(r["slot"], {}).get("status") in ("built", "partial"):
                 try:
                     C._api(ctx, "POST", f"/api/characters/{r['character']}/targets",
                            json={"game_id": gid, "slot": r["slot"], "mod": mod, "nodes": [C.HOST_OS],
@@ -918,6 +991,14 @@ def _twin_snakes(ctx, game, pairs, name, inp):
     return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
+def _soulcalibur(ctx, game, pairs, name, inp):
+    from . import soulcalibur_swap
+    try:
+        return soulcalibur_swap.build_cast(ctx, game, pairs, name)
+    except Exception as e:                                # noqa: BLE001 - the disc build failed as a whole
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
+
+
 def _soulcalibur2(ctx, game, pairs, name, inp):
     from . import soulcalibur2_swap
     return soulcalibur2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
@@ -928,6 +1009,7 @@ BUILDERS = {
     "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
+    "gbox.soulcalibur_swap": _soulcalibur,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
     "gbox.yukes_sd": _match_builder("yukes_sd"),
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
