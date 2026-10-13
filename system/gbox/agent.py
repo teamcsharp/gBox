@@ -644,6 +644,14 @@ def tool_specs() -> list[dict]:
            "title-screen stage-select sequence (down x5, right x7, B, A, Start), then the operator picks the stage. Recipes are "
            "cited per game; use op=stages to see them.",
            {"session_id": s, "op": s, "stage": s, "game": s}, ["session_id", "op"]),
+        fn("ghost_runs", "Ghost runs (speedrun ghosts): every run the operator plays of Super Mario Bros. (NES) is recorded "
+           "per frame from RAM (position, facing, animation, power-up, level/area, inputs) with splits, and earlier runs race "
+           "the live game as translucent ghosts (Runs panel in the session view). op=list game_id (runs, times, splits, best "
+           "flags) | show run_id | rename run_id name | delete run_id | pick game_id pick=best|last|pb_segments|custom|none "
+           "[runs=[run ids]] [mode=level|run] (which ghosts the overlay shows) | status session_id (the live recorder) | "
+           "profiles (supported games).",
+           {"op": s, "game_id": s, "session_id": s, "run_id": s, "name": s, "pick": s, "runs": {"type": "array", "items": s},
+            "mode": s}, ["op"]),
         fn("autoplay", "Take control: gBox plays the live game itself (scripted mission through the debugger). op=list | "
            "start (mission optional; assist=true holds the player's HP so it can't die) | stop (hand control back) | status.",
            {"session_id": s, "op": s, "mission": s, "assist": b}, ["session_id", "op"]),
@@ -1295,6 +1303,12 @@ class Agent:
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
                                     "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
                       worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def ghost_runs(self, op="list", game_id="", session_id="", run_id="", name="", pick="", runs=None, mode=""):
+        inp = {"op": op or "list", "game_id": game_id or "", "session_id": session_id or "", "run_id": run_id or "",
+               "name": name or "", "pick": pick or "", "runs": list(runs or []), "mode": mode or ""}
+        j = self._job("ghost_runs", inp, worker=session_id.rsplit("-", 1)[0] if op == "status" and session_id else None)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def autoplay(self, session_id, op="status", mission="", assist=False):

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .agent_contracts import validate_cheat_call
 
-from . import adapters, catalog, provision, rewind, ring_record, uap
+from . import adapters, catalog, ghost_runs, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
 from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
@@ -382,6 +382,10 @@ def _teardown(sid: str, sr, wait: float = STOP_TEARDOWN_WAIT_S) -> bool:
             ring_record.stop(sid)
         except Exception as e:                       # noqa: BLE001
             print(f'gBox: gameplay ring teardown of {sid} failed: {e}', flush=True)
+        try:
+            ghost_runs.stop(sid)                     # ghost runs (#1098): the run in progress is kept as session_end
+        except Exception as e:                       # noqa: BLE001
+            print(f'gBox: ghost-run recorder teardown of {sid} failed: {e}', flush=True)
     return _within(work, wait, f'session-teardown-{sid}')[0]
 
 
@@ -653,6 +657,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
+        # ghost runs (#1098): every run of a profiled game (Super Mario Bros.) recorded from RAM per frame, raced later
+        try:
+            detail["ghost_runs"] = ghost_runs.start(sid, ad, gd, ctx.server, ctx.headers, lambda: sid in SESSIONS)
+        except Exception as e:                                 # noqa: BLE001 - never block the launch
+            detail["ghost_runs"] = {"state": "unsupported", "reason": f"ghost-run recorder setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -981,6 +990,10 @@ def _pump(sid: str, ad, server: str, headers: dict):
                     c.post(f"/api/sessions/{sid}/ended", json=end)
                     rewind.stop(sid)
                     ring_record.stop(sid)
+                    try:
+                        ghost_runs.stop(sid)
+                    except Exception:                  # noqa: BLE001
+                        pass
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
