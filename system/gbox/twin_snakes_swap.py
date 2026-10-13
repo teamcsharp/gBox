@@ -48,6 +48,7 @@ from . import ts_tex as T
 
 GAME_IDS = TS.GAME_IDS
 WRITER = "gbox.twin_snakes_swap"
+LIVE_FILE = "tts-live.json"                               # the mod's live write (twin_snakes_live apply items)
 BUDGET_TRIES = 6
 SHRINK = 0.85
 
@@ -278,9 +279,8 @@ def flatten(ts: T.TextureSet, img: T.Image, value: str = "mid") -> None:
     o = ts.tpl + img.data_off
     if img.fmt in (8, 9) and img.pal_off:
         pal = T.palette(bytes(ts.data[ts.tpl + img.pal_off: ts.tpl + img.pal_off + 2 * img.pal_count]), img.pal_fmt)
-        lum = pal[:, :3].astype(float).mean(1) * (pal[:, 3] / 255.0)
+        lum = (pal[:, :3].astype(float).mean(1) * (pal[:, 3] / 255.0))[:16 if img.fmt == 8 else 256]
         idx = int(np.argmin(lum)) if value == "dark" else int(np.argmin(np.abs(lum - 128)))
-        idx = min(idx, 15 if img.fmt == 8 else 255)
         b = (idx << 4 | idx) if img.fmt == 8 else idx
         ts.data[o:o + n] = bytes([b]) * n
         return
@@ -427,7 +427,7 @@ def build_stage_dat(stage_dat: bytes, plan: dict[str, Donor], progress=None, cut
             try:
                 for i, mk in enumerate([key] + TWINS.get(key, [])):
                     h = TS.model_hash(mk)
-                    m = _first_model(sd, s["stages"], h) if i else _first_model(sd, s["stages"], h)
+                    m = _first_model(sd, s["stages"], h)
                     if m is None:
                         continue
                     layer = main_colour(m)
@@ -508,6 +508,8 @@ def build_mod(cfg, game: dict, image: Path, name: str, plan: dict[str, Donor], p
     finally:
         disc.f.close()
     new, report = build_stage_dat(stage_dat, plan, progress, cutscenes)
+    if not any(v.get("status") == "built" for v in report["slots"].values()):
+        raise ValueError("no slot was built: " + "; ".join(f"{k}: {v.get('reason')}" for k, v in report["slots"].items()))
     if len(new) != len(stage_dat):
         raise AssertionError("stage.dat changed size")
     work = Path(cfg.cache) / "characters_build" / "twin_snakes" / name
@@ -523,6 +525,7 @@ def build_mod(cfg, game: dict, image: Path, name: str, plan: dict[str, Donor], p
             raise ValueError("the image does not hold the rebuilt stage.dat")
     finally:
         disc.f.close()
+    (Path(b["dir"]) / LIVE_FILE).write_text(json.dumps(live_items(stage_dat, new, list(plan))))
     marker = Path(b["dir"]) / ".gbox-mod.json"
     rec = json.loads(marker.read_text())
     rec |= {"writer": WRITER, "disc": disc_no, "cast": sorted([k, d.slug] for k, d in plan.items()),
@@ -628,7 +631,8 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     (+pairs) | a pick-whip point (x, y + session_id) or words ("the soldier"). Built where the collection is (the
     control plane), launched through the session swap on the requesting session's node."""
     from . import characters as C, filemods
-    if "slot" not in getattr(inp, "model_fields_set", set()) and getattr(inp, "x", None) is not None             and hasattr(inp, "model_copy"):
+    picked = "slot" not in getattr(inp, "model_fields_set", set()) and getattr(inp, "x", None) is not None
+    if picked and hasattr(inp, "model_copy"):
         inp = inp.model_copy(update={"slot": ""})        # a pick-whip point without a slot: what is there
     s = resolve_slot(ctx, game, inp)
     if s in ("cast", "roster", "everyone"):
@@ -734,6 +738,18 @@ def live_items(old_sd: bytes, new_sd: bytes, keys: list[str]) -> list[dict]:
     return items
 
 
+def _live_file(cfg, gid: str, name: str) -> list | None:
+    """The mod's live items on this node: its own folder, or the staged copy the session swap launched."""
+    from . import filemods
+    root = Path(cfg.cache) / "mods" / gid
+    cands = [root / name] + sorted(root.glob(f"{name}{getattr(filemods, 'STAGED_SEP', '~')}*"), reverse=True)
+    for d in cands:
+        f = d / LIVE_FILE
+        if f.is_file():
+            return json.loads(f.read_text())
+    return None
+
+
 def _launch_wait(ctx, gid: str, mod: str, node: str, limit: float = 1800) -> dict:
     """@launch the mod on the session's node (the server turns it into a session swap: save state, launch the mod on
     the same worker, load the state, close the old copy) and wait for the new session."""
@@ -752,8 +768,7 @@ def live_use(ctx, meta: dict, game: dict, inp) -> dict:
     """characters op=live_use (the pick whip's "Try live replacement"): the slot at the picked point (or named) is
     built into a mod as op=use does, the running game moves onto the mod through the session swap (moment kept),
     then the new body and textures are written into the loaded stage (twin_snakes_live apply) so it shows now."""
-    from . import characters as C, filemods
-    from .gcdisc import GCDisc
+    from . import characters as C
     if not inp.session_id:
         raise ValueError("live_use needs a running session_id")
     pick = inp
@@ -772,13 +787,9 @@ def live_use(ctx, meta: dict, game: dict, inp) -> dict:
     res["launch"] = launch
     new_sid = (launch or {}).get("session_id") or inp.session_id
     try:
-        base = GCDisc(str(C._gc_iso(ctx, game)))
-        modded = GCDisc(str(filemods.launch_path(ctx.config, game["game_id"], C._gc_iso(ctx, game), name)))
-        try:
-            items = live_items(base.read(S.STAGE_DAT), modded.read(S.STAGE_DAT), keys_for(slot))
-        finally:
-            base.f.close()
-            modded.f.close()
+        items = _live_file(ctx.config, game["game_id"], name)
+        if items is None:
+            raise FileNotFoundError(f"the mod's {LIVE_FILE} is not on this node")
         j = C._job(ctx, "twin_snakes_live", {"session_id": new_sid, "op": "apply", "items": items},
                    new_sid.split("-")[0], 600)
         res["live"] = (j.get("output") or {}).get("result") or {"state": j.get("state"), "error": j.get("error")}

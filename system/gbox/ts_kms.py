@@ -13,8 +13,8 @@ engine's loader (mgso.rel 0x806b6be8 / 0x806b6860) turns them into pointers, the
     +0x4c G envelopes  +0x50 G positions  +0x54 G normals  +0x58 G uvs  +0x5c file offset of G
   bones (0x40 each, from 0x60): u32 flags, i32 parent, f32 local[3], f32 world[3] (bind pose, model space, mm),
     f32 min[4], max[4]. Every character in the game uses the same 21-bone MGS2 skeleton (BONE_NAMES).
-  G (0x14): u32 ?, u32 ?, u16 mesh count, u16 part count, u32 G LOD sub-groups (0 = none; else 8 x 0x14 headers),
-    u32 G mesh records
+  G (0x14): s16 bounding sphere centre x, y, z and radius (mm; Snake 0, -172, 21, 926), u16 mesh count,
+    u16 part count, u32 G LOD sub-groups (0 = none; else 8 x 0x14 headers), u32 G mesh records
   mesh record (0x48): u32 0, u32 0, f32 min[3], max[3], local[3], world[3], u16 part count, i16 parent,
     u32 0x00abcdef (characters; props carry a strcode there), u16 ?, u16 ?, u32 G parts. Every mesh has its own matrix (the model object allocates 0x144
     bytes per mesh); mesh i < bone count is bone i, later meshes (hair, gear) ride their parent mesh rigidly.
@@ -387,6 +387,11 @@ def encode(template: Kms, P, N, UV, B, F, mesh_of_face=None, keep_extra: bool = 
     o_nrm = put(nbt.astype(np.int8).tobytes(), 32)
     o_uv = put(uvs.astype(">i2").tobytes(), 32)
     body.extend(bytes((-here()) % 32))
+    if len(P):                                             # bounding sphere (s16 centre x, y, z + radius)
+        lo, hi = P.min(0), P.max(0)
+        c = np.clip(np.round((lo + hi) / 2), -32768, 32767).astype(int)
+        r = int(min(32767, np.ceil(np.linalg.norm(P - (lo + hi) / 2, axis=1).max())))
+        struct.pack_into(">4h", g_hdr, 0, int(c[0]), int(c[1]), int(c[2]), r)
     struct.pack_into(">HH", g_hdr, 0x08, nm, n_parts)
     struct.pack_into(">II", g_hdr, 0x0C, 0, 0x14)
     out += g_hdr

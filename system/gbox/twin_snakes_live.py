@@ -29,7 +29,8 @@ MEM1 = (0x80000000, 0x81800000)
 TPL_MAGIC = 0x0020AF30
 
 
-def _ram(ad, lo: int = MEM1[0], hi: int = MEM1[1]) -> bytes:
+def _ram(ad, lo: int | None = None, hi: int | None = None) -> bytes:
+    lo, hi = MEM1[0] if lo is None else lo, MEM1[1] if hi is None else hi
     out = bytearray()
     for a in range(lo, hi, CHUNK):
         try:
@@ -39,10 +40,11 @@ def _ram(ad, lo: int = MEM1[0], hi: int = MEM1[1]) -> bytes:
     return bytes(out)
 
 
-def find_sets(ram: bytes, base: int = MEM1[0], hashes: set[int] | None = None) -> list[dict]:
+def find_sets(ram: bytes, base: int | None = None, hashes: set[int] | None = None) -> list[dict]:
     """Loaded `.tri` texture sets: a TPL (magic 0x0020AF30, n images) whose header sits `tpl` bytes into a set with n
     entries (+0x10 = n, +0x18 = tpl). -> [{address, hash (the set is named by its textures: first entry strcode),
     textures: [strcodes]}]."""
+    base = MEM1[0] if base is None else base
     out = []
     i = ram.find(struct.pack(">I", TPL_MAGIC))
     while i >= 0:
@@ -73,7 +75,7 @@ def loaded(ad) -> dict:
     finally:
         if paused and hasattr(ad, "resume"):
             ad.resume()
-    models = W.find_loaded(ram)
+    models = W.find_loaded(ram, MEM1[0])
     cast = sorted({W.main_key(m["key"]) for m in models} - {None})
     return {"models": [{**m, "address": hex(m["address"]), "hash": f"{m['hash']:06x}"} for m in models], "cast": cast}
 
@@ -96,7 +98,7 @@ def apply(ad, items: list[dict]) -> dict:
         want = {int(it["hash"], 16) if isinstance(it["hash"], str) else int(it["hash"])
                 for it in items if it.get("kind") in ("model", "hide")}
         models: dict[int, list] = {}
-        for m in W.find_loaded(ram, hashes=want or None):
+        for m in W.find_loaded(ram, MEM1[0], hashes=want or None):
             models.setdefault(m["hash"], []).append(m)
         for it in items:
             kind = it.get("kind")
