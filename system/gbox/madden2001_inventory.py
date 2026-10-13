@@ -117,6 +117,8 @@ def _stream(src: bytes, out: bytearray, limit: int, window: int = WINDOW) -> Non
             for _ in range(b.get(7)):
                 out.append(b.get(8))
             continue
+        if b.rem < 0:
+            raise ValueError("EA bit-LZ stream truncated")
         g = b.unary()
         ln = (((1 << g) | b.get(g)) if g else 1) + 2
         op = len(out)
@@ -148,11 +150,19 @@ def decompress(src: bytes, size: int) -> bytes:
     return bytes(out[:size])
 
 
+def _u32(buf: bytes, off: int) -> int:
+    if off < 0 or off + 4 > len(buf):
+        raise ValueError(f"read of u32 at {off:#x} past end of {len(buf):#x}-byte buffer")
+    return struct.unpack_from(">I", buf, off)[0]
+
+
 def check_build(rom: bytes) -> dict:
+    if len(rom) < 0x1000:
+        raise ValueError(f"ROM too short ({len(rom):#x} bytes)")
     h = header(rom)
     if (int(h["crc1"], 16), h["code"], h["rev"]) != BUILD:
         raise ValueError(f"not the owned Madden NFL 2001 NFLE rev0 build: {h['code']} rev{h['rev']} crc1 {h['crc1']}")
-    bad = {f"{a:#x}": role for a, (role, w) in SITES.items() if struct.unpack_from(">I", rom, ram2rom(a))[0] != w}
+    bad = {f"{a:#x}": role for a, (role, w) in SITES.items() if _u32(rom, ram2rom(a)) != w}
     if bad:
         raise ValueError(f"boot-stub sites differ: {bad}")
     return h
@@ -160,21 +170,23 @@ def check_build(rom: bytes) -> dict:
 
 def packs(rom: bytes) -> list[int]:
     out, o = [], PACK_TABLE
-    while (w := struct.unpack_from(">I", rom, o)[0]) >> 24 == 0xB0:
+    while (w := _u32(rom, o)) >> 24 == 0xB0:
         out.append(w & 0xFFFFFF)
         o += 4
     return out
 
 
 def entries(rom: bytes, pack: int) -> list[dict]:
-    hdr = struct.unpack_from(">I", rom, pack)[0]
-    if hdr % 12:
+    hdr = _u32(rom, pack)
+    if hdr % 12 or pack + hdr > len(rom):
         raise ValueError(f"pack {pack:#x} header {hdr:#x} is not a multiple of 12")
     out = []
     for k in range(hdr // 12):
         off, size, flags = struct.unpack_from(">3I", rom, pack + k * 12)
         stored = flags & 0x7FFFFFFF
         comp = bool(flags >> 31) and 0 < stored < size
+        if pack + off + (stored if comp else size) > len(rom):
+            raise ValueError(f"pack {pack:#x} entry {k} overruns the ROM")
         out.append({"idx": k, "rom_off": pack + off, "size": size, "stored": stored if comp else size,
                     "method": "ea_lz" if comp else "stored"})
     return out

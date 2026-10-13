@@ -97,3 +97,21 @@ def test_owned_build_inventory():
     assert kinds[8]["audio_bank"] == 495
     assert inv["teams"][:2] == ["BEARS", "BENGALS"] and len(inv["teams"]) == 73
     assert len(inv["rosters"]) == 67 and inv["players"] == 3382
+
+
+def test_truncated_inputs_raise_valueerror():
+    comp = _long_stream()
+    pack = struct.pack(">3I3I", 24, 4, 0, 28, 37, 0x80000000 | len(comp)) + b"RAW!" + comp
+    for n in range(len(pack)):
+        with pytest.raises(ValueError):
+            m.entries(pack[:n], 0)
+    with pytest.raises(ValueError):
+        m.packs(b"\xb0\x00\x10\x00" * 2)
+    for n in (0, 0x40, 0xFFF):
+        with pytest.raises(ValueError):
+            m.check_build(bytes(n))
+    for n in range(len(comp) - 4):
+        try:
+            m.decompress(comp[:n], 37)
+        except ValueError:
+            pass
