@@ -1120,11 +1120,13 @@ class RetroArchAdapter(CommandAdapter):
         self.proc = _popen(self, argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=work)
         self._p(78, "Emulator process started" + (" on the GPU (VirtualGL)" if argv[0] == VGLRUN else "")
                 + (" · Examine 3D ready" if _examine_ok(self.proc) else ""))
-        for i in range(150):                                   # wait for the command interface to answer
+        boot_s = float(getattr(self, "boot_timeout_s", None) or 30)  # launch_game boot_timeout_s (a launch failure remedy)
+        steps = max(1, int(boot_s / 0.2))
+        for i in range(steps):                                 # wait for the command interface to answer
             if i % 5 == 0:
                 tail = [ln for ln in self.log_tail(4000).splitlines() if ln.strip()]
                 try:
-                    self._p(80 + 18 * i / 150, tail[-1][:160] if tail else "Waiting for content to start")
+                    self._p(80 + 18 * i / steps, tail[-1][:160] if tail else "Waiting for content to start")
                 except Exception:                              # cancelled: don't leave an emulator running
                     self.stop_game()
                     raise
@@ -1144,7 +1146,7 @@ class RetroArchAdapter(CommandAdapter):
             time.sleep(0.2)
         tail = self.log_tail()
         self.stop_game()
-        raise RuntimeError(f"retroarch started but content not running after 30s: {tail}")
+        raise RuntimeError(f"retroarch started but content not running after {boot_s:.0f}s: {tail}")
 
     def _p(self, pct, msg):
         cb = getattr(self, "progress", None)
