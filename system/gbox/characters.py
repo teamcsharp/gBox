@@ -2601,6 +2601,11 @@ def characters_tool(inp: CharIn, ctx):
         # Metal Gear Solid: The Twin Snakes GC: player | model:<key> | enemies | bosses | npcs | all | cast | a pick
         # point / words -> tts_<slot>_<plan hash> (stage.dat rebuilt in a disc-image copy; session swap on launch)
         return {"result": out | twin_snakes_swap.use(ctx, meta, game, inp)}
+    from . import soulcalibur2_swap
+    if gid in soulcalibur2_swap.GAME_IDS and soulcalibur2_swap.is_slot(inp.slot):
+        # Soul Calibur II GC: fighter:<key>[:<costume>] | all | cast (+pairs) | random (two sources alternate per
+        # costume + the random costume select) -> sc2_<slot>_<plan hash> (human.olk costumes rewritten in place)
+        return {"result": out | soulcalibur2_swap.use(ctx, meta, game, inp)}
     from . import crazy_taxi_swap
     if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
         # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]

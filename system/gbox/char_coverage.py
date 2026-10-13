@@ -64,6 +64,11 @@ WRITERS = [
      "Johnny: re-encoded .kms on the MGS2 21-bone skeleton (native animations), donor atlas over the model's colour "
      "texture, every gameplay stage of stage.dat rebuilt in place in a disc-image copy; pick whip / live_use writes "
      "the body into the running game after the session swap; unverified in Dolphin"),
+    ("soulcalibur2_swap", ["fighter:<key>[:<costume>]", "player", "all", "cast", "random"],
+     "Soul Calibur II GC: any of the 24 fighters (Link included), every costume or one (Extra-mode copies too): a new "
+     "VMG on the fighter's own skeleton (motions, moves and weapon kept), donor atlas, human.olk packages rewritten in "
+     "place in a disc-image copy; random = two donor pools alternating over the costume slots + main.dol's body load "
+     "drawing a costume at random each time a fighter is loaded; unverified in Dolphin"),
     ("etm_swap", ["player", "<cast slot>"],
      "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
      "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "

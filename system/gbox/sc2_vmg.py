@@ -419,6 +419,225 @@ def decode(v: Vmg, second_colour: bool = False, lists=(0, 1, 2)) -> tuple[list[d
     return prims, W, [b.name or f"bone{b.index:03d}" for b in v.bones]
 
 
+def model_root(v: Vmg, prims: list[dict] | None = None) -> np.ndarray:
+    """The skeleton-root offset a decode / encode uses: the skin's own (skin_root), or for rigid-only models
+    (Inferno, Charade) the one that stands the bind pose on y = 0."""
+    if v.skin:
+        return skin_root(v)
+    W = bind_world(v)
+    ys = [W[b.index][1, 3] for b in v.bones if b.kind == 0] or [0.0]
+    lo = min(ys)
+    return np.array([0.0, -lo, 0.0])
+
+
+# ------------------------------------------------------------------------------------------------ writer
+
+def _al(n: int, a: int = 32) -> int:
+    return (n + a - 1) // a * a
+
+
+NODE0 = bytes(0x10) + struct.pack(">16f", *np.eye(4).reshape(-1)) + bytes(0x150 - 0x50)   # kind 0, identity
+
+
+def _texture_records(rgba: np.ndarray, rgba2: np.ndarray | None, base: int) -> tuple[bytes, int]:
+    """A one-texture VGT set (CMPR, no mipmaps, linear filter, clamp) with the 1P image and the 2P image."""
+    from .auf_gcm import encode_cmpr
+    h, w = rgba.shape[:2]
+    img1 = encode_cmpr(rgba)
+    img2 = encode_cmpr(rgba2) if rgba2 is not None else img1
+    head = 0x18
+    rec = head
+    d1 = _al(rec + 0x44)
+    d2 = d1 + _al(len(img1)) if rgba2 is not None else d1
+    image0 = (w - 1) | ((h - 1) << 10) | (14 << 20)
+    load = len(img1) // 32
+
+    def texobj(off):
+        return struct.pack(">IIIIIIIHBB", 0x190, 0, image0, off, 0x0002000C, 14, 0, load, 0, 2)
+    out = bytearray(b"VGT." + bytes([4, 0, 0, 0]) + struct.pack(">IIII", 1, 0, rec, 0))
+    out += struct.pack(">I", 0) + texobj(d1) + texobj(d2)
+    out += bytes(d1 - len(out)) + img1
+    if rgba2 is not None:
+        out += bytes(d2 - len(out)) + img2
+    out += bytes(_al(len(out)) - len(out))
+    return bytes(out), rec
+
+
+def pick_material(v: Vmg) -> int:
+    """A template material for the new body: single-texture, unlit-free (layers 1 or 2 without a second map)."""
+    best = None
+    for i, m in enumerate(v.materials):
+        if not m["tex"][0]:
+            continue
+        score = (m["tex"][1] == 0, m["layers"] in (1, 2), m["flags"] == 0, m["stages"][0] != 0)
+        if best is None or score > best[0]:
+            best = (score, i)
+    return best[1] if best else 0
+
+
+def encode(v: Vmg, P: np.ndarray, N: np.ndarray, UV: np.ndarray, B: np.ndarray, F: np.ndarray,
+           atlas: np.ndarray, atlas2: np.ndarray | None = None, root: np.ndarray | None = None) -> bytes:
+    """A new VMG on the template's skeleton: one CPU-skinned mesh (every vertex rides one bone, weight 1), one
+    material, one CMPR texture (1P / 2P images). P (n, 3) model-space bind positions in metres, N normals, UV in
+    [0, 1] (origin top left), B bone per vertex, F (m, 3) triangles wound counter-clockwise seen from the front
+    (written clockwise, the GX front face). The template's bones, names, nodes (pointer fields cleared; an identity
+    node is added when the template has none), texture-stage list and tail block are kept, so the fighter's motions,
+    hit spheres and moves still address the same bones."""
+    d = v.data
+    P, N, UV = np.asarray(P, float), np.asarray(N, float), np.asarray(UV, float)
+    B, F = np.asarray(B, int), np.asarray(F, int).reshape(-1, 3)
+    n = len(P)
+    if n == 0 or n > 0xFFFF:
+        raise ValueError(f"{n} vertices (the 16-bit index format takes 1..65535)")
+    root = model_root(v) if root is None else root
+    W = bind_world(v, root)
+    # ---- skin records (bone space x 8192, normals x 16384), world buffers
+    rec = bytearray()
+    for i in range(n):
+        b = int(B[i])
+        Mi = np.linalg.inv(W[b])
+        lp = Mi[:3, :3] @ P[i] + Mi[:3, 3]
+        ln = W[b][:3, :3].T @ N[i]
+        ln = ln / max(np.linalg.norm(ln), 1e-9)
+        q = np.clip(np.round(lp * Q_POS), -32768, 32767).astype(int)
+        qn = np.clip(np.round(ln * Q_NRM), -32768, 32767).astype(int)
+        rec += struct.pack(">7hBB", *q, int(Q_POS), *qn, 0, b)
+    rec += b"\xff" * 16                                     # end of the 4+-influence group
+    Nn = N / np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
+    posbuf = np.c_[P, np.ones(n)].astype(">f4").tobytes()
+    nrmbuf = np.c_[Nn, np.zeros(n)].astype(">f4").tobytes()
+    uvq = np.clip(np.round(UV * 2048), -32768, 32767).astype(">i2")
+    uvbuf = uvq.tobytes()
+    # ---- display list: GX_TRIANGLES, clockwise; vertex = pos u16, nrm u16, colour u8, uv u16
+    dl = bytearray()
+    tri = F[:, [0, 2, 1]]
+    per = 0xFFFF // 3
+    for s in range(0, len(tri), per):
+        chunk = tri[s:s + per].reshape(-1)
+        dl += struct.pack(">BH", 0x90, len(chunk))
+        for k in chunk:
+            dl += struct.pack(">HHBH", int(k), int(k), 0, int(k))
+    dl += bytes(_al(len(dl)) - len(dl))
+    # ---- template pieces
+    tmesh = next((m for m in v.meshes if m.skinned), None)
+    desc = bytes([0, 16, 4, 0, 16, 4, 0, 4, 3, 11, 3, 3, 2, 3]) if tmesh is None else \
+        d[tmesh.offset:tmesh.offset + 14]
+    if desc[0] & 2:
+        desc = bytes([desc[0] & ~2]) + desc[1:]
+    desc = desc[:10] + bytes([3, 3, 2, 3])
+    mi = pick_material(v)
+    mat = bytearray(d[v.materials[mi]["offset"]:v.materials[mi]["offset"] + 0x50])
+    st0 = v.ptrs["stages"]
+    stages = b""
+    if st0:
+        o = st0
+        while o + 4 <= len(d) and struct.unpack_from(">i", d, o)[0] != -1:
+            size = struct.unpack_from(">H", d, o + 2)[0]
+            if size == 0:
+                break
+            o += size
+        stages = d[st0:o + 4]
+    nodes = [bytearray(d[nd["offset"]:nd["offset"] + 0x150]) for nd in v.nodes]
+    for nd in nodes:
+        struct.pack_into(">I", nd, 4, 0)
+    node0 = next((i for i, nd in enumerate(v.nodes) if nd["kind"] == 0), None)
+    if node0 is None:
+        nodes.append(bytearray(NODE0))
+        node0 = len(nodes) - 1
+    names0 = v.ptrs["names"]
+    names = d[names0:]
+    tail0 = v.ptrs["tail"]
+    tail = d[tail0:names0] if tail0 and names0 > tail0 else d[tail0:tail0 + 0x28] if tail0 else b""
+    bones = bytearray(d[v.ptrs["bones"]:v.ptrs["bones"] + 0x40 * len(v.bones)])
+    # ---- layout
+    lay = {}
+    o = 0x4C
+    lay["meshes"] = o
+    o += 0x38
+    lay["stages"] = o if stages else 0
+    o += len(stages)
+    o = _al(o, 4)
+    lay["colours_obj"] = o
+    o += 8
+    lay["skin"] = o
+    o += 0x24
+    o = _al(o, 16)
+    lay["nodes"] = o
+    o += 0x150 * len(nodes)
+    lay["material"] = o
+    o += 0x50
+    lay["bones"] = o
+    o += len(bones)
+    o = _al(o)
+    lay["colour"] = o
+    o += 32
+    lay["uv"] = o
+    o = _al(o + len(uvbuf))
+    lay["pos"] = o
+    o = _al(o + len(posbuf))
+    lay["pos2"] = o
+    o = _al(o + len(posbuf))
+    lay["nrm"] = o
+    o = _al(o + len(nrmbuf))
+    lay["nrm2"] = o
+    o = _al(o + len(nrmbuf))
+    lay["records"] = o
+    o = _al(o + len(rec))
+    lay["dl"] = o
+    o = _al(o + len(dl))
+    lay["vgt"] = o
+    vgt, trec = _texture_records(atlas, atlas2, o)
+    o = _al(o + len(vgt))
+    lay["tail"] = o if tail else 0
+    o += len(tail)
+    lay["names"] = o
+    o += len(names)
+    out = bytearray(_al(o))
+    # header
+    out[0:8] = d[0:4] + bytes([3, 0x10, 13, 0])
+    struct.pack_into(">8H", out, 8, 1, len(nodes), 1, 0, 0, len(v.bones), 1, 1)
+    end_meshes = lay["meshes"] + 0x38
+    ptrs = [lay["vgt"], lay["material"], lay["stages"], lay["nodes"], lay["colours_obj"], lay["meshes"], end_meshes,
+            end_meshes, lay["skin"], 0, lay["bones"], lay["names"], lay["tail"]]
+    struct.pack_into(">13I", out, 0x18, *ptrs)
+    # mesh
+    mesh = bytearray(desc) + struct.pack(">H10I", len(dl) // 32, lay["nodes"] + 0x150 * node0, lay["material"],
+                                          lay["pos"], lay["pos2"], lay["nrm"], lay["nrm2"], lay["colour"], lay["uv"],
+                                          lay["dl"], 0)
+    out[lay["meshes"]:lay["meshes"] + 0x38] = mesh
+    if stages:
+        out[lay["stages"]:lay["stages"] + len(stages)] = stages
+    struct.pack_into(">II", out, lay["colours_obj"], 0, lay["colour"])
+    struct.pack_into(">9I", out, lay["skin"], n, 0, 0, 0, lay["records"], lay["pos"], lay["pos2"], lay["nrm"],
+                     lay["nrm2"])
+    for i, nd in enumerate(nodes):
+        out[lay["nodes"] + 0x150 * i:lay["nodes"] + 0x150 * (i + 1)] = nd
+    # material: the new texture, its first stage (texture matrix) kept when the template had one
+    s0 = struct.unpack_from(">I", mat, 0x14)[0]
+    struct.pack_into(">IIIIIII", mat, 4, 0, lay["vgt"] + trec, 0, 0,
+                     (lay["stages"] + s0 - st0) if (stages and st0 <= s0 < st0 + len(stages)) else 0, 0, 0)
+    out[lay["material"]:lay["material"] + 0x50] = mat
+    # bones: names moved with the name block
+    for i in range(len(v.bones)):
+        np_ = struct.unpack_from(">I", bones, 0x40 * i + 0x2C)[0]
+        if np_:
+            struct.pack_into(">I", bones, 0x40 * i + 0x2C, np_ - names0 + lay["names"])
+    out[lay["bones"]:lay["bones"] + len(bones)] = bones
+    out[lay["colour"]:lay["colour"] + 4] = b"\xff\xff\xff\xff"
+    out[lay["uv"]:lay["uv"] + len(uvbuf)] = uvbuf
+    for k in ("pos", "pos2"):
+        out[lay[k]:lay[k] + len(posbuf)] = posbuf
+    for k in ("nrm", "nrm2"):
+        out[lay[k]:lay[k] + len(nrmbuf)] = nrmbuf
+    out[lay["records"]:lay["records"] + len(rec)] = rec
+    out[lay["dl"]:lay["dl"] + len(dl)] = dl
+    out[lay["vgt"]:lay["vgt"] + len(vgt)] = vgt
+    if tail:
+        out[lay["tail"]:lay["tail"] + len(tail)] = tail
+    out[lay["names"]:lay["names"] + len(names)] = names
+    return bytes(out)
+
+
 def stats(v: Vmg) -> dict:
     tris = 0
     for m in v.meshes:
