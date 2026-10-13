@@ -98,7 +98,7 @@ S2_TAILS = ["walk", "run", "roll", "roll_fast", "push", "wait", "balance", "look
 S3K_COMMON = ["walk", "run", "roll", "roll_fast", "push", "wait", "balance", "look_up", "duck", "spindash",
               "wait_end", "get_up", "balance2", "skid", "float", "float2", "spring", "hang", "dash2", "victory",
               "hang2", "bubble", "burnt", "drown", "death", "hurt2", "hurt", "slide", "blank", "balance3",
-              "balance4", "super_transform", "lying", "lie_down", "carried", "carried_end"]
+              "balance4", "super_transform", "lying", "lie_down", "anim_22", "anim_23"]
 S3K_TAILS = S3K_COMMON[:10] + ["dummy_0a", "dummy_0b", "dummy_0c", "skid", "float", "float2", "spring", "hang",
                                "anim_12", "victory", "hang2", "bubble", "burnt", "drown", "death", "slide2", "hurt",
                                "slide", "blank", "dummy_1d", "dummy_1e", "run_fast", "fly", "fly2", "carry",
@@ -163,7 +163,7 @@ GAMES = {
                    {"sonic": 3, "tails": 3}, 4, "s2", {"sonic": S2_CLIPS, "tails": S2_CLIPS}),
     "sonic3": Game("sonic3", "Sonic the Hedgehog 3", "s3k", ["sonic", "tails"],
                    {"sonic": S3K_COMMON, "tails": S3K_TAILS}, {"sonic": 3, "tails": 3}, None, None,
-                   {"sonic": S3K_CLIPS[:5], "tails": S3K_CLIPS[:5]}),
+                   {"sonic": S3K_CLIPS[:5], "tails": S3K_CLIPS[:5]}),     # standalone S3's end sign is not read
     "s3k": Game("s3k", "Sonic 3 & Knuckles", "s3k", ["sonic", "tails", "knuckles"],
                 {"sonic": S3K_COMMON, "tails": S3K_TAILS, "knuckles": S3K_KNUCKLES},
                 {"sonic": 3, "tails": 3, "knuckles": 5}, 0x0C, "s3k",
@@ -199,6 +199,12 @@ def read_rom(src) -> tuple[bytes, dict]:
                 if len(members) != 1:
                     raise Sonic2DError(f"expected one ROM member in {p.name}, found {len(members)}")
                 name, d = members[0].filename, zf.read(members[0])
+        elif p.suffix.lower() in (".7z", ".rar"):
+            from . import rom_archives                     # 7-Zip, as the launcher reads these archives
+            ms = [m for m in rom_archives.members(p) if Path(m["name"]).suffix.lower() in (".md", ".bin", ".gen")]
+            if len(ms) != 1 or ms[0]["size"] > 0x800000:
+                raise Sonic2DError(f"expected one ROM member in {p.name}, found {len(ms)}")
+            name, d = ms[0]["name"], rom_archives.prefix(p, ms[0]["name"], ms[0]["size"])
         else:
             name, d = p.name, p.read_bytes()
     if d[0x100:0x104] != b"SEGA" and d[0x100:0x105] != b" SEGA":
@@ -1400,8 +1406,7 @@ def inventory(src) -> dict:
 
 # (dedicated reader name, game key, title test) -- registered in gbox.characters.DEDICATED
 TITLE_TESTS = {
-    "sonic1": re.compile(r"^sonic the hedgehog( \((usa|europe|japan|world|korea|usa, europe|japan, korea)[^)]*\))*"
-                         r"( \(rev [a-z0-9]+\))?$"),
+    "sonic1": re.compile(r"^sonic the hedgehog( \([^)]*\))*$"),
     "sonic2": re.compile(r"^sonic the hedgehog 2( \([^)]*\))*$"),
     "sonic3": re.compile(r"^sonic the hedgehog 3( \([^)]*\))*$"),
     "s3k": re.compile(r"^sonic (&|and) knuckles \+ sonic the hedgehog 3( \([^)]*\))*$"),

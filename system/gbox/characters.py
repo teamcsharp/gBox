@@ -1434,6 +1434,14 @@ def _auf_run(ctx, game, e, work):
     return auf_chars.extract_run(ctx, game, e, work)
 
 
+def _sonic2d(key):
+    """A DEDICATED row for one Sonic Mega Drive title (gbox.sonic2d_sprites), imported only when used."""
+    def mod():
+        return __import__("gbox.sonic2d_sprites", fromlist=["x"])
+    return (f"sonic2d_{key}", lambda t, p: mod().title_test(key)(t, p), lambda: mod().roster(key),
+            lambda ctx, game, e, work: mod().extract_run(ctx, game, e, work))
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
@@ -1533,6 +1541,10 @@ DEDICATED = [
     ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
      lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
+    # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
+    # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
+    *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
 ]
 
 
