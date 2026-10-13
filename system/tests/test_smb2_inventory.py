@@ -116,3 +116,16 @@ def test_owned_rom_inventory():
     assert m["chr_banking"]["sprite_page"]["ppu"] == 0x0000
     assert m["player"]["Mario"]["palette"] == [0x0F, 0x01, 0x16, 0x27]
     assert m["frames"]["climb"] == [0x18, 0x1A, 0x1C, 0x1E]
+
+
+def test_short_prg_or_chr_raise_valueerror():
+    for n in (0, BANK, 2 * BANK + 1):
+        with pytest.raises(ValueError):
+            inv.locate_chr_bank_select(bytes(n))
+    rom = _rom()
+    prg, chr_ = rom[16:16 + 16 * BANK], rom[16 + 16 * BANK:]
+    banks = inv.locate_chr_bank_select(prg)
+    tiles = inv.locate_character_tiles(prg)
+    pal = inv.locate_character_palette(prg)
+    with pytest.raises(ValueError):
+        inv.player_inventory(chr_[:7 * 0x400], banks, tiles, pal)

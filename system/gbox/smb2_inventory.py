@@ -94,6 +94,8 @@ def _word(b: bytes, i: int) -> int:
 
 def _fixed_range(prg: bytes) -> tuple[int, int]:
     """PRG offsets of the two fixed MMC3 banks (mode 0: $C000-$FFFF)."""
+    if len(prg) < 2 * PRG_BANK or len(prg) % PRG_BANK:
+        raise ValueError(f"PRG ROM of {len(prg):#x} bytes is not whole 8 KB MMC3 banks")
     return len(prg) - 2 * PRG_BANK, len(prg)
 
 
@@ -253,6 +255,8 @@ def player_inventory(chr_: bytes, banks: dict, tiles: dict, pal: dict) -> dict:
         sizes = {}
         for si, size in enumerate(SIZES):
             page = banks["pages"][ci * 2 + si]
+            if (page + 1) * CHR_PAGE > len(chr_):
+                raise ValueError(f"{name} {size} CHR page {page} is past the {len(chr_):#x}-byte CHR ROM")
             data = chr_[page * CHR_PAGE:(page + 1) * CHR_PAGE]
             used: set[int] = set()
             frames = []
