@@ -481,6 +481,15 @@ def build_fighter(gdi, character_dir, out_dir, fighter, costume='all', *, allow_
 
 
 ROSTER = [key for key, _name, _aliases in doa2_chars.FIGHTERS]      # the 14 selectable fighters, boss variants excluded
+# body size relative to the cast (the cast swap's by_role mapping): the Armstrongs' heavyweight and Tengu are large
+FIGHTER_SIZE = {"BAS": 1.3, "TNG": 1.25, "BAY": 1.1, "ZAC": 1.05, "KAS": 0.9, "AYA": 0.88, "LEI": 0.9, "HIK": 0.92,
+                "TIN": 0.95, "KTE": 1.0, "GEN": 0.9, "RYU": 1.0, "JAN": 1.0, "SAM": 1.0}
+
+
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: every selectable fighter (all costumes), the slots use_roster fills at once."""
+    return [{"slot": f"fighter:{key}", "name": name, "kind": "fighter", "size": FIGHTER_SIZE.get(key, 1.0),
+             "writer": "gbox.doa2_swap"} for key, name, _aliases in doa2_chars.FIGHTERS]
 
 
 def plan_roster(pairs: list[tuple[str, str]], seed: str = "") -> list[tuple[str, str]]:

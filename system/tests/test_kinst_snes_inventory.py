@@ -15,12 +15,36 @@ OWNED = Path(
 )
 
 
+owned = pytest.mark.skipif(not OWNED.exists(), reason="owned KI SNES source not cached")
+
+
 def _sfc_bytes() -> bytes:
-    if OWNED.exists():
-        return (OWNED.parent / "Killer Instinct (USA) (Rev 1).sfc").read_bytes()
-    raise FileNotFoundError("owned KI SNES zip not present")
+    # the .sfc inside the owned zip (the same read inventory() does); no extracted copy needed
+    return I._read_sfc(OWNED)[0]
 
 
+def test_parse_header_on_synthetic_hirom():
+    """Header offsets checked on any machine: a blank 64 KiB bank with a HiROM header at 0xFFB0."""
+    import struct
+
+    rom = bytearray(0x10000)
+    base = 0xFFB0
+    rom[base + 0x10 : base + 0x25] = b"KILLER INSTINCT".ljust(21, b" ")
+    rom[base + 0x25 : base + 0x29] = bytes([0x31, 0x00, 0x0C, 0x00])
+    struct.pack_into(">HH", rom, base + 0x2C, 0x1234 ^ 0xFFFF, 0x1234)
+    struct.pack_into("<H", rom, base + 0x3C, 0x5551)
+    h = I.parse_header(bytes(rom))
+    assert h["title"] == "KILLER INSTINCT"
+    assert (h["map_mode"], h["cartridge_type"], h["rom_size_code"], h["ram_size_code"]) == ("0x31", "0x00", "0x0c", "0x00")
+    assert h["checksum_ok"] and h["checksum"] == "0x1234"
+    assert h["native_reset_vector"] == "0x5551"
+    rom[base + 0x2C] ^= 1
+    assert not I.parse_header(bytes(rom))["checksum_ok"]
+    with pytest.raises(I.RomError):
+        I.parse_header(b"\x00" * 0x100)
+
+
+@owned
 def test_parse_header_on_known_rom():
     rom = _sfc_bytes()
     h = I.parse_header(rom)
@@ -33,6 +57,7 @@ def test_parse_header_on_known_rom():
     assert h["native_reset_vector"] == "0x5551"
 
 
+@owned
 def test_identity_matches_no_intro():
     rom = _sfc_bytes()
     ident = I.identity(rom)
@@ -43,7 +68,7 @@ def test_identity_matches_no_intro():
     assert ident["known"]
 
 
-@pytest.mark.skipif(not OWNED.exists(), reason="owned KI SNES source not cached")
+@owned
 def test_inventory_from_owned_zip():
     m = I.inventory(OWNED)
     assert m["game_id"] == I.GAME_ID

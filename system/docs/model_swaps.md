@@ -21,6 +21,7 @@ Licensing: every source model here (Nintendo, SEGA, Capcom, Rockstar) is copyrig
 | Any library character as Aya (all 5 outfits, field + battle) | Parasite Eve (PS1) | **Done in gBox** | `characters op=use` builds `pe_<character>` (gbox/pe_swap.py, section 10). Mario checked on the Spark. |
 | Any library character as Cloud (field + battle models) | Final Fantasy VII (PS1) | **Done in gBox** | `characters op=use` builds `ff7_<character>` (gbox/ff7_swap.py, section 11). Mario checked on the Spark. |
 | Which games can rip / reimport, and the fallback | every studied game | **Done in gBox** | `characters op=coverage` (section 12). No writer: overlay + a gap report. |
+| The entire cast of one game as another game's cast ("everyone in PSO as wrestlers") | PSO enemies, DOA2, Def Jam, SmackDown! 2, No Mercy, JGR, Crazy Taxi, Vice City PC | **Done in gBox** | `characters op=cast_swap` / right-click a game -> "Replace entire cast with..." builds one mod (docs/cast_swap.md). |
 | Leon/Mario/Sonic as player | RE4 2005 UHD (PC) | **Medium** | JADERLINK BIN/TPL tools: SMD/OBJ in, `.bin/.tpl` back into `pl*.udas`. Leon-replacement mods exist. |
 | Mario/Sonic as Chris/Jill/Leon/Claire | RE1/2/3 classic PC | **Hard** | RE2MV/RE3MV with OBJ per body part. Very low-poly rigid segments, mostly manual. |
 | OoT characters as PSO Boomas (keeping Booma animations) | PSO BB (PC) | **Hard** | pso-blender (jtuu) `.xj` export into the Booma `.bml` via PSOBMLExtract. The model must match the Booma bone hierarchy. |

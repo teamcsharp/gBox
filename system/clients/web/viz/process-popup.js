@@ -69,7 +69,9 @@
     const budgetFit = fitting && /\binto\b.*\b(budget|triangles?|faces?|data)\b/i.test(m);
     if (/decimat|simplif/i.test(m) || budgetFit) {
       const verb = budgetFit ? "fit to budget" : "decimate";
-      if ((r = /([\d,]+)\s*(?:->|→|\bto)\s*~?([\d,]+)\s*tri/i.exec(m))) {
+      // "12000 -> 8000 triangles", or gta_vc "12000 triangles: decimating to ~8000 (Blender)"
+      if ((r = /([\d,]+)\s*(?:->|→|\bto)\s*~?([\d,]+)\s*tri/i.exec(m))
+          || (r = /([\d,]+)\s*tri\w*\b.*?\b(?:decimat|simplif)\w*\s+(?:->|→|to)\s*~?([\d,]+)/i.exec(m))) {
         const from = +r[1].replace(/,/g, ""), to = +r[2].replace(/,/g, "");
         if (from > 0 && to > 0) return { kind: "decimate", from, to, ratio: Math.min(1, to / from),
           label: `${verb} ${from.toLocaleString("en-US")} → ${to.toLocaleString("en-US")} tris` };

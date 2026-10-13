@@ -1150,7 +1150,7 @@ def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
 
 
 def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+               progress=lambda p, m: None, scale: dict | None = None, data: bytes | None = None) -> dict:
     """-> {files {PLAYER_AFS: bytes}, report, rigged, atlas}: character `index`'s high-detail body drawn as `model`
     (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh). Each rewritten node carries only its
     own new vertices (JGR vertex chunks are plain 0x29, not SA2's weighted ones, so no original chunk has to run
@@ -1164,7 +1164,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     from pathlib import Path
     from . import ninja, ninja_swap as NS
     from .gdrom import GDRom
-    data = GDRom(str(gdi)).read(PLAYER_AFS)
+    if data is None:                     # data: a staged PLAYER.AFS (the cast swap chains one slot onto the previous one)
+        data = GDRom(str(gdi)).read(PLAYER_AFS)
     play, ptex = character_pair(data, index)
     room = entry_room(data, play)
     buf = play_bytes(data, play)
