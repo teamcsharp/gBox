@@ -68,7 +68,7 @@ def iso_files(f) -> dict[str, tuple[int, int]]:
     """``{"/PATH/NAME": (lba, size)}`` for every file of an ISO9660 image."""
     f.seek(16 * SECTOR)
     pvd = f.read(SECTOR)
-    if pvd[1:6] != b"CD001":
+    if pvd[1:6] != b"CD001" or len(pvd) < 190:
         raise ValueError("no ISO9660 primary volume descriptor at LBA 16")
     out: dict[str, tuple[int, int]] = {}
 
@@ -83,6 +83,8 @@ def iso_files(f) -> dict[str, tuple[int, int]]:
             if n == 0:
                 o = (o // SECTOR + 1) * SECTOR
                 continue
+            if n < 34 or o + n > len(d) or 33 + d[o + 32] > n:
+                raise ValueError(f"bad ISO9660 directory record at {path or '/'}+{o:#x}")
             e_lba, e_size = struct.unpack_from("<I", d, o + 2)[0], struct.unpack_from("<I", d, o + 10)[0]
             flags, nl = d[o + 25], d[o + 32]
             name = d[o + 33:o + 33 + nl]
@@ -168,6 +170,8 @@ def atlus_header(b: bytes, o: int = 0) -> tuple[int, int, bytes] | None:
 
 
 def tmx_info(b: bytes, o: int = 0) -> dict:
+    if o < 0 or o + 0x17 > len(b):
+        raise ValueError(f"TMX0 header at {o:#x} truncated")
     w, h, psm = struct.unpack_from("<HHB", b, o + 0x12)
     return {"w": w, "h": h, "psm": PSM.get(psm, psm)}
 
@@ -185,12 +189,17 @@ def pb_chunks(b: bytes) -> list[dict]:
         t, size, magic = h
         c = {"offset": o, "magic": magic.decode(), "size": size}
         if magic == b"TXP0":
+            if o + 0x14 > len(b):
+                raise ValueError(f"TXP0 chunk at {o:#x} too short")
             n = struct.unpack_from("<I", b, o + 0x10)[0]
-            offs = struct.unpack_from(f"<{n}I", b, o + 0x14) if 0 < n < 4096 else ()
+            fits = 0 < n < 4096 and o + 0x14 + 4 * n <= len(b)
+            offs = struct.unpack_from(f"<{n}I", b, o + 0x14) if fits else ()
             c["textures"] = [tmx_info(b, o + x) for x in offs
-                             if atlus_header(b, o + x) and b[o + x + 8:o + x + 12] == b"TMX0"]
+                             if o + x + 0x17 <= len(b) and atlus_header(b, o + x) and b[o + x + 8:o + x + 12] == b"TMX0"]
             c["texture_count"] = n
         elif magic == b"MT00":
+            if o + 0x18 > len(b):
+                raise ValueError(f"MT00 chunk at {o:#x} too short")
             c["motions"] = struct.unpack_from("<I", b, o + 0x14)[0]
         elif magic == b"TMX0":
             c["texture"] = tmx_info(b, o)

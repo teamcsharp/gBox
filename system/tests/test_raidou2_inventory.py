@@ -92,3 +92,23 @@ def test_owned_disc_inventory():
     assert player["chunks"] == ["PIB0", "TXP0", "MD00", "MT00"]
     assert player["textures"] == 11 and player["motions"] == 12
     assert m["character_counts"]["devil_battle_lb"] == 559
+
+
+def test_truncated_inputs_raise_valueerror():
+    import io
+    pb = _pad(_chunk(b"PIB0", b"\0" * 16))
+    # a header whose declared size covers only 16 bytes: the MT00 count at +0x14 is past the buffer
+    with pytest.raises(ValueError):
+        r2.pb_chunks(pb + struct.pack("<HHI4sI", 8, 0, 16, b"MT00", 0))
+    with pytest.raises(ValueError):
+        r2.tmx_info(b"\0" * 0x16)
+    pvd = bytearray(2048)
+    pvd[1:6] = b"CD001"
+    pvd[156 + 2:156 + 6] = struct.pack("<I", 17)
+    pvd[156 + 10:156 + 14] = struct.pack("<I", 2048)
+    rec = bytes([40]) + b"\0" * 39  # record length 40 but the image ends after 20 bytes
+    img = bytes(16 * 2048) + bytes(pvd) + rec[:20]
+    with pytest.raises(ValueError):
+        r2.iso_files(io.BytesIO(img))
+    with pytest.raises(ValueError):
+        r2.iso_files(io.BytesIO(bytes(16 * 2048) + b"\1CD001"))
