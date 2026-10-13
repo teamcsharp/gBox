@@ -429,11 +429,17 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
     """Launch a cataloged game on this node; missing cores/BIOS are installed automatically. Streams to the UI."""
     with _LAUNCH_LOCK:
         diag: dict = {}
+        _LAUNCH_DIAG.d = diag                                  # _launch_game records how far it got (one launch at a time)
         try:
-            return _launch_game(inp, ctx, diag)
+            return _launch_game(inp, ctx)
         except Exception as exc:
             _launch_failure_evidence(inp, ctx, diag, exc)
             raise
+        finally:
+            _LAUNCH_DIAG.d = None
+
+
+_LAUNCH_DIAG = threading.local()
 
 
 def _launch_failure_evidence(inp: LaunchIn, ctx: Ctx, diag: dict, exc: BaseException):
@@ -476,10 +482,11 @@ def _capture_plan(ad, g, want: str, ctx) -> dict:
     return plan | {"renderdoc": str(rd)}
 
 
-def _launch_game(inp: LaunchIn, ctx: Ctx, diag: dict | None = None):
+def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
     timings, staging = {}, None
+    diag = getattr(_LAUNCH_DIAG, "d", None)
     diag = {} if diag is None else diag
     diag["timings"] = timings                                 # filled as the stages pass (a failure shows how far it got)
     t_start = mark = time.monotonic()

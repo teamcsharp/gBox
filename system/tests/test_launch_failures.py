@@ -570,3 +570,38 @@ def test_mods_gallery_entries_carry_the_launch_report(plane):
                              p.store.catalog_get(DOA2), {}, None, launch_report=reports.get((DOA2, MOD)))
     assert entry["launch_report"]["number"] == rec["number"]
     assert any(t["number"] == rec["number"] for t in entry["tickets"])
+
+
+def test_a_failed_launch_on_the_worker_leaves_its_evidence(monkeypatch):
+    from gbox import tools
+
+    class Ad:
+        name = "retroarch"
+
+        def log_tail(self, n):
+            return "[WARN] GDROM not ready"
+
+    def launch(inp, ctx):
+        d = tools._LAUNCH_DIAG.d
+        d.update(_adapter=Ad(), adapter="retroarch", stage="start the emulator", staged_mod=MOD)
+        d.setdefault("timings", {})["mod_s"] = 4.2
+        raise RuntimeError("retroarch started but content not running after 30s")
+
+    class Ctx:
+        def __init__(self):
+            self.artifacts = []
+
+        def artifact(self, name, data, media, **prov):
+            self.artifacts.append((name, data, media))
+    monkeypatch.setattr(tools, "_launch_game", launch)
+    inp = tools.LaunchIn(game={"game_id": DOA2, "title": "Dead or Alive 2", "platform": "dreamcast", "format": "gdi",
+                               "profile_id": DOA2, "source_paths": ["x"]}, mod=MOD, boot_timeout_s=90)
+    ctx = Ctx()
+    with pytest.raises(RuntimeError):
+        tools.launch_game(inp, ctx)
+    got = {n: d for n, d, _m in ctx.artifacts}
+    info = json.loads(got["launch-failure.json"])
+    assert info["adapter"] == "retroarch" and info["stage"] == "start the emulator" and info["staged_mod"] == MOD
+    assert info["timings"] == {"mod_s": 4.2} and info["boot_timeout_s"] == 90 and "_adapter" not in info
+    assert got["emulator-log.txt"] == b"[WARN] GDROM not ready"
+    assert tools._LAUNCH_DIAG.d is None
