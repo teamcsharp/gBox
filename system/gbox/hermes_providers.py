@@ -411,6 +411,34 @@ def session_providers(now: float | None = None) -> dict[str, dict]:
         return {tag: who for tag, s in scan.sessions.items() if (who := served_by(s))}
 
 
+def _note(e: dict, has_ok_lines: bool, last_ok: dict, last_error: dict) -> None:
+    """Fold one log event into the provider's latest success and latest error."""
+    provider = e['provider']
+    if e['kind'] == 'ok' or (e['kind'] == 'call' and not has_ok_lines):
+        # Older logs only mark starts and failures: a started call counts as a sign of life.
+        last_ok[provider] = max(last_ok.get(provider, 0), e['ts'])
+    elif e['kind'] == 'error' or (e['kind'] == 'fail' and e.get('text')):
+        if e['ts'] >= last_error.get(provider, {}).get('ts', 0):
+            last_error[provider] = {'ts': e['ts'], 'text': e['text'], 'code': e.get('code'),
+                                    'kind': error_kind(e['text'], e.get('code')), 'model': e.get('model')}
+
+
+def provider_health(home: Path | None = None, now: float | None = None) -> dict[str, dict]:
+    """``{provider: {'last_ok': ts | None, 'last_error': {ts, text, code, kind, model} | None}}`` from every model
+    call in Hermes's agent log, including calls a run made before it fell through to its next fallback. The route
+    supervisor reads this: a run's final error names only the last provider it tried, so an out-of-credit primary
+    that Hermes silently skipped would otherwise never be seen (hermes_feedback.apply_exhaustion)."""
+    now = time.time() if now is None else now
+    scan = scanner(home)
+    scan.refresh(now, _tz())
+    with scan.lock:
+        events, has_ok_lines = list(scan.events), scan.has_ok_lines
+    last_ok, last_error = {}, {}
+    for e in events:
+        _note(e, has_ok_lines, last_ok, last_error)
+    return {p: {'last_ok': last_ok.get(p), 'last_error': last_error.get(p)} for p in set(last_ok) | set(last_error)}
+
+
 # -- control files ---------------------------------------------------------------------------------
 def _feedback() -> dict:
     try:
@@ -688,14 +716,7 @@ def summary(window: str = 'today', now: float | None = None, *, wait_balance: bo
 
     for e in events:
         provider = e['provider']
-        if e['kind'] == 'ok':
-            last_ok[provider] = max(last_ok.get(provider, 0), e['ts'])
-        elif e['kind'] == 'call' and not has_ok_lines:
-            last_ok[provider] = max(last_ok.get(provider, 0), e['ts'])
-        elif e['kind'] == 'error' or (e['kind'] == 'fail' and e.get('text')):
-            if e['ts'] >= last_error.get(provider, {}).get('ts', 0):
-                last_error[provider] = {'ts': e['ts'], 'text': e['text'], 'code': e.get('code'),
-                                        'kind': error_kind(e['text'], e.get('code')), 'model': e.get('model')}
+        _note(e, has_ok_lines, last_ok, last_error)
         if e['ts'] < since:
             continue
         b = bucket(provider, e.get('model'))

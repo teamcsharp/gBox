@@ -120,7 +120,9 @@ saturated targets fail before another job is queued. Agents continue independent
 source work rather than repeatedly consuming five-minute calls.
 
 Hermes's gBox MCP environment protects the operator's selected PC using
-`GBOX_OPERATOR_WORKER` (currently i9-NUC; JAYBUILTFINALE is the test PC).
+`GBOX_OPERATOR_WORKER`. Since 2026-10-13 the operator plays on JAYBUILTFINALE and agent test sessions run
+only on i9-NUC or the Spark: `GBOX_OPERATOR_WORKER=JAYBUILTFINALE`, `GBOX_TEST_WORKER=i9-NUC` in Hermes's
+`mcp_servers.gbox.env` (`~/.hermes/config.yaml`; the repo sets neither).
 Idle selection excludes that PC even when it owns no
 live game or has been idle while the operator reads. A test launch also preserves
 an existing game on the other PC. Windows agent jobs retain 2% audio enforcement.
@@ -133,7 +135,7 @@ live acceptance therefore remains visible rather than being claimed complete.
 Spark continues source analysis, focused tests and Git publication while that
 client is unavailable. It subsequently reconnected and a real desktop capture
 passed and was attached to the report. The operator then selected i9-NUC as the
-protected PC. JAY's idle worker was refreshed without a local emulator running.
+protected PC (superseded on 2026-10-13, above). JAY's idle worker was refreshed without a local emulator running.
 The operator's explicit test-PC assignment is stored in GBOX_TEST_WORKER.
 It takes precedence over recent-input telemetry, while offline/saturated checks
 and preservation of an existing game remain enforced. Unassigned selection

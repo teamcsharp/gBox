@@ -258,3 +258,45 @@ def test_failed_paid_runs_are_never_resumed_on_the_local_route(monkeypatch, tmp_
         'resumes': [], 'status': 'pending'}}})
     feedback = {'routes': [NOUS], 'cooldowns': {'nous/' + OPUS: 9e12}}
     assert hermes_recovery.recover(feedback, now=1000) == {'status': 'waiting_provider'}
+
+
+def _executions(home, *runs):
+    import sqlite3
+    (home / 'cron').mkdir(exist_ok=True)
+    with sqlite3.connect(home / 'cron' / 'executions.db') as db:
+        db.execute('CREATE TABLE IF NOT EXISTS executions (id TEXT,job_id TEXT,status TEXT,started_at TEXT,'
+                   'finished_at TEXT,error TEXT)')
+        db.executemany('INSERT INTO executions VALUES (?,?,?,?,NULL,NULL)', runs)
+
+
+def test_a_run_past_its_deadline_no_longer_holds_the_switch_to_local(supervisor, monkeypatch):
+    """2026-10-13: three runs fell through to the CPU llama.cpp model and crawled for 2-3 hours. They kept the
+    supervisor 'busy', so it never left Nous or rewrote the fallback chain that still listed llama.cpp and EhmBird."""
+    import datetime as dt
+    import yaml
+    sv = supervisor
+    config = yaml.safe_load(sv.config_path.read_text())
+    config['fallback_providers'] = [{'provider': 'ollama-cloud', 'model': 'kimi-k2.7-code'},
+                                    {'provider': 'llamacpp', 'model': 'Qwen3.6-35B-A3B-UD-Q4_K_M'},
+                                    {'provider': 'EhmBird', 'model': 'qwen3.8:27b-mtp-q4_K_M'}]
+    sv.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    sv.data['cooldowns'] = {'nous/' + OPUS: 9e12, 'openrouter/' + OPUS: 9e12, 'ollama-cloud/kimi-k2.7-code': 9e12}
+    now = dt.datetime.now(dt.timezone.utc)
+    home = sv.config_path.parent
+    _executions(home, ('e-new', 'fresh', 'running', (now - dt.timedelta(minutes=10)).isoformat()))
+    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [{'id': 'fresh'}, {'id': 'stuck'}])
+    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_active', lambda _: True)
+    held = hermes_feedback.adjust_routes()                     # a run 10 minutes in: rotation waits, as before
+    assert held['agent_busy'] and held['overdue_runs'] == [] and sv.config['cron']['model_provider'] == 'nous'
+    assert [x['provider'] for x in held['excluded_fallbacks']] == ['llamacpp', 'EhmBird']
+    _executions(home, ('e-old', 'stuck', 'running', (now - dt.timedelta(hours=3)).isoformat()))
+    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_active', lambda job: job == 'stuck')
+    out = hermes_feedback.adjust_routes()                      # only the 3-hour run is left: it does not hold
+    assert out['mode'] == 'local' and not out['agent_busy']
+    assert [(o['job_id'], o['execution_id']) for o in out['overdue_runs']] == [('stuck', 'e-old')]
+    assert out['overdue_runs'][0]['age_s'] >= 3 * 3600 - 5
+    assert sv.config['cron'] == {'model_provider': 'spark-local', 'model': 'gpt-oss:20b'}
+    assert sv.config['fallback_providers'] == []               # llama.cpp and EhmBird are gone from Hermes's chain
+    assert json.loads(sv.path.read_text())['overdue_runs'][0]['job_id'] == 'stuck'
+    monkeypatch.setenv('GBOX_HERMES_RUN_DEADLINE_S', str(4 * 3600))
+    assert hermes_feedback.overdue_runs(['stuck'], home=home) == []
