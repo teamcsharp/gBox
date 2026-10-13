@@ -146,6 +146,79 @@ def test_parse_skin_and_roles():
         D.roles({"bones": m["bones"][:10]})
 
 
+# ---------------------------------------------------------------- texture coordinates and formats, as the TA reads them
+
+def _ta_uv(raw_pair) -> tuple[float, float]:
+    """The vertex emitter at 0x8c03cc68: ``mov.l @r5+,r2`` loads the strip's two u16 as one little-endian u32,
+    ``mov.l r2,@(16,r4)`` stores it as the TA vertex's U float, ``shll16 r2`` / ``mov.l r2,@(20,r4)`` as V."""
+    word = int(raw_pair[0]) | int(raw_pair[1]) << 16
+    u = float(np.uint32(word).view(np.float32))
+    v = float(np.uint32((word << 16) & 0xFFFFFFFF).view(np.float32))
+    return u, v
+
+
+def test_strip_uv_is_what_the_ta_reads():
+    m = D.parse_model(synthetic_model())
+    s0 = m["sections"][0][0]                                  # stores (0x3f00, 0x3e80): V = 0.5, U = 0.25
+    assert tuple(s0["uv"][0]) == (0.25, 0.5)
+    for sec in m["sections"]:
+        for s in sec:
+            for raw, uv in zip(s["raw_uv"], s["uv"]):
+                u, v = _ta_uv(raw)
+                assert uv[1] == v and abs(uv[0] - u) <= abs(u) * 2 ** -7     # U's low half is V's bits
+    uv = np.array([[0.1, 0.9], [0.75, 0.003], [1.0, 0.0], [0.5, 0.25]])
+    words = D.uv_words(uv)
+    assert tuple(words[3]) == (0x3E80, 0x3F00)                # first V, then U
+    assert np.allclose(D.strip_uv(words), uv, rtol=2 ** -8, atol=0)
+    assert np.allclose([_ta_uv(w) for w in words], uv, rtol=2 ** -7, atol=0)
+
+
+def test_written_strips_sample_the_donor_texel_the_game_reads():
+    """A donor texture with four coloured quadrants, one corner in each: through the atlas, the YUV422 page encoder
+    and the strip words, the texel the game samples at every corner (TA U / V, the page in hardware twiddle order)
+    is the donor's texel at that corner. v3 wrote the words the other way round, and the game sampled the page
+    transposed (#1765: Mario's blocky patches)."""
+    stock = synthetic_model()
+    prims = _donor_prims(stock)
+    tex = np.zeros((8, 8, 3), np.uint8)
+    tex[:4, :4], tex[:4, 4:], tex[4:, :4], tex[4:, 4:] = (230, 40, 40), (40, 200, 40), (40, 40, 230), (230, 230, 230)
+    prims[0]["tex"] = tex
+    prims[0]["uv"] = np.array([[0.05, 0.05], [0.95, 0.05], [0.05, 0.95], [0.95, 0.95]])
+    at = W.atlas(prims, 1)
+    for p in prims:
+        p["_page"] = 1
+        p["_uv"] = [W.map_uv(p["uv"][t], at["slots"][p["_texkey"]]) for t in p["tris"]]
+    m = D.parse_model(W.encode_model(stock, prims, [1])["model"])
+    page = D.page_rgb(D.page_encode(at["images"][0]))
+    lib = D.skin(m)["positions"] @ D.FRAME.T
+    seen = set()
+    for sec in m["sections"]:
+        for s in sec:
+            for p, raw in zip(s["pos"], s["raw_uv"]):
+                u, v = _ta_uv(raw)
+                got = page[int(v * 256) % 256, int(u * 256) % 256].astype(int)
+                k = int(np.abs(prims[0]["pos"] - lib[p]).sum(1).argmin())
+                du, dv = prims[0]["uv"][k]
+                want = tex[int(dv * 8), int(du * 8)].astype(int)
+                assert np.abs(got - want).max() < 30, (k, got, want)
+                seen.add(k)
+    assert seen == {0, 1, 2, 3}
+
+
+def test_page_formats_follow_the_material_byte():
+    assert [D.material_format(x) for x in (0x31, 0x22, 0x63, 0x00, 0x40, 0x70)] == [3, 2, 2, 0, 0, 3]
+    words = np.zeros((256, 256), np.uint16)
+    words[9, 5], words[9, 6], words[200, 17] = 0x8F40, 0xFC00, 0x7C1F
+    raw = np.empty(256 * 256, np.uint16)
+    raw[D._tw()] = words.reshape(-1)
+    page = raw.astype("<u2").tobytes()
+    a4 = D.page_rgba(page, D.ARGB4444)
+    assert tuple(a4[9, 5]) == (255, 68, 0, 136) and tuple(a4[0, 0]) == (0, 0, 0, 0)
+    a1 = D.page_rgba(page, D.ARGB1555)
+    assert tuple(a1[9, 6]) == (255, 0, 0, 255) and tuple(a1[200, 17]) == (255, 0, 255, 0)
+    assert D.page_rgba(page, D.YUV422).shape == (256, 256, 4) and (D.page_rgba(page, D.YUV422)[..., 3] == 255).all()
+
+
 def test_strip_triangles_alternate():
     assert D.strip_triangles(5) == [(0, 1, 2), (2, 1, 3), (2, 3, 4)]
 
@@ -718,6 +791,30 @@ def test_owned_disc_round_trip_identity():
             n += 1
     assert n == 45
     assert W.replace_entries(human, {}) == human
+
+
+@pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")
+def test_owned_disc_yuv_strips_avoid_the_alpha_regions():
+    """Stock pages mix formats: the ARGB4444 hair regions read as pure green in YUV. With the UVs the TA reads, the
+    YUV strips of all 45 costumes almost never land in those regions; read the other way round (the v3 reader) they
+    land there five times as often (the green feet and hair of the old offline renders)."""
+    entries = D.olnk(_owned_human())
+    hits = np.zeros((2, 2))
+    for g, _key, _name, _a in D.FIGHTERS:
+        for c in D.costumes_of(entries, g):
+            cp = D.costume_parts(entries[g * D.GROUP + c])
+            pages = [D.page_rgb(p) for p in cp["pages"]]
+            for sec in D.parse_model(cp["model"])["sections"]:
+                for s in sec:
+                    if D.material_format(s["material"]) != D.YUV422:
+                        continue
+                    for k, uv in enumerate((s["uv"], s["uv"][:, ::-1])):
+                        for a, b, cc in D.strip_triangles(len(uv)):
+                            x, y = (np.floor(uv[[a, b, cc]].mean(0) * 256).astype(int) % 256)
+                            r, gr, bl = pages[s["material"] & 3][y, x].astype(int)
+                            hits[k] += (gr > 100 and r < 40 and bl < 40, 1)
+    ta, swapped = hits[:, 0] / hits[:, 1]
+    assert ta < 0.004 and swapped > 3 * ta, (ta, swapped)
 
 
 @pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")

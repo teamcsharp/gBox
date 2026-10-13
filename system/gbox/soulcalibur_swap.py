@@ -149,12 +149,6 @@ def atlas(prims: list[dict], pages: int) -> dict:
     return {"images": out, "slots": slots, "grid": max(grids), "textures": n}
 
 
-def _bf16(x: np.ndarray) -> np.ndarray:
-    """float -> the upper 16 bits of its float32 (round to nearest)."""
-    b = np.asarray(x, np.float32).view(np.uint32).astype(np.uint64)
-    return ((b + 0x8000) >> 16).astype(np.uint16)
-
-
 def map_uv(uv: np.ndarray, slot: tuple) -> np.ndarray:
     """Donor UVs (one triangle's corners) -> page UVs inside the slot (wrapped into [0,1], half a texel inset)."""
     _page, x, y, w, h = slot
@@ -445,7 +439,7 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         for tri in by_page[page]:
             ids = []
             for _src, s, uv in tri:
-                key = (s, _bf16(np.array(uv))[0], _bf16(np.array(uv))[1])
+                key = (s, *(int(w) for w in D.uv_words(np.array(uv))[0]))   # the strip's (V, U) words
                 if key not in corner_id:
                     corner_id[key] = len(verts)
                     verts.append(key)

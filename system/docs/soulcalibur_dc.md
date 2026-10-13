@@ -66,9 +66,12 @@ in the strings.
   - `[4]` face-shape data, 3104 bytes.
   - `[6]` LZ data.
 - **Weapon** = table of the LZ model followed by one or two pages.
-- **Pages**: raw 256x256 **YUV422, twiddled**, 131,072 bytes, no header. Y is the high byte of each word. The low
-  byte is U on the even texel and V on the odd one. Page 0 of a fighter with a face (model flag `0x200`/`0x300` at
-  +0x12) is the expression sheet. Pure-green texels mark the strands of hair or fringe.
+- **Pages**: raw 256x256 twiddled pages, 131,072 bytes, no header. Most texels are **YUV422**: Y is the high byte
+  of each word, and the low byte is U on the even texel and V on the odd one. A page can also hold regions in other
+  pixel formats, because each strip picks the format with its material byte (see Strips): hair and fringe are
+  **ARGB4444**, and some decals and cloth emblems are **ARGB1555**. Read as YUV, those regions look pure green;
+  that green is not a colour key. Page 0 of a fighter with a face (model flag `0x200`/`0x300` at +0x12) is the
+  expression sheet.
 - **Model** (after LZ):
   - Header (0x20 bytes):
     - +0x00: two dates (`HHMM MMDD`)
@@ -100,11 +103,21 @@ in the strings.
     - Header `+0x14` / `+0x16` are the position / normal slot counts. `0x8c03c998` projects that many positions.
     - Stock layout: each bone's stores are one consecutive slot run, adds carry bit 15, and every add lands on a slot
       stored earlier in the frame. `pack_model(parse_model(m)) == m` holds for every costume.
-  - Strips: sections of `u8 material, u8 flags, 0, u8 count` headers, each followed by `count x (u16 position,
-    u16 normal | 0x8000 on the last, u16 u, u16 v)`. UVs are the upper half of a float. Triangle k is
-    `(k, k+1, k+2)` when k is even and `(k+1, k, k+2)` when k is odd, and faces out in the game's space. `u32 0`
-    closes a section, and an empty section closes the list. `material & 3` is the page (`0x3x` opaque; `0x2x`,
-    `0x4x`, `0x6x` other modes).
+  - Strips: sections of `u8 material, u8 flags, u8 group, u8 count` headers, each followed by `count x (u16 position,
+    u16 normal | 0x8000 on the last, u16 v, u16 u)`. Triangle k is `(k, k+1, k+2)` when k is even and
+    `(k+1, k, k+2)` when k is odd, and faces out in the game's space. `u32 0` closes a section, and an empty section
+    closes the list.
+    - **Texture coordinates** (`0x8c03cc68`, the vertex emitter): `mov.l @r5+,r2` loads the two u16 as one
+      little-endian u32 and stores it as the TA vertex's U float (`mov.l r2,@(16,r4)`); `shll16 r2` then stores
+      the same word shifted as V (`@(20,r4)`). So the **second** u16 is the upper half of U, and the **first** is
+      V. `strip_uv` and `uv_words` read and write them in that order.
+    - **Material** (`0x8c03cf60` builds the polygon header): TCW = `base + (material & 3) * 0x4000 +
+      (material & 0x30) << 23`. So `material & 3` is the page, and `(material >> 4) & 3` is the PVR pixel format:
+      `0x3x` YUV422, `0x2x` ARGB4444, `0x0x` ARGB1555 (`material_format`, `page_rgba`). Bit `0x40` sends the strip
+      to the translucent list, with TSP `0x94100000` (src alpha, inverse src alpha). The opaque list's TSP
+      `0x20080000` ignores texture alpha.
+    - `flags` > 0 scales U and offsets V from a per-model table (`param + 0x25c`, UV animation). The `group` byte
+      is a visibility bit: the strip is drawn when bit `group` of the caller's mask is set (`0xffffffff` for the body).
   - Ivy's chain blade stores `0x7fbfffff` placeholders as some of its normals.
 - **Space**: fighters face +Z, but the space is left-handed. Read in a right-handed frame, texture text comes out
   mirrored. The library frame is reached by mirroring X (`FRAME`), so the game's -X side is the fighter's left.
@@ -168,7 +181,9 @@ fighters' 52 weapon models parse and skin (`soulcalibur_dc.coverage`). Mitsurugi
 
 Limits:
 
-- Hair and fringe strips use green-key pages. How the game masks them was not found, so they render opaque green.
+- Hair and fringe strips (`0x2x` / `0x6x`) read their page region as ARGB4444, and decals (`0x0x` / `0x4x`) read
+  theirs as ARGB1555. The GLB gives those materials their own decoded texture with alpha, blended when the strip is
+  translucent (reader version 3; before that they came out pure green).
 - The motion pack (entry 4) is not decoded.
 - The weapon's in-game placement comes from motion data.
 
@@ -199,7 +214,8 @@ Limits:
   - The model is laid out by `soulcalibur_dc.pack_model`, the same packer that rebuilds every stock model byte for
     byte.
   - The triangles are stripified with the game's winding, after the library-to-game mirror.
-  - Texture page indices go in the material byte.
+  - Texture page indices go in the material byte (`0x3x`, YUV422). The UV words go in the order the TA reads them:
+    V first, then U (`uv_words`).
   - The tail after the strips stays at its stock offset, so the records' extra offsets still hold.
   - The vertex count must stay within the stock position and normal counts. The rows and strips must fit before the
     tail.
