@@ -233,6 +233,112 @@ test('mountSpecial: the same section in another menu (the desktop chip menu), it
   assert.match(host.innerHTML, /Special builds ▸/);
 });
 
+// ------------------------------------------------------------------ #1656: Favorites group, ✎ Rename…, ★ in the options
+const FAVED = { game_id: GID, total: 4, groups: [
+  { key: 'favorites', label: 'Favorites', count: 1, builds: [{ ...HUCAST, favorite: true, home: 'confirmation', display_name: 'Sonic Full Cast',
+                                                              mod_title: 'Sonic Full Cast', original_title: 'HUcast in G1' }] },
+  { key: 'confirmation', label: 'Confirmation builds', count: 1, builds: [{ ...KANE, home: 'confirmation' }] },
+  { key: 'cast', label: 'Cast swaps', count: 1, builds: [{ ...CAST, home: 'cast' }] },
+  { key: 'character', label: 'Character swaps', count: 0, builds: [] },
+  { key: 'other', label: 'Other', count: 1, builds: [{ ...PATCH, home: 'other' }] }] };
+
+const clone = x => JSON.parse(JSON.stringify(x));          // the controller updates the rows it shows
+function buildsIo(state) {
+  const sent = [];
+  const api = (p, body, method) => {
+    if (p.startsWith('/api/builds/')) {
+      sent.push([method, p, body]);
+      if (p.endsWith('/favorite')) return Promise.resolve({ key: 'x', favorite: body.favorite });
+      return Promise.resolve({ key: 'x', display_name: body.display_name, label: body.display_name || 'HUcast in G1' });
+    }
+    if (p.endsWith('/special_builds')) return Promise.resolve(state.special);
+    return answer(p, body);
+  };
+  const r = fakeIo(api);
+  r.io.api = (p, body, method) => { r.calls.api.push([p, body, method]); return api(p, body, method); };
+  return { ...r, sent };
+}
+
+test('Favorites group at the top: ★ on the row, its name as the operator named it; Rebuild all still counts a favorited confirmation build', async () => {
+  const { io } = buildsIo({ special: clone(FAVED) });
+  openState(io);
+  await GM.open(io, { gid: GID, title: 'G1' }).settled;
+  const html = io.el.html;
+  assert.ok(html.indexOf('data-gm-sbg="favorites"') < html.indexOf('data-gm-sbg="confirmation"'), 'Favorites first');
+  assert.match(html, /<b style="font-size:12px">Favorites<\/b> <span class="mut">1<\/span>/);
+  assert.match(html, /<span class="gm-fav" title="Favorite">★<\/span> Sonic Full Cast<\/span>/);
+  assert.match(html, /title="Sonic Full Cast \(was “HUcast in G1”, folder g1_hucast\)"/);
+  assert.match(html, /⟳ Rebuild all confirmation builds \(2\)/, 'the favorited confirmation build is still one of them');
+});
+
+test('✎ Rename… in a build\'s options: an inline field, Enter saves (PATCH), Esc cancels, empty restores; the menu refetches', async () => {
+  const state = { special: clone(SPECIAL) };
+  const { io, sent } = buildsIo(state);
+  openState(io);
+  const m = GM.open(io, { gid: GID, title: 'G1' });
+  await m.settled;
+  io.el.onclick({ target: sb('opts', { key: HUCAST.key }) });
+  assert.match(io.el.html, /data-gm-sb="rename" data-key="g1\/g1_hucast"[^>]*>✎ Rename…</);
+  assert.match(io.el.html, /data-gm-sb="fav" data-key="g1\/g1_hucast"[^>]*>★ Add to favorites</);
+  io.el.onclick({ target: sb('rename', { key: HUCAST.key }) });
+  assert.equal(m.state.sbRenaming, HUCAST.key);
+  assert.match(io.el.html, /<input data-gm-sbrename="g1\/g1_hucast" value="HUcast in G1" maxlength="120"[^>]* data-nomic>/);
+  assert.ok(!io.el.html.includes('data-gm-sbo='), 'the options close while renaming');
+  const field = (value, key = HUCAST.key) => ({ closest: s => s === '[data-gm-sbrename]' ? { dataset: { gmSbrename: key }, value } : null });
+  // a click inside the field stays in it; Esc cancels
+  assert.equal(m.special.click(field('x')), true);
+  io.el.onkeydown({ key: 'Escape', target: field('typed'), preventDefault() {}, stopPropagation() {} });
+  assert.equal(m.state.sbRenaming, null); assert.equal(sent.length, 0);
+  // Enter saves through PATCH /api/builds/{game}/{name}; the menu refetches its groups
+  io.el.onclick({ target: sb('rename', { key: HUCAST.key }) });
+  state.special = clone(FAVED);
+  io.el.onkeydown({ key: 'Enter', target: field('  Sonic Full Cast  '), preventDefault() {} });
+  await tick(6);
+  assert.deepEqual(sent[0], ['PATCH', '/api/builds/g1/g1_hucast', { display_name: 'Sonic Full Cast' }]);
+  assert.match(io.el.html, /✓ renamed “Sonic Full Cast” \(the folder stays g1_hucast\)/);
+  assert.match(io.el.html, /Sonic Full Cast<\/span>/);
+  // empty restores the original
+  io.el.onclick({ target: sb('rename', { key: HUCAST.key }) });
+  io.el.onkeydown({ key: 'Enter', target: field(''), preventDefault() {} });
+  await tick(6);
+  assert.deepEqual(sent[1], ['PATCH', '/api/builds/g1/g1_hucast', { display_name: '' }]);
+});
+
+test('★ Add to favorites from a build\'s options: PUT, the menu refetches with the Favorites group on top; mountSpecial gets keys too', async () => {
+  const state = { special: clone(SPECIAL) };
+  const { io, sent } = buildsIo(state);
+  openState(io);
+  const m = GM.open(io, { gid: GID, title: 'G1' });
+  await m.settled;
+  io.el.onclick({ target: sb('opts', { key: HUCAST.key }) });
+  state.special = clone(FAVED);
+  io.el.onclick({ target: sb('fav', { key: HUCAST.key }) });
+  await tick(6);
+  assert.deepEqual(sent[0], ['PUT', '/api/builds/g1/g1_hucast/favorite', { favorite: true }]);
+  assert.match(io.el.html, /data-gm-sbg="favorites"/);
+  assert.match(io.el.html, /★ HUcast in G1 is a favorite/);
+  // un-star from the Favorites row
+  io.el.onclick({ target: sb('opts', { key: HUCAST.key }) });
+  assert.match(io.el.html, /☆ Remove from favorites/);
+  // the desktop chip menu's mount has the same keys
+  const host = { innerHTML: '' };
+  const s = GM.mountSpecial(io, host, { gid: GID, title: 'G1' });
+  await s.settled;
+  host.onclick({ target: sb('rename', { key: HUCAST.key }), stopPropagation() {} });
+  assert.match(host.innerHTML, /data-gm-sbrename="g1\/g1_hucast"/);
+  host.onkeydown({ key: 'Escape', target: { closest: q => q === '[data-gm-sbrename]' ? { dataset: { gmSbrename: HUCAST.key }, value: '' } : null }, preventDefault() {}, stopPropagation() {} });
+  assert.ok(!host.innerHTML.includes('data-gm-sbrename'));
+});
+
+test('Boot with a mod: a card of a renamed build shows its display name, ★ builds first', () => {
+  const st = { gid: GID, title: 'G1', boot: { disc: '', slot: '', character: '' }, kept: [], chars: [], special: null, specialOpen: false,
+               mods: [{ id: 'a', title: 'Plain card', calls: [{ tool: '@launch', input: { mod: 'plain' } }] },
+                      { id: 'b', title: 'Patch card', display_name: 'Sonic Full Cast', favorite: true, calls: [{ tool: '@launch', input: { mod: 'g1_patch' } }] }] };
+  const html = GM.SECTIONS.mods(st, GM.derive(st));
+  assert.ok(html.indexOf('★ Sonic Full Cast') > 0 && html.indexOf('★ Sonic Full Cast') < html.indexOf('Plain card'));
+  assert.ok(!html.includes('Patch card'));
+});
+
 test('wiring: the web game menu io and the desktop chip menu', () => {
   const read = f => fs.readFileSync(path.join(__dirname, '..', 'clients', f), 'utf8');
   const web = read('web/index.html'), desk = read('desktop/index.html'), gallery = read('web/viz/mods-gallery.js');
@@ -248,4 +354,16 @@ test('wiring: the web game menu io and the desktop chip menu', () => {
   assert.match(desk, /function chipSpecialIO\(m\) \{[\s\S]{0,900}progress: jobs => \{ Promise\.resolve\(processPopupSync\(jobs\)\)/);
   assert.match(desk, /async function specialBuildLaunch\(gid, x\) \{[\s\S]{0,400}modsGalleryPlay\(m,/);
   assert.match(gallery, /function focus\(\{ q, game \} = \{\}\)/);
+});
+
+test('#1656 wiring: the launch screen and the Mini window name a renamed build; the chip menu passes PATCH / PUT', () => {
+  const read = f => fs.readFileSync(path.join(__dirname, '..', 'clients', f), 'utf8');
+  const web = read('web/index.html'), desk = read('desktop/index.html');
+  assert.match(web, /label: x\.build\?\.mod_title \|\| x\.build\?\.label \|\| "" \}\)/, 'Special builds / Builds launches carry the build name');
+  assert.match(web, /loader\.show\(boot\.label \? `\$\{g\.title\} · \$\{boot\.label\}` : g\.title,/);
+  assert.match(desk, /const sessionTitle = s => s \? \(s\.mod_title \? `\$\{s\.title \|\| s\.game_id \|\| "game"\} · \$\{s\.mod_title\}`/);
+  assert.match(desk, /sid = s\.session_id; title = sessionTitle\(s\);/);
+  assert.match(desk, /title = s \? sessionTitle\(s\) : "";\r?\n\s*\}\r?\n\s*miniPadTarget\(sid\);\r?\n\s*gbox\.miniOpen\(sid, title\);/);
+  assert.match(desk, /function chipSpecialIO\(m\) \{\r?\n\s*const api = async \(path, body, method\) => \{ const r = await gbox\.api\(path, body, method\);/);
+  for (const f of [web, desk]) assert.ok(!/[^\r]\n/.test(f), 'CRLF line endings kept');
 });

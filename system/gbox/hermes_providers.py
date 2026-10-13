@@ -45,7 +45,7 @@ KEEP = 8 * 86400                 # parsed history kept in memory (the 7 day wind
 BALANCE_TTL, BALANCE_RETRY = 300, 60
 DB_TTL = 30
 PAIR_S = 10                      # a stream cleanup and its "API call failed" line are one failure
-LOCAL_NAMES = {'llamacpp', 'llama-cpp', 'llama.cpp', 'lmstudio', 'lm-studio', 'local', 'vllm', 'ollama',
+LOCAL_NAMES = {'spark-local', 'llamacpp', 'llama-cpp', 'llama.cpp', 'lmstudio', 'lm-studio', 'local', 'vllm', 'ollama',
                'ollama-local', 'koboldcpp', 'tabbyapi', 'textgen'}
 BALANCE_NOTES = {'nous': 'Balance not available (Nous has no balance API); status is read from its latest errors',
                  'ollama-cloud': 'Balance not available (Ollama Cloud has no balance API); status is read from its '
@@ -139,6 +139,9 @@ def error_kind(text: str, code: int | None = None) -> str:
 def is_local(provider: str, base_url: str | None = None) -> bool:
     extra = {p.strip().lower() for p in (os.environ.get('GBOX_HERMES_LOCAL_PROVIDERS') or '').split(',') if p.strip()}
     if (provider or '').lower() in LOCAL_NAMES | extra:
+        return True
+    local = _local_settings()
+    if local is not None and (provider or '').casefold() == local.provider.casefold():
         return True
     host = urllib.parse.urlsplit(base_url or '').hostname or ''
     if host in ('localhost',) or host.endswith('.local') or host.endswith('.lan'):
@@ -665,6 +668,12 @@ def summary(window: str = 'today', now: float | None = None, *, wait_balance: bo
         if key not in seen:
             seen.add(key)
             routes.insert(0, {'provider': current['provider'], 'model': current['model'], 'key': key, 'in_routes': False})
+    local_cfg = _local_settings()
+    if local_cfg is not None and local_cfg.enabled and feedback:
+        key = f'{local_cfg.provider}/{local_cfg.model}'       # the last-resort route is always listed
+        if key not in seen:
+            seen.add(key)
+            routes.append({'provider': local_cfg.provider, 'model': local_cfg.model, 'key': key, 'in_routes': True})
 
     stats = {r['key']: {'runs_completed': 0, 'runs_failed': 0, 'runs_running': 0, 'calls_started': 0, 'calls_ok': 0,
                         'calls_failed': 0, 'tokens': 0, 'wall_s': 0.0} for r in routes}
@@ -876,8 +885,43 @@ def summary(window: str = 'today', now: float | None = None, *, wait_balance: bo
             'current_route': current, 'routes': route_rows, 'providers': provider_rows,
             'runs': window_runs[:30], 'runs_total': len(window_runs), 'runs_unattributed': unattributed,
             'exhausted': exhausted, 'recommendation': recommend(provider_rows, exhausted, WINDOWS[window]),
+            'local': local_summary(local_cfg, feedback, route_rows, since),
             'sources': {'agent_log': scan.log.is_file(), 'usage_audit': scan.audit.is_file(),
                         'feedback': bool(feedback), 'executions': bool(executions)}}
+
+
+def _local_settings():
+    try:
+        from . import hermes_local
+        return hermes_local.settings()
+    except Exception:  # noqa: BLE001 - the Providers view never fails on the local route's config
+        return None
+
+
+def local_summary(s, feedback: dict, route_rows: list[dict], since: float) -> dict | None:
+    """The local route for the Tasks window: model, whether Hermes is on it now and why, and what it served (model
+    calls and runs from Hermes's log, tokens and refusals from gBox's proxy log)."""
+    if s is None:
+        return None
+    from . import llm_proxy
+    mode = feedback.get('local_mode') if isinstance(feedback.get('local_mode'), dict) else {}
+    current = feedback.get('current_route') if isinstance(feedback.get('current_route'), dict) else {}
+    row = next((r for r in route_rows if r['provider'].casefold() == s.provider.casefold()), None) or {}
+    try:
+        proxy = llm_proxy.summarize(llm_proxy.read_log(since))
+    except Exception:  # noqa: BLE001
+        proxy = {}
+    return {'enabled': s.enabled, 'provider': s.provider, 'model': s.model,
+            'active': str(current.get('provider') or '').casefold() == s.provider.casefold(),
+            'reason': mode.get('reason'), 'since': mode.get('since'), 'next_paid_at': mode.get('next_paid_at'),
+            'runs_completed': row.get('runs_completed', 0), 'runs_failed': row.get('runs_failed', 0),
+            'calls_ok': max(row.get('calls_ok', 0), proxy.get('calls_ok', 0)),
+            'calls_failed': max(row.get('calls_failed', 0), proxy.get('calls_failed', 0)),
+            'tokens': max(row.get('tokens', 0), proxy.get('tokens', 0)),
+            'prompt_tokens': proxy.get('prompt_tokens', 0), 'completion_tokens': proxy.get('completion_tokens', 0),
+            'refused_while_playing': proxy.get('refused_while_playing', 0),
+            'trimmed_calls': proxy.get('trimmed_calls', 0), 'fixed_calls': proxy.get('fixed_calls', 0),
+            'last_call_at': proxy.get('last_call_at')}
 
 
 def recommend(providers: list[dict], exhausted: list[dict], label: str = 'Today') -> str:

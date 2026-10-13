@@ -49,6 +49,38 @@
       r.local ? '<span class="tkp-tag local">local model</span>' : "",
       r.in_routes === false ? '<span class="tkp-tag">not in routes</span>' : ""].join("");
   }
+  function clock(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+  // "Hermes is on the local model" (or "Local fallback ready"): the Spark's GPU route, why it is used, what it served.
+  function localBanner(local, now) {
+    if (!local || local.enabled === false) return "";
+    const on = !!local.active;
+    const why = on ? (local.reason || "Every paid route is cooling down or out of credit")
+      : "Standby: used only when every paid route is out of credit";
+    const next = on && local.next_paid_at ? ` · next paid retry ${clock(local.next_paid_at)}` : "";
+    const stats = `${local.calls_ok || 0} calls · ${tokens(local.tokens)} tokens · ${local.runs_completed || 0} runs`
+      + (local.refused_while_playing ? ` · ${local.refused_while_playing} held while you played` : "")
+      + (local.trimmed_calls ? ` · ${local.trimmed_calls} trimmed to fit` : "");
+    return `<div class="tkp-local ${on ? "active" : "standby"}" data-tkp-local="${on ? "active" : "standby"}">
+      <b>${on ? "Hermes is on the local model" : "Local fallback ready"}</b><span class="tkp-tag local">${esc(local.provider)} · ${esc(local.model)}</span>
+      <span class="tkp-local-why">${esc(why + next)}</span><span class="tkp-local-stats">${esc(stats)}</span></div>`;
+  }
+  // The Spark helper's card: "Spark helper: doing X", or why it waits, and its last finished chore.
+  function gruntCard(g, now) {
+    if (!g) return "";
+    const label = g.label || (g.doing ? `Spark helper: ${g.doing}` : g.waiting ? `Spark helper waiting: ${g.waiting}` : "Spark helper idle");
+    const state = g.running ? "working" : g.enabled === false || g.waiting ? "cooling" : "idle";
+    const last = (g.chores || []).filter(c => c.last_run).sort((a, b) => b.last_run - a.last_run)[0];
+    const failed = (g.chores || []).filter(c => c.last_status === "error").length;
+    return `<article class="tkp-card tkp-grunt ${state}" data-tkp-grunt>
+      <header><b>Spark helper</b><span class="tkp-tag">no LLM</span></header>
+      <div class="tkp-status" title="${esc(label)}"><i></i>${esc(label)}</div>
+      ${last ? `<div class="tkp-model" title="${esc(JSON.stringify(last.last_result || {}))}">Last: ${esc(last.title)} · ${ago(last.last_run, now)}</div>` : ""}
+      ${failed ? `<div class="tkp-error">${failed} chore${failed === 1 ? "" : "s"} failed last time</div>` : ""}</article>`;
+  }
   function errorLine(err, now) {
     return err ? `<div class="tkp-error" title="${esc(err.text)}">${esc(String(err.text).slice(0, 110))} · ${ago(err.ts, now)}</div>` : "";
   }
@@ -68,7 +100,7 @@
         <div class="tkp-balance" title="${esc(credit)}">${esc(credit)}</div>${errorLine(r.last_error, now)}</article>`;
     }).join("") || '<p class="tkp-empty">No Hermes routes or model calls found on the server.</p>';
     return `<div class="tkp-head"><b>Providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}<span class="tkp-rec">${esc(data.recommendation || "")}</span></div>
-      <div class="tkp-cards">${body}</div>`;
+      ${localBanner(data.local, now)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
   }
   // Technical tab: the same numbers as a table, per provider and per route, plus recent run attribution.
   function table(data, opts = {}) {
@@ -91,12 +123,19 @@
     const runs = (data.runs || []).slice(0, 12).map(r => `<tr><td>${ago(r.start, now)}</td><td>${esc(r.name || r.job_id || "")}</td>
         <td>${r.provider ? esc(runLabel(r)) : '<span class="mut">no successful call</span>'}</td><td>${esc(r.status)}</td>
         <td>${tokens(r.tokens)}</td><td>${duration(r.wall_s)}</td><td class="mut">${esc((r.tried || []).join(" → "))}</td></tr>`).join("");
+    const g = data.grunt;
+    const chores = g ? (g.chores || []).map(c => `<tr><td><b>${esc(c.title)}</b>${c.running ? ' <span class="tkp-tag current">running</span>' : ""}${c.enabled === false ? ' <span class="tkp-tag">off</span>' : ""}</td>
+        <td>${c.last_run ? ago(c.last_run, now) : '<span class="mut">never</span>'}</td><td>${esc(c.last_status || "")}</td>
+        <td class="tkp-err">${esc(JSON.stringify(c.last_result || {}).slice(0, 160))}</td></tr>`).join("") : "";
     return `<div class="mc tkp-tech"><div class="mh"><b>Hermes providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}</div>
+      ${localBanner(data.local, now)}
       <p class="tkp-rec">${esc(data.recommendation || "")}</p>
+      ${g ? `<details data-tk-key="tkp-grunt"><summary>${esc(g.label || "Spark helper")}</summary>
+        <table><tr><th>Chore</th><th>Last run</th><th>Result</th><th>Details</th></tr>${chores}</table></details>` : ""}
       <table><tr><th>Route</th><th>Status now</th><th>Runs done</th><th>Runs failed</th><th>Calls ok / failed</th><th>Tokens</th><th>Wall time</th><th>Credit</th><th>Last error</th></tr>${routes}</table>
       ${providers ? `<table><tr><th>Provider</th><th>Status</th><th>Runs done</th><th>Calls ok / failed</th><th>Tokens</th><th>Wall time</th><th>Spend</th><th>Per run</th></tr>${providers}</table>` : ""}
       ${runs ? `<details data-tk-key="tkp-runs"><summary>Recent runs and who served them (${data.runs_total || 0} in window${data.runs_unattributed ? `, ${data.runs_unattributed} without a successful call` : ""})</summary>
         <table><tr><th>Started</th><th>Job</th><th>Served by</th><th>Status</th><th>Tokens</th><th>Wall</th><th>Fell through</th></tr>${runs}</table></details>` : ""}</div>`;
   }
-  root.GBoxProviders = { cards, table, runLabel, balance, tokens, duration, ago, STATE };
+  root.GBoxProviders = { cards, table, runLabel, balance, tokens, duration, ago, STATE, localBanner, gruntCard };
 })(typeof window !== "undefined" ? window : globalThis);

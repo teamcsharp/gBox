@@ -185,6 +185,8 @@
     // Apply saved filters before the first query, then expand them from server facets.
     for (const [selector, value] of [['.as-kind', prefs.kind], ['.as-game', prefs.game]]) if (value) $(selector).insertAdjacentHTML('beforeend', `<option value="${esc(value)}" selected>${esc(value)}</option>`);
     collapse(!!prefs.closed);
-    return { refresh, dispose() { state.disposed = true; clearInterval(interval); clearTimeout(debounce); clearTimeout(state.retryTimer); root.remove(); css.remove(); } };
+    // reveal(q): open the sidebar filtered to q (the pick whip's "Show in Assets")
+    function reveal(q) { collapse(false); $('.as-search').value = String(q || ''); save(); refresh(); root.scrollIntoView?.({ block: 'nearest' }); }
+    return { refresh, reveal, dispose() { state.disposed = true; clearInterval(interval); clearTimeout(debounce); clearTimeout(state.retryTimer); root.remove(); css.remove(); } };
   } };
 })();

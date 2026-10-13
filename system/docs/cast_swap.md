@@ -56,6 +56,7 @@ crew, each donor looking like its own game's character (no outline shell, correc
 |---|---|---|
 | PSO Ver.2 (`gbox.pso_player` / `pso_enemy`) | **pairs**: `pso_enemy.build_cast` -> `build_swap` with a donor per enemy body; each pack rebuilt once, one `patch_gdi` | every enemy slot (Booma family + the 16 other packs); a failing body (pack room, unmappable skeleton) fails alone; the player class is skipped (not drawn yet) |
 | DOA2 (`gbox.doa2_swap`) | **pairs**: `use_roster` (every selectable fighter in one disc) | full cast (14 fighters); the roster needs every fighter, so `slots=` subsets fail with plan_roster's reason |
+| SoulCalibur DC (`gbox.soulcalibur_swap`) | **pairs**: `build_cast` (every slot's costumes rebuilt in their own HUMAN.DAT slots, one GD-ROM) | full cast (19 fighters, 45 costumes); `characters op=use slot=roster` adds the random costume hook (docs/soulcalibur_dc.md); unverified in game |
 | Def Jam Vendetta PS2 (`gbox.defjam_writer`) | **pairs**: `match` (one data.bin) | full cast (44 names, every costume) |
 | SmackDown! 2 (`gbox.yukes_sd`) | **pairs**: `match` | full cast (66 wrestlers) |
 | No Mercy (`gbox.aki_wrestling`) | **pairs**: `match` (one ROM) | full cast (64 default wrestlers); WCW World Tour / Revenge rosters come off their ROMs, not listed yet |
@@ -74,6 +75,12 @@ crew, each donor looking like its own game's character (no outline shell, correc
 staged once (`{path: bytes}`, never the original image), each slot's writer step reads the staged bytes (or a disc
 through `StagedDisc`) and returns its new bytes, a failing step leaves the staged files untouched and is reported, and
 the writer writes the image once at the end. A writer joins by getting an entry in `BUILDERS` that builds its steps.
+
+**Fixed names (`mod_name=`, the Sonic showcase).** `mod_name=showcase_sonic_<title>` builds into that folder instead of
+`cast_<game>_<source>_<digest>`; the marker's `cast_plan` (`plan_digest`: which donor on which slot) then decides a
+rebuild, so an unchanged plan is reused and a changed one rebuilt. `showcase=true` adds the `showcase` record to the
+marker and skips the Play-as character targets. A writer that names its own build (DOA2 roster, one-slot writers) gets
+a hard-linked copy under the fixed name (`link_tree`). See docs/sonic_showcase.md.
 
 ## Tests
 

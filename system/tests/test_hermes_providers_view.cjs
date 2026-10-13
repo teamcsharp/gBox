@@ -126,3 +126,34 @@ test('desktop wiring: containers, the 5 s poll, window toggle and provider on ru
   // The technical table keeps the reader's place like the rest of the list.
   assert.match(desktop, /tkRender\(\$\("#tk-providers"\), P\.table\(TK\.providers, \{ window: TK\.providersWindow \}\), \$\("#tk-technical"\)\)/);
 });
+
+test('local mode banner and the Spark helper card (docs/hermes-local-fallback.md)', () => {
+  const P = load();
+  const local = { enabled: true, provider: 'spark-local', model: 'gpt-oss:20b', active: true,
+    reason: 'Every paid route is cooling down or out of credit', next_paid_at: null,
+    calls_ok: 42, tokens: 1_250_000, runs_completed: 3, refused_while_playing: 2, trimmed_calls: 1 };
+  const grunt = { enabled: true, running: 'draft_pr_tests', doing: 'testing a Hermes draft PR', label: 'Spark helper: testing a Hermes draft PR',
+    chores: [{ name: 'triage_inbox', title: 'Inbox triage', last_run: NOW - 120, last_status: 'ok', last_result: { triaged: 2 } },
+             { name: 'fingerprints', title: 'Assimilate fingerprints', last_run: NOW - 900, last_status: 'error', last_result: { error: 'x' } }] };
+  const html = P.cards({ ...data, local, grunt }, { window: 'today', now: NOW });
+  assert.match(html, /<div class="tkp-local active" data-tkp-local="active">/);
+  assert.match(html, /<b>Hermes is on the local model<\/b><span class="tkp-tag local">spark-local · gpt-oss:20b<\/span>/);
+  assert.match(html, /42 calls · 1\.3M tokens · 3 runs · 2 held while you played · 1 trimmed to fit/);
+  assert.match(html, /<article class="tkp-card tkp-grunt working" data-tkp-grunt>/);
+  assert.match(html, /Spark helper: testing a Hermes draft PR/);
+  assert.match(html, /Last: Inbox triage · 2m ago/);
+  assert.match(html, /1 chore failed last time/);
+  assert.equal((html.match(/<article class="tkp-card/g) || []).length, 4);
+  const standby = P.cards({ ...data, local: { ...local, active: false },
+    grunt: { ...grunt, running: null, doing: null, label: '', waiting: 'a build is running (characters use)' } }, { now: NOW });
+  assert.match(standby, /Local fallback ready/);
+  assert.match(standby, /Standby: used only when every paid route is out of credit/);
+  assert.match(standby, /tkp-grunt cooling/);
+  assert.match(standby, /Spark helper waiting: a build is running/);
+  const table = P.table({ ...data, local, grunt }, { now: NOW });
+  assert.match(table, /Hermes is on the local model/);
+  assert.match(table, /<details data-tk-key="tkp-grunt"><summary>Spark helper: testing a Hermes draft PR<\/summary>/);
+  assert.match(table, /<td><b>Inbox triage<\/b><\/td>\s*<td>2m ago<\/td><td>ok<\/td>/);
+  assert.equal(P.localBanner({ enabled: false }), '');
+  assert.equal(P.gruntCard(null), '');
+});

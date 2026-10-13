@@ -259,7 +259,8 @@ test('a newer launch (or the loader closing) drops the older answer', async () =
 test('the web shell loads the module and starts it from play() with the launch\'s mod; show/hide clear it', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'clients', 'web', 'index.html'), 'utf8');
   assert.match(html, /<script src="\/viz\/launch-mods\.js"><\/script>/);
-  assert.match(html, /loader\.show\(g\.title, [^\n]*\);\r?\n  loader\.modsFor\?\.\(id, boot\.disc\);/);
+  // (#1656: the title names a renamed build launched from Mods / Builds / Special builds: "<game> · <build name>")
+  assert.match(html, /loader\.show\(boot\.label \? `\$\{g\.title\} · \$\{boot\.label\}` : g\.title, [^\n]*\);\r?\n  loader\.modsFor\?\.\(id, boot\.disc\);/);
   assert.match(html, /this\.generation\+\+; this\.mods\?\.clear\(\);/);
   assert.match(html, /this\.three\?\.viz\?\.stop\(\); this\.mods\?\.clear\(\);/);
   assert.match(html, /modsFor\(gid, mod\) \{[\s\S]*?GBoxLaunchMods\.mount\(\$\("#loader"\)[\s\S]*?modKeepGet\(gid\)/);

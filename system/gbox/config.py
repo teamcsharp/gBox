@@ -92,6 +92,28 @@ class VoiceConfig(BaseModel):
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
 
 
+class ShowcaseConfig(BaseModel):
+    """[showcase] the Sonic showcase (gbox/sonic_showcase.py, docs/sonic_showcase.md): a background service on the
+    control plane that builds `showcase_sonic_<title>` cast swaps (SA1 + SA2 cast) of the favorites and recently
+    played titles, and queues readiness work for titles without a writer. The gBox Settings toggle overrides these."""
+    enabled: bool = False             # off until the operator turns it on (Settings card or PUT /api/showcase)
+    paused: bool = False              # the pause switch: nothing new is planned, built or queued
+    favorites: int = 25               # favorites considered per pass (starred titles first)
+    recent: int = 10                  # then this many recently played titles
+    budget_gb: float = 50.0           # disk cap for showcase builds; older showcase builds are evicted (LRU) to fit
+    builds_per_hour: int = 3          # build jobs started per rolling hour
+    whole_cast_max_slots: int = 16    # whole cast when it has at most this many slots, else player + main cast
+    interval_s: float = 300.0         # seconds between passes (a settings change or POST /api/showcase/run wakes it)
+    recheck_hours: float = 6.0        # an up-to-date title is planned again after this long (new donors, writer fixes)
+    retry_failed_hours: float = 24.0  # a failed plan is not built again before this, unless the plan changes
+    hdd_root: dict[str, str] = {"linux": "/home/ehm_eckx/samples"}   # os -> the external HDD mount; builds only there
+    require_hdd: bool = True          # refuse to build when the mod cache is not on that mount (never fill the NVMe)
+    min_free_gb: float = 50.0         # and when the HDD has less than this free
+    dedupe: bool = True               # hard-link identical files of a new build to the game's base copy / other showcases
+    dedupe_min_mb: int = 4            # files below this size are not compared
+    pause_while_playing_anywhere: bool = False   # also wait while a game runs on a Windows PC (default: Spark only)
+
+
 class GameAudioConfig(BaseModel):
     """[game_audio] where emulators send their sound on a Windows node, and what a slow sound device may cost a launch
     (gbox/game_audio.py). A sleeping or switching output (wireless headset) can hold an emulator's audio init for many
@@ -120,6 +142,50 @@ class RecordingConfig(BaseModel):
     capture: str = "auto"             # auto (Windows: gdigrab of the game window's screen area; Linux: x11grab of the session display) | gdigrab | ddagrab (Windows, GPU zero-copy, NVENC only) | x11grab
     priority: str = "low"             # low: ffmpeg below the emulator (Windows below-normal, Linux nice 10) | normal
     keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
+
+
+class HermesLocalConfig(BaseModel):
+    """[hermes.local] the Spark's GPU model as Hermes's last-resort route (docs/hermes-local-fallback.md).
+
+    Hermes's route supervisor (hermes_feedback.adjust_routes) switches cron work to this route only when every paid
+    route is cooling down or out of credit, or when the operator sets local only; it rotates back by itself as soon as
+    a paid route recovers. Hermes reaches the model through gBox's proxy (gbox/llm_proxy.py), never Ollama directly."""
+    enabled: bool = True
+    provider: str = "spark-local"     # the Hermes custom provider name the supervisor registers
+    model: str = "gpt-oss:20b"        # best tool caller on the GB10: MoE (3.6B active), native tool calls, 128k context
+    upstream: str = "http://127.0.0.1:11434"   # Ollama on the Spark (native /api/chat: the only API that sets num_ctx)
+    proxy_url: str | None = None      # what Hermes calls; default http://127.0.0.1:<api_port>/api/llm/local/v1
+    context_tokens: int = 65536       # num_ctx the proxy asks Ollama for; prompts are capped to fit (per-model: contexts)
+    contexts: dict[str, int] = {}     # model -> its context limit, when a non-default model is chosen
+    max_output_tokens: int = 8192     # reserved for the answer inside the context
+    chars_per_token: float = 3.0      # conservative prompt-size estimate (no tokenizer in the control plane)
+    keep_alive: str = "10m"           # Ollama unloads the model this long after the last call (frees GPU memory)
+    reasoning_effort: str = "medium"  # gpt-oss think level when the call names none (low | medium | high)
+    local_only: bool = False          # operator: Hermes uses only the local route (also POST /api/hermes/local)
+    queue_limit: int = 8              # calls waiting for the single slot; more answer 503 at once
+    queue_wait_s: float = 900.0       # a waiting call gives up with 503 after this long
+    request_timeout_s: float = 1800.0 # one model call (prefill of a long prompt on the GPU can take minutes)
+    retry_after_s: int = 120          # Retry-After on a 503 while the operator plays on the Spark
+    tool_budget: int = 20             # tool calls a local run may make (paid runs: 45), the last 6 for handoff
+    pr_label: str = "local model"     # label on draft PRs a local run publishes
+
+
+class GruntConfig(BaseModel):
+    """[hermes.grunt] the Spark helper: LLM-free chores for Hermes, one at a time at idle priority (gbox/spark_grunt.py)."""
+    enabled: bool = True
+    tick_s: float = 60.0              # how often the helper looks for a due chore
+    start_delay_s: float = 180.0      # after the service starts, before the first chore
+    disabled: list[str] = []          # chore names switched off (GET /api/grunt lists them)
+    cooldowns: dict[str, float] = {}  # chore name -> seconds between runs (overrides the built-in cooldown)
+    verify_nodes: list[str] = ["i9-NUC", "spark"]   # verification launches only here ("spark" = this control plane's node)
+    never_nodes: list[str] = ["JAYBUILTFINALE"]     # never used for verification launches, whatever else says
+    pr_test_timeout_s: float = 900.0  # one draft PR's focused tests
+    manifest_budget_mb: int = 4096    # bytes hashed per built-mod manifest pass
+
+
+class HermesConfig(BaseModel):
+    local: HermesLocalConfig = HermesLocalConfig()
+    grunt: GruntConfig = GruntConfig()
 
 
 class Config(BaseModel):
@@ -172,6 +238,8 @@ class Config(BaseModel):
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
+    hermes: HermesConfig = HermesConfig()            # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
+    showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
     game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
@@ -268,6 +336,13 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # tts_family = "kokoro_tts"       # tts_model / stt_model = explicit GGUF paths when discovery finds none
 # tts_voice = "af_heart"
 # stt_family = "qwen3_asr"
+# [hermes.local]                  # the Spark's GPU model as Hermes's last-resort route (docs/hermes-local-fallback.md)
+# model = "gpt-oss:20b"           # or "qwen3.8:27b-mtp-q4_K_M" (slower, dense); any Ollama model with tool calls
+# context_tokens = 65536
+# local_only = false              # true: Hermes uses only the local route
+# [hermes.grunt]                  # Spark helper chores at idle priority (GET /api/grunt)
+# disabled = []                   # e.g. ["verify_launch_fixes"]
+# verify_nodes = ["i9-NUC", "spark"]
 # [game_audio]                    # emulator sound on a Windows node (gbox/game_audio.py)
 # device = ""                     # output device name; "" = default playback device if active, else the first active one
 # retroarch_drivers = ["xaudio", "wasapi", "null"]   # next driver when audio init stalls past init_grace_s
