@@ -62,10 +62,17 @@ def check_skeleton(new: Path, base: Path) -> dict:
     return {"ok": not problems, "bones": len(b), "base_bones": len(a), "problems": problems}
 
 
-def find_props(path: Path, roles: dict, hints: list | None = None) -> list[dict]:
+def find_props(path: Path, roles: dict, hints: list | None = None, base_model: Path | None = None) -> list[dict]:
     """Meshes that aren't skinned = props: each one's bone (nearest joint ancestor in the node tree) and the body role
-    that bone belongs to (its nearest ancestor with a role: a hat on 'Head_end' still rides the head)."""
+    that bone belongs to (its nearest ancestor with a role: a hat on 'Head_end' still rides the head).
+    base_model: the variant's original - its own unskinned meshes (a rigid-part body: N64 / PS1 limbs) are body, not
+    props, unless the original listed them as props; a node the export marked gbox_part=body is never a prop."""
+    from . import attachments
     gl = _gl(path)
+    base_body = set()
+    if base_model is not None:
+        bgl = _gl(base_model)
+        base_body = {n.get("name") for n in bgl.get("nodes") or [] if "mesh" in n} - attachments.prop_nodes(bgl)
     skins = gl.get("skins") or []
     joints = {j for s in skins for j in s["joints"]}
     par = {c: i for i, n in enumerate(gl["nodes"]) for c in n.get("children", [])}
@@ -74,7 +81,9 @@ def find_props(path: Path, roles: dict, hints: list | None = None) -> list[dict]
     hint = {h.get("object") or h.get("node"): h for h in hints or [] if isinstance(h, dict)}
     out = []
     for i, nd in enumerate(gl["nodes"]):
-        if "mesh" not in nd or "skin" in nd:
+        if "mesh" not in nd or "skin" in nd or attachments.extras(nd).get("gbox_part") == "body":
+            continue
+        if name(i) in base_body and not attachments.is_marked(nd):
             continue
         p = par.get(i)
         while p is not None and p not in joints:
@@ -131,7 +140,9 @@ def store(ctx, root: Path, base_slug: str, name: str, model: Path, scale: dict |
     names = set(skeleton(model))
     roles = {r: n for r, n in ((base.get("rig") or {}).get("roles") or {}).items() if n in names}
     sc = {k: round(float(v), 3) for k, v in (scale or {}).items() if v and abs(float(v) - 1) > 0.005}
-    props = find_props(model, roles, hints)
+    props = find_props(model, roles, hints, base_model)
+    from . import attachments
+    attachments.stamp(model, props)                        # marked in the file too: any writer finds them
     d = Path(root) / slug
     if prev:                                               # the old model file / Mario- or Leon-rigged copies are stale
         for f in [d / prev["model"], d / "targets"]:
