@@ -357,16 +357,67 @@ def test_live_push_finds_the_session_showing_the_character_or_its_original():
     assert s["session_id"] == "w2-z" and "picked" in t["why"]
 
 
-def test_pick_replace_live_is_used_only_when_registered(monkeypatch):
+PICK_GAME = {"game_id": "0123456789abcdef", "title": "Some GC game", "platform": "gamecube"}
+
+
+def _plane(tools, learned=None):
+    def api(ctx, method, path, **kw):
+        if path == "/api/tools":
+            return tools
+        if path.startswith("/api/profiles/"):
+            return learned or {}
+        raise AssertionError(path)
+    return api
+
+
+def test_pick_replace_is_used_only_when_registered(monkeypatch):
+    from gbox import live_link as L
+    monkeypatch.setattr(C, "_api", _plane([{"name": "characters", "workers": ["spark"]}]))
+    assert L.pick_replace_live(None, {"session_id": "w1-a"}, {"slug": "x"}, "player", PICK_GAME) == {"tried": False}
+    monkeypatch.setattr(C, "_api", _plane([{"name": "pick_replace", "workers": []}]))          # nobody runs it
+    assert L.pick_replace_live(None, {"session_id": "w1-a"}, {"slug": "x"}, "player", PICK_GAME) == {"tried": False}
+
+
+@pytest.mark.parametrize("status,ok", [("live", True), ("swapped", True), ("live_failed", False), ("failed", False),
+                                       ("not_replaceable", False)])
+def test_pick_replace_gets_the_real_contract_and_live_or_swapped_count(monkeypatch, status, ok):
+    from gbox import live_link as L, pick_tool as PT
+    calls = []
+    monkeypatch.setattr(C, "_api", _plane([{"name": "pick_replace", "workers": ["pc"]}]))
+    monkeypatch.setattr(C, "_job", lambda ctx, tool, inp, w, lim: calls.append((tool, inp, w)) or
+                        {"id": "j1", "state": "succeeded",
+                         "output": {"result": {"status": status, "mode_used": "build", "fell_back": True,
+                                               "session_id": "w1-new"}}})
+    sess = {"session_id": "w1-a", "game_id": PICK_GAME["game_id"], "adapter": "dolphin"}
+    r = L.pick_replace_live(None, sess, {"slug": "knight"}, "player", PICK_GAME)
+    assert r["ok"] is ok and r["status"] == status and r["pick"] == "slot-only pick"
+    tool, inp, worker = calls[0]
+    assert tool == "pick_replace" and worker == "w1"                    # the session's worker
+    PT.PickReplaceIn.model_validate(inp)                                # the tool's own input model accepts it
+    assert inp["mode"] == "live" and inp["fallback"] and inp["refresh_ram"] and inp["revert_on_fail"]
+    assert not inp["rebuild"] and not inp["allow_arena"] and inp["character"] == "knight"
+    pick = inp["pick"]
+    assert pick["slot"] == "player" and pick["game_id"] == PICK_GAME["game_id"] and pick["backend"] == "profile"
+    assert {"live", "build", "reason"} <= set(pick["replaceable"])
+
+
+def test_a_recorded_pick_is_passed_unchanged(monkeypatch):
     from gbox import live_link as L
     calls = []
-    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: [{"name": "characters", "workers": ["spark"]}])
-    assert L.pick_replace_live(None, {"session_id": "w1-a"}, {"slug": "x"}, "player") == {"tried": False}
-    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: [{"name": "pick_replace", "workers": ["pc"]}])
-    monkeypatch.setattr(C, "_job", lambda ctx, tool, inp, w, lim: calls.append((tool, inp, w)) or
-                        {"id": "j1", "state": "succeeded", "output": {"result": {"ok": True}}})
-    r = L.pick_replace_live(None, {"session_id": "w1-a"}, {"slug": "x"}, "player")
-    assert r["ok"] and calls == [("pick_replace", {"session_id": "w1-a", "character": "x", "mode": "live", "slot": "player"}, "w1")]
+    picked = {"game_id": PICK_GAME["game_id"], "slot": "enemy:booma", "backend": "profile", "ram": {"model": "0x80401000"},
+              "replaceable": {"live": True, "build": True}, "click": [0.4, 0.6], "entity": {"class": 7}}
+    monkeypatch.setattr(C, "_api", _plane([{"name": "pick_replace", "workers": ["pc"]}],
+                                          {"picks": {"enemy:booma": picked}}))
+    monkeypatch.setattr(C, "_job", lambda ctx, tool, inp, w, lim: calls.append(inp) or
+                        {"id": "j1", "state": "succeeded", "output": {"result": {"status": "live", "mode_used": "live"}}})
+    sess = {"session_id": "w2-b", "game_id": PICK_GAME["game_id"]}
+    r = L.pick_replace_live(None, sess, {"slug": "knight"}, "enemy:booma", PICK_GAME)
+    assert r["ok"] and r["pick"] == "recorded pick" and calls[0]["pick"] == picked
+    sess["live_pick"] = dict(picked, click=[0.1, 0.1])                    # the session's own record wins
+    L.pick_replace_live(None, sess, {"slug": "knight"}, "enemy:booma", PICK_GAME)
+    assert calls[1]["pick"]["click"] == [0.1, 0.1]
+    other = dict(picked, game_id="ffffffffffffffff")                      # a pick from another game never counts
+    assert L.recorded_pick({"game_id": PICK_GAME["game_id"], "pick": other}, {}, "enemy:booma") is None
 
 
 def test_generic_push_rebuilds_then_session_swaps(monkeypatch):

@@ -6,8 +6,11 @@ push (control-plane node, where the collection lives):
               the character's family (itself, its original, the original's other variants: their built mods'
               names vs the session's live_mod / mod, or the character the pick whip put there) - so a save in
               Blender updates whichever game shows that character now; none -> "stored" (nothing to reload)
-  live inject when a worker registers `pick_replace` (the live RAM injection tool), mode "live" is tried first;
-              if it can't, the rebuild below runs
+  live inject when a worker registers `pick_replace` (gbox.pick_tool, docs/live-inject.md), it runs first on the
+              session's worker: mode "live", fallback (build + session swap), with the pick that put the character
+              there when one was recorded (the session's live_pick / pick / last_pick, the learned profile's
+              picks[slot] / last_pick) else a slot-only pick (slot_pick). status live | swapped = done; a failed
+              build there ends the push; not_replaceable / refused -> the rebuild below
   building    the game's swap writer rebuilds the variant's mod (SM64: sm64_<slug>; RE4 GC: re4_<slug>); the previous
               build is kept as <mod>.prev until the new one is live. Every other writer: characters op=use
               rebuild=true launch=false for the slot (generic_push), then the session swap below
@@ -338,9 +341,48 @@ def find_live_session(sessions: list[dict], chars: list[dict], meta: dict) -> tu
     return None, {}
 
 
-def pick_replace_live(ctx, sess: dict, meta: dict, slot: str) -> dict:
-    """The live RAM injection tool (`pick_replace` mode "live", another module), when a worker registers it:
-    {ok, tried, ...}. Not registered / no worker -> {tried: False}; it ran but couldn't -> {tried: True, ok: False}."""
+PICK_OK = ("live", "swapped")                              # pick_replace result.status values that mean "it's in"
+
+
+def recorded_pick(sess: dict, learned: dict, slot: str) -> dict | None:
+    """The pick_identify result that put a character into this slot, when one was kept: on the session (the pick
+    whip UI's live_pick / pick / last_pick) or in the game's learned profile (picks[slot] / last_pick). Only a pick for
+    this game and this slot counts."""
+    gid = sess.get("game_id")
+    cands = [sess.get(k) for k in ("live_pick", "pick", "last_pick")]
+    cands += [((learned.get("picks") or {}).get(slot) if isinstance(learned.get("picks"), dict) else None),
+              learned.get("last_pick")]
+    for p in cands:
+        if isinstance(p, dict) and p.get("slot") == slot and (not p.get("game_id") or p.get("game_id") == gid):
+            return p
+    return None
+
+
+def slot_pick(game: dict, sess: dict, slot: str, learned: dict) -> dict:
+    """A pick for a known slot without a click: the fields pick_replace reads (slot, game_id, backend, replaceable;
+    session / title / platform for the record), worked out the way pick_identify would for that slot
+    (pick_tool.backend_of + replaceable). No entity / RAM hints: a live write locates the model by the writer's
+    learned image signatures alone, and falls back to build + session swap."""
+    from types import SimpleNamespace
+    from . import pick_tool as PT
+    backend = PT.backend_of(game)
+    try:
+        rp = PT.replaceable(backend, game, slot, None, SimpleNamespace(name=sess.get("adapter") or ""), {}, learned)
+    except Exception as e:                                 # noqa: BLE001 - unknown: let pick_replace build
+        rp = {"live": False, "build": True, "reason": f"replaceable unknown ({type(e).__name__}: {e})"}
+    return {"game_id": game.get("game_id") or sess.get("game_id"), "slot": slot, "backend": backend,
+            "replaceable": rp, "session_id": sess.get("session_id"), "title": game.get("title") or "",
+            "platform": game.get("platform") or "", "entity": None, "ram": {}, "click": [], "slot_guess": False,
+            "confidence": 1.0, "evidence": [{"step": "slot", "ok": True,
+                                             "detail": f"slot {slot} from the running mod (live_link, no click)",
+                                             "source": "gbox.live_link"}]}
+
+
+def pick_replace_live(ctx, sess: dict, meta: dict, slot: str, game: dict | None = None) -> dict:
+    """The pick whip's `pick_replace` (gbox.pick_tool, docs/live-inject.md) in mode "live" with fallback (build +
+    session swap), when a worker registers it: {ok, tried, ...}. The pick is the one that put the character there
+    when it was recorded, else a slot-only pick (slot_pick). Dispatched to the session's worker. Not registered /
+    no worker -> {tried: False}; ran but not live / swapped -> {tried: True, ok: False}."""
     from . import characters as C
     try:
         tools = C._api(ctx, "GET", "/api/tools")
@@ -349,17 +391,29 @@ def pick_replace_live(ctx, sess: dict, meta: dict, slot: str) -> dict:
     t = next((t for t in tools or [] if isinstance(t, dict) and t.get("name") == "pick_replace"), None)
     if not t or not t.get("workers"):
         return {"tried": False}
-    sid = sess["session_id"]
+    sid, gid = sess["session_id"], sess.get("game_id") or (game or {}).get("game_id") or ""
     try:
-        j = C._job(ctx, "pick_replace", {"session_id": sid, "character": meta["slug"], "mode": "live", "slot": slot},
-                   sid.split("-")[0], 600)
-    except Exception as e:                                 # noqa: BLE001 - its input differs / refused: rebuild path
-        return {"tried": True, "ok": False, "error": f"{type(e).__name__}: {e}"}
-    r = (j.get("output") or {}).get("result") or j.get("output") or {}
-    ok = j.get("state") == "succeeded" and (r.get("ok") or r.get("status") in ("live", "replaced", "injected"))
-    return {"tried": True, "ok": bool(ok), "job": j.get("id"), "state": j.get("state"), "error": j.get("error"),
-            **({"session_id": r.get("session_id")} if isinstance(r, dict) and r.get("session_id") else {}),
-            "result": r if isinstance(r, dict) else {}}
+        learned = C._api(ctx, "GET", f"/api/profiles/{gid}/pick") if gid else {}
+    except Exception:                                      # noqa: BLE001 - nothing learned yet
+        learned = {}
+    learned = learned if isinstance(learned, dict) else {}
+    pick = recorded_pick(sess, learned, slot)
+    how = "recorded pick"
+    if pick is None:
+        pick, how = slot_pick(game or {"game_id": gid}, sess, slot, learned), "slot-only pick"
+    try:
+        j = C._job(ctx, "pick_replace", {"session_id": sid, "pick": pick, "character": meta["slug"], "mode": "live",
+                                         "fallback": True, "rebuild": False, "refresh_ram": True,
+                                         "revert_on_fail": True, "allow_arena": False}, sid.split("-")[0], 14400)
+    except Exception as e:                                 # noqa: BLE001 - refused: the rebuild path here
+        return {"tried": True, "ok": False, "pick": how, "error": f"{type(e).__name__}: {e}"}
+    r = (j.get("output") or {}).get("result") or {}
+    r = r if isinstance(r, dict) else {}
+    ok = j.get("state") == "succeeded" and r.get("status") in PICK_OK
+    return {"tried": True, "ok": bool(ok), "pick": how, "job": j.get("id"), "state": j.get("state"),
+            "error": j.get("error"), "status": r.get("status"), "mode_used": r.get("mode_used"),
+            "fell_back": r.get("fell_back"), **({"session_id": r["session_id"]} if r.get("session_id") else {}),
+            "result": r}
 
 
 def generic_push(ctx, meta: dict, game: dict, sess: dict | None, slot: str, stage, t0: float) -> dict:
@@ -443,14 +497,19 @@ def push(ctx, inp) -> dict:
         out["stages"][name] = round(time.time() - t0, 1)
         ctx.progress(pct, f"{name}: {msg}")
     if sess and inp.method in ("auto", "live"):           # the live injection tool, when a worker has it
-        r = pick_replace_live(ctx, sess, meta, slot)
+        r = pick_replace_live(ctx, sess, meta, slot, game)
         if r.get("ok"):
-            stage("live", 100, "✓ (pick_replace live)")
-            return out | {"status": "live", "method": "pick_replace live", "reload": r, "session_id": r.get("session_id") or sess["session_id"],
-                          "seconds": round(time.time() - t0, 1),
-                          "message": f"live ✓ {meta['name']} is in the running game (RAM injection, {round(time.time() - t0)} s)"}
+            how = "RAM injection" if r.get("status") == "live" else "built + session swap"
+            stage("live", 100, f"✓ (pick_replace {r.get('status')})")
+            return out | {"status": "live", "method": f"pick_replace {r.get('mode_used') or r.get('status')}", "reload": r,
+                          "session_id": r.get("session_id") or sess["session_id"], "seconds": round(time.time() - t0, 1),
+                          "message": f"live ✓ {meta['name']} is in the running game ({how}, {round(time.time() - t0)} s)"}
+        if r.get("tried") and r.get("status") == "failed" and r.get("mode_used") == "build":
+            return out | {"status": "failed", "stage": "reloading", "pick_replace": r,      # its build + swap failed:
+                          "message": f"pick_replace build + session swap failed: "         # the same build here would too
+                                     f"{(r.get('result') or {}).get('message') or r.get('error')}"}
         if r.get("tried"):
-            out["pick_replace"] = r                        # it was there but couldn't: rebuild + swap instead
+            out["pick_replace"] = r                        # not mapped / refused: this module's rebuild + swap
     if gid in sm64_swap.GAME_IDS and slot == "player":
         writer, mod = "sm64", f"sm64_{meta['slug']}"
     elif gid in C.RE4GC and slot == "player":

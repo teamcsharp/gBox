@@ -54,7 +54,11 @@ in Blender on the build host.
 - Target: the session picked with *Use in game*; else the newest running session whose model belongs to the
   character's family (the character, its original, the original's other variants: the session's `live_mod` / `mod`
   against their built mods, or the character the pick whip put there). None running: the edit is stored ("stored").
-- When a worker registers `pick_replace` (live RAM injection), mode `live` is tried first.
+- When a worker registers `pick_replace` (`gbox/pick_tool.py`, docs/live-inject.md), it runs first on the session's
+  worker: `{session_id, pick, character, mode: "live", fallback: true, ...}`. The pick is the one that put the
+  character there when recorded (session `live_pick` / `pick` / `last_pick`, learned profile `picks[slot]` /
+  `last_pick`), else a slot-only pick (slot, game, backend, replaceable). Status `live` or `swapped` = done; a failed
+  build there ends the push; `not_replaceable` / refused falls through to the paths below.
 - SM64 / RE4 GC player: their dedicated path (SM64 RetroArch hot swap in RDRAM, else save state -> relaunch -> load).
 - Every other writer: `characters op=use rebuild=true launch=false` for the slot, then `POST /api/sessions/{sid}/swap
   {mod, keep_state: true}` (session swap: same PC, same moment). A failed swap leaves the game on the previous model.
