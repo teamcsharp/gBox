@@ -551,8 +551,9 @@ class CharIn(BaseModel):
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
     slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Clay Fighter SC (N64): fighter:<name>[:flip] (bmf, blob, bonker, booger, kiln, ewj, highfive, houngan, icky, kungpow, liberty, lockjaw, sumo, taffy, thoppy, zappa; player = Bad Mr. Frosty; :flip mirrors the donor) re-draws that fighter's sprites from a sprites entry
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all | Jet Grind Radio: player (Beat, the new-game skater, unless active_id) | character:<name> (beat, gum, corn, combo, code, nuts, reco, bis, yoyo, plug, goji, pots, rival_lshocker, rival_ntank, rival_pjam, rival_snpjam) | id:N (native ID) | NN (PLAYER.AFS archive index)
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
-                                 description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
+                                 description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
     launch: bool = True                    # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
@@ -1530,7 +1531,8 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         refresh = False
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
-            refresh = _doa2_needs_refresh(ctx, game, existing)
+            refresh = _doa2_needs_refresh(ctx, game, existing) or (
+                name == "jgr" and __import__("gbox.jgr", fromlist=["x"]).needs_refresh(existing))   # #1396
             if verify_entry(root, existing)['ok'] and not refresh:
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
@@ -2056,6 +2058,7 @@ def characters_tool(inp: CharIn, ctx):
     and files a request | use character=<name> session_id|game: launch/build the swap mod (RE4 GC replaces Leon, SM64 Mario, GTA LCS
     PS2 every Toni outfit, OoT Link both ages or [x, y | slot=<NPC name>] the NPC there, Parasite Eve Aya (all outfits),
     FF7 Cloud (field + battle), Clay Fighter SC slot=fighter:<name> (a sprites entry re-draws that fighter)), else the overlay (when the game runs) + a gap report so the writer gets built |
+    FF7 Cloud (field + battle), Jet Grind Radio slot=player (Beat unless active_id) | character:<name>), else the overlay (when the game runs) + a gap report so the writer gets built |
     coverage: per studied game, can gBox rip its characters and reimport any character into it (slots) | swap a=<who> b=<who> session_id (OoT; who = "link", an NPC name or a picture point
     "x,y"): A gets B's model and B gets A's (one_way=true: only A <- B, "play as B") | place character=<name>
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
@@ -2173,9 +2176,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import sa2_chars
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
-    from . import jgr
-    if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
-        return {"result": out | jgr.use(ctx, meta, game, inp)}
+    from . import jgr_swap
+    if gid in jgr_swap.GAME_IDS:            # JGR: player (Beat unless active_id) | character:<name> | id:N | NN
+        return {"result": out | jgr_swap.use(ctx, meta, game, inp)}
     from . import pso_player
     if gid in pso_player.GAME_IDS and (inp.slot == "player" or pso_player.is_enemy_slot(inp.slot)):
         # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>; enemy:<name> | enemies -> pso_<slug>_as_<name>

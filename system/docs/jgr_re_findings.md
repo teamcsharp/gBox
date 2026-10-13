@@ -99,8 +99,9 @@ the fixed `BODY_ROLES` map (15 roles). On the owned disc, all 16 entries pass `v
 ## Open questions (follow-up work)
 
 - **Motion data** (kinds 4-7, about 650 KB in the kind-6 record): not decoded yet.
-- **Texture-id binding** to PTEX order is assumed for ids 0-2; the PTEX header table (404
-  records) may remap them per variant.
+- **Texture-id binding** (resolved, #1396): ids index each draw group's own NJS_TEXLIST in the PTEX binding
+  record, not PTEX order. See `docs/jgr_pipeline.md` for the draw groups, the texlists and the
+  cel-shading outline hull that the collector now separates.
 - **Writer and bone map**: rebuild a PLAY tree from a library character, mapped onto the 20-node
   skeleton, then verify the swap in-game at the operator's saved moment.
 
