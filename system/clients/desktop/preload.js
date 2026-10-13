@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld("gbox", {
   taskSnapshot: () => ipcRenderer.invoke("task:snapshot"),
   cancel: id => ipcRenderer.invoke("task:cancel", id),
   openExternal: url => ipcRenderer.invoke("open:external", url),
+  // #1639 the download icon's Export… / Open folder: a folder picker and Explorer on this PC
+  pickFolder: opts => ipcRenderer.invoke("dialog:folder", opts),
+  showInFolder: p => ipcRenderer.invoke("shell:show", p),
+  openPath: p => ipcRenderer.invoke("shell:open", p),
   osNotify: n => ipcRenderer.invoke("notify:os", n),
   onNotifyClick: fn => ipcRenderer.on("notify:click", (_e, id) => fn(id)),
   relaunch: () => ipcRenderer.invoke("app:relaunch"),
