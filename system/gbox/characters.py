@@ -667,6 +667,8 @@ class CharIn(BaseModel):
     props: list[dict] = []                 # add base=...: [{object, bone}] the Blender add-on bound
     rig_roles: dict[str, str] = {}         # add: semantic body role -> joint node name in the imported model
     scale: dict = {}                       # add base=...: {"head": k} head-bone scale
+    auto_rig: bool = True                  # add (from Blender): a model without a skeleton gets the humanoid auto rig
+    derived_ok: bool = False               # add: bones changed vs the base -> a new character derived from it (else blocked)
     head_scale: float = 0.0                # use: build a "<name> - big head" variant (0.5..3) and use that
     a: str = ""                            # swap (OoT): who gets B's looks: "link" (default) | a name | "x,y" picture point
     b: str = ""                            # swap: whose looks: a name ("Saria", "kokiri boy") | "x,y" picture point
@@ -2213,6 +2215,13 @@ def add_model(ctx, inp: CharIn) -> dict:
     if not name:
         raise ValueError("add needs character=<name for the new entry>")
     data, _src = _model_bytes(ctx, inp)
+    if inp.kind in ("", "character"):
+        # the Blender round trip (gbox.blender_roundtrip): a variant when the model names a collection character (base=, or
+        # the gBox extras of an exported GLB) with the same skeleton, else a new character: detected / auto-rigged body
+        # roles, attachments as props
+        from . import blender_roundtrip
+        game = _game(ctx, inp) if (inp.session_id or inp.game_id or inp.game) else None
+        return blender_roundtrip.import_model(ctx, inp, data, name, game)
     if inp.base:                                           # a variant (Blender Live Link): base rig, props, scale
         from . import variants
         root = library_root(ctx.config)
@@ -2258,20 +2267,15 @@ def to_blender(ctx, inp: CharIn) -> dict:
     if not m:
         raise ValueError(f"nothing in the collection matches {inp.character!r}")
     base = next(r for x, r in pool if x is m)
-    f = base / m["slug"] / m["model"]
-    data = f.read_bytes()
-    if f.suffix == ".gltf":                                # one self-contained file: external buffers/images inlined
-        gl = json.loads(data)
-        for coll, mt in (("buffers", "application/octet-stream"), ("images", "image/png")):
-            for it in gl.get(coll, []):
-                if it.get("uri") and not it["uri"].startswith("data:"):
-                    it["uri"] = f"data:{mt};base64," + base64.b64encode((f.parent / it["uri"]).read_bytes()).decode()
-        data = json.dumps(gl).encode()
+    from . import blender_roundtrip                        # one self-contained GLB + rig role names / props as extras
+    data = blender_roundtrip.export_glb(base, m["slug"])
     item = _api(ctx, "POST", "/api/clipboard", json={"kind": "gltf", "name": m["slug"], "b64": base64.b64encode(data).decode(),
-                                                     "meta": {"character": m["slug"], "model": m["model"]}}, timeout=300)
+                                                     "meta": {"character": m["slug"], "model": m["model"], "roundtrip": 1,
+                                                              "base": m.get("variant_of") or m["slug"]}}, timeout=300)
     return {"status": "on_clipboard", "entry": _brief(m), "clipboard_seq": item.get("seq"),
-            "message": f"{m['name']} is on the gBox clipboard: in Blender press Ctrl+Shift+V (gBox add-on). After editing, "
-                       "use the gBox panel's 'Send to gBox', then characters op=add from_clipboard=true character=<new name>."}
+            "message": f"{m['name']} is on the gBox clipboard: in Blender press Ctrl+Shift+V (gBox add-on; the bones keep "
+                       "their role names). After editing, the gBox panel's 'Send to gBox' stores it back as a variant of "
+                       f"{m['name']} (attachments bound to bones included)."}
 
 
 def _finish(ctx, res: dict) -> dict:
@@ -2323,7 +2327,10 @@ def characters_tool(inp: CharIn, ctx):
     session_id [pos | x, y | near=<actor>] [size, yaw] (OoT): a statue of it in the world (default in front of you) |
     unplace [character] session_id | overlay character=<name> session_id [x, y]: draw it over the player on screen in the
     desktop app now, any game (an overlay, not in-engine) | blender character=<name>: put it on the gBox clipboard for Blender (Ctrl+Shift+V) |
-    add character=<new name> from_clipboard=true|artifact|path: store an edited model. |
+    add character=<new name> from_clipboard=true|artifact|path: store a model from Blender (gbox.blender_roundtrip): a
+    variant of the collection character it came from (base=, or the GLB's gBox extras; skeleton unchanged), else a new
+    character (derived_ok=true when bones changed) with its rig recognised (Mixamo, Rigify, VRM, UE, biped) or
+    auto-rigged (auto_rig); objects parented to bones become attachments every writer carries. |
     cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role] [seed]
     [slots=all|main|enemies] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
     another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
@@ -2545,8 +2552,15 @@ def characters_tool(inp: CharIn, ctx):
 @functools.wraps(characters_tool)
 def characters_recorded(inp: CharIn, ctx):
     """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
-    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
-    out = characters_tool(inp, ctx)
-    from . import special_builds
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer). The result carries
+    "attachments" when Blender props went through a writer: kept / simplified / dropped for the game's budget."""
+    from . import attachments, special_builds
+    with attachments.ledger() as led:
+        out = characters_tool(inp, ctx)
+    rep = attachments.summary(led)
+    if rep and isinstance(out, dict) and isinstance(out.get("result"), dict):
+        out["result"]["attachments"] = rep
+        if rep["dropped"] and isinstance(out["result"].get("message"), str):
+            out["result"]["message"] += f" Attachments dropped for the budget: {', '.join(rep['dropped'])}."
     special_builds.record_call(ctx, inp, out)
     return out

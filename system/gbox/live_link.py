@@ -2,15 +2,24 @@
 anything (`live_link op=push`, started by the gBox add-on on Ctrl+S / Push).
 
 push (control-plane node, where the collection lives):
+  target      target=<session> | game_id=<game> | neither: the running session (newest) whose current model belongs to
+              the character's family (itself, its original, the original's other variants: their built mods'
+              names vs the session's live_mod / mod, or the character the pick whip put there) - so a save in
+              Blender updates whichever game shows that character now; none -> "stored" (nothing to reload)
+  live inject when a worker registers `pick_replace` (the live RAM injection tool), mode "live" is tried first;
+              if it can't, the rebuild below runs
   building    the game's swap writer rebuilds the variant's mod (SM64: sm64_<slug>; RE4 GC: re4_<slug>); the previous
-              build is kept as <mod>.prev until the new one is live
+              build is kept as <mod>.prev until the new one is live. Every other writer: characters op=use
+              rebuild=true launch=false for the slot (generic_push), then the session swap below
   validating  deterministic checks of the built files (no guessing), any blocking failure stops here with the reason:
               skeleton (joint count / order / offsets) unchanged, model-data budget, texture limits, culling radius still
               covers the model, hit boxes independent of the mesh (documented per writer; flags visual-only overhang)
   reloading   SM64 on RetroArch: hot swap = the new model data, geo layout and display-list pointers are written straight
               into the running game's RDRAM (paused for the write): same moment, no relaunch, ~seconds.
               Others: save state -> relaunch with the new mod -> load the state (RE4 GC keeps the model it already loaded
-              in RAM until the next area load: the state brings the old one back; walk through a door).
+              in RAM until the next area load: the state brings the old one back; walk through a door). Other writers:
+              POST /api/sessions/{sid}/swap {mod, keep_state} (session_swap: same PC, same moment).
+              Attachments (gbox.attachments) report kept / simplified / dropped for the game's budget.
   live        a frame check (picture not black, game still animating) confirms it; otherwise the previous build is put
               back (RAM and mod files) and the push reports "reverted".
 hotswap (runs on the session's worker): applies one prepared patch to the emulator's memory and checks frames.
@@ -294,6 +303,111 @@ def _mod_image(cfg, gid: str, mod: str, d: Path | None = None) -> Path | None:
         return None
 
 
+def family(chars: list[dict], meta: dict) -> list[dict]:
+    """The character, its original (variant_of) and every other variant of that original."""
+    base = meta.get("variant_of") or meta["slug"]
+    return [m for m in chars if m.get("slug") in (meta["slug"], base) or m.get("variant_of") == base]
+
+
+def live_mods(chars: list[dict], meta: dict) -> dict[str, dict]:
+    """mod name -> {game_id, slot, slug} for every swap mod built from the character's family (module doc: a running
+    session using one of them is showing this character)."""
+    out: dict[str, dict] = {}
+    for m in sorted(family(chars, meta), key=lambda m: m.get("slug") != meta["slug"]):   # the character's own first
+        for gid, lst in (m.get("targets") or {}).items():
+            for t in lst or []:
+                for mod in (t.get("mod"), t.get("base_mod")):
+                    if mod and mod not in out:
+                        out[mod] = {"game_id": gid, "slot": t.get("slot") or "player", "slug": m["slug"]}
+    return out
+
+
+def find_live_session(sessions: list[dict], chars: list[dict], meta: dict) -> tuple[dict | None, dict]:
+    """The running session (newest first) whose current model (live_mod / mod, or the character the pick whip put
+    there) belongs to this character's family -> (session, {game_id, slot, slug, why}) | (None, {})."""
+    mods = live_mods(chars, meta)
+    fam = {m["slug"] for m in family(chars, meta)}
+    for s in sorted((s for s in sessions if s.get("state") == "running"), key=lambda s: -(s.get("started") or 0)):
+        for key in ("live_mod", "mod"):
+            if s.get(key) and s[key] in mods:
+                return s, mods[s[key]] | {"why": f"session {s['session_id']} runs {s[key]}"}
+        live = s.get("live_character") or s.get("character") or ""
+        if live and live in fam:
+            return s, {"game_id": s.get("game_id"), "slot": s.get("live_slot") or "player", "slug": live,
+                       "why": f"session {s['session_id']} shows {live} (picked)"}
+    return None, {}
+
+
+def pick_replace_live(ctx, sess: dict, meta: dict, slot: str) -> dict:
+    """The live RAM injection tool (`pick_replace` mode "live", another module), when a worker registers it:
+    {ok, tried, ...}. Not registered / no worker -> {tried: False}; it ran but couldn't -> {tried: True, ok: False}."""
+    from . import characters as C
+    try:
+        tools = C._api(ctx, "GET", "/api/tools")
+    except Exception:                                      # noqa: BLE001 - no tool list: not available
+        return {"tried": False}
+    t = next((t for t in tools or [] if isinstance(t, dict) and t.get("name") == "pick_replace"), None)
+    if not t or not t.get("workers"):
+        return {"tried": False}
+    sid = sess["session_id"]
+    try:
+        j = C._job(ctx, "pick_replace", {"session_id": sid, "character": meta["slug"], "mode": "live", "slot": slot},
+                   sid.split("-")[0], 600)
+    except Exception as e:                                 # noqa: BLE001 - its input differs / refused: rebuild path
+        return {"tried": True, "ok": False, "error": f"{type(e).__name__}: {e}"}
+    r = (j.get("output") or {}).get("result") or j.get("output") or {}
+    ok = j.get("state") == "succeeded" and (r.get("ok") or r.get("status") in ("live", "replaced", "injected"))
+    return {"tried": True, "ok": bool(ok), "job": j.get("id"), "state": j.get("state"), "error": j.get("error"),
+            **({"session_id": r.get("session_id")} if isinstance(r, dict) and r.get("session_id") else {}),
+            "result": r if isinstance(r, dict) else {}}
+
+
+def generic_push(ctx, meta: dict, game: dict, sess: dict | None, slot: str, stage, t0: float) -> dict:
+    """Any game with a swap writer (characters op=use routes to it): rebuild the character's mod for that slot, then
+    session_swap it into the running game (same PC, same moment: save state -> relaunch with the mod -> load state)."""
+    from . import attachments, characters as C, sm64_swap
+    gid = game["game_id"]
+    stage("building", 5, f"{meta['name']} -> {game['title']} ({slot})")
+    with attachments.ledger() as led:
+        try:
+            res = C.characters_tool(C.CharIn(op="use", character=meta["slug"], game_id=gid, slot=slot, rebuild=True,
+                                             launch=False), ctx)["result"]
+        except Exception as e:                             # noqa: BLE001
+            return {"status": "blocked", "stage": "building", "message": f"the build failed: {e}"}
+    att = attachments.summary(led)
+    mod = res.get("mod")
+    if not mod:
+        st = res.get("status") or "missing"
+        return {"status": "missing" if st in ("missing", "overlay", "gap") else "blocked", "stage": "building",
+                "build": {k: v for k, v in res.items() if k in ("status", "message", "missing", "notes")},
+                "message": res.get("message") or f"no swap writer built a mod for {game['title']} ({slot})"}
+    stage("validating", 60, "the writer's own checks")
+    checks = [_check("build", True, res.get("message") or res.get("notes") or f"{mod} built")]
+    if att:
+        checks.append(_check("attachments", not att["dropped"], att["message"], blocking=False))
+    out = {"mod": mod, "checks": checks, "writer": "characters op=use",
+           "build": {k: v for k, v in res.items() if k in ("mod", "status", "notes", "report", "slot")},
+           **({"attachments": att} if att else {})}
+    if not sess:
+        return out | {"status": "built", "message": f"{mod} built (no running session to update)"}
+    sid = sess["session_id"]
+    stage("reloading", 70, f"session swap into {sid}")
+    try:
+        j = C._api(ctx, "POST", f"/api/sessions/{sid}/swap", json={"mod": mod, "keep_state": True})
+        j = sm64_swap._wait(ctx, j, 900)
+    except Exception as e:                                 # noqa: BLE001
+        return out | {"status": "failed", "stage": "reloading", "message": f"session swap refused: {e}"}
+    o = j.get("output") or {}
+    if j.get("state") != "succeeded" or not o.get("session_id"):
+        return out | {"status": "failed", "stage": "reloading",
+                      "message": f"session swap {j.get('state')}: {j.get('error')}; the game keeps the previous model"}
+    stage("live", 100, "✓")
+    return out | {"status": "live", "method": "session_swap", "session_id": o["session_id"], "reload": o,
+                  "seconds": round(time.time() - t0, 1),
+                  "message": f"live ✓ {meta['name']} is in the running game (rebuilt + swapped at the same moment, "
+                             f"{round(time.time() - t0)} s{'; state loaded' if o.get('state_loaded') else ''})"}
+
+
 def push(ctx, inp) -> dict:
     from . import characters as C, filemods, sm64_swap
     from .models import CatalogEntry
@@ -305,24 +419,44 @@ def push(ctx, inp) -> dict:
     meta = C.get(root, inp.character)
     sess = C._session(ctx, inp.target) if inp.target else None
     if inp.target and (not sess or sess.get("state") != "running"):
-        raise ValueError(f"session {inp.target} isn't running")
+        if not inp.auto_target:
+            raise ValueError(f"session {inp.target} isn't running")
+        sess = None                                        # replaced (a swap / relaunch) or stopped: find it again
+    found = {}
+    if not sess and not inp.game_id and inp.auto_target:
+        # Blender saved a character: is it (its original, or another variant of it) in a running game right now?
+        sess, found = find_live_session(C._api(ctx, "GET", "/api/sessions"), C._api(ctx, "GET", "/api/characters"), meta)
+        if not sess:
+            return {"character": meta["slug"], "status": "stored", "stages": {},
+                    "message": f"{meta['name']} saved; no running game shows it or {meta.get('variant_of') or 'its original'} "
+                               "(Use in game once: Live then follows that game)"}
     gid = (sess or {}).get("game_id") or inp.game_id
     if not gid:
         raise ValueError("push needs target (a running session) or game_id")
     game = C._api(ctx, "GET", f"/api/catalog/{gid}")
     t0 = time.time()
-    out = {"character": meta["slug"], "game": game["title"], "game_id": gid, "stages": {}}
+    slot = inp.slot or found.get("slot") or "player"
+    out = {"character": meta["slug"], "game": game["title"], "game_id": gid, "slot": slot, "stages": {},
+           **({"session_id": sess["session_id"], "found_by": found.get("why")} if found else {})}
 
     def stage(name, pct, msg):
         out["stages"][name] = round(time.time() - t0, 1)
         ctx.progress(pct, f"{name}: {msg}")
-    if gid in sm64_swap.GAME_IDS:
+    if sess and inp.method in ("auto", "live"):           # the live injection tool, when a worker has it
+        r = pick_replace_live(ctx, sess, meta, slot)
+        if r.get("ok"):
+            stage("live", 100, "✓ (pick_replace live)")
+            return out | {"status": "live", "method": "pick_replace live", "reload": r, "session_id": r.get("session_id") or sess["session_id"],
+                          "seconds": round(time.time() - t0, 1),
+                          "message": f"live ✓ {meta['name']} is in the running game (RAM injection, {round(time.time() - t0)} s)"}
+        if r.get("tried"):
+            out["pick_replace"] = r                        # it was there but couldn't: rebuild + swap instead
+    if gid in sm64_swap.GAME_IDS and slot == "player":
         writer, mod = "sm64", f"sm64_{meta['slug']}"
-    elif gid in C.RE4GC:
+    elif gid in C.RE4GC and slot == "player":
         writer, mod = "re4gc", f"re4_{meta['slug']}" + ("_d2" if gid == "e42c9b780c07c437" else "")
     else:
-        return out | {"status": "missing", "missing": C.needs_for(game),
-                      "message": f"no swap writer for {game['title']}: live mode needs one (SM64 and RE4 GC have one)"}
+        return out | generic_push(ctx, meta, game, sess, slot, stage, t0)
     d = filemods.mod_dir(cfg, gid, mod)
     prev = d.with_name(mod + ".prev")
     shutil.rmtree(prev, ignore_errors=True)
@@ -368,7 +502,7 @@ def push(ctx, inp) -> dict:
         return out | {"status": "built", "mod": mod, "message": f"{mod} built and validated (no running session to update)"}
     sid, wid = sess["session_id"], sess["session_id"].split("-")[0]
     method = inp.method
-    if method == "auto":
+    if method in ("auto", "live"):
         method = "hotswap" if writer == "sm64" and sess.get("adapter") == "retroarch" else "relaunch"
     stage("reloading", 70, f"{method} into session {sid}")
     if method == "hotswap":
@@ -447,7 +581,10 @@ class LiveIn(BaseModel):
     character: str = ""                    # push / validate: the variant (collection slug)
     target: str = ""                       # push: the running session to update ("" = build + validate only)
     game_id: str = ""                      # push without target: the game to build for
-    method: str = "auto"                   # push: auto (SM64 on RetroArch: hotswap, else relaunch) | hotswap | relaunch
+    method: str = "auto"                   # push: auto (pick_replace live if registered; SM64 on RetroArch: hotswap, else
+                                           # relaunch / session swap) | live | hotswap | relaunch
+    slot: str = ""                         # push: the slot the character fills ("" = the one its running mod was built for)
+    auto_target: bool = True               # push without target/game_id: find the running game showing this character
     revert_on_fail: bool = True
     session_id: str = ""                   # hotswap (internal): the session whose memory is patched
     patch: str = ""                        # hotswap (internal): artifact sha of the prepared patch
@@ -464,7 +601,9 @@ class LiveOut(BaseModel):
 def live_link(inp: LiveIn, ctx):
     """Blender Live Link: push character=<variant slug> target=<running session id> = rebuild its mod, validate it
     (skeleton, budget, textures, culling radius, hit boxes), then put it into the running game (SM64: hot swap in RDRAM;
-    others: save state -> relaunch -> load state) and confirm with a frame check (reverts on failure)."""
+    others: save state -> relaunch -> load state) and confirm with a frame check (reverts on failure). Without target
+    or game_id it finds the running game showing the character (or its original / another variant); any game with a
+    swap writer is rebuilt for that slot and session-swapped; `pick_replace` mode live is tried first when registered."""
     if inp.op == "push":
         return {"result": push(ctx, inp)}
     if inp.op == "hotswap":
