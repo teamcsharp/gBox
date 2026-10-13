@@ -648,12 +648,15 @@ def tool_specs() -> list[dict]:
            "guest_session_id and memory watch specs (trigger/win/lose). session_id is the running Stranglehold host.",
            {"op": s, "session_id": s, "verdict": s, "guest": s, "round": s, "guest_session_id": s, "guest_node": s,
             "style": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
-        fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
-           "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
-           "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
-           "extracted model; false opens a live Bevy window on the operator's PC.",
+        fn("bevy_scene", "The gBox Bevy viewer (Rust/Bevy, real-time 3D): render collection entries (items=[{character: slug} "
+           "or {environment: slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation "
+           "[x,y,z], scale, rotation_y_deg; camera={eye, target}. op=render + screenshot=true (default) returns a PNG shown "
+           "in the chat - use it to look at an extracted model or stage a scene. Reactive: op=open starts a live window on "
+           "the operator's PC; then react to what you see with op=snapshot (capture the live window to {name}.png), "
+           "op=set_camera (move it), op=add (more items), op=remove (drop item index), op=close (stop it); op=list shows "
+           "live sessions and saved scenes/renders.",
            {"name": s, "items": {"type": "array", "items": {"type": "object"}}, "camera": {"type": "object"},
-            "screenshot": {"type": "boolean"}}, ["items"]),
+            "screenshot": {"type": "boolean"}, "op": s, "index": {"type": "integer"}}, []),
         fn("mashup", "Cross-title mashup planner: turn a request like 'put Mario 64 in Ocarina of Time' into a resolved source "
            "character + target game, a feasibility check (native writer vs overlay-only) and an ordered plan. Explicit source "
            "(character name/slug) and target (game title/id) override the parsed request. auto_dispatch=true submits the "
@@ -1300,12 +1303,27 @@ class Agent:
     def um_render3d(self, **args):
         return self._um("um_render3d", args)
 
-    def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
-        j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
+    def bevy_scene(self, items=None, name="scene", camera=None, screenshot=True, op=None, index=None):
+        inp = {"name": name, "items": items or [], "camera": camera or {}, "screenshot": bool(screenshot)}
+        if op:
+            inp["op"] = op
+        if index is not None:
+            inp["index"] = index
+        # A live window exists only in the worker process that opened it: later ops on that scene go to the same PC.
+        live = getattr(self, "_bevy_live", None)
+        if live is None:
+            live = self._bevy_live = {}
+        pinned = live.get(name) if op in ("snapshot", "set_camera", "add", "remove", "close") else None
+        j = self._job("bevy_scene", inp, None if pinned else "windows", 3600, worker=pinned)
+        if op == "open" and j.get("state") == "succeeded" and j.get("worker_id"):
+            live[name] = j["worker_id"]
+        elif op == "close":
+            live.pop(name, None)
         out = j.get("output") or {}
         if j["state"] != "succeeded":
             return {"state": j["state"], "error": j.get("error")}
-        res = {k: out.get(k) for k in ("scene", "screenshot", "pid")}
+        # every field the op returned (op=list: live / scenes / renders; add/remove/set_camera: items, camera)
+        res = {k: v for k, v in out.items() if v not in (None, [], "")}
         try:                                                   # the screenshot as an image in the chat sidebar
             arts = self.api.get(f"/api/receipts/{j['receipt_id']}").json().get("artifacts", [])
             res["artifact"] = next((a["sha256"] for a in arts if a["name"] == "bevy.png"), None)
