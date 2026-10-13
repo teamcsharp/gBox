@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .agent_contracts import validate_cheat_call
 
-from . import adapters, catalog, provision, rewind, uap
+from . import adapters, catalog, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
 from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
@@ -288,6 +288,7 @@ def _close_previous_games(ctx):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
             rewind.stop(sid)
+            ring_record.stop(sid)
             SESSIONS.pop(sid, None)
             continue
         if _session_ended_on_server(ctx, sid):
@@ -316,6 +317,7 @@ def _close_previous_games(ctx):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                        json={'via': 'single_game', 'checkpoint': snapshot['artifact']}, timeout=10).raise_for_status()
         rewind.stop(sid)
+        ring_record.stop(sid)
         SESSIONS.pop(sid, None)
         track_emulator(ctx.config, sid, None, add=False)
     return checkpoints
@@ -423,6 +425,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
     except Exception as e:                                     # noqa: BLE001 - never block the launch
         detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
+    # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
+    try:
+        detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
+    except Exception as e:                                     # noqa: BLE001 - never block the launch
+        detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -545,6 +552,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                             threading.Thread(target=answer, args=(e,), daemon=True).start()
                     if pad:
                         rewind.feed(sid, pad)                 # Select+L2 / Select+R2 on a streamed session's pad
+                        ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
                     if pad and "send_input" in ad.supported:
                         ad.send_input(pad)
                 except Exception:
@@ -568,6 +576,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                 if not running:
                     c.post(f"/api/sessions/{sid}/ended", json={"returncode": getattr(ad.proc, "returncode", None)})
                     rewind.stop(sid)
+                    ring_record.stop(sid)
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
@@ -779,10 +788,67 @@ def session_op(inp: SessionIn, ctx: Ctx):
         if proc is not None and proc.poll() is None:
             raise RuntimeError('Emulator process is still running; stop was not confirmed')
         rewind.stop(inp.session_id)
+        ring_record.stop(inp.session_id)
         SESSIONS.pop(inp.session_id, None)
         track_emulator(ctx.config, inp.session_id, None, add=False)
     return {"result": res if isinstance(res, dict) else {"value": str(res)[:200]}, "session_id": inp.session_id,
             "ended": inp.op == "stop_game"}
+
+
+# --- background gameplay ring (#1084) -------------------------------------------------------
+
+class RecordingIn(BaseModel):
+    session_id: str
+    op: str = "status"                     # status | export | enable | disable
+    in_s: float | None = None              # export: the clip starts this many recorded seconds before the newest moment (None: all)
+    out_s: float = 0.0                     # export: and ends this many seconds before it (0 = the newest moment)
+    target_mb: float = 20.0                # export: file size goal in MiB; the bitrate (and, if needed, the resolution) follow it
+
+class RecordingOut(BaseModel):
+    session_id: str
+    op: str
+    status: dict
+    clip: dict | None = None               # export: {sha256, name, bytes, seconds, kbps, width, height, encoder, fits, ...}
+
+def _recording_validate(out: RecordingOut, arts) -> list[str]:
+    if out.op != "export":
+        return []
+    clip = out.clip or {}
+    data = arts.get(clip.get("name") or "")
+    if data is None:
+        return ["exported clip artifact missing"]
+    if sha256(data) != clip.get("sha256") or len(data) != clip.get("bytes"):
+        return ["clip artifact hash / size does not match the output"]
+    return [] if data[4:8] == b"ftyp" else ["clip artifact is not an MP4"]
+
+@tool("recording", "1.0", RecordingIn, RecordingOut, capabilities=["video", "runtime"], permissions=[P.EXECUTE], timeout_s=900,
+      side_effects=["background ffmpeg capture of the session while the pad is in use (bounded ring on local disk)"],
+      artifacts=["replay-*.mp4"], validation="clip artifact hash + size + MP4 signature", validate=_recording_validate,
+      check=lambda c: None if shutil.which("ffmpeg") else "ffmpeg not on PATH")
+def recording(inp: RecordingIn, ctx: Ctx):
+    """Background gameplay ring of a session (#1084): status (timeline, encoder), export the range in_s..out_s seconds
+    before the newest recorded moment as an MP4 of about target_mb, or enable / disable the capture for the session."""
+    ring = ring_record.get(inp.session_id)
+    op = inp.op.lower()
+    clip = None
+    if op in ("enable", "disable"):
+        ring.set_enabled(op == "enable")
+    elif op == "export":
+        ctx.progress(10, "Copying the recorded segments")
+        res = ring.export(inp.in_s, inp.out_s, inp.target_mb, progress=ctx.progress)
+        path = res.pop("file")
+        try:
+            data = path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+        ctx.artifact(res["name"], data, "video/mp4", session=inp.session_id, game=ring.meta.get("game_id"),
+                     title=ring.meta.get("title"), seconds=res["seconds"], in_s=res["in_s"], out_s=res["out_s"],
+                     target_mb=res["target_mb"], encoder=res["encoder"], replay=True)
+        clip = res | {"sha256": sha256(data), "bytes": len(data)}
+        ctx.progress(100, f"Clip ready: {len(data) / 2**20:.1f} MB, {res['seconds']:.0f} s, {res['height']}p ({res['encoder']})")
+    elif op != "status":
+        raise ValueError(f"unknown op {inp.op} (status, export, enable, disable)")
+    return {"session_id": inp.session_id, "op": op, "status": ring.status(), "clip": clip}
 
 
 class PokeIn(BaseModel):
