@@ -370,6 +370,7 @@ def um_backup_tool(inp: BackupIn, ctx: Ctx):
         if not um_backup.snapshots(name):
             raise ValueError(f"no snapshots for {name}")
         d = um_backup.diff(name, inp.to or None, str(_snapshot_path(name, inp.snapshot) or "") or None)
+        d["modified"] = d.pop("changed")               # "changed" is what this op changed (nothing)
         return {"result": {"op": op, **d, "changed": []}}
     if op == "delete":
         zp = _snapshot_path(name, inp.snapshot)
