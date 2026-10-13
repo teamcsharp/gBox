@@ -11,10 +11,22 @@ The pick whip is the one tool for pointing at something in the running game and 
 | Desktop app, any docked game | **Ctrl+I** (a global shortcut while a game is docked, so it works when the game has focus) or the status-bar dropper | The game pauses, the frame freezes, hovering outlines the character under the cursor and labels it (name, model, slot). Left click grabs it (extract + chat); right click opens the character menu. Esc closes and resumes the game. |
 | Desktop app, any docked game | **Right-click a character** (`winembed.py` forwards right-clicks from the native game window) | The character menu opens at that point and the game pauses until the menu closes. "Game menu…" at the bottom opens the old game menu (autoplay, save states, settings). |
 | Desktop app | **Alt+drag** (pick whip) or drag a collection card onto the game | The existing whip menus. "Replace live" now runs the same replacement chain as the character menu and streams it into the mini console. |
-| Web viewer (streamed game) | **⌖** in the session bar, or right-click the picture | The same outline, label, menu and console on the MJPEG picture. |
+| Web viewer and the desktop's Sessions page (streamed game, e.g. a Spark session) | **⌖** in the session bar, or **right-click any emulator view** (the Play stream, Inspect's picture, Examine's live frame) | The same outline, label, menu and console on the MJPEG picture. The menu always opens, even when the freeze, the pause or the identification fails. |
+| Anywhere above | **Report…** (first item of the character menu and of the desktop game menu) | The report pop-up: "⚑ Report: Problem at this spot (x% across, y% down)", plus "on <name>" when something was picked, with an optional "What did you expect?" field. It files the report into the inbox. |
+
+### Report…
+
+**Report…** is the first item of the character menu and of the desktop game menu (right-click on the game, the PiP bar's ⋮). It opens the report pop-up, which uses the same flow as the web shell's right-click report (`POST /api/requests/issue`):
+
+* **What's filled in:** the session, game, game id, mod and worker, the view (for example "web Sessions · play" or "desktop docked game"), and the click position as fractions and as the window aspect.
+* **Default text:** "Problem at this spot (x% across, y% down)", plus "on <name>" when the pick whip identified something there. The operator's own words ("What did you expect?") are optional.
+* **What's attached:** the current frame with the spot ringed in red. The desktop uses the frozen eyedropper frame or a fresh window capture; the web uses the frozen stream frame or the live stream. When something was picked, the pick result is attached as `pick-result.json` and summarised in the detail.
+* **What the server adds:** with a session, the exact moment (save state), the emulator log, recent jobs, chat tool calls and the session's launch mod. Without a frame of its own, the server attaches the session frame.
+* **Without a pick:** Report works with nothing picked, with no picker tools at all, and from the game menu off the game picture. In that last case it has no spot ("Problem in this game").
 
 ### The character menu
 
+* **Report…** files a problem at this spot (see above).
 * **Replace with…** opens a character browser with previews. Characters are filtered by compatibility: vehicles for vehicles, bodies for bodies. Ready-in-this-game characters come first, then previously fitted ones that need a rebuild, then everything else that has a model. Picking one runs `pick_replace` in live mode, then `pick_replace` in build mode if live did not take. Until `pick_replace` is registered, it runs `characters op=live_use`, and if that fails it files a rebuild request (`/api/requests/auto-mod-failure` with `needs_rebuild` and `replacement_requested`).
 * **Copy to clipboard** puts the identification text on the OS clipboard. When the model can be extracted, it also puts the GLB on the gBox clipboard.
 * **Copy to Blender** writes Blender's own clipboard on this PC with `blender_copy` (artifact = the extracted GLB, or the collection character), so you can press Ctrl+V in a 3D viewport. The Blender paste pop-up shows what was copied.
@@ -87,8 +99,8 @@ These tools are built by other work. The client calls them through `/api/jobs` a
 * `clients/web/viz/asset-sidebar.js` gained `reveal(q)` for "Show in Assets".
 * `gbox/pickwhip.py` has the pause hold, the watchdog and `pick_name`. It is wired in `gbox/server.py` and listed in `gbox/tools.py` tool modules.
 * Tests:
-  * `tests/test_pick_whip_ui.cjs` covers geometry, the hover scheduler, the hold, the fallbacks and the menu flows on a fake DOM.
-  * `tests/test_pickwhip_desktop.cjs` covers routing, holds and main's resume.
+  * `tests/test_pick_whip_ui.cjs` covers geometry, the hover scheduler, the hold, the fallbacks and the menu flows on a fake DOM. It also covers the report body and pop-up, Report without a pick, and right-click on a Sessions stream.
+  * `tests/test_pickwhip_desktop.cjs` covers routing, holds, main's resume, and Report… in the game menu.
   * `tests/test_pickwhip_glue.py` covers the hold routes, the watchdog and the `pick_name` tool loop.
 
 ## Remaining work

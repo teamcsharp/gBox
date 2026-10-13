@@ -151,6 +151,27 @@ def test_unavailable_models_fall_back_to_evidence():
     assert out["model"] == "enemy / beast.nj" and len(out["tried"]) == 2
 
 
+def test_pick_whip_report_body_is_accepted_by_the_issue_route(cfg):
+    """The body clients/web/viz/pick-whip.js reportBody() sends (Report… in the pick whip menus) files a request."""
+    import base64 as b64
+    from gbox.server import create_app
+    app = create_app(cfg)
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    pick = b64.b64encode(json.dumps({"preview": {"picked": {"class": "kasumi"}}}).encode()).decode()
+    body = {"session_id": "", "save_state": False, "what": "Problem at this spot (50% across, 40% down) on Kasumi",
+            "detail": "Picked: Kasumi (player) · via pick_preview", "note": "hair is missing",
+            "title": "Dead or Alive 2: Problem at this spot (50% across, 40% down) on Kasumi — hair is missing",
+            "element": {"kind": "game-point", "view": "web Sessions · play", "tag": "GAME", "x": 0.5, "y": 0.4, "window_aspect": 1.3333},
+            "image_b64": None, "attachments": [{"name": "pick-result.json", "type": "application/json", "b64": pick}],
+            "context": {"source": "pick whip report", "game": "Dead or Alive 2", "worker": "spark", "click": {"x": 0.5, "y": 0.4}}}
+    r = client.post("/api/requests/issue", json=body)
+    assert r.status_code == 200, r.text
+    req = r.json()
+    assert req["title"].startswith("Dead or Alive 2: Problem at this spot")
+    assert req["context"]["source"] == "pick whip report" and req["context"]["click"] == {"x": 0.5, "y": 0.4}
+    assert "hair is missing" in req["body"]
+
+
 def test_json_content_answer_is_accepted():
     post = lambda r, b: {"choices": [{"message": {"content": 'Sure: {"name": "yellow taxi", "kind": "vehicle"}'}}]}
     out = PW.name_pick(PW.PickNameIn(), PW.llm_routes(cfg(), ""), post, lambda n, a: {})

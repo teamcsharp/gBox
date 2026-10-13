@@ -539,7 +539,7 @@ document.addEventListener("click", e => { const im = e.target.closest(LB_SOURCES
 // card showed, the session's recent jobs and a frame go into the inbox for a fix); otherwise file a request about that
 // element (#1386): what it is, where it is and what the operator wants done with it
 document.addEventListener("contextmenu", e => {
-  if (e.target.closest(".tchip, .card[data-gid], input, textarea, select, #scr, #pwcanvas, #pwmenu")) return;   // the game picture: the pick whip's menu
+  if (e.target.closest(".tchip, .card[data-gid], input, textarea, select, #scr, img.screen, img[src*='/mjpeg'], #pwcanvas, #pwmenu, #pwreport")) return;   // the game picture: the pick whip's menu
   const scr = document.querySelector(".screen[data-sid]"),
         opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a, label, li, h2, h3, h4, section") || e.target;
   if (!opt) return; e.preventDefault();
@@ -3702,6 +3702,8 @@ window.PWW = GBoxPickWhip.mountOverlay(document, {
   retarget: o => /^[0-9a-f]{16}$/.test(o.gid || "") ? retargetOpen({ ...o, title: active?.title || "" }) : null,
   assets: q => window.assetSidebar?.reveal?.(q),
   chatModel: () => ({ name: "" }),                         // the Spark's local default (the desktop passes its header model)
+  session: sid => ({ game: active?.title || "", game_id: document.querySelector("#wb[data-gid]")?.dataset.gid || "", worker: String(sid || "").split("-")[0] }),
+  view: () => typeof cur === "string" ? (cur === "Sessions" ? `web Sessions · ${sessionMode || "play"}` : "web " + cur) : "web",
   sessionOp: async (sid, op) => { const j = await runJob({ tool: "session_op", input: { session_id: sid, op }, require_worker: sid.split("-")[0] });
     if (j.state !== "succeeded") throw new Error(j.error || j.state); return j.output?.result; },
   fallbackLive: async o => { const sid = active?.sid; const j = await runJob({ tool: "characters", input: { op: "live_use", character: o.character, session_id: sid, x: o.x, y: o.y }, require_worker: sid.split("-")[0] });
@@ -3710,9 +3712,12 @@ window.PWW = GBoxPickWhip.mountOverlay(document, {
     action: "pick whip model replacement", target: o.target || "", target_kind: o.kind || "", x: o.x, y: o.y, moment: `x=${o.x}, y=${o.y}`,
     needs_rebuild: true, replacement_requested: true, detail: (o.steps || []).map(s => `${s.via} ${s.mode}: ${s.error || s.status}`).join("; ") || "no live path" }).catch(() => null),
 });
-document.addEventListener("contextmenu", e => {                // right-click a character on the streamed picture
-  if (!e.target.closest?.("#scr") || !GBoxPickWhip.settings().rclick) return;
-  e.preventDefault(); PWW.menuAt(e.clientX, e.clientY);
+// Right-click any emulator view (the Sessions stream, Inspect's picture, Examine's live frame): the character menu,
+// Report… first. It opens even when nothing is identified there.
+const PW_GAME_VIEW = "#scr, img.screen, img[src*='/mjpeg']";
+document.addEventListener("contextmenu", e => {
+  const v = e.target.closest?.(PW_GAME_VIEW); if (!v || v.id === "pipimg") return;
+  e.preventDefault(); PWW.menuAt(e.clientX, e.clientY, v);
 });
 </script>
 <script src="/viz/stream-watchdog.js"></script>

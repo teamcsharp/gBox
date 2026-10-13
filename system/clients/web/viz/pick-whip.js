@@ -333,6 +333,7 @@
   function menuItems({ label, asset, canBlender = true, extra = [] } = {}) {
     const who = label && label.known ? label.name : "this character";
     return [
+      { id: "report", icon: "⚑", text: "Report…", hint: "a problem at this spot: the moment, a frame and what was picked go to the inbox" },
       { id: "replace", icon: "⇄", text: `Replace ${who} with…`, hint: "live when the game allows it, else a build" },
       { id: "copy", icon: "⧉", text: "Copy to clipboard", hint: asset ? "model + identification" : "identification (extracts the model when it can)" },
       { id: "blender", icon: "⬈", text: "Copy to Blender", hint: "Ctrl+V in a Blender 3D viewport", disabled: !canBlender },
@@ -378,6 +379,13 @@
   .pw-label em { display:block; color:#7f8aa8; font-size:10px; font-style:normal }
   #pwmenu { position:fixed; z-index:98; min-width:250px; max-width:340px; background:var(--bg,#16171c); color:var(--fg,#e8e8ee);
     border:1px solid var(--line,#333); border-radius:8px; padding:6px; box-shadow:0 10px 30px #000a; font:13px system-ui,sans-serif }
+  #pwreport { position:fixed; z-index:99; width:320px; background:var(--bg,#16171c); color:var(--fg,#e8e8ee); border:1px solid var(--line,#333);
+    border-radius:8px; padding:6px; box-shadow:0 10px 30px #000a; font:13px system-ui,sans-serif }
+  #pwreport .pw-head { display:flex; gap:6px; align-items:center; padding:2px 4px 6px } #pwreport .pw-head b { flex:1 }
+  #pwreport .pw-head button { background:none; border:0; color:var(--mut,#999); cursor:pointer }
+  #pwreport .pw-rep { width:100%; text-align:left; padding:6px; border-radius:5px; border:1px solid var(--line,#333); background:var(--card,#23252c);
+    color:inherit; cursor:pointer; font:inherit }
+  #pwreport input { width:100%; box-sizing:border-box; margin-top:6px } #pwreport .mut { color:var(--mut,#999); font-size:11px; margin-top:4px }
   #pwmenu .pw-head { padding:4px 6px 6px; border-bottom:1px solid var(--line,#333); margin-bottom:4px }
   #pwmenu .pw-head .mut, #pwmenu small { color:var(--mut,#999); font-size:11px }
   #pwmenu button { display:flex; gap:8px; align-items:baseline; width:100%; text-align:left; background:none; border:0; color:inherit;
@@ -527,6 +535,93 @@
     return { open, close, anchor, get size() { return panels.size; }, el: box };
   }
 
+  // ---- Report… : a problem at this spot of the game, into the inbox ---------------------------------------------------
+  // The same flow as the web shell's right-click report (POST /api/requests/issue): the server saves the exact moment
+  // (save state), adds the emulator log, recent jobs and the session's mod; this adds the click position, a frame with
+  // the spot marked, and whatever the pick whip identified there (pick-result.json). Works with no pick at all.
+  const pct = v => Math.round(v * 100);
+  function utf8b64(s) {
+    if (typeof Buffer !== "undefined") return Buffer.from(String(s), "utf8").toString("base64");
+    return env.btoa(unescape(encodeURIComponent(String(s))));
+  }
+  function reportBody({ sid = "", at = null, aspect = PICTURE, pick = null, note = "", session = {}, view = "game", image = null }) {
+    const l = pick && (pick.preview || pick.ident || pick.named) ? labelOf(pick.preview, pick.ident, pick.named) : null;
+    const known = !!(l && l.known && (pick.preview?.picked || pick.ident || pick.named));
+    const where = at ? `at this spot (${pct(at[0])}% across, ${pct(at[1])}% down)` : "in this game";
+    const what = `Problem ${where}${known ? " on " + l.name : ""}`;
+    const facts = known ? [`Picked: ${l.name}${l.kind ? " (" + l.kind + ")" : ""}`, l.model && "model " + l.model, l.slot && "slot " + l.slot,
+      l.ram && "RAM " + l.ram, l.id && "entity " + l.id, l.via && "via " + l.via].filter(Boolean).join(" · ")
+      : at ? "No character was identified at this spot." : "";
+    const worker = session.worker || String(sid).split("-")[0] || "";
+    const raw = pick && (pick.preview || pick.ident || pick.named) ? { preview: pick.preview || null, identify: pick.ident || null, named: pick.named || null } : null;
+    const game = session.game || "";
+    return {
+      session_id: sid, save_state: !!sid, what, detail: facts, note,
+      title: `${game ? game + ": " : ""}${what}${note ? " — " + note : ""}`.slice(0, 140),
+      element: { kind: "game-point", view, tag: "GAME", text: what, x: at ? +at[0].toFixed(4) : null, y: at ? +at[1].toFixed(4) : null, window_aspect: +(+aspect).toFixed(4) },
+      image_b64: image || null,
+      attachments: raw ? [{ name: "pick-result.json", type: "application/json", b64: utf8b64(JSON.stringify(raw, null, 2)) }] : [],
+      context: { source: "pick whip report", view, session_id: sid, game, game_id: session.game_id || "", mod: session.mod || "", worker,
+        click: at ? { x: +at[0].toFixed(4), y: +at[1].toFixed(4) } : null, window_aspect: +(+aspect).toFixed(4),
+        pick: known ? { name: l.name, kind: l.kind, model: l.model, slot: l.slot, ram: l.ram, entity: l.id, via: l.via } : null },
+    };
+  }
+  // a frame with the reported spot marked (a red ring), as base64 PNG; src = canvas / img / ImageBitmap
+  function markedFrame(doc, src, at, w, h) {
+    const W = w || src.naturalWidth || src.videoWidth || src.width, H = h || src.naturalHeight || src.videoHeight || src.height;
+    if (!W || !H) return null;
+    const c = doc.createElement("canvas"); c.width = W; c.height = H;
+    const g = c.getContext("2d"); g.drawImage(src, 0, 0, W, H);
+    if (at) {
+      const r = Math.max(10, Math.min(W, H) * 0.04);
+      g.lineWidth = Math.max(3, r / 5); g.strokeStyle = "#ff3b30"; g.shadowColor = "#000"; g.shadowBlur = 4;
+      g.beginPath(); g.arc(at[0] * W, at[1] * H, r, 0, Math.PI * 2); g.stroke();
+    }
+    return c.toDataURL("image/png").split(",")[1];
+  }
+  // io: { api, place, drag, session(sid) -> {game, game_id, mod, worker}, frame(at) -> b64 | null, onReported(r) }
+  // o:  { sid, at, aspect, x, y, pick: {preview, ident, named} | null, view }
+  function reportPopup(doc, io, o) {
+    ensureCss(doc);
+    let m = doc.getElementById("pwreport");
+    if (!m) { m = doc.createElement("div"); m.id = "pwreport"; m.setAttribute("role", "menu"); doc.body.append(m); if (io.drag) io.drag(m); }
+    const session = (io.session && io.session(o.sid)) || {};
+    const base = reportBody(Object.assign({}, o, { session }));
+    m.innerHTML = `<div class="pw-head"><b>⚑ Report</b><span class="mut">${ESC(session.game || "")}</span><button data-r="x" title="Close (Esc)">✕</button></div>` +
+      `<button class="pw-rep" data-r="send">⚑ Report: ${ESC(base.what)}</button>` +
+      `<input type="text" placeholder="What did you expect? (optional)" aria-label="What did you expect? (optional)">` +
+      `<div class="mut">${ESC(base.detail || "The moment, a frame and the emulator log go with it.")}</div>`;
+    m.style.display = "block"; m.style.left = (o.x || 0) + "px"; m.style.top = (o.y || 0) + "px";
+    if (io.place) io.place(m, o.x || 0, o.y || 0);
+    const input = m.querySelector("input"), status = m.querySelector(".mut");
+    // capture now, not after typing; the pop-up stays invisible for the two frames the capture needs (the closed menu
+    // and this pop-up are not in the reported picture)
+    m.style.visibility = "hidden";
+    const raf = env.requestAnimationFrame ? f => env.requestAnimationFrame(f) : f => setTimeout(f, 16);
+    const frame = new Promise(r => raf(() => raf(r))).then(() => io.frame ? io.frame(o.at) : null).catch(() => null);
+    frame.then(() => { m.style.visibility = ""; });
+    let sent = false, open = true;
+    const close = () => { if (!open) return; open = false; m.style.display = "none"; doc.removeEventListener("mousedown", outside, true); };
+    const outside = e => { if (!(e.target && m.contains(e.target))) close(); };
+    async function send() {
+      if (sent) return null; sent = true;
+      status.textContent = o.sid ? "Filing the report with the game, the moment and its output…" : "Filing the report…";
+      const body = reportBody(Object.assign({}, o, { session, note: (input.value || "").trim(), image: await frame }));
+      try {
+        const r = await io.api("/api/requests/issue", body);
+        status.textContent = `✓ Report #${r.number} is in the inbox`;
+        if (io.onReported) io.onReported(r);
+        setTimeout(close, 2500);
+        return r;
+      } catch (e) { sent = false; status.textContent = "✗ " + e.message; return null; }
+    }
+    m.onclick = e => { const b = e.target.closest && e.target.closest("[data-r]"); if (!b) return; if (b.dataset.r === "send") send(); else close(); };
+    input.onkeydown = k => { if (k.key === "Enter") send(); if (k.key === "Escape") close(); };
+    doc.addEventListener("mousedown", outside, true);
+    setTimeout(() => { try { input.focus(); } catch {} }, 0);
+    return { send, close, el: m, body: base };
+  }
+
   // ---- pause hold ------------------------------------------------------------------------------------------------------
   // acquire() pauses (once per session, ref-counted across the eyedropper and the menu), renews the lease while held,
   // release() resumes. Without the hold route (an older control plane) it falls back to plain session_op pause/resume.
@@ -597,7 +692,9 @@
     const label = doc.createElement("div"); label.className = "pw-label"; label.style.display = "none"; doc.body.append(label);
     const cv = doc.createElement("canvas"); cv.id = "pwcanvas";
     Object.assign(cv.style, { position: "fixed", zIndex: 95, cursor: "crosshair", display: "none" }); doc.body.append(cv);
-    const scr = () => doc.getElementById("scr");
+    // the game picture: the Play tab's stream, or any other live MJPEG view (Inspect, Examine's fallback frame)
+    const scr = () => (S.el && S.el.isConnected !== false && doc.contains?.(S.el) !== false ? S.el : null) || doc.getElementById("scr");
+    const sidOf = el => (el && el.dataset && el.dataset.sid) || (/\/api\/sessions\/([^/?#]+)\/mjpeg/.exec((el && el.getAttribute && el.getAttribute("src")) || "") || [])[1] || (io.sid && io.sid()) || "";
     const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
     const hover = createHover({
       request: at => runTool(io, "pick_preview", { session_id: S.sid, x: at[0], y: at[1], window_aspect: S.rect.w / S.rect.h }, { ms: 200, max: 50 }).then(r => r.result),
@@ -618,10 +715,11 @@
       placeLabel(doc, label, S.rect, S.cur || [0, 0, 0, 0], tgt ? S.label || (S.region ? { name: "colour region", model: "", slot: "", kind: "", via: "no entity data here" } : null) : null);
       S.raf = W.requestAnimationFrame(frame);
     }
-    async function start() {
+    async function start(view) {
+      if (view) S.el = view;
       const el = scr(); if (S.on) return;
       if (!el) { io.toast?.("The pick whip works on the streamed game picture here; in the desktop app press Ctrl+I or right-click the game"); return; }
-      S.sid = el.dataset.sid || (io.sid && io.sid()); if (!S.sid) return;
+      S.sid = sidOf(el); if (!S.sid) return;
       S.on = true; S.rect = rectOf(el);
       Object.assign(cv.style, { left: S.rect.x + "px", top: S.rect.y + "px", width: S.rect.w + "px", height: S.rect.h + "px", display: "block" });
       cv.width = Math.round(S.rect.w); cv.height = Math.round(S.rect.h);
@@ -650,17 +748,31 @@
     cv.addEventListener("click", e => menuAt(e.clientX, e.clientY));
     doc.addEventListener("keydown", e => { if (e.key === "Escape" && S.on) stop(); });
     W.addEventListener("pagehide", () => hold.releaseAll());
-    async function menuAt(cx, cy) {
-      const el = scr(); if (!el) return;
-      const cold = !S.on;                                     // a right-click on the playing game: the menu's own pause
-      if (cold) await start();
-      if (!S.on) return;
-      const at = [(cx - S.rect.x) / S.rect.w, (cy - S.rect.y) / S.rect.h];
-      return characterMenu(doc, io, { sid: S.sid, at, aspect: S.rect.w / S.rect.h, x: cx, y: cy, preview: S.preview, con, gid: el.closest("[data-gid]")?.dataset.gid || io.gid?.() || "",
-        anchor: [S.rect.x + (S.cur ? S.cur[2] : at[0]) * S.rect.w + 12, S.rect.y + (S.cur ? S.cur[1] : at[1]) * S.rect.h],
-        onClose: () => { if (cold) stop(); } });          // closing that menu resumes the game; ⌖ keeps picking open
+    function frameAt(at) {                                   // the frozen picture (or the live one) with the spot marked
+      const el = scr();
+      try { return S.frame ? markedFrame(doc, S.frame, at) : el ? markedFrame(doc, el, at) : null; } catch { return null; }
     }
-    return { start, stop, toggle: () => S.on ? stop() : start(), menuAt, get on() { return S.on; }, hold, console: con };
+    // Right-click on a game view: the character menu (Report… first). It always opens, even when the freeze, the pause
+    // or the identification fails: Report must stay reachable.
+    async function menuAt(cx, cy, view) {
+      if (view && !S.on) S.el = view;
+      const el = scr(); if (!el) return null;
+      const cold = !S.on;                                     // a right-click on the playing game: the menu's own pause
+      if (cold) { try { await start(); } catch { /* the menu still opens */ } }
+      const rect = S.on ? S.rect : rectOf(el), sid = S.sid || sidOf(el);
+      const at = [clamp01((cx - rect.x) / rect.w), clamp01((cy - rect.y) / rect.h)];
+      return characterMenu(doc, Object.assign({}, io, { frame: io.frame || frameAt }), { sid, at, aspect: rect.w / rect.h, x: cx, y: cy,
+        preview: S.on ? S.preview : null, con, gid: (el.closest && el.closest("[data-gid]")?.dataset.gid) || io.gid?.() || "", view: io.view?.() || "stream",
+        anchor: [rect.x + (S.cur ? S.cur[2] : at[0]) * rect.w + 12, rect.y + (S.cur ? S.cur[1] : at[1]) * rect.h],
+        onClose: why => { if (cold && why !== "report") stop(); else if (cold) setTimeout(stop, 0); } });   // closing resumes; ⌖ keeps picking open
+    }
+    function reportAt(cx, cy, view) {                        // straight to the report pop-up (no pick needed)
+      const el = view || scr(); if (!el) return null;
+      const rect = rectOf(el), at = [clamp01((cx - rect.x) / rect.w), clamp01((cy - rect.y) / rect.h)];
+      return reportPopup(doc, Object.assign({}, io, { frame: io.frame || (a => { try { return markedFrame(doc, el, a); } catch { return null; } }) }),
+        { sid: sidOf(el), at, aspect: rect.w / rect.h, x: cx, y: cy, pick: null, view: io.view?.() || "stream" });
+    }
+    return { start, stop, toggle: () => S.on ? stop() : start(), menuAt, reportAt, get on() { return S.on; }, hold, console: con };
   }
 
   // ---- the character menu (desktop + web) -------------------------------------------------------------------------
@@ -726,6 +838,12 @@
 
     async function onPick(id) {
       const l = lbl(), who = l.known ? l.name : "the character";
+      if (id === "report") {                                 // the pop-up first (its frame capture starts now), then the menu goes
+        const r = reportPopup(doc, io, { sid: o.sid, at: o.at, aspect: o.aspect, x: o.x, y: o.y, view: o.view || "game",
+          pick: { preview: st.preview, ident: st.ident, named: st.named } });
+        dismiss("report");
+        return r;
+      }
       if (id === "pause") { saveSettings({ pause: !settings().pause }); return render(); }
       if (id === "cloud") { saveSettings({ cloud: !settings().cloud }); return render(); }
       if (o.extra && o.extra.some(x => x.id === id)) { dismiss(id); return o.onExtra && o.onExtra(id); }
@@ -807,5 +925,5 @@
   return { settings, saveSettings, windowToPicture, pictureToWindow, clampBox, floodRegion, decodeMask, maskBox, maskEdges, outlineOf,
     easeBox, labelOf, labelHTML, createHover, missingTool, startJob, waitJob, runTool, identify, nameLocal, replace, rankCharacters,
     menuItems, consoleLines, fitLines, ensureCss, paintOutline, placeLabel, openMenu, setMenuHead, closeMenu, browser, createConsole,
-    createHold, mountOverlay, characterMenu, PICTURE };
+    createHold, mountOverlay, characterMenu, reportBody, reportPopup, markedFrame, PICTURE };
 });

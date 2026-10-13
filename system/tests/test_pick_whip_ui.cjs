@@ -15,7 +15,9 @@ class El {
   set innerHTML(v) { this._html = v; this.kids = {}; } get innerHTML() { return this._html; }
   append(...c) { for (const x of c) { this.children.push(x); x.parent = this; if (x._id) this.doc.ids[x._id] = x; } }
   remove() { if (this._id && this.doc.ids[this._id] === this) delete this.doc.ids[this._id]; this.removed = true; }
-  setAttribute(k, v) { this.attrs[k] = v; } addEventListener() {} focus() {}
+  setAttribute(k, v) { this.attrs[k] = v; } getAttribute(k) { return this.attrs[k] ?? null; } addEventListener(t, f) { (this.on ||= {})[t] = f; } focus() {}
+  getContext() { return new Proxy({}, { get: () => () => ({ data: new Uint8ClampedArray(4) }) }); }
+  toDataURL() { return 'data:image/png;base64,RlJBTUU='; }
   querySelector(sel) { return this.kids[sel] || (this.kids[sel] = new El(sel, this.doc)); }
   contains(x) { return x === this; } getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 100 }; }
 }
@@ -26,7 +28,8 @@ function fakeDoc() {
   doc.head = new El('head', doc); doc.body = new El('body', doc);
   doc.addEventListener = (t, f) => (doc.listeners[t] ||= []).push(f);
   doc.removeEventListener = (t, f) => { doc.listeners[t] = (doc.listeners[t] || []).filter(x => x !== f); };
-  doc.defaultView = { innerWidth: 1600, innerHeight: 900 };
+  doc.defaultView = { innerWidth: 1600, innerHeight: 900, requestAnimationFrame: () => 0, cancelAnimationFrame() {}, addEventListener() {} };
+  doc.contains = () => true;
   return doc;
 }
 const tick = async (n = 6) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
@@ -174,8 +177,88 @@ test('web viewer: shared module, ⌖ in the session bar, right-click on the pict
   assert.match(web, /<script src="\/viz\/pick-whip\.js"><\/script>/);
   assert.match(web, /id="pwbtn"[\s\S]{0,400}PWW\.toggle\(\)/);
   assert.match(web, /window\.PWW = GBoxPickWhip\.mountOverlay\(document, \{/);
-  assert.match(web, /closest\("\.tchip, \.card\[data-gid\], input, textarea, select, #scr, #pwcanvas, #pwmenu"\)/);   // the issue menu stays off the picture
-  assert.match(web, /closest\?\.\("#scr"\)[\s\S]{0,80}PWW\.menuAt\(e\.clientX, e\.clientY\)/);
+  assert.match(web, /closest\("\.tchip, \.card\[data-gid\], input, textarea, select, #scr, img\.screen, img\[src\*='\/mjpeg'\], #pwcanvas, #pwmenu, #pwreport"\)/);   // the issue menu stays off the picture
+  assert.match(web, /const PW_GAME_VIEW = "#scr, img\.screen, img\[src\*='\/mjpeg'\]";/);
+  assert.match(web, /closest\?\.\(PW_GAME_VIEW\)[\s\S]{0,120}PWW\.menuAt\(e\.clientX, e\.clientY, v\)/);
+});
+
+// ---- Report… ---------------------------------------------------------------------------------------------------------------
+test('report body: a problem at this spot, prefilled; no pick needed', () => {
+  const b = PW.reportBody({ sid: 'spark-s7', at: [0.5, 0.4], aspect: 16 / 9, session: { game: 'Dead or Alive 2', game_id: 'g1', mod: 'doa2_amy', worker: 'spark' }, view: 'web Sessions · play' });
+  assert.equal(b.session_id, 'spark-s7'); assert.equal(b.save_state, true);
+  assert.equal(b.what, 'Problem at this spot (50% across, 40% down)');
+  assert.equal(b.detail, 'No character was identified at this spot.');
+  assert.equal(b.title, 'Dead or Alive 2: Problem at this spot (50% across, 40% down)');
+  assert.deepEqual(b.element, { kind: 'game-point', view: 'web Sessions · play', tag: 'GAME', text: b.what, x: 0.5, y: 0.4, window_aspect: 1.7778 });
+  assert.deepEqual(b.context.click, { x: 0.5, y: 0.4 });
+  assert.equal(b.context.mod, 'doa2_amy'); assert.equal(b.context.worker, 'spark'); assert.equal(b.context.pick, null);
+  assert.deepEqual(b.attachments, []); assert.equal(b.image_b64, null);
+  assert.equal(PW.reportBody({ sid: 'w1-s1' }).context.worker, 'w1');                 // worker from the session id
+  assert.equal(PW.reportBody({}).save_state, false);                                  // no game: a plain request, no state save
+});
+
+test('report body: the pick goes along (summary + pick-result.json)', () => {
+  const pick = { preview: { picked: { class: 'kasumi', kind: 'player', ptr: '0x8c0f1000' }, model: 'KASUMI.BIN' }, named: { name: 'Kasumi', route: 'local', llm_model: 'gemma4:e4b' } };
+  const b = PW.reportBody({ sid: 'spark-s7', at: [0.3, 0.6], pick, note: 'her hair is missing', image: 'PNG' });
+  assert.equal(b.what, 'Problem at this spot (30% across, 60% down) on Kasumi');
+  assert.match(b.detail, /Picked: Kasumi \(player\) · model KASUMI\.BIN · RAM 0x8c0f1000 · via gemma4:e4b \(local\)/);
+  assert.match(b.title, /— her hair is missing$/); assert.equal(b.image_b64, 'PNG');
+  const att = JSON.parse(Buffer.from(b.attachments[0].b64, 'base64').toString('utf8'));
+  assert.equal(b.attachments[0].name, 'pick-result.json'); assert.equal(att.preview.picked.class, 'kasumi'); assert.equal(att.named.name, 'Kasumi');
+  assert.equal(b.context.pick.name, 'Kasumi');
+});
+
+test('character menu: Report… is first, opens the report pop-up and files it with a marked frame', async () => {
+  const fx = menuFixture({ pick_preview: { picked: { class: 'kasumi', kind: 'player' } } }, { '/api/requests/issue': b => ({ number: 12, id: 'r12', body: b }) });
+  fx.io.frame = at => 'FRAME@' + at.join(',');
+  fx.io.session = sid => ({ game: 'Dead or Alive 2', game_id: 'g1', mod: 'doa2_amy', worker: 'spark' });
+  let reported = null; fx.io.onReported = r => { reported = r; };
+  await tick(10);
+  assert.equal(PW.menuItems()[0].id, 'report');
+  assert.match(fx.doc.getElementById('pwmenu').innerHTML, /^<div class="pw-head">[\s\S]*?<button role="menuitem" data-pw="report"/);
+  const pop = await fx.menu.onPick('report');
+  assert.deepEqual(fx.seen.closed, ['report']);
+  const m = fx.doc.getElementById('pwreport');
+  assert.match(m.innerHTML, /⚑ Report: Problem at this spot \(50% across, 50% down\) on kasumi/);
+  assert.match(m.innerHTML, /What did you expect\? \(optional\)/);
+  m.querySelector('input').value = 'should not freeze';
+  const r = await pop.send();
+  const body = fx.f.calls.find(c => c.path === '/api/requests/issue').body;
+  assert.equal(r.number, 12); assert.equal(reported.number, 12);
+  assert.equal(body.session_id, 'w1-s1'); assert.equal(body.save_state, true); assert.equal(body.note, 'should not freeze');
+  assert.equal(body.image_b64, 'FRAME@0.5,0.5'); assert.equal(body.context.game, 'Dead or Alive 2'); assert.equal(body.context.mod, 'doa2_amy');
+  assert.equal(body.attachments[0].name, 'pick-result.json');
+  assert.match(m.querySelector('.mut').textContent, /Report #12 is in the inbox/);
+});
+
+test('Report works where identification fails (no picker tools at all)', async () => {
+  const fx = menuFixture({}, { '/api/requests/issue': () => ({ number: 13 }) });
+  await tick(10);
+  const pop = await fx.menu.onPick('report');
+  await pop.send();
+  const body = fx.f.calls.find(c => c.path === '/api/requests/issue').body;
+  assert.equal(body.what, 'Problem at this spot (50% across, 50% down)'); assert.deepEqual(body.attachments, []);
+  assert.equal(body.detail, 'No character was identified at this spot.');
+});
+
+test('web viewer: right-click on a Sessions stream opens the menu (paused), Report… is there, and reportAt files directly', async () => {
+  const doc = fakeDoc(), f = fakeApi({}, { '/api/pickwhip/spark-s7/hold': b => ({ paused: true, owned: true }), '/api/requests/issue': () => ({ number: 14 }) });
+  const img = new El('img', doc); img.id = 'scr'; img.attrs.src = '/api/sessions/spark-s7/mjpeg?token=x';
+  img.getBoundingClientRect = () => ({ left: 100, top: 100, width: 640, height: 480 }); img.naturalWidth = 640; img.naturalHeight = 480;
+  const store = new Map(); globalThis.localStorage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  const ow = PW.mountOverlay(doc, { api: f.api, sleep: f.sleep, toast() {}, view: () => 'web Sessions · play' });
+  await ow.menuAt(420, 340, img); await tick(10);
+  assert.ok(f.calls.some(c => c.path === '/api/pickwhip/spark-s7/hold' && c.body.op === 'pause'));
+  const menu = doc.getElementById('pwmenu');
+  assert.equal(menu.style.display, 'block'); assert.match(menu.innerHTML, /data-pw="report"/);
+  const pop = ow.reportAt(420, 340, img);
+  assert.match(pop.el.innerHTML, /Problem at this spot \(50% across, 50% down\)/);
+  await pop.send();
+  const body = f.calls.find(c => c.path === '/api/requests/issue').body;
+  assert.equal(body.session_id, 'spark-s7'); assert.equal(body.context.worker, 'spark'); assert.equal(body.element.view, 'web Sessions · play');
+  assert.equal(body.image_b64, 'RlJBTUU=');                                          // the stream frame with the spot marked
+  ow.stop(); await tick();                                                            // closing resumes (and stops the renewals)
+  assert.ok(f.calls.some(c => c.path === '/api/pickwhip/spark-s7/hold' && c.body.op === 'release'));
 });
 
 // ---- tool fallbacks ------------------------------------------------------------------------------------------------------

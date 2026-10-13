@@ -16,6 +16,7 @@ function desktop({ rclick = true, pause = true, eyeOn = false, model = 'gemma4:e
     createHold: () => ({ acquire: async sid => { seen.acquire.push(sid); return { paused: true }; }, release: async sid => { seen.release.push(sid); } }),
     createConsole: () => ({ open: () => ({}), anchor() {} }),
     characterMenu: (doc, io, o) => { seen.menus.push({ io, o }); return {}; },
+    reportPopup: (doc, io, o) => { seen.reports.push({ popup: true, io, o }); return {}; },
     runTool: async () => ({ ok: true, result: {}, job: {} }),
   };
   const ctx = { GBoxPickWhip: stub, EMB: { sid: 'w1-s1', game: '0123456789abcdef', title: 'AUF', rect: { x: 100, y: 50, w: 800, h: 600 } },
@@ -24,10 +25,12 @@ function desktop({ rclick = true, pause = true, eyeOn = false, model = 'gemma4:e
     $: sel => sel === '#chatmodel' ? { value: model } : null, toast() {}, fitMenu() {}, dragAnywhere() {}, embedSoon() {}, blenderCopiedMsg() {},
     pipMenu: (x, y) => seen.pip.push([x, y]), retargetOpen() {}, gameJob: async (tool, input) => { seen.jobs.push({ tool, input }); return { status: 'ok' }; },
     autoWhipFailure: async o => { seen.reports.push(o); return { number: 1 }; },
-    gbox: { api: async () => ({ ok: true, data: {} }), token: async () => 'tok' }, encodeURIComponent };
+    gbox: { api: async () => ({ ok: true, data: {} }), token: async () => 'tok' }, encodeURIComponent, innerWidth: 1500, innerHeight: 950,
+    LIVE_SESSIONS: { peek: () => ({ ok: true, data: [{ session_id: 'w1-s1', title: 'Dead or Alive 2', game_id: '0123456789abcdef', mod: 'doa2_amy', detail: { worker_name: 'PC' } }] }) },
+    refreshInbox() {} };
   vm.createContext(ctx);
   vm.runInContext(slice(html, 'const PW = GBoxPickWhip;', '// ---------------- game eyedropper (Ctrl+I') +
-    '\nthis.pw = { pwRightClick, pwMenuAt, pwIO, pwModel, PWD };', ctx);
+    '\nthis.pw = { pwRightClick, pwMenuAt, pwIO, pwModel, PWD, pwReport, pwSession };', ctx);
   return { ctx, seen, pw: ctx.pw };
 }
 const settle = () => new Promise(r => setTimeout(r, 0));
@@ -74,6 +77,23 @@ test('naming uses the header model; replace falls back to live_use, then a rebui
   assert.match(rep.detail, /slot npc_3.*characters live_use live: unsupported/);
 });
 
+test('Report… from the game menu: at the right-clicked spot, prefilled from the live session; off the game: no spot', async () => {
+  const d = desktop();
+  await d.pw.pwReport([500, 350]);
+  let { o, io } = d.seen.reports[0];
+  assert.equal(o.sid, 'w1-s1'); assert.deepEqual(plain(o.at), [0.5, 0.5]); assert.equal(o.pick, null); assert.equal(o.view, 'desktop docked game');
+  assert.deepEqual(plain(io.session('w1-s1')), { game: 'Dead or Alive 2', game_id: '0123456789abcdef', mod: 'doa2_amy', worker: 'PC' });
+  assert.equal(typeof io.frame, 'function'); assert.equal(typeof io.onReported, 'function');
+  await d.pw.pwReport([20, 20]);
+  assert.equal(d.seen.reports[1].o.at, null);
+  // the game menu lists it first and routes it here; the character menu gets the view for the report
+  assert.match(html, /GM\.at = \[x, y\];[\s\S]{0,120}const items = \[\["report", "⚑ Report…"\], \["-"\],/);
+  assert.match(html, /else if \(a === "report"\) await pwReport\(GM\.at\);/);
+  d.pw.pwRightClick(500, 350); await settle();
+  assert.equal(d.seen.menus[0].o.view, 'desktop docked game');
+  assert.match(html, /#pwmenu, #pwcon, #pwreport"/);                                 // shown above the docked native game
+});
+
 test('closing the eyedropper resumes the game it paused', () => {
   const released = [];
   const ctx = { EYE: { on: true, sid: 'w1-s1', hover: { stop() { this.stopped = true; } }, lab: { remove() {} } }, EMB: {}, PWD: { hold: { release: sid => released.push(sid) } },
@@ -103,7 +123,7 @@ test('main resumes held games when the window crashes, reloads or closes', async
 
 test('the shell loads the shared module and cuts its menu and console out of the docked game', () => {
   assert.match(html, /<script src="\.\.\/web\/viz\/pick-whip\.js"><\/script>/);
-  assert.match(html, /const EMB_HOLES = "[^"]*#pwmenu, #pwcon"/);
+  assert.match(html, /const EMB_HOLES = "[^"]*#pwmenu, #pwcon, #pwreport"/);
   assert.match(html, /if \(ev\.event === "rclick"\) pwRightClick\(ev\.x, ev\.y\)/);
   assert.match(html, /m\.ev === "gamecontext"\) pwRightClick/);
 });

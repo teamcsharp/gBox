@@ -3074,7 +3074,7 @@ function popups() {                                          // floating things 
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon";
+const EMB_HOLES = ".piprz, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
 const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
@@ -3269,7 +3269,8 @@ function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
-  const items = [...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
+  GM.at = [x, y];                                              // Report… files a problem at this spot
+  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
@@ -3334,6 +3335,7 @@ async function gameAction(a) {
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
     else if (a === "orb") ORB.on ? orbClose() : orbOpen();
     else if (a === "vov") { vovEnable(!VOV.enabled); toast(VOV.enabled ? "✨ The transition visual shows over the game while you and gBox talk" : "✨ Voice overlay off"); }
+    else if (a === "report") await pwReport(GM.at);
     else if (a === "pwrclick") { const s = GBoxPickWhip.saveSettings({ rclick: !GBoxPickWhip.settings().rclick }); toast(s.rclick ? "⌖ Right-click a character in the game for its menu (Replace, Copy, Blender…)" : "⌖ Right-click on the game opens the game menu"); }
     else if (a === "pwpause") { const s = GBoxPickWhip.saveSettings({ pause: !GBoxPickWhip.settings().pause }); toast(s.pause ? "⏸ The game pauses while the pick whip is open" : "⏸ The game keeps running while you pick"); }
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
@@ -3611,6 +3613,26 @@ async function pwBlenderCopy(input) {                          // blender_copy o
   blenderCopiedMsg({ result: r.result, input, worker: me.name });
   return r.result;
 }
+function pwSession(sid) {                                      // what the report pre-fills: game, mod, worker
+  const row = (LIVE_SESSIONS.peek?.()?.data || []).find(s => s.session_id === sid) || {};
+  return { game: row.title || EMB.title || "", game_id: row.game_id || EMB.game || "", mod: row.mod || "",
+           worker: row.detail?.worker_name || String(sid || "").split("-")[0] };
+}
+async function pwFrame(at) {                                   // the current frame (frozen eyedropper frame or a fresh capture), spot marked
+  if (EYE.on && EYE.full) return PW.markedFrame(document, EYE.full, at);
+  const R = EMB.rect, shot = R && await gbox.captureOS?.().catch(() => null); if (!shot) return null;
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = shot; });
+  const k = img.width / innerWidth, c = Object.assign(document.createElement("canvas"), { width: Math.round(R.w * k), height: Math.round(R.h * k) });
+  c.getContext("2d").drawImage(img, R.x * k, R.y * k, R.w * k, R.h * k, 0, 0, c.width, c.height);
+  return PW.markedFrame(document, c, at);
+}
+const pwView = () => EMB.surface === "gpu" ? "desktop GPU game surface" : EYE.on ? "desktop eyedropper" : "desktop docked game";
+async function pwReport(p) {                                   // Report… from the game menu: at the right-clicked spot when it's on the game
+  const R = EMB.rect, [x, y] = p || [innerWidth / 2, innerHeight / 3];
+  const inside = !!R && x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h;
+  return PW.reportPopup(document, await pwIO(), { sid: EMB.sid || "", at: inside ? [(x - R.x) / R.w, (y - R.y) / R.h] : null,
+    aspect: R ? R.w / R.h : 4 / 3, x, y, pick: null, view: pwView() });
+}
 function pwAssets(q) {
   if (window.assetSidebar?.reveal) { window.assetSidebar.reveal(q); toast(`▤ Assets: ${q}`); }
   else toast("The asset sidebar is still loading");
@@ -3620,6 +3642,7 @@ async function pwIO() {
   return { api: pwApi, toast, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y, 8, 40),
     img: c => `${S.apiUrl}${c.preview_url || `/api/characters/${encodeURIComponent(c.slug)}/preview`}?token=${tok}`,
     clipboard: t => navigator.clipboard.writeText(t), assets: pwAssets, chatModel: pwModel, crop: pwCrop, blenderCopy: pwBlenderCopy,
+    session: pwSession, frame: pwFrame, onReported: () => { try { refreshInbox(); } catch {} },
     retarget: o => /^[0-9a-f]{16}$/.test(o.gid || "") ? retargetOpen({ ...o, title: EMB.title || "" }) : toast("Open the game first: the Retarget editor needs its game id."),
     fallbackLive: o => gameJob("characters", { op: "live_use", character: o.character, session_id: sid, x: o.x, y: o.y }),
     fallbackBuild: o => autoWhipFailure({ sid, game: EMB.title || "the game", model: o.name, character: o.character, target: o.target,
@@ -3631,7 +3654,7 @@ async function pwMenuAt(cx, cy) {                              // the character 
   const R = EMB.rect; if (!EMB.sid || !R) return pipMenu(cx, cy);
   const sid = EMB.sid, frozen = EYE.on, at = [(cx - R.x) / R.w, (cy - R.y) / R.h];
   if (!frozen) PWD.hold.acquire(sid).then(r => { if (r.error) toast("⚠ could not pause the game: " + r.error.slice(0, 120)); });
-  PW.characterMenu(document, await pwIO(), { sid, at, aspect: R.w / R.h, x: cx, y: cy, preview: frozen ? EYE.preview : null, con: pwCon(), gid: EMB.game,
+  PW.characterMenu(document, await pwIO(), { sid, at, aspect: R.w / R.h, x: cx, y: cy, preview: frozen ? EYE.preview : null, con: pwCon(), gid: EMB.game, view: pwView(),
     anchor: [cx + 24, cy - 20], extra: [{ id: "gamemenu", icon: "⋮", text: "Game menu…" }],
     onExtra: id => { if (id === "gamemenu") pipMenu(cx, cy); },
     onClose: why => { if (why === "dismiss") PWD.dismissed = Date.now();   // that click closes the menu; it doesn't grab
