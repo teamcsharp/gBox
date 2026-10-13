@@ -270,7 +270,12 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
     def current_info():
-        return info.model_copy(update={'pending_results': outbox.pending_count()})
+        try:                                        # this PC's own builds for the Builds view (cached, stat-only)
+            from . import filemods
+            local = filemods.local_builds(config)
+        except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
+            local = []
+        return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
