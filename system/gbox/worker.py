@@ -251,6 +251,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     if outbox.protected_sessions(_builtin._running_file(config)):
         raise RuntimeError('Worker activation held: a delivered native launch still has an owned PID record; no emulator was stopped')
     info = describe(config, name)
+    from . import cache_tiers                       # two-tier cache where configured (no-op when `serve` did it)
+    cache_tiers.install(config)
     def _push():                                    # mods built on this machine join the central collection on the Spark
         try:
             from . import filemods

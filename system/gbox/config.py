@@ -117,6 +117,14 @@ class Config(BaseModel):
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)
     cache_limit_gb: float = 20.0
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
+    # Two-tier cache (gbox/cache_tiers.py, docs/cache-tiers.md): cache_dirs is the fast hot tier, cold_cache_dirs a big
+    # slow disk behind it. Least recently used per-game units move to the cold tier only while the node is idle and
+    # leave a symlink, so <cache>/... paths keep working; access moves them back. Unset for an OS = one tier.
+    cold_cache_dirs: dict[str, str] = {}      # os -> cold tier root (must exist: a missing mount is never created)
+    hot_cache_limit_gb: dict[str, float] = {} # os -> size the idle demoter keeps the hot tier under (default: cache_limit)
+    cache_tier_idle_minutes: float = 30.0     # no session / job / launch on this node for this long before demoting
+    cache_tier_warm_fraction: float = 0.5     # after the migration, recently used cold units are promoted up to this share
+    cache_tier_promote_wait_s: float = 60.0   # a launch waits for its unit's promotion only if it fits in this; else later
     runtime_dirs: dict[str, str] = {}        # os -> local disk for emulators/cores (never run binaries off a network share)
     stage_min_mb: int = 32            # stage library files larger than this (disc images) onto the local cache before launch
     stage_wait_s: float = 45.0        # a launch waits for a cache copy only if it will finish within this; else the game
@@ -161,6 +169,16 @@ class Config(BaseModel):
     @property
     def cache_limit(self) -> float:
         return self.cache_limits_gb.get(HOST_OS, self.cache_limit_gb)
+
+    @property
+    def cold_cache(self) -> Path | None:
+        """The cold tier behind self.cache on this OS, or None (single-tier cache)."""
+        d = self.cold_cache_dirs.get(HOST_OS)
+        return Path(os.path.expandvars(d)) if d else None
+
+    @property
+    def hot_cache_limit(self) -> float:
+        return self.hot_cache_limit_gb.get(HOST_OS, self.cache_limit)
 
     @property
     def runtime(self) -> Path:
