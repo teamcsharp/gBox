@@ -321,7 +321,11 @@ def _profiled(rig, tgt, out, rep, scale, T, jmap):
     prof = RP.profile_of(scale)
     if FE.active():
         FE.auto_model(rig.get("source"))
-        FE.stage("scale", data=FE.fit_numbers(rep))
+        basis = rep.get("facing")                         # the donor as loaded, stood upright: its original height
+        th = tgt.get("height") or (float(np.asarray(T)[:, 1].max()) - float(tgt["ground"]) if "ground" in tgt else None)
+        FE.stage("scale", data=FE.fit_numbers(rep) | FE.donor_numbers(rig, basis, fitted_height=FE.height(out),
+                                                                       target_height=th),
+                 prims=FE.donor(rig, basis))
         FE.stage("retarget", data={"limb_stretch": rep.get("limb_stretch"), "roles": len(rep.get("roles_used") or []),
                                    "vertices": int(sum(len(p["pos"]) for p in out)),
                                    "triangles": int(sum(len(p["tris"]) for p in out))}, prims=out)

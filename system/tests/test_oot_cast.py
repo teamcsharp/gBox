@@ -358,6 +358,100 @@ def test_build_cast_refuses_what_does_not_fit_and_keeps_the_rest(tmp_path, rom_b
         "doesn't fit" in sar["reason"], sar
 
 
+def _fit_events(lines):
+    from gbox import fit_events as FE
+    return [FE.split(m)[1] for _p, m in lines if FE.split(m)[1] is not None]
+
+
+def _stage_order(evs, key):
+    seen = []
+    for e in evs:
+        if e.get("model") == key and e.get("stage") and e["stage"] not in seen:
+            seen.append(e["stage"])
+    return seen
+
+
+def _last(evs, key, stage):
+    return [e for e in evs if e.get("model") == key and e.get("stage") == stage][-1]
+
+
+def test_build_cast_reports_every_slot_stage_by_stage_with_snapshots(tmp_path, rom_bytes, monkeypatch):
+    """The Fitting pop-up on the OoT cast: every model planned up front, then per slot the donor as loaded (scale),
+    retargeted onto the slot's posed skeleton, proportion, per-limb assignment, decimate, encode (bytes, growth,
+    relocation) and write (where the object landed in the new ROM)."""
+    from gbox import fit_events as FE
+    from tests.test_fit_events import read_glb
+    monkeypatch.setattr(C, "_blender", lambda cfg: None)
+    meta = _donor(tmp_path, rom_bytes)
+    lines = []
+    with FE.job(lambda p, m: lines.append((p, m)), tmp_path / "snaps"):
+        r = SW.build_cast(SimpleNamespace(cache=tmp_path / "cache"), OOT,
+                          [("saria", meta), ("deku_scrub", meta), ("epona", meta), ("talon", meta)], "cast_fit",
+                          root=tmp_path / "lib", rom_data=rom_bytes)
+    assert r["mod"] == "cast_fit"
+    evs = _fit_events(lines)
+    assert [x["model"] for x in evs[0]["plan"]] == ["saria", "deku_scrub", "epona", "talon"]   # Fitting k/4
+    assert evs[0]["plan"][0]["label"] == "Donor -> Saria"
+    full = ["scale", "retarget", "proportion", "weights", "decimate", "encode", "write"]
+    for slot in ("saria", "deku_scrub", "talon"):
+        assert _stage_order(evs, slot) == full, (slot, _stage_order(evs, slot))
+        scale = _last(evs, slot, "scale")
+        assert scale["data"]["donor_height"] > 0 and scale["data"]["donor_triangles"] > 0
+        assert scale["data"]["fitted_height"] > 0 and scale["data"]["scale"] > 0
+        assert read_glb(scale["snapshot"])["accessors"][0]["count"] > 0          # the donor as loaded
+        ret = _last(evs, slot, "retarget")
+        assert read_glb(ret["snapshot"])["accessors"][0]["count"] > 0            # on the slot's posed skeleton
+        w = _last(evs, slot, "weights")["data"]
+        assert w["vertices"] > 0 and sum(w["per_limb"].values()) == w["vertices"] and w["skeleton_limbs"] == 15
+        dec = _last(evs, slot, "decimate")
+        assert dec["state"] == "skipped" and dec["data"]["from"] == dec["data"]["triangles"] > 0
+        enc = _last(evs, slot, "encode")["data"]
+        assert 0 < enc["bytes"] <= enc["budget"] and enc["grew"] == r["slots"][slot]["grew"]
+        assert enc["relocates"] == (enc["grew"] > 0)
+        wr = _last(evs, slot, "write")
+        assert wr["state"] == "done" and wr["data"]["mod"] == "cast_fit" and wr["data"]["image"].endswith(".z64")
+        assert bool(wr["data"]["relocated"]) == enc["relocates"]
+        if enc["relocates"]:
+            assert wr["data"]["vrom"].startswith("0x")
+    sar = _last(evs, "saria", "retarget")["data"]
+    assert sar["roles"] > 0 and sar["vertices"] > 0
+    assert "head (limb 14)" in _last(evs, "saria", "weights")["data"]["per_limb"]
+    assert _last(evs, "saria", "proportion")["state"] == "skipped"            # no profile on the donor
+    deku = _last(evs, "deku_scrub", "retarget")["data"]
+    assert deku["mode"] == "rigid ride" and deku["limb"] in range(1, 15)
+    dw = _last(evs, "deku_scrub", "weights")["data"]
+    assert dw["limbs"] == 1 and list(dw["per_limb"])[0].startswith("body (limb")
+    assert _stage_order(evs, "epona") == ["write"] and _last(evs, "epona", "write")["state"] == "failed"
+    assert "skinned" in _last(evs, "epona", "write")["data"]["reason"]
+
+
+def test_fit_reports_decimation_with_a_snapshot(tmp_path, rom_bytes, monkeypatch):
+    """Above the triangle budget the decimation pass is a stage of its own: before / after counts, the target and the
+    byte budget, and the decimated mesh on the target skeleton."""
+    from gbox import fit_events as FE, re4gc_enemies
+    from tests.test_fit_events import read_glb
+    meta = _donor(tmp_path, rom_bytes)
+    rom = OW.Rom(rom_bytes)
+    tgt = SW.slot_target(rom, OC.slot_spec(rom, "talon")) | {"tag": "talon"}
+    model = tmp_path / "lib" / "donor" / "donor.gltf"
+    roles = meta["rig"]["roles"]
+    monkeypatch.setattr(re4gc_enemies, "decimate", lambda src, dst, amount, blender=None: src)   # Blender stand-in
+    lines = []
+    with FE.job(lambda p, m: lines.append((p, m)), tmp_path / "snaps"):
+        FE.model("talon", "Donor -> Talon")
+        placed = SW.place(model, roles, tgt)
+        n = sum(len(p["tris"]) for p in placed[0])
+        f = SW.fit(model, roles, tgt, tmp_path / "work", "Donor", "blender", 0x40000, max_tris=n - 1, placed=placed)
+    evs = _fit_events(lines)
+    assert [e["stage"] for e in evs if e.get("stage")] == ["scale", "retarget", "proportion", "weights", "decimate",
+                                                            "encode"]
+    dec = _last(evs, "talon", "decimate")
+    assert dec["state"] == "done" and dec["data"]["from"] == n and dec["data"]["to"] == n - 1
+    assert dec["data"]["budget_bytes"] == 0x40000 and dec["data"]["passes"] == 1
+    assert read_glb(dec["snapshot"])["accessors"][0]["count"] > 0
+    assert _last(evs, "talon", "encode")["data"]["bytes"] == f["report"]["bytes"]
+
+
 def test_fit_budget_flattens_then_refuses():
     tri = ((np.zeros(3), np.array([0, 1.0, 0]), (0.0, 0.0)), (np.array([10.0, 0, 0]), np.array([0, 1.0, 0]), (1.0, 0.0)),
            (np.array([0, 10.0, 0]), np.array([0, 1.0, 0]), (0.0, 1.0)))

@@ -436,37 +436,86 @@ def fit_budget(parts: dict, mats: list, uses: list, budget: int) -> tuple[list, 
                      f"(budget {budget})")
 
 
-def fit(model: Path, roles: dict, tgt: dict, work: Path, name: str, blender: str | None, budget: int,
-        max_tris: int = MAX_TRIS, scale: dict | None = None, props=(), progress=lambda p, m: None) -> dict:
-    """Library model -> {parts, mats, rigged (glTF on the target skeleton), report}."""
-    from .re4gc_enemies import decimate
-    work.mkdir(parents=True, exist_ok=True)
+def limb_names(tgt: dict) -> dict:
+    """target limb -> its body role ("head (limb 10)"), else "limb N" - the Fitting pop-up's per-limb counts."""
+    names = {int(j): f"{r} (limb {j})" for r, j in (tgt.get("roles") or {}).items()}
+    if tgt.get("mode") == "rigid":
+        names[int(tgt["rigid_limb"])] = f"body (limb {tgt['rigid_limb']})"
+    return names
+
+
+def place(model: Path, roles: dict, tgt: dict, scale: dict | None = None, props=()) -> tuple[list[dict], dict]:
+    """The donor on the target skeleton, in the target's pose: retargeted limb by limb (sm64_swap.retarget, which
+    reports scale / retarget / proportion to the Fitting pop-up), or the rigid ride on the body limb. Reports the
+    limb assignment (weights: vertices per limb)."""
+    from . import fit_events as FE
     rig = S.load_rig(Path(model), roles, props)
     if tgt.get("mode") == "rigid":
         prims, rep = rigid_place(rig, tgt)
+        if FE.active():
+            FE.auto_model(rig.get("source"))
+            basis = S.facing(rig)
+            FE.stage("scale", data={"scale": rep["scale"], "target_height": round(float(tgt["height"]), 2),
+                                    "fitted_height": FE.height(prims)} | FE.donor_numbers(rig, basis),
+                     prims=FE.donor(rig, basis))
+            FE.stage("retarget", data={"mode": "rigid ride", "limb": rep["limb"], "pose": tgt.get("pose"),
+                                       "why": tgt.get("why_rigid"), "vertices": int(sum(len(p["pos"]) for p in prims)),
+                                       "triangles": FE.triangles(prims)}, prims=prims)
+            FE.stage("proportion", "skipped", {"profile": "rigid ride: the donor keeps its own proportions"})
     else:
         prims, rep = S.retarget(rig, tgt, scale, jmap=tgt["roles"])
+    if FE.active():
+        counts = FE.per_limb(prims, limb_names(tgt), owner=_dl_owner(tgt))   # the limb that draws each vertex
+        FE.stage("weights", data={"mode": "rigid ride (one limb)" if tgt.get("mode") == "rigid"
+                                  else "rigid per limb (one limb per vertex)", "limbs": len(counts),
+                                  "skeleton_limbs": tgt["joints"], "vertices": int(sum(counts.values())),
+                                  "per_limb": counts})
+    return prims, rep
+
+
+def fit(model: Path, roles: dict, tgt: dict, work: Path, name: str, blender: str | None, budget: int,
+        max_tris: int = MAX_TRIS, scale: dict | None = None, props=(), progress=lambda p, m: None,
+        placed: tuple[list[dict], dict] | None = None) -> dict:
+    """Library model -> {parts, mats, rigged (glTF on the target skeleton), report}. placed: place()'s result when
+    the caller retries the same fit with smaller byte budgets (the retarget is done once)."""
+    from . import fit_events as FE
+    from .re4gc_enemies import decimate
+    work.mkdir(parents=True, exist_ok=True)
+    prims, rep = placed if placed is not None else place(model, roles, tgt, scale, props)
+    rep = dict(rep)
     tag = tgt.get("age") or tgt.get("tag") or "npc"
     rigged = S.write_rigged(prims, tgt, work / f"oot_{tag}.gltf", name)
     tris = sum(len(p["tris"]) for p in prims)
-    rep["source_triangles"] = tris
-    src, last = rigged, None
+    rep["source_triangles"] = src_tris = tris
+    src, last, passes = rigged, None, []
     for target_tris in (max_tris, int(max_tris * 0.7), int(max_tris * 0.5), int(max_tris * 0.35), int(max_tris * 0.22),
                         int(max_tris * 0.15)):
         if tris > target_tris:
             if not blender:
+                FE.stage("decimate", "failed", {"from": src_tris, "to": target_tris, "budget_bytes": budget,
+                                                "reason": "no Blender on this node"})
                 raise ValueError(f"{tris} triangles (budget ~{target_tris}) and no Blender on this node to decimate")
             progress(45, f"Decimating {name} -> {target_tris} triangles (Blender)")
             src = decimate(rigged, work / f"dec_{tag}_{target_tris}.glb", float(target_tris), blender)
+            passes.append(target_tris)
         rprims = S.read_rigged(src)
         parts, mats, uses = to_parts(rprims, tgt)
         tris = sum(len(v) for v in parts.values())
         try:
             fitted, frep = fit_budget(parts, mats, uses, budget)
-            return {"parts": parts, "mats": fitted, "rigged": rigged,
-                    "report": rep | frep | {"triangles": tris, "limbs": sorted(int(j) for j in parts)}}
         except ValueError as e:
             last = e
+            continue
+        if FE.active():
+            dec = {"from": src_tris, "triangles": tris, "max_tris": max_tris, "budget_bytes": budget,
+                   "passes": len(passes), **({"to": passes[-1]} if passes else {})}
+            FE.stage("decimate", "done" if passes else "skipped", dec, prims=rprims if passes else None)
+            FE.stage("encode", data={"bytes": frep["bytes"], "budget": budget, "triangles": tris,
+                                     "limbs": len(parts), "materials": len(fitted), "textures": frep["textures"],
+                                     "flattened": frep["flattened"], "max_texels": frep["max_texels"]})
+        return {"parts": parts, "mats": fitted, "rigged": rigged,
+                "report": rep | frep | {"triangles": tris, "limbs": sorted(int(j) for j in parts)}}
+    FE.stage("encode", "failed", {"budget": budget, "triangles": tris, "reason": str(last)[:150]})
     raise last
 
 
@@ -990,7 +1039,7 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
     growth_plan: Kokiri Forest's NPCs share ~130 KB). Grown objects get a fresh VROM range, the DMA table and
     gObjectTable follow, the CRC is fixed (oot_writer.Rom.build). A slot that can't be rebuilt is reported with the
     reason and the rest still build. -> {"mod", "slots": {slot: {status, reason?, mode, ...}}, "detail"}."""
-    from . import characters as C, oot_cast as OC
+    from . import characters as C, fit_events as FE, oot_cast as OC
     if rom_data is None:
         rom, rom_file = rom_of(cfg, game)
     else:
@@ -1005,6 +1054,13 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
             specs[slot] = OC.slot_spec(rom, slot)
         except (ValueError, LookupError) as e:
             per[slot] = {"status": "failed", "reason": str(e)}
+    # every model up front ("Fitting k/N" in the pop-up); a slot the ROM can't take ends right away
+    FE.plan([(slot, meta["slug"], f"{meta.get('name', meta['slug'])} -> {specs[slot]['name'] if slot in specs else slot}")
+             for slot, meta in pairs])
+    for slot, _meta in pairs:
+        if slot not in specs:
+            FE.model(slot)
+            FE.stage("write", "failed", {"reason": per[slot]["reason"][:150]})
     caps: dict[int, int] = {}
     share: dict[int, int] = {}
     for slot, sp in specs.items():
@@ -1019,6 +1075,7 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
         if slot not in specs:
             continue
         progress(5 + 70 * k // max(1, len(pairs)), f"{meta['name']} -> {specs[slot]['name']} ({k + 1}/{len(pairs)})")
+        FE.model(slot)                                    # every stage below belongs to this slot's model
         model = root / meta["slug"] / meta["model"]
         work = Path(cfg.cache) / "characters_build" / "cast" / name / slot
         saved = dict(rom.changed)
@@ -1034,23 +1091,29 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
                     tgt = link_target(rom, age)
                     regions = link_reclaim(rom, age)
                     rec = sum(b - a for a, b in regions)
+                    placed = place(model, roles, tgt, scale, props)     # retargeted once, refitted per byte budget
 
-                    def attempt(budget, age=age, tgt=tgt, regions=regions):
-                        f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props)
+                    def attempt(budget, age=age, tgt=tgt, regions=regions, placed=placed):
+                        f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props,
+                                placed=placed)
                         return f, write_link(rom, age, f["parts"], f["mats"], regions)
                     f, w, g = _fit_into(rom, [o], allow.get(o, 0) // share.get(o, 1), rec, attempt)
                     row[age] = {"triangles": f["report"]["triangles"], "grew": g[o], "code_entries": w["code_entries"]}
+                    _encoded(f, g, rec, age=age, code_entries=w["code_entries"])
                 row["mode"] = "retarget (Link's roles)"
             else:
                 tgt = slot_target(rom, sp) | {"tag": slot}
                 objs = sp["objects"]
                 room = min(allow.get(o, 0) // share.get(o, 1) for o in objs)
                 rec = sum(b - a for a, b in sp["regions"])
+                placed = place(model, roles, tgt, scale, props)
 
-                def attempt(budget, sp=sp, tgt=tgt):
-                    f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props)
+                def attempt(budget, sp=sp, tgt=tgt, placed=placed):
+                    f = fit(model, roles, tgt, work, meta["name"], blender, budget, scale=scale, props=props,
+                            placed=placed)
                     return f, write_group(rom, sp["group"], f["parts"], f["mats"], sp["regions"])
                 f, w, g = _fit_into(rom, objs, room, rec, attempt)
+                _encoded(f, g, rec, mode=tgt["mode"], room=room)
                 row |= {"mode": tgt["mode"], "triangles": f["report"]["triangles"], "grew": max(g.values()),
                         "reused": rec, "pose": tgt.get("pose"), "textures": f["report"].get("textures"),
                         "branched_lists": len(sp["group"].get("branch_dls", []))}
@@ -1062,6 +1125,7 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
         except Exception as e:                            # noqa: BLE001 - one slot never stops the cast
             rom.changed = saved
             per[slot] = {"status": "failed", "reason": str(e)[:500] or type(e).__name__}
+            FE.stage("write", "failed", {"reason": per[slot]["reason"][:150]})
     if not built:
         return {"mod": None, "slots": per, "detail": {"growth": plan}}
     first = OW.Rom(rom.data)                              # what grew, measured on the final staged files (a slot
@@ -1096,9 +1160,40 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
                              "strict_cutscenes to fit those too (smaller models)")
     rec = [{"slot": s, "character": per[s]["character"], **{k: v for k, v in per[s].items() if k != "character"}}
            for s in built]
-    write_mod(cfg, game, name, {"rom": out, "rom_file": rom_file},
-              {"writer": "gbox.oot_swap (cast)", "cast_build": rec, "detail": detail})
+    d = write_mod(cfg, game, name, {"rom": out, "rom_file": rom_file},
+                  {"writer": "gbox.oot_swap (cast)", "cast_build": rec, "detail": detail})
+    for slot in built:                                    # where each rebuilt object ended up in the new ROM
+        sp = specs[slot]
+        objs = [LINK[a]["obj"] for a in sp["ages"]] if sp["kind"] == "link" else sp["objects"]
+        FE.model(slot)
+        FE.stage("write", data={"mod": name, "image": (d / image_name(rom_file)).name, "rom_bytes": len(out),
+                                **_placement(orig, check, objs)})
     return {"mod": name, "slots": per, "detail": detail}
+
+
+def _encoded(f: dict, grew: dict, reused: int, **extra):
+    """The encode stage of a written slot: display-list + texture bytes, what it reused of the old model, how far the
+    object grew (a grown object moves to a fresh VROM range at the rebuild)."""
+    from . import fit_events as FE
+    rep = f["report"]
+    FE.stage("encode", data={"bytes": rep.get("bytes"), "budget": rep.get("budget"), "triangles": rep.get("triangles"),
+                             "limbs": len(rep.get("limbs") or []), "textures": rep.get("textures"),
+                             "flattened": rep.get("flattened"), "max_texels": rep.get("max_texels"),
+                             "reused_bytes": reused, "grew": max(grew.values()) if grew else 0,
+                             "relocates": any(v > 0 for v in grew.values()),
+                             "objects": [NAMES["objects"].get(hex(o), hex(o)) for o in grew], **extra})
+
+
+def _placement(orig: OW.Rom, new: OW.Rom, objs: list[int]) -> dict:
+    """{objects, relocated: [names], vrom: "start-end" of the first moved object, object_bytes} for the write stage."""
+    moved, vrom, size = [], None, 0
+    for o in objs:
+        a, b = orig.dma[orig.object_index(o)][:2], new.dma[new.object_index(o)][:2]
+        size += b[1] - b[0]
+        if list(a) != list(b):
+            moved.append(NAMES["objects"].get(hex(o), hex(o)))
+            vrom = vrom or f"{b[0]:#x}-{b[1]:#x} (was {a[0]:#x})"
+    return {"objects": len(objs), "object_bytes": size, "relocated": moved, **({"vrom": vrom} if vrom else {})}
 
 
 def mod_name(jobs_desc: list[str]) -> str:

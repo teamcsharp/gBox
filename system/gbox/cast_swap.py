@@ -656,6 +656,8 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     mod = res.get("mod")
     built = [s for s, r in per.items() if r.get("status") in ("built", "partial")]
     for s, _m in pairs:                                   # every model's last stage in the Fitting pop-up
+        if FE.written(s):                                 # the writer reported its own write (bytes, new place)
+            continue
         FE.model(s)
         ok = s in built and mod
         FE.stage("write", "done" if ok else "failed",

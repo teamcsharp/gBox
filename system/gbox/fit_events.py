@@ -164,13 +164,18 @@ def _send(event: dict, text: str):
 
 def plan(rows: list[tuple[str, str, str]]):
     """The cast build's models before any of them is fitted: [(model key, donor slug, label)]. auto_model(slug)
-    then takes the next planned key of that donor."""
+    then takes the next planned key of that donor. A key already planned keeps its row (the cast swap plans every
+    model, then the writer's own build_cast plans the same ones again when it runs alone)."""
     sk = _sink.get()
     if sk is None:
         return
+    labels = sk.setdefault("labels", {})
+    rows = [(str(k), s, lab) for k, s, lab in rows if str(k) not in labels]
+    if not rows:
+        return
     for key, slug, label in rows:
-        sk["plan"].setdefault(str(slug), []).append((str(key), label))
-        sk.setdefault("labels", {})[str(key)] = label
+        sk["plan"].setdefault(str(slug), []).append((key, label))
+        labels[key] = label
     _send({"plan": [{"model": k, "label": lab} for k, _s, lab in rows]}, f"Fitting {len(rows)} models")
 
 
@@ -255,8 +260,78 @@ def stage(name: str, state: str = "done", data: dict | None = None, text: str | 
         cur["fitted"] = True
     if name == "write" and state in ("done", "failed"):
         cur["closed"] = True
+        sk.setdefault("written", set()).add(cur["key"])
     label = cur.get("label") or cur["key"]
     _send(ev, text or f"{label}: {name}" + (f" ({state})" if state != "done" else ""))
+
+
+def written(key: str) -> bool:
+    """The model's write stage already ended (done / failed): a writer that reports its own write (with the object's
+    new place, bytes...) keeps it - the cast swap's generic write row is only for writers that report none."""
+    sk = _sink.get()
+    return bool(sk) and str(key) in sk.get("written", ())
+
+
+# ---------------------------------------------------------------- numbers the writers report
+
+def triangles(prims) -> int:
+    return int(sum(len(np.asarray(p["tris"]).reshape(-1, 3)) if p.get("tris") is not None
+                   else len(np.asarray(p["pos"]).reshape(-1, 3)) // 3 for p in prims))
+
+
+def height(prims) -> float:
+    """Vertical extent (+Y up) of the prims, in their own units."""
+    ys = [np.asarray(p["pos"], float).reshape(-1, 3)[:, 1] for p in prims if len(np.asarray(p["pos"]).reshape(-1))]
+    return round(float(np.ptp(np.concatenate(ys))), 4) if ys else 0.0
+
+
+def donor(rig: dict, basis=None) -> list[dict]:
+    """The donor as loaded (its own units and bind pose), turned upright by the writer's facing basis (rows: left,
+    up, front) so the snapshot stands like the fitted one."""
+    B = None if basis is None else np.asarray(basis, float)
+    out = []
+    for p in rig.get("prims") or []:
+        P = np.asarray(p["pos"], float).reshape(-1, 3)
+        out.append({"pos": P @ B.T if B is not None else P, "tris": p.get("tris")})
+    return out
+
+
+def donor_numbers(rig: dict, basis=None, **extra) -> dict:
+    """The scale stage's donor facts: original height (source units), vertices, triangles, joints, body roles."""
+    pr = donor(rig, basis)
+    return {"donor_height": height(pr), "donor_vertices": int(sum(len(p["pos"]) for p in pr)),
+            "donor_triangles": triangles(pr),
+            "donor_joints": len(rig["parent"] if rig.get("parent") is not None else rig.get("joints", [])),
+            "donor_roles": len(rig.get("roles") or {}), **extra}
+
+
+def per_limb(prims, names: dict | list | None = None, owner=None) -> dict:
+    """Vertices per target limb / bone (the strongest influence of each vertex; owner(j) folds a limb onto the one
+    that draws it), largest first, named by names[j] when given."""
+    js = []
+    for p in prims:
+        J = p.get("J") if p.get("J") is not None else p.get("jid")
+        if J is None:
+            continue
+        J = np.asarray(J)
+        if J.ndim == 2:
+            W = p.get("W")
+            J = J[np.arange(len(J)), np.asarray(W).argmax(1)] if W is not None else J[:, 0]
+        js.append(J.astype(np.int64).reshape(-1))
+    if not js:
+        return {}
+    J = np.concatenate(js)
+    if owner is not None:
+        J = np.asarray([owner(int(j)) for j in J], np.int64) if callable(owner) else np.asarray(owner)[J]
+    ids, n = np.unique(J, return_counts=True)
+
+    def name(j):
+        if isinstance(names, dict) and j in names:
+            return str(names[j])
+        if isinstance(names, (list, tuple)) and 0 <= j < len(names):
+            return str(names[j])
+        return f"limb {j}"
+    return {name(int(j)): int(c) for j, c in sorted(zip(ids, n), key=lambda x: -x[1])}
 
 
 # ---------------------------------------------------------------- a small mesh snapshot
