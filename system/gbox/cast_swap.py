@@ -579,7 +579,7 @@ def run(ctx, inp) -> dict:
     game = _target_game(ctx, inp)
     root = C.library_root(ctx.config)
     local = root.is_dir()
-    chars = C._api(ctx, "GET", "/api/characters?fresh=1")   # a collect may just have run in another process
+    chars = C._api(ctx, "GET", "/api/characters?fresh=1", timeout=900)   # a full re-read: 35-80 s on the HDD under load   # a collect may just have run in another process
     if not inp.source:
         return {"status": "needs_source", "game_id": game["game_id"], "title": game.get("title"),
                 "sources": source_groups(chars), "message": "name a source: a game or a group (wrestlers, fighters, ...)"}
