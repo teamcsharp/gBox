@@ -534,6 +534,55 @@ def list_mods(cfg, game_id: str) -> list[dict]:
             if (m / ".gbox-mod.json").exists() and not (m / STAGED_MARK).exists()] if d.exists() else []
 
 
+def copies_of(cfg, game_id: str, name: str) -> list[str]:
+    """This machine's folders of one build: the build itself and its staged copies (<name>~<build>, or a folder whose
+    staging mark names it). Never the base copy (modbase/) or another build."""
+    root = Path(cfg.cache) / "mods" / game_id
+    out = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return out
+    for e in entries:
+        if not e.is_dir(follow_symlinks=False):
+            continue
+        mark = Path(e.path) / STAGED_MARK
+        try:
+            of = mark.read_text(encoding="utf-8").strip() if mark.is_file() else ""
+        except OSError:
+            of = ""
+        if e.name == name or e.name.startswith(name + STAGED_SEP) or of == name:
+            out.append(e.name)
+    return sorted(out, key=lambda n: (n != name, n))
+
+
+def delete_build(cfg, game_id: str, name: str, in_use=()) -> dict:
+    """Delete one build's local copies (Builds ▸ Delete, file_mod op=delete_build): every staged copy too, with their
+    hash sidecars. Refuses (ModInUse) while a running game uses any of them (in_use: the mod folder names running
+    sessions hold); a folder a process still holds open is left whole and reported."""
+    names = copies_of(cfg, game_id, name)
+    busy = sorted(set(names) & set(in_use or ()))
+    if busy:
+        raise ModInUse(16, f"{name} is in use by a running game ({', '.join(busy)}): stop that game first, then delete it")
+    removed, errors = [], []
+    for n in names:
+        out = mod_dir(cfg, game_id, n)
+        try:
+            shutil.rmtree(out)
+            removed.append(n)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            errors.append(f"{n}: {e}")
+            continue
+        try:
+            _hash_sidecar(out).unlink(missing_ok=True)
+        except OSError:
+            pass
+    _LOCAL_CACHE.clear()                             # the next heartbeat reports the build gone
+    return {"removed": removed, "errors": errors}
+
+
 def remove(cfg, game_id: str, name: str) -> bool:
     out = mod_dir(cfg, game_id, name)
     if out.exists():

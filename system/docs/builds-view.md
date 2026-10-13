@@ -79,6 +79,64 @@ false}` (POST does the same), and `DELETE` un-stars it. The star is kept in the 
   sweep (the Sonic showcase's LRU eviction on the `sonic-showcase` branch) must skip any build it names. The cache's
   own eviction (`catalog.evict`) never touches `mods/` at all.
 
+## What this changes
+
+Every Mods card, Builds row (one line, and the full block in Details ▸) and Special builds row says what the build does
+(`what` on every listing, from `gbox/build_summary.py`):
+
+1. **Recorded**: the marker's own text (`what`, `summary`, `description`, `notes`, ...), its cast rows, its donor → slot
+   rows, its codes, cheats and patches (plus the mod card's extra calls), its compile facts, and its file changes. When
+   none of these exist, the mod card's own description is used (not the stand-in text the gallery writes).
+2. **Compared**: when nothing is recorded, the build's files are compared with the game's base copy
+   (`modbase/<game_id>`). The background sizer of the built-mods index runs `built_mods.base_diff` once per marker. A
+   hard link or equal bytes count as the same file, and an equal-size file over 8 MB counts as "may differ". If nothing
+   differs, the badge **"No changes from the original game found: this looks like a test build"** shows.
+3. **Inferred**: read from the build name using a writer's vocabulary. For AUF this is the maps, mission levels and
+   body keys of `auf_swap`, so `auf_dm1_bondcombat_uwbthug` reads as "multiplayer map dm1; characters Bond (combat) and
+   Underwater base thug". The first sentence of the writer module's docstring is added too (parsed, never imported).
+   Every inferred line is labelled **inferred**.
+4. Otherwise the badge reads **"Changes not recorded"**.
+
+**Where to look in game** comes from the marker (`where_to_look`, `where`, `level`, `map`, `stage`, `mode`, ...), the
+slot names, the recipe's slot, or the name: "Multiplayer > map dm1 > play as Bond (combat)", marked inferred.
+
+## 🗑 Delete
+
+The 🗑 button sits at the bottom right of a Mods card, next to ▶ Launch / ▾ on a Builds row, and in every options menu
+(Mods ⋯ or a right-click, Builds ▾ or a right-click, Special builds ⋯). It opens a dialog (`viz/build-actions.js`)
+showing the name, folder, game, size and where the build lives, with two choices: **Delete everywhere** (the Spark
+collection plus every PC's copy; the default) or **Only this PC**.
+
+`DELETE /api/builds/{game_id}/{name}?scope=all|node&node=<PC>`, or `POST .../delete {scope, node}` for clients whose
+api() only posts:
+
+* `scope=all` removes the Spark's folder and its staged copies (`<name>~<build>` or a folder whose staging mark names it)
+  with their hash sidecars. It also drops the build from the built-mods index (`Index.forget`), clears its display name,
+  favorite and report mark and the stand-in mod card the gallery registered, and marks a showcase record as deleted.
+  It then queues `file_mod op=delete_build` on every online PC whose heartbeat lists a copy. Offline PCs are listed as
+  skipped, with a reason.
+* `scope=node` deletes only that PC's copy (the Spark's copy when the node is the Spark).
+* The request is refused (409) while a running game uses the build or one of its staged copies. The worker checks
+  again before deleting (`filemods.delete_build`).
+* The base copy (`modbase/`) and other builds are never touched. A build that only shares a name prefix, such as
+  `bb` next to `b`, is another build.
+* Every delete is written to the audit log (`build.delete`) and to the recently deleted list (`GET
+  /api/builds/deleted`: the marker facts, size, scope, jobs). There is no undo.
+
+## ⚑ Report
+
+**⚑ Report** sits at the bottom right of every Mods card. It is also ⚑ on Builds rows and "Report a problem…" in each
+options menu. It opens a dialog with quick reasons ("Doesn't show the expected change", "Character looks broken or
+garbled", "Game crashes or freezes", "Other") and a text field.
+
+`POST /api/builds/{game_id}/{name}/report {reason, note}` files the report through the issue flow
+(`/api/requests/issue`, no game session involved). The report is titled "Build report: `<name>` (`<game>`): `<reason>`".
+Its body holds the game, the build, the writer, the slots and donors, What this changes and where to look, the build
+recipe and the last launch. The card's newest in-game frame is the report's screenshot, and that frame plus the build's
+preview / fit pictures are attached. The report is then routed to the investigation queue that the launch-failure auto
+reports use (`_dispatch_resolution`): the durable Hermes queue when Hermes runs the tasks, else a resolution agent. The
+card shows **Reported #N** (store kind `build_report`).
+
 ## Details ▸
 
 `GET /api/builds/{game_id}/{name}/details` loads when the row opens:

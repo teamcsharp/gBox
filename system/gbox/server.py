@@ -2072,7 +2072,9 @@ def create_app(config: Config) -> FastAPI:
                           submit=lambda tool, inp, require_os, actor: submit(
                               JobRequest(tool=tool, input=inp, require_os=require_os), actor))
     from . import builds                          # top bar "Builds": every custom build, details, scheduled build jobs
-    builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor))
+    # ⚑ build reports go through the issue flow and then the investigation queue (both defined further down)
+    builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor),
+                  file_report=lambda issue, details, actor: _build_report(issue, details, actor))
 
     class Progress(BaseModel):
         pct: float
@@ -3834,6 +3836,50 @@ def create_app(config: Config) -> FastAPI:
             store.put("request", rid, report)
         return report
 
+    def _dispatch_resolution(report: dict, details: str, session_id: str = "",
+                             queued_text: str = "Native replacement queued for Hermes. Identify the selected actor, repair "
+                                                "or rebuild its native assets, and verify this donor in gameplay. Preview "
+                                                "and overlay do not complete this request.") -> dict:
+        """The investigation queue failure reports go to: the durable Hermes queue when Hermes runs the tasks
+        (no_agent), else a resolution agent chat. Used by the launch / swap auto reports and the build reports."""
+        rid = report["id"]
+        from . import hermes_task_mode
+        controller = hermes_task_mode._job() or {}
+        managed = bool(controller.get("no_agent"))
+        try:
+            prompt = (f"Resolve gBox auto report #{report['number']} ({rid}). {details}\n"
+                      "Inspect the exact failure, fix the relevant model writer or mod path, verify the result in the game, "
+                      "attach screenshots to this request, report each attempt and outcome, record actual token usage, "
+                      "and mark the request done only after verification. Preserve the operator's running game and save state.")
+            if managed:
+                report["context"]["resolution_dispatch"] = "hermes_queue"
+                report["messages"].append({"author": "agent", "text": queued_text,
+                    "ts": time.time(), "attachments": [], "task_step": {"action": "dispatch resolution",
+                    "attempt": "1", "result": "durable Hermes queue", "status": "queued"}})
+            else:
+                chat = hub.get(new_id())
+                store.put("chat", chat["id"], chat)
+                hub.post(chat["id"], prompt, {"request_id": rid, "session_id": session_id,
+                                          "resolve_auto_report": True}, api_requests, None, [])
+                report = store.get("request", rid) or report
+                report["context"]["resolution_chat_id"] = chat["id"]
+                report["status"], report["started"] = "in_progress", time.time()
+                report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
+                                       "task_step": {"action": "dispatch resolution", "attempt": "1", "result": chat["id"], "status": "running"}})
+        except Exception as exc:
+            report = store.get("request", rid) or report
+            report["messages"].append({"author": "agent", "text": f"Resolution dispatch failed: {exc}", "ts": time.time(), "attachments": []})
+        store.put("request", rid, report)
+        return report
+
+    def _build_report(issue: dict, details: str, actor: str) -> dict:
+        """A ⚑ build report (gbox.builds): filed like any issue report, then routed to the investigation queue."""
+        filed = req_issue(IssueIn(**issue), actor)
+        report = store.get("request", filed["id"]) or filed
+        return _dispatch_resolution(report, details, "", queued_text=(
+            "Build report queued for Hermes: reproduce it (launch the build on the agent test PC, never the operator's "
+            "session), find why it doesn't do what it should, rebuild or fix its writer, and verify in game."))
+
     class AutoFailureIn(BaseModel):
         session_id: str = ""
         game: str = ""
@@ -3902,35 +3948,7 @@ def create_app(config: Config) -> FastAPI:
             except Exception as exc:
                 report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
         store.put("request", rid, report)
-        from . import hermes_task_mode
-        controller = hermes_task_mode._job() or {}
-        managed = bool(controller.get("no_agent"))
-        try:
-            prompt = (f"Resolve gBox auto report #{report['number']} ({rid}). {details}\n"
-                      "Inspect the exact failure, fix the relevant model writer or mod path, verify the result in the game, "
-                      "attach screenshots to this request, report each attempt and outcome, record actual token usage, "
-                      "and mark the request done only after verification. Preserve the operator's running game and save state.")
-            if managed:
-                report["context"]["resolution_dispatch"] = "hermes_queue"
-                report["messages"].append({"author": "agent", "text":
-                    "Native replacement queued for Hermes. Identify the selected actor, repair or rebuild its native "
-                    "assets, and verify this donor in gameplay. Preview and overlay do not complete this request.",
-                    "ts": time.time(), "attachments": [], "task_step": {"action": "dispatch resolution",
-                    "attempt": "1", "result": "durable Hermes queue", "status": "queued"}})
-            else:
-                chat = hub.get(new_id())
-                store.put("chat", chat["id"], chat)
-                hub.post(chat["id"], prompt, {"request_id": rid, "session_id": f.session_id,
-                                          "resolve_auto_report": True}, api_requests, None, [])
-                report = store.get("request", rid) or report
-                report["context"]["resolution_chat_id"] = chat["id"]
-                report["status"], report["started"] = "in_progress", time.time()
-                report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
-                                       "task_step": {"action": "dispatch resolution", "attempt": "1", "result": chat["id"], "status": "running"}})
-        except Exception as exc:
-            report = store.get("request", rid) or report
-            report["messages"].append({"author": "agent", "text": f"Resolution dispatch failed: {exc}", "ts": time.time(), "attachments": []})
-        store.put("request", rid, report)
+        report = _dispatch_resolution(report, details, f.session_id)
         store.audit(actor, "request.auto_mod_failure", rid, {"session": f.session_id, "job": f.job_id, "model": f.model})
         if f.session_id and s_.get("state") == "running":
             def _preserve_failure():

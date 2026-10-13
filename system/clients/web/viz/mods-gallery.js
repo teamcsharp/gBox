@@ -17,6 +17,8 @@
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const PAGE = 24;
+  // What this changes / Delete / Report (viz/build-actions.js; loaded before this file, or required by node tests)
+  const BA = () => root.GBoxBuildActions || (typeof module === "object" && module.exports ? require("./build-actions.js") : null);
   const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
   // favorites (★) first, then newest; fav: only the favorites
@@ -97,7 +99,8 @@
     return `<div class="mg-menu" role="menu" data-mg-menu="${ESC(m.key)}">${item("rename", "✎ Rename…", "Give this build your own name (the folder keeps its name)")}`
       + item("fav", m.favorite ? "☆ Remove from favorites" : "★ Add to favorites")
       + (m.display_name ? item("unname", `↺ Restore “${ESC(m.original_title || m.name)}”`) : "")
-      + item("play", "▶ Play") + "</div>";
+      + item("play", "▶ Play") + item("report", "⚑ Report a problem…", "File a report: it doesn't do what it should")
+      + item("delete", "🗑 Delete…", "Delete this build (asks first: everywhere or only this PC)") + "</div>";
   }
 
   function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "" } = {}) {
@@ -110,10 +113,11 @@
         : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}</div>
       <div class="mg-body">
         <div class="mg-h"><span class="mg-tt">${starHTML(m)}${titleHTML(m, renaming)}</span>
-          <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
+          <span class="mg-hr">${BA()?.reportedHTML(m.reported, "mg-badge ba-rep") || ""}<span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
         ${m.display_name && m.original_title && m.original_title !== m.display_name ? `<div class="mg-was mut">was “${ESC(m.original_title)}”</div>` : ""}
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
           <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}</div>
+        ${BA()?.whatHTML(m.what) || ""}
         ${changesHTML(m)}
         <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
@@ -121,7 +125,8 @@
         <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
           ${m.state_slot != null && m.card_id ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
           <button class="act" type="button" data-mg="shot" title="Once the mod is running, capture a frame and add it to this mod's pictures"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
-          <span class="mg-msg mut">${ESC(note)}</span></div></div></article>`;
+          <span class="mg-msg mut">${ESC(note)}</span>
+          <span class="mg-acts"><button class="act" type="button" data-mg="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…">⚑ Report</button><button class="act mg-del" type="button" data-mg="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></span></div></div></article>`;
   }
 
   // a request's thread (GET /api/requests/{id}) shown under the card when the client has no inbox view of its own
@@ -166,7 +171,7 @@
     .mg-star{font-size:15px;color:#c9a43a;opacity:.8}.mg-star.on{opacity:1}.mg-was{font-size:11px;margin-top:-3px}
     .mg-favf{display:flex;gap:4px;align-items:center;font-size:12.5px;white-space:nowrap}
     .mg-menu{position:absolute;z-index:5;top:8px;right:8px;display:flex;flex-direction:column;gap:3px;padding:6px;border:1px solid var(--line,#444);border-radius:8px;background:var(--bg,#16161a);box-shadow:0 8px 24px #000a;min-width:190px}
-    .mg-menu .act{text-align:left}`;
+    .mg-menu .act{text-align:left}.mg-acts{margin-left:auto;display:flex;gap:4px}.mg-del:hover{background:#7a2b2b;color:#fff}`;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -185,7 +190,7 @@
 
     function shell() {
       const f = facets(st.data?.items || []);
-      host.innerHTML = `<style>${CSS}</style>` + toolbarHTML(st, f, st.nodes);
+      host.innerHTML = `<style>${CSS}${BA()?.WHAT_CSS || ""}</style>` + toolbarHTML(st, f, st.nodes);
       built = true;
     }
     function shown() { return filterMods(st.data?.items || [], st); }
@@ -307,6 +312,35 @@
       return m;
     }
 
+    // ⚑ Report / 🗑 Delete: the shared dialogs (viz/build-actions.js); env.buildActions replaces them in tests
+    const dialogs = () => env.buildActions || BA();
+    const dialogEnv = () => ({ document: env.document || root.document, api: env.api, here: env.here && env.here !== "auto" ? env.here : "" });
+    async function report(m) {
+      const r = await dialogs().open("report", m, dialogEnv());
+      if (!r) return null;
+      m.reported = { number: r.number, id: r.id };
+      note(m.key, `⚑ Reported: request #${r.number}`);
+      read.invalidate(); st.sig = ""; draw();
+      toast(`${m.mod_title || m.name}: report filed as request #${r.number}`);
+      return r;
+    }
+    async function remove(m) {
+      let b = m;
+      try {                                                  // where it lives (the Spark, this PC, other PCs) for the dialog
+        const got = await env.api(`/api/builds?game_id=${encodeURIComponent(m.game_id)}&q=${encodeURIComponent(m.name)}`);
+        const row = (got?.items || []).find(x => x.key === m.key);
+        if (row) b = { ...m, where: row.where, size: m.size ?? row.size, own_size: m.own_size ?? row.own_size };
+      } catch {}
+      const r = await dialogs().open("delete", b, dialogEnv());
+      if (!r) return null;
+      const text = dialogs().deleteResultText(b, r);
+      if (r.scope === "all" && st.data) st.data.items = st.data.items.filter(x => x.key !== m.key);
+      else note(m.key, text);
+      read.invalidate(); st.sig = ""; built = false; draw();
+      toast(text);
+      return r;
+    }
+
     async function onClick(e) {
       const t = e.target, card = t.closest?.(".mg-card"), m = card && find(card.dataset.key);
       const act = t.closest?.("[data-mg]")?.dataset.mg;
@@ -321,6 +355,7 @@
       if (act === "fav") { e.preventDefault?.(); await favorite(m); return; }
       if (act === "menu") { st.menu = st.menu === m.key ? null : m.key; draw(); return; }
       if (act === "unname") { st.menu = null; await rename(m.key, ""); return; }
+      if (act === "report" || act === "delete") { if (st.menu) { st.menu = null; draw(); } return act === "report" ? report(m) : remove(m); }
       if (act === "play" && t.closest?.("[data-mg-menu]")) {  // ▶ Play in the options: the card's own Play button
         st.menu = null; draw();
         const b = host.querySelector?.(`.mg-card[data-key="${String(m.key).replace(/"/g, '\\"')}"] .mg-btns [data-mg="play"]`);
@@ -404,7 +439,7 @@
     }
     // show one build / request: the game menu's "Open in Mods page" (search + game filter set, the toolbar redrawn)
     function focus({ q, game } = {}) { if (q != null) st.q = String(q); if (game != null) st.game = String(game); st.page = 1; built = false; draw(); }
-    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, onKey, onFocusOut, onContext, rename, favorite, tick, busy, focus, ready: null };
+    const api = { st, load, draw, stop, start, play, screenshot, onClick, onInput, onKey, onFocusOut, onContext, rename, favorite, report, remove, tick, busy, focus, ready: null };
     api.ready = start();
     return api;
   }

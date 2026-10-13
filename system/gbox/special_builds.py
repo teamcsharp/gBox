@@ -239,6 +239,8 @@ def build_row(item: dict, meta: dict, pcs: list[dict]) -> dict:
     row = {k: item.get(k) for k in ("key", "name", "game_id", "mod_title", "display_name", "original_title", "writer",
                                     "built", "verified", "card_id", "state_slot", "last_launch", "tickets", "changes")}
     row["favorite"] = bool(item.get("favorite"))
+    row["what"], row["reported"] = item.get("what"), item.get("reported")   # "What this changes", "Reported #N"
+    row["size"], row["own_size"] = item.get("size"), item.get("own_size")
     pic = (item.get("images") or [{}])[0].get("url") or ((item.get("shots") or [{}])[0].get("url"))
     row |= {"kind": kind, "image": pic or "", "launch_options": launch_options(item, pcs),
             "rebuild_recipe": recipe, "recipe_recorded": recorded,

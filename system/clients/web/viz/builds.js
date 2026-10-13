@@ -21,6 +21,8 @@
   const KINDS = { cast: "cast swap", character: "character swap", file: "file mod", cheats: "cheats", romhack: "ROM hack",
                   compile: "decomp / compile", showcase: "showcase", test: "test", collect: "collect" };
   const TICK = 4000;                                        // scheduled jobs poll (ms) while the view is shown
+  // What this changes / Delete / Report (viz/build-actions.js; loaded before this file, or required by node tests)
+  const BA = () => root.GBoxBuildActions || (typeof module === "object" && module.exports ? require("./build-actions.js") : null);
   const LIST_EVERY = 30000;                                 // the build list (5 s while the index is still working)
   const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/+esm";
   const GLTF_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
@@ -97,13 +99,13 @@
     return `<div class="bv-row${open ? " open" : ""}${b.local_only ? " bv-local" : ""}${b.favorite ? " bv-fav" : ""}" data-bv-key="${ESC(b.key)}">
       <button class="bv-tri" type="button" data-bv="toggle" aria-expanded="${open}" title="${open ? "Hide" : "Show"} details">${open ? "▾" : "▸"}</button>
       ${b.image ? `<img class="bv-thumb" loading="lazy" decoding="async" alt="" src="${ESC(url(b.image))}">` : `<div class="bv-thumb bv-nothumb">${ESC((b.game_title || b.game_id || "?").slice(0, 2))}</div>`}
-      <div class="bv-main"><div class="bv-nm">${star}${name}</div><div class="bv-sub mut" title="${ESC(sub)}">${ESC(sub)}</div>${msg ? `<div class="bv-msg">${ESC(msg)}</div>` : ""}</div>
+      <div class="bv-main"><div class="bv-nm">${star}${name}</div>${BA()?.whatHTML(b.what, { compact: true }) || ""}<div class="bv-sub mut" title="${ESC(sub)}">${ESC(sub)}</div>${msg ? `<div class="bv-msg">${ESC(msg)}</div>` : ""}</div>
       <div class="bv-game" title="${ESC(b.game_id)}">${ESC(b.game_title || b.game_id)}</div>
-      <div class="bv-kinds">${(b.kinds || [b.kind]).map((k, i) => chip(KINDS[k] || k, i ? "" : "bv-k1")).join("")}${b.verified ? chip("verified", "bv-ok") : ""}</div>
+      <div class="bv-kinds">${(b.kinds || [b.kind]).map((k, i) => chip(KINDS[k] || k, i ? "" : "bv-k1")).join("")}${b.verified ? chip("verified", "bv-ok") : ""}${BA()?.reportedHTML(b.reported, "bv-chip ba-rep") || ""}</div>
       <div class="bv-date" title="${ESC(fmtDate(b.built))}">${ESC(fmtAge(b.built, now))}</div>
       <div class="bv-size">${b.local_only ? '<span class="mut" title="only on a PC: sized when it reaches the Spark">–</span>' : ESC(fmtSize(sizeOf(b)))}</div>
       <div class="bv-where">${whereHTML(b)}</div>
-      <div class="bv-launch"><button class="act pri" type="button" data-bv="launch" ${d ? "" : "disabled"} title="${ESC(d ? optLabel(d, env.here) : "no launch option")}">▶ Launch</button><button class="act" type="button" data-bv="opts" aria-haspopup="menu" aria-expanded="${st.opts === b.key}" title="Launch options">▾</button></div>
+      <div class="bv-launch"><button class="act pri" type="button" data-bv="launch" ${d ? "" : "disabled"} title="${ESC(d ? optLabel(d, env.here) : "no launch option")}">▶ Launch</button><button class="act" type="button" data-bv="opts" aria-haspopup="menu" aria-expanded="${st.opts === b.key}" title="Launch options">▾</button><button class="act bv-act" type="button" data-bv="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…" aria-label="Report">⚑</button><button class="act bv-act bv-del" type="button" data-bv="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></div>
     </div>${st.opts === b.key ? optionsHTML(b, env.here) : ""}${open ? `<div class="bv-det" data-bv-det="${ESC(b.key)}">${detailsBody(st.details?.get?.(b.key), env)}</div>` : ""}`;
   }
   // ▾ (or a right-click on the row): the launch options, then ✎ Rename…, ★ favorite, restore the original name
@@ -115,6 +117,8 @@
       + `<button class="act" type="button" role="menuitem" data-bv="rename" ${k} title="Give this build your own name (the folder keeps its name)">✎ Rename…</button>`
       + `<button class="act" type="button" role="menuitem" data-bv="fav" ${k}>${b.favorite ? "☆ Remove from favorites" : "★ Add to favorites"}</button>`
       + (b.display_name ? `<button class="act" type="button" role="menuitem" data-bv="unname" ${k}>↺ Restore “${ESC(b.original_title || b.name)}”</button>` : "")
+      + `<button class="act" type="button" role="menuitem" data-bv="report" ${k}>⚑ Report a problem…</button>`
+      + `<button class="act" type="button" role="menuitem" data-bv="delete" ${k}>🗑 Delete…</button>`
       + `</div>`;
   }
   function detailsBody(entry, env) {
@@ -190,7 +194,7 @@
       : `<p class="mut">${ESC(d.recipe_note || "no recipe")}</p>`;
     const call = d.build_call ? `<p class="mut">The exact call recorded at build time:</p>${pre(d.build_call)}` : "";
     const where = (d.where || []).map(w => w.label).join(", ");
-    return `<div class="bv-dhead mut">folder <code>${ESC(d.name)}</code> · ${ESC(d.writer || "?")} · built ${ESC(fmtDate(d.built))}${d.built_on ? ` on ${ESC(d.built_on.host || d.built_on.worker_id || d.built_on.os || "?")}` : ""}${where ? ` · lives on ${ESC(where)}` : ""}</div>`
+    return (BA()?.whatHTML(d.what) || "") + `<div class="bv-dhead mut">folder <code>${ESC(d.name)}</code> · ${ESC(d.writer || "?")} · built ${ESC(fmtDate(d.built))}${d.built_on ? ` on ${ESC(d.built_on.host || d.built_on.worker_id || d.built_on.os || "?")}` : ""}${where ? ` · lives on ${ESC(where)}` : ""}</div>`
       + sect("Modifications", filesHTML(m), (m.files || []).length)
       + sect("Characters inserted", (d.cast?.source ? `<p class="mut">cast from ${ESC(d.cast.source)}${d.cast.mapping ? ` · mapping ${ESC(d.cast.mapping)}` : ""}${d.cast.seed ? ` · seed ${ESC(d.cast.seed)}` : ""}</p>` : "") + charactersHTML(d, env), (d.characters || []).length)
       + sect("Codes, cheats & hacks", codesHTML(d), (d.codes || []).length)
@@ -605,7 +609,7 @@
     const findJob = id => jobs().get(id);
 
     function shell() {
-      host.innerHTML = `<style>${CSS}</style>` + toolbarHTML(st, facets(fullItems()));
+      host.innerHTML = `<style>${CSS}${BA()?.WHAT_CSS || ""}.bv-act{padding-left:6px;padding-right:6px}.bv-del:hover{background:#7a2b2b;color:#fff}.bv-main .ba-what{margin:2px 0}</style>` + toolbarHTML(st, facets(fullItems()));
       built = true;
     }
     function drawList() {
@@ -700,6 +704,28 @@
       finally { busyRename = false; }
       drawList();
     }
+    // ⚑ Report / 🗑 Delete: the shared dialogs (viz/build-actions.js); env.buildActions replaces them in tests
+    const dialogs = () => env.buildActions || BA();
+    const dialogEnv = () => ({ document: env.document || root.document, api: env.api, here: env.here && env.here !== "auto" ? env.here : "" });
+    async function report(b) {
+      drawList();
+      const r = await dialogs().open("report", b, dialogEnv());
+      if (!r) return null;
+      b.reported = { number: r.number, id: r.id };
+      st.msg.set(b.key, `⚑ Reported: request #${r.number}`); st.listSig = "";
+      drawList(); toast(`${b.label || b.name}: report filed as request #${r.number}`);
+      return r;
+    }
+    async function remove(b) {
+      drawList();
+      const r = await dialogs().open("delete", b, dialogEnv());
+      if (!r) return null;
+      const text = dialogs().deleteResultText(b, r);
+      if (r.scope === "all" && st.data) { st.data.items = st.data.items.filter(x => x.key !== b.key); st.open.delete(b.key); built = false; shell(); drawSched(); }
+      else st.msg.set(b.key, text);
+      st.listSig = ""; drawList(); toast(text);
+      return r;
+    }
     // ★: PUT /api/builds/{game}/{name}/favorite {favorite} (favorites list first, head the game's Special builds)
     async function favorite(b, on = !b.favorite) {
       st.opts = null;
@@ -764,6 +790,8 @@
       if (bk && act === "rename") { st.opts = null; st.renaming = bk.key; drawList(); return; }
       if (bk && act === "fav") return favorite(bk);
       if (bk && act === "unname") { st.opts = null; return rename(bk.key, ""); }
+      if (bk && act === "report") { st.opts = null; return report(bk); }
+      if (bk && act === "delete") { st.opts = null; return remove(bk); }
       if (act === "rebuild") { const bb = find(a.dataset.key); if (bb) return rebuild(bb); return; }
       if (act === "jobopen") { const jid = a.dataset.jid; st.jobOpen.add(jid); await investigate(jid); part("[data-bv-sched]")?.scrollIntoView?.({ behavior: "smooth" }); return; }
       if (act === "jinvclose" && jobEl) { st.inv.delete(jobEl.dataset.bvJid); drawSched(); return; }
@@ -836,7 +864,7 @@
     }
     function focus({ q, game, kind } = {}) { if (q != null) st.q = String(q); if (game != null) st.game = String(game); if (kind != null) st.kind = String(kind); st.page = 1; built = false; drawList(); drawSched(); }
     const ctl = { st, tts, flows, loadList, loadSched, drawList, drawSched, onClick, onContext, onDblClick, onKey, onFocusOut, onInput, tick, stop, focus,
-                  toggle, rename, favorite, launch, investigate, ready: null, wait };
+                  toggle, rename, favorite, report, remove, launch, investigate, ready: null, wait };
     ctl.ready = start();
     return ctl;
   }

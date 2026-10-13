@@ -99,10 +99,23 @@
       (b.launch_options || []).map(o => btn(`data-gm-sb="launch" ${k} data-opt="${ESC(o.id)}"`, `▶ ${ESC(sbOptLabel(o, st))}`)).join("") +
       btn(`data-gm-sb="rename" ${k}`, "✎ Rename…", "Give this build your own name (the folder keeps its name)") +
       btn(`data-gm-sb="fav" ${k}`, b.favorite ? "☆ Remove from favorites" : "★ Add to favorites", "Favorites head this menu, list first on the Mods page and in Builds, and are never evicted") +
+      btn(`data-gm-sb="report" ${k}`, "⚑ Report a problem…", "File a report: it doesn't show the expected change, looks broken, crashes…") +
+      btn(`data-gm-sb="delete" ${k}`, "🗑 Delete…", "Delete this build (asks first: everywhere or only this PC)") +
       btn(`data-gm-sb="mods" ${k}`, "Open in Mods page") +
       (b.tickets || []).map(t => btn(`data-gm-sb="request" ${k} data-n="${ESC(t.number)}"`, `Open request #${ESC(t.number)}${t.title ? " · " + ESC(t.title) : ""}`)).join("") +
       (b.rebuild_recipe ? btn(`data-gm-sb="rebuild" ${k}`, "⟳ Rebuild", "Build it again on the Spark from its recipe (never launches)")
         : `<div class="mut" style="font-size:11px;margin-top:3px">No rebuild recipe: ${ESC(b.recipe_missing || "none recorded")}</div>`) + `</div>`;
+  }
+  // What this changes (one line, its badge) and "Reported #N" (viz/build-actions.js; plain text without it)
+  const BA = () => root.GBoxBuildActions || (typeof module === "object" && module.exports ? require("./build-actions.js") : null);
+  function sbWhat(b) {
+    const w = b.what;
+    if (!w) return "";
+    const rep = b.reported && b.reported.number ? ` <span class="gm-rep" style="font-size:10.5px;padding:0 5px;border-radius:8px;background:#5a3f8a;color:#fff">Reported #${ESC(b.reported.number)}</span>` : "";
+    const line = (w.badge ? `<b style="color:${w.status === "no_changes" ? "#e88" : "#bbb"}">${ESC(w.badge)}</b> ` : "") + ESC((w.lines || [])[0] || "")
+      + (w.inferred ? ' <i class="mut">(inferred)</i>' : "");
+    return `<div class="gm-what" style="font-size:11px;border-left:2px solid ${w.status === "no_changes" ? "#c0503a" : w.status === "inferred" ? "#c9a43a" : "var(--acc,#7c96ff)"};padding-left:5px;margin:2px 0"
+      title="${ESC([...(w.lines || []), w.where ? "Where to look in game: " + w.where : ""].filter(Boolean).join("\n"))}">${line}${rep}${w.where ? `<div class="mut">Where to look: ${ESC(w.where)}</div>` : ""}</div>`;
   }
   function sbRow(b, st) {
     const d = sbDefault(b), open = st.sbOpts === b.key;
@@ -114,7 +127,7 @@
       <div style="display:flex;gap:4px;align-items:center">${name}
       <button class="act pri" type="button" data-gm-sb="quick" data-key="${ESC(b.key)}" title="Quick launch: ${ESC(d ? sbOptLabel(d, st) : "")}" ${d ? "" : "disabled"}>▶</button>
       <button class="act" type="button" data-gm-sb="opts" data-key="${ESC(b.key)}" aria-haspopup="menu" aria-expanded="${open}" title="Options">⋯</button></div>
-      ${tickets ? `<div style="font-size:11px">${tickets}</div>` : ""}${b.summary ? `<div class="mut" style="font-size:11px">${ESC(b.summary)}</div>` : ""}
+      ${tickets ? `<div style="font-size:11px">${tickets}</div>` : ""}${sbWhat(b)}${b.summary ? `<div class="mut" style="font-size:11px">${ESC(b.summary)}</div>` : ""}
       ${open ? sbOptions(b, st) : ""}</div>`;
   }
   function specialHTML(st) {
@@ -187,6 +200,34 @@
         repaint(); await changed();
       } catch (err) { st.sbStatus = "✗ " + String(err && err.message || err).slice(0, 160); repaint(); }
     }
+    // ⚑ Report / 🗑 Delete: the shared dialogs (viz/build-actions.js; io.buildActions in tests)
+    const dialogs = () => io.buildActions || BA();
+    const dialogEnv = () => ({ document: io.document || root.document, api: io.api, here: io.worker || "" });
+    async function report(b) {
+      try {
+        const r = await dialogs().open("report", { ...b, game_id: b.game_id || gid }, dialogEnv());
+        if (!r) return null;
+        b.reported = { number: r.number, id: r.id };
+        st.sbStatus = `⚑ ${b.mod_title || b.name}: report filed as request #${r.number}`;
+        repaint(); await changed();
+        return r;
+      } catch (err) { st.sbStatus = "✗ " + String(err && err.message || err).slice(0, 160); repaint(); return null; }
+    }
+    async function remove(b) {
+      try {
+        let full = { ...b, game_id: b.game_id || gid };
+        try {                                              // where it lives (the Spark, this PC, other PCs) for the dialog
+          const got = await io.api(`/api/builds?game_id=${encodeURIComponent(full.game_id)}&q=${encodeURIComponent(b.name)}`);
+          const row = ((got && got.items) || []).find(x => x.key === b.key);
+          if (row) full = { ...full, where: row.where, size: row.size, own_size: row.own_size, game_title: row.game_title };
+        } catch {}
+        const r = await dialogs().open("delete", full, dialogEnv());
+        if (!r) return null;
+        st.sbStatus = "🗑 " + dialogs().deleteResultText(full, r);
+        repaint(); await changed();
+        return r;
+      } catch (err) { st.sbStatus = "✗ " + String(err && err.message || err).slice(0, 160); repaint(); return null; }
+    }
     // Enter saves, Esc cancels (the rename field of a Special builds row) -> handled?
     function key(ev) {
       const inp = ev && ev.target && ev.target.closest && ev.target.closest("[data-gm-sbrename]");
@@ -212,13 +253,14 @@
         if (inp) { try { inp.focus(); inp.select && inp.select(); } catch {} }
       }
       else if (act === "fav") favorite(b);
+      else if ((act === "report" || act === "delete") && b) { st.sbOpts = null; repaint(); (act === "report" ? report : remove)(b); }
       else if (act === "mods") { close(); io.openMods && io.openMods(gid, b); }
       else if (act === "request") { close(); const n = a.dataset.n; io.openRequest && io.openRequest((b?.tickets || []).find(x => String(x.number) === String(n)) || { number: +n }, b); }
       else if (act === "rebuild" && b?.rebuild_recipe) rebuild({ recipes: [b.rebuild_recipe] }, b.mod_title || b.name);
       else if (act === "rebuild-all") rebuild({ recipes: "all", group: "confirmation" }, "every confirmation build");
       return true;
     }
-    return { fetch, click, key, launch, rebuild, rename, favorite };
+    return { fetch, click, key, launch, rebuild, rename, favorite, report, remove };
   }
   // The section on its own, in another menu (the desktop app's game chip menu): host = an element; io as above
   function mountSpecial(io, host, { gid, title = "" }) {
