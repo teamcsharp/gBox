@@ -41,6 +41,7 @@ How to work:
   already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re5, re6, gta_mods,
   ac_mods, mario_kart for Mario Kart 64 items);
   already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods,
+  mario_kart for Mario Kart 64 items, mgs_vr for Metal Gear Solid VR Missions);
   mario_kart for Mario Kart 64 items, sonic_adventure_2 for Sonic Adventure 2 stage skips / ranks / emblems);
   (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
   memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
@@ -143,6 +144,12 @@ How to work:
   are asked for); op=infinite keeps whatever item the player picks up; op=give writes it once; player=1-4, split=3p4p on a 3-4
   player screen; on=false or op=release stops it. The result's verified field is the proof: report the item, the player and
   the undo (op=release). Other Mario Kart games: the cheats / memory_search playbook below.
+- Metal Gear Solid: VR Missions ("mark this mission complete", "clear / finish / pass this level", "skip this mission",
+  "unlock all missions / levels"): mgs_vr on the live session, nothing else first (no cheats, no memory search).
+  op=complete runs the mission manager's own clear routine (what reaching the goal does): the CLEARED result screen
+  follows and the game records the clear itself; it needs a running mission (state running), so after MISSION FAILED
+  restart the level first. op=unlock_all is run inside any mission (it completes that mission and the result screen
+  stores every menu clear mark); op=status shows stage, state, goal and player position. Report completed/verified.
 - Sonic Adventure 2 (Dreamcast USA, SA2 Battle GameCube USA) - "skip to the end of this level", "finish / beat / clear this
   stage", "give me an S rank" / "A rank", "give me all the emblems": sonic_adventure_2 on the live session, nothing else
   first (no cheat database, no web search). op=finish_level ends the stage now (the game's own level-clear: the results
@@ -598,6 +605,12 @@ def tool_specs() -> list[dict]:
            "shell, lightning, fake item box, star, boo, mushroom, double mushrooms, triple mushrooms, super mushroom. player=1-4; "
            "split=3p4p when 3-4 players share the screen (default 1p2p).",
            {"session_id": s, "op": s, "item": s, "player": i, "split": s, "on": b}, ["session_id", "op"]),
+        fn("mgs_vr", "Metal Gear Solid: VR Missions (PS1) on the live session. op=complete marks the current mission "
+           "complete ('mark this mission complete', 'clear this level'): runs the mission manager's own clear routine, "
+           "so the CLEARED result screen and the record follow from the game; needs a running mission (restart after "
+           "MISSION FAILED). op=unlock_all (run inside any mission) completes it and stores every menu clear mark so "
+           "all missions open; op=status shows the stage, mission state, goal and player position; op=stages lists "
+           "the stage families.", {"session_id": s, "op": s}, ["session_id", "op"]),
         fn("sonic_adventure_2", "Sonic Adventure 2 (Dreamcast USA) / SA2 Battle (GameCube USA) on the live session, verified "
            "by read-back. op=finish_level ends the current stage now ('skip to the end of this level', 'beat this level'): the "
            "game's own level-clear, the real mission is graded and saved; op=rank rank=A finishes the stage with an A rank "
@@ -1218,6 +1231,10 @@ class Agent:
                                      "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def mgs_vr(self, session_id, op="status"):
+        j = self._job("mgs_vr", {"session_id": session_id, "op": op or "status"}, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def sonic_adventure_2(self, session_id, op="status", rank="A", count=0, finish=True, timeout_s=3.0):
         j = self._job("sonic_adventure_2", {"session_id": session_id, "op": op, "rank": rank or "A", "count": int(count or 0),
                                             "finish": bool(finish), "timeout_s": float(timeout_s or 3.0)},
@@ -1783,11 +1800,14 @@ def zelda_equip_card(result: dict, session_id: str) -> dict:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart", "gta_live", "sonic_adventure_2"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart", "mgs_vr", "re5", "gta_live", "sonic_adventure_2"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart", "gta_live", "sonic_adventure_2"}
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart", "mgs_vr", "re5", "gta_live", "sonic_adventure_2"}
+
+
+# tools that change the running game: a request that uses one is bookmarked with save states before and after
 
 
 def _modifies_game(name: str, args: dict) -> bool:
@@ -1802,7 +1822,7 @@ def _modifies_game(name: str, args: dict) -> bool:
             op == "time" and (args.get("hours") is not None or args.get("minutes") is not None) or \
             op == "wanted" and args.get("level") is not None
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages"}
 
 
 class ChatHub:
