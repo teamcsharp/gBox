@@ -11,8 +11,9 @@
 # the restart goes through the same idle check the bootstrap uses (gbox.hermes_activation --check-idle) with
 # Hermes dispatch paused meanwhile so the idle window actually arrives. Runtime code = gbox/, adapters/,
 # hermes/, profiles/, gbox.toml, pyproject.toml; client and doc changes are live without a restart. A share file
-# that matches neither the new main nor the previously deployed main was edited on the share by someone else:
-# it is kept and logged, never overwritten, until that edit reaches main. A deferred restart is remembered in
+# whose content (line endings ignored) matches no version of that path in main's last 200 commits was edited on the
+# share by someone else: it is kept and logged, never overwritten, until that edit reaches main. A share file equal
+# to any older main version is a stale copy and is overwritten (with the usual backup). A deferred restart is remembered in
 # gbox-data/deploy-restart-pending and retried on later rounds even when no further file changes.
 #
 # Install (once, on the Spark):   crontab -l | { cat; echo '*/15 * * * * $HOME/bin/deploy_main.sh >> $HOME/gbox-deploy.log 2>&1'; } | crontab -
@@ -48,31 +49,55 @@ if [ -f "$PENDING" ]; then
 fi
 
 # Files to deploy: everything tracked under system/ that differs from the share (ignoring line endings).
-changed=(); kept=()
-share_edited() {                                   # $1 = rel path: does the share copy match any known main version?
-  local rel="$1" dst="$DST/$1" ref
-  if [ -n "$PREV" ]; then
-    git -C "$SRC" show "$PREV:system/$rel" 2>/dev/null | diff -q --strip-trailing-cr - "$dst" >/dev/null 2>&1 && return 1
-    return 0
-  fi
-  for ref in $(git -C "$SRC" rev-list --max-count=50 HEAD -- "system/$rel"); do
-    git -C "$SRC" show "$ref:system/$rel" 2>/dev/null | diff -q --strip-trailing-cr - "$dst" >/dev/null 2>&1 && return 1
-  done
+# A differing share file is a genuine share-side edit only when its CR-stripped content matches NO version of that
+# path in main's recent history. Comparing only with the previously deployed main kept stale copies of OLDER main
+# commits as "edits" whenever a share copy fell behind (gbox/characters.py sat at main 90433ea for 18 hours, hiding
+# a /api/characters fix and every reader registered after it); a copy of any earlier main version is now overwritten.
+HISTORY_DEPTH="${GBOX_DEPLOY_HISTORY:-200}"        # main commits touching a path that count as "known versions"
+changed=(); kept=(); stale=()
+share_edited() {                                   # $1 = rel path: 0 = genuine share edit (keep), 1 = a main version
+  local rel="$1" dst="$DST/$1" have commit blob seen=" "
+  have="$(tr -d '\r' < "$dst" | git -C "$SRC" hash-object --stdin)"
+  while IFS= read -r commit; do
+    blob="$(git -C "$SRC" rev-parse -q --verify "$commit:system/$rel" 2>/dev/null)" || continue   # deleted there
+    case "$seen" in *" $blob "*) continue ;; esac
+    seen="$seen$blob "
+    if [ "$(git -C "$SRC" cat-file blob "$blob" | tr -d '\r' | git -C "$SRC" hash-object --stdin)" = "$have" ]; then
+      GUARD_RULE="stale copy of main ${commit:0:7}"
+      return 1
+    fi
+  done < <(git -C "$SRC" log --max-count="$HISTORY_DEPTH" --format=%H HEAD -- "system/$rel")
+  GUARD_RULE="share edit: matches none of the last $HISTORY_DEPTH main versions of this path"
   return 0
+}
+classify() {                                       # $1 = rel path -> ACTION new|same|stale|edit, GUARD_RULE says why
+  local rel="$1" src="$SRC/system/$1" dst="$DST/$1"
+  GUARD_RULE=""
+  if [ ! -f "$dst" ]; then
+    ACTION=new; GUARD_RULE="not on the share yet"
+  elif diff -q --strip-trailing-cr "$src" "$dst" >/dev/null 2>&1; then
+    ACTION=same
+  elif share_edited "$rel"; then
+    ACTION=edit
+  else
+    ACTION=stale
+  fi
 }
 if [ "$HEAD" != "$PREV" ]; then
   while IFS= read -r f; do
     rel="${f#system/}"
-    src="$SRC/system/$rel"
-    dst="$DST/$rel"
-    if [ ! -f "$dst" ]; then
-      changed+=("$rel")
-    elif ! diff -q --strip-trailing-cr "$src" "$dst" >/dev/null 2>&1; then
-      if share_edited "$rel"; then kept+=("$rel"); else changed+=("$rel"); fi
-    fi
+    classify "$rel"
+    case "$ACTION" in
+      new) changed+=("$rel") ;;
+      stale) changed+=("$rel"); stale+=("$rel ($GUARD_RULE)") ;;
+      edit) kept+=("$rel") ;;
+    esac
   done < <(git -C "$SRC" ls-files system)
+  if [ "${#stale[@]}" -gt 0 ]; then
+    log "rule 'older main version': stale share copies overwritten (backed up): ${stale[*]}"
+  fi
   if [ "${#kept[@]}" -gt 0 ]; then
-    log "share-side edits kept, not on main yet (commit them to main to deploy): ${kept[*]}"
+    log "rule 'share edit' (matches no version in the last $HISTORY_DEPTH main commits of the path): kept, not on main yet (commit them to main to deploy): ${kept[*]}"
   fi
 fi
 
