@@ -194,7 +194,7 @@ CAST = [
        typ="normal", size=1.4),
     _s("twinrova", "Twinrova (merged)", "boss", ["Boss_Tw"], "object_tw", 0x30C20, "gTwinrovaSkel", size=1.2),
     _s("king_dodongo", "King Dodongo", "boss", ["Boss_Dodongo"], "object_kingdodongo", 0x19F10,
-       "object_kingdodongo_Skel_01B310", typ="normal", size=3.0),
+       "King Dodongo skeleton (ROM scan)", typ="normal", size=3.0),
     _s("bongo_bongo_head", "Bongo Bongo (head)", "boss", ["Boss_Sst"], "object_sst", 0x16840, "gBongoHeadSkel",
        size=2.5),
     # not replaceable by an object rebuild (kept in the catalogue so the reason is on record)
