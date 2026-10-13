@@ -218,9 +218,18 @@ def fetch_note(cfg, rel: str) -> str:
     return r.text
 
 
+def query_args(query: str) -> list[str]:
+    """Split like upstream's command line: words are OR-ed, a "quoted phrase" is one term (the phrase or all its words)."""
+    import shlex
+    try:
+        return [a for a in shlex.split(query) if a.strip()]
+    except ValueError:                                 # an unbalanced quote
+        return query.replace('"', " ").split()
+
+
 def search_index(query: str, game: str = "", engine: str = "", route: str = "", limit: int = 8) -> list[dict]:
     """Rank the vendored index's notes (title, game, engine, route, tags, tools) with upstream's term rules."""
-    groups = um_kb._groups([query]) if query.strip() else []
+    groups = um_kb._groups(query_args(query))
     terms = list({t.pattern: t for g in groups for t in g}.values())
     out = []
     for e in _index():
@@ -271,7 +280,7 @@ def um_kb_tool(inp: KbIn, ctx: Ctx):
         cached = _notes_dir(ctx.config)
         if cached.is_dir() and inp.query.strip():          # full text of the notes already fetched
             have = {h["path"] for h in hits}
-            for h in um_kb.search(cached, [inp.query], inp.game or None, inp.engine or None, inp.route or None, inp.limit):
+            for h in um_kb.search(cached, query_args(inp.query), inp.game or None, inp.engine or None, inp.route or None, inp.limit):
                 if h["path"] not in have:
                     hits.append({**h, "full_text": True})
         return {"result": {"op": op, "hits": hits[:max(1, min(inp.limit, 50))], "notes": len(_index()), "changed": [],

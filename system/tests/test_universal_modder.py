@@ -127,6 +127,14 @@ def test_kb_search_is_offline_and_ranks_the_game(ctx):
     assert run("um_kb", {"op": "search", "query": "x", "engine": "no-such-engine"}, ctx)["hits"] == []
 
 
+def test_kb_query_words_are_ored_and_quotes_make_a_phrase():
+    assert um.query_args('unreal pak "grand theft auto"') == ["unreal", "pak", "grand theft auto"]
+    assert um.query_args('broken "quote') == ["broken", "quote"]
+    words = um.search_index("unreal pak", limit=50)
+    assert len(words) > len(um.search_index('"unreal pak"', limit=50))
+    assert any(h["engine"] == "unreal" for h in words[:5])
+
+
 def test_kb_show_fetches_the_pinned_note_once_then_caches(ctx, monkeypatch):
     import httpx
     calls = []
