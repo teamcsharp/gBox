@@ -25,8 +25,10 @@ decompressed_size * 4. Compressed files use the VPK0 codec
 Huffman trees (offsets, lengths), then the LZ bitstream (MSB first).
 
 File IDs -> asset names are taken from the US decomp's
-tools/relocFileDescriptions.us.txt (shipped as ssb64_names_us.txt); the
-EUR build shares the same file set. Character files are IDs 202..250.
+tools/relocFileDescriptions.us.txt (shipped as ssb64_names_us.txt). The EUR
+build does NOT share the US IDs: 13 files are inserted at EUR IDs 0..12 and
+4 more at EUR IDs 268..271, shifting the rest (see eur_to_us). Character
+files are EUR IDs 215..263 (US IDs 202..250).
 
 CLI:
     python -m gbox.ssb64_inventory ROM.z64 --out manifest.json
@@ -50,8 +52,40 @@ EXPECTED_FILES_HI = 2400
 
 _NAMES_FILE = Path(__file__).with_name("ssb64_names_us.txt")
 
+# EUR<->US file ID mapping.  The EUR table inserts 13 files at EUR IDs
+# 0..12 and 4 more at EUR IDs 268..271:
+#     EUR = US + 13   for US IDs 0..254 (EUR 13..267)
+#     EUR = US + 17   for US IDs 255..2131 (EUR 272..)
+# Verified against decompressed sizes of 84 known-size US masters with 0
+# mismatches, and byte-level against the MarioMain / MarioMainMotion
+# masters (tests/test_ssb64_analysis.py).
+EUR_ONLY_SPANS = ((0, 12), (268, 271))
+
+
+def eur_to_us(eur_id: int) -> int | None:
+    """US file ID for a EUR file ID, or None when the EUR ID is EUR-only."""
+    if not 0 <= eur_id:
+        return None
+    for lo, hi in EUR_ONLY_SPANS:
+        if lo <= eur_id <= hi:
+            return None
+    if eur_id < EUR_ONLY_SPANS[1][0]:
+        return eur_id - 13
+    return eur_id - 17
+
+
+def us_to_eur(us_id: int) -> int:
+    """EUR file ID for a US file ID (inverse of eur_to_us)."""
+    if not 0 <= us_id:
+        raise ValueError(f"us_id {us_id} out of range")
+    if us_id <= EUR_ONLY_SPANS[1][0] - 14:
+        return us_id + 13
+    return us_id + 17
+
+
 # Fighter file IDs and their meaning (from the US decomp descriptions).
-FIGHTERS = {
+# US IDs in parentheses; the EUR build shifts them (see eur_to_us).
+US_FIGHTERS = {
     "mario":   (202, 204), "mmario": (205, 206), "nmario":  (207, 207),
     "fox":     (208, 210), "nfox":   (211, 211),
     "donkey":  (212, 213), "ndonkey": (214, 214), "gdonkey": (215, 215),
@@ -66,6 +100,13 @@ FIGHTERS = {
     "yoshi":   (246, 247), "nyoshi": (248, 248),
     "boss":    (249, 250),  # Master Hand
 }
+
+# EUR file IDs.  The EUR table inserts 13 files at IDs 0..12 and 4 more at
+# IDs 268..271, so EUR = US + 13 for US IDs 0..254 and EUR = US + 17 for
+# US IDs 255..2131.  Verified against decompressed sizes of 84 known-size
+# US masters (0 mismatches) and byte-level against the MarioMain /
+# MarioMainMotion masters (see tests/test_ssb64_analysis.py).
+FIGHTERS = {name: (us_to_eur(lo), us_to_eur(hi)) for name, (lo, hi) in US_FIGHTERS.items()}
 FIGHTERS_COSTUMES = 4  # default + red/blue/green team palettes per fighter
 
 # Fighting Polygon Team: low-poly variants, one per fighter.
@@ -276,7 +317,9 @@ def vpk0_decode(src: bytes, out_size: int) -> bytes | None:
                         sample2 = get_bits(off)
                         value = sample2 * 4 + sp64 - 8
                     else:
-                        value = sample1
+                        # dma.c: copy_src = out_ptr - value * 4 - sp64 + 8
+                        # with sp64 == 0, i.e. distance = value * 4 - 8.
+                        value = sample1 * 4 - 8
                     copy_src = len(out) - value
                 else:
                     node = offsets_tree
@@ -317,9 +360,11 @@ def inventory(rom_path: str | Path, out: str | Path | None = None) -> dict:
     for fid in range(file_count):
         off = table_addr + fid * ENTRY_SIZE
         e = parse_entry(rom[off:off + ENTRY_SIZE], fid)
+        us_id = eur_to_us(fid)
         files.append({
             "id": fid,
-            "name": names.get(fid, "unknown"),
+            "name": (names.get(us_id, "unknown") if us_id is not None
+                     else f"EUR-only-{fid}"),
             "rom_offset": data_begin + e.data_offset,
             "stored_bytes": e.stored_bytes,
             "decompressed_bytes": e.decompressed_bytes,
