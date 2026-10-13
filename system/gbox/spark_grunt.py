@@ -709,8 +709,9 @@ class ServiceContext:
     def queue_favorites(self) -> list[dict]:
         from . import hermes_work_queue as Q
         data = Q._read()
-        items = [i for i in data.get('items', {}).values() if i.get('lane') == 'favorite' and i.get('favorite')
-                 and i.get('in_catalog')]
+        # starred favorites and showcase titles (recently played, no writer yet: ensure_item) alike
+        items = [i for i in data.get('items', {}).values() if i.get('lane') == 'favorite'
+                 and (i.get('favorite') or i.get('showcase')) and i.get('in_catalog')]
         return sorted(items, key=lambda i: (Q.priority_rank(i, data), i.get('created') or 0))
 
     def save_fingerprint(self, gid: str, fp: dict) -> None:

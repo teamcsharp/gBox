@@ -17,11 +17,13 @@
   const PAGE = 24;
   const TICK = 5000;                                         // poll tick (ms); a fetch happens only when the read is stale
 
-  function filterMods(items, { game = "", writer = "", q = "" } = {}) {
+  // kind: "" every build | "showcase" the Sonic showcase test builds (gbox/sonic_showcase.py) | "other" everything else
+  function filterMods(items, { game = "", writer = "", q = "", kind = "" } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
     const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
-    return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && words.every(w => hay(m).includes(w)))
+    return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer)
+        && (!kind || (kind === "showcase") === !!m.showcase) && words.every(w => hay(m).includes(w)))
       .sort((a, b) => (b.built || 0) - (a.built || 0));
   }
 
@@ -33,7 +35,8 @@
       writers.set(m.writer, (writers.get(m.writer) || 0) + 1);
     }
     return { games: [...games.values()].sort((a, b) => a.title.localeCompare(b.title)),
-             writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })) };
+             writers: [...writers.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([writer, count]) => ({ writer, count })),
+             showcase: (items || []).filter(m => m.showcase).length };
   }
 
   // in-game shots first (what the build looks like running: card shots, then frames captured from sessions of the build),
@@ -42,6 +45,7 @@
     return [...(m.shots || []).map(s => ({ src: url(s.url), name: `${m.mod_title}: in-game shot`, kind: "shot" })),
             ...(m.frames || []).map(f => ({ src: url(f.url), name: `${m.mod_title}: ${f.source || "frame"} (session ${String(f.session_id || "").slice(0, 8)})`, kind: "shot" })),
             ...(m.images || []).map(i => ({ src: url(i.url), name: `${m.mod_title}: ${i.name}`, kind: "build" })),
+            ...(m.fit_previews || []).map(p => ({ src: url(p.url), name: `${m.mod_title}: ${p.label || p.slot} (fitting)`, kind: "fit" })),
             ...(m.donor_previews || []).map(d => ({ src: url(d.url), name: `Donor ${d.slug} (collection preview)`, kind: "donor" }))];
   }
 
@@ -101,7 +105,7 @@
         <div class="mg-h"><b title="${ESC(m.name)}">${ESC(m.mod_title || m.name)}</b>
           <span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span></div>
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
-          <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}</div>
+          <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}${m.showcase ? '<span class="mg-chip mg-sonic" data-mg-kind="showcase" title="A Sonic showcase test build (Settings &gt; Sonic showcase)">Sonic showcase</span>' : ""}</div>
         ${changesHTML(m)}
         <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
@@ -127,6 +131,7 @@
       <input type="search" data-mg-f="q" placeholder="Search mod, game, donor, slot, #request" value="${ESC(st.q)}">
       <select data-mg-f="game">${opt("", "All games", st.game)}${f.games.map(g => opt(g.game_id, `${g.title} (${g.count})`, st.game)).join("")}</select>
       <select data-mg-f="writer">${opt("", "All writers", st.writer)}${f.writers.map(w => opt(w.writer, `${w.writer} (${w.count})`, st.writer)).join("")}</select>
+      <select data-mg-f="kind" title="Sonic showcase: the background test builds with the Sonic Adventure cast">${opt("", "All builds", st.kind || "")}${opt("showcase", `Sonic showcase (${f.showcase || 0})`, st.kind || "")}${opt("other", "Other builds", st.kind || "")}</select>
       <label class="mut">Play on <select data-mg-f="node">${opt("", "This PC", st.node)}${nodes.map(n => opt(n.name, `${n.name} (${n.os})`, st.node)).join("")}</select></label>
       <button class="act" type="button" data-mg="refresh" title="Rescan the build folders">Refresh</button><span class="mut" data-mg-sum></span></div>
       <div class="mg-grid" data-mg-grid></div><div data-mg-more></div>`;
@@ -157,7 +162,7 @@
   //   openImages(list, i, [x, y]), poll (GBoxLivePoll), here (this PC's worker name), visible() -> bool,
   //   play?(mod, {node, moment}), openRequest?(ticket), toast?(text), wait?(ms) }
   function mount(host, env) {
-    const st = { q: env.q || "", game: env.game || "", writer: "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "",
+    const st = { q: env.q || "", game: env.game || "", writer: "", kind: env.kind || "", node: "", page: 1, idx: new Map(), data: null, nodes: [], sig: "",
                  choice: new Map() };                        // card key -> the screenshot choice it offers (another build runs)
     const poll = env.poll || root.GBoxLivePoll;
     const read = poll ? poll.cachedRead(() => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), { ttl: 15000 })
@@ -260,7 +265,8 @@
       const act = t.closest?.("[data-mg]")?.dataset.mg;
       if (act === "more") { st.page++; draw(); return; }
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} read.invalidate(); st.sig = ""; await load(0); return; }
-      const chipG = t.closest?.("[data-mg-game]"), chipW = t.closest?.("[data-mg-writer]");
+      const chipG = t.closest?.("[data-mg-game]"), chipW = t.closest?.("[data-mg-writer]"), chipK = t.closest?.("[data-mg-kind]");
+      if (chipK) { st.kind = chipK.dataset.mgKind; st.page = 1; built = false; draw(); return; }
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
       const imgs = imagesOf(m, url);

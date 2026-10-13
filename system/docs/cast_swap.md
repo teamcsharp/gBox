@@ -76,6 +76,12 @@ staged once (`{path: bytes}`, never the original image), each slot's writer step
 through `StagedDisc`) and returns its new bytes, a failing step leaves the staged files untouched and is reported, and
 the writer writes the image once at the end. A writer joins by getting an entry in `BUILDERS` that builds its steps.
 
+**Fixed names (`mod_name=`, the Sonic showcase).** `mod_name=showcase_sonic_<title>` builds into that folder instead of
+`cast_<game>_<source>_<digest>`; the marker's `cast_plan` (`plan_digest`: which donor on which slot) then decides a
+rebuild, so an unchanged plan is reused and a changed one rebuilt. `showcase=true` adds the `showcase` record to the
+marker and skips the Play-as character targets. A writer that names its own build (DOA2 roster, one-slot writers) gets
+a hard-linked copy under the fixed name (`link_tree`). See docs/sonic_showcase.md.
+
 ## Tests
 
 * `tests/test_cast_swap.py`: slot enumeration (PSO, JGR, Crazy Taxi, Def Jam, DOA2), sources (groups, titles, ids,

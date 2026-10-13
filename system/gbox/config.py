@@ -92,6 +92,28 @@ class VoiceConfig(BaseModel):
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
 
 
+class ShowcaseConfig(BaseModel):
+    """[showcase] the Sonic showcase (gbox/sonic_showcase.py, docs/sonic_showcase.md): a background service on the
+    control plane that builds `showcase_sonic_<title>` cast swaps (SA1 + SA2 cast) of the favorites and recently
+    played titles, and queues readiness work for titles without a writer. The gBox Settings toggle overrides these."""
+    enabled: bool = False             # off until the operator turns it on (Settings card or PUT /api/showcase)
+    paused: bool = False              # the pause switch: nothing new is planned, built or queued
+    favorites: int = 25               # favorites considered per pass (starred titles first)
+    recent: int = 10                  # then this many recently played titles
+    budget_gb: float = 50.0           # disk cap for showcase builds; older showcase builds are evicted (LRU) to fit
+    builds_per_hour: int = 3          # build jobs started per rolling hour
+    whole_cast_max_slots: int = 16    # whole cast when it has at most this many slots, else player + main cast
+    interval_s: float = 300.0         # seconds between passes (a settings change or POST /api/showcase/run wakes it)
+    recheck_hours: float = 6.0        # an up-to-date title is planned again after this long (new donors, writer fixes)
+    retry_failed_hours: float = 24.0  # a failed plan is not built again before this, unless the plan changes
+    hdd_root: dict[str, str] = {"linux": "/home/ehm_eckx/samples"}   # os -> the external HDD mount; builds only there
+    require_hdd: bool = True          # refuse to build when the mod cache is not on that mount (never fill the NVMe)
+    min_free_gb: float = 50.0         # and when the HDD has less than this free
+    dedupe: bool = True               # hard-link identical files of a new build to the game's base copy / other showcases
+    dedupe_min_mb: int = 4            # files below this size are not compared
+    pause_while_playing_anywhere: bool = False   # also wait while a game runs on a Windows PC (default: Spark only)
+
+
 class GameAudioConfig(BaseModel):
     """[game_audio] where emulators send their sound on a Windows node, and what a slow sound device may cost a launch
     (gbox/game_audio.py). A sleeping or switching output (wireless headset) can hold an emulator's audio init for many
@@ -217,6 +239,7 @@ class Config(BaseModel):
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
     hermes: HermesConfig = HermesConfig()            # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
+    showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
     game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
