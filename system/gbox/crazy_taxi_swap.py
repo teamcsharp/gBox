@@ -572,17 +572,37 @@ def swap_bank(bank: bytes, glb, joint_roles: dict, slot: Slot, progress=None,
     progress(5, "Cutting the donor into body segments")
     FE.auto_model(glb)
     segs = donor_segments(glb, joint_roles)
+    if FE.active():                                       # the donor as loaded, then cut into the game's body parts
+        cut = [{"pos": np.asarray(v[0], float), "tris": np.asarray(v[2], int).reshape(-1, 3)} for v in segs.values()]
+        whole = [{"pos": np.concatenate([c["pos"] for c in cut]),
+                  "tris": np.concatenate([c["tris"] + sum(len(x["pos"]) for x in cut[:i]) for i, c in enumerate(cut)])}]
+        FE.stage("scale", data={"donor_height": FE.height(cut), "donor_vertices": int(len(whole[0]["pos"])),
+                                "donor_triangles": FE.triangles(cut), "donor_roles": len(joint_roles),
+                                "fit": "each part to the stock part's extent (bone-local parts, no global scale)"},
+                 prims=whole)
     FE.stage("retarget", data={"segments": len(segs), "triangles": int(sum(len(v[2]) for v in segs.values())),
-                               "fit": "principal axes per part"})
+                               "fit": "principal axes per part"}, prims=cut if FE.active() else None)
     grp = people(ct.read_bank(bank))
     missing = [g for g in slot.groups if g not in grp]
     if missing:
         raise ValueError(f"{BANK} has no {', '.join(missing)} parts")
     FE.stage("proportion", "done" if profile else "skipped",
              {"profile": "size adjustments per part" if profile else "none"})
+    FE.stage("weights", data={"mode": "rigid per part (each part rides its own bone)", "limbs": len(segs),
+                              "vertices": int(sum(len(v[0]) for v in segs.values())),
+                              "per_limb": {p: int(len(v[0])) for p, v in sorted(segs.items(), key=lambda x: -len(x[1][0]))}})
     new_bank, stats = swap_people(bank, segs, slot.groups, progress, profile=profile)
     fitted = [v for v in stats.values() if not v.get("hidden")]
+    per_part: dict[str, int] = {}                         # a part's twins / LODs share its donor segment: once each
+    for v in fitted:
+        per_part[v["part"]] = max(per_part.get(v["part"], 0), int(v["tris"]))
+    FE.stage("decimate", data={"from": int(sum(len(segs[p][2]) for p in per_part if p in segs)),
+                               "triangles": int(sum(per_part.values())), "parts": len(per_part), "blobs": len(fitted),
+                               "budget": "each stock blob's own size (vertex clustering)",
+                               "shrunk": min((v["shrunk"] for v in fitted), default=1.0)})
     FE.stage("encode", data={"blobs": len(stats), "fitted": len(fitted),
+                             "bytes": int(sum(v["size"] for v in stats.values())), "relocated": False,
+                             "where": "every blob rewritten in place at its own size",
                              "triangles": int(sum(v["tris"] for v in fitted)),
                              "vertices": int(sum(v["verts"] for v in fitted))})
     report = {"slot": slot.slot, "groups": list(slot.groups), "blobs": len(stats), "fitted": len(fitted),

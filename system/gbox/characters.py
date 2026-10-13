@@ -15,6 +15,7 @@ Every model here was extracted from the operator's own copy of the game, for loc
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
 import re
@@ -1453,6 +1454,14 @@ def _auf_run(ctx, game, e, work):
     return auf_chars.extract_run(ctx, game, e, work)
 
 
+def _sonic2d(key):
+    """A DEDICATED row for one Sonic Mega Drive title (gbox.sonic2d_sprites), imported only when used."""
+    def mod():
+        return __import__("gbox.sonic2d_sprites", fromlist=["x"])
+    return (f"sonic2d_{key}", lambda t, p: mod().title_test(key)(t, p), lambda: mod().roster(key),
+            lambda ctx, game, e, work: mod().extract_run(ctx, game, e, work))
+
+
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
@@ -1552,6 +1561,10 @@ DEDICATED = [
     ("etm", lambda t, p: t.startswith("enter the matrix") and p in ("windows_native", "ps2"),
      lambda: __import__("gbox.etm_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.etm_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Sonic 1 / 2 / 3 / S&K / S3K (Mega Drive): the player characters' animations decoded from the ROM (art + DPLC +
+    # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
+    # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
+    *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
 ]
 
 
@@ -1646,6 +1659,8 @@ def collect(ctx, inp):
     # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
     entries = [e for e in dedicated_entries(ctx.config, game, name, roster)
                if e.get('kind', 'character') == 'character' or e.get('collect') is True]
+    from . import fit_events as FE                        # the pop-up: every character, then each as it comes out
+    FE.plan([(e['slug'], e['slug'], e['name']) for e in entries], kind="collect")
     results = []
     for i, e in enumerate(entries):
         total = max(1, len(entries))
@@ -1673,6 +1688,11 @@ def collect(ctx, inp):
                             'message': '' if done else ('Model needs verification.' if kind != 'character' else
                                                         'Model or mapped rig needs verification before retargeting.')})
         except Exception as exc:
+            try:
+                FE.model(e['slug'], e['name'])
+                FE.stage("preview", "failed", {"error": str(exc)[:150]})
+            except Exception:                              # noqa: BLE001 - the row is reported below either way
+                pass
             results.append({'slug': e['slug'], 'name': e['name'], 'kind': e.get('kind', 'character'),
                             'status': 'failed', 'verified': False, 'retargetable': False, 'error': str(exc)})
     chars = [r for r in results if r['kind'] == 'character']
@@ -1723,6 +1743,41 @@ def refresh_collection(root: Path, result: dict) -> dict:
     return result | collection_status(rows)
 
 
+def _collect_stages(model: Path, meta: dict, state: str, data: dict, preview: bool = True):
+    """The Fitting pop-up's extract stage for one collected character: the decoded model as the reader wrote it (its
+    own bind pose, coloured from its textures, <= 3000 triangles), or a sprite reader's sheet PNG; then (preview) the
+    collection's preview render. Never fails the collection."""
+    from . import fit_events as FE
+    if not FE.active():
+        return
+    model = Path(model)
+    try:
+        if model.suffix.lower() == ".png":
+            FE.stage("extract", state, data | {"kind": "sprites"}, preview=model)
+        else:
+            prims = FE.model_prims(model)
+            FE.stage("extract", state, data | {"triangles": FE.triangles(prims),
+                                               "vertices": int(sum(len(p["pos"]) for p in prims)),
+                                               "meshes": len(prims), "height": FE.height(prims),
+                                               "roles": len((meta.get("rig") or {}).get("roles") or {})},
+                     prims=prims)
+    except Exception as e:                                 # noqa: BLE001 - an unreadable model: still a row
+        if type(e).__name__ == "Cancelled":
+            raise
+        FE.stage("extract", state, data | {"snapshot": f"unavailable: {str(e)[:80]}"})
+    if preview:
+        _preview_stage(model.parent, meta)
+
+
+def _preview_stage(d: Path, meta: dict):
+    from . import fit_events as FE
+    p = Path(d) / (meta.get("preview") or "preview.png")
+    FE.stage("preview", data={"slug": meta.get("slug"), "kind": meta.get("kind"),
+                              "triangles": (meta.get("stats") or {}).get("triangles"),
+                              "roles": len((meta.get("rig") or {}).get("roles") or {})},
+             preview=p if p.is_file() else None)
+
+
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
     """The game's own extractor, when it has one: None = no extractor for this game."""
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
@@ -1734,22 +1789,29 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
         refresh = False
+        from . import fit_events as FE                    # the pop-up: this character as it comes out of the game
+        FE.model(e["slug"], e["name"])
         if (Path(root) / e["slug"] / "meta.json").is_file():
             existing = get(root, e["slug"])
             refresh = _doa2_needs_refresh(ctx, game, existing) or bool(
                 (reader_status(existing, name) or {}).get("stale"))           # an older reader made it (JGR v1, #1396)
             if verify_entry(root, existing)['ok'] and not refresh:
+                _collect_stages(Path(root) / e["slug"] / existing["model"], existing, "skipped",
+                                {"reason": "already in the collection"})
                 return {"status": "in_collection", "extractor": name, "entry": backfill_roles(root, name, existing)}
         work = Path(ctx.config.cache) / "characters_build" / "extract" / e["slug"]
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
         ctx.progress(20, f"Extracting {e['name']} from {game['title']} (gBox's {name} extractor)")
         r = run(ctx, game, e, work)
+        _collect_stages(Path(r["files"][0]), {"rig": {"roles": r.get("roles") or {}}}, "done",
+                        {"extractor": name, "files": len(r["files"])}, preview=False)
         ctx.progress(85, "Adding it to the collection (preview render)")
         meta = add(root, e["slug"], e["name"], r["files"],
                    {"game_title": game["title"], "game_id": game["game_id"], "platform": plat, "files": r["source_files"]},
                    r["tool"], rig={"roles": r["roles"]} if r.get("roles") else None, aliases=e["aliases"],
                    notes=r.get("notes", ""), kind=e.get("kind", "character"), extra=r.get('extra'))
+        _preview_stage(Path(root) / e["slug"], meta)
         if refresh:
             for targets in meta.get('targets', {}).values():
                 for target in targets:
@@ -2243,11 +2305,6 @@ def _finish(ctx, res: dict) -> dict:
     return res
 
 
-@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
-      artifacts=["preview.png"],
-      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
-                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
-                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard"])
 def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
@@ -2480,3 +2537,19 @@ def characters_tool(inp: CharIn, ctx):
         need = needs_for(game)
     from . import char_coverage                               # no writer: overlay now (if the game runs) + a gap report
     return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
+
+
+@tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
+      artifacts=["preview.png"],
+      side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
+                    "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
+                    "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard",
+                    "use/match/cast_swap: records the rebuild recipe in the built mod's .gbox-mod.json"])
+@functools.wraps(characters_tool)
+def characters_recorded(inp: CharIn, ctx):
+    """The registered `characters` tool: characters_tool, then the shared build path records how the mod it built is
+    built again (gbox.special_builds: the call's input in the mod's marker, for every writer)."""
+    out = characters_tool(inp, ctx)
+    from . import special_builds
+    special_builds.record_call(ctx, inp, out)
+    return out

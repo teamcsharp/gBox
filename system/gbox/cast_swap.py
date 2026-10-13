@@ -458,7 +458,20 @@ def chain(files: dict, steps: list[tuple[str, object]], progress=lambda p, m: No
             report[slot] = {"status": "built", "files": sorted(new)}
         except Exception as e:                            # noqa: BLE001 - one slot never stops the cast
             report[slot] = {"status": "failed", "reason": str(e)[:500] or type(e).__name__}
+            FE.stage("write", "failed", {"reason": report[slot]["reason"][:150]})
     return state, report
+
+
+def chain_written(report: dict, mod: str, image: str, files: dict | None = None):
+    """The write stage of every chained slot once the one image is written: the image, and how big the staged files
+    it changed are (each slot's step rewrote them in place)."""
+    from . import fit_events as FE
+    for slot, r in report.items():
+        if r.get("status") != "built":
+            continue
+        FE.model(slot)
+        FE.stage("write", data={"mod": mod, "image": image, "files": len(r.get("files") or []),
+                                "bytes": sum(len(files[f]) for f in r.get("files") or [] if f in (files or {}))})
 
 
 class StagedDisc:
@@ -579,7 +592,7 @@ def run(ctx, inp) -> dict:
     game = _target_game(ctx, inp)
     root = C.library_root(ctx.config)
     local = root.is_dir()
-    chars = C._api(ctx, "GET", "/api/characters?fresh=1")   # a collect may just have run in another process
+    chars = C._api(ctx, "GET", "/api/characters?fresh=1", timeout=900)   # a full re-read: 35-80 s on the HDD under load   # a collect may just have run in another process
     if not inp.source:
         return {"status": "needs_source", "game_id": game["game_id"], "title": game.get("title"),
                 "sources": source_groups(chars), "message": "name a source: a game or a group (wrestlers, fighters, ...)"}
@@ -674,6 +687,8 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     mod = res.get("mod")
     built = [s for s, r in per.items() if r.get("status") in ("built", "partial")]
     for s, _m in pairs:                                   # every model's last stage in the Fitting pop-up
+        if FE.written(s):                                 # the writer reported its own write (bytes, new place)
+            continue
         FE.model(s)
         ok = s in built and mod
         FE.stage("write", "done" if ok else "failed",
@@ -840,6 +855,7 @@ def _jgr(ctx, game, pairs, name, inp):
     img = patch_gdi(gdi, d, name, files, ctx.progress)
     (d / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": game["game_id"], "image": img.name,
                                                   "files": sorted(files), "writer": "gbox.jgr (cast chain)"}))
+    chain_written(per, name, img.name, files)
     return {"mod": name, "slots": per}
 
 
@@ -864,7 +880,8 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
     files, per = chain({CTS.BANK: bank}, [(s, step(s, m)) for s, m in pairs], ctx.progress)
     if not any(r["status"] == "built" for r in per.values()):
         return {"mod": None, "slots": per}
-    ct.build_mod(ctx.config, game, iso, files[CTS.BANK], name, f"Crazy Taxi {name}.iso", progress=ctx.progress)
+    b = ct.build_mod(ctx.config, game, iso, files[CTS.BANK], name, f"Crazy Taxi {name}.iso", progress=ctx.progress)
+    chain_written(per, name, Path(str((b or {}).get("image") or f"Crazy Taxi {name}.iso")).name, files)
     return {"mod": name, "slots": per}
 
 

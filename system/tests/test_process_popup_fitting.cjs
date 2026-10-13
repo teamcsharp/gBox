@@ -116,3 +116,40 @@ test('desktop and web load the extended popup script (no second copy)', () => {
   assert.equal(web.split('/viz/process-popup.js').length - 1, 1);
   assert.equal(desk.split('../web/viz/process-popup.js').length - 1, 1);
 });
+
+test('the cast writers numbers: donor height, rigid ride, per-limb counts, growth and the new VROM range', () => {
+  const N = popup.stageNumbers;
+  assert.equal(N('scale', { scale: 100, donor_height: 7.9, fitted_height: 790 }), '×100 · 7.9 → 790 tall');
+  assert.equal(N('scale', { donor_height: 1.75, donor_triangles: 1200 }), '1.75 tall · 1,200 tris');
+  assert.equal(N('retarget', { mode: 'rigid ride', vertices: 168 }), 'rigid ride · 168 verts');
+  assert.equal(N('weights', { limbs: 14, vertices: 168, per_limb: { 'head (limb 14)': 12 } }), '14 limbs · 168 verts');
+  assert.equal(N('weights', { nodes: 9, vertices: 1200 }), '9 limbs · 1,200 verts');
+  assert.equal(N('encode', { bytes: 4768, grew: 1104, relocates: true }), '4.66 KB · +1.08 KB · moved');
+  assert.equal(N('encode', { bytes: 2048, relocated: false }), '2 KB');
+  assert.equal(N('write', { mod: 'cast_oot', relocated: ['object_sa'], vrom: '0x120000-0x12b600 (was 0xf8a30)' }),
+    'cast_oot · 0x120000-0x12b600 (was 0xf8a30)');
+  // a sprite writer's preview image shows when the model has no mesh snapshot; a mesh snapshot wins
+  const sprite = { order: ['fighter:taffy'], current: 'fighter:taffy', models: { 'fighter:taffy': { label: 'Donor → Taffy',
+    stages: {}, preview: '/api/jobs/j1/fitting/files/fitted_frames-1.png', preview_ts: 5 } } };
+  assert.equal(popup.previewOf({ fitting: sprite }), '/api/jobs/j1/fitting/files/fitted_frames-1.png');
+  sprite.models['fighter:taffy'].snapshot = '/api/jobs/j1/fitting/files/x.glb'; sprite.models['fighter:taffy'].snapshot_ts = 9;
+  assert.equal(popup.previewOf({ fitting: sprite }), null);
+  assert.equal(popup.previewOf(job()), null);
+});
+
+test('a collect job lists the roster as Collecting k/N with extract / preview chips and the extracted mesh', () => {
+  const f = { kind: 'collect', order: ['sa1_sonic', 'sa1_tikal'], current: 'sa1_tikal', updated: 3, models: {
+    sa1_sonic: { label: 'Sonic', state: 'done', current: 'preview', updated: 2,
+      snapshot: '/api/jobs/j2/fitting/files/sa1_sonic-extract-0.glb', snapshot_stage: 'extract',
+      stages: { extract: { state: 'done', data: { triangles: 1800, roles: 15 } }, preview: { state: 'done', data: { roles: 15 } } } },
+    sa1_tikal: { label: 'Tikal', state: 'running', current: 'extract', updated: 3,
+      snapshot: '/api/jobs/j2/fitting/files/sa1_tikal-extract-1.glb', snapshot_stage: 'extract',
+      stages: { extract: { state: 'done', data: { triangles: 1500 } } } } } };
+  const j = { id: 'j2', tool: 'characters', input: { op: 'collect' }, state: 'running', fitting: f };
+  const html = popup.fittingHTML(j);
+  assert.ok(html.includes('<b>Collecting</b> 1/2 characters'), html);
+  assert.ok(html.includes('title="extract: 1,800 tris · 15 roles">E</i>') && !html.includes('>S</i>'), html);
+  assert.equal(popup.modelPath(j), '/api/jobs/j2/fitting/files/sa1_tikal-extract-1.glb');   // not the placeholder
+  assert.equal(popup.previewOf(j), null);                                                   // the mesh wins over a PNG
+  assert.equal(popup.stageNumbers('extract', { kind: 'sprites' }), 'sprite sheet');
+});

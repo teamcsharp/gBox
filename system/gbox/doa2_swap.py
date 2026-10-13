@@ -335,6 +335,24 @@ def limit_influences(prims: list[dict], max_influences: int = 2) -> tuple[list[d
     return out, {'max_influences': max_influences, 'vertices_reduced': reduced, 'largest_weight_dropped': round(dropped, 4)}
 
 
+def weights_stage(prims: list[dict], fit: dict, jmap: dict) -> None:
+    """The Fitting pop-up's weights stage: vertices per DOA2 body part (strongest influence), and the two-influence
+    reduction native SUP needs (skipped when the donor already has at most two)."""
+    from . import fit_events as FE
+    if not FE.active():
+        return
+    names = {}
+    for role, j in jmap.items():
+        names.setdefault(int(j), f"{role} (bone {j})")
+    counts = FE.per_limb(prims, names)
+    data = {"mode": "weighted (native SUP: two influences)", "bones": len(counts), "vertices": int(sum(counts.values())),
+            "per_limb": counts}
+    if "influence_reduction" in fit:
+        FE.stage("weights", data=data | {"max_influences_before": fit["max_influences"], **fit["influence_reduction"]})
+    else:
+        FE.stage("weights", data=data | {"max_influences": fit.get("max_influences"), "native_limit": 2})
+
+
 def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
           fighter: str, costume: str, profile: dict, *, allow_downscale: bool = False,
           progress=lambda p, m: None) -> dict:
@@ -376,9 +394,7 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
     if fit.get("max_influences", 0) > 2:                       # native SUP holds two influences per vertex
         prims, fit["influence_reduction"] = limit_influences(prims, 2)
         progress(20, f"Reduced {fit['influence_reduction']['vertices_reduced']} vertices to two bone influences")
-        FE.stage("weights", data={"max_influences_before": fit["max_influences"], **fit["influence_reduction"]})
-    else:
-        FE.stage("weights", "skipped", {"max_influences": fit.get("max_influences"), "native_limit": 2})
+    weights_stage(prims, fit, target["jmap"])
     lba, original_bytes = disc.files[stem + ".CHR"]
     next_lba = min((l for l, _ in disc.files.values() if l > lba), default=lba+(original_bytes+2047)//2048)
     sup_lba, sup_bytes = disc.files[stem + '.SUP']
@@ -565,16 +581,18 @@ def build_roster(gdi, donors: dict[str, Path], out_dir, plan: list[tuple[str, st
                  progress=lambda p, m: None):
     """One disc with every selectable fighter replaced per `plan` ([(family, donor slug)]; donors: slug -> character dir)."""
     from .gdrom import GDRom
-    from . import doa2_rig
+    from . import doa2_rig, fit_events as FE
     disc = GDRom(gdi)
     audit = doa2_rig.collect_axes(disc)
+    names = {key: name for key, name, _aliases in doa2_chars.FIGHTERS}
+    FE.plan([(f"fighter:{family}", slug, f"{slug} -> {names.get(family, family)}") for family, slug in plan])
     changes, reports, patches = {}, [], []
     for index, (family, slug) in enumerate(plan):
         if slug not in donors:
             raise ValueError(f"Unknown donor {slug!r}")
 
         def update(p, m, index=index):
-            progress(0.6 * (index + p / 100) / len(plan), f"{family}: {m}")
+            progress(60 * (index + p / 100) / len(plan), f"{family}: {m}")     # percent, like write_mod's
         edits, fighter_reports, fighter_patches = fighter_edits(disc, audit, gdi, donors[slug], out_dir, family, 'all',
                                                                 allow_downscale=allow_downscale, progress=update)
         overlap = set(edits) & set(changes)
@@ -594,6 +612,12 @@ def build_roster(gdi, donors: dict[str, Path], out_dir, plan: list[tuple[str, st
     record = json.loads(marker.read_text(encoding='utf-8'))
     record['roster'] = [{'fighter': family, 'character': slug} for family, slug in plan]
     marker.write_text(json.dumps(record), encoding='utf-8')
+    for family, slug in plan:                            # every fighter's files, written into the one disc
+        FE.model(f"fighter:{family}")
+        mine = {k: v for k, v in changes.items() if Path(k).name.upper().startswith(family)}
+        FE.stage('write', data={'mod': name, 'image': Path(str(result.get('image') or '')).name, 'files': len(mine),
+                                'bytes': sum(len(v) for v in mine.values()),
+                                'costumes': sum(1 for r in reports if r.get('fighter') == family)})
     return result | {'roster': record['roster']}
 
 

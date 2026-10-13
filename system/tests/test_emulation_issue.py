@@ -53,7 +53,8 @@ def test_report_immediately_keeps_markdown_screenshot_and_deduplicates(cfg, monk
     assert 'private-token' not in console
     assert job['tool'] == 'emulation_recovery' and job['parent_request_id'] == report['id']
     assert client.post('/api/sessions/worker-session/emulation-issue', json={}).json()['job']['id'] == job['id']
-    assert len(targets) == 1
+    # one recovery thread (create_app's own character-library warm-up thread is not this report's)
+    assert len([t for t in targets if getattr(t, "__name__", "") != "_refresh_list"]) == 1
 
 
 def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False, covered_points=None, frame_images=None):

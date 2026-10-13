@@ -61,6 +61,8 @@
   const STAGES = ["scale", "retarget", "proportion", "weights", "decimate", "encode", "write"];
   const STAGE_NAMES = { scale: "scale", retarget: "retarget", proportion: "proportion", weights: "weights",
     decimate: "decimate", encode: "encode", write: "write" };
+  const COLLECT_STAGES = ["extract", "preview"];                          // characters op=collect (a reader's roster)
+  const isCollect = job => ((job && job.fitting) || {}).kind === "collect";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const isSnapshot = p => typeof p === "string" && p.includes("/fitting/files/");
 
@@ -71,7 +73,8 @@
       const m = f.models[k], st = m.stages || {};
       const names = STAGES.filter(s => st[s]).concat(Object.keys(st).filter(s => !STAGES.includes(s)));
       return { key: k, label: m.label || k, state: m.state || "pending", current: m.current || null, snapshot: m.snapshot || null,
-        snapshotStage: m.snapshot_stage || null, updated: m.updated || 0,
+        snapshotStage: m.snapshot_stage || null, updated: m.updated || 0, preview: m.preview || null,
+        previewStage: m.preview_stage || null, previewTs: m.preview_ts || 0, snapshotTs: m.snapshot_ts || 0,
         stages: names.map(s => ({ name: s, state: st[s].state || "running", text: stageNumbers(s, st[s].data) })) };
     });
   }
@@ -88,32 +91,48 @@
     const any = rows.filter(r => r.snapshot).sort((a, b) => b.updated - a.updated)[0];
     return any ? any.snapshot : null;
   }
+  // a preview image (a sprite writer's donor / fitted frames, a sprite reader's sheet): shown over the 3D view when the
+  // model being fitted has no mesh snapshot of its own (a mesh snapshot always wins: the operator sees the 3D model)
+  function previewOf(job) {
+    const rows = fittingRows(job), cur = (job.fitting || {}).current;
+    const r = rows.find(x => x.key === cur) || rows.filter(x => x.preview).sort((a, b) => b.updated - a.updated)[0];
+    return r && r.preview && !r.snapshot ? r.preview : null;
+  }
   const n2 = v => (typeof v === "number" ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString("en-US") : String(+v.toFixed(2))) : "");
   function stageNumbers(stage, d) {                                         // the stage's numbers, short
     d = d || {};
     if (d.error || d.reason) return String(d.error || d.reason).slice(0, 60);
-    if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "");
-    if (stage === "retarget") return [d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
+    // the donor as loaded -> the fitted height (the writers' scale stage: donor_height / fitted_height, own units)
+    const tall = d.donor_height != null && d.fitted_height != null ? ` · ${n2(d.donor_height)} → ${n2(d.fitted_height)} tall` : "";
+    if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "") + tall;
+    if (stage === "scale" && d.donor_height != null) return `${n2(d.donor_height)} tall · ${n2(d.donor_triangles || 0)} tris`;
+    if (stage === "retarget") return [d.mode || "", d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
       d.segments != null ? `${d.segments} parts` : ""].filter(Boolean).join(" · ");
     if (stage === "proportion") return d.applied ? ["height", "head", "torso_width"].filter(k => d[k] != null && d[k] !== 1)
       .map(k => `${k.replace("_", " ")} ×${n2(d[k])}`).concat((d.roles_adjusted || []).length ? [`${d.roles_adjusted.length} parts`] : [])
       .join(" · ") || "profile" : (d.profile === "none" ? "no profile" : String(d.profile || ""));
-    if (stage === "weights") return d.vertices_reduced != null ? `${n2(d.vertices_reduced)} verts → ${d.max_influences} bones` : (d.max_influences != null ? `max ${d.max_influences}` : "");
+    const limbs = d.limbs != null ? d.limbs : d.nodes != null ? d.nodes : d.bones;   // per-limb vertex counts
+    if (stage === "weights") return d.vertices_reduced != null ? `${n2(d.vertices_reduced)} verts → ${d.max_influences} bones`
+      : limbs != null ? `${limbs} limbs · ${n2(d.vertices || 0)} verts` : (d.max_influences != null ? `max ${d.max_influences}` : "");
     if (stage === "decimate") return d.from != null && (d.triangles != null || d.to != null) ? `${n2(d.from)} → ${n2(d.triangles != null ? d.triangles : d.to)} tris` : "";
-    if (stage === "encode") return d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
-      : d.triangles != null ? `${n2(d.triangles)} tris` : "";
-    if (stage === "write") return d.mod || d.image || "";
+    const moved = d.relocates || (Array.isArray(d.relocated) ? d.relocated.length : d.relocated) ? " · moved" : "";
+    if (stage === "encode") return (d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
+      : d.triangles != null ? `${n2(d.triangles)} tris` : "") + (d.grew ? ` · +${n2(d.grew / 1024)} KB` : "") + moved;
+    if (stage === "write") return (d.mod || d.image || "") + (d.vrom ? ` · ${d.vrom}` : "");
+    if (stage === "extract") return d.kind === "sprites" ? "sprite sheet" : d.reason ? String(d.reason)
+      : [d.triangles != null ? `${n2(d.triangles)} tris` : "", d.roles ? `${d.roles} roles` : ""].filter(Boolean).join(" · ");
+    if (stage === "preview") return d.roles ? `${d.roles} roles` : (d.kind || "");
     return "";
   }
   function fittingHTML(job) {
     const rows = fittingRows(job);
     if (!rows.length) return "";
-    const s = fittingSummary(job);
-    const head = `<div class="pp-fh"><b>Fitting</b> ${s.done}/${s.total} models${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
+    const s = fittingSummary(job), collect = isCollect(job), chips = collect ? COLLECT_STAGES : STAGES;
+    const head = `<div class="pp-fh"><b>${collect ? "Collecting" : "Fitting"}</b> ${s.done}/${s.total} ${collect ? "characters" : "models"}${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
     return head + rows.map(r => `<div class="pp-fr ${ESC(r.state)}${s.current && s.current.key === r.key ? " cur" : ""}" title="${ESC(r.key)}">
-      <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${STAGES.map(name => {
+      <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${chips.map(name => {
         const st = r.stages.find(x => x.name === name);
-        return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name])}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
+        return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name] || name)}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
       }).join("")}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span></div>`).join("");
   }
 
@@ -200,7 +219,7 @@
     const assetUrl = opts.assetUrl || (p => p);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, picEl = null, picSrc = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
       lastMsgs = [], dead = false, polling = null;
 
@@ -252,7 +271,10 @@
       stage = doc.createElement("div"); stage.className = "pp-stage";
       overlay = doc.createElement("canvas"); overlay.width = 390; overlay.height = 250;
       opEl = doc.createElement("div"); opEl.className = "pp-op";
-      stage.append(overlay, opEl);
+      picEl = doc.createElement("img"); picEl.className = "pp-pic"; picSrc = null;   // a sprite writer's preview image
+      picEl.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;"
+        + "background:rgba(8,10,16,.92);display:none";
+      stage.append(overlay, picEl, opEl);
       ctx2d = overlay.getContext && overlay.getContext("2d");
       const meta = doc.createElement("div"); meta.className = "pp-meta";
       barEl = doc.createElement("div"); barEl.className = "pp-bar";
@@ -336,6 +358,12 @@
       }
       const fitting = fittingSummary(job);
       if (fitEl) { const html = fittingHTML(job); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
+      const pic = previewOf(job);
+      if (picEl && pic !== picSrc) {
+        picSrc = pic;
+        if (pic) picEl.src = assetUrl(pic);
+        picEl.style.display = pic ? "" : "none";
+      }
       if (opEl && fitting.current && fitting.current.current) {             // the model being fitted and its stage
         const lbl = `${fitting.current.current} · ${fitting.done + (fitting.current.state === "done" ? 0 : 1)}/${fitting.total}`;
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
@@ -411,7 +439,7 @@
         group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
         if (isSnapshot(path)) {                                             // the writer's own fitted mesh, this stage
           const s = fittingSummary(current || job), r = s.current || fittingRows(current || job).find(x => x.snapshot === path);
-          footEl.textContent = `Fitted mesh · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
+          footEl.textContent = `${isCollect(current || job) ? "Extracted model" : "Fitted mesh"} · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
         } else footEl.textContent = "Donor model preview · stage effects illustrate reported progress";
         fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
       };
@@ -626,5 +654,5 @@
   }
 
   return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS,
-    fittingRows, fittingSummary, fittingHTML, snapshotOf, stageNumbers, STAGES };
+    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, STAGES };
 });

@@ -238,8 +238,12 @@ def swap_files(img: ImgArchive, src_model: Path, src_roles: dict, work: Path, bl
         raise ValueError(f"{tname}: no rasters")
     size = (max(raster.width, 256), max(raster.height, 256))
     src = Path(src_model)
+    from . import fit_events as FE
     progress(20, f"Fitting onto {model}'s {len(clump.hanim['nodes'])} bones")
     prims = retarget(clump, src, src_roles)
+    names = {i: f"{fr['name']} (frame {i})" for i, fr in enumerate(clump.frames)}
+    FE.weights(prims, names=names, skeleton=len(clump.hanim["nodes"]),
+               mode="one bone per vertex (skinned to the ped's HAnim bones)")
     tris = sum(len(np.asarray(p["tris"]).reshape(-1, 3)) for p in prims)
     note = None
     if tris > MAX_TRIS and blender:
@@ -247,13 +251,24 @@ def swap_files(img: ImgArchive, src_model: Path, src_roles: dict, work: Path, bl
         progress(30, f"{tris} triangles: decimating to ~{int(MAX_TRIS * 0.9)} (Blender)")
         src = decimate(src, Path(work) / f"_gtavc_{model}_dec.glb", int(MAX_TRIS * 0.9), blender)
         prims = retarget(clump, src, src_roles)
+        FE.stage("decimate", data={"from": tris, "to": int(MAX_TRIS * 0.9), "max_tris": MAX_TRIS,
+                                   "triangles": FE.triangles(prims)}, prims=prims)
     elif tris > MAX_TRIS:
         note = f"{tris} triangles (> {MAX_TRIS}) and no Blender to decimate: written as is"
+        FE.stage("decimate", "skipped", {"from": tris, "triangles": tris, "max_tris": MAX_TRIS,
+                                         "reason": "no Blender on this node: written as is"})
+    else:
+        FE.stage("decimate", "skipped", {"from": tris, "triangles": tris, "max_tris": MAX_TRIS})
     atlases, maps = pack_atlases(prims, [size])
     maps = [(0, uv) for _a, uv in maps]
     geom, idx, w = skinned_geometry(clump, prims, [uv for _a, uv in maps], frame)
     new_dff = build_dff(clump, geom, idx, w, None if tex and tex.lower() == raster.name.lower() else raster.name)
     new_txd = M.txd_replace(txd, {raster.name: M.raster_8888(raster, atlases[0])})
+    FE.stage("encode", data={"bytes": len(new_dff) + len(new_txd), "dff_bytes": len(new_dff),
+                             "txd_bytes": len(new_txd), "was_bytes": len(dff) + len(txd),
+                             "triangles": len(geom.tris), "vertices": len(geom.pos),
+                             "relocated": len(new_dff) + len(new_txd) != len(dff) + len(txd),
+                             "where": "gta3.img rebuilt: entries re-laid out, gta3.dir rewritten"})
     return {"model": model, "txd": txd_name, "dff": new_dff, "txd_bytes": new_txd, "atlas": atlases[0],
             "triangles": len(geom.tris), "vertices": len(geom.pos), "parts": dff_parts(new_dff), "note": note,
             "raster": raster.describe(), "source": str(src), "roles": {r: clump.frames[i]["name"] for r, i in clump.roles.items()},
@@ -347,9 +362,11 @@ def build_cast(cfg, game: dict, rom: Path, pairs: list[tuple[str, dict]], name: 
     """The whole-cast swap's Vice City pairs path: [(player | ped:<dff>, donor meta)] -> every .dff/.txd fitted to its
     own donor, gta3.img + gta3.dir rebuilt once into one filemods copy of the install (never the install itself).
     -> {mod, slots {slot: {status, reason?}}}."""
-    from . import characters as C, filemods
+    from . import characters as C, filemods, fit_events as FE
     progress = progress or (lambda p, m: None)
     root = Path(root or C.library_root(cfg))
+    FE.plan([(s, m["slug"], f"{m.get('name') or m['slug']} -> {'Tommy Vercetti' if s == 'player' else s}")
+             for s, m in pairs])
     inst = locate_install(rom)
     if inst["kind"] != "classic":
         why = (f"{inst['kind']} install at {inst['root']}: no models/gta3.img (the writer covers the classic RenderWare "
@@ -363,6 +380,7 @@ def build_cast(cfg, game: dict, rom: Path, pairs: list[tuple[str, dict]], name: 
     rep, slots, orig = {}, {}, {}
     for k, (slot, meta) in enumerate(pairs):
         progress(5 + 60 * k / max(1, len(pairs)), f"{slot} <- {meta.get('name')} ({k + 1}/{len(pairs)})")
+        FE.model(slot)                                    # every stage below belongs to this ped's model
         try:
             kind, target = parse_slot(slot)
             if kind not in ("player", "ped"):
@@ -375,10 +393,11 @@ def build_cast(cfg, game: dict, rom: Path, pairs: list[tuple[str, dict]], name: 
                            txds.get(model.lower(), model))
         except Exception as e:                             # noqa: BLE001 - one ped never stops the cast
             slots[slot] = {"status": "failed", "reason": str(e)[:400]}
+            FE.stage("write", "failed", {"reason": slots[slot]["reason"][:150]})
             continue
         rep[f"{f['model']}.dff"], rep[f"{f['txd']}.txd"] = f["dff"], f["txd_bytes"]
         orig |= f["orig_sha256"]
-        slots[slot] = {"status": "built", "triangles": f["triangles"]}
+        slots[slot] = {"status": "built", "triangles": f["triangles"], "entries": [f"{f['model']}.dff", f"{f['txd']}.txd"]}
     if not rep:
         return {"mod": None, "slots": slots}
     progress(70, f"Rebuilding gta3.img ({len(rep)} entries replaced)")
@@ -391,6 +410,19 @@ def build_cast(cfg, game: dict, rom: Path, pairs: list[tuple[str, dict]], name: 
     rec |= {"entries": sorted(rep), "source_sha256": orig, "new_sha256": {n: _sha(b) for n, b in rep.items()},
             "install_kind": "classic", "exe": Path(inst["exe"]).name, "built": time.time()}
     (out / ".gbox-mod.json").write_text(json.dumps(rec))
+    new_at = {e[2].lower(): e for e in R.dir_read(new_dir)}
+    for slot, row in slots.items():                       # each ped's entries, in the one rebuilt gta3.img
+        if row["status"] != "built":
+            continue
+        FE.model(slot)
+        ents = row.pop("entries")
+        moved = [e for e in ents if e.lower() in new_at and img.ents[img.index[e.lower()]][:2] != new_at[e.lower()][:2]]
+        dff = new_at.get(ents[0].lower())
+        FE.stage("write", data={"mod": name, "image": "models/gta3.img", "entries": len(ents),
+                                "bytes": sum(len(rep[e]) for e in ents), "img_bytes": new_img.stat().st_size,
+                                "relocated": moved,
+                                **({"vrom": f"{ents[0]} @ sector {dff[0]} (was {img.ents[img.index[ents[0].lower()]][0]})"}
+                                   if dff and moved else {})})
     return {"mod": name, "slots": slots}
 
 

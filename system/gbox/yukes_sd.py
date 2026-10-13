@@ -851,12 +851,13 @@ def fit_character(files: dict, group: int, model: Path, roles: dict, work: Path,
     rig = load_rig(Path(model), roles, props)
     jm = {r: b for r, b in ROLE_BONE.items() if r != "neck"}
     prims, rep = retarget(rig, tgt, scale, jm)
+    from . import fit_events as FE
+    FE.weights(prims, ROLE_BONE, skeleton=len(bones))
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     rigged = write_rigged(prims, tgt, work / "sd2_rigged.gltf", name)
     src = rigged
     tris_src = sum(len(p["tris"]) for p in rig["prims"])
-    from . import fit_events as FE
     if tris_src > 8000 and blender:
         FE.stage("decimate", "running", {"from": tris_src, "to": 8000})
         src = decimate(rigged, work / "sd2_dec.glb", 8000.0, blender)
@@ -1013,7 +1014,10 @@ def build_disc(base: Path, out_bin: Path, jobs: list[dict], work: Path, blender=
     files = read_files(base)
     newf = {f: bytearray(files[f]) for f in PART_FILES}
     reports = []
+    from . import fit_events as FE
     for k, jb in enumerate(jobs):
+        if jb.get("fit_key"):                             # the cast's model for this wrestler (the Fitting pop-up)
+            FE.model(jb["fit_key"])
         fit = fit_character(files, jb["group"], jb["model"], jb["roles"], Path(work) / f"g{jb['group']}", jb["name"],
                             jb.get("props", ()), jb.get("scale"), blender,
                             progress=lambda p, m, k=k: progress(5 + (k * 80 + p * 0.8) / max(1, len(jobs)), m))
@@ -1027,6 +1031,9 @@ def build_disc(base: Path, out_bin: Path, jobs: list[dict], work: Path, blender=
                     raise ValueError(f"{jb['name']}: {f} entry {eid:#x} needs {len(data)} bytes, has {room}")
                 newf[f][o:o + room] = data + bytes(room - len(data))
             sizes[f] = [len(data), min(u * 0x100 for _e, u, _o in ents)]
+        FE.stage("encode", data={"bytes": sum(s[0] for s in sizes.values()), "budget": sum(s[1] for s in sizes.values()),
+                                 "files": len(sizes), "triangles": fit["report"]["triangles"],
+                                 "relocated": False, "where": "every costume entry rewritten in place"})
         reports.append({"group": jb["group"], "character": jb["name"], "rigged": str(fit["rigged"]), "sizes": sizes,
                         **fit["report"]})
     progress(90, "Writing the disc image")
@@ -1106,7 +1113,8 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         if "hip" not in roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"group": w["id"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
-                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
+                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale"),
+                     "fit_key": w.get("fit_key")})
     name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / name
     shutil.rmtree(work, ignore_errors=True)
@@ -1132,6 +1140,12 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
           "triangles": [r["triangles"] for r in b["reports"]], "fit": FIT_VERSION}
     (d / ".gbox-mod.json").write_text(json.dumps(mj))
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE
+    for (_meta, w), r in zip(pairs, b["reports"]):       # every wrestler's entries, in the one disc image
+        if w.get("fit_key"):
+            FE.model(w["fit_key"])
+        FE.stage("write", data={"mod": name, "image": cue, "wrestler": w["name"], "files": len(r.get("sizes") or {}),
+                                "bytes": sum(s[0] for s in (r.get("sizes") or {}).values())})
     return {"mod": name, "image": cue, "previews": previews,
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
 
@@ -1213,7 +1227,9 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
         if w["id"] in used:
             raise ValueError(f"{w['name']} is already replaced in this match")
         used.add(w["id"])
-        pairs.append((meta, w))
+        pairs.append((meta, dict(w, fit_key=wq or w["name"])))   # the Fitting pop-up's model: the cast slot
+    from . import fit_events as FE                         # every wrestler of the match up front (Fitting k/N)
+    FE.plan([(w["fit_key"], m["slug"], f"{m['name']} -> {w['name']}") for m, w in pairs])
     return use(ctx, pairs[0][0], game, inp, pairs, title)
 
 

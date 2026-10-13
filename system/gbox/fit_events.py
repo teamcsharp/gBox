@@ -10,6 +10,10 @@ job's "fitting" record ({order, models: {key: {label, stages: {stage: {state, da
 Writers do not pass anything around: characters_tool opens a job sink (job()), and the shared retargets
 (sm64_swap / doa2_weighted_retarget / re4gc_enemies .retarget) call auto_model() + stage(); a writer that knows its
 model better (DOA2 per costume, the cast build's plan) names it with model(). Without a sink every call is a no-op.
+
+characters op=collect uses the same record with kind "collect" (plan(..., kind="collect")): per character an
+"extract" stage (the decoded model as a snapshot, coloured from its textures; a sprite reader's sheet as a preview
+image) and a "preview" stage (the collection's preview render). The pop-up then reads "Collecting k/N".
 """
 from __future__ import annotations
 
@@ -28,6 +32,9 @@ import numpy as np
 
 MARK = " #fit"
 STAGES = ["scale", "retarget", "proportion", "weights", "decimate", "encode", "write"]
+COLLECT_STAGES = ["extract", "preview"]                  # characters op=collect: each character as it comes out
+LAST = ("write", "preview")                              # a model's last stage: done there = the model is done
+KINDS = ("fit", "collect")
 STATES = {"running", "done", "skipped", "failed"}
 MAX_MODELS = 80
 SNAPSHOT_TRIS = 3000
@@ -88,6 +95,8 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
     st.setdefault("order", [])
     st.setdefault("models", {})
     ts = now if now is not None else time.time()
+    if event.get("kind") in KINDS:                          # "collect": a reader's roster, not a writer's fits
+        st["kind"] = event["kind"]
     for row in event.get("plan") or []:                     # the cast build announces every model up front
         key = str(row.get("model") or "")[:120]
         if key and key not in st["models"] and len(st["order"]) < MAX_MODELS:
@@ -115,7 +124,7 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
             s["text"] = str(event["text"])[:200]
         s["ts"] = ts
         m["current"] = str(stage)[:24]
-        m["state"] = "failed" if s["state"] == "failed" else ("done" if stage == "write" and s["state"] == "done"
+        m["state"] = "failed" if s["state"] == "failed" else ("done" if stage in LAST and s["state"] == "done"
                                                               else "running")
     for k in ("snapshot", "preview"):
         v = event.get(k)
@@ -162,16 +171,24 @@ def _send(event: dict, text: str):
             raise
 
 
-def plan(rows: list[tuple[str, str, str]]):
+def plan(rows: list[tuple[str, str, str]], kind: str = "fit"):
     """The cast build's models before any of them is fitted: [(model key, donor slug, label)]. auto_model(slug)
-    then takes the next planned key of that donor."""
+    then takes the next planned key of that donor. A key already planned keeps its row (the cast swap plans every
+    model, then the writer's own build_cast plans the same ones again when it runs alone)."""
     sk = _sink.get()
     if sk is None:
         return
+    labels = sk.setdefault("labels", {})
+    rows = [(str(k), s, lab) for k, s, lab in rows if str(k) not in labels]
+    if not rows:
+        return
     for key, slug, label in rows:
-        sk["plan"].setdefault(str(slug), []).append((str(key), label))
-        sk.setdefault("labels", {})[str(key)] = label
-    _send({"plan": [{"model": k, "label": lab} for k, _s, lab in rows]}, f"Fitting {len(rows)} models")
+        sk["plan"].setdefault(str(slug), []).append((key, label))
+        labels[key] = label
+    ev = {"plan": [{"model": k, "label": lab} for k, _s, lab in rows]}
+    if kind != "fit":
+        ev["kind"] = kind
+    _send(ev, f"{'Collecting' if kind == 'collect' else 'Fitting'} {len(rows)} models")
 
 
 def model(key: str, label: str | None = None, slug: str | None = None, explicit: bool = True) -> str | None:
@@ -181,6 +198,10 @@ def model(key: str, label: str | None = None, slug: str | None = None, explicit:
     if sk is None:
         return None
     key = str(key)
+    if sk.get("default") and sk["default"][0] == key:      # the job's own model, named by the writer: its label
+        label = label or sk["default"][1]
+        slug = slug or sk["default"][2]
+        sk.pop("default")
     label = label or sk.get("labels", {}).get(key) or key
     for q in sk["plan"].values():                            # a planned key started by name is no longer pending
         q[:] = [row for row in q if row[0] != key]
@@ -253,10 +274,178 @@ def stage(name: str, state: str = "done", data: dict | None = None, text: str | 
         ev["preview"] = str(preview)
     if name == "retarget" and state == "done":
         cur["fitted"] = True
-    if name == "write" and state in ("done", "failed"):
+    if name in LAST and state in ("done", "failed"):
         cur["closed"] = True
+        sk.setdefault("written", set()).add(cur["key"])
     label = cur.get("label") or cur["key"]
     _send(ev, text or f"{label}: {name}" + (f" ({state})" if state != "done" else ""))
+
+
+def written(key: str) -> bool:
+    """The model's write stage already ended (done / failed): a writer that reports its own write (with the object's
+    new place, bytes...) keeps it - the cast swap's generic write row is only for writers that report none."""
+    sk = _sink.get()
+    return bool(sk) and str(key) in sk.get("written", ())
+
+
+# ---------------------------------------------------------------- numbers the writers report
+
+def triangles(prims) -> int:
+    return int(sum(len(np.asarray(p["tris"]).reshape(-1, 3)) if p.get("tris") is not None
+                   else len(np.asarray(p["pos"]).reshape(-1, 3)) // 3 for p in prims))
+
+
+def height(prims) -> float:
+    """Vertical extent (+Y up) of the prims, in their own units."""
+    ys = [np.asarray(p["pos"], float).reshape(-1, 3)[:, 1] for p in prims if len(np.asarray(p["pos"]).reshape(-1))]
+    return round(float(np.ptp(np.concatenate(ys))), 4) if ys else 0.0
+
+
+def donor(rig: dict, basis=None) -> list[dict]:
+    """The donor as loaded (its own units and bind pose), turned upright by the writer's facing basis (rows: left,
+    up, front) so the snapshot stands like the fitted one."""
+    B = None if basis is None else np.asarray(basis, float)
+    out = []
+    for p in rig.get("prims") or []:
+        P = np.asarray(p["pos"], float).reshape(-1, 3)
+        out.append({"pos": P @ B.T if B is not None else P, "tris": p.get("tris")})
+    return out
+
+
+def donor_numbers(rig: dict, basis=None, **extra) -> dict:
+    """The scale stage's donor facts: original height (source units), vertices, triangles, joints, body roles."""
+    pr = donor(rig, basis)
+    return {"donor_height": height(pr), "donor_vertices": int(sum(len(p["pos"]) for p in pr)),
+            "donor_triangles": triangles(pr),
+            "donor_joints": len(rig["parent"] if rig.get("parent") is not None else rig.get("joints", [])),
+            "donor_roles": len(rig.get("roles") or {}), **extra}
+
+
+def weights(prims, jmap: dict | None = None, mode: str = "rigid per bone (one bone per vertex)",
+            skeleton: int | None = None, word: str = "bone", owner=None, names: dict | list | None = None, **extra):
+    """The weights stage: vertices per target bone / limb, named by the body role that maps to it ("head (bone 7)")
+    or by names[j]."""
+    if _sink.get() is None:
+        return
+    nm = dict(names) if isinstance(names, dict) else {i: n for i, n in enumerate(names or [])}
+    for r, j in (jmap or {}).items():
+        try:
+            nm[int(j)] = f"{r} ({word} {int(j)})"
+        except (TypeError, ValueError):
+            pass
+    counts = per_limb(prims, nm, owner)
+    stage("weights", data={"mode": mode, "limbs": len(counts), "skeleton_limbs": skeleton,
+                           "vertices": int(sum(counts.values())), "per_limb": counts, **extra})
+
+
+def model_prims(path: str | Path) -> list[dict]:
+    """A collection model (glTF / GLB) as snapshot prims: every triangle primitive in its node's world transform (the
+    model as the reader posed it - its own bind pose), coloured per vertex from its base-colour texture x factor."""
+    from .re4gc_models import _gltf_load, _node_world
+    gl, acc, image = _gltf_load(Path(path))
+    wn = _node_world(gl)
+    cache, out = {}, []
+    for ni, nd in enumerate(gl.get("nodes") or []):
+        if "mesh" not in nd:
+            continue
+        M = wn[ni]
+        for pr in gl["meshes"][nd["mesh"]]["primitives"]:
+            if pr.get("mode", 4) != 4 or "POSITION" not in pr["attributes"]:
+                continue
+            a = pr["attributes"]
+            P = acc(a["POSITION"]).astype(float) @ M[:3, :3].T + M[:3, 3]
+            F = acc(pr["indices"]).reshape(-1, 3).astype(int) if "indices" in pr else \
+                np.arange(len(P) // 3 * 3).reshape(-1, 3)
+            col = np.ones((len(P), 4))
+            if (mi := pr.get("material")) is not None:
+                pbr = gl["materials"][mi].get("pbrMetallicRoughness", {})
+                col *= np.asarray(pbr.get("baseColorFactor", [1, 1, 1, 1]), float)
+                bct = pbr.get("baseColorTexture")
+                if bct is not None and "TEXCOORD_0" in a:
+                    if bct["index"] not in cache:
+                        try:
+                            cache[bct["index"]] = image(bct["index"])
+                        except Exception:                    # noqa: BLE001 - a missing image: the factor alone
+                            cache[bct["index"]] = None
+                    tex = cache[bct["index"]]
+                    if tex is not None:
+                        uv = acc(a["TEXCOORD_0"]).astype(float)
+                        h, w = tex.shape[:2]
+                        x = (np.floor(np.mod(uv[:, 0], 1.0) * w).astype(int)) % w
+                        y = (np.floor(np.mod(uv[:, 1], 1.0) * h).astype(int)) % h
+                        t = np.asarray(tex, float)[y, x] / 255.0
+                        col[:, :t.shape[1]] *= t
+            out.append({"pos": P, "tris": F, "rgba": col})
+    return out
+
+
+def image(name: str, rgba) -> str | None:
+    """A preview image (RGBA / RGB array) saved next to the job's snapshots, for stage(preview=...) - what a sprite
+    writer shows instead of a mesh. None without a sink or when it can't be written."""
+    sk = _sink.get()
+    if sk is None:
+        return None
+    try:
+        from PIL import Image
+        p = Path(sk["dir"]) / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', str(name))[:60]}-{sk['n']}.png"
+        sk["n"] += 1
+        p.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.asarray(rgba, np.uint8)).save(p)
+        return str(p)
+    except Exception:                                        # noqa: BLE001 - a preview never fails a build
+        return None
+
+
+def compact(P, F, max_tris: int = SNAPSHOT_TRIS) -> dict:
+    """A snapshot-sized copy of a mesh ({pos, tris}, at most max_tris triangles, unused vertices dropped): what a
+    writer's worker process hands back so the parent can show it (the sink lives in the parent only)."""
+    P, F = np.asarray(P, np.float32).reshape(-1, 3), np.asarray(F, np.int64).reshape(-1, 3)
+    if len(F) > max_tris:
+        F = F[np.linspace(0, len(F) - 1, max_tris).astype(np.int64)]
+    used = np.unique(F)
+    remap = np.full(len(P), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    return {"pos": P[used], "tris": remap[F]}
+
+
+def mesh(parts, pos: str = "P", tris: str = "F") -> list[dict]:
+    """Writer parts ({P, F} dicts, or (P, N, ..., F) tuples) -> snapshot prims."""
+    out = []
+    for p in parts:
+        if isinstance(p, dict):
+            out.append({"pos": p[pos], "tris": p[tris]})
+        else:
+            out.append({"pos": p[0], "tris": p[-1]})
+    return out
+
+
+def per_limb(prims, names: dict | list | None = None, owner=None) -> dict:
+    """Vertices per target limb / bone (the strongest influence of each vertex; owner(j) folds a limb onto the one
+    that draws it), largest first, named by names[j] when given."""
+    js = []
+    for p in prims:
+        J = p.get("J") if p.get("J") is not None else p.get("jid")
+        if J is None:
+            continue
+        J = np.asarray(J)
+        if J.ndim == 2:
+            W = p.get("W")
+            J = J[np.arange(len(J)), np.asarray(W).argmax(1)] if W is not None else J[:, 0]
+        js.append(J.astype(np.int64).reshape(-1))
+    if not js:
+        return {}
+    J = np.concatenate(js)
+    if owner is not None:
+        J = np.asarray([owner(int(j)) for j in J], np.int64) if callable(owner) else np.asarray(owner)[J]
+    ids, n = np.unique(J, return_counts=True)
+
+    def name(j):
+        if isinstance(names, dict) and j in names:
+            return str(names[j])
+        if isinstance(names, (list, tuple)) and 0 <= j < len(names):
+            return str(names[j])
+        return f"limb {j}"
+    return {name(int(j)): int(c) for j, c in sorted(zip(ids, n), key=lambda x: -x[1])}
 
 
 # ---------------------------------------------------------------- a small mesh snapshot
@@ -273,7 +462,12 @@ def snapshot_glb(prims, path: str | Path, max_tris: int = SNAPSHOT_TRIS) -> Path
             continue
         P_all.append(P)
         F_all.append(F + base)
-        C_all.append(np.tile(np.array(palette[i % len(palette)] + (1.0,), np.float32), (len(P), 1)))
+        rgba = p.get("rgba")                               # the model's own colours (texture sampled per vertex)
+        if rgba is not None and len(rgba) == len(P):
+            c = np.asarray(rgba, np.float32).reshape(len(P), -1)
+            C_all.append(np.c_[c[:, :3], np.ones(len(P), np.float32)])
+        else:
+            C_all.append(np.tile(np.array(palette[i % len(palette)] + (1.0,), np.float32), (len(P), 1)))
         base += len(P)
     if not P_all:
         raise ValueError("no geometry to snapshot")
