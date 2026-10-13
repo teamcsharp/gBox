@@ -58,6 +58,10 @@ WRITERS = [
      "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "
      "re-encoded .gcm on the slot's skeleton (native animations), donor atlas in the level's texture chunk, rebuilt "
      "maps/*.ngc in a disc-image copy; unverified in game"),
+    ("pso_gc_swap", ["class:<humar..fomar>", "player", "enemy:<key>"],
+     "PSO Episode I & II (GC): any of the 12 player classes (pl<X>bdy00.nj loose + in pl<X>nj.bml, head / hair hidden, "
+     "the atlas in every pl<X>tex.afs texture) or any of 50 enemy bodies on their own trees (the BML pack rebuilt in "
+     "every GSL area archive that carries it); read back by gbox.pso_gc; unverified in Dolphin"),
     ("crazy_taxi_swap", ["player", "driver:<axel|bd_joe|gena|gus>", "drivers", "pedestrian:<group>", "pedestrians",
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
