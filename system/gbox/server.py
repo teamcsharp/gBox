@@ -2098,18 +2098,15 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
+        from .live_stream import mjpeg_parts
         lv = _live(sid)
 
-        def gen():                                   # wakes on every new frame: stream fps = source fps
-            seq, idle = -1, time.time()
-            while time.time() - idle < 30:
-                with lv["cond"]:
-                    lv["cond"].wait_for(lambda: lv["seq"] != seq and lv["frame"] is not None, 1.0)
-                    if lv["seq"] == seq or lv["frame"] is None:
-                        continue
-                    seq, frame, idle = lv["seq"], lv["frame"], time.time()
-                yield b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=f",
+        def alive() -> bool:                         # stop streaming once the session has ended or was replaced
+            s = store.get("session", sid)
+            return s is None or s.get("state") != "ended"
+        # Wakes on every new frame (stream fps = source fps) and repeats the newest frame while the source pauses,
+        # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
+        return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
     class InputEvents(BaseModel):
