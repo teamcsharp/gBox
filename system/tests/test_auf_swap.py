@@ -486,18 +486,23 @@ def test_disc_rebuild_in_place_and_moved(tmp_path):
 def test_build_mod_end_to_end_on_a_synthetic_disc(tmp_path, donor):
     from gbox.gcdisc import GCDisc
     level = level_package()
-    src = gc_image(tmp_path / "auf.iso", {"maps/dm1.ngc": level, "maps/dm2.ngc": level, "opening.bnr": b"x" * 64})
-    plan = {("dm1", "body"): "synthetic_wrestler"}
-    r = S.build_mod(tmp_path / "cache", src, "auf_test", plan, {"synthetic_wrestler": donor})
+    src = gc_image(tmp_path / "auf.iso", {"maps/dm1.ngc": level, "maps/dm2.ngc": level, "maps/dm3.ngc": level,
+                                          "opening.bnr": b"x" * 64})
+    plan = {("dm1", "body"): "synthetic_wrestler", ("dm2", "body"): "synthetic_wrestler"}
+    r = S.build_mod(tmp_path / "cache", src, "auf_test", plan, {"synthetic_wrestler": donor}, workers=2)
     d = GCDisc(r["image"])
     try:
-        q = N.NgcPackage(d.read("maps/dm1.ngc"))
-        assert len(N.mesh(q.read("models/actors/actorheads/head_l.gcm"))["faces"]) == 0
-        assert d.read("maps/dm2.ngc") == level                                # untouched level
+        for lv in ("dm1", "dm2"):
+            q = N.NgcPackage(d.read(f"maps/{lv}.ngc"))
+            assert len(N.mesh(q.read("models/actors/actorheads/head_l.gcm"))["faces"]) == 0
+            assert len(N.mesh(q.read("models/actors/test/body_l.gcm"))["faces"]) > 50
+        assert d.read("maps/dm1.ngc") == d.read("maps/dm2.ngc")              # deterministic across processes
+        assert d.read("maps/dm3.ngc") == level                                # untouched level
     finally:
         d.f.close()
     marker = json.loads((Path(r["dir"]) / ".gbox-mod.json").read_text())
-    assert marker["writer"] == "gbox.auf_swap" and marker["cast"] == [["dm1", "body", "synthetic_wrestler"]]
+    assert marker["writer"] == "gbox.auf_swap" and marker["cast"] == [["dm1", "body", "synthetic_wrestler"],
+                                                                      ["dm2", "body", "synthetic_wrestler"]]
     assert S._disc_reader(Path(r["image"]))("maps/dm1.ngc") == d.__class__(r["image"]).read("maps/dm1.ngc")
 
 

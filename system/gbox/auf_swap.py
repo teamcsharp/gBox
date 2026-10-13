@@ -893,9 +893,18 @@ def level_path(level: str) -> str:
     return f"maps/{level}.ngc"
 
 
-def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor], progress=None, workers: int = 1) -> dict:
-    """A disc-image mod (cache/mods/<game>/<name>): every level the plan touches rebuilt, the rest copied."""
+def _swap_job(args):
+    data, assign, lv = args
+    return swap_level(data, assign, lv)
+
+
+def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor], progress=None,
+              workers: int | None = None) -> dict:
+    """A disc-image mod (cache/mods/<game>/<name>): every level the plan touches rebuilt (``workers`` processes,
+    default half the CPUs up to 6; each level is independent), the rest copied."""
+    import os
     import types
+    from concurrent.futures import ProcessPoolExecutor
     from . import filemods
     from .gcdisc import GCDisc
     progress = progress or (lambda p, m: None)
@@ -903,25 +912,35 @@ def build_mod(cfg, image: Path, name: str, plan: dict, donors: dict[str, Donor],
     by_level: dict = {}
     for (lv, k), slug in plan.items():
         by_level.setdefault(lv, {})[k] = donors[slug]
+    workers = workers if workers is not None else max(1, min(6, (os.cpu_count() or 2) // 2))
     changes, reports = {}, []
     src = _disc_reader(image)
     try:
-        for i, lv in enumerate(sorted(by_level)):
-            base = 5 + 80 * i / max(1, len(by_level))
-            progress(base, f"Rebuilding {lv} ({i + 1}/{len(by_level)})")
-            data = src(level_path(lv))
-            out, rep = swap_level(data, by_level[lv], lv,
-                                  lambda p, m, base=base: progress(base + 80 / max(1, len(by_level)) * p / 100, m))
-            if rep.get("replaced"):
-                changes[level_path(lv)] = {"bytes": out}
-            reports.append(rep)
+        levels = sorted(by_level)
+        jobs = [(src(level_path(lv)), by_level[lv], lv) for lv in levels]
     finally:
         getattr(src, "close", lambda: None)()
+    progress(5, f"Rebuilding {len(levels)} level(s) with {workers} worker(s)")
+    if workers > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            results = []
+            for i, r in enumerate(ex.map(_swap_job, jobs)):
+                results.append(r)
+                progress(5 + 80 * (i + 1) / len(jobs), f"Rebuilt {levels[i]} ({i + 1}/{len(jobs)})")
+    else:
+        results = []
+        for i, job in enumerate(jobs):
+            base = 5 + 80 * i / len(jobs)
+            results.append(swap_level(*job, lambda p, m, base=base: progress(base + 80 / len(jobs) * p / 100, m)))
+    for lv, (out, rep) in zip(levels, results):
+        if rep.get("replaced"):
+            changes[level_path(lv)] = {"bytes": out}
+        reports.append(rep)
     if not changes:
         raise ValueError("no level changed: the plan's characters are not on this disc")
     progress(88, "Writing the disc image")
     cfg = cfg if hasattr(cfg, "cache") else types.SimpleNamespace(cache=Path(cfg))
-    b = filemods.build_image(cfg, GAME_ID, image, name, changes, progress)
+    b = filemods.build_image(cfg, GAME_ID, image, name, changes, lambda p, m: progress(88 + 0.1 * (p or 0), m))
     marker = Path(b["dir"]) / ".gbox-mod.json"
     rec = json.loads(marker.read_text())
     rec |= {"writer": "gbox.auf_swap", "cast": sorted([lv, k, s] for (lv, k), s in plan.items()),
