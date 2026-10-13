@@ -1287,7 +1287,9 @@ class RetroArchAdapter(CommandAdapter):
     # (verified with Flycast: rcheevos registers 16MB SYSTEM RAM at $0); GameCube/Wii MEM1 at 0x80000000/0xC0000000.
     RAM_WINDOWS = {"dreamcast": (0x1F000000, 0x0C000000, 0x00FFFFFF), "naomi": (0x1F000000, 0x0C000000, 0x00FFFFFF),
                    "gamecube": (0x3E000000, 0x00000000, 0x01FFFFFF), "wii": (0x3E000000, 0x00000000, 0x01FFFFFF),
-                   "n64": (0x1F800000, 0x00000000, 0x007FFFFF)}
+                   "n64": (0x1F800000, 0x00000000, 0x007FFFFF),
+                   # NDS main RAM: 4 MiB at 0x02000000 (mirrored to 0x02FFFFFF); melonDS registers it as SYSTEM_RAM at $0
+                   "nds": (0xFF000000, 0x02000000, 0x003FFFFF)}
 
     def _ram_offset(self, address: int) -> int:
         w = self.RAM_WINDOWS.get(self.platform or "")

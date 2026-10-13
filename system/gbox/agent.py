@@ -628,11 +628,13 @@ def tool_specs() -> list[dict]:
            {"op": s, "host": s, "guest": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"},
             "on_win": s, "on_lose": s}, ["op", "host", "guest"]),
         fn("stranglehold_shot", "Stranglehold bullet-time interception: op=systems (list the minimum systems), locate (find the "
-           "profile functions in RAM), arm (infinite life), fire verdict=hit|miss (immediate override), or link with a guest "
-           "session_id and memory watch specs (trigger/win/lose) to let a minigame decide the result. session_id is the "
-           "running Stranglehold host.",
-           {"op": s, "session_id": s, "verdict": s, "guest_session_id": s, "trigger": {"type": "object"},
-            "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
+           "profile functions in RAM), arm (infinite life), fire verdict=hit|miss (immediate override), or link to let a "
+           "minigame decide the result. op=link guest=tetris_ds is hands-free: precision-aim trigger and Tetris DS win/lose "
+           "flags come from the profiles (round=vs_cpu default | sprint), the Tetris DS session is found or launched on "
+           "another worker, style=pip shows it picture-in-picture while Stranglehold is frozen. Otherwise give "
+           "guest_session_id and memory watch specs (trigger/win/lose). session_id is the running Stranglehold host.",
+           {"op": s, "session_id": s, "verdict": s, "guest": s, "round": s, "guest_session_id": s, "guest_node": s,
+            "style": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
         fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
            "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
            "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
@@ -1242,9 +1244,11 @@ class Agent:
                                     "lose": lose or {}, "on_win": on_win, "on_lose": on_lose}, worker=host.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def stranglehold_shot(self, op, session_id="", verdict="hit", guest_session_id="", trigger=None, win=None, lose=None):
-        j = self._job("stranglehold_shot", {"op": op, "session_id": session_id, "verdict": verdict,
-                                            "guest_session_id": guest_session_id, "trigger": trigger or {},
+    def stranglehold_shot(self, op, session_id="", verdict="hit", guest_session_id="", trigger=None, win=None, lose=None,
+                          guest="", round="", guest_node="", style="pip"):
+        j = self._job("stranglehold_shot", {"op": op, "session_id": session_id, "verdict": verdict, "guest": guest,
+                                            "round": round, "guest_session_id": guest_session_id, "guest_node": guest_node,
+                                            "style": style, "trigger": trigger or {},
                                             "win": win or {}, "lose": lose or {}}, worker=session_id.rsplit("-", 1)[0] if session_id else None)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 

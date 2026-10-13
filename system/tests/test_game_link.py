@@ -40,7 +40,7 @@ def test_link_round(monkeypatch):
     assert host.paused and guest.loads == 1
     guest.mem[1] = 1                                       # player wins the match
     for _ in range(200):
-        if applied:
+        if applied and not host.paused:                    # the verdict goes in first, then the host resumes
             break
         real_sleep(0.01)
     assert applied == ["god_hit"] and not host.paused and guest.paused
