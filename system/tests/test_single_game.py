@@ -145,3 +145,11 @@ def test_keep_unknown_session_still_closes_all(monkeypatch, tmp_path):
     ctx = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
     tools._close_previous_games(ctx, keep='ghost')
     assert events == ['stop'] and not sessions
+
+
+def test_op_on_a_session_the_worker_no_longer_holds_says_relaunch():
+    """#840: an op after a worker restart raised a bare KeyError instead of a readable message."""
+    with pytest.raises(Unsupported, match='no longer running') as e:
+        tools.SESSIONS['gone-session']
+    assert isinstance(e.value, KeyError) and 'gone-session' in str(e.value)
+

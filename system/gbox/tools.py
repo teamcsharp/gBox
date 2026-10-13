@@ -25,7 +25,22 @@ from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
 
 ROOT = Path(__file__).resolve().parent.parent
-SESSIONS: dict[str, tuple[adapters.Adapter, dict]] = {}   # per-worker live runtime sessions
+class SessionGone(Unsupported, KeyError):
+    """A session op for a game this worker no longer holds (worker restarted, or another game replaced it)."""
+    def __str__(self):
+        return str(self.args[0]) if self.args else "session not running"
+
+
+class _Sessions(dict):
+    def __getitem__(self, sid):
+        try:
+            return super().__getitem__(sid)
+        except KeyError:
+            raise SessionGone(f"This game session ({sid}) is no longer running on this PC: the worker restarted or "
+                              "another game replaced it. Relaunch the game to continue.") from None
+
+
+SESSIONS: dict[str, tuple[adapters.Adapter, dict]] = _Sessions()   # per-worker live runtime sessions
 
 
 # --- Phase 0 contract tool ------------------------------------------------------------------
