@@ -125,6 +125,26 @@ def test_every_build_gets_a_launchable_card_once(tmp_path):
     assert first["items"]
 
 
+def test_a_writers_own_card_replaces_the_stand_in(tmp_path):
+    cfg, app, store, h = fixture(tmp_path)
+    with TestClient(app) as c:
+        c.get("/api/mods/built?fresh=true", headers=h)
+        stand_in = next(m for m in store.all("mod") if built_mods.card_mod(m) == "cast_pso_ult")
+        c.post(f"/api/mods/{stand_in['id']}/thumb?append=true", headers=h, content=png("red"))
+        saved = c.post("/api/mods", headers=h, json={"title": "PSO enemies as wrestlers", "game_id": "pso", "requests": [9],
+                                                     "calls": [{"tool": "@launch", "input": {"mod": "cast_pso_ult"}}]}).json()
+        cards = [m for m in store.all("mod") if built_mods.card_mod(m) == "cast_pso_ult"]
+        assert [m["id"] for m in cards] == [saved["id"]] and not saved.get("auto_registered")
+        assert saved["shots"] and saved["thumb"] == saved["shots"][0] and saved["requests"] == [9]
+        pso = c.get("/api/mods/built?game_id=pso&fresh=true", headers=h).json()["items"][0]
+        assert pso["card_id"] == saved["id"] and len(pso["shots"]) == 1
+        # same title as the stand-in: the card keeps its id and is no longer marked as a stand-in
+        cf = next(m for m in store.all("mod") if built_mods.card_mod(m) == "cf_hucast_taffy")
+        again = c.post("/api/mods", headers=h, json={"title": cf["title"], "game_id": "cf3", "verified": True,
+                                                      "calls": [{"tool": "@launch", "input": {"mod": "cf_hucast_taffy"}}]}).json()
+        assert again["id"] == cf["id"] and "auto_registered" not in again and again["verified"] is True
+
+
 def test_same_title_for_another_mod_keeps_both_cards(tmp_path):
     cfg, app, store, h = fixture(tmp_path)
     import hashlib

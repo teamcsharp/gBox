@@ -355,6 +355,23 @@ def register_missing(store, records: list[dict]) -> list[str]:
     return made
 
 
+def supersede(store, doc: dict) -> dict:
+    """A card saved through POST /api/mods for a build the gallery registered first: drop the stand-in card (keeping its
+    in-game shots, thumb and tickets on the new one) so a build has one card."""
+    doc = {k: v for k, v in doc.items() if k != "auto_registered"}     # saved over a stand-in with the same title
+    mod = card_mod(doc)
+    if not mod:
+        return doc
+    for old in store.all("mod"):
+        if (old.get("auto_registered") and old.get("id") != doc.get("id") and old.get("game_id") == doc.get("game_id")
+                and card_mod(old) == mod):
+            shots = [*(doc.get("shots") or []), *[s for s in old.get("shots") or [] if s not in (doc.get("shots") or [])]]
+            doc = doc | ({"shots": shots[:24]} if shots else {}) | ({"thumb": old["thumb"]} if old.get("thumb") and not doc.get("thumb") else {})
+            doc["requests"] = sorted(set(doc.get("requests") or []) | set(old.get("requests") or []))
+            store.delete("mod", old["id"])
+    return doc
+
+
 def gallery(store, config, *, register: bool = True) -> dict:
     """The whole gallery, newest build first."""
     root = mods_root(config)

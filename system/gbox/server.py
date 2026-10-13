@@ -283,6 +283,8 @@ def create_app(config: Config) -> FastAPI:
                 except Exception:
                     pass                                     # no picture is fine; the card offers 📷
             threading.Thread(target=_shoot, daemon=True).start()
+        from . import built_mods
+        doc = built_mods.supersede(store, doc)          # a writer's own card replaces the gallery's stand-in for its build
         store.put("mod", mid, doc)
         store.audit(actor, "mod.save", m.title, {"game": gid, "calls": len(doc["calls"])})
         app.state.built_mods_invalidate()
