@@ -33,7 +33,7 @@ How to work:
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
 - Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
   already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re6, gta_mods, ac_mods,
-  mario_kart for Mario Kart 64 items);
+  mario_kart for Mario Kart 64 items, mgs_vr for Metal Gear Solid VR Missions);
   (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
   memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
   surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
@@ -120,6 +120,12 @@ How to work:
   are asked for); op=infinite keeps whatever item the player picks up; op=give writes it once; player=1-4, split=3p4p on a 3-4
   player screen; on=false or op=release stops it. The result's verified field is the proof: report the item, the player and
   the undo (op=release). Other Mario Kart games: the cheats / memory_search playbook below.
+- Metal Gear Solid: VR Missions ("mark this mission complete", "clear / finish / pass this level", "skip this mission",
+  "unlock all missions / levels"): mgs_vr on the live session, nothing else first (no cheats, no memory search).
+  op=complete runs the mission manager's own clear routine (what reaching the goal does): the CLEARED result screen
+  follows and the game records the clear itself; it needs a running mission (state running), so after MISSION FAILED
+  restart the level first. op=unlock_all is run inside any mission (it completes that mission and the result screen
+  stores every menu clear mark); op=status shows stage, state, goal and player position. Report completed/verified.
 - "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (zelda op=noclip; PSO has no noclip op), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
@@ -514,6 +520,12 @@ def tool_specs() -> list[dict]:
            "shell, lightning, fake item box, star, boo, mushroom, double mushrooms, triple mushrooms, super mushroom. player=1-4; "
            "split=3p4p when 3-4 players share the screen (default 1p2p).",
            {"session_id": s, "op": s, "item": s, "player": i, "split": s, "on": b}, ["session_id", "op"]),
+        fn("mgs_vr", "Metal Gear Solid: VR Missions (PS1) on the live session. op=complete marks the current mission "
+           "complete ('mark this mission complete', 'clear this level'): runs the mission manager's own clear routine, "
+           "so the CLEARED result screen and the record follow from the game; needs a running mission (restart after "
+           "MISSION FAILED). op=unlock_all (run inside any mission) completes it and stores every menu clear mark so "
+           "all missions open; op=status shows the stage, mission state, goal and player position; op=stages lists "
+           "the stage families.", {"session_id": s, "op": s}, ["session_id", "op"]),
         fn("stage_warp", "Put the player on a named stage / level of the live game: 'put me on the final world', 'take me to "
            "the last stage', 'stage 3'. op=games (supported games) | stages (the live game's stages, or pass game='super mario "
            "world'/'tmnt') | warp stage=<name> ('final world', \"bowser's castle\", 'stage 5'; names are fuzzy). Super Mario World "
@@ -1039,6 +1051,10 @@ class Agent:
                                      "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def mgs_vr(self, session_id, op="status"):
+        j = self._job("mgs_vr", {"session_id": session_id, "op": op or "status"}, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False, reach=True):
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
                                     "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
@@ -1530,11 +1546,11 @@ def zelda_equip_card(result: dict, session_id: str) -> dict:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart", "mgs_vr"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart", "mgs_vr"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
@@ -1545,7 +1561,7 @@ def _modifies_game(name: str, args: dict) -> bool:
     if name == "mod":
         return op == "apply"     # list/verify are reads; save/delete edit files, not the running game
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games", "stages"}
 
 
 class ChatHub:

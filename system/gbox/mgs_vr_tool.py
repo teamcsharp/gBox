@@ -53,7 +53,7 @@ GAME_STATE = 0x800B5BA8          # GCL game-state shorts (0xC0 bytes; copy at 0x
 RECORDS = 0x800B5398             # GCL variable block (0x800 bytes; copy at 0x800B4AD8): per-mission records, s16
 SAVE_BODY = 0xA38                # memory-card save body: version 0x60, ..., stage name, state, vars, 0x140 tail
 
-STATES = {0: "not started", 1: "running", 2: "cleared", 3: "clear (scripted)", 4: "ending", 5: "over"}
+STATES = {0: "not started", 1: "running", 2: "cleared", 4: "result (clear sequence done)", 5: "over"}
 
 # Stage families on the disc (STAGE.DIR names).  Display names come from the overlay's own mode strings; the
 # family -> mode mapping is read from the file names and the result-screen strings (docs/mgs_vr_decomp.md).
@@ -78,6 +78,28 @@ def family(stage: str) -> str:
 
 def is_mission(stage: str) -> bool:
     return bool(re.match(r"^(vr_[a-z]{3}\d\d|vab_[a-z]{3}|vcd_n\d\d|vefgh_\d\d|vijkl_\d\d|photo_[mn]\d)$", stage))
+
+
+# ---------------------------------------------------------------------------------------------- disc (offline)
+def stage_dir(data: bytes) -> dict[str, int]:
+    """MGS/STAGE.DIR: u32 header size, then {char name[8], u32 sector} per stage -> {name: byte offset}."""
+    size = struct.unpack_from("<I", data, 0)[0]
+    out = {}
+    for o in range(4, size, 12):
+        name = data[o:o + 8].split(b"\0")[0].decode("latin-1")
+        if name:
+            out[name] = struct.unpack_from("<I", data, o + 8)[0] * 2048
+    return out
+
+
+def stage_overlay(data: bytes, name: str) -> bytes:
+    """A stage's code overlay: .stg header (u8 1, u8 0, u16 sectors, then 8-byte entries {u16 hash, u8 mode,
+    u8 ext, u32 size}); entry 0 is the 'b' (.bin) overlay, stored from offset 0x800."""
+    off = stage_dir(data)[name]
+    hash_, mode, ext, size = struct.unpack_from("<HBBI", data, off + 4)
+    if chr(ext) != "b":
+        return b""
+    return data[off + 0x800:off + 0x800 + size]
 
 
 # ---------------------------------------------------------------------------------------------- memory
@@ -201,12 +223,10 @@ def read_manager(mem: Mem, mgr: dict, lay: dict) -> dict:
     raw = mem.rd(a, 0x11C)
     state = mem.u32(lay["state"])
     gx, gy, gz = struct.unpack_from("<3h", raw, 0x24)
-    elapsed, limit = struct.unpack_from("<2h", raw, 0x34)
-    px, py, pz = struct.unpack(f"<3h", mem.rd(PLAYER_POS, 6))
+    px, py, pz = struct.unpack("<3h", mem.rd(PLAYER_POS, 6))
     return {"state": state, "state_name": STATES.get(state, f"unknown {state}"), "clear_step": raw[lay["step"]],
             "goal": [gx, gy, gz], "player": [px, py, pz],
             "at_goal": abs(px - gx) <= 500 and abs(pz - gz) <= 500,
-            "elapsed_frames": elapsed & 0xFFFF, "limit_frames": limit,
             "actor": f"{a:#x}", "state_address": f"{lay['state']:#x}", "clear_routine": f"{lay['handler']:#x}"}
 
 
@@ -254,7 +274,7 @@ def complete(mem: Mem, wait_s: float = 2.0) -> dict:
     lay = manager_layout(mem, mgr)
     before = read_manager(mem, mgr, lay)
     res = {"stage": stage, "family": family(stage), "before": before}
-    if before["state"] == 2:
+    if before["state"] == 2 or (before["state"] == 4 and before["clear_step"] > 0):
         return res | {"completed": True, "verified": True, "note": "the mission was already cleared"}
     if before["state"] != 1:
         return res | {"completed": False,

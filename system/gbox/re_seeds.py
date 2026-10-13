@@ -520,6 +520,24 @@ TITLE_FACTS = [
          _f("patch", "0x8003B230", "back-face cull (renderer 1)", "nclip; blez -> 00000000 draws back faces "
             "(also 0x8003B380, 0x8003B4D0, 0x8003B620)", "knowledge base"),
      ]},
+    {"platform": "psx", "title_has": ["metal gear", "vr missions"], "label": "Metal Gear Solid: VR Missions USA (SLUS-00957)",
+     "executable": {"processor": "MIPS:LE:32:default", "base": "0x80010000", "note": "stage overlays (entry 0 of each "
+                    "STAGE.DIR .stg) load unrelocated at 0x800C4350"},
+     "facts": [
+         _f("global", "0x800B5B98", "current stage name", "8 chars, e.g. vr_sud03", "docs/mgs_vr_decomp.md"),
+         _f("global", "0x800AC1E4", "GM_GameStatus", "bit 0x10000000 = mission ended", "docs/mgs_vr_decomp.md"),
+         _f("global", "0x800AC820", "GM_PlayerPosition", "SVECTOR; the goal test reads it", "docs/mgs_vr_decomp.md"),
+         _f("table", "0x800ADA28", "GV actor levels", "9 x 0x44; actor +4 next, +8 act, +0xC die, +0x14 source name",
+            "docs/mgs_vr_decomp.md"),
+         _f("function", "0x800D87A8", "vr.c clear routine (vr_sud03)", "state=2, status|=0x10000000, step+0x10B=1; "
+            "per-stage address: gbox.mgs_vr_tool.find_clear_handler", "docs/mgs_vr_decomp.md"),
+         _f("global", "0x800E2BB0", "mission state (vr_sud03)", "1 running, 2 cleared, 4 result, 5 over",
+            "docs/mgs_vr_decomp.md"),
+         _f("format", "VRAM 160,224 12x16", "clearflags grid", "16 rows x 6 words; selectvr mirror 0x800E543C",
+            "gbox/mgs_vr_unlock.py"),
+         _f("table", "0x800B5398", "GCL variables / records", "0x800 bytes (copy 0x800B4AD8); save loader 0x800240A0",
+            "docs/mgs_vr_decomp.md"),
+     ]},
     {"platform": "n64", "title_has": ["ocarina of time"], "label": "Zelda: Ocarina of Time N64 (v1.2)",
      "executable": {"processor": "MIPS:BE:32:default"},
      "facts": [
