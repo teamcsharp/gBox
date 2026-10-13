@@ -91,6 +91,8 @@ SIGNATURES = {
     "zlib": ("codec", "zlib", _zlib, b"\x78\x9c", []),
     "gzip": ("codec", "gzip", b"\x1f\x8b", b"\x1f\x8b\x08", []),
     "bpe": ("codec", "BPE byte-pair packing", b"BPE ", b"BPE ", []),
+    "lz77": ("codec", "Nintendo LZ77 tag + LZ10/LZ11 stream", lambda h: h[:4] == b"LZ77" and h[4:5] in (b"\x10", b"\x11"),
+             b"LZ77\x10\x40\0\0", ["nintendo_ds"]),
     "lz10": ("codec", "Nintendo LZ10 (weak: one byte)", lambda h: h[:1] == b"\x10" and len(h) > 4 and h[1:4] != b"\0\0\0", b"\x10\x40\0\0", []),
     # models
     "njcm": ("model", "Ninja chunk model (NJCM)", b"NJCM", b"NJCM", ["ninja"]),

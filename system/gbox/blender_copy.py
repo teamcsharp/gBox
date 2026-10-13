@@ -9,6 +9,10 @@ first, so the file is written by the same version: copybuffer files are version-
 writes that file to every place the operator's Blender may read it from (#1393: the gBox worker often runs under
 another session or user than Blender, so its %TEMP% is not Blender's).
 
+A character comes as the round-trip GLB (/api/characters/<slug>/blender, gbox.blender_roundtrip): the pasted armature
+carries gbox_slug / gbox_base / gbox_roles, its bones gbox_role, attachments gbox_prop / gbox_bone, so the add-on's
+"Send to gBox" after a Ctrl+V paste stores the edit back as a variant of that character.
+
 Sources: character=<collection slug> | environment=<slug> | artifact=<sha of a .glb/.gltf, e.g. a scene_capture> |
          path=<local .glb/.gltf>. nodes=[names]: only those objects (an Examine 3D selection: one node per draw call).
 """
@@ -33,10 +37,20 @@ SCRIPT = r'''
 import sys, json, bpy
 a = sys.argv[sys.argv.index("--") + 1:]
 src, out, keep = a[0], a[1], set(json.loads(a[2]))
+tags = json.loads(a[3]) if len(a) > 3 else {}
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)
 bpy.ops.import_scene.gltf(filepath=src)
 objs = list(bpy.data.objects)
+for o in objs:                                        # gBox round trip: role names on bones, the character on the armature
+    if o.type == "ARMATURE" and tags.get("armature"):
+        for k, v in tags["armature"].items():
+            o[k] = v
+        for b in o.data.bones:
+            if tags.get("bones", {}).get(b.name):
+                b["gbox_role"] = tags["bones"][b.name]
+    for k, v in (tags.get("objects", {}).get(o.name) or {}).items():
+        o[k] = v
 if keep:                                              # an Examine 3D selection: just those draw calls (+ their parents)
     want = {o for o in objs if o.name in keep or any(o.name.startswith(k + ".") for k in keep)}
     for o in list(want):
@@ -194,8 +208,33 @@ def write_everywhere(staged: Path, dirs: list[Path]) -> tuple[list[str], dict[st
     return written, skipped
 
 
+def gbox_tags(src: Path) -> dict:
+    """The gBox metadata a round-trip GLB carries (gbox.blender_roundtrip.tag), as Blender custom properties to set
+    after the import: {armature: {gbox_slug, gbox_base, gbox_name, gbox_roles}, bones: {bone: role},
+    objects: {node: {gbox_prop, gbox_bone, gbox_part}}}. {} for a file without them."""
+    from . import attachments
+    try:
+        gl, _ = attachments.read_gltf(Path(src))
+    except Exception:                                  # noqa: BLE001 - not a glTF we can read: nothing to tag
+        return {}
+    g = next((sc.get("extras", {}).get("gbox") for sc in gl.get("scenes") or []
+              if isinstance(sc.get("extras"), dict) and isinstance(sc["extras"].get("gbox"), dict)), None)
+    nodes = gl.get("nodes") or []
+    bones = {n.get("name"): attachments.extras(n)["gbox_role"] for n in nodes if attachments.extras(n).get("gbox_role")}
+    objs = {n.get("name"): {k: v for k, v in attachments.extras(n).items() if k in ("gbox_prop", "gbox_bone", "gbox_part")}
+            for n in nodes if "mesh" in n and any(k in attachments.extras(n) for k in ("gbox_prop", "gbox_bone", "gbox_part"))}
+    if not (g or bones or objs):
+        return {}
+    arm = {}
+    if g:
+        arm = {"gbox_slug": g.get("slug") or "", "gbox_base": g.get("base") or g.get("slug") or "",
+               "gbox_name": g.get("name") or "", "gbox_roles": json.dumps(g.get("roles") or {})}
+    return {"armature": arm, "bones": bones, "objects": objs}
+
+
 def to_blender(src: Path, nodes: list[str] | None = None) -> dict:
     exe = find_blender()
+    tags = gbox_tags(src)
     running = running_blenders()
     probe = probe_tempdir(exe)
     dirs = candidate_dirs(running, probe)
@@ -203,7 +242,7 @@ def to_blender(src: Path, nodes: list[str] | None = None) -> dict:
         script, staged = Path(td) / "gbox_copybuffer.py", Path(td) / COPYBUFFER
         script.write_text(SCRIPT)
         r = subprocess.run([exe, "-b", "--factory-startup", "--python", str(script), "--", str(src), str(staged),
-                            json.dumps(nodes or [])], capture_output=True, text=True, timeout=300, creationflags=_NOWINDOW)
+                            json.dumps(nodes or []), json.dumps(tags)], capture_output=True, text=True, timeout=300, creationflags=_NOWINDOW)
         line = next((l for l in r.stdout.splitlines() if l.startswith("GBOX_RESULT ")), None)
         if not line:
             raise RuntimeError("Blender couldn't import the asset: " + (r.stdout + r.stderr)[-600:])
@@ -219,6 +258,8 @@ def to_blender(src: Path, nodes: list[str] | None = None) -> dict:
     version = res.pop("version", "") or probe.get("version", "")
     host = platform.node()
     return res | {"copybuffer": written[0], "copybuffers": written, "skipped": skipped, "blender": exe,
+                  "gbox": {"character": (tags.get("armature") or {}).get("gbox_slug", ""), "roles": len(tags.get("bones") or {}),
+                           "props": sorted(k for k, v in (tags.get("objects") or {}).items() if v.get("gbox_prop"))},
                   "blender_version": version, "blender_tempdir": probe.get("base", ""), "blender_pref_tempdir": probe.get("pref", ""),
                   "running": [x["exe"] for x in running], "host": host,
                   "next": f"In Blender on {host}, hover the 3D viewport and press Ctrl+V: the asset pastes with its textures."}
@@ -270,9 +311,13 @@ def blender_copy(inp: CopyIn, ctx):
     elif inp.path:
         source = inp.path
         src = Path(inp.path)
-    elif inp.character:
-        source = f"/api/characters/{inp.character}/model"
-        src = _fetch(ctx, source, ".glb")
+    elif inp.character:                                # the round-trip GLB: rig role names + props ride along
+        source = f"/api/characters/{inp.character}/blender"
+        try:
+            src = _fetch(ctx, source, ".glb")
+        except Exception:                              # noqa: BLE001 - an older control plane: the plain model
+            source = f"/api/characters/{inp.character}/model"
+            src = _fetch(ctx, source, ".glb")
     elif inp.environment:
         import httpx
         meta = httpx.get(f"{ctx.server}/api/environments/{inp.environment}", headers=ctx.headers, timeout=60).json()

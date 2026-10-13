@@ -2,13 +2,17 @@ import base64
 import json
 import struct
 import sqlite3
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from gbox import asset_library
 from gbox.config import Config
-from gbox.asset_library import _IndexMetadata
+from gbox.asset_library import AssetLibrary, _IndexMetadata
 from gbox.server import create_app
 
 
@@ -311,3 +315,91 @@ def test_package_raw_audio_companions_follow_owner_search_and_type_filters(asset
     assert [a['name'] for a in found['items']] == ['swing.anim']
     default = client.get('/api/asset-groups').json()
     assert default['groups'][0]['count'] == 1 and default['hidden_assets'] == 4
+
+
+def test_repeat_listing_reuses_the_index_and_new_assets_still_appear(assets, monkeypatch):
+    app, client, cfg = assets
+    monkeypatch.setattr(asset_library, 'SETTLE_S', 0)     # files written by the test count as settled
+    lib = app.state.assets
+    lib.wait_for_build(10)                                  # the startup warm-up must not see half-written folders
+    collection(cfg)
+    assert client.get('/api/asset-groups').json()['total'] == 1
+    lib.wait_for_build(10)
+    builds = lib.completed
+    for _ in range(3):
+        assert client.get('/api/asset-groups').json()['total'] == 1
+    assert lib.completed == builds, 'an unchanged store is answered from the snapshot, without a rescan'
+    app.state.store.put_artifact(glb() + b'new', 'new.glb', 'model/gltf-binary', {'tool': 'scene_capture'})
+    assert client.get('/api/asset-groups').json()['total'] == 2
+    collection(cfg, 'sonic', 'Sonic', 'Sonic Adventure 2', 300)
+    assert {g['title'] for g in client.get('/api/asset-groups').json()['groups']} == {'Super Mario 64', 'Sonic Adventure 2', 'Unknown title'}
+
+
+def test_slow_first_index_answers_indexing_and_ttl_refresh_serves_the_old_copy(assets, monkeypatch):
+    app, client, cfg = assets
+    monkeypatch.setattr(asset_library, 'SETTLE_S', 0)
+    collection(cfg)
+    lib = AssetLibrary(app.state.store, cfg)
+    gate, real = threading.Event(), lib._build_index
+    monkeypatch.setattr(lib, '_build_index', lambda *args: (gate.wait(10), real(*args))[1])
+    lib.wait_s = 0.05
+    started = time.monotonic()
+    page = lib.page()
+    assert time.monotonic() - started < 2
+    assert page['indexing'] and page['items'] == [] and page['total'] == 0
+    with pytest.raises(HTTPException) as missing:
+        lib.get('anything')
+    assert missing.value.status_code == 503
+    gate.set(); assert lib.wait_for_build(10)
+    page = lib.page()
+    assert not page['indexing'] and page['total'] == 1
+    # Past the TTL the old copy answers at once while a full rescan runs in the background.
+    gate.clear(); lib.full_at -= lib.ttl_s + 1
+    before = lib.index()
+    started = time.monotonic()
+    assert lib.index() is before and lib.building and time.monotonic() - started < 2
+    gate.set(); assert lib.wait_for_build(10)
+    assert time.monotonic() - lib.full_at < 10
+
+
+def test_fresh_rescans_files_changed_in_place(assets, monkeypatch):
+    app, client, cfg = assets
+    monkeypatch.setattr(asset_library, 'SETTLE_S', 0)
+    app.state.assets.wait_for_build(10)
+    p = collection(cfg)
+    (p / 'skin.png').write_bytes(b'1')
+    assert client.get('/api/assets?kind=texture').json()['items'][0]['size'] == 1
+    (p / 'skin.png').write_bytes(b'12345')
+    assert client.get('/api/assets?kind=texture&fresh=1').json()['items'][0]['size'] == 5
+
+
+def test_folder_completed_after_a_scan_is_picked_up_without_a_root_change(assets):
+    app, client, cfg = assets
+    lib = app.state.assets
+    lib.wait_for_build(10)
+    folder = cfg.cache / 'characters' / 'late'; folder.mkdir(parents=True)
+    (folder / 'model.glb').write_bytes(glb())
+    assert client.get('/api/asset-groups').json()['total'] == 0       # no meta.json yet: not an entry
+    root_mtime = (cfg.cache / 'characters').stat().st_mtime_ns
+    (folder / 'meta.json').write_text(json.dumps({'slug': 'late', 'name': 'Late', 'model': 'model.glb', 'kind': 'character'}))
+    assert (cfg.cache / 'characters').stat().st_mtime_ns == root_mtime
+    assert client.get('/api/asset-groups').json()['total'] == 1
+    (folder / 'skin.png').write_bytes(b'skin')                         # a folder still being written stays watched
+    assert client.get('/api/assets?kind=texture').json()['total'] == 1
+
+
+def test_periodic_refresh_finds_files_added_to_a_settled_folder_and_keeps_an_unchanged_snapshot(assets, monkeypatch):
+    app, client, cfg = assets
+    monkeypatch.setattr(asset_library, 'SETTLE_S', 0)
+    lib = app.state.assets
+    lib.wait_for_build(10)
+    p = collection(cfg)
+    assert client.get('/api/assets?nest=false').json()['total'] == 1
+    lib.wait_for_build(10)
+    snapshot, lib.refresh_s = lib.index(), -1             # every call re-checks (monotonic() ticks are coarse on Windows)
+    lib.index(); lib.wait_for_build(10)
+    assert lib.index() is snapshot, 'nothing changed on disk: the refresh keeps the snapshot instead of rebuilding it'
+    lib.wait_for_build(10)                                # (that call started another refresh)
+    (p / 'skin.png').write_bytes(b'skin')                 # the folder changes, the library root does not
+    lib.index(); lib.wait_for_build(10)                   # served the old copy, re-checked folders in the background
+    assert client.get('/api/assets?nest=false').json()['total'] == 2

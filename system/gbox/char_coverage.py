@@ -64,11 +64,22 @@ WRITERS = [
      "Johnny: re-encoded .kms on the MGS2 21-bone skeleton (native animations), donor atlas over the model's colour "
      "texture, every gameplay stage of stage.dat rebuilt in place in a disc-image copy; pick whip / live_use writes "
      "the body into the running game after the session swap; unverified in Dolphin"),
+    ("soulcalibur2_swap", ["fighter:<key>[:<costume>]", "player", "all", "cast", "random"],
+     "Soul Calibur II GC: any of the 24 fighters (Link included), every costume or one (Extra-mode copies too): a new "
+     "VMG on the fighter's own skeleton (motions, moves and weapon kept), donor atlas, human.olk packages rewritten in "
+     "place in a disc-image copy; random = two donor pools alternating over the costume slots + main.dol's body load "
+     "drawing a costume at random each time a fighter is loaded; unverified in Dolphin"),
     ("etm_swap", ["player", "<cast slot>"],
      "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
      "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "
      "rebuilt as plain triangles on the shared 89-joint skeleton in WAD1.DFU, in place; read back from the image; "
      "unverified in PCSX2"),
+    ("mgs2_swap", ["player", "snake", "raiden", "soldiers", "<cast slot>"],
+     "Metal Gear Solid 2 Substance (the catalog's windows_native entry is the PS2 DVD SLUS-20554): Snake (tanker + "
+     "Big Shell models), Raiden (every outfit), the soldier variants (Tanker / Big Shell Gurlukovich, heavy, high-tech, "
+     "SEAL, Tengu), Marines, Olga, the Ninja, Ocelot, Solidus, Otacon: stage kms rebuilt on each model's own skeleton "
+     "with the donor atlas in its texture pack, STAGE.DAT / STAGE2.DAT pages re-deflated + re-encrypted in place; "
+     "pick whip live_use swaps the running session; unverified in PCSX2"),
     ("doapp_swap", ["<fighter>[:<costume>]", "player"],
      "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
      "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
@@ -97,23 +108,56 @@ def _mod(name):
         return None
 
 
+def code_routes(fn) -> dict:
+    """What a function (and its nested code) routes to, read from its loaded bytecode: {"imports": {alias: module} for
+    `from . import module [as alias]`, "calls": {(alias, attr)} for `alias.attr(...)` loads, "globals": names}.
+
+    The bytecode is the code that actually runs. inspect.getsource re-reads the file through the function's stale line
+    numbers, so in a long-running worker whose characters.py was updated on disk after import (lines shifted) it sliced
+    the wrong text, and cast_swap answered "Crazy Taxi (USA) has no routed character writer" (#1554) although
+    characters_tool routes crazy_taxi_swap.use."""
+    import dis
+    imports, calls, names = {}, set(), set()
+    todo = [getattr(fn, "__code__", fn)]
+    while todo:
+        co = todo.pop()
+        names.update(co.co_names)
+        todo += [c for c in co.co_consts if hasattr(c, "co_code")]
+        ins = list(dis.get_instructions(co))
+        for i, a in enumerate(ins):
+            nxt = ins[i + 1] if i + 1 < len(ins) else None
+            if nxt is None:
+                continue
+            if a.opname == "IMPORT_FROM" and nxt.opname.startswith("STORE_"):
+                imports[str(nxt.argval)] = str(a.argval)
+            elif a.opname.startswith(("LOAD_FAST", "LOAD_DEREF", "LOAD_GLOBAL", "LOAD_NAME")) and \
+                    nxt.opname in ("LOAD_ATTR", "LOAD_METHOD"):
+                vals = a.argval if isinstance(a.argval, tuple) else (a.argval,)
+                calls.add((str(vals[-1]).removeprefix("NULL + ").removesuffix(" + NULL"), str(nxt.argval)))
+    return {"imports": imports, "calls": calls, "globals": names}
+
+
+def routes_to(r: dict, module: str, attr: str = "use") -> bool:
+    """Does the code_routes result call <module>.<attr>(...) through any alias it imported the module under?"""
+    return any(mod == module and (alias, attr) in r["calls"] for alias, mod in r["imports"].items())
+
+
 def writer_for(game: dict) -> dict | None:
     """The swap writer op=use reaches for this catalog game, or None."""
     from . import characters as C
-    src = inspect.getsource(C.characters_tool)
+    r = code_routes(C.characters_tool)
     gid, t, plat = game.get("game_id", ""), (game.get("title") or "").lower(), game.get("platform") or ""
     for name, slots, what in WRITERS:
         m = _mod(name)
         if m is not None and gid in (getattr(m, "GAME_IDS", None) or {}):
-            alias = re.search(rf"from \. import {name}(?: as (\w+))?", src)
-            routed = bool(alias) and f"{alias.group(1) or name}.use(" in src
-            return {"writer": f"gbox.{name}", "routed": routed, "slots": slots, "replaces": what}
+            return {"writer": f"gbox.{name}", "routed": routes_to(r, name), "slots": slots, "replaces": what}
     if gid in C.RE4GC or gid in C.RE4WII:
-        return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": "build_re4(" in src, "slots": SPECIAL[0][2],
-                "replaces": SPECIAL[0][3]}
+        return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": "build_re4" in r["globals"],
+                "slots": SPECIAL[0][2], "replaces": SPECIAL[0][3]}
     o = _mod("oot_swap")
     if o is not None and getattr(o, "is_oot", None) and o.is_oot(game):
-        return {"writer": "gbox.oot_swap", "routed": "oot_swap.tool(" in src, "slots": SPECIAL[1][2], "replaces": SPECIAL[1][3]}
+        return {"writer": "gbox.oot_swap", "routed": routes_to(r, "oot_swap", "tool"), "slots": SPECIAL[1][2],
+                "replaces": SPECIAL[1][3]}
     return None
 
 
