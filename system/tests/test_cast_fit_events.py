@@ -423,10 +423,14 @@ def test_vice_city_build_cast_fits_each_ped_onto_its_skeleton(tmp_path, monkeypa
 # ---------------------------------------------------------------- 007 Agent Under Fire (auf_swap.build_mod)
 
 @pytest.mark.parametrize("workers", [1, 2])
-def test_auf_cast_reports_each_body_even_from_level_worker_processes(tmp_path, workers):
+def test_auf_cast_reports_each_body_even_from_level_worker_processes(tmp_path, workers, monkeypatch):
     import json
     from pathlib import Path
+    import gbox
     from gbox import auf_gcm as G, auf_ngc as N, auf_swap as S
+    system = str(Path(gbox.__file__).resolve().parents[1])   # spawned level workers import THIS checkout's gbox
+    monkeypatch.syspath_prepend(system)
+    monkeypatch.chdir(system)
     TA = importlib.import_module("test_auf_swap")
     m = N.mesh(TA._model(("body_mat",)))
     N.to_glb(m, tmp_path / "donor.glb", "donor")
