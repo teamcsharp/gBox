@@ -823,7 +823,7 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
 # ---- native swap writer: a library character -> one PLAYER.AFS body (gbox.ninja_swap pipeline, as gbox.sa2_chars) ----
 BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300, 270, 240, 200)   # char 00's 5 big lists need 4 holes:
 # at 300 triangles two of them overshoot the biggest hole by 28 bytes, so smaller steps follow (#1155)
-ATLAS_TEXTURE = 0                       # the PTEX texture the new strips draw (it's replaced by the character's atlas)
+ATLAS_TEXTURE = 0       # legacy (PTEX texture 0 / id 0): the writer now finds both per group (group_texture_ids)
 HEAD_NODES = {10, 11}
 
 
@@ -902,9 +902,12 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     return int(digits)
 
 
-CACHE_VERSION = 5  # 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
+CACHE_VERSION = 6  # 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
                    # put new vertices past the native cache span and drew no body in gameplay (#1153 live).
                    # 5: new vertices stay inside every group's native span (#1156).
+                   # 6: the atlas is the body group's largest texlist texture and every group draws it under its
+                   #    own texlist id (PTEX texture 0 / id 0 painted Gum, Code, Reco, Yo-Yo and the Poison Jam
+                   #    leaders with the wrong texture; #1396).
 
 
 def donor_fingerprint(model, roles: dict, scale=None) -> str:
@@ -1032,6 +1035,22 @@ def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = No
     raise first
 
 
+def group_texture_ids(data: bytes, play: int, ptex: int, roots: list[int]) -> tuple[int, dict[int, int]]:
+    """(PTEX index of the body atlas, {draw-group root: the Ninja texture id that draws it in that group's texlist})."""
+    groups, texlists = play_groups(data, play), ptex_texlists(data, ptex)
+    atlas = atlas_texture(data, ptex, texlists)
+    out = {}
+    for r in roots:
+        if r not in groups:
+            raise ValueError(f"JGR body {r:#x} is not a draw group of the PLAY binding record")
+        tl = texlists[groups.index(r)]
+        if atlas not in tl:
+            raise ValueError(f"JGR draw group {groups.index(r)} ({r:#x}) has no texture id for the body atlas "
+                             f"(PTEX texture {atlas}); its texlist is {tl}")
+        out[r] = tl.index(atlas)
+    return atlas, out
+
+
 def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
     """Other textured full-body groups whose native bind state matches up to node-local translations.
 
@@ -1114,7 +1133,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     first), placed at the node's native cache base and clamped so every slot stays inside the native vertex span of
     EVERY group that draws the shared models (`vertex_slots`): on Beat, slots 368-529 past the stock 0-354 (low LOD
     0-178) drew no body at all in gameplay while the cutscene renderer drew it (#1153 live, #1156). The new strips
-    draw with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
+    draw the body atlas (atlas_texture: the gameplay body's largest texlist texture, which becomes the character's
+    atlas) under each group's own texlist id for it (group_texture_ids; #1396). The PLAY and PTEX entries are rewritten in
     their own AFS room, so PLAYER.AFS keeps its size; the model is decimated until it fits."""
     import numpy as np
     from pathlib import Path
@@ -1134,14 +1154,23 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     twins = body_twins(buf, data, play, root)
     twin_nodes = [nd for group in twins.values() for nd in group]
     offsets = {g: twin_offsets(nodes, group) for g, group in twins.items()}
-    copies = {}                                    # (node, offset) -> blob key >= 20; twins with one offset share it
-    for g, offs in offsets.items():
-        for j, d in sorted(offs.items()):
-            copies.setdefault((j, tuple(round(x, 6) for x in d)), len(nodes) + len(copies))
+    # Each group draws the atlas under ITS texlist's id for it (Yo-Yo's spray-can bodies: id 1, the gameplay bodies:
+    # id 0; #1396), so a twin whose id differs from the primary's gets its own copy of the strips, like a moved node.
+    atlas, tex_ids = group_texture_ids(data, play, ptex, [root, *twins])
+    prim_tex = tex_ids[root]
+
+    def _copy_id(g, j):
+        d, t = offsets[g].get(j), tex_ids[g]
+        return None if d is None and t == prim_tex else (j, tuple(round(x, 6) for x in (d or (0.0, 0.0, 0.0))), t)
+    copies = {}                                    # (node, offset, texture id) -> blob key >= 20; equal twins share it
+    for g in twins:
+        for j in range(len(nodes)):
+            if _copy_id(g, j) is not None:
+                copies.setdefault(_copy_id(g, j), len(nodes) + len(copies))
 
     def copy_key(g, j):
-        d = offsets[g].get(j)
-        return None if d is None else copies[(j, tuple(round(x, 6) for x in d))]
+        c = _copy_id(g, j)
+        return None if c is None else copies[c]
     spans = {}
     for group_root in [root, *twins]:
         cache = nj.vbuf if group_root == root else play_model(buf, group_root).vbuf
@@ -1241,17 +1270,17 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                 P, N, T = geo[j]
                 if len(P) > vlimit:                         # ValueError: fit() retries a smaller budget
                     raise ValueError(f"node {j}: {len(P)} vertices > {vlimit} native vertex cache slots")
-                built[j] = ninja.cnk_model_lists(P, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
+                built[j] = ninja.cnk_model_lists(P, N, T, prim_tex, mat, tiny_fl, tex_fl, strip_fl,
                                                  base=min(orig_base(nd), vlimit - len(P)))
                 blobs[("v", j)] = built[j][0]
                 blobs[("p", j)] = built[j][1]
             if nd["model"]:
                 blobs[("m", j)] = bytes(24)
-        for (j, d), key in copies.items():                 # the same strips, expressed in a twin's own node frame
+        for (j, d, t), key in copies.items():              # the same strips in a twin's own node frame / texlist
             if j in geo:
                 P, N, T = geo[j]
                 moved = [[p[0] + d[0], p[1] + d[1], p[2] + d[2]] for p in P]
-                built[key] = ninja.cnk_model_lists(moved, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
+                built[key] = ninja.cnk_model_lists(moved, N, T, t, mat, tiny_fl, tex_fl, strip_fl,
                                                    base=min(orig_base(nodes[j]), vlimit - len(P)))
                 blobs[("v", key)] = built[key][0]
                 blobs[("p", key)] = built[key][1]
@@ -1299,13 +1328,13 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         return bytes(out)
     progress(20, f"Fitting {name} to JGR character {index:02d}'s {len(nodes)} nodes")
     r = NS.fit(Path(model), roles, tgt, Path(work), name, BUDGETS, blender, encode, 256, scale, progress)
-    progress(80, "Encoding the texture atlas (PVR, PTEX texture 0's format)")
+    progress(80, f"Encoding the texture atlas (PVR, PTEX texture {atlas}'s format)")
     from .ninja import pvr_like
     texs = ptex_textures(data, ptex)
-    t0 = texs[ATLAS_TEXTURE]
+    t0 = texs[atlas]
     new_t = pvr_like(t0["bytes"], r["atlas"])
     if len(new_t) != len(t0["bytes"]):
-        raise ValueError(f"PTEX texture {ATLAS_TEXTURE}: re-encoded {len(new_t)} bytes != {len(t0['bytes'])}")
+        raise ValueError(f"PTEX texture {atlas}: re-encoded {len(new_t)} bytes != {len(t0['bytes'])}")
     size = entry_size(data, ptex)
     pt = bytearray(data[ptex:ptex + size])
     pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
@@ -1318,7 +1347,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                                           for g, o in offsets.items() if o},
                          "body_selection": "max_triangles_unverified",
                          "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
-                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_slots": vlimit,
+                         "atlas": list(r["atlas"].size), "atlas_texture": atlas,
+                         "texture_ids": {f"{g:#x}": t for g, t in tex_ids.items()}, "vertex_slots": vlimit,
                          "group_vertex_spans": {f"{k:#x}": v for k, v in spans.items()}}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
