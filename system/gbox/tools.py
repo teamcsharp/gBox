@@ -2710,6 +2710,9 @@ def file_mod(inp: FileModIn, ctx: Ctx):
             changes[rel] = ch
         build = filemods.build if filemods.is_folder_game(rom) else filemods.build_image   # folder game | ROM / disc image
         res = build(ctx.config, g.game_id, rom, inp.name, changes, ctx.progress)
+        from . import build_record                     # the Builds view: which job built it and the exact call
+        build_record.stamp_marker(filemods.mod_dir(ctx.config, g.game_id, inp.name),
+                                  build_call=build_record.call_of("file_mod", inp), **build_record.from_ctx(ctx))
         ctx.artifact("mod.json", json.dumps(res).encode(), "application/json", game=g.game_id, mod=inp.name)
         return {"result": res}
     raise ValueError(f"unknown op {inp.op}")
@@ -3565,6 +3568,7 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
+                              "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
                               "aki_wrestling",   # aki_wrestling: No Mercy / Revenge / World Tour writers (via characters op=use|match)
                               "yukes_sd",   # yukes_sd: WWF SmackDown! 2 (PS1) reader + writer (via characters op=use|match|extract)

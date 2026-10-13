@@ -41,7 +41,10 @@ WRITERS = [
     ("jgr_swap", ["player", "character:<name>", "id:<N>", "<00-15>"],
      "JGR USA: any of the 16 PLAYER.AFS cast (player = Beat unless active_id): every textured body group and its "
      "texlist's body atlas rebuilt in a new GD-ROM mod; gameplay replacement unverified until launched"),
-    ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
+    ("mgs_vr_swap", ["player", "enemy:soldier", "enemy:ninja", "model:<hash>", "enemies", "all", "cast"],
+     "Metal Gear Solid VR Missions: any collection character as Snake, every Genome soldier (38582 + 55267 in all 88 "
+     "mission stages), the ninja or the other 16-object figures, one native disc (fitted KMDs with their own textures; "
+     "cast_swap pairs); pick whip / live_use swaps a running session in place (session_swap); unverified in game"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
@@ -55,6 +58,12 @@ WRITERS = [
                          "passenger:<group>", "passengers"],
      "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
      "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("twin_snakes_swap", ["player", "model:<key>", "enemies", "soldiers", "bosses", "npcs", "all", "cast"],
+     "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
+     "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "
+     "Johnny: re-encoded .kms on the MGS2 21-bone skeleton (native animations), donor atlas over the model's colour "
+     "texture, every gameplay stage of stage.dat rebuilt in place in a disc-image copy; pick whip / live_use writes "
+     "the body into the running game after the session swap; unverified in Dolphin"),
     ("etm_swap", ["player", "<cast slot>"],
      "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
      "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "

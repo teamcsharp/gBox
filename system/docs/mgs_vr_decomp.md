@@ -1,13 +1,15 @@
 # Metal Gear Solid: VR Missions (PS1, USA) — what is known
 
 Requests: #1082 (mark the current mission complete), #1085 (decompile VR Missions completely), #848 (character
-writer), #1117 (pick whip: Aya Brea onto the player). Game ids `afd2fc507bb69843` / `f55555ee6513391b`.
+writer), #1117 (pick whip: Aya Brea onto the player), #1597 (Sonic as Snake came out broken; Snake and the soldiers
+as Sonic characters on the fly and with the pick whip). Game ids `afd2fc507bb69843` / `f55555ee6513391b`.
 
 Everything below was read from the operator's own disc with capstone (MIPS R3000, little endian) and checked
 against pcsx_rearmed save states of a real run, unless marked *inferred*. Code: `gbox/mgs_vr_tool.py` (live mission
-tool), `gbox/mgs_vr_unlock.py`, `gbox/mgs_vr_swap.py` (player writer), `gbox/mgs_kmd.py` (models), `gbox/mgs_pcc.py`
-(textures), `gbox/mgs_vr_tex.py` (texture repaint). Tests: `tests/test_mgs_vr_tool.py`, `tests/test_mgs_vr_tex.py`,
-`tests/test_mgs_kmd.py`.
+tool, pick), `gbox/mgs_vr_unlock.py`, `gbox/mgs_vr_swap.py` (character writer: Snake, soldiers, the other figures),
+`gbox/mgs_kmd.py` (models), `gbox/mgs_pcc.py` (textures), `gbox/mgs_vr_tex.py` (texture repaint). Tests:
+`tests/test_mgs_vr_tool.py`, `tests/test_mgs_vr_tex.py`, `tests/test_mgs_kmd.py`, `tests/test_mgs_vr_swap.py`
+(synthetic KMD / PCC / STAGE.DIR / RAM; two owned-disc checks), `tests/test_pickwhip_dispatch.cjs`.
 
 ## Disc
 
@@ -38,9 +40,12 @@ Redump "Metal Gear Solid - VR Missions (USA)", single MODE2/2352 track, 492,487,
 | `photo_m1, m2, n1..n3` | 5 | Photograph mode |
 | `vrtitle`, `selectvr`, `select`, `vrsave`, `opening`, `option`, `camera`, `movie`, `sound` | 9 | title, mission select, save, menus |
 
-A `.stg` is `u8 1, u8 0, u16 sectors`, then 8-byte entries `{u16 hash, u8 mode, u8 ext, u32 size}`; the leading
-streamed entries are stored in order from +0x800, each sector aligned (`mgs_vr_tool.stg_entry`). Mode `c` entries
-are cached files whose size field is a running offset (MetalMintSolid handles those). `init.stg`: entry 0 =
+A `.stg` is `u8 1, u8 0, u16 sectors`, then 8-byte entries `{u16 hash, u8 mode, u8 ext, u32 size}` up to an
+all-zero entry; the streamed entries (modes `s`, `n`, `r`) are stored in order from +0x800, each sector aligned
+(`mgs_vr_tool.stg_entry`, `mgs_vr_swap.stage_files`). A run of mode `c` (cached) entries is one block that starts at
+the next sector boundary: each entry's size field is its offset in the block and the run ends with a hash-0 entry
+(ext 0xFF) whose size is the block length; the next streamed entry follows the block, sector aligned. Checked
+against MetalMintSolid's extraction of `vr_sud03` (every file at the computed offset, byte for byte). `init.stg`: entry 0 =
 `0_0.dar` models (156,784 bytes), entry 1 = `1_0.dar` textures (141,656), then a `.pcc`, `59988.gcx` (script) and a
 `.wvx`. A mission `.stg`: entry 0 = the stage's code overlay `*.bin`, then DARs, KMDs, OARs (motion), HZM (hit
 zones), CON, LIT, the `59988.gcx` script, WVX/EFX/MT3.
@@ -132,16 +137,25 @@ Each of the 90 mission overlays has this store exactly once (`mgs_vr_unlock.find
 ## Models (KMD) and slots
 
 `gbox/mgs_kmd.py` documents the KMD layout and the game's contract (16 objects = 16 motion bones, word-aligned
-SVECTOR arrays, weld export flags). Character models with 16 objects:
+SVECTOR arrays, weld export flags). Character models with 16 objects (every one has Snake's object tree, parents
+`[-1,0,1,2,3,1,5,1,7,8,0,10,11,0,13,14]`, so one role map fits them all):
 
-| Model | Bytes | Where | Loaded by |
-| --- | --- | --- | --- |
-| 39213 `snake` | 13,608 | init.stg 0_0.dar | player actor (exe 0x8005DDC0); no mission script passes `m`, so every stage uses it (Sneaking included) |
-| 38582 | 9,936 | a DAR of most mission stages | soldier actor of each overlay (`GM_InitObject(.., 38582, 0x32D, motion 0xA8A1)`, 0x800C5D7C in vr_sud03) |
-| 55267 | 6,060 | most mission stages | the soldier actor when its GCL param `y` = 1 |
-| 37617, 31475 (`camera_def2`), 46243, 37567, 26944 | | vcd_n01-05, vijkl, vefgh_10 | stage-specific; the Ninja model is among the unresolved names |
+| Slot | Model | Bytes | Where | Loaded by |
+| --- | --- | --- | --- | --- |
+| `player` | 39213 `snake` | 13,608 | init.stg 0_0.dar | player actor `../snake_vr/sna_init.c` (exe 0x8005DDC0); no mission script passes `m`, so every stage uses it (Sneaking included) |
+| `enemy:soldier` | 38582 | 9,936 | a cached file of 88 mission stages (identical bytes everywhere) | soldier actor `watcher.c` of each overlay (`GM_InitObject(.., 38582, 0x32D, motion GV_StrCode("enemy") 0xA8A1)`, 0x800C5D7C in vr_sud03) |
+| `enemy:soldier` | 55267 | 6,060 | the same 88 stages | the soldier actor when its GCL param `y` = 1: the same soldier with fewer triangles |
+| `enemy:ninja` | 37617 | 14,252 | vcd_n01..03 | a figure with a long sword in its right hand (object 4): the ninja (*inferred from the mesh; the actor name is not read yet*) |
+| `model:46243`, `model:37567` | 46243 / 37567 | 9,352 / 6,264 | vijkl_01/03/06/10 | stage-specific figures (high / low detail) |
+| `model:31475` | 31475 (`camera_def2` / `mel_wlf` by hash) | 13,932 | vcd_n05 | a long-haired figure |
+| `model:26944` | 26944 | 10,328 | vefgh_10 | a soldier variant (bigger head object) |
 
-`mgs_vr_swap.SLOTS` holds this table. Only the player has a writer.
+`mgs_vr_swap.SLOTS` holds this table; every slot has a writer now (below). Soldier textures: 23 names (24 with an
+untextured `0` in 38582) in each stage's own texture DAR (entry 1), at y 236/237 with nine CLUT positions; the
+pixels are identical in all stages but VRAM places, CLUT places and palettes differ per stage, so a fit is painted
+once per stage. 38582 and 55267 share 21 of those names; a fitted face only uses names its own model already uses.
+Some stage DARs also hold 8-bit textures (`mgs_pcc` reads only 4-bit); none of their 256-entry palettes overlaps a
+soldier CLUT on the disc, and the painter skips any slot whose CLUT row one would overlap.
 
 ## Textures (PCC)
 
@@ -154,22 +168,82 @@ Snake names 28 textures (e.g. `sna_chest4` 47255: 20x23 at VRAM 960,80, CLUT 784
 (784,226) with 20 Snake slots plus 15620 and 62675, and (768,226) with 8 plus 54560 and 62721 (models 6049,
 16964, 57810). Init models 56141, 16964 and 57810 also name some of Snake's textures.
 
-## Player writer with textures (#848, #1117)
+## Character writer: Snake, the soldiers, every 16-object figure (#848, #1117, #1597)
 
-`mgs_vr_swap.fit_kmd_textured` retargets a collection model onto Snake's 16 bones (welded seams, within the
-13,608-byte allocation) and keeps each face's own image and UVs; `mgs_vr_tex.paint` repaints Snake's slots:
-images split between the two CLUT groups by colour (32 colours), a lone atlas split into 2x2 tiles, the busiest
-image in the largest slot, untextured colours in a swatch slot, foreign CLUT members re-indexed to keep their look,
-byte budget pooled over the repainted entries (the DAR keeps 141,656 bytes). `build(textures=True)` patches
-init.stg entries 0 and 1.
+`gbox/mgs_vr_swap.py`. `characters op=use character=<any> game_id=<VR Missions> slot=player | enemy:soldier |
+enemy:ninja | model:<hash> | enemies | all` (or `slot=cast pairs=[{slot, character}]`) builds one disc; with
+`session_id` it goes into the running game through session_swap. `characters op=cast_swap target_game=afd2fc507bb69843
+source=sonic` plans every slot from the Sonic Adventure 1 + 2 cast and builds them into one disc
+(`mgs_vr_swap.build_cast`, strategy `pairs`), with fit events per slot.
 
-Offline checks on the owned disc: HUcast and Aya (tshirt jeans) fit with `check_compatible` clean;
-MetalMintSolid decodes the fitted KMD with the repainted textures and the preview shows HUcast's red armour and
-Aya's white top, jeans, hair and shoes. A full HUcast build patched 34 raw sectors; read back from the new BIN, the
-KMD and all 32 repainted textures match, the other textures are untouched and init.stg keeps its size.
+The fit, per model of a slot (`fit_slot`):
 
-Not yet seen on a screen: the textured build in a live mission (VRAM placement and CLUT upload by the game are
-inferred from the headers, the same way MetalMintSolid decodes them).
+1. `sm64_swap.retarget` onto the model's bind-pose joints, scaled to the model's whole height (`fit_height`);
+2. `proportion()`: a head over twice the model's own head height (a chibi head) is seated on the neck (its lowest
+   point at the model's head base) and the chest grows up to it; a head that would take the figure over 1.2x the
+   model's height is shrunk about its base; a limb segment that stops short of the next joint is stretched along its
+   bone; each foot is squashed / stretched about its ankle until the soles stand on the model's ground; then the
+   operator's Retarget editor profile and head size (`rig.scale`), which the first writer never passed;
+3. every triangle to the object of its bone, in that object's local frame;
+4. `decimate()`: quadric edge collapse per object (`auf_swap.decimate`) to per-object triangle targets that share the
+   KMD allocation in proportion to the donor's own detail, at least 6 triangles per object that has any, within the
+   u8 vertex / 7-bit normal limits;
+5. the kept faces' images painted into the model's texture slots (`mgs_vr_tex.paint`, once per texture archive:
+   Snake's in init, the soldier's in each stage), more images than slots folded into flat colours, each DAR keeping
+   its own size;
+6. seam welds (`mgs_kmd.weld_seams`) and `mgs_kmd.check_compatible`.
+
+The container layer is native (`StageDir`): a KMD is rewritten in place at its own size (zero padded), a texture DAR
+is repacked to its own size (anything after its last entry kept), and only the changed raw sectors get new EDC/ECC.
+For the player this gives the same BIN, byte for byte, as the MetalMintSolid path (`build()`, still used by
+`mgs1_swap`); a node without the disc image hands the build to a Windows worker.
+
+### What was wrong with Sonic (2026-10-13)
+
+No Sonic donor ever produced a VR Missions disc through the writer (the job history has only the early
+"no writer" answers and the HUcast / Aya builds); run offline on the owned disc, every Sonic Adventure character
+failed:
+
+* **The KMD never fitted.** One vertex-cluster cell for the whole body grew until Sonic's head (490-685 triangles of
+  1,000-1,540) fitted the 255-vertex / 13,608-byte limits; long before that his hands (8-24 triangles) and feet
+  collapsed to nothing, and an object left without triangles failed the fit: "could not fit the model into the
+  13608-byte KMD allocation" for sonic, sa1_sonic and the rest.
+* **The scale.** Fitted at Snake's head joint, Sonic stood 2,945 units (1.7x Snake's 1,720) with his shoes 450
+  units under the floor and his quills 1,300 units behind him; legs at the retarget's 2x stretch limit left gaps
+  at the knees and ankles.
+* **The operator's adjustments were ignored**: `fit_kmd_textured` called the retarget without `rig.scale`, so the
+  Retarget editor profile and head size never reached a VR Missions build.
+* Characters with more images than Snake's 28 slots (E-102) crashed the painter (`StopIteration`).
+
+Now (offline, owned disc, as Snake): all 21 Sonic Adventure entries of the collection (sonic, the 8 sa1_* and the
+12 sa2_*), HUcast, Aya and the wrestlers fit (12.4-13.5 KB of 13,608, 378-421 triangles, every face textured,
+`check_compatible` clean), standing 1,680-2,260 units tall on Snake's ground (Snake: 1,720). A native build of Sonic (SA1) as Snake
+and Knuckles as every soldier wrote 4,305 sectors in about three minutes: all 176 soldier KMDs and Snake's read
+back clean, 89 texture DARs keep their sizes and decode, and MetalMintSolid extracts the patched STAGE.DIR, init.stg
+and vr_sud03.stg and decodes the new KMDs.
+
+Not yet seen on a screen: any of these builds in a live mission (VRAM placement and CLUT upload by the game are
+inferred from the headers, the same way MetalMintSolid decodes them). A chibi donor on Snake's skeleton keeps a big
+head on long, thin limbs: the game's motions need the joints where Snake has them.
+
+### Pick whip and "on the fly"
+
+`mgs_vr op=pick x y` (live session) lists the player (`../snake_vr/sna_init.c`) and soldier (`watcher.c`) actors:
+actor +0x20 is the model root (hip) in world units (CONTROL.mov; Snake's equals GM_PlayerPosition), projected
+through the renderer's view matrix at **0x800B280C** (s16 3x3, 4096 = 1.0; s32 translation at +0x14; 0x8001F1C4
+loads it into the GTE right before RTPS): `v = m P + t`, picture point `(0.5 + v.x/v.z, 0.5 + v.y/v.z)` of the
+320x240 frame. Each figure is a segment from 570 above to 1,150 below its root; the click picks the nearest within
+12 picture pixels (letterboxing handled). Checked on four save states (vr_sud01/03/05; side and top-down cameras):
+Snake and every visible soldier land where the frame shows them.
+
+`characters op=resolve_slot session_id x y` names the slot (the desktop pick whip asks it when a collection card
+is dropped on a VR Missions game and offers "Put <character> in place of <Snake / the Genome soldiers> (running game,
+same moment)"); `characters op=live_use` resolves the slot, builds a disc holding the session's current VR Missions
+mod plus this replacement (Snake stays replaced when the soldiers are replaced next) and applies it through
+session_swap (save the moment, launch the mod on the same PC, load the moment, close the old copy).
+
+Actors of the stage-specific figures (ninja, vijkl, vcd_n05, vefgh_10) are not named yet, so the pick whip resolves
+Snake and the soldiers only; the other slots are reachable with `slot=`.
 
 ## Live mission tool (`mgs_vr`)
 
@@ -180,12 +254,13 @@ inferred from the headers, the same way MetalMintSolid decodes them).
   `StoreImage` call into a nop (that code first runs at the result screen, so no recompiler holds a stale copy;
   the overlay is reloaded from disc on the next stage) and completes the mission; the result screen then writes
   the full grid to VRAM. On the menu it only reports the open-entry count.
+* `pick x y [window_aspect]`: the Snake / soldier figure drawn at that point (above).
 
 PS1 RAM via RetroArch: main RAM at offsets 0..0x1FFFFF (`address & 0x1FFFFF`).
 
 ## Open for #1085
 
 Not yet decoded: GCL bytecode (params are big-endian with typed values, `06 hash` = string), stage geometry and
-collision (`.hzm`, map KMDs), enemy placement (GCL `chara` calls in each `59988.gcx`), the Ninja model, and the 23
-unresolved clear marks. Those are the prerequisites for level export to Blender tiles, soldier placement and
-switching to Ninja.
+collision (`.hzm`, map KMDs), enemy placement (GCL `chara` calls in each `59988.gcx`), the actor names of the
+ninja and the other stage-specific figures, and the 23 unresolved clear marks. Those are the prerequisites for level
+export to Blender tiles, soldier placement, picking the stage-specific figures on screen and switching to Ninja.
