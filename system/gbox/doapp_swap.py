@@ -62,7 +62,9 @@ TPAGE = (TEX_X // 64) | (1 << 7)   # 0x8b: page x 704, 8-bit
 CLUT = (CLUT_X >> 4) | (CLUT_Y << 6)
 CODE_GT3, CODE_GT4 = 0x34, 0x3C    # textured gouraud, opaque
 HEIGHTS = (256, 192, 128, 96, 64)  # texture page heights tried (texels)
-GRIDS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)   # vertex clustering cells (game units = mm)
+LEVELS = (1.0, 0.85, 0.7, 0.55, 0.4, 0.3, 0.2)       # decimation targets, fractions of SLOT_VERTEX_CAP
+QUAD_NORMAL_DOT = 0.9              # two triangles pair into a GT4 when their lighting normals on the edge agree this well
+FOOT_BONES = (3, 9)
 
 # game bone per collection role (doapp_chars.BODY); the body slot's part -> bone table (overlay 0x80103ed0)
 ROLE_BONE = {"hip": 2, "chest": 0, "head": 1, "l_upper": 8, "l_fore": 4, "l_hand": 5, "r_upper": 14, "r_fore": 10,
@@ -367,16 +369,48 @@ def walk_container(model: bytes) -> list[dict]:
     return out
 
 
-def expand_all(model: bytes) -> dict[int, bytes]:
-    """{section: expanded bytes} with the expander port, sections in file order (doapp_models.unpack_model's result)."""
+def expand_all(model: bytes, base: int = M.WORK_BASE) -> dict[int, bytes]:
+    """{section: expanded bytes} with the expander port, sections in file order, work buffer at `base`
+    (doapp_models.unpack_model's result for the default base)."""
     tm, out = _new_template(), {}
     for r in walk_container(model):
         if not r["dest"]:
             continue
         if r["packed"]:
-            out[r["index"]] = expand_mesh(model, r["start"], M.WORK_BASE + r["dest"], template=tm)[0]
+            out[r["index"]] = expand_mesh(model, r["start"], base + r["dest"], template=tm)[0]
         else:
             out[r["index"]] = model[r["start"]:r["end"]]
+    return out
+
+
+GAME_WORK = 0x801FE800             # player 1's work buffer in the game's 4 MiB RAM (0x8008775c[0])
+GAME_SOURCE = 0x80300000           # free RAM for the packed file (doapp_motion.Rig.MODEL_SOURCE)
+
+
+def game_expand_all(model: bytes, program_ram: bytes) -> dict[int, bytes]:
+    """{section: expanded bytes} by the game's own 0x8006c718 on gbox.zn_tps_boot's interpreter, in the 4 MiB board
+    RAM at player 1's real work buffer, so the whole 0x18000-byte buffer is available (the fight loader's walk)."""
+    from . import zn_tps_boot as Z
+    mem = Z.ZNMemory(b"\0" * 16, b"", b"\0" * 8, b"\0" * 8, ram_size=0x400000)
+    mem.ram[:len(program_ram)] = program_ram
+    src = GAME_SOURCE & 0x3FFFFF
+    mem.ram[src:src + len(model)] = model
+    cpu = Z.R3000(mem)
+    out = {}
+    for r in walk_container(model):
+        if not r["dest"]:
+            continue
+        if r["dest"] + r["length"] > EXPANDED_LIMIT:
+            raise WriterError(f"section {r['index']} ends at {r['dest'] + r['length']:#x}, past the work buffer")
+        w = (GAME_WORK + r["dest"]) & 0x3FFFFF
+        if r["packed"]:
+            q = cpu.call(M.UNPACK_FN, (0, GAME_SOURCE + r["start"], GAME_WORK + r["dest"]), sp=0x803FFF00,
+                         limit=20_000_000) - GAME_SOURCE
+            if q != r["end"]:
+                raise WriterError(f"section {r['index']}: the game's expander stopped at {q:#x}, not {r['end']:#x}")
+        else:
+            mem.ram[w:w + r["length"]] = model[r["start"]:r["end"]]
+        out[r["index"]] = bytes(mem.ram[w:w + r["length"]])
     return out
 
 
@@ -569,6 +603,29 @@ def target_from(pose: list, tris: list[dict], model: bytes, fighter: dict, costu
             "file": fighter["models"][costume]}
 
 
+def fit_feet(prims: list[dict], tgt: dict) -> dict:
+    """Soles on the fighter's ground: the retarget fits the head height and the limb directions, so a donor's feet can
+    end below the floor or above it; each foot bone's vertices are scaled vertically about its ankle (0.5..1.5) so
+    the lowest one lands on the original model's ground. -> {foot bone: scale}."""
+    out = {}
+    for bone in FOOT_BONES:
+        ys = [np.asarray(p["pos"])[np.asarray(p["J"])[:, 0] == bone, 1] for p in prims]
+        ys = np.concatenate(ys) if ys else np.zeros(0)
+        if not len(ys):
+            continue
+        ankle, lo = float(tgt["T"][bone][1]), float(ys.min())
+        if ankle - lo < 1 or abs(lo - tgt["ground"]) < 2:
+            continue
+        k = float(np.clip((ankle - tgt["ground"]) / (ankle - lo), 0.5, 1.5))
+        for p in prims:
+            m = np.asarray(p["J"])[:, 0] == bone
+            if m.any():
+                p["pos"] = np.array(p["pos"], float)
+                p["pos"][m, 1] = ankle + (p["pos"][m, 1] - ankle) * k
+        out[bone] = round(k, 3)
+    return out
+
+
 # =============================================================================================== geometry
 def _slot_of(bone: int) -> int:
     return HAND_SLOT.get(bone, 0)
@@ -578,19 +635,23 @@ def triangles(prims: list[dict]) -> dict:
     """Retargeted prims -> per-triangle arrays: bone per corner (n, 3), game positions (n, 3, 3), game normals, and
     per prim its material and UVs (page texels come from page_uvs). Triangles spanning a hand and its forearm go
     rigidly to the majority bone (hands are their own slots, so only body-slot triangles can be seams)."""
-    bones, pos, nrm, mats = [], [], [], []
+    bones, pos, nrm, uvs, mats, keys = [], [], [], [], [], []
     for p in prims:
         t = np.asarray(p["tris"], int).reshape(-1, 3)
         if not len(t):
             continue
         J = np.asarray(p["J"])[:, 0] if np.ndim(p["J"]) == 2 else np.asarray(p["J"])
+        k = Page.key(p)
+        if k not in keys:
+            keys.append(k)
         bones.append(J[t].astype(int))
         pos.append(np.asarray(p["pos"], float)[t] * FLIP)
         nrm.append(np.asarray(p["nrm"], float)[t] * FLIP)
-        mats.append((Page.key(p), np.asarray(p["uv"], float)[t]))
+        uvs.append(np.asarray(p["uv"], float)[t])
+        mats.append(np.full(len(t), keys.index(k)))
     if not bones:
         raise WriterError("the character has no triangles")
-    B, P, N = (np.concatenate(x) for x in (bones, pos, nrm))
+    B, P, N, UV, MT = (np.concatenate(x) for x in (bones, pos, nrm, uvs, mats))
     if B.min() < 0 or B.max() >= 15:
         raise WriterError("a vertex follows no body bone")
     slots = np.vectorize(_slot_of)(B)
@@ -600,11 +661,141 @@ def triangles(prims: list[dict]) -> dict:
         s = max(c, key=lambda k: (c[k], k == 0))
         keep = [int(b) for b in B[i] if _slot_of(int(b)) == s]
         B[i] = Counter(keep).most_common(1)[0][0]
-    return {"bones": B, "pos": P, "nrm": N, "mats": mats, "moved_to_one_bone": int(mixed.sum())}
+    return {"bones": B, "pos": P, "nrm": N, "uv": UV, "mat": MT, "keys": keys, "moved_to_one_bone": int(mixed.sum())}
 
 
 def page_uvs(tri: dict, page: Page) -> np.ndarray:
-    return np.concatenate([page.uv(k, uv) for k, uv in tri["mats"]])
+    out = np.zeros(tri["uv"].shape, int)
+    for m, k in enumerate(tri["keys"]):
+        sel = tri["mat"] == m
+        if sel.any():
+            out[sel] = page.uv(k, tri["uv"][sel])
+    return out
+
+
+def _quadric(n: np.ndarray, p: np.ndarray, w: float) -> np.ndarray:
+    v = np.r_[n, -float(n @ p)]
+    return np.outer(v, v) * w
+
+
+def decimate(tri: dict, caps: dict[int, int], weld: float = 0.05) -> dict:
+    """Quadric-error half-edge collapse (no Blender needed) until every slot's vertex count is within `caps`.
+    Vertices are welded per bone (glTF splits them at UV / material seams), only edges inside one bone collapse (the
+    rigid one-bone-per-vertex skinning and the seams between bones stay), a vertex always collapses onto a neighbour
+    (no new positions), collapses that would flip a face are refused, open borders carry extra planes, and the moved
+    corners take the texel / normal of their target from a removed face of the same material and UV chart."""
+    import heapq
+    B, P = tri["bones"], tri["pos"]
+    n = len(B)
+    key = np.concatenate([B.reshape(-1, 1), np.round(P.reshape(-1, 3) / weld).astype(np.int64)], 1)
+    uniq, vid = np.unique(key, axis=0, return_inverse=True)
+    vid = vid.reshape(n, 3)
+    V = np.zeros((len(uniq), 3))
+    V[vid.reshape(-1)] = P.reshape(-1, 3)
+    vb = uniq[:, 0].astype(int)
+    vslot = np.vectorize(_slot_of)(vb) if len(vb) else np.zeros(0, int)
+    UV, NR, MT = tri["uv"].copy(), tri["nrm"].copy(), tri["mat"]
+    F = [list(map(int, f)) for f in vid]
+    alive = np.array([len(set(f)) == 3 for f in F])
+    vf: list[set] = [set() for _ in range(len(V))]
+    for i, f in enumerate(F):
+        if alive[i]:
+            for v in f:
+                vf[v].add(i)
+    Q = np.zeros((len(V), 4, 4))
+    edges = Counter()
+    for i, f in enumerate(F):
+        if not alive[i]:
+            continue
+        a, b, c = V[f]
+        nn = np.cross(b - a, c - a)
+        area = np.linalg.norm(nn)
+        if area < 1e-12:
+            continue
+        nn /= area
+        K = _quadric(nn, a, area)
+        for v in f:
+            Q[v] += K
+        for k in range(3):
+            edges[tuple(sorted((f[k], f[(k + 1) % 3])))] += 1
+    for (a, b), cnt in edges.items():                     # open borders: a plane through the edge, across the face
+        if cnt != 1:
+            continue
+        i = next(iter(vf[a] & vf[b]))
+        f = F[i]
+        p0, p1, p2 = V[f]
+        fn = np.cross(p1 - p0, p2 - p0)
+        e = V[b] - V[a]
+        bn = np.cross(e, fn)
+        ln = np.linalg.norm(bn)
+        if ln > 1e-12:
+            K = _quadric(bn / ln, V[a], 10.0 * float(e @ e))
+            Q[a] += K
+            Q[b] += K
+    live = np.zeros(len(V), bool)
+    if alive.any():
+        live[np.unique(np.array([F[i] for i in np.nonzero(alive)[0]]).reshape(-1))] = True
+    count = {s: int((live & (vslot == s)).sum()) for s in (0, 2, 4)}
+    ver = np.zeros(len(V), int)
+    heap = []
+
+    def cost(v, u):
+        x = np.r_[V[u], 1.0]
+        return float(x @ (Q[u] + Q[v]) @ x)
+
+    def push(a, b):
+        if a != b and vb[a] == vb[b]:
+            heapq.heappush(heap, (cost(a, b), a, b, ver[a], ver[b]))
+            heapq.heappush(heap, (cost(b, a), b, a, ver[b], ver[a]))
+    for (a, b) in edges:
+        push(a, b)
+    collapses = 0
+    while heap and any(count[s] > caps.get(s, 1 << 30) for s in count):
+        _c, v, u, va, ua = heapq.heappop(heap)
+        if not (live[v] and live[u]) or ver[v] != va or ver[u] != ua or count[vslot[v]] <= caps.get(vslot[v], 1 << 30):
+            continue
+        both = vf[v] & vf[u]
+        if not both:
+            continue
+        ok = True
+        for i in vf[v] - both:                            # the faces that move: no flips, no slivers
+            f = F[i]
+            a, b, c = V[f]
+            n0 = np.cross(b - a, c - a)
+            g = [u if x == v else x for x in f]
+            a, b, c = V[g]
+            n1 = np.cross(b - a, c - a)
+            if float(n0 @ n1) <= 0.2 * np.linalg.norm(n0) * np.linalg.norm(n1) or np.linalg.norm(n1) < 1e-9:
+                ok = False
+                break
+        if not ok:
+            continue
+        removed = [(MT[i], UV[i][F[i].index(v)], UV[i][F[i].index(u)], NR[i][F[i].index(u)]) for i in both]
+        for i in vf[v] - both:
+            k = F[i].index(v)
+            for m, uvv, uvu, nu in removed:
+                if m == MT[i] and np.abs(uvv - UV[i][k]).max() < 1e-4:
+                    UV[i][k], NR[i][k] = uvu, nu
+                    break
+            F[i][k] = u
+            vf[u].add(i)
+        for i in both:
+            alive[i] = False
+            for x in F[i]:
+                vf[x].discard(i)
+        vf[v] = set()
+        live[v] = False
+        count[vslot[v]] -= 1
+        Q[u] += Q[v]
+        ver[u] += 1
+        collapses += 1
+        for w in {x for i in vf[u] for x in F[i]} - {u}:
+            push(u, w)
+    keep = np.nonzero(alive)[0]
+    Fa = np.array([F[i] for i in keep], int).reshape(-1, 3)
+    return {"bones": vb[Fa], "pos": V[Fa], "nrm": NR[keep], "uv": UV[keep], "mat": MT[keep], "keys": tri["keys"],
+            "moved_to_one_bone": tri.get("moved_to_one_bone", 0), "collapses": collapses,
+            "slot_vertices": count}
 
 
 def quantize(tri: dict, tgt: dict, grid: int) -> dict:
@@ -634,9 +825,21 @@ def local_frames(tgt: dict) -> list[tuple[np.ndarray, np.ndarray]]:
     return [(np.linalg.inv(G[:3, :3]), G[:3, 3]) for G in tgt["G"]]
 
 
+def _close(n1, n2) -> bool:
+    return n1 == n2 or float(np.dot(n1, n2)) >= QUAD_NORMAL_DOT * 4096 * 4096
+
+
+def _mean_normal(n1, n2) -> tuple:
+    if n1 == n2:
+        return n1
+    v = np.add(n1, n2, dtype=float)
+    return tuple(int(x) for x in np.round(v / (np.linalg.norm(v) or 1) * 4096))
+
+
 def pair_quads(tris: list[dict]) -> tuple[list[dict], list[dict]]:
     """Lit triangles of one bone (drawing order) -> (quads, leftover triangles). Two triangles sharing an edge with
-    the same texels and normals on it become one GT4 drawn as (0, 1, 2) + (1, 3, 2): exactly the same two triangles."""
+    the same texels on it (and lighting normals within QUAD_NORMAL_DOT) become one GT4 drawn as (0, 1, 2) + (1, 3, 2):
+    exactly the same two triangles, 0x98 expanded bytes instead of 2 x 0x74."""
     edges: dict = {}
     for i, t in enumerate(tris):
         for k in range(3):
@@ -654,7 +857,7 @@ def pair_quads(tris: list[dict]) -> tuple[list[dict], list[dict]]:
                     continue
                 if q["uv"][kk] != t["uv"][(k + 1) % 3] or q["uv"][(kk + 1) % 3] != t["uv"][k]:
                     continue
-                if q["n"][kk] != t["n"][(k + 1) % 3] or q["n"][(kk + 1) % 3] != t["n"][k]:
+                if not (_close(q["n"][kk], t["n"][(k + 1) % 3]) and _close(q["n"][(kk + 1) % 3], t["n"][k])):
                     continue
                 hit = (k, j, kk)
                 break
@@ -669,7 +872,8 @@ def pair_quads(tris: list[dict]) -> tuple[list[dict], list[dict]]:
         x, ia, ib, d = (k + 2) % 3, k, (k + 1) % 3, (kk + 2) % 3
         quads.append({"v": [t["v"][x], t["v"][ia], t["v"][ib], q["v"][d]],
                       "uv": [t["uv"][x], t["uv"][ia], t["uv"][ib], q["uv"][d]],
-                      "n": [t["n"][x], t["n"][ia], t["n"][ib], q["n"][d]]})
+                      "n": [t["n"][x], _mean_normal(t["n"][ia], q["n"][(kk + 1) % 3]),
+                            _mean_normal(t["n"][ib], q["n"][kk]), q["n"][d]]})
     return quads, rest
 
 
@@ -866,38 +1070,41 @@ def fit(prims: list[dict], tgt: dict, progress=lambda p, m: None) -> dict:
         slot7 = len(M.parse_mesh(expand_all(tgt["model"])[10])["groups"])
     kept = sum(recs[s]["length"] for s in (0, 11, 12, 13) if recs[s]["dest"])
     last = None
-    pages, uvs, quants = {}, {}, {}
+    pages, levels = {}, []
     tri = triangles(prims)
     for heights in (HEIGHTS[:3], HEIGHTS[3:]):
-        for grid in GRIDS:
-            if grid not in quants:
-                quants[grid] = quantize(tri, tgt, grid)
-            q = quants[grid]
+        for k, level in enumerate(LEVELS):
+            if k == len(levels):                          # decimate further from the previous level
+                caps = {s: max(8, int(SLOT_VERTEX_CAP[s] * level)) for s in (0, 2, 4)}
+                levels.append(decimate(levels[-1] if levels else tri, caps))
+            dec = levels[k]
+            q = quantize(dec, tgt, 1)
             if any(n > SLOT_VERTEX_CAP[s] for s, n in q["counts"].items()):
-                last = {"grid": grid, "vertices": q["counts"], "caps": SLOT_VERTEX_CAP}
-                continue                                  # a smaller page won't help: coarser grid
+                last = {"level": level, "vertices": q["counts"], "caps": SLOT_VERTEX_CAP}
+                continue
             for h in heights:
                 if h not in pages:
                     pages[h] = Page(h)
                     pages[h].build(prims)
-                    uvs[h] = page_uvs(tri, pages[h])
                 page = pages[h]
-                geo = build_geometry(tri, uvs[h], q, slot7)
+                geo = build_geometry(dec, page_uvs(dec, page), q, slot7)
                 rep = geo["report"]
                 expanded = kept + sum(mesh_bytes(m) for m in geo["meshes"].values()) + 0x200
                 if expanded > EXPANDED_LIMIT:
-                    last = {"grid": grid, "expanded": expanded, "limit": EXPANDED_LIMIT}
+                    last = {"level": level, "expanded": expanded, "limit": EXPANDED_LIMIT}
                     break
                 data, info = model_file(geo, tgt, page)
                 if info["extent"] > EXPANDED_LIMIT:
-                    last = {"grid": grid, "extent": info["extent"]}
+                    last = {"level": level, "extent": info["extent"]}
                     break
                 if len(data) <= room:
                     rep.update(bytes=len(data), budget=room, texture=[256, h], extent=info["extent"],
-                               extent_limit=EXPANDED_LIMIT, tim_bytes=info["tim_bytes"])
-                    progress(None, f"fits: grid {grid}, page 256x{h}, {rep['triangles']} triangles, {len(data)} bytes")
+                               extent_limit=EXPANDED_LIMIT, tim_bytes=info["tim_bytes"], level=level,
+                               collapses=dec.get("collapses", 0), donor_triangles=int(len(tri["bones"])))
+                    progress(None, f"fits: {rep['triangles']} triangles ({len(tri['bones'])} in the donor), page "
+                                   f"256x{h}, {len(data)} of {room} bytes")
                     return {"data": data, "geometry": geo, "page": page, "report": rep}
-                last = {"grid": grid, "texture": h, "bytes": len(data), "budget": room}
+                last = {"level": level, "texture": h, "bytes": len(data), "budget": room}
     raise WriterError(f"the character doesn't fit {tgt['fighter']['name']} costume {tgt['costume'] + 1}: {last}")
 
 
@@ -905,32 +1112,42 @@ def fit(prims: list[dict], tgt: dict, progress=lambda p, m: None) -> dict:
 def check_model(data: bytes, geo: dict, program_ram: bytes | None = None) -> dict:
     """The built file read back: the expander port and (with the decoded program) the game's own 0x8006c718 on the
     interpreter must expand every mesh to exactly the logical meshes the writer laid out."""
-    port = expand_all(data)
+    port = expand_all(data, GAME_WORK)
+    dests = {r["index"]: r["dest"] for r in walk_container(data)}
     out = {"sections": sorted(port), "port_matches_layout": True}
     for slot, mesh in geo["meshes"].items():
-        got = mesh_from_expanded(port[3 + slot], M.WORK_BASE + next(r["dest"] for r in walk_container(data)
-                                                                    if r["index"] == 3 + slot))
+        got = mesh_from_expanded(port[3 + slot], GAME_WORK + dests[3 + slot])
         if not same_mesh(got, mesh):
             out["port_matches_layout"] = False
     if program_ram is not None:
-        game = M.unpack_model(data, program_ram)
+        game = game_expand_all(data, program_ram)
         out["game_expander_identical"] = game == port
         if not out["game_expander_identical"]:
             out["game_expander_mismatch"] = [s for s in game if game[s] != port.get(s)]
     return out
 
 
-def verify_read_back(program_ram: bytes, banked: bytes, fighter: dict, costume: int) -> dict:
-    """The rebuilt bankedroms through the reader: the game's fight init + skeleton build with the new model, then
-    doapp_chars.assemble's checks (every vertex on a bone, short seams, feet on the ground, a fighter's height)."""
+def verify_read_back(program_ram: bytes, banked: bytes, fighter: dict, costume: int, height: float | None = None,
+                     glb: Path | None = None, clips: dict | None = None) -> dict:
+    """The rebuilt bankedroms through the reader: the game's fight loader walk, fight init and skeleton build with the
+    new model (doapp_motion.Rig), then doapp_chars.assemble (every vertex on a bone, every primitive textured from the
+    model's own TIM, seams, ground, height). ok = textured, seams <= 400 units, soles within 60 of the ground, height
+    within 25 % of the original fighter's. glb: also write the read-back model (+ clips {name: motion}) there."""
     from . import doapp_chars as R
     from . import doapp_motion as DM
     rig = DM.Rig(program_ram, banked, fighter, costume)
     pose = rig.rest_pose()
     a = R.assemble(rig.sections(), rig.model, pose, rig.hand_shapes(), R.chains(program_ram, fighter["id"], costume))
     r = a["report"]
-    return {k: r[k] for k in ("triangles", "seam_triangles", "seam_max_edge", "ground", "height", "untextured_prims",
-                              "joints", "textures", "verified")}
+    out = {k: r[k] for k in ("triangles", "seam_triangles", "seam_max_edge", "ground", "height", "untextured_prims",
+                             "inexact_texture", "joints", "textures")}
+    out["ok"] = (r["untextured_prims"] == 0 and r["seam_max_edge"] <= R.SEAM_LIMIT and abs(r["ground"]) <= R.GROUND
+                 and (height is None or abs(r["height"] - height) <= 0.25 * height))
+    if glb is not None:
+        frames = {n: rig.clip(m) for n, m in (clips or {}).items()}
+        R.write_glb(glb, a, Path(glb).stem, frames, extras={"source": "gbox.doapp_swap read-back"})
+        out["glb"] = str(glb)
+    return out
 
 
 # =============================================================================================== ROM set
@@ -947,9 +1164,8 @@ def rebuild_set(src_dir, replacements: dict[int, bytes], out_dir) -> dict:
         if len(data) > budget(idx):
             raise WriterError(f"file {idx}: {len(data):#x} bytes, room {budget(idx):#x}")
         banked[start:start + size] = data + bytes(size - len(data))
-        chip = (start // 0x400000) - 1
         files[idx] = {"offset": start, "size": size, "used": len(data), "chips": sorted({
-            D.DATA_BANKS[(start // 0x400000) - 1], D.DATA_BANKS[((start + size - 1) // 0x400000) - 1]}), "chip": chip}
+            D.DATA_BANKS[(start // 0x400000) - 1], D.DATA_BANKS[((start + size - 1) // 0x400000) - 1]})}
     out_dir.mkdir(parents=True, exist_ok=True)
     chips = {}
     tmp = out_dir / f"{SET}.zip.part"
@@ -1016,8 +1232,10 @@ def cast_slots() -> list[dict]:
 
 def build(program_ram: bytes, banked: bytes, model_path: Path, roles: dict, jobs: list[tuple[dict, int]],
           work: Path, name: str, blender: str | None = None, progress=lambda p, m: None, scale=None, props=(),
-          verify: bool = True) -> dict:
-    """Collection model -> {file index: model bytes} for every (fighter, costume) job, with reports."""
+          verify: bool = True, preview: Path | None = None) -> dict:
+    """Collection model -> {file index: model bytes} for every (fighter, costume) job, with reports. verify: read every
+    built model back through the game's fight init / skeleton build and the reader; preview: a folder for the
+    read-back GLB + PNG of the first four jobs."""
     from .sm64_swap import load_rig, retarget
     from . import doapp_motion as DM
     rig_src = load_rig(Path(model_path), roles, props)
@@ -1028,6 +1246,7 @@ def build(program_ram: bytes, banked: bytes, model_path: Path, roles: dict, jobs
         rig = DM.Rig(program_ram, banked, f, c)
         tgt = target(program_ram, banked, f, c, rig)
         prims, rrep = retarget(rig_src, tgt, scale, jmap=ROLE_BONE)
+        rrep["feet_to_ground"] = fit_feet(prims, tgt)
         prims = _decimated(prims, tgt, work / f"{f['name'].lower().replace(' ', '_')}_{c + 1}", name, blender)
         r = fit(prims, tgt, progress)
         r["report"]["retarget"] = rrep
@@ -1035,15 +1254,21 @@ def build(program_ram: bytes, banked: bytes, model_path: Path, roles: dict, jobs
         if not r["report"]["check"].get("game_expander_identical", True) or not r["report"]["check"]["port_matches_layout"]:
             raise WriterError(f"{lbl}: the packed sections don't expand to the layout: {r['report']['check']}")
         out[tgt["file"]] = r["data"]
-        reports[tgt["file"]] = {"fighter": f["name"], "costume": c + 1, **r["report"]}
+        reports[tgt["file"]] = {"fighter": f["name"], "costume": c + 1, "original_height": round(tgt["height"], 1),
+                                **r["report"]}
     if verify:
         b = bytearray(banked)
         for idx, data in out.items():
             start, size = D.file_span(idx)
             b[start:start + size] = data + bytes(size - len(data))
-        for (f, c) in jobs:
+        for k, (f, c) in enumerate(jobs):
             progress(88, f"Reading {f['name'].title()} costume {c + 1} back through the reader")
-            reports[f["models"][c]]["read_back"] = verify_read_back(program_ram, bytes(b), f, c)
+            rep = reports[f["models"][c]]
+            glb = Path(preview) / f"doapp_{f['name'].lower().replace(' ', '_')}_{c + 1}.glb" if preview and k < 4 else None
+            rep["read_back"] = verify_read_back(program_ram, bytes(b), f, c, rep["original_height"], glb)
+            if glb is not None:
+                from .characters import render_preview
+                rep["read_back"]["preview"] = str(render_preview(glb, glb.with_suffix(".png")))
     return {"files": out, "reports": reports}
 
 
