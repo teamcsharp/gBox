@@ -302,3 +302,67 @@ def test_operator_priority_puts_listed_games_and_requests_first(env):
     assert q.priority_rank({'number': 5}, {'priority': ['5']}) == 0
     assert q.priority_rank({'game_id': 'zz'}, {'priority': ['a', 'b']}) == 2
     assert q.get_priority() == [other]
+
+
+# --- docs/stream-stability.md: the operator plays on the Spark (DOA2, 2026-10-13) while a Hermes sandbox ran its own
+# Dolphin at 300% CPU on the same machine.
+
+def test_operator_gate_defers_emulator_work_and_caps_dispatch():
+    runtime = favorite(lane='favorite', favorite=True,
+                       stages={s: {'status': 'verified'} for s in ('inventory', 'analysis', 'reader', 'writer')})
+    reader = favorite('1' * 16, lane='favorite', favorite=True)
+    repair = {'lane': 'inbox', 'request_id': R, 'repair': True}
+    plain = {'lane': 'inbox', 'request_id': P}
+    options = [('favorite:a', runtime), ('favorite:1', reader), ('inbox:r', repair), ('inbox:p', plain)]
+    assert q.operator_gate(options, []) == (options, None, None)
+    kept, cap, report = q.operator_gate(options, [{'session_id': 'spark-1', 'title': 'Dead or Alive 2'}],
+                                        {'throttled': [12]})
+    assert [k for k, _ in kept] == ['favorite:1', 'inbox:p'] and cap == 1
+    assert report == {'games': ['Dead or Alive 2'], 'deferred': ['favorite:a', 'inbox:r'],
+                      'sandboxes': {'throttled': [12]}}
+
+
+def test_tick_throttles_sandboxes_and_warns_agents_while_the_operator_plays(env, monkeypatch):
+    jobs = [{'id': 'controller', 'name': q.mode.NAME, 'enabled': True, 'no_agent': True}]
+    reqs = [request(P), request(R)]
+    monkeypatch.setattr(q.mode, '_job', lambda: jobs[0])
+    monkeypatch.setattr(q.mode, '_jobs', lambda: jobs)
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'nous', 'model': 'opus', 'max_parallel_jobs': 4}})
+    monkeypatch.setattr(q, '_executions', lambda: ({}, set()))
+    monkeypatch.setattr(q, '_native_jobs', lambda: [])
+    from gbox import hermes_recovery, operator_guard
+    monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    throttled = []
+    monkeypatch.setattr(operator_guard, 'throttle_agent_sandboxes', lambda: throttled.append(1) or {'throttled': [7]})
+    favorites = [favorite(f'{i:016x}') for i in range(3)]
+
+    def api(path, body=None):
+        if path == '/api/sessions?include_ended=false':
+            return [{'session_id': 'spark-x', 'state': 'running', 'title': 'Dead or Alive 2'}]
+        if path == '/api/workers': return [{'id': 'spark', 'os': 'linux', 'online': True}]
+        if path == '/api/chat': return []
+        if path == '/api/favorites': return {'count': len(favorites), 'items': favorites}
+        if path == '/api/requests' and body is None: return reqs
+        if path == '/api/requests':
+            child = request(f'{len(reqs)+100:016x}', **body)
+            reqs.append(child)
+            return child
+        raise AssertionError(path)
+    monkeypatch.setattr(q, '_api', api)
+    prompts = []
+
+    def run(*args):
+        if args[0] == 'create':
+            prompts.append(args[2])
+            jobs.append({'id': 'j' + str(len(jobs)), 'name': args[args.index('--name')+1],
+                         'enabled': True, 'schedule': {'kind': 'once'}})
+    monkeypatch.setattr(q.mode, '_run', run)
+    # The Spark session id is "spark-x" but the worker is "spark": the worker prefix decides the machine.
+    result = q.tick(now=1000)
+    assert throttled == [1] and result['capacity'] == 1 and len(result['dispatched']) == 1
+    assert result['operator_playing']['games'] == ['Dead or Alive 2']
+    assert 'The operator is playing Dead or Alive 2 on this machine right now' in prompts[0]
+    # Throttling runs even when the dispatcher itself is switched off.
+    jobs[0]['enabled'] = False
+    assert q.tick(now=1060)['status'] == 'disabled_or_legacy_controller' and throttled == [1, 1]

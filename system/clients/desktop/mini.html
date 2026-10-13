@@ -61,4 +61,7 @@
   document.getElementById("full").onclick = () => gbox.miniRestore();
   addEventListener("dblclick", () => gbox.miniRestore());
   addEventListener("keydown", e => { if (e.key === "Escape") gbox.miniRestore(); });
-</script></body></html>
+  // The mini player is a file:// page and the stream another origin: keep the last frame and reattach on errors,
+  // without the /stream/health poll (a cross-origin fetch it cannot make). docs/stream-stability.md
+  window.GBOX_STREAM_HEALTH = false;
+</script><script src="../web/viz/stream-watchdog.js"></script></body></html>
