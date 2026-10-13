@@ -1,7 +1,7 @@
 // gBox desktop manager (Electron main process).
 // Manages: the Spark control plane (over SSH: install/update, start/stop, logs), the local Windows worker,
 // dependency setup on both nodes, and hosts the gBox web UI with the API token injected.
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
 // The shell and its guest are one dark app, including native controls and first paint.
@@ -358,6 +358,18 @@ function startPadWatcher() {
 }
 
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
+// a finished build (the embedded view's bell tray, gbox/build_notify.py): an OS notification while gBox is not in front;
+// a click brings the window back with the tray open. Kept referenced until closed (a collected one loses its click).
+const OS_NOTES = new Set();
+ipcMain.handle("notify:os", (_e, n = {}) => {
+  if (!Notification.isSupported() || (win && win.isVisible() && win.isFocused() && !win.isMinimized())) return false;
+  const note = new Notification({ title: String(n.title || "gBox").slice(0, 120), body: String(n.body || "").slice(0, 240) });
+  OS_NOTES.add(note);
+  note.on("click", () => { OS_NOTES.delete(note); if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); win.webContents.send("notify:click", n.id || ""); } });
+  note.on("close", () => OS_NOTES.delete(note));
+  note.show();
+  return true;
+});
 
 ipcMain.handle("report:clipboard-files", async () => {
   if (process.platform !== "win32") return [];
