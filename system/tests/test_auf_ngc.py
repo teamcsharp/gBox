@@ -374,3 +374,72 @@ def test_boa_and_restable_reject_truncated_input():
         auf_ngc.boa_expand(b"\x00\x13", 4)          # back-reference cut in half
     with pytest.raises(ValueError):
         auf_ngc.parse_restable(struct.pack(">I", 1000) + bytes(12))
+
+# --- cast-wide replacement (gbox.auf_ngc_writer) -----------------------------
+
+def _gcm_with_shader(shader_id: int) -> bytes:
+    """Return a copy of the synthetic skinned gcm using ``shader_id`` in its section."""
+    g = bytearray(_skinned_gcm())
+    info = auf_ngc.gcm_info(bytes(g))
+    # geom_section array[9]: data at file_offset, count 1, record 16 bytes; shader id at record +4.
+    sec = info["arrays"][9]
+    off = sec["file_offset"] + 4
+    struct.pack_into(">I", g, off, shader_id)
+    return bytes(g)
+
+
+def _cast_pkg():
+    from gbox import auf_ngc_writer as W
+    g1 = _gcm_with_shader(0x11111111)
+    g2 = bytearray(g1)
+    # Perturb a vertex so the two files are not byte-identical.
+    # Position array starts at ngc_body + arrays[0].offset; first vertex is x,y,z s16.
+    info = auf_ngc.gcm_info(bytes(g2))
+    pos_off = info["arrays"][0]["file_offset"]
+    struct.pack_into(">h", g2, pos_off, 99)
+    t = W.build_restable([("models/actors/a/a1.gcm", g1),
+                          ("models/actors/a/a2.gcm", bytes(g2)),
+                          ("models/props/p1.gcm", b"\x01" * 0x200)])
+    data = (W.encode_chunk("restable", t) +
+            W.encode_chunk("restxtrs", _restxtrs()) +
+            W.encode_chunk("shaders", _shaders()))
+    return auf_ngc.NgcPackage(data), g1, bytes(g2)
+
+
+def test_writer_actor_gcms_filters_only_actor_gcm():
+    from gbox import auf_ngc_writer as W
+    pkg, _g1, _g2 = _cast_pkg()
+    assert W.actor_gcms(pkg) == ["models/actors/a/a1.gcm", "models/actors/a/a2.gcm"]
+
+
+def test_writer_random_cast_assignments_seed_reproducible():
+    from gbox import auf_ngc_writer as W
+    pkg, _g1, _g2 = _cast_pkg()
+    a1 = W.random_cast_assignments(pkg, ["models/actors/a/a1.gcm", "models/actors/a/a2.gcm"], seed=7)
+    a2 = W.random_cast_assignments(pkg, ["models/actors/a/a1.gcm", "models/actors/a/a2.gcm"], seed=7)
+    assert a1 == a2
+    assert set(a1.keys()) == {"models/actors/a/a1.gcm", "models/actors/a/a2.gcm"}
+    assert all(v in ("models/actors/a/a1.gcm", "models/actors/a/a2.gcm") for v in a1.values())
+
+
+def test_writer_cast_swap_report_and_byte_check():
+    from gbox import auf_ngc_writer as W
+    pkg, g1, g2 = _cast_pkg()
+    assignments = {"models/actors/a/a1.gcm": "models/actors/a/a2.gcm"}
+    data, report = W.cast_swap(pkg, assignments)
+    q = auf_ngc.NgcPackage(data)
+    assert q.read("models/actors/a/a1.gcm") == g2
+    assert q.read("models/actors/a/a2.gcm") == g2
+    assert report["assignments"] == assignments
+    assert report["same"] == []
+    assert W.check_package(data)["problems"] == []
+
+
+def test_writer_cast_swap_leaves_same_target_out_of_assignments():
+    from gbox import auf_ngc_writer as W
+    pkg, g1, _g2 = _cast_pkg()
+    data, report = W.cast_swap(pkg, {"models/actors/a/a1.gcm": "models/actors/a/a1.gcm"})
+    assert report["same"] == ["models/actors/a/a1.gcm"]
+    assert report["assignments"] == {}
+    q = auf_ngc.NgcPackage(data)
+    assert q.read("models/actors/a/a1.gcm") == g1

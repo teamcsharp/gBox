@@ -587,6 +587,10 @@ class CharIn(BaseModel):
     size: float = 0.0                      # place: statue height x adult Link-ish 75 units (default 1)
     pairs: list[dict] = []                 # match (No Mercy): [{character, slot = a wrestler's name}] -> one ROM; use slot=roster (DOA2): [{character, slot?}], unassigned donors are dealt over the rest
     title: str = ""                        # match: the mod card title ("Mario vs Princess Peach")
+    level: str = ""                        # AUF / level-based games: which maps/*.ngc file to rebuild (default maps/dm1.ngc)
+    random: bool = False                   # match: randomly assign donors to every compatible slot
+    seed: int | None = None                # match: reproducible random assignment seed
+    donors: list[str] = []                 # match (AUF cast swap): explicit donor .gcm names; empty = every actor in the level
 
     @model_validator(mode="after")
     def require_named_character(self):
@@ -1416,6 +1420,9 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.clayfighter_swap", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # 007: Agent Under Fire (GameCube, GW7E69): actors are .gcm files in maps/*.ngc restables.
+    ("auf_ngc", lambda t, p: "agent under fire" in t and p == "gamecube", lambda: [],
+     lambda ctx, game, e, work: __import__("gbox.auf_chars", fromlist=["x"]).extract_run(ctx, game, e["slug"], work)),
     # Def Jam: Vendetta (GDTE69 rev 0): static model-space meshes from data/sNNNx/*.gpl; rig not decoded yet
     ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
@@ -2152,6 +2159,8 @@ def characters_tool(inp: CharIn, ctx):
         g = _game(ctx, inp)
         mod = yukes_sd if g["game_id"] in yukes_sd.GAME_IDS else aki_wrestling   # SmackDown! 2 (PS1) | No Mercy (N64)
         mod = defjam_writer if g["game_id"] in defjam_writer.GAME_IDS else mod   # Def Jam Vendetta (PS2)
+        if g["game_id"] in __import__("gbox.auf_chars", fromlist=["x"]).GAME_IDS:
+            return {"result": __import__("gbox.auf_chars", fromlist=["x"]).match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
         return {"result": mod.match(ctx, chars, g, inp, [x for x in pr if x[0]], inp.title or None)}
     if inp.op in ("swap", "unplace"):                         # OoT: in-game characters / statues (gbox.oot_swap)
         from . import oot_swap
@@ -2249,6 +2258,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import defjam_writer
     if gid in defjam_writer.GAME_IDS:                         # Def Jam Vendetta (PS2): slot = a wrestler | player (heroes)
         return {"result": out | defjam_writer.use(ctx, meta, game, inp)}
+    from . import auf_chars
+    if gid in auf_chars.GAME_IDS:                             # 007: Agent Under Fire (GC): actor .gcm swaps / cast randomizer
+        return {"result": out | auf_chars.use(ctx, meta, game, inp)}
     from . import clayfighter_swap
     if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
         # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>

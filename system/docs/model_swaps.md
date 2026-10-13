@@ -348,6 +348,16 @@ The only third-party code used is aap's open-source librwgta `tools/storiesconv`
 
 ---
 
+## 3.5. 007: Agent Under Fire (GameCube)
+
+Status: **same-game cast randomization implemented; cross-game retargeting pending.**
+
+`gbox.auf_ngc` reads the level `.ngc` packages and `.gcm` character models (skeleton, matrix-palette skinning, GX strips, textures). `gbox.auf_ngc_writer` can rebuild a package and swap one actor `.gcm` for another **within the same level** when the donor skeleton's bone hashes are a subset of the target's (so the target's animations still drive it).
+
+`characters op=match game=<AUF> slot=cast random=true` randomly assigns every compatible actor `.gcm` in a level to another actor from the level, producing a cast-randomizer mod. Explicit pairs are also supported. The writer checks rebuilt packages for in-place BOA safety, restable hash sort, and `.gcm` tiling.
+
+**Cross-game (WWE wrestlers, etc.)** is not done yet: there is no glTF-to-.gcm retargeting encoder. Once that encoder exists, the same `slot=cast` API can take donors from any collection character.
+
 ## 4. Resident Evil
 
 ### RE4 (2005): PC UHD (Steam) is the practical target

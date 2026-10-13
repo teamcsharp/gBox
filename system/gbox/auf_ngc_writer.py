@@ -316,6 +316,95 @@ def build_mod(cache, gcz, name: str, pairs=DEFAULT_PAIRS, level: str = DEFAULT_L
                 "source_level_sha256": hashlib.sha256(src).hexdigest(), "swaps": info, "check": chk}
 
 
+
+
+# ---------------------------------------------------------------------------
+# Cast-wide replacement: map every actor .gcm in a level to a donor .gcm.
+# The donor skeleton must be a subset of the target skeleton (same animation
+# hashes); use this for same-game cast randomization.  Cross-game retargeting
+# (e.g. WWE wrestlers into AUF) needs a glTF-to-.gcm encoder that is not built
+# yet; cast_swap reports which slots were skipped for that reason.
+
+
+def actor_gcms(pkg: "ngc.NgcPackage") -> list[str]:
+    """Return every ``models/actors/**.gcm`` name in the level's restable."""
+    return [r.name for r in pkg.resources()
+            if r.name.lower().startswith("models/actors/") and r.name.lower().endswith(".gcm")]
+
+
+def skeleton_bone_hashes(gcm: bytes) -> set[int]:
+    return {b["hash"] for b in ngc.skeleton(gcm)}
+
+
+def compatible_donors(target_gcm: bytes, donor_gcms: dict[str, bytes]) -> list[str]:
+    """Donor names whose bone hashes are a subset of the target's bone hashes."""
+    tb = skeleton_bone_hashes(target_gcm)
+    out = []
+    for name, data in donor_gcms.items():
+        try:
+            db = skeleton_bone_hashes(data)
+        except Exception:
+            continue
+        if db <= tb:
+            out.append(name)
+    return out
+
+
+def random_cast_assignments(pkg: "ngc.NgcPackage", donor_names: list[str], seed: int | None = None,
+                            filter_prefix: str = "models/actors/") -> dict[str, str]:
+    """Randomly assign a donor to every actor .gcm that is compatible with it.
+
+    If a target has no compatible donor, it is left unchanged (not in the
+    returned dict).  With ``seed`` the randomization is reproducible."""
+    import random
+    rng = random.Random(seed)
+    targets = actor_gcms(pkg)
+    donor_gcms = {n: pkg.read(n) for n in donor_names if n.lower().startswith(filter_prefix.lower())}
+    assignments = {}
+    for t in targets:
+        try:
+            tg = pkg.read(t)
+        except Exception:
+            continue
+        ok = compatible_donors(tg, donor_gcms)
+        if ok:
+            assignments[t] = rng.choice(ok)
+    return assignments
+
+
+def cast_swap(pkg: "ngc.NgcPackage", assignments: dict[str, str],
+              progress=None) -> tuple[bytes, dict]:
+    """Apply target->donor name assignments inside one level package.
+
+    Returns the rebuilt package bytes and a report dict with ``assignments``
+    (target->donor), ``skipped`` (targets with no compatible donor),
+    ``unmapped`` (donor names that do not exist), and ``same`` (targets whose
+    donor is identical to the original target)."""
+    donor_gcms = {}
+    unmapped = []
+    for donor in set(assignments.values()):
+        try:
+            donor_gcms[donor] = pkg.read(donor)
+        except Exception:
+            unmapped.append(donor)
+    pairs = []
+    skipped = []
+    same = []
+    for target, donor in assignments.items():
+        if donor in unmapped:
+            continue
+        if donor.lower() == target.lower():
+            same.append(target)
+            continue
+        pairs.append((target, donor))
+    if not pairs:
+        data = write_package(pkg)
+    else:
+        data, info = swap_models(pkg, pairs)
+    report = {"assignments": {t: d for t, d in assignments.items() if d not in unmapped and t not in same},
+              "skipped": skipped, "unmapped": unmapped, "same": same, "pairs": pairs}
+    return data, report
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="AUF GC .ngc package writer")
     ap.add_argument("ngc")

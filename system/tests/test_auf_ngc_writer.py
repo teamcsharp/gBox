@@ -125,3 +125,46 @@ def test_owned_dm1_bondcombat_slot_takes_uwb_thug(tmp_path):
     with pytest.raises(ValueError):
         W.swap_models(pkg, [(head, "models/actors/actorheads/griffin_head_l.gcm")])
     assert hashlib.sha256(out).hexdigest() == "7e9e72489cb7f192378b7184e0006887489c455c9a8cf1a0acec8723c78f2561"
+
+def _skinned_gcm():
+    """Two bones (root at z=10, child +5 z and turned 90 deg about z), a 0.5-scale
+    dequant matrix, one strip whose last two vertices use the child's matrix slot."""
+    g = bytearray(0x600)
+    struct.pack_into(">II", g, 0, 0x48400001, 0x00000008)
+    h = 0x10
+    struct.pack_into(">I", g, h + 0x0C, len(g))
+    struct.pack_into(">3f", g, h + 0x20, 0.5, 1.0, 12.5)      # bbox centre
+    struct.pack_into(">3f", g, h + 0x30, 1.5, 1.0, 2.5)       # half extents
+    struct.pack_into(">H", g, h + 0x50, 2)                    # bones
+    struct.pack_into(">H", g, h + 0x54, 2)                    # palette records
+    for field, at in ((0x74, 0x200), (0x78, 0x220), (0x7C, 0x280), (0x80, 0x300)):
+        struct.pack_into(">I", g, h + field, at)
+        _block(g, at)
+    struct.pack_into(">iIiI", g, 0x210, 0, 0x13C6700F, 0, 0x02489002)
+    s = 0.5 ** 0.5
+    struct.pack_into(">8f", g, 0x230, 0, 0, 10, 0, 0, 0, 0, 1)
+    struct.pack_into(">8f", g, 0x250, 0, 0, 5, 0, 0, 0, s, s)
+    struct.pack_into(">hhfhhf", g, 0x290, 0, -2, 1.0, 1, -2, 1.0)
+    body = 0x310
+    struct.pack_into(">12f", g, body, 0.5, 0, 0, 1.0, 0, 0.5, 0, 0, 0, 0, 0.5, 0)
+    data = {
+        "vtx_pos": struct.pack(">12h", 0, 0, 0, 2, 0, 0, 0, 2, 0, 2, 2, 0),
+        "vtx_normal": struct.pack(">3b", 0, 0, 64),
+        "vtx_st": struct.pack(">2h", 2048, 1024),
+        "ent_vtx": struct.pack(">12H", 0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0),
+        "u16_list": struct.pack(">4H", 0, 1, 2, 3),
+        "u8_list": bytes([0, 0, 3, 3]),
+        "tri_strip": struct.pack(">HHHBB", 0, 4, 0, 0, 0xFF),
+        "mtx_map": bytes([0, 0, 1, 3]),
+        "geom_group": struct.pack(">4H", 0, 2, 0, 1),
+        "geom_section": struct.pack(">IIHHI", 0, 0xABCD1234, 0, 1, 0),
+    }
+    off = 0xA0
+    for field, name, esize in auf_ngc.NGC_ARRAYS:
+        if name not in data:
+            continue
+        raw = data[name]
+        struct.pack_into(">II", g, body + field, off, len(raw) // esize)
+        g[body + off:body + off + len(raw)] = raw
+        off = (off + len(raw) + 3) & ~3
+    return bytes(g)
