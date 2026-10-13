@@ -590,60 +590,146 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     return {"session_id": sid, "adapter": ad.name, "capabilities": caps, "detail": detail}
 
 
+def _emulator_in_front(fg_pid: int | None, docked_pids: set, emulator_pids: set, docked_ok: bool, fg_is_gbox: bool = False) -> bool:
+    """Should a game hotkey be held right now? Only while the emulator's own window is the foreground window (fg_pid is
+    the emulator or one of its child processes), or, with docked_ok, while gBox is: the foreground window has the emulator
+    docked inside it (docked_pids = the processes owning that window's child windows) or is the gBox app itself
+    (fg_is_gbox: gBox.exe, e.g. showing the game as a GPU capture). Any other application in front (Blender, a
+    browser...) -> False: the key is released and reaches that application untouched."""
+    if not fg_pid or not emulator_pids:
+        return False
+    if fg_pid in emulator_pids:
+        return True
+    return bool(docked_ok and (fg_is_gbox or set(docked_pids or ()) & set(emulator_pids)))
+
+
+def _exe_name(pid: int | None) -> str:
+    """Lower-case image name of a process ("gbox.exe"), "" when unknown."""
+    if not pid:
+        return ""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, int(pid))                 # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        buf, n = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        ok = k32.QueryFullProcessImageNameW(wintypes.HANDLE(h), 0, buf, ctypes.byref(n))
+        return Path(buf.value).name.lower() if ok else ""
+    finally:
+        k32.CloseHandle(wintypes.HANDLE(h))
+
+
+def _process_tree(pids) -> set:
+    """pids + every descendant process (wrappers/launchers start the real emulator)."""
+    out = set()
+    for p in pids:
+        if p:
+            out.add(p)
+            try:
+                out.update(adapters._win_descendants(p))
+            except OSError:
+                pass
+    return out
+
+
+def _foreground_pids(user32, children: bool = True) -> tuple:
+    """(foreground window's process id, the process ids owning that window's child windows: a game docked in gBox)."""
+    import ctypes
+    from ctypes import wintypes
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return None, set()
+    pid, kids = wintypes.DWORD(), set()
+    user32.GetWindowThreadProcessId(wintypes.HWND(fg), ctypes.byref(pid))
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _):
+        p = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(p))
+        kids.add(p.value)
+        return True
+    if children:
+        user32.EnumChildWindows(wintypes.HWND(fg), cb, 0)
+    return pid.value, kids
+
+
+def _scoped_hotkey(name: str, hk_id: int, vk: int, sessions, fire, docked_ok: bool) -> threading.Thread:
+    """Hold RegisterHotKey(vk) ONLY while the emulator is the foreground window (_emulator_in_front), checked every 30 ms:
+    registered when it comes to the front, unregistered the moment anything else does, so the key is never taken from
+    another application. A press that lands in the gap after a switch is replayed to the window now in front.
+    sessions() -> the adapters this hotkey serves (the loop ends, releasing the key, when there are none)."""
+    def loop():
+        import ctypes
+        from ctypes import wintypes
+        user32, WM_HOTKEY, msg = ctypes.windll.user32, 0x0312, wintypes.MSG()
+        held, tree, tree_at, tree_key, names = False, set(), 0.0, None, {}
+        try:
+            while targets := sessions():
+                pids = tuple(sorted({p for a in targets if (p := getattr(getattr(a, "proc", None), "pid", None))}))
+                if pids != tree_key or time.monotonic() - tree_at > 2.0:      # emulator + children, refreshed every 2 s
+                    tree, tree_at, tree_key = _process_tree(pids), time.monotonic(), pids
+                fg_pid, docked = _foreground_pids(user32, children=docked_ok)
+                if len(names) > 256:
+                    names.clear()
+                if docked_ok and fg_pid and fg_pid not in names:
+                    names[fg_pid] = _exe_name(fg_pid)
+                front = _emulator_in_front(fg_pid, docked, tree, docked_ok, names.get(fg_pid) == "gbox.exe")
+                if front and not held:
+                    held = bool(user32.RegisterHotKey(None, hk_id, 0x4000, vk))      # MOD_NOREPEAT
+                elif not front and held:
+                    user32.UnregisterHotKey(None, hk_id)
+                    held = False
+                while user32.PeekMessageW(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY, 1):
+                    if front:
+                        fire(targets)
+                    else:                                                     # pressed as another app came to the front
+                        sc = user32.MapVirtualKeyW(vk, 0)
+                        user32.keybd_event(vk, sc, 0, 0)
+                        user32.keybd_event(vk, sc, 2, 0)                      # KEYEVENTF_KEYUP
+                time.sleep(0.03)
+        finally:
+            if held:
+                user32.UnregisterHotKey(None, hk_id)                          # the key works normally again
+    t = threading.Thread(target=loop, daemon=True, name=name)
+    t.start()
+    return t
+
+
 _HOTKEY = {"thread": None}
 
 
 def _ensure_rewind_hotkey():
-    """Keypad minus -> rewind 5 s in native RetroArch windows. Registered system-wide only while such a game runs."""
+    """Keypad minus -> rewind 5 s in native RetroArch windows. Held only while that RetroArch window (on its own or docked
+    in the gBox window) is in front: Blender and every other app keep keypad minus (zoom out) when they are in front."""
     if _HOTKEY["thread"] and _HOTKEY["thread"].is_alive():
         return
 
-    def loop():
-        import ctypes
-        from ctypes import wintypes
-        user32, VK_SUBTRACT, WM_HOTKEY, HK = ctypes.windll.user32, 0x6D, 0x0312, 0xB0C5
-        if not user32.RegisterHotKey(None, HK, 0x4000, VK_SUBTRACT):      # MOD_NOREPEAT
-            return
-        msg = wintypes.MSG()
-        try:
-            while any(getattr(a, "rewind_on", False) for a, _ in SESSIONS.values()):
-                while user32.PeekMessageW(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY, 1):
-                    for a, _ in list(SESSIONS.values()):
-                        if getattr(a, "rewind_on", False):
-                            threading.Thread(target=a.rewind, args=(5,), daemon=True).start()
-                time.sleep(0.03)
-        finally:
-            user32.UnregisterHotKey(None, HK)                            # keypad minus works normally again
-    _HOTKEY["thread"] = threading.Thread(target=loop, daemon=True, name="rewind-hotkey")
-    _HOTKEY["thread"].start()
+    def fire(targets):
+        for a in targets:
+            threading.Thread(target=a.rewind, args=(5,), daemon=True).start()
+    _HOTKEY["thread"] = _scoped_hotkey(
+        "rewind-hotkey", 0xB0C5, 0x6D,                                           # VK_SUBTRACT
+        lambda: [a for a, _ in list(SESSIONS.values()) if getattr(a, "rewind_on", False)], fire, docked_ok=True)
 
 
 _PS3_HOTKEY = {"thread": None}
 
 
 def _ensure_ps3_load_hotkey():
-    """F4 -> load the newest save state (RPCS3 relaunch) while a PS3 game runs on this PC; released when none does."""
+    """F4 -> load the newest save state (RPCS3 relaunch) while RPCS3's own window is in front; released whenever anything
+    else is. Docked in gBox, gBox's own F4 (main.js, held while gBox is in front) loads instead, so the two never overlap."""
     if _PS3_HOTKEY["thread"] and _PS3_HOTKEY["thread"].is_alive():
         return
 
-    def loop():
-        import ctypes
-        from ctypes import wintypes
-        user32, VK_F4, WM_HOTKEY, HK = ctypes.windll.user32, 0x73, 0x0312, 0xB0C6
-        if not user32.RegisterHotKey(None, HK, 0x4000, VK_F4):           # MOD_NOREPEAT
-            return
-        msg = wintypes.MSG()
-        try:
-            while any(isinstance(a, adapters.RPCS3Adapter) for a, _ in SESSIONS.values()):
-                while user32.PeekMessageW(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY, 1):
-                    for a, _ in list(SESSIONS.values()):
-                        if isinstance(a, adapters.RPCS3Adapter):
-                            threading.Thread(target=a.load_state, daemon=True).start()
-                time.sleep(0.03)
-        finally:
-            user32.UnregisterHotKey(None, HK)                            # F4 works normally again
-    _PS3_HOTKEY["thread"] = threading.Thread(target=loop, daemon=True, name="ps3-load-hotkey")
-    _PS3_HOTKEY["thread"].start()
+    def fire(targets):
+        for a in targets:
+            threading.Thread(target=a.load_state, daemon=True).start()
+    _PS3_HOTKEY["thread"] = _scoped_hotkey(
+        "ps3-load-hotkey", 0xB0C6, 0x73,                                         # VK_F4
+        lambda: [a for a, _ in list(SESSIONS.values()) if isinstance(a, adapters.RPCS3Adapter)], fire, docked_ok=False)
 
 
 def _stage_for_launch(src: Path, g, ctx, must_wait: bool = False) -> dict:
@@ -3593,7 +3679,8 @@ def _load_tool_modules(names=("pso_mods_tool", "re_mods_tool", "zelda_tool", "ac
                               "re_agent",        # re_agent: ReAgent reverser/checker/fix loop over the Ghidra Bridge
                               "gta_live",        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
-                              "evidence_capture")):   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
     import sys
