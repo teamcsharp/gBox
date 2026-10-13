@@ -267,3 +267,78 @@ PAD_HELD = 0x80287E9E                    # u16 held buttons (A 0x100, B 0x200, R
 # at 0x801ED930 (only that routine reads it); 0x801ED938 = pi/80 (the fixed step); scaled by aim_turn_speed.
 AIM_TURN = ((0x801ED930, 3.1415927410125732), (0x801ED938, 0.039269909262657166))
 HOOK_SLOT_LAUNCH, HOOK_SLOT_SPIN = 3, 4
+
+
+# ---- #511 / #512: Mercenaries combo window, grenades that never hurt the player -------------------------------------
+# Every address gBox added for these tickets, per release, with where it came from. live_checked stays False until
+# someone checks it in the running game (docs/mercenaries.md "Live checks" has the exact steps); the tool reports it.
+MERC_ADDRESS_TABLE = {
+    "G4BE08": {
+        "COMBO_WINDOW": {
+            "address": 0x802B17F0, "size": 4, "original": 300,
+            "what": "Mercenaries combo window in frames (s32, .sdata, 300 = 10 s at 30 fps): every kill after the first "
+                    "reloads the combo timer (combo struct 0x8021392C +0x2C) from it",
+            "source": "static analysis of the G4BE08 main.dol: its only reader is lwz r9,-0x7F90(r13) at 0x8001EF38 "
+                      "(r13 = 0x802B9780), stored to +0x2C of the combo struct at 0x8001EF40 by the add-kill routine "
+                      "0x8001EEA8; the countdown is the addi r9,r9,-1 at 0x8001DD88 (gBox's combo_freeze). Jay007's Gecko "
+                      "code 'Infinite Combo Time (Mercenaries Mode)' 0401EF40 60000000 patches that same store",
+            "confidence": "high (single reader, cross-checked with a published Gecko code)",
+            "live_checked": False},
+        "GRENADE_OWNER_A": {
+            "address": 0x8003B7BC, "size": 4, "original": "38600000", "patched": "806d98c4",
+            "what": "hand-grenade blast (routine 0x8003B5FC): li r3,0 -> lwz r3,-0x673C(r13), the attack owner becomes "
+                    "the player for the area attack 0x80142FE8(owner, pos, pos, class 0x13, 0, radius) at 0x8003B7D4",
+            "source": "static analysis of the G4BE08 main.dol (callers of the area attack 0x80142FE8; owner = r3). The "
+                      "owner rule (a blast owned by the player em hurts enemies, never the player) is gBox's own live "
+                      "evidence of 2026-10-07 for explosive_melee: HP 1632 -> 1632 with the player as owner, 1632 -> 912 "
+                      "with owner 0 (MELEE_CODE notes above)",
+            "confidence": "high for the site; the effect is inferred from the verified owner rule",
+            "live_checked": False},
+        "GRENADE_OWNER_B": {
+            "address": 0x8003B868, "size": 4, "original": "38600000", "patched": "806d98c4",
+            "what": "hand-grenade blast, second path (routine 0x8003B828, class 0x13 area attack at 0x8003B86C)",
+            "source": "static analysis of the G4BE08 main.dol (as GRENADE_OWNER_A)",
+            "confidence": "medium-high: the sibling routine of the hand-grenade object with the same class 0x13 blast",
+            "live_checked": False},
+    },
+    # Resident Evil 4: Wii Edition PAL: none of these is located in the Wii main.dol yet (no Wii disc on the PC that
+    # did the analysis; the GC->Wii feature-bag matcher in the notes above is the way). The tool refuses with that note.
+    "RB4P08": {},
+}
+# Not patched (recorded so nobody re-derives it): the area-attack call at 0x8003A988 in routine 0x8003A8D4, classes
+# 0x19/0x1F/0x20 by sub-type - probably the incendiary grenade's fire, unconfirmed; grenade_safe leaves it alone.
+
+_T = MERC_ADDRESS_TABLE["G4BE08"]
+COMBO_WINDOW = (_T["COMBO_WINDOW"]["address"], _T["COMBO_WINDOW"]["original"])
+GRENADE_SAFE = tuple((e["address"], e["original"], e["patched"], e["what"])
+                     for k, e in _T.items() if k.startswith("GRENADE_OWNER"))
+WII_PAL.over.update({"COMBO_WINDOW": None, "GRENADE_SAFE": None})
+
+
+def address_table(game_id) -> dict:
+    """The #511/#512 address table of one release; unknown releases are refused (KeyError)."""
+    gid = game_id.decode() if isinstance(game_id, bytes) else str(game_id)
+    if gid not in MERC_ADDRESS_TABLE:
+        raise KeyError(f"no Mercenaries address table for {gid!r}; known: {', '.join(MERC_ADDRESS_TABLE)}")
+    return {k: {**v, "address": f"0x{v['address']:08X}"} for k, v in MERC_ADDRESS_TABLE[gid].items()}
+
+
+# What the system unlock word really holds per release (pSys + 4, u32, MSB first). Only bits with evidence are named;
+# unlock_all writes all 32 (verified live on GC and Wii: every extra mode + Professional).
+UNLOCK_SCOPE = {
+    "G4BE08": {"characters": ["Leon", "Ada", "HUNK", "Krauser", "Wesker"],
+               "stages": ["Village", "Castle", "Island", "Waterworld"],
+               "modes": ["The Mercenaries", "Assignment Ada"],
+               "named_bits": {"0x08000000": "Mercenaries Ada", "0x04000000": "Mercenaries HUNK",
+                              "0x02000000": "Mercenaries Krauser", "0x01000000": "Mercenaries Wesker",
+                              "byte 0 = 0xFF": "every extra game + all Merc characters and stages"},
+               "costumes": "none in Mercenaries (one outfit per character); the story-mode special costumes sit in the "
+                           "other bytes of the same word, which unlock_all also sets (not separately confirmed)",
+               "weapons": "none to unlock in Mercenaries (fixed loadouts; merc_loadout changes them)"},
+    "RB4P08": {"characters": ["Leon", "Ada", "HUNK", "Krauser", "Wesker"],
+               "stages": ["Village", "Castle", "Island", "Waterworld"],
+               "modes": ["The Mercenaries", "Assignment Ada", "Separate Ways", "Movie Browser"],
+               "named_bits": {"byte 0 = 0xFF": "every extra game + all Merc characters and stages"},
+               "costumes": "none in Mercenaries (one outfit per character)",
+               "weapons": "none to unlock in Mercenaries (fixed loadouts)"},
+}

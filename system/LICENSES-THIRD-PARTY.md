@@ -1,6 +1,11 @@
 # Third-party components
 
-gBox bundles **no** third-party code. Python dependencies are installed via pip, and external tools run as separate processes.
+gBox bundles almost no third-party code. Python dependencies are installed via pip, and external tools run as separate processes.
+The exceptions are vendored under `gbox/vendor/`, each with its licence file and pinned upstream commit:
+
+| Vendored | Use | License | Where |
+|---|---|---|---|
+| universal-modder (rehan-remade), commit 5ba8150e27b4f1bf17ae19dcecdb2341e467885a | `um_*` tools: game scan, field notes, save backups, publish lint, sprites, ComfyUI, 3D-to-sprite | MIT | `gbox/vendor/universal_modder/` (LICENSE there; changes listed in its `__init__.py`; docs/universal_modder.md) |
 
 | Component | Use | License | How it's integrated |
 |---|---|---|---|
@@ -13,6 +18,7 @@ gBox bundles **no** third-party code. Python dependencies are installed via pip,
 | Steam client | PC launch | proprietary | `steam://` URI only |
 | audio.cpp `audiocpp_server` (ShugoAI LLC; `github.com/mirek190/audio.cpp`, reviewed at `73c55549`) | local speech assistant (TTS/ASR) | Apache-2.0 (models: Kokoro-82M and Qwen3-ASR Apache-2.0) | separate process built and installed by the operator; HTTP on localhost; not bundled (`docs/audio_cpp.md`) |
 | Sunshine / Moonlight (planned) | streaming + remote input | GPLv3 | separate process |
+| ComfyUI | local image generation (`um_comfy`) | GPLv3 | separate server, HTTP API only; not bundled |
 
 Check each license again before bundling anything in a Windows installer.
 
