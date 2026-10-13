@@ -393,6 +393,23 @@ function startPadWatcher() {
 }
 
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
+// #1639 the download icon on the Mods cards / Builds rows: Export… picks a folder on this PC (the export job runs on this
+// PC's worker and writes there); Show in folder / Open folder open Explorer. Folders only: never runs a file.
+ipcMain.handle("dialog:folder", async (_e, o = {}) => {
+  const start = typeof o.defaultPath === "string" && o.defaultPath && fs.existsSync(o.defaultPath) ? o.defaultPath : undefined;
+  const r = await dialog.showOpenDialog(win, { title: String(o.title || "Choose a folder").slice(0, 200), defaultPath: start,
+    buttonLabel: "Export here", properties: ["openDirectory", "createDirectory", "promptToCreate", "dontAddToRecent"] });
+  return r.canceled ? "" : (r.filePaths[0] || "");
+});
+ipcMain.handle("shell:show", (_e, p) => {
+  if (typeof p !== "string" || !p || !fs.existsSync(p)) return false;
+  shell.showItemInFolder(path.normalize(p)); return true;
+});
+ipcMain.handle("shell:open", async (_e, p) => {
+  if (typeof p !== "string" || !p) return false;
+  try { if (!fs.statSync(p).isDirectory()) return false; } catch { return false; }
+  return (await shell.openPath(path.normalize(p))) === "";
+});
 // a finished build (the embedded view's bell tray, gbox/build_notify.py): an OS notification while gBox is not in front;
 // a click brings the window back with the tray open. Kept referenced until closed (a collected one loses its click).
 const OS_NOTES = new Set();
