@@ -1015,55 +1015,7 @@ def build_mod(cfg, game: dict, iso: Path, bank: bytes, name: str, image_name: st
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
-    """characters op=use for Crazy Taxi (GC): slot=player -> Axel the driver (MP_YH_plyrA_*: 15 rigid parts plus
-    his hand-pose, head and sl_ LOD variants) rebuilt from the library character (mod ct_<slug>)."""
-    from . import characters as C
-    from . import filemods
-    gid = game["game_id"]
-    name = f"ct_{meta['slug']}"
-    have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
-    built = None
-    if inp.rebuild or not have:
-        joint_roles = dict(meta.get("rig", {}).get("roles") or {})
-        roles = resolve_roles(joint_roles)
-        if C.library_root(ctx.config).is_dir():
-            from .gcdisc import GCDisc
-            glb = C._local_or_fetch(ctx, meta, meta["model"])
-            iso = C._gc_iso(ctx, game)
-            bank = GCDisc(iso).read(BANK)
-            src_sha = hashlib.sha256(bank).hexdigest()[:16]
-            new_bank, stats = swap_driver(bank, glb, roles, joint_roles, "A", progress=ctx.progress)
-            built = build_mod(ctx.config, game, iso, new_bank, name, f"Crazy Taxi {meta['slug']}.iso",
-                              progress=ctx.progress)
-            built["stats"] = stats
-            C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
-                   json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
-                         "notes": f"replaces Axel the driver (MP_YH_plyrA_*: {len(stats)} .shp parts; source bank "
-                                  f"{src_sha}…); his skeleton/animations stay"})
-        else:
-            cp = next((w["id"] for w in C._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"
-                       and w.get("online")), None)
-            ctx.progress(10, "Building the Crazy Taxi mod on the control-plane node (the collection lives there)")
-            j = C._job(ctx, "characters", {"op": "use", "character": meta["slug"], "game_id": gid,
-                                           "rebuild": inp.rebuild, "launch": False, "slot": inp.slot}, cp, 3600)
-            r = (j.get("output") or {}).get("result") or {}
-            if j.get("state") != "succeeded" or r.get("status") not in ("built", "ready"):
-                return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
-            built = r.get("build")
-    res = {"mod": name, "build": built,
-           "replaces": "Axel the driver (MP_YH_plyrA_* .shp parts, all LODs and hand poses)"}
-    if not inp.launch:
-        return res | {"status": "built" if built else "ready"}
-    ctx.progress(90, f"Launching Crazy Taxi with {meta['name']} (mod {name})")
-    lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": name, "node": "idle"}})
-    t0 = time.time()
-    while lj.get("state") in ("queued", "running") and time.time() - t0 < 1800:
-        time.sleep(2)
-        lj = C._api(ctx, "GET", f"/api/jobs/{lj['id']}")
-    ok = lj.get("state") == "succeeded"
-    launch = {"job": lj.get("id"), "state": lj.get("state"),
-              "session_id": (lj.get("output") or {}).get("session_id"), "error": lj.get("error")}
-    return res | {"status": ("built+launched" if built else "launched") if ok else "launch " + str(lj.get("state")),
-                  "launch": launch,
-                  "message": f"Crazy Taxi is running with {meta['name']} as the driver (mod {name})." if ok else
-                  f"Mod {name} is {'built' if built else 'ready'} but the launch {lj.get('state')}: {lj.get('error')}"}
+    """characters op=use for Crazy Taxi (GC): gbox.crazy_taxi_swap.use (slots player | driver:<name> | drivers |
+    pedestrian(s) | passenger(s)). Kept so older callers of gbox.crazy_taxi.use reach the same writer."""
+    from . import crazy_taxi_swap
+    return crazy_taxi_swap.use(ctx, meta, game, inp)

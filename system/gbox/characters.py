@@ -2109,9 +2109,10 @@ def characters_tool(inp: CharIn, ctx):
         # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>; enemy:<name> | enemies -> pso_<slug>_as_<name>
         # (gbox.pso_enemy: the character on the enemy's node tree and motions)
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
-    from . import crazy_taxi
-    if gid in crazy_taxi.GAME_IDS and inp.slot == "player":    # Crazy Taxi GC: Axel the driver -> ct_<slug>
-        return {"result": out | crazy_taxi.use(ctx, meta, game, inp)}
+    from . import crazy_taxi_swap
+    if gid in crazy_taxi_swap.GAME_IDS and crazy_taxi_swap.is_slot(inp.slot):
+        # Crazy Taxi GC: player | driver:<name> | drivers | pedestrian(s) | passenger(s) -> ct_<slug>[_<slot>]
+        return {"result": out | crazy_taxi_swap.use(ctx, meta, game, inp)}
     from . import aki_wrestling
     if gid in aki_wrestling.GAME_IDS:                         # AKI wrestling (No Mercy): slot = a wrestler | player 1
         return {"result": out | aki_wrestling.use(ctx, meta, game, inp)}

@@ -42,7 +42,16 @@ material's chunk separately, so the fit searches the largest vertex count whose 
 Slots (`characters op=use slot=...`): `player` (the driver this character was last built for in this game, else
 Axel), `driver:<axel|bd_joe|gena|gus>` (names and aliases), `drivers` (all four, so the driver-select choice does
 not matter), `pedestrian:<group>` / `pedestrians`, `passenger:<group>` / `passengers`. `roster()` lists them and
-`characters op=collect` reports them as slots without extracting anything (the parts are bone-local, #1369).
+`characters op=collect` reports them as slots (`cast_slots()`) without extracting anything (the parts are bone-local,
+#1369).
+
+Quantisation: the header (radius, centre, scale, format words) is kept byte for byte, so the game decodes the new
+s16 arrays exactly as it decoded the stock ones. gbox.crazy_taxi's `Shape.frac()` guesses the POS shift from the
+bounding radius; on a written blob that guess can differ (a donor that does not reach the stock radius reads as
+frac 6), so checks decode written parts with the stock part's frac.
+
+Checked on the owned bank (a5171e43...) with HUcast: every driver (54/54/50/50 blobs, 1087-1241 triangles), every
+pedestrian and every fare group encode at their stock sizes, names and order.
 """
 from __future__ import annotations
 
@@ -291,6 +300,17 @@ def roster(bank: bytes | None = None) -> list[dict]:
     return out
 
 
+def cast_slots() -> list[dict]:
+    """The slots this writer offers the cast menu (`characters op=collect` "slots", via
+    gbox.char_coverage.cast_slots): `player` first, then every roster() slot. Nothing is extracted or read."""
+    out = [{"slot": "player", "name": "the driver (the one this character was last built for, else Axel)",
+            "kind": "player", "writer": "gbox.crazy_taxi_swap"}]
+    for r in roster():
+        out.append({"slot": r["slot"], "name": r["name"], "kind": r["slot_kind"], "writer": r["writer"],
+                    "aliases": r["aliases"], **({"blobs": r["blobs"]} if "blobs" in r else {})})
+    return out
+
+
 # ----------------------------------------------------------------------------------------------- fitting
 
 def representable(template: bytes, frac: int) -> np.ndarray:
@@ -338,10 +358,66 @@ def deal_materials(pos, tris, centroids) -> list[list[tuple]]:
     return [[tris[i] for i in o] for o in order]
 
 
+def _axes(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Centroid and principal axes (rows, by falling variance) of a point set."""
+    mu = X.mean(0)
+    _u, _s, vt = np.linalg.svd(X - mu, full_matrices=False)
+    if len(vt) < 3:                                          # fewer than 3 points: complete the frame
+        vt = np.linalg.qr(np.vstack([vt, np.eye(3)]).T)[0].T[:3]
+    return mu, vt
+
+
+def _chamfer(a: np.ndarray, b: np.ndarray) -> float:
+    d = ((a[:, None, :] - b[None, :, :]) ** 2).sum(-1)
+    return float(np.sqrt(d.min(1)).mean() + np.sqrt(d.min(0)).mean())
+
+
+def fit_points(P, N, cloud, max_stretch: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+    """Donor points P (normals N) onto a stock part's decoded cloud: the donor's principal axes onto the part's (of the
+    four proper sign choices, the one with the smallest chamfer distance), each axis scaled to the part's extent along
+    it (stretch held within `max_stretch` of the mean scale, so a flat donor plate is not blown up into a box), and the
+    bounding-box centres matched. Returns (points, unit normals).
+
+    A rigid + uniform-scale Umeyama on farthest-point samples (gbox.crazy_taxi._fit_rigid) pairs points by sample
+    order, not by position; on unrelated shapes that pairing shrinks the donor (a 4 x 2 x 2 part took a sphere 1.3
+    across), so the parts came out as small blobs at the joints."""
+    P, cloud = np.asarray(P, float), np.asarray(cloud, float)
+    N = np.asarray(N, float) if len(N) == len(P) else np.zeros_like(P)
+    mp, ap = _axes(P)
+    mc, ac = _axes(cloud)
+    cq = (cloud - mc) @ ac.T
+    lo_c, hi_c = cq.min(0), cq.max(0)
+    sub = P[ct._farthest(P, min(len(P), 400))]
+    best = None
+    for signs in ((1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)):
+        S = np.asarray(signs, float)
+        if np.linalg.det(ac.T @ np.diag(S) @ ap) < 0:
+            S = -S                                           # keep a proper rotation (ap/ac may be left-handed)
+        q = (P - mp) @ ap.T * S
+        lo_p, hi_p = q.min(0), q.max(0)
+        ext_p, ext_c = np.maximum(hi_p - lo_p, 1e-6), np.maximum(hi_c - lo_c, 1e-6)
+        k = ext_c / ext_p
+        g = float(np.exp(np.log(k).mean()))
+        k = np.clip(k, g / max_stretch, g * max_stretch)
+        shift = (lo_c + hi_c) / 2 - k * (lo_p + hi_p) / 2
+
+        def place(X, S=S, k=k, shift=shift):
+            return mc + (((X - mp) @ ap.T * S) * k + shift) @ ac
+
+        err = _chamfer(place(sub), cloud)
+        if best is None or err < best[0]:
+            best = (err, S, k, place)
+    _err, S, k, place = best
+    L = ac.T @ np.diag(k) @ np.diag(S) @ ap                  # x' = L x (+ offset): normals go by L^-T
+    nrm = N @ np.linalg.inv(L)
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-9)
+    return place(P), nrm
+
+
 def fit_blob(template: bytes, seg, name: str = "") -> tuple[bytes, dict]:
-    """One donor segment (pos, nrm, tris in donor space) -> the part's blob (same size): rigid + uniform-scale fit onto
-    the part's decoded cloud, centre subtracted, shrunk into the s16 range if needed, vertex-clustered down to the
-    largest count whose actual encoding fits, triangles dealt to the materials by region."""
+    """One donor segment (pos, nrm, tris in donor space) -> the part's blob (same size): principal-axis fit onto the
+    part's decoded cloud (`fit_points`), centre subtracted, shrunk into the s16 range if needed, vertex-clustered down
+    to the largest count whose actual encoding fits, triangles dealt to the materials by region."""
     shape = ct.read_shape(template, name)
     cloud = np.asarray(shape.positions(), float)
     P = np.asarray(seg[0], float)
@@ -349,11 +425,10 @@ def fit_blob(template: bytes, seg, name: str = "") -> tuple[bytes, dict]:
     T = [tuple(map(int, t)) for t in seg[2]]
     if len(cloud) < 3 or len(P) < 3 or not T:
         raise ValueError(f"{name}: empty donor segment or target cloud")
-    R, t, s = ct._fit_rigid(P, cloud)
     centre = np.asarray(shape.centre, float)
-    local = (P @ R.T * s + t) - centre
-    nrm = N @ R.T
-    over = float((np.abs(local).max(0) / (representable(template, shape.frac()) * 0.999)).max())
+    fitted, nrm = fit_points(P, N, cloud)
+    local = fitted - centre
+    over =float((np.abs(local).max(0) / (representable(template, shape.frac()) * 0.999)).max())
     if over > 1:
         mu = cloud.mean(0) - centre
         local = mu + (local - mu) / over
@@ -378,10 +453,13 @@ def fit_blob(template: bytes, seg, name: str = "") -> tuple[bytes, dict]:
     hi = max(3, min(vmax, len(local)))
     best = attempt(hi)
     if best is None:
-        lo = 3
-        best = attempt(lo)
-        if best is None:
-            raise ValueError(f"{name}: even {lo} vertices don't fit the part blob ({len(template)} bytes)")
+        # the smallest k that keeps a triangle (very few clusters can collapse every donor triangle), then the
+        # largest k that still encodes (sizes grow with k)
+        lo = next((k for k in range(3, min(hi, 48)) if attempt(k) is not None), None)
+        if lo is None:
+            raise ValueError(f"{name}: no vertex count up to {min(hi, 48) - 1} keeps a donor triangle that fits the "
+                             f"part blob ({len(template)} bytes)")
+        best = tried[lo]
         while hi - lo > 1:                                   # largest k that encodes (sizes grow with k)
             mid = (lo + hi) // 2
             r = attempt(mid)

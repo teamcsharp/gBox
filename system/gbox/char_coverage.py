@@ -38,7 +38,10 @@ WRITERS = [
      "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
-    ("crazy_taxi", ["player"], "Crazy Taxi GC: Axel the driver (15 rigid .shp parts + hand/head variants and sl_ LODs)"),
+    ("crazy_taxi_swap", ["player", "driver:<axel|bd_joe|gena|gus>", "drivers", "pedestrian:<group>", "pedestrians",
+                         "passenger:<group>", "passengers"],
+     "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
+     "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
