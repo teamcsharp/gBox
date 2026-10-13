@@ -213,7 +213,8 @@ def test_garbage_memory_never_raises():
     p = prof()
     empty = Mem()                                                     # all zeros: no table pointer
     pr = entity_probe.Probe(p, empty.read_memory)
-    assert pr.scan() == {"entities": [], "camera": None, "frame": [640, 480], "diagnostics": pr.diagnostics}
+    assert pr.scan() == {"entities": [], "camera": None, "frame": [640, 480], "camera_check": None,
+                         "diagnostics": pr.diagnostics}
     assert any("outside pointer_range" in d for d in pr.diagnostics)
     mem = build(p, SCENE, CAMERA, count=10 ** 6)                      # absurd count: capped, no exception
     pr = entity_probe.Probe(p, mem.read_memory, max_entities=8)
@@ -288,3 +289,126 @@ def test_under_point_collapses_cloneplayer_twin_onto_its_bot():
     assert all(o["class"] != "ClonePlayer" for o in hit["others"])
     lone = dict(clone, index=200, x=999.0)          # a ClonePlayer with no owner stays pickable
     assert Probe.under_point(340, 200, {"frame": [640, 480], "entities": [lone]})["entity"]["index"] == 200
+
+
+# --- camera cut detection (#1438 stage 1 live m3: a shot change between the RAM read and the frame named nothing) ----
+
+def _flip_to_scripted_after(mem, p, n_blob_reads):
+    """After the camera block has been read n times, the game cuts to its scripted camera (pm_flags 0x100)."""
+    flags = CLIENTS + hx(p["camera"]["override"]["flags"][1])
+    seen = {"n": 0}
+    orig = mem.read_memory
+
+    def read(a, n):
+        out = orig(a, n)
+        if a == CLIENTS:
+            seen["n"] += 1
+            if seen["n"] == n_blob_reads:
+                mem.u32(flags, 0x100)
+        return out
+    return read, seen
+
+
+def test_camera_delta_separates_motion_from_cuts():
+    a = entity_probe.Camera((0, 0, 64), (10, 359, 0), 60)
+    assert entity_probe.camera_delta(a, a)["cut"] is False
+    moved = entity_probe.Camera((20, 0, 64), (12, 1, 0), 60)            # walking and turning across yaw 0: motion
+    d = entity_probe.camera_delta(a, moved)
+    assert d["cut"] is False and d["eye"] == 20.0 and d["angle"] == pytest.approx(2.0)
+    assert entity_probe.camera_delta(a.as_dict(), moved.as_dict())["cut"] is False     # dicts from scans work too
+    assert entity_probe.camera_delta(a, entity_probe.Camera((500, 0, 64), (10, 359, 0), 60))["cut"] is True
+    assert entity_probe.camera_delta(a, entity_probe.Camera((0, 0, 64), (10, 300, 0), 60))["cut"] is True
+    assert entity_probe.camera_delta(a, entity_probe.Camera((0, 0, 64), (10, 359, 0), 45))["cut"] is True
+    assert entity_probe.camera_delta(a, entity_probe.Camera((0, 0, 64), (10, 359, 0), 60, source="scripted"))["cut"]
+    assert entity_probe.camera_delta(a, None) == {"eye": None, "angle": None, "fov": None, "source_changed": None,
+                                                  "cut": True, "readable": False}      # camera vanished: a cut
+    none = entity_probe.camera_delta(None, None)                          # title/FMV: no world, no camera, no cut
+    assert none["cut"] is False and none["readable"] is False
+    assert entity_probe.camera_delta(a, moved, cut_eye=10)["cut"] is True                 # profile limits apply
+
+
+def test_scan_reports_a_stable_camera_and_rewalks_after_a_cut():
+    p = prof()
+    mem = build(p, SCENE, CAMERA)
+    scan = entity_probe.Probe(p, mem.read_memory).scan()
+    assert scan["camera_check"]["stable"] is True and scan["camera_check"]["retried"] == 0
+    scripted = ((300, 0, 64), (0, 180, 0), 60)
+    mem = build(p, SCENE, CAMERA, scripted=scripted)
+    read, seen = _flip_to_scripted_after(mem, p, 1)                      # cut right after the first camera read
+    scan = entity_probe.Probe(p, read).scan()
+    chk = scan["camera_check"]
+    assert chk["stable"] is True and chk["retried"] == 1 and scan["camera"]["source"] == "scripted"
+    assert not any("camera cut" in d for d in scan["diagnostics"])       # the re-walk resolved it
+    by = {e["index"]: e for e in scan["entities"]}
+    assert by[1]["screen"][0] > 640                                      # boxes use the new shot, not the old one
+    mem = build(p, SCENE, CAMERA, scripted=scripted)
+    read, _ = _flip_to_scripted_after(mem, p, 1)
+    scan = entity_probe.Probe(p, read).scan(retries=0)                  # no re-walk allowed: the cut is reported
+    assert scan["camera_check"]["cut"] is True and scan["camera_check"]["source_changed"] is True
+    assert any("camera cut" in d for d in scan["diagnostics"])
+
+
+def test_reused_entities_compare_against_camera_before_and_recheck_flags_a_later_cut():
+    p = prof()
+    mem = build(p, SCENE, CAMERA, scripted=((300, 0, 64), (0, 180, 0), 60))
+    pr = entity_probe.Probe(p, mem.read_memory)
+    before = pr.camera()
+    ents = pr.entities()
+    scan = pr.scan(entities=ents, camera_before=before)
+    assert scan["camera_check"]["stable"] is True
+    assert pr.recheck(scan)["stable"] is True
+    mem.u32(CLIENTS + hx(p["camera"]["override"]["flags"][1]), 0x100)   # the shot changes after the frame was taken
+    re = pr.recheck(scan)
+    assert re["cut"] is True and re["stable"] is False and re["camera_now"]["source"] == "scripted"
+    from gbox import tools
+    scan["recheck"] = re
+    out = tools._pick_from_probe(scan, 0.5, 230 / 480)
+    assert out["camera_check"]["cut"] is True and "click again" in out["warning"]
+    assert out["picked"]["class"] == "Bot"                              # still answers, but says it may be stale
+    scan.pop("recheck")
+    out = tools._pick_from_probe(scan, 0.5, 230 / 480)
+    assert out["camera_check"]["stable"] is True and "warning" not in out
+
+
+def test_no_world_loaded_is_not_reported_as_a_cut():
+    """Live on the Spark (2026-10-13, launch a1771e15fcd041a0): during AUF's pre-rendered intro g_entities and the
+    client array are null. The probe reports no camera; the recheck must not call that a shot change."""
+    p = prof()
+    empty = Mem()
+    empty.put(0x80000000, b"GW7E69")
+    pr = entity_probe.Probe(p, empty.read_memory)
+    scan = pr.scan()
+    assert scan["camera"] is None and scan["camera_check"] is None
+    re = pr.recheck(scan)
+    assert re["cut"] is False and re["readable"] is False and re["camera_now"] is None
+    from gbox import tools
+    scan["recheck"] = re
+    out = tools._pick_from_probe(scan, 0.5, 0.5)
+    assert out["picked"] is None and "camera unreadable" in out["note"] and "warning" not in out
+
+
+def test_pick_whip_entity_profile_warns_on_a_cut_after_the_click(monkeypatch):
+    """pick_identify (the pick whip) uses pick_tool.entity_profile, not the older pick tool: it rechecks the camera
+    after the scan and records a failed 'camera' evidence step when the shot changed (#1438)."""
+    from gbox import pick_tool, tools
+    p = prof()
+    mem = build(p, SCENE, CAMERA, scripted=((300, 0, 64), (0, 180, 0), 60))
+    monkeypatch.setattr(tools, "_semantic_state", lambda ad, g: {"profile": p["id"], "entities": None})
+    monkeypatch.setattr(semantic, "load_profiles", lambda: [p])
+
+    class Ad:
+        read_memory = staticmethod(mem.read_memory)
+
+    ev = pick_tool.Evidence()
+    out = pick_tool.entity_profile(Ad(), {}, "s", 0.5, 230 / 480, 4 / 3, 0.5, 230 / 480, None, ev, None)
+    assert out["entity"]["class"] == "Bot" and not any(r["step"] == "camera" for r in ev)
+    original = entity_probe.Probe.recheck
+
+    def cut_then_recheck(self, scan):                       # the shot changes between the scan and the recheck
+        mem.u32(CLIENTS + hx(p["camera"]["override"]["flags"][1]), 0x100)
+        return original(self, scan)
+    monkeypatch.setattr(entity_probe.Probe, "recheck", cut_then_recheck)
+    ev = pick_tool.Evidence()
+    pick_tool.entity_profile(Ad(), {}, "s", 0.5, 230 / 480, 4 / 3, 0.5, 230 / 480, None, ev, None)
+    cam = next(r for r in ev if r["step"] == "camera")
+    assert cam["ok"] is False and "click again" in cam["detail"] and cam["data"]["camera_check"]["cut"] is True

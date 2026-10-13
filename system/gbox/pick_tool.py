@@ -273,9 +273,13 @@ def entity_profile(ad, g, sid, x, y, aspect, cx, cy, box, ev: Evidence, ctx) -> 
     picked, others, how = None, [], ""
     if cam.get("layout") == "pos_angles_fov":
         from . import entity_probe
-        scan = entity_probe.Probe(prof, ad.read_memory).scan(*T.PICK_FRAME, entities=st.get("entities"))
+        probe = entity_probe.Probe(prof, ad.read_memory)
+        scan = probe.scan(*T.PICK_FRAME, entities=st.get("entities"))
+        scan["recheck"] = probe.recheck(scan)                # a shot change around the click shows up here (#1438)
         res = T._pick_from_probe(scan, cx, cy)
         picked, others, how = res.get("picked"), res.get("others") or [], "gbox.entity_probe (gclient camera)"
+        if res.get("warning"):
+            ev.add("camera", False, res["warning"], how, camera_check=res.get("camera_check"))
     elif cam:
         hits = project_hits(ad, g, prof, st, cx, cy)
         how = "profile.camera projection (tools.project_point)"

@@ -3457,6 +3457,11 @@ def _pick_from_probe(scan: dict, cx: float, cy: float) -> dict:
            "click": [round(cx, 3), round(cy, 3)], "click_px": [round(cx * w, 1), round(cy * h, 1)],
            "others": [entity_probe.summary(o) for o in hit["others"]], "camera": scan["camera"],
            "entities": len(scan["entities"]), "diagnostics": scan["diagnostics"][:20]}
+    check = scan.get("recheck") or scan.get("camera_check")
+    if check is not None:
+        out["camera_check"] = {k: check.get(k) for k in ("stable", "cut", "eye", "angle", "fov", "source_changed")}
+        if check.get("cut") and scan.get("camera"):
+            out["warning"] = "the camera cut while the game was read: the boxes may belong to the previous shot, click again"
     if e is None:
         out["note"] = "nothing projectable near the click" if scan["camera"] else "camera unreadable (see diagnostics)"
     elif e.get("model"):
@@ -3485,7 +3490,9 @@ def pick(inp: PickIn, ctx: Ctx):
         prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
         if prof and (prof.get("camera") or {}).get("layout") == "pos_angles_fov":      # table-of-records games (AUF)
             from . import entity_probe
-            probe_scan = entity_probe.Probe(prof, ad.read_memory).scan(*PICK_FRAME, entities=st.get("entities"))
+            probe = entity_probe.Probe(prof, ad.read_memory)
+            probe_scan = probe.scan(*PICK_FRAME, entities=st.get("entities"))
+            probe_scan["recheck"] = probe.recheck(probe_scan)      # a shot change around the click shows up here
         elif prof and prof.get("camera"):
             cam_raw = (ad.read_memory(int(prof["camera"]["eye"], 16), 12), ad.read_memory(int(prof["camera"]["target"], 16), 12))
     finally:
