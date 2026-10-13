@@ -46,6 +46,8 @@ def presentation_state(error, frames_seen, session_id=None):
     for fragment, state, needs_frame in PRESENTATION_ERRORS:
         if fragment in text and (frames_seen or not needs_frame):
             return state
+    if 'sessiongone' in text or 'no longer running on this pc' in text:
+        return 'stopped'  # tools.SessionGone: the worker restarted or another game replaced this one.
     if session_id and 'keyerror' in text and str(session_id).lower() in text:
         return 'stopped'
     return None

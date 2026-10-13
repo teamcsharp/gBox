@@ -312,3 +312,14 @@ def test_any_capture_failure_after_the_session_ended_is_stopped(observer):
         failed_frame(o, 'RuntimeError: ffmpeg exited with status 1')
     row = o.store.get('session_observer', 'worker-launch')
     assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')
+
+
+def test_worker_session_gone_is_stopped_not_a_repair(observer):
+    # Workers since #840 raise tools.SessionGone instead of a bare KeyError for a session they no longer hold.
+    o = observer
+    o.sample(o.session)
+    for _ in range(4):
+        failed_frame(o, 'SessionGone: This game session (worker-launch) is no longer running on this PC: the worker '
+                        'restarted or another game replaced it. Relaunch the game to continue.')
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'stopped' and row.get('failures', 0) == 0 and not o.store.all('request')
