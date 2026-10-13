@@ -7,23 +7,31 @@ In the 3D viewport: Ctrl+Shift+V or the sidebar tab "gBox".
 - image -> textured plane (pixel-exact: Closest filtering, alpha), 1 px = 1 cm, provenance in custom props
 - gltf  -> imported scene objects
 - text  -> a Text datablock
-"Send to gBox" exports the selection as GLB onto the gBox clipboard (gBox: characters op=add from_clipboard=true).
-"Auto-paste" imports each new gBox copy as soon as it happens.
+"Send to gBox" stores the selection (or the gBox character being edited) in the gBox collection as a character
+(characters op=add, gbox.blender_roundtrip): a gBox character with its skeleton unchanged -> a variant of it (rig roles
+kept, objects parented to bones = attachments with their own textures); bones changed -> a new character derived from
+it; anything else -> a new character, its rig recognised (Mixamo, Rigify, VRoid/VRM, UE mannequin, biped, Blender
+metarig) or, without an armature, auto-rigged. "Copy to gBox clipboard" only puts the GLB on the clipboard.
+"Auto-paste" imports each new gBox copy as soon as it happens. A character pasted from gBox (Ctrl+Shift+V, or a plain
+Ctrl+V after gBox's "Copy to Blender") keeps its role names on the bones and is adopted into gBox/<slug> on send.
 
 gBox Live Link (sidebar > gBox > gBox Live Link):
   Connect      reads the collection (previews) and the running sessions from the gBox server
-  Pull         imports a character into the collection "gBox/<slug>" (armature, materials, textures) with its gBox
-               metadata as custom properties (collection: gbox_slug, gbox_base, gbox_roles; bones: gbox_role)
+  Pull         imports a character into the collection "gBox/<slug>" (armature, weights, textures: the round-trip GLB)
+               with its gBox metadata as custom properties (collection + armature: gbox_slug, gbox_base, gbox_roles;
+               bones: gbox_role; meshes: gbox_part=body, attachments gbox_prop / gbox_bone)
   edit         reshape the head, scale the head bone (pose mode: carried through as the head scale), add hats / props
                (any object in that collection; bound to its "gbox_bone" property's bone or the nearest bone on send,
                or pick one with Bind), paint / swap textures, change materials
-  Send back    exports the collection (GLB; painted images packed, node-only materials baked) and stores it in gBox as a
-               variant (characters op=add base=<slug>): base rig roles, props mapped to the roles of their bones
-  Use in game  characters op=use on a running gBox session (built + launched where a writer exists: SM64, RE4 GC)
-  Live         re-sends the variant on every save (Ctrl+S) or Push, rebuilds it and puts it into the running game
-               (live_link: building -> validating -> reloading -> live ✓, or the blocking reason)
+  Send back    exports the collection (GLB with extras; painted images packed, node-only materials baked) and stores it
+               in gBox as a variant (characters op=add base=<slug>): base rig roles, props mapped to their bones
+  Use in game  characters op=use on a running gBox session (built + launched where a writer exists)
+  Live         on every save (Ctrl+S; saves within DEBOUNCE_S coalesce into one push) or Push: re-sends the variant
+               (the first save creates it) and live_link puts it into the game showing it - the session picked with
+               Use in game, else whichever running game shows this character or its original (live_link finds it):
+               building -> validating -> reloading -> live ✓, or the blocking reason, in the status box
 """
-bl_info = {"name": "gBox", "author": "gBox", "version": (0, 2, 0), "blender": (3, 6, 0),
+bl_info = {"name": "gBox", "author": "gBox", "version": (0, 3, 0), "blender": (3, 6, 0),
            "location": "View3D > Sidebar > gBox, Ctrl+Shift+V", "description": "Paste assets copied in gBox; gBox Live Link",
            "category": "Import-Export"}
 
@@ -44,6 +52,77 @@ _state = {"last_seq": None}
 LIVE = {"status": "", "busy": False, "chars": [], "sessions": [], "pending": [], "connected": "", "last": {}}
 _previews = {"pc": None}
 _items = {"chars": [], "sessions": []}
+DEBOUNCE_S = 1.5                                              # saves closer together than this: one live push
+
+
+# ---------------------------------------------------------------- pure helpers (no bpy: tested without Blender)
+
+class Debounce:
+    """Ctrl+S pressed several times in a row -> one push, `wait` seconds after the last save."""
+
+    def __init__(self, wait=DEBOUNCE_S):
+        self.wait, self.at = wait, None
+
+    def hit(self, now):
+        self.at = now
+
+    def due(self, now):
+        return self.at is not None and now - self.at >= self.wait
+
+    def left(self, now):
+        return None if self.at is None else max(0.0, self.wait - (now - self.at))
+
+    def clear(self):
+        self.at = None
+
+
+_save_wait = Debounce()
+
+
+def glb_json(path):
+    """The glTF json of a .glb / .gltf file."""
+    with open(path, "rb") as f:
+        d = f.read()
+    if d[:4] == b"glTF":
+        import struct
+        n = struct.unpack_from("<I", d, 12)[0]
+        return json.loads(d[20:20 + n])
+    return json.loads(d)
+
+
+def gbox_tags(gl):
+    """gBox metadata of a round-trip GLB (gbox.blender_roundtrip.tag) -> {info, bones {bone: role},
+    objects {node: {gbox_prop, gbox_bone, gbox_part}}} ({} when it has none)."""
+    info = next((sc["extras"]["gbox"] for sc in gl.get("scenes") or [] if isinstance(sc.get("extras"), dict)
+                 and isinstance(sc["extras"].get("gbox"), dict)), None)
+    bones, objs = {}, {}
+    for n in gl.get("nodes") or []:
+        e = n.get("extras") if isinstance(n.get("extras"), dict) else {}
+        if e.get("gbox_role"):
+            bones[n.get("name")] = e["gbox_role"]
+        keep = {k: v for k, v in e.items() if k in ("gbox_prop", "gbox_bone", "gbox_part")}
+        if "mesh" in n and keep:
+            objs[n.get("name")] = keep
+    return {"info": info, "bones": bones, "objects": objs} if (info or bones or objs) else {}
+
+
+def add_input(name, artifact, base="", replace="", props=(), roles=None, scale=None, auto_rig=True, derived_ok=True):
+    """characters op=add input of a send (the control plane decides variant / derived / new, gbox.blender_roundtrip)."""
+    return {"op": "add", "character": name, "artifact": artifact, "base": base or "", "replace": replace or "",
+            "props": [{"object": p["object"], "bone": p["bone"]} for p in props or []], "rig_roles": dict(roles or {}),
+            "scale": dict(scale or {}), "auto_rig": bool(auto_rig), "derived_ok": bool(derived_ok)}
+
+
+def describe_add(r):
+    """One status line for a characters op=add result."""
+    e = r.get("entry") or {}
+    mode = r.get("mode") or ("variant" if r.get("variant_of") else "new")
+    props = ", ".join(f"{p.get('node')}→{p.get('bone')}" for p in r.get("props") or []) or "no attachments"
+    rig = r.get("rig") or {}
+    how = {"variant": f"variant of {r.get('variant_of')}", "derived": f"new character derived from {r.get('derived_from')}",
+           "new": f"new character ({rig.get('rig') or 'no'} rig{', auto-rigged' if rig.get('rig') == 'auto' else ''})"}[mode]
+    warn = f" ⚠ {r['note']}" if r.get("note") else ""
+    return f"✓ {e.get('name')} ({e.get('slug')}): {how}; {props}{warn}"
 
 
 # ---------------------------------------------------------------- server
@@ -128,12 +207,20 @@ def _paste(item, context):
         ob.data.materials.append(mat)
         created = [ob]
     elif item["kind"] == "gltf":
-        path = os.path.join(tmp, "asset.gltf")
+        path = os.path.join(tmp, "asset.glb" if data[:4] == b"glTF" else "asset.gltf")
         with open(path, "wb") as f:
             f.write(data)
         before = set(bpy.data.objects)
         bpy.ops.import_scene.gltf(filepath=path)
         created = [o for o in bpy.data.objects if o not in before]
+        try:
+            tags = gbox_tags(glb_json(path))
+        except Exception:                                     # not ours / unreadable: a plain import
+            tags = {}
+        if tags:                                              # a gBox character: role names on bones, its own collection
+            apply_tags(created, tags)
+            if tags.get("info"):
+                adopt(created, tags["info"], context)
     else:
         txt = bpy.data.texts.new(name)
         txt.write(data.decode("utf-8", "replace") if item["kind"] == "text" else data.hex(" "))
@@ -166,15 +253,18 @@ class GBOX_OT_paste(bpy.types.Operator):
 
 class GBOX_OT_send(bpy.types.Operator):
     bl_idname = "gbox.send"
-    bl_label = "Send to gBox"
-    bl_description = ("Export the selected objects (or the whole scene) as GLB and put it on the gBox clipboard; then ask "
-                      "gBox to add it to the collection (characters op=add from_clipboard)")
+    bl_label = "Copy to gBox clipboard"
+    bl_description = ("Export the selected objects (or the whole scene) as GLB and put it on the gBox clipboard only "
+                      "(Send to gBox stores it in the collection)")
 
     def execute(self, context):
         try:
             path = os.path.join(tempfile.mkdtemp(prefix="gbox_"), "edited.glb")
             sel = bool(context.selected_objects)
-            bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=sel)
+            try:
+                bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=sel, export_extras=True)
+            except TypeError:
+                bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=sel)
             with open(path, "rb") as f:
                 data = f.read()
             name = (context.active_object.name if context.active_object else "blender_model")
@@ -233,7 +323,11 @@ def _layer_coll(lc, name):
 
 
 def _fetch_model(slug, d):
-    data = _get(f"/api/characters/{slug}/model", raw=True)
+    """The round-trip GLB (armature, weights, textures, role names, props as extras); an older server: the model."""
+    try:
+        data = _get(f"/api/characters/{slug}/blender", raw=True)
+    except Exception:
+        data = _get(f"/api/characters/{slug}/model", raw=True)
     if data[:4] == b"glTF":
         p = os.path.join(d, slug + ".glb")
     else:                                                     # .gltf: fetch external buffers / images beside it
@@ -252,51 +346,106 @@ def _fetch_model(slug, d):
     return p
 
 
-def pull(slug, context=None):
-    """Character -> collection gBox/<slug> with armature, materials, textures and the gBox metadata."""
+def apply_tags(objs, tags):
+    """Custom properties from a round-trip GLB's extras (the importer usually sets them itself; names can differ)."""
+    info = tags.get("info") or {}
+    for o in objs:
+        if o.type == "ARMATURE":
+            if info:
+                o["gbox_slug"] = info.get("slug") or ""
+                o["gbox_base"] = info.get("base") or info.get("slug") or ""
+                o["gbox_name"] = info.get("name") or ""
+                o["gbox_roles"] = json.dumps(info.get("roles") or {})
+            roles = tags.get("bones") or {}
+            if not roles and info.get("roles"):
+                roles = {b: r for r, b in info["roles"].items()}
+            for b in o.data.bones:
+                if roles.get(b.name):
+                    b["gbox_role"] = roles[b.name]
+        for k, v in ((tags.get("objects") or {}).get(o.name) or {}).items():
+            o[k] = v
+
+
+def adopt(objs, info, context=None):
+    """Objects of one gBox character -> its own collection gBox/<slug> with the Live Link properties (Pull does this;
+    a Ctrl+Shift+V / Ctrl+V paste of a gBox character too, on paste or on send)."""
     context = context or bpy.context
-    meta = _get(f"/api/characters/{slug}")
-    path = _fetch_model(slug, tempfile.mkdtemp(prefix="gbox_pull_"))
-    if context.object and context.object.mode != "OBJECT":
-        bpy.ops.object.mode_set(mode="OBJECT")
+    slug = info.get("slug") or info.get("base") or "character"
     coll = bpy.data.collections.new(f"gBox/{slug}")
     context.scene.collection.children.link(coll)
-    context.view_layer.active_layer_collection = _layer_coll(context.view_layer.layer_collection, coll.name)
-    before = set(bpy.data.objects)
-    bpy.ops.import_scene.gltf(filepath=path)
-    new = [o for o in bpy.data.objects if o not in before]
-    shapes = {pb.custom_shape for o in new if o.type == "ARMATURE" for pb in o.pose.bones if pb.custom_shape}
-    new = [o for o in new if o not in shapes]                 # the importer's bone-display shapes aren't part of it
-    for o in new:                                             # everything in the gBox collection only
+    shapes = {pb.custom_shape for o in objs if o.type == "ARMATURE" for pb in o.pose.bones if pb.custom_shape}
+    for o in objs:
+        if o in shapes:                                       # the importer's bone-display shapes aren't part of it
+            continue
         if coll not in o.users_collection:
             coll.objects.link(o)
         for c in list(o.users_collection):
             if c != coll:
                 c.objects.unlink(o)
+    variant = bool(info.get("variant_of"))
+    coll["gbox_slug"] = slug
+    coll["gbox_base"] = info.get("base") or info.get("variant_of") or slug
+    coll["gbox_variant"] = slug if variant else ""
+    coll["gbox_variant_name"] = (info.get("name") or "") if variant else ""
+    coll["gbox_name"] = info.get("name") or slug
+    coll["gbox_roles"] = json.dumps(info.get("roles") or {})
+    coll["gbox_server"] = _cfg().get("server", "")
+    for o in objs:
+        if o.type == "MESH" and _skinned(o) and not o.get("gbox_prop"):
+            o["gbox_part"] = "body"
+    lc = _layer_coll(context.view_layer.layer_collection, coll.name)
+    if lc is not None:
+        context.view_layer.active_layer_collection = lc
+    context.scene["gbox_last_coll"] = coll.name
+    return coll
+
+
+def adopt_selection(context=None):
+    """No gBox collection, but the active object belongs to a pasted gBox character (armature gbox_slug): adopt it."""
+    context = context or bpy.context
+    ob = getattr(context, "active_object", None)
+    arm = ob if ob is not None and ob.type == "ARMATURE" else (
+        ob.parent if ob is not None and ob.parent is not None and ob.parent.type == "ARMATURE" else None)
+    if arm is None or not arm.get("gbox_slug"):
+        return None
+    try:
+        roles = json.loads(arm.get("gbox_roles") or "{}")
+    except ValueError:
+        roles = {}
+    base = arm.get("gbox_base") or arm["gbox_slug"]
+    info = {"slug": arm["gbox_slug"], "base": base, "name": arm.get("gbox_name") or "", "roles": roles,
+            "variant_of": base if base != arm["gbox_slug"] else ""}
+    return adopt([arm, *arm.children_recursive], info, context)
+
+
+def pull(slug, context=None):
+    """Character -> collection gBox/<slug> with armature, weights, materials, textures and the gBox metadata."""
+    context = context or bpy.context
+    meta = _get(f"/api/characters/{slug}")
+    path = _fetch_model(slug, tempfile.mkdtemp(prefix="gbox_pull_"))
+    if context.object and context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=path)
+    new = [o for o in bpy.data.objects if o not in before]
+    try:
+        tags = gbox_tags(glb_json(path))
+    except Exception:                                         # an older server's plain model
+        tags = {}
+    roles = (meta.get("rig") or {}).get("roles") or {}
+    info = {"slug": slug, "base": meta.get("variant_of") or slug, "variant_of": meta.get("variant_of") or "",
+            "name": meta["name"], "roles": roles}
+    apply_tags(new, {**tags, "info": info})
+    coll = adopt(new, info, context)
     for im in bpy.data.images:                                # textures live in the .blend (paint, re-export)
         if im.source == "FILE" and not im.packed_file and im.has_data:
             try:
                 im.pack()
             except Exception:
                 pass
-    roles = (meta.get("rig") or {}).get("roles") or {}
-    coll["gbox_slug"] = slug
-    coll["gbox_base"] = meta.get("variant_of") or slug
-    coll["gbox_variant"] = slug if meta.get("variant_of") else ""
-    coll["gbox_variant_name"] = meta["name"] if meta.get("variant_of") else ""
-    coll["gbox_name"] = meta["name"]
-    coll["gbox_roles"] = json.dumps(roles)
-    coll["gbox_server"] = _cfg().get("server", "")
-    arm = next((o for o in new if o.type == "ARMATURE"), None)
-    if arm:
-        arm["gbox_slug"] = slug
-        arm["gbox_roles"] = json.dumps(roles)
-        for role, bone in roles.items():
-            b = arm.data.bones.get(bone)
-            if b:
-                b["gbox_role"] = role
-    context.scene["gbox_last_coll"] = coll.name
-    LIVE["status"] = f"pulled {meta['name']} into {coll.name} ({len(new)} objects)"
+    props = [o.name for o in coll.all_objects if o.get("gbox_prop")]
+    LIVE["status"] = (f"pulled {meta['name']} into {coll.name} ({len(new)} objects, {len(roles)} role bones"
+                      + (f", attachments {', '.join(props)}" if props else "") + ")")
     return coll
 
 
@@ -312,6 +461,17 @@ def target_coll(context=None):
             if "gbox_slug" in c:
                 return c
     return bpy.data.collections.get(context.scene.get("gbox_last_coll", ""))
+
+
+def edited_coll(context=None):
+    """target_coll, or the pasted gBox character the active object belongs to (adopted into gBox/<slug> now)."""
+    context = context or bpy.context
+    ob = getattr(context, "active_object", None)
+    if ob is not None and not any("gbox_slug" in c for o in (ob, ob.parent) if o for c in o.users_collection):
+        adopted = adopt_selection(context)
+        if adopted is not None:
+            return adopted
+    return target_coll(context)
 
 
 def _armature(coll):
@@ -351,6 +511,24 @@ def bind(ob, arm, bone):
     bpy.context.view_layer.update()
     ob.matrix_world = mw
     ob["gbox_bone"] = bone
+    ob["gbox_prop"] = True                                    # glTF extras: every writer carries it rigidly on that bone
+    if "gbox_part" in ob:
+        del ob["gbox_part"]
+
+
+def bone_roles(arm):
+    """{role: bone} from the bones' gbox_role properties (Pull / paste set them; rename-proof), else the armature's."""
+    roles = {}
+    for b in arm.data.bones:
+        r = b.get("gbox_role")
+        if r and r not in roles:
+            roles[r] = b.name
+    if not roles:
+        try:
+            roles = {r: n for r, n in json.loads(arm.get("gbox_roles") or "{}").items() if arm.data.bones.get(n)}
+        except ValueError:
+            roles = {}
+    return roles
 
 
 def bind_props(coll, arm):
@@ -362,7 +540,10 @@ def bind_props(coll, arm):
         if (ob is arm or ob.type not in {"MESH", "CURVE", "SURFACE", "META", "FONT"} or _skinned(ob) or ob in shapes
                 or not ob.visible_get()):
             continue
+        if ob.get("gbox_part") == "body":                    # the character's own rigid parts (N64 / PS1 limbs)
+            continue
         if ob.parent is arm and ob.parent_type == "BONE":
+            ob["gbox_bone"], ob["gbox_prop"] = ob.parent_bone, True
             out.append({"object": ob.name, "bone": ob.parent_bone, "how": "bone parent"})
             continue
         if ob.parent is not None and ob.parent in objs and ob.parent is not arm:
@@ -496,6 +677,9 @@ def head_scale(coll, arm):
 def export_collection(coll, arm, path):
     if bpy.context.object and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
+    _clear_scene_gbox()
+    arm["gbox_slug"] = coll.get("gbox_variant") or coll.get("gbox_slug") or ""   # names its original in the file
+    arm["gbox_base"] = coll.get("gbox_base") or ""
     bpy.ops.object.select_all(action="DESELECT")
     shapes = {pb.custom_shape for pb in arm.pose.bones if pb.custom_shape}
     for o in coll.all_objects:
@@ -504,7 +688,7 @@ def export_collection(coll, arm, path):
     arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     kw = dict(filepath=path, export_format="GLB", use_selection=True, export_animations=False, export_skins=True,
-              export_apply=True, export_yup=True)
+              export_apply=True, export_yup=True, export_extras=True)   # extras: gbox_role / gbox_prop / gbox_slug
     try:
         bpy.ops.export_scene.gltf(**kw)
     except TypeError:                                         # an exporter without one of the options
@@ -525,7 +709,76 @@ def export_payload(coll, name, replace=""):
     finally:
         restore()
     return {"coll": coll.name, "name": name, "base": coll["gbox_base"], "replace": replace, "props": props,
-            "scale": head_scale(coll, arm), "textures": tex, "glb": data, "blend": bpy.data.filepath}
+            "scale": head_scale(coll, arm), "textures": tex, "glb": data, "blend": bpy.data.filepath,
+            "roles": bone_roles(arm)}
+
+
+def _clear_scene_gbox():
+    """A pulled GLB's scene extras land on the Blender scene as "gbox": never export them with another model (the
+    control plane would take that character for its original)."""
+    sc = bpy.context.scene
+    if "gbox" in sc.keys():
+        del sc["gbox"]
+
+
+def selection_payload(context, name, auto_rig=True):
+    """Main-thread half of Send to gBox for a model that isn't a gBox character (made in Blender): the selection (or
+    everything visible) + its armature and the armature's children; objects parented to a bone are attachments."""
+    sel = list(context.selected_objects) or [o for o in context.view_layer.objects if o.visible_get()]
+    arm = next((o for o in sel if o.type == "ARMATURE"), None)
+    arm = arm or next((o.parent for o in sel if o.parent is not None and o.parent.type == "ARMATURE"), None)
+    arm = arm or next((m.object for o in sel for m in getattr(o, "modifiers", []) if m.type == "ARMATURE" and m.object), None)
+    objs, props, roles = set(sel), [], {}
+    if arm is not None:
+        objs |= {arm, *arm.children_recursive}
+        for o in arm.children_recursive:
+            if o.type == "MESH" and o.parent is arm and o.parent_type == "BONE" and not _skinned(o):
+                o["gbox_bone"], o["gbox_prop"] = o.parent_bone, True
+                props.append({"object": o.name, "bone": o.parent_bone})
+        roles = bone_roles(arm)
+    if context.object and context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in objs:
+        if o.visible_get():
+            o.select_set(True)
+    if arm is not None:
+        context.view_layer.objects.active = arm
+    _clear_scene_gbox()
+    path = os.path.join(tempfile.mkdtemp(prefix="gbox_send_"), "model.glb")
+    kw = dict(filepath=path, export_format="GLB", use_selection=True, export_animations=False, export_skins=True,
+              export_apply=True, export_yup=True, export_extras=True)
+    try:
+        bpy.ops.export_scene.gltf(**kw)
+    except TypeError:
+        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True)
+    with open(path, "rb") as f:
+        data = f.read()
+    return {"name": name, "glb": data, "base": (arm.get("gbox_base") or "") if arm is not None else "", "replace": "",
+            "props": props, "roles": roles, "scale": {}, "auto_rig": auto_rig, "arm": arm.name if arm is not None else "",
+            "blend": bpy.data.filepath}
+
+
+def send_character(p):
+    """Network half of Send to gBox (any thread): upload, characters op=add; the control plane decides variant /
+    derived / new (gbox.blender_roundtrip) and answers with the entry, its roles and attachments."""
+    q = urllib.parse.urlencode({"name": f"{p['name']}.glb", "media_type": "model/gltf-binary",
+                                "provenance": json.dumps({"from": "blender send", "base": p.get("base", ""),
+                                                          "blend": p.get("blend", "")})})
+    LIVE["status"] = f"uploading {len(p['glb']) // 1024} KB"
+    ref = _req("POST", "/api/artifacts?" + q, p["glb"], "application/octet-stream", timeout=300)
+    r = _job({"tool": "characters", "require_os": "linux",
+              "input": add_input(p["name"], ref["sha256"], p.get("base"), p.get("replace"), p.get("props"), p.get("roles"),
+                                 p.get("scale"), p.get("auto_rig", True), True)}, "storing")
+    e = r.get("entry") or {}
+    mode = r.get("mode") or "variant"
+    if p.get("coll"):
+        LIVE["pending"].append(("variant" if mode == "variant" else "derived", p["coll"], e.get("slug"), e.get("name")))
+    elif p.get("arm"):
+        LIVE["pending"].append(("armature", p["arm"], e.get("slug"), e.get("name")))
+    LIVE["result"] = r
+    LIVE["status"] = describe_add(r)
+    return r
 
 
 def upload_variant(p):
@@ -575,16 +828,19 @@ def push(payload, target="", game_id=""):
     """Live push: store the re-sent variant, then live_link (build -> validate -> reload -> frame check)."""
     r = upload_variant(payload)
     slug = (r.get("entry") or {}).get("slug")
-    if not (target or game_id):
-        LIVE["status"] = f"✓ {slug} updated (Use in game once: live then follows that game)"
-        return r
+    # no target picked (Use in game): live_link finds the running game showing this character or its original
     res = _job({"tool": "live_link", "require_os": "linux",
-                "input": {"op": "push", "character": slug, "target": target, "game_id": game_id}}, "live")
+                "input": {"op": "push", "character": slug, "target": target, "game_id": game_id, "auto_target": True}}, "live")
     if res.get("session_id"):
         LIVE["last"]["session"] = res["session_id"]
+        LIVE["last"]["game_id"] = res.get("game_id") or LIVE["last"].get("game_id")
     st = res.get("status")
     LIVE["result"] = res
-    LIVE["status"] = ("live ✓ " + res.get("message", "").replace("live ✓ ", "")) if st == "live" else f"{st}: {res.get('message')}"
+    LIVE["last_push"] = time.time()
+    att = (res.get("attachments") or {}).get("message")
+    LIVE["status"] = (("live ✓ " + res.get("message", "").replace("live ✓ ", "")) if st == "live"
+                      else f"✓ {slug} updated: {res.get('message')}" if st == "stored" else f"{st}: {res.get('message')}") \
+        + (f" | {att}" if att else "")
     return res
 
 
@@ -729,20 +985,35 @@ class GBOX_OT_use(bpy.types.Operator):
 
 
 def _start_push():
-    coll = target_coll()
-    if not coll or not coll.get("gbox_variant"):
-        LIVE["status"] = "live: send the variant once first (Send back as variant)"
+    """Export the edited character and push it (the first push creates its variant; later ones update it)."""
+    coll = edited_coll()
+    if not coll:
+        LIVE["status"] = "live: nothing to push (Pull a character, or paste one copied from gBox)"
         return
-    if LIVE["busy"]:
+    if LIVE["busy"]:                                          # saved during a push: once more after it
         LIVE["queued"] = True
+        LIVE["status"] = "live: saved again during a push - pushing the newest save after it"
         return
+    variant = coll.get("gbox_variant") or ""
+    name = coll.get("gbox_variant_name") or (coll["gbox_name"] if variant else f"{coll['gbox_name']} – variant")
     try:
-        p = export_payload(coll, coll.get("gbox_variant_name") or coll["gbox_name"], coll["gbox_variant"])
+        p = export_payload(coll, name, variant)
     except Exception as e:
         LIVE["status"] = f"✗ export: {e}"
         return
     last = LIVE.get("last") or {}
-    _bg("building", push, p, last.get("session", ""), last.get("game_id", ""))
+    _bg("live push", push, p, last.get("session", ""), last.get("game_id", ""))
+
+
+def _debounced_push():
+    """Timer: push DEBOUNCE_S after the last save (another save restarts the wait)."""
+    now = time.time()
+    if not _save_wait.due(now):
+        left = _save_wait.left(now)
+        return None if left is None else max(0.1, left)
+    _save_wait.clear()
+    _start_push()
+    return None
 
 
 class GBOX_OT_push(bpy.types.Operator):
@@ -758,7 +1029,53 @@ class GBOX_OT_push(bpy.types.Operator):
 @persistent
 def _on_save(*_a):
     if getattr(bpy.context.scene, "gbox_live", False):
-        bpy.app.timers.register(lambda: _start_push() and None, first_interval=0.2)
+        _save_wait.hit(time.time())
+        if not LIVE["busy"]:
+            LIVE["status"] = f"saved: live push in {DEBOUNCE_S:g} s (saving again restarts the wait)"
+        if not bpy.app.timers.is_registered(_debounced_push):
+            bpy.app.timers.register(_debounced_push, first_interval=DEBOUNCE_S)
+
+
+class GBOX_OT_send_character(bpy.types.Operator):
+    bl_idname = "gbox.send_character"
+    bl_label = "Send to gBox"
+    bl_description = ("Store the character in the gBox collection: a gBox character with its skeleton unchanged becomes "
+                      "a variant of it (attachments parented to bones included), bones changed -> a new character "
+                      "derived from it; a model made in Blender -> a new character (rig auto-detected, or auto-rigged)")
+    name: bpy.props.StringProperty(name="Name", default="")
+    auto_rig: bpy.props.BoolProperty(name="Auto-rig it if it has no armature", default=True)
+
+    def invoke(self, context, event):
+        coll = edited_coll(context)
+        if coll:
+            self.name = context.scene.gbox_variant_name or f"{coll.get('gbox_name')} – variant"
+        else:
+            ob = context.active_object
+            self.name = (ob.parent.name if ob is not None and ob.parent is not None else ob.name) if ob is not None else "Blender character"
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        lay = self.layout
+        lay.prop(self, "name")
+        coll = target_coll(context)
+        if not coll or not _armature(coll):
+            lay.prop(self, "auto_rig")
+        else:
+            lay.label(text=f"a variant of {coll.get('gbox_name')} if the bones are unchanged", icon="INFO")
+
+    def execute(self, context):
+        coll = edited_coll(context)
+        try:
+            if coll and _armature(coll):
+                p = export_payload(coll, self.name, "")
+                context.scene.gbox_variant_name = self.name
+            else:
+                p = selection_payload(context, self.name, self.auto_rig)
+        except Exception as e:
+            self.report({"ERROR"}, f"gBox export failed: {e}")
+            return {"CANCELLED"}
+        _bg("sending", send_character, p)
+        return {"FINISHED"}
 
 
 # ---------------------------------------------------------------- UI
@@ -789,7 +1106,8 @@ class GBOX_PT_panel(bpy.types.Panel):
     def draw(self, context):
         col = self.layout.column()
         col.operator("gbox.paste", icon="PASTEDOWN")
-        col.operator("gbox.send", icon="EXPORT")
+        col.operator("gbox.send_character", icon="EXPORT")
+        col.operator("gbox.send", icon="COPYDOWN")
         col.prop(context.scene, "gbox_auto_paste")
         col.label(text=_cfg().get("server", "not configured"))
 
@@ -819,7 +1137,11 @@ class GBOX_PT_live(bpy.types.Panel):
                 hs = head_scale(coll, arm)
                 box.label(text=f"head scale ×{hs['head']}" if hs else "head ×1 (scale the head bone in pose mode)")
                 shapes = {pb.custom_shape for pb in arm.pose.bones if pb.custom_shape}
-                props = [o for o in coll.all_objects if o is not arm and o.type == "MESH" and not _skinned(o) and o not in shapes]
+                props = [o for o in coll.all_objects if o is not arm and o.type == "MESH" and not _skinned(o) and o not in shapes
+                         and o.get("gbox_part") != "body"]
+                rb = bone_roles(arm)
+                box.label(text=f"{len(rb)} role bones" + (f" (hip {rb['hip']}, head {rb.get('head', '?')})" if "hip" in rb else ""),
+                          icon="ARMATURE_DATA")
                 for o in props[:8]:
                     on = o.parent_bone if o.parent is arm and o.parent_type == "BONE" else (o.get("gbox_bone") or "nearest bone on send")
                     box.label(text=f"{o.name} → {on}", icon="MESH_CONE")
@@ -827,6 +1149,7 @@ class GBOX_PT_live(bpy.types.Panel):
                 r.prop_search(sc, "gbox_bind_bone", arm.data, "bones", text="")
                 r.operator("gbox.live_bind", text="Bind", icon="BONE_DATA")
             box.prop(sc, "gbox_variant_name", text="Name")
+            box.operator("gbox.send_character", icon="EXPORT")
             r = box.row(align=True)
             r.operator("gbox.live_send", text="Send back as variant", icon="EXPORT").update = False
             if coll.get("gbox_variant"):
@@ -839,8 +1162,15 @@ class GBOX_PT_live(bpy.types.Panel):
             r.prop(sc, "gbox_live", text="Live (on save)", toggle=True, icon="REC")
             r.operator("gbox.live_push", icon="EXPORT")
             last = LIVE.get("last") or {}
-            if last.get("session"):
-                box.label(text=f"live target: {last['session'][:24]}")
+            box.label(text=f"live target: {last['session'][:24]}" if last.get("session")
+                      else "live target: the running game showing it (found on push)", icon="LINKED")
+            left = _save_wait.left(time.time())
+            if sc.gbox_live and left is not None:
+                box.label(text=f"push in {left:.1f} s", icon="TIME")
+            elif LIVE.get("last_push"):
+                box.label(text=f"last push {int(time.time() - LIVE['last_push'])} s ago", icon="TIME")
+        else:
+            lay.operator("gbox.send_character", icon="EXPORT")
         if LIVE["status"]:
             st = lay.box().column(align=True)
             st.label(text="working…" if LIVE["busy"] else "status", icon="SORTTIME" if LIVE["busy"] else "INFO")
@@ -865,10 +1195,17 @@ def _auto_tick():
         c = bpy.data.collections.get(cname)
         if kind == "variant" and c is not None and slug:
             c["gbox_variant"], c["gbox_variant_name"] = slug, name or ""
+        elif kind == "derived" and c is not None and slug:   # bones changed: the collection is that new character now
+            c["gbox_slug"], c["gbox_base"], c["gbox_name"] = slug, slug, name or slug
+            c["gbox_variant"], c["gbox_variant_name"] = "", ""
+        elif kind == "armature" and slug:                     # a model made in Blender: now a gBox character
+            a = bpy.data.objects.get(cname)
+            if a is not None:
+                a["gbox_slug"], a["gbox_base"], a["gbox_name"] = slug, slug, name or slug
     if LIVE.get("queued") and not LIVE["busy"]:               # saved again during a push: push once more
         LIVE["queued"] = False
         _start_push()
-    if LIVE["busy"] or LIVE.get("_was_busy"):
+    if LIVE["busy"] or LIVE.get("_was_busy") or _save_wait.at is not None:     # status / countdown stay current
         LIVE["_was_busy"] = LIVE["busy"]
         for w in getattr(bpy.context.window_manager, "windows", []):
             for a in w.screen.areas:
@@ -888,8 +1225,8 @@ def _auto_tick():
 
 
 _keymaps = []
-CLASSES = (GBOX_prefs, GBOX_OT_paste, GBOX_OT_send, GBOX_OT_connect, GBOX_OT_pull, GBOX_OT_bind, GBOX_OT_send_variant,
-           GBOX_OT_sessions, GBOX_OT_use, GBOX_OT_push, GBOX_PT_panel, GBOX_PT_live)
+CLASSES = (GBOX_prefs, GBOX_OT_paste, GBOX_OT_send, GBOX_OT_send_character, GBOX_OT_connect, GBOX_OT_pull, GBOX_OT_bind,
+           GBOX_OT_send_variant, GBOX_OT_sessions, GBOX_OT_use, GBOX_OT_push, GBOX_PT_panel, GBOX_PT_live)
 
 
 def register():
@@ -918,6 +1255,8 @@ def unregister():
     _keymaps.clear()
     if bpy.app.timers.is_registered(_auto_tick):
         bpy.app.timers.unregister(_auto_tick)
+    if bpy.app.timers.is_registered(_debounced_push):
+        bpy.app.timers.unregister(_debounced_push)
     if _on_save in bpy.app.handlers.save_post:
         bpy.app.handlers.save_post.remove(_on_save)
     for p in ("gbox_auto_paste", "gbox_char", "gbox_session", "gbox_variant_name", "gbox_bind_bone", "gbox_live"):
