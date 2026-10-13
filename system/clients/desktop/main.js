@@ -49,7 +49,16 @@ const DEFAULTS = {
 };
 if (STANDALONE) Object.assign(DEFAULTS, { sshHost: "", apiUrl: process.env.GBOX_API_URL || "http://127.0.0.1:8765",
   repoLocal: path.join(STANDALONE, "system"), repoShare: path.join(STANDALONE, "system"), repoRemote: "" });
+// Every API call reads the settings (#712): parse the file only when it changed, not 2-3 times per request.
+let settingsCache = null, settingsStamp = null;
 const settings = () => {
+  let stamp = "none";
+  try { const st = fs.statSync(SETTINGS); stamp = `${st.mtimeMs}:${st.size}`; } catch {}
+  if (settingsCache && stamp === settingsStamp) return { ...settingsCache };
+  settingsCache = readSettings(); settingsStamp = stamp;
+  return { ...settingsCache };
+};
+const readSettings = () => {
   const s = { ...DEFAULTS, ...(fs.existsSync(SETTINGS) ? JSON.parse(fs.readFileSync(SETTINGS, "utf8")) : {}) };
   // layout migration: everything moved under <root>/system (root = gBox.exe + system/)
   if (/[\\/]gBox$/i.test(s.repoShare || "")) s.repoShare += "\\system";
@@ -81,6 +90,7 @@ app.on("web-contents-created", (_e, wc) => {
   }
   wc.on("console-message", (ev, level, message, line, source) => {
   const m = ev?.message ?? message, lv = ev?.level ?? level, src = ev?.sourceId ?? source, ln = ev?.lineNumber ?? line;
+  if (m === 'GBOX:{"ev":"layout"}') return;                 // the embedded view's menu-changed signal (#1081), not a log line
   logPush(`${wc.getType()}:${lv}`, `${m}${src ? `  (${String(src).split("/").pop()}:${ln})` : ""}`);
   });
   wc.on("render-process-gone", (_e, details) => {
@@ -137,15 +147,21 @@ async function token() {
   return cachedToken;
 }
 
+// GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
+const ETAGS = new Map();                              // path -> { etag, data }
 async function api(p, body) {
   const t = await token();
+  const known = !body && ETAGS.get(p);
   const r = await fetch(settings().apiUrl + p, {
     method: body ? "POST" : "GET", body: body && JSON.stringify(body),
-    headers: { authorization: `Bearer ${t}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000 : 8000),
   });
+  if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
+  const data = await r.json(), etag = !body && r.headers.get("etag");
+  if (etag) ETAGS.set(p, { etag, data }); else ETAGS.delete(p);
+  return data;
 }
 
 // Windows keeps one mixer volume per playback session. This helper follows gBox's
@@ -174,7 +190,7 @@ ipcMain.handle("audio:volume", (_e, value) => {
     const volume = volumePercent(value);
     const s = settings();
     fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
-    fs.writeFileSync(SETTINGS, JSON.stringify({ ...s, volume }, null, 1));
+    fs.writeFileSync(SETTINGS, JSON.stringify({ ...s, volume }, null, 1)); settingsStamp = null;
     audioVolumeFailures = 0;
     if (!audioVolumeHelper) startAudioVolumeHelper();
     try { audioVolumeHelper?.stdin.write(String(volume) + "\n"); }
@@ -186,10 +202,17 @@ app.on("before-quit", () => shutdownSessions());
 
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
-ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); cachedToken = null; return settings(); });
+ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); settingsStamp = null; cachedToken = null; return settings(); });
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
 ipcMain.handle("api", async (_e, p, body) => { try { return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
+// a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
+ipcMain.handle("api:tagged", async (_e, p, have) => {
+  try {
+    const data = await api(p), etag = ETAGS.get(p)?.etag || null;
+    return etag && etag === have ? { ok: true, etag, unchanged: true } : { ok: true, etag, data };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 
 ipcMain.handle("spark:status", async () => {
   const s = settings();
@@ -580,14 +603,15 @@ async function syncEmbeddedGame(st) {
 }
 // Update pending = app or worker code on disk changed after this app started (the logo click applies it).
 const APP_START = Date.now();
-ipcMain.handle("update:pending", () => {
+ipcMain.handle("update:pending", async () => {
+  // asynchronous (#712): the synchronous walk of ~320 files blocked the app's main thread ~25 ms every 20 s
   const root = settings().repoLocal;
   let newest = 0, file = "";
-  const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+  const walk = async d => { for (const e of await fs.promises.readdir(d, { withFileTypes: true })) {
     if (["__pycache__", "node_modules", ".git"].includes(e.name)) continue;
     const p = path.join(d, e.name);
-    if (e.isDirectory()) walk(p); else { const m = fs.statSync(p).mtimeMs; if (m > newest) { newest = m; file = p; } } } };
-  try { ["clients/desktop", "gbox"].forEach(d => { const p = path.join(root, d); if (fs.existsSync(p)) walk(p); }); } catch {}
+    if (e.isDirectory()) await walk(p); else { const m = (await fs.promises.stat(p)).mtimeMs; if (m > newest) { newest = m; file = p; } } } };
+  try { for (const d of ["clients/desktop", "gbox"]) { const p = path.join(root, d); if (fs.existsSync(p)) await walk(p); } } catch {}
   return { pending: newest > APP_START + 2000, changed: newest ? new Date(newest).toLocaleString() : "", file: file && path.relative(root, file) };
 });
 // AutoBrowse: gBox's browser (pages from search results / chat links, and the download queue)
@@ -615,6 +639,8 @@ ipcMain.handle("viz:overlay", (_e, st) => {
     vizOv.loadURL(settings().apiUrl + "/viz/overlay.html" + (st.mode ? "?mode=" + encodeURIComponent(st.mode) : ""));
   }
   vizOv.setBounds(bounds); vizOv.setOpacity(Math.max(0.1, Math.min(0.9, st.opacity ?? 0.42)));
+  // the app's menus and panels over the game stay above the visualizer, as they do above the game itself (#1081)
+  try { vizOv.setShape(embedGeometry.shapeMinusHoles(bounds.width, bounds.height, st.holes || [], z)); } catch {}
   if (!vizOv.isVisible()) vizOv.showInactive();
   // a fresh conversation (#250) starts a new random transition visual; the level and beats follow who is talking
   if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat, ...(st.restart ? { mode: st.mode || "random" } : {}) })})`).catch(() => {});
