@@ -19,7 +19,7 @@ The `gbox` MCP server connects to the live gBox control plane. Use its tools for
 
 Use `job_characters` with `op=coverage` or the game's `game_roster` to check for a native writer. `characters op=use` may offer an overlay when no writer exists. An overlay is visual only; it is not a replacement in the game's own model data. For a native swap, use `job_characters` or `start_job` with the requested character, game, and slot. Follow the result, inspect the generated artifact, and verify it in the emulator before reporting success.
 
-When a native reader or writer is missing, work from the exact ROM or executable version, locate the asset container and model format, implement and test the reader/writer in gBox, then verify a rebuilt game in the emulator. Ghidra and other reversing tools can provide evidence, but their presence alone does not establish format support. Keep the original files intact and preserve a rollback artifact.
+When a native reader or writer is missing, first fingerprint the game: `start_job` with `{"tool":"assimilate","input":{"op":"fingerprint","game_id":"<id>"}}` ranks its containers, codecs, model/texture/animation formats and engine/middleware against every title gBox already assimilated and names the reader to start from (docs/assimilation.md, gbox/formats). Then work from the exact ROM or executable version, locate the asset container and model format, implement and test the reader/writer in gBox, then verify a rebuilt game in the emulator. Ghidra and other reversing tools can provide evidence, but their presence alone does not establish format support. Keep the original files intact and preserve a rollback artifact.
 
 ## Long tasks
 

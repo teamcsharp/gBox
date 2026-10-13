@@ -1807,9 +1807,10 @@ def create_app(config: Config) -> FastAPI:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
-        elif t.name == "re_executable":
+        elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
+            # assimilate fingerprints the owned files where the library and the analysis cache live.
             job.require_worker, job.require_os = None, "linux"
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]

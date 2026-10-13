@@ -46,68 +46,10 @@ import json
 import struct
 import zlib
 from pathlib import Path
+from .formats.lz import LZ10Error, lz10_decompress  # noqa: F401  (shared codec, moved to gbox.formats)
 
 TETRIS_DS_GAMECODE = "ATRE"
 TETRIS_DS_ROM_SHA256 = "4e443f9b03363900dda6fa308229a3b14631b0fedd14f1c2e4cc1d5b3224db68"
-
-
-class LZ10Error(ValueError):
-    pass
-
-
-def lz10_decompress(data: bytes) -> bytes:
-    """Nitro LZ10 (type 0x10) decompressor with the backward zero-window.
-
-    Matches ndspy.lz10.decompress byte-for-byte on every compressed file of
-    the owned Tetris DS (USA) ROM.
-    """
-    if not data or data[0] != 0x10:
-        raise LZ10Error("not an LZ10 stream (missing 0x10 type byte)")
-    out_len = data[1] | (data[2] << 8) | (data[3] << 16)
-    out = bytearray(out_len)  # zero-filled: backward reads beyond out_pos see 0x00
-    in_pos, out_pos = 4, 0
-    while out_len > 0 and in_pos < len(data):
-        d = data[in_pos]
-        in_pos += 1
-        if d:
-            for _ in range(8):
-                if d & 0x80:
-                    if in_pos + 2 > len(data):
-                        raise LZ10Error("truncated copy token")
-                    w = (data[in_pos] << 8) | data[in_pos + 1]
-                    in_pos += 2
-                    length = (w >> 12) + 3
-                    window = out_pos - (w & 0xFFF) - 1
-                    for _ in range(length):
-                        out[out_pos] = out[window]  # may read backward/zeroed cells
-                        out_pos += 1
-                        window += 1
-                        out_len -= 1
-                        if out_len == 0:
-                            return bytes(out)
-                else:
-                    if in_pos >= len(data):
-                        raise LZ10Error("truncated literal")
-                    out[out_pos] = data[in_pos]
-                    out_pos += 1
-                    in_pos += 1
-                    out_len -= 1
-                    if out_len == 0:
-                        return bytes(out)
-                d = (d << 1) & 0xFF
-        else:
-            for _ in range(8):
-                if in_pos >= len(data):
-                    raise LZ10Error("truncated literal run")
-                out[out_pos] = data[in_pos]
-                out_pos += 1
-                in_pos += 1
-                out_len -= 1
-                if out_len == 0:
-                    return bytes(out)
-    if out_len:
-        raise LZ10Error(f"stream exhausted with {out_len} bytes missing")
-    return bytes(out)
 
 
 class NDSRom:
