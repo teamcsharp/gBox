@@ -819,6 +819,6 @@ def test_single_root_writer_cache_builds_a_new_identity_and_keeps_old_files(cach
     result = jgr.use(case.ctx, case.meta, case.game,
                      CharIn(op="use", character="amy", slot="id:0", launch=False))
     assert result["mod"] != old_name and result["status"] == "built"
-    assert case.calls["build"][0]["identity"]["schema"] == 3
+    assert case.calls["build"][0]["identity"]["schema"] == jgr.CACHE_VERSION
     assert before == {p.name: p.read_bytes() for p in folder.iterdir()}
     assert result["runtime_verified"] is False

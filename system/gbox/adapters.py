@@ -35,6 +35,10 @@ FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
 # Keep rendered textures in emulated VRAM, so future states can include them.
 # Unthreaded rendering also keeps serialization size stable between query/write.
 FLYCAST_STATE_OPTS = {"reicast_threaded_rendering": "disabled", "reicast_enable_rttb": "enabled"}
+# Windows N64 (docked, resizable window) uses parallel_n64's software angrylion RDP, whose output scales with the window.
+# angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
+# angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
+N64_WINDOWS_OPTS = {"parallel-n64-gfxplugin": "angrylion", "parallel-n64-rspplugin": "cxd4"}
 
 
 def _set_core_opts(path: Path, values: dict[str, str]) -> None:
@@ -47,6 +51,10 @@ def _set_core_opts(path: Path, values: dict[str, str]) -> None:
 class Adapter:
     name = "base"
     supported: set[str] = set()
+    # gBox's checkpoint rewind (gbox/rewind.py): "path" = save_state reports the file it wrote (the operator's slot,
+    # borrowed and given back), "dir" = checkpoint_save writes a private slot found under state_dir() / state_glob,
+    # False = the save state does not work in place (checkpoint_reason says why), None = no save state file to copy.
+    checkpoint_state: str | bool | None = None
 
     def get_capabilities(self) -> dict[str, str]:
         return {op: ("supported" if op in self.supported else "unsupported") for op in OPS}
@@ -70,6 +78,7 @@ def _kill_tree(proc: subprocess.Popen | None):
         proc.wait(10)
     except subprocess.TimeoutExpired:
         proc.kill()
+        proc.wait(5)  # No successful stop until the native process has actually exited.
 
 
 class CommandAdapter(Adapter):
@@ -206,6 +215,9 @@ _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
                                                                      0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
                                                                      0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32])}}
+# function keys and Tab: emulator hotkeys (Dolphin's save / load state slots and its speed limit); they were dropped before
+_SCAN.update({f"F{i + 1}": (sc, 0) for i, sc in enumerate([0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58])})
+_SCAN["Tab"] = (0x0F, 0)
 
 
 def _pid_window(pid: int):
@@ -295,6 +307,81 @@ def _win_title(hwnd):
     return title.value
 
 
+WINDOW_SURFACE = "window-surface"   # PrintWindow of the emulator's own HWND (#1057)
+
+
+def _print_window_png(hwnd, width: int, height: int) -> bytes | None:
+    """PNG of one window's own surface via PrintWindow(PW_RENDERFULLCONTENT), or None.
+
+    Works while other windows cover it. Returns None when the API is missing,
+    refuses, or produces a uniformly empty bitmap (some GPU swap chains do)."""
+    if width <= 0 or height <= 0 or width * height > 16384 * 16384:
+        return None
+    try:
+        import ctypes
+        user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+        from ctypes import wintypes as wt
+        for function, args, result in (
+                (user.GetWindowDC, [wt.HWND], wt.HDC),
+                (user.ReleaseDC, [wt.HWND, wt.HDC], ctypes.c_int),
+                (user.PrintWindow, [wt.HWND, wt.HDC, wt.UINT], wt.BOOL),
+                (gdi.CreateCompatibleDC, [wt.HDC], wt.HDC),
+                (gdi.CreateCompatibleBitmap, [wt.HDC, ctypes.c_int, ctypes.c_int], wt.HBITMAP),
+                (gdi.SelectObject, [wt.HDC, wt.HANDLE], wt.HANDLE),
+                (gdi.DeleteObject, [wt.HANDLE], wt.BOOL),
+                (gdi.DeleteDC, [wt.HDC], wt.BOOL),
+                (gdi.GetDIBits, [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT,
+                                ctypes.c_void_p, ctypes.c_void_p, wt.UINT], ctypes.c_int)):
+            function.argtypes, function.restype = args, result
+        src = user.GetWindowDC(hwnd)
+        if not src:
+            return None
+        mem = bmp = None
+        try:
+            mem = gdi.CreateCompatibleDC(src)
+            bmp = gdi.CreateCompatibleBitmap(src, width, height)
+            old = gdi.SelectObject(mem, bmp)
+            ok = user.PrintWindow(hwnd, mem, 2)              # PW_RENDERFULLCONTENT
+            gdi.SelectObject(mem, old)
+            if not ok:
+                return None
+
+            class BIH(ctypes.Structure):
+                _fields_ = [("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32), ("biHeight", ctypes.c_int32),
+                            ("biPlanes", ctypes.c_uint16), ("biBitCount", ctypes.c_uint16),
+                            ("biCompression", ctypes.c_uint32), ("biSizeImage", ctypes.c_uint32),
+                            ("biXPelsPerMeter", ctypes.c_int32), ("biYPelsPerMeter", ctypes.c_int32),
+                            ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32)]
+            info = BIH(ctypes.sizeof(BIH), width, -height, 1, 32, 0, 0, 0, 0, 0, 0)
+            buf = ctypes.create_string_buffer(width * height * 4)
+            if gdi.GetDIBits(mem, bmp, 0, height, buf, ctypes.byref(info), 0) != height:
+                return None
+        finally:
+            if bmp:
+                gdi.DeleteObject(bmp)
+            if mem:
+                gdi.DeleteDC(mem)
+            user.ReleaseDC(hwnd, src)
+        return print_window_bitmap_png(buf.raw, width, height)
+    except Exception:
+        return None
+
+
+def print_window_bitmap_png(bgra: bytes, width: int, height: int) -> bytes | None:
+    """Encode a top-down BGRA PrintWindow bitmap; None for an empty (one-colour) result."""
+    import io
+    from PIL import Image
+    if len(bgra) != width * height * 4:
+        return None
+    image = Image.frombuffer("RGB", (width, height), bgra, "raw", "BGRX", 0, 1)
+    lo, hi = zip(*image.getextrema())
+    if lo == hi:                                             # nothing rendered: let the caller report occlusion
+        return None
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    return out.getvalue()
+
+
 def win_grab(pid: int) -> bytes:
     """PNG of a local emulator window (docked or not), as the screen shows it."""
     global _last_grab
@@ -334,7 +421,14 @@ def win_grab(pid: int) -> bytes:
         if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != pid:
             foreign += 1
     if foreign >= 3:
-        raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
+        # The compositor would return the covering app. Ask the emulator's own
+        # window to render itself instead; its pixels are never another app's.
+        data = _print_window_png(h, r.right - r.left, r.bottom - r.top)
+        if not data:
+            raise RuntimeError("the game window is covered by another app; bring gBox or the emulator forward before capturing")
+        _last_grab = dict(pid=pid, covered=foreign, source=WINDOW_SURFACE, frame_age_s=0,
+                         sha256=sha256(data).hexdigest())
+        return data
     buf = io.BytesIO()
     ImageGrab.grab((r.left, r.top, r.right, r.bottom), all_screens=True).save(buf, "PNG")
     data = buf.getvalue()
@@ -594,6 +688,29 @@ def _validate_completed_state_file(path: Path, expected_stat) -> None:
             raise ValueError('saved checkpoint changed during validation')
 
 
+def _link_lst_names(lst: Path) -> list[str]:
+    """A GD-ROM .lst may name its data file differently from what the set ships
+    (capcomvssnk2.bin vs cvs2gd.bin): hard-link each missing referenced name to the
+    set's single data file, next to the .lst. Returns the names that were linked.
+    A set with more than one data file is left alone (ambiguous)."""
+    text = lst.read_text(errors="replace")
+    wants = [m[4].strip('"') for m in (re.findall(r'"[^"]+"|\S+', ln) for ln in text.splitlines())
+             if len(m) >= 5 and m[4].strip('"').lower().endswith((".bin", ".dat"))]
+    bins = [f for f in lst.parent.iterdir() if f.suffix.lower() in (".bin", ".dat")]
+    linked = []
+    for want in wants:
+        if Path(want).name != want or '/' in want or '\\' in want or ':' in want or want in ('.', '..'):
+            raise ValueError('GD list reference must be a sibling filename')
+        if len(bins) != 1 or (lst.parent / want).exists():
+            continue
+        try:
+            os.link(bins[0], lst.parent / want)
+        except OSError:
+            shutil.copyfile(bins[0], lst.parent / want)
+        linked.append(want)
+    return linked
+
+
 class RetroArchAdapter(CommandAdapter):
     """RetroArch + libretro core, controlled through RetroArch's UDP network command interface.
 
@@ -604,6 +721,8 @@ class RetroArchAdapter(CommandAdapter):
     name = "retroarch"
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "save_state",
                  "load_state", "step_frames", "query_runtime", "get_frame", "send_input", "stream_session", "rewind", "fast_forward"}
+    checkpoint_state = "path"                            # NO_REWIND cores: gBox's checkpoint ring behind Select+L2
+    ff_on = False                                        # gBox's view of RetroArch's fast-forward toggle
 
     def __init__(self, cfg: EmulatorConfig, config: Config | None = None, platform: str | None = None,
                  port: int | None = None, host: str = "127.0.0.1"):
@@ -649,9 +768,7 @@ class RetroArchAdapter(CommandAdapter):
                 "suspend_screensaver_enable": "false", "video_font_enable": "false"}
         co = d["retroarch"] / "core-options.cfg"              # Flycast: threaded rendering lets the state grow between the size
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
-            set_opt = {"parallel-n64-gfxplugin": "angrylion"}             # draw at launch size -> squeezed/cropped picture;
-            lines = [l for l in (co.read_text().splitlines() if co.exists() else []) if l.split(" =")[0] not in set_opt]   # software
-            co.write_text("\n".join(lines + [f'{k} = "{v}"' for k, v in set_opt.items()]) + "\n")                        # output scales
+            _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") in FLYCAST_PLATFORMS:
             _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
@@ -791,19 +908,41 @@ class RetroArchAdapter(CommandAdapter):
                     out.mkdir(parents=True, exist_ok=True)
                     self._p(30, f"Unpacking {Path(rom).name}")
                     z.extractall(out)
-                # the .lst may name its data file differently from what the set ships (capcomvssnk2.bin vs cvs2gd.bin):
-                # link each missing name to the set's single data file
-                import re
-                bins = [f for f in out.iterdir() if f.suffix.lower() in (".bin", ".dat")]
-                for want in re.findall(r'"?([\w\-. ]+\.(?:bin|dat))"?', (out / lst).read_text(errors="replace"), re.I):
-                    if not (out / want).exists() and len(bins) == 1:
-                        try:
-                            os.link(bins[0], out / want)
-                        except OSError:
-                            shutil.copyfile(bins[0], out / want)
+                _link_lst_names(out / lst)
                 return str(out / lst)
         except zipfile.BadZipFile:
             return rom
+
+    def _from_lst(self, rom: str) -> str:
+        """Unpacked NAOMI/Atomiswave GD-ROM list sets (<game>.lst + data files next to it): Flycast opens
+        the .lst itself. When its referenced names all exist next to it, launch in place (the library stays
+        read-only). When the set's data file has a different name than the .lst expects, stage a linked copy
+        in the runtime extract cache and launch that instead."""
+        if not rom.lower().endswith(".lst") or (self.platform or "") not in ("naomi", "naomi2", "atomiswave"):
+            return rom
+        path = Path(rom)
+        try:
+            wants = [m[4].strip('"') for m in (re.findall(r'"[^"]+"|\S+', ln)
+                     for ln in path.read_text(errors="replace").splitlines()) if len(m) >= 5]
+        except OSError:
+            return rom
+        if not wants or all((path.parent / w).exists() for w in wants):
+            return rom                                     # names match: flycast reads the set in place
+        if self.config is None or any(Path(w).suffix.lower() not in (".bin", ".dat") for w in wants):
+            return rom                                     # ambiguous or nowhere to stage: let flycast report it
+        bins = [f for f in path.parent.iterdir() if f.suffix.lower() in (".bin", ".dat")]
+        if len(bins) != 1:
+            return rom
+        import hashlib
+        out = self.config.runtime / "extract" / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        staged = out / path.name
+        if not staged.exists():
+            out.mkdir(parents=True, exist_ok=True)
+            self._p(30, f"Staging {Path(rom).name}")
+            shutil.copyfile(path, staged)
+            shutil.copyfile(bins[0], out / bins[0].name)
+        _link_lst_names(staged)
+        return str(staged)
 
     def _from_old_chd(self, rom: str) -> str:
         """The neocd core only reads CHD v5; HyperSpin's Neo Geo CD set is v4: convert once to cue/bin with chdman."""
@@ -836,7 +975,7 @@ class RetroArchAdapter(CommandAdapter):
 
     def launch_game(self, rom: str) -> dict:
         if self.config is not None:
-            rom = self._from_lst_zip(self._from_gme(self._from_old_chd(self._from_7z(rom))))
+            rom = self._from_lst_zip(self._from_lst(self._from_gme(self._from_old_chd(self._from_7z(rom)))))
         argv = self._argv(rom)
         self.examine_unavailable_reason = None
         if HOST_OS == "windows" and getattr(self, "examine", False) and not _examine_driver_ok(argv):
@@ -949,14 +1088,25 @@ class RetroArchAdapter(CommandAdapter):
                 "content": parts[2] if len(parts) > 2 else None}
 
     def pause(self) -> dict:
-        if self.query_runtime()["state"] != "PAUSED":
-            self.cmd("PAUSE_TOGGLE")
-        return self.query_runtime()
+        return self._set_paused(True)
 
     def resume(self) -> dict:
-        if self.query_runtime()["state"] == "PAUSED":
-            self.cmd("PAUSE_TOGGLE")
-        return self.query_runtime()
+        return self._set_paused(False)
+
+    def _set_paused(self, wanted: bool) -> dict:
+        """Send at most one toggle and return only an observed requested state.
+        RetroArch may report stale status in the command poll receiving the hotkey.
+        Bound the follow-up reads; an unconfirmed transition remains a failure."""
+        before = self.query_runtime()
+        if before.get("state") in ("PLAYING", "PAUSED") and (before["state"] == "PAUSED") == wanted:
+            return before
+        self.cmd("PAUSE_TOGGLE")
+        for _ in range(12):
+            after = self.query_runtime()
+            if (after.get("state") == "PAUSED") == wanted and after.get("state") in ("PLAYING", "PAUSED"):
+                return after
+            time.sleep(0.05)
+        raise RuntimeError("Emulator did not confirm " + ("pause" if wanted else "resume"))
 
     def reset(self) -> dict:
         """Reset the emulated console (RetroArch RESET = the core's soft reset / power cycle); unpauses first."""
@@ -975,9 +1125,15 @@ class RetroArchAdapter(CommandAdapter):
         return {"rewound_s": seconds, "steps": steps}
 
     def fast_forward(self, on: bool | None = None) -> dict:
-        """Toggle fast-forward (4x)."""
+        """Fast-forward (fastforward_ratio, 16x in the session cfg): a toggle, or on / off as gBox last set it."""
+        if on is not None and bool(on) == self.ff_on:
+            return {"fast_forward": "on" if self.ff_on else "off"}
         self.cmd("FAST_FORWARD")
-        return {"fast_forward": "toggled"}
+        self.ff_on = (not self.ff_on) if on is None else bool(on)
+        return {"fast_forward": "toggled", "on": self.ff_on}
+
+    def state_dir(self) -> Path:
+        return self.config.runtime / "states"
 
     def step_frames(self, n: int = 1) -> dict:
         for _ in range(n):
@@ -1101,6 +1257,14 @@ class RetroArchAdapter(CommandAdapter):
             return {"sent": len(events), "network_gamepad": sent}
         if HOST_OS != "linux" or not self.display:
             raise Unsupported("send_input needs a linux session display")
+        total, gamepad = len(events), 0
+        if getattr(self, "remote_port", None):
+            # Pad buttons go through RetroArch's network gamepad here too: on lilspark's Xvfb sessions Flycast never
+            # saw xdotool keys although its window held focus (#1153), while the UDP pad reached the game at once.
+            # L2/R2 stay keyboard hotkeys (rewind / fast-forward) when trigger_hotkeys is on.
+            hot = [self.trigger_hotkeys and ev["key"] in ("l2", "r2") and int(ev.get("player", 1)) == 1 for ev in events]
+            gamepad, rest = self.remote_input([ev for ev, h in zip(events, hot) if not h])
+            events = [ev for ev, h in zip(events, hot) if h] + rest
         args, pressed = [], set()
         for ev in events:
             keys = PAD_KEYS.get(int(ev.get("player", 1)), PAD_KEYS[1])
@@ -1116,7 +1280,7 @@ class RetroArchAdapter(CommandAdapter):
             args += ["keydown" if down else "keyup", key]
         if args:
             subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5)
-        return {"sent": len(events)}
+        return {"sent": total, "network_gamepad": gamepad} if gamepad else {"sent": total}
 
     # Native address -> RetroAchievements RAM offset, for cores without a libretro memory map (Flycast, Dolphin):
     # (segment mask, segment value, offset mask): Dreamcast main RAM 0x0C000000 with P1/P2 mirrors 0x8C/0xAC000000
@@ -1340,6 +1504,7 @@ class DolphinAdapter(StandaloneAdapter):
     name = "dolphin"
     flatpak = "org.DolphinEmu.dolphin-emu"
     screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
+    checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
     # gBox pad -> keys; GCPadNew.ini binds the same keys to the GameCube pad (Dolphin names letter keys in upper case)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
             "l": "q", "r": "w", "l2": "q", "r2": "w", "select": "e", "z": "e", "start": "Return",
@@ -1445,13 +1610,25 @@ D-Pad/Right = `H`
         from .debug import GdbDebugger
         return GdbDebugger("127.0.0.1", self.port, "ppc", connect_timeout=60)
 
+    # gBox's checkpoint ring (Select+L2 on the streamed pad, gbox/rewind.py): Dolphin's slot 8, the operator keeps slot 1
+    def state_dir(self) -> Path:
+        return Path.home() / ".var" / "app" / self.flatpak / "data" / "dolphin-emu" / "StateSaves"
+
+    def checkpoint_save(self) -> dict:
+        self._xdo("key", "shift+F8")
+        return {"slot": 8}
+
+    def checkpoint_load(self) -> dict:
+        self._xdo("key", "F8")
+        return {"slot": 8}
+
 
 class DolphinWinAdapter(DolphinAdapter):
     """GameCube / Wii on standalone Dolphin on Windows (portable copy in the runtime folder, same release as the Spark's
     flatpak so save states move between them). Docked in the app like RetroArch; the operator's Xbox pad drives the
     GameCube pad; memory + breakpoints through Dolphin's GDB stub, exactly like on the Spark."""
     name = "dolphin"
-    supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window"}   # native window, frames via get_frame
+    supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window", "fast_forward"}   # native window, frames via get_frame
     # XInput pad (positional, like RetroArch's autoconfig) with the keyboard keys gBox sends as an alternative
     PAD_INI_WIN = """[GCPad1]
 Device = XInput/0/Gamepad
@@ -1595,6 +1772,32 @@ D-Pad/Right = `Pad E`
     def load_state(self, slot: int | None = None) -> dict:
         win_send_keys(self.proc.pid, [{"key": "F1", "down": True}, {"key": "F1", "down": False}])
         return {"slot": 1}
+
+    # gBox's checkpoint ring (Select+L2 rewind, gbox/rewind.py) uses Dolphin's slot 8: the operator's slot 1 is untouched.
+    # Its hotkeys are keystrokes into the game window (win_send_keys focuses it): checkpoints only while the pad is in use.
+    checkpoint_when_playing = True
+
+    def state_dir(self) -> Path:
+        return self._exe().parent / "User" / "StateSaves"
+
+    def checkpoint_save(self) -> dict:
+        win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F8", "down": True},
+                                      {"key": "F8", "down": False}, {"key": "Shift_R", "down": False}])
+        return {"slot": 8}
+
+    def checkpoint_load(self) -> dict:
+        win_send_keys(self.proc.pid, [{"key": "F8", "down": True}, {"key": "F8", "down": False}])
+        return {"slot": 8}
+
+    ff_on = False
+
+    def fast_forward(self, on: bool | None = None) -> dict:
+        """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (Tab, its default) while gBox wants fast-forward."""
+        want = (not self.ff_on) if on is None else bool(on)
+        if want != self.ff_on:
+            win_send_keys(self.proc.pid, [{"key": "Tab", "down": want}])
+            self.ff_on = want
+        return {"fast_forward": "on" if self.ff_on else "off"}
 
 
 class MgbaAdapter(StandaloneAdapter):
@@ -1850,6 +2053,9 @@ class RPCS3Adapter(Adapter):
     # GPU-rendered game made it stutter (same reason RetroArch native windows aren't streamed)
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "read_memory", "write_memory", "pause", "resume",
                  "save_state", "load_state"}
+    # save state = F2 "save and continue" (RPCS3 reloads the game from it), load = a relaunch: no in-place checkpoint
+    # every two seconds; Select+L2 reports itself unsupported here (gbox/rewind.py)
+    checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
 
     def __init__(self, config: Config):
         self.config, self.proc, self.stream, self.base, self.paused = config, None, None, None, False
@@ -2156,7 +2362,13 @@ def for_game(game: dict, config: Config, debug: bool = False) -> Adapter:
     override = config.emulators.get(plat)
     if override and override.adapter == "command":
         return CommandAdapter(override)
-    if plat == "ps3" and game.get("launch", {}).get("kind") != "attract":
+    launch = game.get("launch") or {}
+    # A HyperSpin PS3 entry is an empty "<name>.txt" stub beside its disc folder. RocketLauncher's RPCS3.ahk only
+    # resolves that folder's EBOOT.BIN, and on the test PCs every RocketLauncher run throws "RLDLL.Start - Exception
+    # thrown: -2" and exits 0 within ~15 s: a black screen with no save state (#1093). Boot the stub's EBOOT in
+    # gBox's own RPCS3 instead (tools._launch_game resolves it), which keeps save/load state for recovery.
+    if plat == "ps3" and (launch.get("kind") != "attract"
+                          or str(launch.get("rel_path") or game.get("rel_path") or "").lower().endswith(".txt")):
         if HOST_OS != "windows":
             raise ToolUnavailable("PS3 games run in RPCS3 on a Windows node")
         return RPCS3Adapter(config)

@@ -989,7 +989,10 @@ def create_app(config: Config) -> FastAPI:
     # --- tools & workers ---
     def workers() -> list[dict]:
         now = time.time()
-        return [w | {"online": now - w["last_seen"] < WORKER_TTL} for w in store.all("worker")]
+        from . import background_testing
+        ex = background_testing.excluded(store)
+        return [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex)}
+                for w in store.all("worker")]
 
     @app.get("/api/tools")
     def list_tools(actor=Depends(auth)):
@@ -1060,8 +1063,10 @@ def create_app(config: Config) -> FastAPI:
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
         online = [w for w in workers() if w["online"] and w["os"] == "windows"]
-        capable = [w for w in online if tool in (w.get("tools") or [])]
+        capable = [w for w in online if tool in (w.get("tools") or []) and w.get("background_testing", True)]
         if len(online) < 2 or not capable:
+            if online and not any(w.get("background_testing", True) for w in online):
+                raise HTTPException(409, "No PC is marked available for background testing (right-click the Tasks icon)")
             raise HTTPException(409, "Two online Windows workers and the requested tool are needed for other-PC testing")
         running = [s for s in store.all("session") if s.get("state") == "running"]
         newest = max(running, key=lambda s: s.get("started") or 0, default={})
@@ -1085,6 +1090,24 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/workers/idle")
     def get_idle_worker(tool: str = "launch_game", actor=Depends(auth)):
         return idle_worker(tool)
+
+    # --- which PCs background testing may use (#1383): ticked in the Tasks icon menu, keyed by worker name ---
+    class TestingIn(BaseModel):
+        available: bool
+
+    @app.get("/api/testing/workers")
+    def testing_workers(actor=Depends(auth)):
+        from . import background_testing
+        return {"excluded": sorted(background_testing.excluded(store)),
+                "workers": [{k: w.get(k) for k in ("id", "name", "os", "online", "background_testing")} for w in workers()]}
+
+    @app.post("/api/testing/workers/{wid}")
+    def testing_worker_set(wid: str, body: TestingIn, actor=Depends(auth)):
+        from . import background_testing
+        w = store.get("worker", _wid(wid)) or next((x for x in workers() if x.get("name") == wid), None) or _404()
+        background_testing.set_available(store, w["name"], body.available)
+        store.audit(actor, "worker.background_testing", w["id"], {"name": w["name"], "available": body.available})
+        return testing_workers(actor)
 
     class WorkerActivity(BaseModel):
         idle_seconds: float | None = None
@@ -1413,15 +1436,17 @@ def create_app(config: Config) -> FastAPI:
             outcome = (r.output or {}).get("result") or {}
             status = str(outcome.get("status") or "") if isinstance(outcome, dict) else ""
             failed_swap = (state != JobState.SUCCEEDED or status.startswith(("unsupported", "failed", "error"))
-                           or status in ("not_in_collection", "overlay") or (isinstance(outcome, dict) and
+                           or status in ("not_in_collection", "overlay", "missing", "blocked", "reverted") or (isinstance(outcome, dict) and
                             (outcome.get("ok") is False or bool(outcome.get("error")))))
-            if failed_swap and not j.get("parent_request_id"):
+            gap_request = (outcome.get("request") or {}).get("id") if isinstance(outcome, dict) else None
+            if failed_swap and not j.get("parent_request_id") and not gap_request:
                 def _report_failed_swap():
                     try:
                         i = j.get("input") or {}
                         req_auto_mod_failure(AutoFailureIn(session_id=i.get("session_id") or "", game=i.get("game") or "",
                             model=i.get("character") or i.get("name") or "", action=f"{t.name} {i.get('op') or ''}".strip(),
-                            target=i.get("slot") or "", moment=f"x={i.get('x')}, y={i.get('y')}",
+                            target=i.get("slot") or "", character=i.get("character") or "",
+                            x=i.get('x'), y=i.get('y'), moment=f"x={i.get('x')}, y={i.get('y')}",
                             detail=j.get("error") or (outcome.get("message") if isinstance(outcome, dict) else "") or status,
                             job_id=j["id"]), "gbox-auto")
                     except Exception as exc:
@@ -1479,6 +1504,10 @@ def create_app(config: Config) -> FastAPI:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
             job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
+        elif t.name == "re_executable":
+            # Analysis output belongs on Spark; RAM is read remotely through the
+            # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
+            job.require_worker, job.require_os = None, "linux"
         elif sid := inp.get("session_id"):          # sessions live on the worker that launched them
             job.require_worker = sid.split("-")[0]
         if job.require_worker in ("idle", "other"):
@@ -1573,7 +1602,8 @@ def create_app(config: Config) -> FastAPI:
                 if assigned and assigned not in worker_ids:
                     worker_ids[assigned] = _wid(assigned)
                 worker_id = worker_ids.get(assigned)
-                reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running")
+                cleanup = job.get('tool') == 'session_op' and (job.get('input') or {}).get('op') == 'stop_game'
+                reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running") and not cleanup
                           else "assigned worker is no longer available" if worker_id and now - (job.get("created") or now) > 3600
                           and worker_id not in available else None)
                 if not reason:
@@ -1784,7 +1814,19 @@ def create_app(config: Config) -> FastAPI:
             hit = art_dirs[str(d)] = (time.time(), names)
         return hit[1]
 
+    art_dir = config.data_dir / "art"                 # covers fetched online (#1067): art/<game_id>/<kind>.<ext> wins over the library
+
+    def _local_art(gid: str, kind: str) -> Path | None:
+        d = art_dir / gid
+        if gid and d.is_dir():
+            for f in sorted(d.glob(f"{kind}.*")):
+                return f
+        return None
+
     def _resolve_art(e: dict, kinds) -> Path | None:
+        for kind in kinds:
+            if local := _local_art(e.get("game_id") or "", kind):
+                return local
         root = config.library(e["library"]).root() if e.get("library") else None
         if not root:
             return None
@@ -1858,6 +1900,39 @@ def create_app(config: Config) -> FastAPI:
             art_hits[key] = _resolve_art(e, BEST if kind == "best" else (kind,))
         f = art_hits[key]
         return FileResponse(f, headers={"cache-control": "max-age=86400"}) if f else _404()
+
+    class CoverIn(BaseModel):
+        url: str = ""              # a picture the operator chose; empty = look it up online by platform + title
+        kind: str = "boxart"       # boxart | snap | wheel
+
+    @app.post("/api/catalog/{gid}/cover")
+    def catalog_cover(gid: str, body: CoverIn, actor=Depends(auth)):
+        """Attach cover art to a game (#1067): libretro-thumbnails by platform + title, or the given picture URL."""
+        from . import cover_art
+        e = store.catalog_get(gid) or _404()
+        kind = body.kind if body.kind in cover_art.KINDS else "boxart"
+        if body.url:
+            try:
+                data, src, tried = cover_art.fetch(body.url), body.url, []
+            except Exception as exc:                  # noqa: BLE001
+                raise HTTPException(400, f"could not fetch that picture: {exc}") from exc
+        else:
+            src, data, tried = cover_art.find(e.get("title") or "", e.get("platform") or "", kind)
+            if not data:
+                raise HTTPException(404, {"error": "no online cover found for this title", "title": e.get("title"),
+                                          "platform": e.get("platform"), "tried": tried})
+        d = art_dir / gid
+        d.mkdir(parents=True, exist_ok=True)
+        for old in d.glob(f"{kind}.*"):
+            old.unlink()
+        f = d / f"{kind}.{cover_art.image_type(data)}"
+        f.write_bytes(data)
+        for key in [k for k in art_hits if k[0] == gid]:
+            art_hits.pop(key, None)
+        for t in (thumbs / gid[:2]).glob(f"{gid}-*"):
+            t.unlink(missing_ok=True)
+        store.audit(actor, "catalog.cover", gid, {"kind": kind, "source": src, "bytes": len(data)})
+        return {"ok": True, "kind": kind, "source": src, "bytes": len(data), "file": str(f)}
 
     @app.get("/api/thumbs/stats")
     def thumb_stats(actor=Depends(auth)):
@@ -1944,13 +2019,36 @@ def create_app(config: Config) -> FastAPI:
                                          "cond": threading.Condition()})
 
     @app.get("/api/sessions")
-    def sessions(actor=Depends(auth)):
+    def sessions(actor=Depends(auth), include_ended: bool = True):
         out = []
         now = time.time()
         for s_ in store.all("session", reverse=True):
+            if not include_ended and s_.get('state') != 'running':
+                continue
             lv = live.get(s_["session_id"], {})
             out.append(s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None})
         return out
+
+    @app.get("/api/sessions/{sid}/observers")
+    def session_observers(sid: str, actor=Depends(auth)):
+        store.get('session', sid) or _404()
+        runtime = store.get('setting', 'session_observers_runtime') or {}
+        return (store.get('session_observer', sid) or {'session_id': sid, 'state': 'not_attached'}) | {
+            'service_online': time.time() - runtime.get('heartbeat', 0) < 30 and not runtime.get('error'),
+            'service_error': runtime.get('error'), 'interval_seconds': 30}
+
+    class ObserverIn(BaseModel):
+        enabled: StrictBool
+
+    @app.post("/api/sessions/{sid}/observers")
+    def session_observers_setting(sid: str, setting: ObserverIn, actor=Depends(auth)):
+        store.get('session', sid) or _404()
+        with store.lock:
+            row = store.get('session_observer', sid) or {'session_id': sid}
+            store.put('session_observer', sid, row | {'enabled': setting.enabled,
+                      'state': 'waiting' if setting.enabled else 'paused'})
+        store.audit(actor, 'session.observers', sid, {'enabled': setting.enabled})
+        return session_observers(sid, actor)
 
     class LiveModelIn(BaseModel):
         mod: str = ""
@@ -2220,6 +2318,22 @@ def create_app(config: Config) -> FastAPI:
     def hermes_task_mode_state(actor=Depends(auth)):
         from . import hermes_task_mode
         return hermes_task_mode.status()
+
+    class QueuePriorityIn(BaseModel):
+        ids: list[str] = []            # game ids and/or request ids (or numbers), most important first
+
+    @app.get("/api/hermes/queue/priority")
+    def hermes_queue_priority(actor=Depends(auth)):
+        from . import hermes_work_queue
+        return {"priority": hermes_work_queue.get_priority()}
+
+    @app.post("/api/hermes/queue/priority")
+    def hermes_queue_priority_set(body: QueuePriorityIn, actor=Depends(auth)):
+        """Operator priority for the Hermes queue: these games/requests are worked first in their lane."""
+        from . import hermes_work_queue
+        ids = hermes_work_queue.set_priority(body.ids)
+        store.audit(actor, "hermes.queue_priority", "", {"ids": ids})
+        return {"priority": ids}
 
     class TaskModeIn(BaseModel):
         enabled: bool
@@ -2614,9 +2728,10 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu") and not req.op.startswith("debug_"):
-            raise HTTPException(422, "read-only, reset and debug_* ops only; edits go through the write_memory job")
-        if req.op in ("reset", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
+        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume") \
+                and not req.op.startswith("debug_"):
+            raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
+        if req.op in ("reset", "pause", "resume", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
             store.audit(actor, f"session.{req.op}", sid, req.args)
         rid, lv = new_id(), _live(sid)
         with lv["cond"]:
@@ -2981,6 +3096,12 @@ def create_app(config: Config) -> FastAPI:
         detail: str = ""
         image_b64: str | None = None
         job_id: str = ""
+        character: str = ""
+        target_kind: str = ""
+        x: float | None = Field(default=None, ge=0, le=1)
+        y: float | None = Field(default=None, ge=0, le=1)
+        needs_rebuild: bool = False
+        replacement_requested: bool = False
 
     @app.post("/api/requests/auto-mod-failure")
     def req_auto_mod_failure(f: AutoFailureIn, actor=Depends(auth)):
@@ -2995,15 +3116,28 @@ def create_app(config: Config) -> FastAPI:
             existing = next((x for x in store.all("request") if x.get("source") == "automation"
                              and (x.get("context") or {}).get("job_id") == f.job_id), None) if f.job_id else None
             if existing:
+                context = existing.setdefault("context", {})
+                for key in ("character", "target", "target_kind", "x", "y"):
+                    value = getattr(f, key)
+                    if value is not None and value != "":
+                        context[key] = value
+                if f.needs_rebuild:
+                    context["needs_rebuild"] = True
                 if f.image_b64 and not existing.get("image"):
                     existing["messages"].append({"author": "agent", "text": f.detail or "Additional failure screenshot", "ts": time.time(),
                         "attachments": _attach(existing["id"], [{"name": "failed-moment.png", "type": "image/png", "b64": f.image_b64}])})
-                    store.put("request", existing["id"], existing)
+                store.put("request", existing["id"], existing)
                 return _clean(existing)
-            report = req_create(RequestIn(title=f"Auto report: {f.action} failed in {game}"[:140], body=details,
+            title = (f"Character replacement: {f.model} in {game}" if f.replacement_requested else
+                     f"Auto report: {f.action} failed in {game}")
+            report = req_create(RequestIn(title=title[:140], body=details,
                 source="automation", kind="screenshot" if f.image_b64 else "text", image_b64=f.image_b64,
                 author="system", automated=True, context={"session_id": f.session_id, "session": f.session_id, "game_id": s_.get("game_id"),
                                                             "game": game, "model": f.model, "moment": f.moment,
+                                                            "character": f.character, "target": f.target,
+                                                            "target_kind": f.target_kind, "x": f.x, "y": f.y,
+                                                            "needs_rebuild": f.needs_rebuild, "native_replacement": True,
+                                                            "replacement_requested": f.replacement_requested,
                                                             "job_id": f.job_id, "auto_report": True}), actor)
         rid = report["id"]
         if f.session_id and s_.get("state") == "running":
@@ -3020,19 +3154,30 @@ def create_app(config: Config) -> FastAPI:
             except Exception as exc:
                 report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
         store.put("request", rid, report)
+        from . import hermes_task_mode
+        controller = hermes_task_mode._job() or {}
+        managed = bool(controller.get("no_agent"))
         try:
-            chat = hub.get(new_id())
-            store.put("chat", chat["id"], chat)
             prompt = (f"Resolve gBox auto report #{report['number']} ({rid}). {details}\n"
                       "Inspect the exact failure, fix the relevant model writer or mod path, verify the result in the game, "
                       "attach screenshots to this request, report each attempt and outcome, record actual token usage, "
                       "and mark the request done only after verification. Preserve the operator's running game and save state.")
-            hub.post(chat["id"], prompt, {"request_id": rid, "session_id": f.session_id,
+            if managed:
+                report["context"]["resolution_dispatch"] = "hermes_queue"
+                report["messages"].append({"author": "agent", "text":
+                    "Native replacement queued for Hermes. Identify the selected actor, repair or rebuild its native "
+                    "assets, and verify this donor in gameplay. Preview and overlay do not complete this request.",
+                    "ts": time.time(), "attachments": [], "task_step": {"action": "dispatch resolution",
+                    "attempt": "1", "result": "durable Hermes queue", "status": "queued"}})
+            else:
+                chat = hub.get(new_id())
+                store.put("chat", chat["id"], chat)
+                hub.post(chat["id"], prompt, {"request_id": rid, "session_id": f.session_id,
                                           "resolve_auto_report": True}, api_requests, None, [])
-            report = store.get("request", rid) or report
-            report["context"]["resolution_chat_id"] = chat["id"]
-            report["status"], report["started"] = "in_progress", time.time()
-            report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
+                report = store.get("request", rid) or report
+                report["context"]["resolution_chat_id"] = chat["id"]
+                report["status"], report["started"] = "in_progress", time.time()
+                report["messages"].append({"author": "agent", "text": f"Resolution agent dispatched (chat {chat['id']}).", "ts": time.time(), "attachments": [],
                                        "task_step": {"action": "dispatch resolution", "attempt": "1", "result": chat["id"], "status": "running"}})
         except Exception as exc:
             report = store.get("request", rid) or report

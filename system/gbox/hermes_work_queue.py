@@ -1,0 +1,479 @@
+"""Bounded, durable dispatch of favorite-game engineering and inbox acceptance.
+
+The cheap cron pump owns admission; agents own isolated task workspaces. Queue
+claims precede cron writes and uncertain writes are reconciled, never replayed.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import re
+import sqlite3
+import time
+
+from . import hermes_delivery as delivery, hermes_task_mode as mode, hermes_quota
+
+PREFIX = 'gBox queue '
+STAGES = ('inventory', 'analysis', 'reader', 'writer', 'runtime')
+ACTIVE = ('claimed', 'running')
+HASH = re.compile(r'^[0-9a-f]{64}$')
+ID = re.compile(r'^[0-9a-f]{16}$')
+
+
+def _path():
+    return delivery.state_dir() / 'work-queue.json'
+
+
+def _read():
+    return json.loads(_path().read_text()) if _path().exists() else {
+        'version': 1, 'items': {}, 'last_lane': 'inbox'}
+
+
+def _save(data):
+    p = _path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix('.tmp')
+    tmp.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    tmp.replace(p)
+
+
+def _api(path, body=None):
+    from .hermes_availability import _api as api
+    return api(path, body)
+
+
+def _executions():
+    # A missing/unreadable DB is not evidence of spare capacity.
+    p = mode._home() / 'cron/executions.db'
+    with sqlite3.connect(f'file:{p.as_posix()}?mode=ro', uri=True, timeout=3) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute('SELECT id,job_id,status,started_at,finished_at FROM executions '
+                          'ORDER BY rowid DESC').fetchall()
+    latest, active = {}, set()
+    for row in rows:
+        r = dict(row)
+        # A scheduled occurrence with no start still reserves its job.
+        if r['status'] in ACTIVE:
+            active.add(r['job_id'])
+        if r.get('started_at'):
+            latest.setdefault(r['job_id'], r)
+    return latest, active
+
+
+def _native_jobs():
+    # Read the local control DB: GET /api/tasks can enqueue inventory jobs.
+    p = Path(__file__).resolve().parents[1] / 'gbox-data/gbox.sqlite3'
+    with sqlite3.connect(f'file:{p.as_posix()}?mode=ro', uri=True, timeout=3) as db:
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT body FROM docs WHERE kind='job' AND json_extract(body,'$.state') "
+            "IN ('queued','running','cancelling')")]
+
+
+def _stamp(value):
+    from .hermes_tasks import _stamp
+    return _stamp(value) or 0
+
+
+def _on_main():
+    p = delivery.state_dir() / 'branches.json'
+    if not p.exists():
+        return set()
+    data = json.loads(p.read_text())
+    # Old observations are hints only; agents must confirm deployment and acceptance.
+    return {rid for rid, value in data.get('reported', {}).items() if value.startswith('on_main:')}
+
+
+def sync(data, favorites, requests, *, now):
+    """Inventory every durable favorite, including missing catalog entries."""
+    if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
+            or favorites.get('count') != len(favorites['items'])):
+        raise ValueError('Incomplete favorite snapshot; dispatch deferred')
+    if len({g['game_id'] for g in favorites['items']}) != favorites['count']:
+        raise ValueError('Duplicate favorite snapshot; dispatch deferred')
+    favorite_ids = {g['game_id'] for g in favorites['items']}
+    children = {(r.get('context') or {}).get('hermes_favorite_game'): r for r in requests
+                if (r.get('context') or {}).get('hermes_favorite_game')}
+    for item in data['items'].values():
+        if item['lane'] == 'favorite':
+            item['favorite'] = item['game_id'] in favorite_ids
+    for game in favorites['items']:
+        gid = game['game_id']
+        if not ID.fullmatch(gid):
+            raise ValueError('Invalid favorite game ID')
+        item = data['items'].setdefault('favorite:' + gid, {
+            'lane': 'favorite', 'game_id': gid, 'stages': {}, 'attempts': 0,
+            'last_dispatched': 0, 'created': now})
+        item.update(title=game.get('title') or gid, platform=game.get('platform'),
+                    favorite=True, in_catalog=game.get('in_catalog') is True)
+        if gid in children:
+            item.update(request_id=children[gid]['id'], number=children[gid]['number'])
+            item.pop('request_uncertain', None)
+    for request in requests:
+        if request['id'] == data.get('parent_request_id'):
+            continue  # its child game tasks are the executable units
+        if request['id'] in {r['id'] for r in children.values()}:
+            continue
+        # Automatic recurring review reminders are never engineering work.
+        context = request.get('context') or {}
+        body = str(request.get('body') or request.get('title') or '').lstrip()
+        actionable = request.get('source') in ('gap', 'characters')
+        repair = bool(context.get('auto_report') or context.get('native_replacement')
+                      or actionable and (context.get('character') or context.get('what')
+                                         or body.startswith('Extract ') or 'pick whip' in body.lower()))
+        operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
+                          and request.get('source') not in {'characters', 'gap', 'system', 'automation', 'agent', 'review'})
+        if ((request.get('automated') and not repair and not operator_child and not actionable)
+                or body.startswith(('gBox request review', '<agent-message', '<task-notification'))):
+            continue
+        if request.get('status') not in ('open', 'in_progress'):
+            continue
+        item = data['items'].setdefault('inbox:' + request['id'], {
+            'lane': 'inbox', 'request_id': request['id'], 'attempts': 0, 'last_dispatched': 0,
+            'created': request.get('created', now)})
+        item.update(number=request.get('number'), title=request.get('title'), repair=repair,
+                    session_observer=bool(context.get('session_observer')),
+                    operator_requested=bool(context.get('replacement_requested')),
+                    game_id=context.get('game_id'), target=context.get('target'),
+                    character=context.get('character'))
+    data.update(favorites_count=len(favorite_ids), synced_at=now)
+
+
+def next_stage(item):
+    return next((stage for stage in STAGES if (item.get('stages', {}).get(stage) or {}).get('status') != 'verified'), None)
+
+
+def reconcile(data, jobs, latest, active, *, now):
+    """One completed occurrence advances the queue exactly once, even after a crash."""
+    by_name = {j.get('name'): j for j in jobs}
+    for item in data['items'].values():
+        if item.get('dispatch_state') == 'uncertain':
+            job = by_name.get(item.get('job_name'))
+            if job:
+                item.update(job_id=job['id'], dispatch_state='queued')
+            else:
+                continue  # An unacknowledged creation stays held for inspection.
+        jid = item.get('job_id')
+        if not jid:
+            continue
+        job = next((j for j in jobs if j['id'] == jid), None)
+        if jid in active or job and job.get('enabled'):
+            continue
+        run = latest.get(jid)
+        if not run or run['id'] == item.get('last_run_id'):
+            continue
+        if _stamp(run['started_at']) < item.get('last_dispatched', 0) - 2:
+            continue  # Old history cannot settle a newer queued occurrence.
+        item.update(last_run_id=run['id'], dispatch_state='finished', last_finished=now)
+        advanced = item.get('checkpoint_at', 0) >= item.get('last_dispatched', 0)
+        failures = 0 if advanced else item.get('no_progress_runs', 0) + 1
+        item['no_progress_runs'] = failures
+        # Make room for other titles; repeated reading/error runs back off instead of spinning.
+        delay = min(6 * 3600, 300 * 2 ** min(failures - 1, 6)) if failures else 60
+        item['retry_at'] = max(item.get('retry_at', 0), now + delay)
+
+
+def candidates(data, requests, native, owned, on_main, *, now):
+    by_id = {r['id']: r for r in requests}
+    busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
+    busy_games = {(j.get('input') or {}).get('game_id') or
+                  ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
+    busy_games.update(i.get('game_id') for i in data['items'].values()
+                      if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned)
+    heavy = sum(j.get('tool') in ('analyze_binary', 'ghidra_script', 'characters', 'doa2_assets') for j in native)
+    result = []
+    for key, item in data['items'].items():
+        rid = item.get('request_id')
+        if (rid and rid in busy_requests or item.get('retry_at', 0) > now
+                or item.get('game_id') and item['game_id'] in busy_games
+                or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
+            continue
+        req = by_id.get(rid, {})
+        if item['lane'] == 'favorite':
+            if not item.get('favorite') or not item.get('in_catalog') or item['game_id'] in busy_games or not next_stage(item):
+                continue
+            if heavy >= 2 and next_stage(item) in ('inventory', 'analysis'):
+                continue
+            # Explicit operator closure/block is respected; the readiness manifest stays separate.
+            if req.get('status') in ('done', 'blocked'):
+                continue
+        elif req.get('status') not in ('open', 'in_progress'):
+            continue
+        item['on_main'] = rid in on_main
+        result.append((key, item))
+    repair_games = {i.get('game_id') for _, i in result if i.get('repair') and i.get('game_id')}
+    return [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
+
+
+def priority_rank(item, data) -> int:
+    """Position of this item's game or request in the operator's priority list; past the end when not listed."""
+    order = [str(x) for x in (data.get('priority') or [])]
+    for key in (item.get('game_id'), item.get('request_id'), str(item.get('number') or '')):
+        if key and key in order:
+            return order.index(key)
+    return len(order)
+
+
+def set_priority(ids) -> list[str]:
+    """Operator priority: game ids and/or request ids (or numbers) worked first in their lane; saved in the queue data."""
+    data = _read()
+    data['priority'] = [str(x).strip() for x in ids if str(x).strip()]
+    _save(data)
+    return data['priority']
+
+
+def get_priority() -> list[str]:
+    return list(_read().get('priority') or [])
+
+
+def choose(options, data):
+    """Alternate lanes and first attempts/follow-ups so acceptance is not postponed indefinitely; inside a lane the
+    operator's priority list (games or requests) comes first."""
+    preferred = 'favorite' if data.get('last_lane') == 'inbox' else 'inbox'
+    lane = [v for v in options if v[1]['lane'] == preferred] or options
+    if lane and len({v[1]['lane'] for v in lane}) == 1:
+        followup = data.get('last_' + lane[0][1]['lane'] + '_kind') == 'new'
+        lane = [v for v in lane if bool(v[1].get('last_dispatched')) == followup] or lane
+    return min(lane, key=lambda v: (
+        priority_rank(v[1], data),
+        0 if v[1]['lane'] == 'favorite' or v[1].get('operator_requested') or v[1].get('session_observer') else 1 if v[1].get('repair') else 2 if v[1].get('on_main') else 3,
+        v[1].get('last_dispatched', 0),
+        v[1].get('created', 0), v[0])) if lane else None
+
+
+def _prompt(item):
+    rid = item['request_id']
+    header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
+              "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
+              "Do not select a different ticket from list_requests. ")
+    if item['lane'] == 'inbox':
+        if item.get('session_observer'):
+            header += ('This task supports passive observation of an operator gameplay session. '
+                       'Read its observations, capture evidence and exact game build. Repair the native '
+                       'model reader or read-only observation capability. Never send input, pause, stop, '
+                       'reset, move, relaunch, or capture GPU draws on the operator session. Work from '
+                       'owned files with REA/Ghidra and publish tested readers and reusable assets. '
+                       'Keep replacement testing on a separate agent-owned session. ')
+        elif item.get('repair'):
+            header += ('This is unfinished native character work. Follow the request scope: extraction needs an '
+                       'identified reusable native asset with validation; replacement additionally needs gameplay '
+                       'acceptance. Read the preserved donor, target, '
+                       'normalized pick point, exact game build, screenshot and checkpoint from the request. '
+                       'Identify the selected actor and its native model/skeleton/animation slot using REA and '
+                       'Ghidra evidence; do not silently replace the player when a different actor was selected. '
+                       'Implement the missing reader/writer or rebuild marked assets, preserve source hashes, '
+                       'test the round trip and replay this donor/target in the game. A preview, overlay, build '
+                       'or successful tool exit is not completion. Require gameplay evidence of the actual '
+                       'replacement, animations and controls. Record exact pending job IDs and the next step; '
+                       'keep the request open until verified, or name a concrete external blocker. ')
+        header += ('Its published branch is recorded on main. Confirm the exact deployed files and perform '
+                   'the outstanding acceptance check before writing more source. ' if item.get('on_main') else '')
+        return header + mode._handoff()
+    stage = next_stage(item)
+    template = Path(__file__).resolve().parents[1] / 'hermes/gbox/FAVORITE_WORK.md'
+    return header + f"\nGame: {item['title']} ({item['platform']}), game_id={item['game_id']}. " + (
+        f"Next unfinished stage: {stage}. Preserved checkpoint: " + json.dumps(item.get('stages', {}))
+        + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+
+
+def _ensure_request(data, item, requests):
+    if item.get('request_id'):
+        return
+    parent = data.get('parent_request_id')
+    if not parent or not any(r['id'] == parent for r in requests):
+        raise ValueError('Favorites queue requires its existing operator parent request')
+    # Persist before POST. Lost responses are recovered by the context marker on the next scan.
+    item['request_uncertain'] = True
+    _save(data)
+    r = _api('/api/requests', {
+        'title': f"Character replacement readiness: {item['title']}", 'source': 'automation',
+        'author': 'agent', 'automated': True, 'parent_request_id': parent,
+        'context': {'hermes_favorite_game': item['game_id'], 'game_id': item['game_id']},
+        'body': (f"Persistent work for favorite game {item['game_id']} ({item['platform']}). "
+                 "Inventory the owned build, analyze executable/asset loaders, implement and test native "
+                 "character extraction and replacement, then verify the rebuilt game. Preserve hash-identified "
+                 "artifacts, reusable Ghidra projects and exact pending job IDs. Each run advances one bounded "
+                 "stage; a report, extracted binary or preview alone is not a working character replacement.")})
+    if not ID.fullmatch(str(r.get('id', ''))):
+        raise ValueError('Request creation was not acknowledged')
+    item.update(request_id=r['id'], number=r['number'])
+    item.pop('request_uncertain', None)
+    _save(data)
+
+
+def tick(*, now=None):
+    now = time.time() if now is None else now
+    with delivery.locked('work-queue'):
+        controller = mode._job() or {}
+        if not controller.get('enabled') or not controller.get('no_agent'):
+            return {'status': 'disabled_or_legacy_controller'}
+        data = _read()
+        jobs = mode._jobs()
+        latest, active = _executions()
+        requests = _api('/api/requests')
+        sync(data, _api('/api/favorites'), requests, now=now)
+        reconcile(data, jobs, latest, active, now=now)
+        _save(data)
+        config = mode._config()
+        path = delivery.state_dir() / 'feedback.json'
+        feedback = json.loads(path.read_text()) if path.exists() else {}
+        routes = hermes_quota.routes(config, feedback.get('routes') or [])
+        eligible = [r for r in routes if feedback.get('cooldowns', {}).get(r['provider']+'/'+r['model'], 0) <= now]
+        primary = {'provider': (config.get('cron') or {}).get('model_provider'),
+                   'model': (config.get('cron') or {}).get('model')}
+        if primary not in eligible:
+            return {'status': 'waiting_for_route_supervisor', 'favorites': data['favorites_count']}
+        limit = min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        script_ids = {j['id'] for j in jobs if j.get('no_agent')}
+        reserved = active - script_ids
+        reserved.update(j['id'] for j in jobs if not j.get('no_agent') and j.get('enabled')
+                        and (j.get('schedule') or {}).get('kind') == 'once')
+        from .hermes_recovery import _active_requests
+        owned = _active_requests()
+        # A legacy/local resolution still owns its request until its chat finishes.
+        chat_ids = {(r.get('context') or {}).get('resolution_chat_id'): r['id'] for r in requests
+                    if (r.get('context') or {}).get('resolution_chat_id')}
+        if chat_ids:
+            owned.update(chat_ids[c['id']] for c in _api('/api/chat')
+                         if c.get('busy') and c.get('id') in chat_ids)
+        native = _native_jobs()
+        options = candidates(data, requests, native, owned, _on_main(), now=now)
+        dispatched = []
+        for _ in range(max(0, limit - len(reserved))):
+            # Give both backlogs capacity; spare slots go to whichever has work.
+            counts = {lane: sum(j.get('name', '').startswith(PREFIX + lane + ' ') and
+                               j['id'] in reserved for j in jobs) +
+                      sum(d['lane'] == lane for d in dispatched) for lane in ('inbox', 'favorite')}
+            least = min((counts[v[1]['lane']] for v in options), default=0)
+            chosen = choose([v for v in options if counts[v[1]['lane']] == least], data)
+            if not chosen:
+                break
+            key, item = chosen
+            options.remove(chosen)
+            if item.get('game_id'):
+                options = [v for v in options if v[1].get('game_id') != item['game_id']]
+            _ensure_request(data, item, requests)
+            name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
+            prompt = _prompt(item)
+            existing = [j for j in jobs if j.get('name') == name]
+            if len(existing) > 1:
+                raise RuntimeError('Ambiguous queue job identity')
+            # Recheck the operator switch immediately before admission.
+            if not (mode._job() or {}).get('enabled'):
+                break
+            attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
+            item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
+                        attempts=item.get('attempts', 0) + 1)
+            _save(data)
+            if existing:
+                job = existing[0]
+                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity', '--unpin')
+                mode._run('resume', job['id'], '--run-now')
+            else:
+                mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
+                          '--reasoning-effort', 'high', '--workdir', str(mode._PROMPT.parents[2]),
+                          '--deliver', 'local', '--failure-deliver', 'local')
+                found = [j for j in mode._jobs() if j.get('name') == name]
+                if len(found) != 1:
+                    raise RuntimeError('Queue launch acknowledgment missing')
+                job = found[0]
+            item.update(job_id=job['id'], dispatch_state='queued')
+            data['last_lane'] = item['lane']
+            data['last_' + item['lane'] + '_kind'] = attempt_kind
+            _save(data)
+            dispatched.append({'job_id': job['id'], 'request_id': item['request_id'],
+                               'game_id': item.get('game_id'), 'lane': item['lane']})
+        return {'status': 'dispatched' if dispatched else 'waiting', 'dispatched': dispatched,
+                'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
+                'favorites': data['favorites_count'], 'eligible_tasks': len(options)}
+
+
+def snapshot(game_id=''):
+    data = _read()
+    games = [{k: item.get(k) for k in ('game_id', 'title', 'platform', 'in_catalog', 'request_id',
+             'number', 'dispatch_state', 'job_id', 'attempts', 'retry_at', 'stages')}
+             | {'next_stage': next_stage(item)} for item in data['items'].values()
+             if item['lane'] == 'favorite' and item.get('favorite')]
+    count, ready = len(games), sum(g['next_stage'] is None for g in games)
+    if game_id:
+        games = [g for g in games if g['game_id'] == game_id]
+    else:
+        games = [{k: v for k, v in g.items() if k != 'stages'} |
+                 {'stages': {k: v.get('status') for k, v in (g.get('stages') or {}).items()}} for g in games]
+    return {'synced_at': data.get('synced_at'), 'favorites': count,
+            'verified_native_replacement': ready, 'games': games}
+
+
+def checkpoint(game_id, request_id, stage, status, note, *, source_sha256='', artifacts=(), next_step='', now=None):
+    """Retain exact-build milestones with stored evidence, never infer success from a run exit."""
+    now = time.time() if now is None else now
+    if stage not in STAGES or status not in ('partial', 'verified', 'blocked') or not note.strip():
+        raise ValueError('A valid stage, status and concrete result note are required')
+    if status == 'verified':
+        if not HASH.fullmatch(source_sha256) or not artifacts:
+            raise ValueError('Verified stages require the owned source hash and stored evidence artifacts')
+        request = _api(f'/api/requests/{request_id}')
+        attached = {a.get('sha256') for m in request.get('messages', []) for a in m.get('attachments', [])}
+        attached.add(request.get('image'))
+        for digest in artifacts:
+            if not HASH.fullmatch(digest):
+                raise ValueError('Invalid evidence hash')
+            if digest not in attached:
+                raise ValueError('Evidence must be attached to this game request')
+            _api(f'/api/artifacts/{digest}/meta')  # missing artifacts refuse completion
+        if stage == 'runtime':
+            # A text report alone cannot claim native character replacement in gameplay.
+            if not any(str(_api(f'/api/artifacts/{d}/meta').get('media_type', '')).startswith('image/') for d in artifacts):
+                raise ValueError('Runtime verification requires a stored real gameplay screenshot')
+    with delivery.locked('work-queue'):
+        data = _read()
+        item = data['items']['favorite:' + game_id]
+        if item.get('request_id') != request_id:
+            raise ValueError('Checkpoint request does not own this game queue item')
+        previous_source = item.get('source_sha256')
+        if source_sha256 and previous_source and source_sha256 != previous_source:
+            raise ValueError('Source build changed; preserve and review its earlier evidence before resetting stages')
+        if status == 'verified' and any((item['stages'].get(s) or {}).get('status') != 'verified'
+                                        for s in STAGES[:STAGES.index(stage)]):
+            raise ValueError('Verify the preceding exact-build stages first')
+        record = {'status': status, 'note': note, 'next_step': next_step,
+                  'source_sha256': source_sha256, 'artifacts': list(artifacts)}
+        previous = item['stages'].get(stage) or {}
+        changed = {k: v for k, v in previous.items() if k != 'at'} != record
+        item['stages'][stage] = record | {'at': now if changed else previous.get('at', now)}
+        if source_sha256:
+            item['source_sha256'] = source_sha256
+        if changed:
+            item['checkpoint_at'] = now
+        if status == 'blocked':
+            item['retry_at'] = now + 6 * 3600
+        _save(data)
+        return {'game_id': game_id, 'request_id': request_id, 'stage': stage, 'status': status,
+                'next_stage': next_stage(item), 'ready': next_stage(item) is None}
+
+
+def install_script():
+    root = Path(__file__).resolve().parents[1]
+    path = mode._home() / 'scripts/gbox-work-queue.py'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('import sys,json\nsys.path.insert(0,' + repr(str(root)) + ')\n'
+                    'from gbox.hermes_work_queue import tick\nprint(json.dumps(tick()))\n', encoding='utf-8')
+    return path.name  # Hermes resolves scripts relative to ~/.hermes/scripts.
+
+
+def pause_pending():
+    with delivery.locked('work-queue'):
+        data = _read()
+        for job in mode._jobs():
+            if job.get('name', '').startswith(PREFIX) and job.get('enabled'):
+                mode._run('pause', job['id'])
+                if not mode._active(job['id']):
+                    for item in data['items'].values():
+                        if item.get('job_id') == job['id']:
+                            item['dispatch_state'] = 'paused'
+        _save(data)
+
+
+def claims():
+    """Expose durable assignments before the agent's first mutation receipt."""
+    return {item['job_id']: item['request_id'] for item in _read()['items'].values()
+            if item.get('job_id') and item.get('request_id') and item.get('dispatch_state') == 'queued'}

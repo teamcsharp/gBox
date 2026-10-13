@@ -366,6 +366,76 @@ PLAYBOOKS = [
                       "ResolvePrecisionAim + StrangleholdPawn.ServerResolveDamage (@01e1 branch, @02a6 DamageScale=1000)",
                       "ref": "profiles/stranglehold-ps3-us.json"}],
     },
+    {
+        # ReAgent (Dryxio/reagent, MIT) ported onto gBox's Ghidra Bridge: docs/re_tool_integrations.md
+        "id": "reconstruct-function", "seed_version": 1,
+        "title": "Reconstruct a game function as C/C++ (ReAgent loop on the Ghidra Bridge)",
+        "goal": "Turn one decompiled function into reviewed C/C++ that matches the binary, as a hypothesis with evidence: "
+                "to understand a mechanic, document a struct or prepare a patch.",
+        "when": ["reconstruct", "rewrite in c", "c++", "source code", "what does this function do", "decompile",
+                 "reverse this function", "reagent", "clean up the decompilation", "port the function"],
+        "platforms": ["any"], "tags": ["ghidra", "decompile", "reconstruction", "llm", "reagent"],
+        "steps": [
+            {"do": "Know the title first (executable, processor, known addresses).", "tool": "re_dossier", "args": {"op": "read"}},
+            {"do": "Open the executable in the operator's Ghidra once; later calls stay on the same worker.",
+             "tool": "ghidra_bridge", "args": {"op": "open", "binary_path": "<ELF from re_study>", "processor": "<if needed>"},
+             "expect": "program info (language, image base, function count) and a worker_id"},
+            {"do": "Choose what to reconstruct. high-impact = most callers first (shared helpers), easiest-first = "
+                   "fewest callers (leaf functions, quick wins), dependency-order = callees before callers (each "
+                   "function's helpers are done before it).", "tool": "re_agent",
+             "args": {"op": "pick", "query": "<class or name filter>", "strategy": "dependency-order"}},
+            {"do": "Gather evidence the decompilation alone lacks: callers, callees, referenced strings.",
+             "tool": "ghidra_bridge", "args": {"op": "xrefs_to", "target": "<0x address>"}},
+            {"do": "Run the loop: reverser (may request decompile/xrefs/strings itself) -> independent checker -> "
+                   "structural verifier -> fix rounds, stopping on PASS, the call budget or a repeated failure.",
+             "tool": "re_agent", "args": {"op": "reverse", "target": "<0x address>", "max_rounds": 4},
+             "expect": "code + checker verdict + objective verdict per round"},
+            {"do": "Or write the candidate yourself from ghidra_bridge op=decompile and have it judged.",
+             "tool": "re_agent", "args": {"op": "check", "target": "<0x address>", "code": "<your C/C++>"}},
+            {"do": "Record the function (name, role) as a hypothesis; promote it only with runtime evidence "
+                   "(debugger breakpoint hit, value change).", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "function", "address": "<0x address>", "name": "<Class::Name>",
+                      "role": "<what it does>", "status": "hypothesis"}},
+        ],
+        "pitfalls": [
+            "A PASS means the checker and the structural verifier found no mismatch, not that the code is equivalent.",
+            "Use an independent checker model when you can (checker_endpoint): one model grading itself is weak.",
+            "The structural verifier only fails on strong mismatches (missing calls/branches, wrong constant return).",
+            "Ghidra Bridge keeps the program open on ONE worker: pass the returned worker_id to later calls.",
+            "Floating-point expression order and integer widths matter; keep Ghidra's order unless evidence says otherwise.",
+        ],
+        "verify": ["re_agent result success=true with checker PASS and objective not FAIL",
+                   "for gameplay code: a debugger exec breakpoint at the address fires on the in-game event"],
+        "record": ["re_dossier op=record kind=function status=hypothesis", "re_playbook op=learn with what helped"],
+        "examples": [],
+    },
+    {
+        "id": "gta-live-state", "seed_version": 1,
+        "title": "GTA live state: player, pools, vehicles, weather, time, wanted level, teleport, spawn",
+        "goal": "Read or change a running PS2 GTA's world state (the in-game controls of the Ariane map editor).",
+        "when": ["gta", "grand theft auto", "weather", "time of day", "wanted level", "stars", "teleport", "spawn a car",
+                 "vehicle pool", "ped pool", "liberty city", "vice city"],
+        "platforms": ["ps2"], "tags": ["gta", "memory", "ariane"],
+        "steps": [
+            {"do": "See what is mapped for this game and where each address comes from.", "tool": "gta_live",
+             "args": {"session_id": "<session_id>", "op": "games"}},
+            {"do": "If clock/weather/wanted are not mapped, resolve them from the game's own ELF symbol table.",
+             "tool": "gta_live", "args": {"session_id": "<session_id>", "op": "resolve", "elf_path": "<ELF from re_study>"}},
+            {"do": "Read the state first.", "tool": "gta_live", "args": {"session_id": "<session_id>", "op": "player"}},
+            {"do": "Change it (each write is read back; the previous bytes are returned for undo).", "tool": "gta_live",
+             "args": {"session_id": "<session_id>", "op": "weather", "value": "rainy"}},
+            {"do": "Verify on screen once.", "tool": "look_at_screen", "args": {"session_id": "<session_id>"}},
+        ],
+        "pitfalls": [
+            "Every gta_live address is live_checked=false until someone confirms it; say 'written, read back' not 'verified'.",
+            "Vice City windows_native 1fd42f50b10252e6 is the Definitive Edition (UE4): no RenderWare addresses apply.",
+            "Liberty City Stories and Vice City Stories have no symbol table: unmapped fields need memory_search.",
+            "Wanted level follows the chaos value every frame: freeze_memory the chaos word to hold it.",
+        ],
+        "verify": ["the op's read-back value equals the request", "look_at_screen shows the weather/time/stars"],
+        "record": ["re_dossier op=record kind=global with the address once confirmed live"],
+        "examples": [],
+    },
 ]
 
 
@@ -431,6 +501,32 @@ TITLE_FACTS = [
             "knowledge base: PSO multi-equip"),
          _f("patch", "0x8C1E743E", "serial check bypass 1", "01 E0 (mov #1,r0)", "docs/what_this_is.md"),
          _f("patch", "0x8C2670B6", "serial check bypass 2", "01 E0 (mov #1,r0)", "docs/what_this_is.md"),
+     ]},
+    {"platform": "gamecube", "title_has": ["agent under fire"], "label": "007 Agent Under Fire GameCube USA (GW7E69)",
+     "executable": {"processor": "PowerPC:BE:32:default", "registers": {"r13": "0x804EB040", "r2": "0x804EC2A0"},
+                    "note": "Bond.elf (/base.elf/Bond.elf, sha256 1a9c0d19...) keeps .symtab and .rela.*: 17636 "
+                            "CodeWarrior-mangled symbols; Quake III / Ritual UberTools lineage (FAKK2 names)"},
+     "facts": [
+         _f("global", "0x804E38B0", "g_entities", "gentity_t* table, 0x2B0 bytes each; count at globals+0x80 "
+            "(0x803F0210); +0x1E4 inuse, +0x24C Entity*, +0x5C s.modelindex, +0x124 svflags (0x80 hidden), "
+            "+0x214/+0x220 absmin/absmax, +0x22C currentOrigin", "profiles/auf-gcn-us.json"),
+         _f("global", "0x804E3530", "gClientArr", "gclient_t* array (stride at gClientSize 0x804E3534 = 0x860, count "
+            "gNumClients 0x804E3068, viewed index currentPlayer 0x804E34CC): +0x74 eye, +0x68 angles (pitch,yaw,roll "
+            "deg), +0x2D0 fov deg; scripted camera +0x2DC/+0x2E8/+0x2F4 while pm_flags(+0xC) & 0x100",
+            "profiles/auf-gcn-us.json"),
+         _f("field", "+0x4", "Entity.vtable", "vtable pointer (Class keeps it at +4); +0x1C classname, +0x28 model "
+            "(str -> strdata.data), +0x8C origin, +0x98 angles, +0x2C/+0x38 mins/maxs, +0x14 edict, +0x18 client",
+            "profiles/auf-gcn-us.json"),
+         _f("table", "0x802612C0", "__vt__5Actor", "NPC class vtable; Player 0x80254E70, DeathmatchPlayer 0x802482C0, "
+            "Bot 0x80287BB4, Sentient 0x80259E4C (246 ClassDefs from the __sinit_* initialisers)",
+            "profiles/auf-gcn-us.json"),
+         _f("function", "0x800990D0", "G_NextEntity(Entity*)", "walks g_entities[0..num_entities) skipping !inuse",
+            "docs/auf-entity-analysis.md"),
+         _f("function", "0x800138A0", "R_BuildCameraMatrix(player, mtx, fov*, angles*)", "camera from gclient_t; "
+            "R_RenderPlayerView_Sub 0x800149F8 -> R_Draw 0x800142B0 -> R_SetupProjection 0x80014270 -> "
+            "veMatPerspective 0x8019B4D0 (m00 = cot/aspect, m11 = cot: vertical fov)", "docs/auf-entity-analysis.md"),
+         _f("function", "0x80075D00", "Entity::setModel(const char*)", "gi.setmodel -> edict s.modelindex; model str "
+            "at Entity+0x28, handle at +0x144", "docs/auf-entity-analysis.md"),
      ]},
     {"platform": "gamecube", "title_has": ["metal arms"], "label": "Metal Arms GameCube USA (GM5E7D)",
      "executable": {"processor": "PowerPC:BE:32:default", "registers": {"r13": "0x804BABE0", "r2": "0x804C2420"}},

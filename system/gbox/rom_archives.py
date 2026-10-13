@@ -61,7 +61,7 @@ def members(src):
 def boot_member(entries):
     from .catalog import EXT_PLATFORM, SNIFF_EXT
     # A disc descriptor references ALL tracks; selecting the largest BIN loses audio/data tracks.
-    for suffix in ("/ps3_game/usrdir/eboot.bin", ".m3u", ".gdi", ".cue"):
+    for suffix in ("/ps3_game/usrdir/eboot.bin", ".m3u", ".gdi", ".cue", ".lst"):
         choices = sorted(e["name"] for e in entries if ("/" + e["name"].lower()).endswith(suffix))
         if choices:
             return choices[0]

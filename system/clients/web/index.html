@@ -320,6 +320,58 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script>
 const tabs = { Library: library, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+
+// Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
+// when it would run past the bottom, clamp it to the edges, and let it scroll inside when it is taller than the window.
+// A ResizeObserver re-fits the menu when its content changes later (menus load their entries asynchronously).
+function fitMenu(el, x, y, pad = 8, minTop = pad) {
+  if (!el) return;
+  el._fitXY = [x, y, pad, minTop];
+  if (!el._fitRO && window.ResizeObserver) {
+    el._fitRO = new ResizeObserver(() => { if (el._fitXY && el.offsetParent !== null) refitMenu(el); });
+    el._fitRO.observe(el);
+  }
+  refitMenu(el);
+}
+
+// Any popup can be moved by pressing on a spot that is not a control and dragging (#1415); it stays where it was
+// dropped, and a drag never counts as a click. Controls, text fields, the 3D stage and scrollable logs keep their job.
+function dragAnywhere(el) {
+  if (!el || el._dragAny) return el;
+  el._dragAny = true;
+  el.addEventListener("pointerdown", e => {
+    if (e.button !== 0 || e.target.closest("button, a, input, select, textarea, label, option, canvas, video, [contenteditable], .pp-log, .scroll")) return;
+    const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, id = e.pointerId;
+    let moving = false;
+    const move = ev => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      if (!moving) {
+        if (Math.abs(dx) + Math.abs(dy) < 4) return;
+        moving = true; el._fitXY = null;
+        try { el.setPointerCapture(id); } catch {}
+        Object.assign(el.style, { position: "fixed", right: "auto", bottom: "auto", margin: "0", transform: "none" });
+      }
+      el.style.left = Math.max(0, Math.min(innerWidth - 40, r.left + dx)) + "px";
+      el.style.top = Math.max(0, Math.min(innerHeight - 24, r.top + dy)) + "px";
+      ev.preventDefault();
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up);
+      if (moving) { try { el.releasePointerCapture(id); } catch {} el._dragged = true; setTimeout(() => { el._dragged = false; }, 0); }
+    };
+    el.addEventListener("pointermove", move); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+  });
+  el.addEventListener("click", e => { if (el._dragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  return el;
+}
+function refitMenu(el) {
+  const [x, y, pad, minTop] = el._fitXY, vw = innerWidth, vh = innerHeight;
+  el.style.maxHeight = ""; el.style.overflowY = "";
+  const w = el.offsetWidth; let h = el.offsetHeight;
+  if (h > vh - pad - minTop) { h = vh - pad - minTop; el.style.maxHeight = h + "px"; el.style.overflowY = "auto"; }
+  const top = y + h > vh - pad ? (y - h >= minTop ? y - h : vh - pad - h) : y;      // flip above the pointer, else clamp
+  el.style.left = Math.max(pad, Math.min(x, vw - w - pad)) + "px"; el.style.top = Math.max(minTop, top) + "px";
+}
 let tok = ""; try { tok = localStorage.getItem("gbox_tok") || ""; } catch {}
 const HASH = new URLSearchParams(location.hash.slice(1));      // deep links: #token=…&session=<sid>&mode=inspect
 if (HASH.get("token")) { tok = HASH.get("token"); try { localStorage.setItem("gbox_tok", tok); } catch {} }
@@ -391,53 +443,90 @@ function trayPop() {
     : '<p class="mut" style="padding:10px">No notifications yet.</p>';
   el.classList.add("on");
 }
-// click a mod thumbnail: view it in a pop-up (wheel / + - zoom at the cursor, drag to pan, double-click = fit, Esc / backdrop = close)
+// click a mod thumbnail or any texture (img.tpable): view it in a pop-up (#186) — wheel / + - zoom at the cursor, drag to pan,
+// double-click = fit, ‹ › through its siblings, brightness / contrast, alpha checkerboard, Save; Esc / backdrop = close
 document.body.insertAdjacentHTML("beforeend", `<div id="lbox" style="display:none;position:fixed;inset:0;z-index:120;background:#000d;overflow:hidden;cursor:grab">
   <img alt="" draggable="false" style="position:absolute;left:0;top:0;transform-origin:0 0;max-width:none;user-select:none;image-rendering:auto">
-  <div style="position:absolute;top:10px;right:12px;display:flex;gap:6px"><button class="act" data-z="1.25">+</button><button class="act" data-z="0.8">−</button>
-  <button class="act" data-z="fit">Fit</button><button class="act" data-z="1:1">1:1</button><button class="act" data-z="x">✕</button></div></div>`);
-const LB = { el: $("#lbox"), k: 1, x: 0, y: 0 };
+  <div style="position:absolute;top:10px;right:12px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><b id="lbox-name" class="mut" style="font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></b>
+  <button class="act" data-z="prev" title="Previous (←)">‹</button><button class="act" data-z="next" title="Next (→)">›</button>
+  <button class="act" data-z="1.25" title="Zoom in (+)">+</button><button class="act" data-z="0.8" title="Zoom out (−)">−</button>
+  <button class="act" data-z="fit" title="Fit (0)">Fit</button><button class="act" data-z="1:1" title="Actual pixels">1:1</button><button class="act" data-z="checker" title="Alpha checkerboard">▦</button>
+  <label class="mut" style="font-size:11px" title="Brightness">☀ <input data-adj="bright" type="range" min="0" max="300" value="100" style="width:64px"></label>
+  <label class="mut" style="font-size:11px" title="Contrast">◐ <input data-adj="contrast" type="range" min="0" max="300" value="100" style="width:64px"></label>
+  <button class="act" data-z="save" title="Download this picture">⬇ Save</button><button class="act" data-z="x" title="Close (Esc)">✕</button></div></div>`);
+const LB = { el: $("#lbox"), k: 1, x: 0, y: 0, list: [], i: 0, bright: 100, contrast: 100, checker: false };
 LB.img = LB.el.querySelector("img");
-const lbApply = () => LB.img.style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.k})`;
+const lbApply = () => { LB.img.style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.k})`;
+  LB.img.style.filter = LB.bright === 100 && LB.contrast === 100 ? "" : `brightness(${LB.bright}%) contrast(${LB.contrast}%)`;
+  LB.el.style.background = LB.checker ? "repeating-conic-gradient(#2c2c33 0 25%, #1c1c21 0 50%) 0 0 / 16px 16px" : "#000d"; };
 const lbZoom = (f, cx = innerWidth / 2, cy = innerHeight / 2) => {          // keep the point under the cursor still
   const k = Math.min(32, Math.max(0.05, LB.k * f)); LB.x = cx - (cx - LB.x) * k / LB.k; LB.y = cy - (cy - LB.y) * k / LB.k; LB.k = k; lbApply(); };
 const lbFit = () => { const w = LB.img.naturalWidth || 1, h = LB.img.naturalHeight || 1;
   LB.k = Math.min((innerWidth - 40) / w, (innerHeight - 70) / h); LB.x = (innerWidth - w * LB.k) / 2; LB.y = (innerHeight - h * LB.k) / 2 + 15; lbApply(); };
-function lbOpen(src) { LB.img.onload = lbFit; LB.img.src = src; LB.el.style.display = "block"; if (LB.img.complete) lbFit(); }
-const lbClose = () => { LB.el.style.display = "none"; LB.img.removeAttribute("src"); };
+function lbShow(i) {
+  const it = LB.list[i]; if (!it) return;
+  LB.i = i; LB.img.onload = lbFit; LB.img.src = it.src; if (LB.img.complete) lbFit();
+  $("#lbox-name").textContent = (it.name || "") + (LB.list.length > 1 ? `${it.name ? " · " : ""}${i + 1} / ${LB.list.length}` : "");
+  LB.el.querySelectorAll("[data-z=prev], [data-z=next]").forEach(b => b.disabled = LB.list.length < 2);
+}
+function lbOpen(src, list = null, i = 0) {                   // one picture, or a sibling list to walk with ‹ ›
+  LB.list = list && list.length ? list : [{ src, name: "" }];
+  LB.bright = LB.contrast = 100; LB.el.querySelectorAll("[data-adj]").forEach(r => r.value = 100);
+  LB.el.style.display = "block"; lbShow(list && list.length ? Math.max(0, i) : 0);
+}
+const lbClose = () => { LB.el.style.display = "none"; LB.img.removeAttribute("src"); LB.list = []; };
+async function lbSave() {
+  const it = LB.list[LB.i]; if (!it) return;
+  const ext = (it.src.match(/\.(png|jpe?g|webp|gif|bmp)(?:\?|$)/i) || [])[1] || (it.src.startsWith("data:image/") ? it.src.slice(11, it.src.indexOf(";")) : "png");
+  const a = document.createElement("a"); a.download = `${(it.name || "texture").replace(/[^\w.-]+/g, "_").replace(/\.(png|jpe?g|webp|gif|bmp)$/i, "") || "texture"}.${ext}`;
+  try { a.href = /^(data|blob):/.test(it.src) ? it.src : URL.createObjectURL(await (await fetch(it.src)).blob()); a.click(); }
+  catch { open(it.src, "_blank"); }
+}
 LB.el.addEventListener("wheel", e => { e.preventDefault(); lbZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY); }, { passive: false });
-LB.el.addEventListener("pointerdown", e => { if (e.target.closest("button")) return; LB.drag = { x: e.clientX, y: e.clientY, ox: LB.x, oy: LB.y, moved: false };
+LB.el.addEventListener("pointerdown", e => { if (e.target.closest("button, input, label")) return; LB.drag = { x: e.clientX, y: e.clientY, ox: LB.x, oy: LB.y, moved: false };
   LB.el.setPointerCapture(e.pointerId); LB.el.style.cursor = "grabbing"; });
 LB.el.addEventListener("pointermove", e => { const d = LB.drag; if (!d) return; if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 3) d.moved = true;
   LB.x = d.ox + e.clientX - d.x; LB.y = d.oy + e.clientY - d.y; lbApply(); });
 LB.el.addEventListener("pointerup", e => { const d = LB.drag; LB.drag = null; LB.el.style.cursor = "grab";
   if (d && !d.moved && e.target === LB.el) lbClose(); });                 // a click on the backdrop (not a drag) closes
 LB.el.addEventListener("dblclick", lbFit);
+LB.el.addEventListener("input", e => { const a = e.target.dataset?.adj; if (a) { LB[a] = +e.target.value; lbApply(); } });
 LB.el.addEventListener("click", e => { const z = e.target.closest("button[data-z]")?.dataset.z; if (!z) return;
-  if (z === "x") lbClose(); else if (z === "fit") lbFit(); else if (z === "1:1") lbZoom(1 / LB.k); else lbZoom(+z); });
-addEventListener("keydown", e => { if (LB.el.style.display === "none") return;
-  if (e.key === "Escape") lbClose(); else if (e.key === "+" || e.key === "=") lbZoom(1.25); else if (e.key === "-") lbZoom(0.8); else if (e.key === "0") lbFit(); });
-document.addEventListener("click", e => { const im = e.target.closest(".wbm > img, .wbm img[data-moment]"); if (!im || e.target.closest("button")) return;
-  e.preventDefault(); e.stopPropagation(); lbOpen(im.src.replace(/([?&])w=\d+/, "$1")); }, true);   // capture: before the card's own click (Load moment stays a button)
-// right-click any option while a game is open: report that it doesn't work with this title (game, what was tried,
-// what the card showed, the session's recent jobs and a frame go into the inbox for a fix)
+  if (z === "x") lbClose(); else if (z === "fit") lbFit(); else if (z === "1:1") lbZoom(1 / LB.k);
+  else if (z === "prev" || z === "next") lbShow((LB.i + (z === "next" ? 1 : -1) + LB.list.length) % LB.list.length);
+  else if (z === "checker") { LB.checker = !LB.checker; lbApply(); } else if (z === "save") lbSave(); else lbZoom(+z); });
+addEventListener("keydown", e => { if (LB.el.style.display === "none" || e.target.closest?.("input, textarea, select")) return;
+  if (e.key === "Escape") lbClose(); else if (e.key === "+" || e.key === "=") lbZoom(1.25); else if (e.key === "-") lbZoom(0.8); else if (e.key === "0") lbFit();
+  else if (e.key === "ArrowLeft" || e.key === "ArrowRight") lbShow((LB.i + (e.key === "ArrowRight" ? 1 : -1) + LB.list.length) % LB.list.length); });
+const LB_SOURCES = [".wbm > img, .wbm img[data-moment]", "img.tpable"];
+document.addEventListener("click", e => { const im = e.target.closest(LB_SOURCES.join(", ")); if (!im || e.target.closest("button")) return;
+  const all = [...document.querySelectorAll(LB_SOURCES.find(s => im.matches(s)))];   // its siblings: every picture of the same kind on the page
+  e.preventDefault(); e.stopPropagation();
+  lbOpen(null, all.map(x => ({ src: (x.tpSrc || x.dataset.full || x.src).replace(/([?&])w=\d+/, "$1"), name: x.dataset.name || x.alt || x.title || "" })), all.indexOf(im)); }, true);   // capture: before the card's own click (Load moment stays a button)
+// right-click any option: with a game open, report that it doesn't work with this title (game, what was tried, what the
+// card showed, the session's recent jobs and a frame go into the inbox for a fix); otherwise file a request about that
+// element (#1386): what it is, where it is and what the operator wants done with it
 document.addEventListener("contextmenu", e => {
-  if (e.target.closest(".tchip, .card[data-gid], input, textarea")) return;
-  const scr = document.querySelector(".screen[data-sid]"), opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a");
-  if (!scr || !opt) return; e.preventDefault();
-  const sid = scr.dataset.sid, box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
+  if (e.target.closest(".tchip, .card[data-gid], input, textarea, select")) return;
+  const scr = document.querySelector(".screen[data-sid]"),
+        opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a, label, li, h2, h3, h4, section") || e.target;
+  if (!opt) return; e.preventDefault();
+  const sid = scr?.dataset.sid || "", box = opt.closest(".chc, .modcard, .card, section, li, div") || opt;
   const what = ((opt.closest(".chc")?.dataset.name ? opt.closest(".chc").dataset.name + ": " : "") + (opt.innerText || opt.title || opt.getAttribute("aria-label") || "").trim()).replace(/\s+/g, " ").slice(0, 120);
   const detail = (box.innerText || "").trim().replace(/\n{2,}/g, "\n").slice(0, 1500);
-  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m);
+  let m = $("#issuemenu"); if (!m) { m = document.createElement("div"); m.id = "issuemenu"; document.body.append(m); dragAnywhere(m);
     m.style.cssText = "position:fixed;z-index:99;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:6px;box-shadow:0 10px 30px #000a;min-width:260px;font-size:13px"; }
-  m.style.left = Math.min(innerWidth - 300, e.clientX) + "px"; m.style.top = Math.min(innerHeight - 140, e.clientY) + "px";
-  m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">⚑ Report: “${esc(what || "this")}” doesn't work in this game</button>
-    <input placeholder="What did you expect? (optional)" style="width:100%;margin-top:6px;box-sizing:border-box"><div class="mut" style="margin-top:4px"></div>`;
-  m.style.display = "block";
+  m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
+  m.innerHTML = `<button class="act" data-rep style="width:100%;text-align:left">${scr ? `⚑ Report: “${esc(what || "this")}” doesn't work in this game` : `✎ Request about “${esc(what || "this")}”`}</button>
+    <input placeholder="${scr ? "What did you expect? (optional)" : "What should gBox do with it?"}" style="width:100%;margin-top:6px;box-sizing:border-box"><div class="mut" style="margin-top:4px"></div>`;
+  m.style.display = "block"; fitMenu(m, e.clientX, e.clientY);
   const send = async () => {
-    m.querySelector(".mut").textContent = "Filing the report with the game, what you tried and its output…";
-    try { const r = await api("/api/requests/issue", { session_id: sid, what: what || "an option", detail, note: m.querySelector("input").value,
-            element: { text: what, cls: opt.className || "", tag: opt.tagName } });
+    const note = m.querySelector("input").value.trim();
+    if (!scr && !note) { m.querySelector(".mut").textContent = "Say what you want done with it first."; return; }
+    m.querySelector(".mut").textContent = scr ? "Filing the report with the game, what you tried and its output…" : "Filing the request…";
+    try { const r = await api("/api/requests/issue", { session_id: sid, save_state: !!scr, what: scr ? (what || "an option") : "Request about: " + (what || "this"), detail, note,
+            title: scr ? "" : ("Request: " + (what || "this") + " — " + note).slice(0, 140),
+            element: { text: what, cls: opt.className || "", tag: opt.tagName, view: typeof cur === "string" ? cur : "" } });
           m.querySelector(".mut").textContent = `✓ Report #${r.number} is in the inbox`; setTimeout(() => m.style.display = "none", 2500); }
     catch (err) { m.querySelector(".mut").textContent = "✗ " + err.message; }
   };
@@ -445,6 +534,8 @@ document.addEventListener("contextmenu", e => {
   m.querySelector("input").onkeydown = k => { if (k.key === "Enter") send(); };
 });
 document.addEventListener("mousedown", e => { const m = $("#issuemenu"); if (m && !m.contains(e.target)) m.style.display = "none"; });
+// a click on the docked native game window never reaches this page: closing on focus loss covers it (#1423)
+addEventListener("blur", () => { const m = $("#issuemenu"); if (m) m.style.display = "none"; $("#gmenu")?.classList.remove("on"); });
 // right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();
@@ -1313,6 +1404,7 @@ async function sessionsView(sid, mode) {
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
     ${s.game_id ? `<button class="act" id="session-fav" data-gid="${esc(s.game_id)}" style="margin-left:auto;padding:4px 8px;font-size:16px;line-height:1;color:var(--warn,#f5c542)" title="Checking favorites" aria-label="Favorite this game" aria-pressed="false" disabled onclick='toggleSessionFav(this)'>☆</button>` : ""}
     ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="${s.game_id ? "" : "margin-left:auto;"}padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+    <button class="act" id="padbtn" style="padding:5px 7px;line-height:0" title="Controller settings of this emulator, over the game (RetroArch: Quick Menu → Controls → Port 1 Controls; click again to close). Emulators without that menu open gBox's controller mapping" aria-label="Controller settings" aria-pressed="false" onclick='padSettings(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 0 0-3.9 3.1l-1.2 6.5A2.8 2.8 0 0 0 6.4 17l2.1-2h7l2.1 2a2.8 2.8 0 0 0 4.8-2.4l-1.2-6.5A4 4 0 0 0 17.3 5z"/></svg></button>
     <button class="act" id="resetbtn" style="padding:5px 7px;line-height:0" title="Reset: restart the game (console reset; emulators without one relaunch the same game + mod)"
       aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
@@ -1335,7 +1427,7 @@ async function sessionsView(sid, mode) {
           <div id="padglyph" title="Your controller live · click a button to press it"></div>
           <button id="padstat" class="act" style="width:100%;text-align:left;white-space:normal;font-size:11px;margin-top:4px" aria-expanded="false" aria-controls="padpicker" onclick="togglePadPicker()"></button>
           <button class="act" style="width:100%;margin-top:4px;font-size:11px" title="Opens the emulator's own menu over the game (RetroArch: Quick Menu → Controls → Port 1 Controls for binds, analog sensitivity, deadzone, turbo). Press it again to close."
-            onclick='api("/api/sessions/" + encodeURIComponent(${JSON.stringify(sid)}) + "/rpc", { op: "menu", args: {} }).then(() => { this.textContent = "🎮 Emulator controller settings (open — press again to close)"; }).catch(e => { this.textContent = "🎮 not available: " + e.message.slice(0, 80); })'>🎮 Emulator controller settings</button>
+            onclick='padSettings(${JSON.stringify(sid)}, this).then(ok => { this.textContent = ok ? "🎮 Emulator controller settings (open — press again to close)" : "🎮 not available here: gBox controller mapping shown"; })'>🎮 Emulator controller settings</button>
           <div id="padpicker" hidden style="margin-top:8px"></div></details>
         <details open data-dock="session" class="sect"><summary draggable="true">Session</summary>
       <div class="bar" style="margin-top:12px">
@@ -1515,7 +1607,7 @@ async function examineAfter(sid) {
     const c = EXAM.cache[sid]; if (!c?.glb) return;
     $("#ex_blmsg").textContent = "Copying to Blender…";
     try { const r = await blenderCopy({ artifact: c.glb, nodes }, sid); if (!current()) return;
-          $("#ex_blmsg").textContent = `✓ ${r.objects} object(s), ${r.triangles} triangles, ${r.packed} texture(s): press Ctrl+V in Blender's 3D viewport`; }
+          $("#ex_blmsg").textContent = `✓ ${r.objects} object(s) ${blenderCopyNote(r)}`; }
     catch (e) { if (current()) $("#ex_blmsg").textContent = "✗ " + e.message; }
   };
   $("#ex_blsel").onclick = () => EXAM.picked && toBlender([EXAM.picked]);
@@ -1854,13 +1946,56 @@ function modWatch(gid, sid, mods) {                       // re-apply kept patch
     if (pso) { const j = await runJob({ tool: "pso_mods", input: { session_id: sid, op: "status" }, require_worker: sid.split("-")[0] }).catch(() => null); st = j?.output?.result?.status; }
     for (const m of keep) {
       const off = m.calls.some(c => c.tool === "pso_mods" && st && st[c.input.op] === "off");
+      if (m._gaveUp) continue;                            // three failed re-applies: stop retrying (#1130); the card says why
       if (off || (!m._applied && !pso)) { m._applied = true; modApply(m, sid).then(r => {
         const i = mods.indexOf(m), card = document.querySelector(`.wbm[data-m="${i}"]`);
-        if (card) { card.classList.add("on"); card.querySelector(".row i").textContent = "kept on · " + r.summary; } }).catch(() => { m._applied = false; }); }
+        m._fails = 0;
+        if (card) { card.classList.add("on"); card.querySelector(".row i").textContent = "kept on · " + r.summary; } }).catch(e => {
+        m._applied = false; m._fails = (m._fails || 0) + 1;
+        if (m._fails >= 3) {
+          m._gaveUp = String((e && e.message) || e);
+          const i = mods.indexOf(m), card = document.querySelector(`.wbm[data-m="${i}"]`);
+          if (card) { card.classList.remove("on"); card.querySelector(".row i").textContent = "kept off · failed 3 times: " + m._gaveUp + " (turn it on again to retry)"; }
+        } }); }
     }
   };
   MODWATCH.mods = mods; MODWATCH.tick = tick;
   tick(); MODWATCH.t = setInterval(tick, 20000);
+}
+const observerWatch = { timer: null };
+function sessionObserverWatch(sid) {
+  clearTimeout(observerWatch.timer);
+  const element = document.getElementById('session-observers');
+  if (!element) return;
+  const path = `/api/sessions/${encodeURIComponent(sid)}/observers`;
+  const tick = async () => {
+    if (!element.isConnected) return;
+    try {
+      const r = await api(path);
+      if (!element.isConnected) return;
+      const latest = r.latest || {}, models = r.models || {}, result = models.result || {};
+      const state = r.service_online ? (r.gameplay_state || r.state) : 'Observer service offline';
+      const list = (label, values) => values?.length ? `<p><b>${label}</b> ${values.map(esc).join('; ')}</p>` : '';
+      element.innerHTML = `<p><b>${esc(state || 'Waiting')}</b> <button data-observer-toggle>${r.enabled === false ? 'Resume observers' : 'Pause observers'}</button></p>
+        <p>Models: ${esc(models.state || 'Waiting')}${result.collected != null ? ` · ${+result.collected} / ${+result.total} collected` : ''}</p>
+        ${models.request_id ? `<p>Model repair tracked in inbox <code>${esc(models.request_id)}</code></p>` : ''}
+        ${r.observation_request_id ? `<p>Observation repair tracked in inbox <code>${esc(r.observation_request_id)}</code></p>` : ''}
+        ${latest.summary ? `<p>${esc(latest.summary)}</p><small>${new Date(latest.captured * 1000).toLocaleTimeString()} · ${+r.samples || 0} observations</small>` : '<p>Waiting for the first gameplay observation.</p>'}
+        ${list('Actors:', latest.actors)}${list('Changes:', latest.changes)}${list('HUD:', latest.hud)}
+        ${list('Possible mechanics:', latest.mechanics_hypotheses)}${list('Uncertain:', latest.uncertainties)}
+        ${r.error || r.service_error ? `<p class="mut">${esc(r.error || r.service_error)}</p>` : ''}
+        <details><summary>Recent observations</summary>${(r.history || []).slice(-10).reverse().map(o =>
+          `<p>${new Date(o.captured * 1000).toLocaleTimeString()} · ${esc(o.summary)} <a target="_blank" href="/api/artifacts/${encodeURIComponent(o.frame)}?${tq()}">Frame</a></p>`).join('')}</details>`;
+      element.querySelector('[data-observer-toggle]').onclick = async e => {
+        e.currentTarget.disabled = true;
+        try { await api(path, { enabled: r.enabled === false }); await tick(); }
+        catch (error) { element.textContent = error.message; }
+      };
+    } catch (error) { if (element.isConnected) element.textContent = 'Session observers unavailable: ' + error.message; }
+    clearTimeout(observerWatch.timer);
+    if (element.isConnected) observerWatch.timer = setTimeout(tick, 5000);
+  };
+  tick();
 }
 async function wbInit() {
   const el = $("#wb"); if (!el) return;
@@ -1889,7 +2024,8 @@ async function wbInit() {
         ${m.video ? `<a class="b" target="_blank" href="/api/artifacts/${m.video}?${tq()}">Play video</a>` : ""}<i></i></div>
       <details><summary>How it works</summary>${m.desc ? `<p>${esc(m.desc)}</p>` : ""}${m.calls.map(c => `<div class="call"><b>${esc(c.tool)}</b>
         <div>${esc((tdesc[c.tool] || "").split("\n")[0].slice(0, 220))}</div><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}</details></div>`;
-  el.innerHTML = `<details open data-dock="mods" class="sect"><summary draggable="true">Mods <span class="mut">${mods.length} switch${mods.length === 1 ? "" : "es"} for this game: every change that worked</span></summary>
+  el.innerHTML = `<details open data-dock="observers" class="sect"><summary draggable="true">Session agents <span class="mut">models and gameplay</span></summary><div id="session-observers"><p>Connecting observers...</p></div></details>
+    <details open data-dock="mods" class="sect"><summary draggable="true">Mods <span class="mut">${mods.length} switch${mods.length === 1 ? "" : "es"} for this game: every change that worked</span></summary>
       <div class="wbms">${mods.map(mod).join("") || '<p class="mut">Ask gBox to change the game ("infinite red shells", "skip the Deku Tree"); when it works it lands here as a switch.</p>'}</div></details>
     <details open data-dock="controls" class="sect"><summary draggable="true">🎚 Controls <span class="mut">${d.controls.length} from your conversations</span></summary>
       <div class="wbcs">${d.controls.map(ctl).join("") || '<p class="mut">Ask gBox for a slider ("give me a slider for car speed") and it lands here.</p>'}</div></details>
@@ -1899,6 +2035,7 @@ async function wbInit() {
       <div id="chars" data-gid="${esc(gid)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>`;
   const host = el.closest(".play") || el;
   dockApply();
+  sessionObserverWatch(sid);
   charsInit();
   modWatch(gid, sid, mods);
   const curMod = ((await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {}).mod || "";
@@ -1934,7 +2071,7 @@ async function wbInit() {
       try {
         if (turnOff) { const res = await modOff(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.remove("on");
                        modKeep(gid, m.id, false); if (modOffable(m)) btn.textContent = "Turn on"; }
-        else { const res = await modApply(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.add("on");
+        else { m._gaveUp = null; m._fails = 0; const res = await modApply(m, sid, msg); st.textContent = res.summary; st.title = res.detail; card.classList.add("on");
                if (modOffable(m)) btn.textContent = "Turn off";
                if (modSticky(m)) modKeep(gid, m.id, true);
                if (!m.thumb && !m.calls.some(c => c.tool === "@launch")) setTimeout(() => modShot(m, sid, card, false), 1500); } }
@@ -1944,7 +2081,7 @@ async function wbInit() {
       const L = m.calls.find(c => c.tool === "@launch").input;
       st.textContent = "copying to Blender…";
       try { const r = await blenderCopy({ mod: L.mod, game_id: L.game_id || m.game_id }, sid);
-            st.textContent = `on Blender's clipboard: ${r.triangles} triangles, ${r.packed} textures (Ctrl+V in its viewport)`; }
+            st.textContent = "✓ " + blenderCopyNote(r); }
       catch (err) { st.textContent = "✗ " + err.message.slice(0, 120); st.title = err.message; }
     } else if (e.target.closest("button[data-romx]")) {
       const b = e.target.closest("button[data-romx]"); b.disabled = true; st.textContent = "Export ROM hack: starting…"; st.title = "";
@@ -2060,7 +2197,7 @@ async function charsInit() {
       finally { hg.disabled = false; } return; }
     const bl = e.target.closest("button[data-bl]");
     if (bl) { const box = bl.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i"); bl.disabled = true; st.textContent = "copying to Blender…";
-      try { const r = await blenderCopy({ character: c.slug }, sid); st.textContent = `✓ on Blender's clipboard (${r.triangles} triangles, ${r.packed} textures): Ctrl+V in its viewport`; }
+      try { const r = await blenderCopy({ character: c.slug }, sid); st.textContent = "✓ " + blenderCopyNote(r); }
       catch (err) { st.textContent = "✗ " + err.message; } finally { bl.disabled = false; } return; }
     const b = e.target.closest("button[data-use]"); if (!b) return;
     try { const u = JSON.parse(localStorage.getItem("gbox_char_used") || "{}"); u[b.closest(".chc").dataset.slug] = Date.now(); localStorage.setItem("gbox_char_used", JSON.stringify(u)); } catch {}
@@ -2227,7 +2364,19 @@ async function blenderCopy(input, sid) {
   if (!me) throw new Error("no gBox worker on this PC (Blender's clipboard is local to this machine)");
   const j = await runJob({ tool: "blender_copy", input, require_worker: me.id });
   if (j.state !== "succeeded") throw new Error(j.error || j.state);
-  return j.output.result;
+  const r = j.output?.result;
+  if (!r || !blenderCopyFiles(r).length) throw new Error(`the copy ran on ${me.name} but no clipboard file was written`);
+  blenderCopied(r, input, me);
+  return r;
+}
+// #1393: the worker writes copybuffer.blend to every temp dir the operator's Blender may read; say which PC and how many
+// files, and hand the result to the desktop shell (GBOX: console bridge) for its pop-up with the model rotating.
+const blenderCopyFiles = r => (r?.copybuffers || [r?.copybuffer]).filter(Boolean);
+const blenderCopyNote = r => `on Blender's clipboard${r.host ? " on " + r.host : ""}: ${r.triangles} triangles, ${r.packed} textures` +
+  ` · hover a 3D viewport there and press Ctrl+V (${blenderCopyFiles(r).length} file${blenderCopyFiles(r).length === 1 ? "" : "s"} written)`;
+function blenderCopied(r, input, me) {
+  if (!window.GBOX_LOCAL?.worker) return;                    // only the desktop shell listens
+  console.log("GBOX:" + JSON.stringify({ ev: "blendercopied", result: r, input, worker: me.name }));
 }
 async function modShot(m, sid, card, force) {                // the mod card's picture = this game's screen now
   const st = card.querySelector(".row i");
@@ -2251,11 +2400,12 @@ function bootBadge(gid) {
   c.querySelector(".bootmod")?.remove(); c.insertAdjacentHTML("afterbegin", bootBadgeHTML(gid));
 }
 document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div>');
+dragAnywhere($("#gmenu"));
 document.addEventListener("contextmenu", async e => {
   const c = e.target.closest(".card[data-gid]"); if (!c) return; e.preventDefault();
   const gid = c.dataset.gid, el = $("#gmenu"), b = bootGet(gid);
-  el.style.left = Math.min(innerWidth - 352, e.clientX) + "px"; el.style.top = Math.max(8, Math.min(innerHeight - 420, e.clientY)) + "px";
-  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><p class="mut">loading mods…</p>`; el.classList.add("on");
+  el.style.left = e.clientX + "px"; el.style.top = e.clientY + "px";
+  el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><p class="mut">loading mods…</p>`; el.classList.add("on"); fitMenu(el, e.clientX, e.clientY);
   const [mods, chars] = await Promise.all([api(`/api/mods?game_id=${encodeURIComponent(gid)}`).catch(() => []),
     api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => [])]);
   const kept = modKeepGet(gid), dmod = m => m.calls.find(x => x.tool === "@launch").input.mod;
@@ -2272,6 +2422,7 @@ document.addEventListener("contextmenu", async e => {
   const characterNote = (name, targetSlot) => targetSlot && targetSlot !== "player"
     ? `${name} selected: choose ${targetSlot} on the game's character selection screen.` : `${name} selected: every Play of this game uses them.`;
   el.innerHTML = `<h4>${esc(c.dataset.title)}</h4><button class="act" data-models type="button" style="width:100%;margin-bottom:8px">Models · view, assign, export</button>
+    <button class="act" data-cover type="button" style="width:100%;margin-bottom:8px">Attach game cover (online)</button>
     <div class="gms"><b>Play as (saved: every Play uses it)</b>
       <div class="gmch">${tile("", "Original", "")}${ready.map(ch => tile(ch.slug, ch.name, ch.preview_url, readyMod(ch), readyTarget(ch)?.slot)).join("")}</div>
       ${other.length ? `<label><select id="gmbuild"><option value="">+ another character for this game…</option>${other.map(ch => `<option value="${esc(ch.slug)}">${esc(ch.name)}${ch.source?.game_title ? " · " + esc(ch.source.game_title) : ""}</option>`).join("")}</select></label>` : ""}
@@ -2336,10 +2487,24 @@ document.addEventListener("contextmenu", async e => {
     }
   };
   el.onclick = ev => { if (ev.target.closest("[data-models]")) { el.classList.remove("on"); show("GameModels", gid, c.dataset.title); return; }
+    if (ev.target.closest("[data-cover]")) { attachCover(gid, c, ev.target.closest("[data-cover]")); return; }
     const g = ev.target.closest("[data-go]"); if (!g) return; el.classList.remove("on");
     const go = g.dataset.go; play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined); };
 });
 document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $("#gmenu")?.classList.remove("on"); });
+async function attachCover(gid, card, btn, url = "") {        // #1067: fetch box art online (or a chosen picture) and keep it for this game
+  btn.disabled = true; btn.textContent = url ? "Fetching that picture…" : "Looking for the cover online…";
+  try {
+    const r = await api(`/api/catalog/${encodeURIComponent(gid)}/cover`, { url, kind: "boxart" });
+    btn.textContent = `✓ Cover attached (${Math.round(r.bytes / 1024)} KB)`;
+    card.querySelectorAll("img").forEach(im => { const u = im.src.replace(/([?&])v=\d+/, ""); im.src = u + (u.includes("?") ? "&" : "?") + "v=" + Date.now(); });
+  } catch (err) {
+    btn.disabled = false;
+    const u = prompt("No cover was found online for this title. Paste a picture URL to use instead:", "");
+    if (u && u.trim()) return attachCover(gid, card, btn, u.trim());
+    btn.textContent = "Attach game cover (online)";
+  }
+}
 async function moveHere(sid, btn) {                        // pull the game onto THIS PC (from the Spark or another PC)
   btn.disabled = true; btn.textContent = "Moving… (save, launch here, load)";
   try {
@@ -2357,13 +2522,17 @@ async function runJob(body) {
   while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 400)); j = await api("/api/jobs/" + j.id); }
   return j;
 }
-async function hardStop(sid, btn) {                         // no confirm: the emulator is killed at once, then the game list
+async function hardStop(sid, btn) {
   if (btn) btn.disabled = true;
-  if (active?.sid === sid) { active = null; pip(); }
-  // ended first: the app stops showing it at once (no picture-in-picture of a game that's being killed), then the kill
-  await api(`/api/sessions/${encodeURIComponent(sid)}/ended`, { by: "operator", via: "stop button" }).catch(() => {});
-  runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } }).catch(() => {});
-  show("Library");
+  try {
+    const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "stop_game" } });
+    if (j.state !== 'succeeded' || j.output?.ended !== true) throw new Error(j.error || 'Emulator stop was not confirmed');
+    if (active?.sid === sid) { active = null; pip(); }
+    show("Library");
+  } catch (error) {
+    if (btn) btn.title = 'Could not stop game: ' + error.message;
+    const status = $('#sopres'); if (status) status.textContent = 'Could not stop game: ' + error.message;
+  } finally { if (btn) btn.disabled = false; }
 }
 async function resetGame(sid, btn, hard) {
   if (hard) return hardReset(sid, btn);                       // no confirm: console reset, else relaunch the same game (+ mod)
@@ -2412,8 +2581,12 @@ function watchSessionPause(sid) {
   const control = GBoxSessionPause.create({
     read: async () => (await rpc(sid, 'info', {})).runtime,
     command: async op => {
+      // The live session channel reaches the emulator in one round trip; the job queue waits for a worker claim.
+      // Older servers/workers refuse pause over it, and pause/resume are idempotent, so falling back is safe (#1123).
+      try { return await rpc(sid, op, {}); } catch {}
       const j = await runJob({ tool: 'session_op', input: { session_id: sid, op }, require_worker: sid.split('-')[0] });
       if (j.state !== 'succeeded') throw new Error(j.error || `${op}: ${j.state}`);
+      return j.output?.result;
     },
     render: ({ paused, busy }) => {
       if (!current()) return;
@@ -2444,7 +2617,30 @@ function watchSessionPause(sid) {
   };
   poll();
 }
+// the controller icon on the session bar (#622): the emulator's own controller settings, in place. RetroArch toggles its
+// Quick Menu over the game (Controls → Port 1 Controls: binds, analog sensitivity, deadzone, turbo); emulators without that
+// RPC (Dolphin, Xenia, RPCS3, PCSX2…) keep theirs in their own window, so gBox's controller mapping page opens and the
+// status line says so.
+async function padSettings(sid, btn) {
+  const el = $("#sopres");
+  try {
+    await api("/api/sessions/" + encodeURIComponent(sid) + "/rpc", { op: "menu", args: {} });
+    const open = btn ? btn.getAttribute("aria-pressed") !== "true" : true;
+    if (btn) btn.setAttribute("aria-pressed", String(open));
+    if (el) el.textContent = open ? "controller settings: the emulator's menu is open over the game (Controls → Port 1 Controls); click the controller icon again to close it"
+                                  : "controller settings: emulator menu closed";
+    return true;
+  } catch (e) {
+    if (el) el.textContent = `controller settings: ${String(e.message || e).slice(0, 140)} — this emulator keeps them in its own window; showing gBox's controller mapping instead`;
+    show("Controllers"); return false;
+  }
+}
 async function sop(sid, op) {
+  if ((op === 'pause' || op === 'resume') && sessionPause?.sid === sid) {
+    const state = await sessionPause.control.refresh().catch(() => undefined);
+    if (state === (op === 'pause')) { const el = $("#sopres"); if (el) el.textContent = `${op}: already ${state ? 'paused' : 'running'}`; return; }
+    if (state !== undefined) return sessionPause.control.toggle();   // live session channel, no job queue (#1123)
+  }
   const j = await runJob({ tool: "session_op", input: { session_id: sid, op } });
   if (op === "stop_game" && active?.sid === sid) { active = null; pip(); }
   const el = $("#sopres"); if (el) el.textContent = `${op}: ${j.state} ${j.error || JSON.stringify(j.output?.result || "")}`;

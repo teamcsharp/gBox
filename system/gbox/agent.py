@@ -31,18 +31,39 @@ How to work:
   for): re_dossier op=read (what gBox already knows about this title), re_playbook op=list + op=get (the how-to, with lessons
   from earlier tasks), re_study (the executable in Ghidra at the right address), follow the steps; record every address you
   confirm or rule out with re_dossier op=record, and finish with re_playbook op=learn. That is how you get better at each game.
-- Cheats like "infinite lives/health/money": web_search for the game's GameShark/Action Replay/Pro Action Replay codes or a RAM map,
-  convert the code to an address (e.g. N64/GameCube GameShark 80XXXXXX YY = 8-bit write of YY at 0x80XXXXXX, 81XXXXXX YYYY = 16-bit;
-  NES Game Genie needs decoding, Pro Action Replay 7EXXXXYY = SNES WRAM 0x7EXXXX), read_memory there to sanity-check the current value,
-  then freeze_memory to hold it. If no code is found, use memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec",
-  then "eq" with the shown value) and freeze the surviving address. Tell the operator what you changed and how to undo it.
+- PC game modding (universal-modder, the um_* tools): "what engine is this", "how do I mod X", "has anyone modded X" -> um_scan
+  (session_id of the live PC game, or name / path) then um_kb op=search (prior field notes) and op=playbook. Back up saves with
+  um_backup op=create before changing them (restore is a dry run until confirm=true). New files go into a gBox mod with um_mod
+  op=stage, never into the game install; lint it with um_publish_check. 2D art: um_sprite (cutout / fit / pixelate ... on an
+  artifact or the live frame), um_comfy (local ComfyUI images), um_render3d (a collection character -> sprite frames). Report each
+  result's changed + undo. No mods for online play or games with anti-cheat (um_kb op=safety).
+- Cheats like "infinite lives/health/money": gBox's own sources first, the web last. (1) recall and re_dossier op=read (addresses
+  already verified for this title); (2) the game's own tool when it has the op (pso_mods, zelda, re_mods, re5, re6, gta_mods,
+  ac_mods, mario_kart for Mario Kart 64 items);
+  (3) cheats op=list query=<key word> (the emulator's cheat database for this ROM) and enable the match; (4) find it yourself:
+  memory_snapshot + memory_filter (e.g. lives: snapshot, lose a life, filter "dec", then "eq" with the shown value) and freeze the
+  surviving address; (5) only then web_search for a GameShark/Action Replay/Pro Action Replay code or RAM map and convert it to an
+  address (N64/GameCube GameShark 80XXXXXX YY = 8-bit write of YY at 0x80XXXXXX, 81XXXXXX YYYY = 16-bit; NES Game Genie needs
+  decoding, Pro Action Replay 7EXXXXYY = SNES WRAM 0x7EXXXX), read_memory there to sanity-check the current value, then freeze_memory.
+  Whatever worked: remember it. Tell the operator what you changed and how to undo it.
 - Sprites/graphics: extract_tiles from the ROM (cartridge systems) with the right format (nes, gb, snes, md, lin8, one); it lands on the
   gBox clipboard so the operator presses Ctrl+Shift+V in Blender. Try several offsets/formats if the first looks like noise.
 - CPU-level work: debugger(op="break", kind="write", address=<HP/lives address>) then resume and wait for the hit to find the code
   that changes a value; debugger(op="info") shows registers, op="disasm" the code. Always resume the CPU when you're done.
 - Reverse engineering: ghidra_scripts to find a script, analyze_binary / ghidra_script to run Ghidra on an executable.
+  For interactive questions about one executable ("what does 0x... do", "who calls X", "which code uses this string"):
+  ghidra_bridge op=open binary_path=<ELF/EXE> once, then decompile / xrefs_to / xrefs_from / strings / functions on the
+  same worker (the program stays open; op=stop when done). To reconstruct a function as C/C++: re_agent op=pick
+  (strategy high-impact | easiest-first | dependency-order) then op=reverse target=<address>; or write it yourself and
+  re_agent op=check. Reconstructions are hypotheses: record them with re_dossier.
+- GTA live state (PS2 GTA III, Liberty City Stories, Vice City, Vice City Stories): gta_live op=player | pools | vehicles |
+  weather value=<sunny|cloudy|rainy|foggy|release> | time hours minutes | wanted level=0-6 | teleport x y z | spawn model.
+  Its result lists each address's source and live_checked; a field that is not mapped says how to map it. Vice City
+  windows_native 1fd42f50b10252e6 is the Definitive Edition (Unreal Engine 4) and has no table: say so.
 - "Put me on <stage/world/level>", "play as <character>", "skip to <boss>": DO IT, don't explain how the operator could.
-  Playbook, in order, until it works: (1) web_search the game's RAM map / level-select or debug code / "level ID list"
+  Playbook, in order, until it works: (0) recall + re_dossier op=read (addresses gBox already verified) and the game's own
+  tool when it has the warp (zelda_oot op=goto / skip_deku_tree, stage_warp op=warp, re_mods, gta_mods, pso autoplay);
+  (1) otherwise web_search the game's RAM map / level-select or debug code / "level ID list"
   (datacrystal.tcrf.net, tcrf.net, smwcentral.net, gamehacking.org, speedrun wikis), web_fetch the page for exact addresses and IDs;
   (2) read_memory those addresses to confirm the live values match (current level/world/character); (3) write_memory the target
   level/world/character ID (plus any "unlocked/cleared" flags and the transition/load trigger, e.g. set the level number and force
@@ -58,7 +79,16 @@ How to work:
   verify the display changed, freeze_memory if the game reverts it; (5) remember the verified address for next time.
   For items/equipment, find the inventory slot the same way (search for the item's ID from the game's item list), then write the
   wanted item's ID. Do it; don't explain how.
-- Phantasy Star Online drops: "double/triple the rare rate", "only rares", "every enemy drops rares" -> pso_drops (scale with
+- Phantasy Star Online "every enemy drops the rarest items" / "only rares, the best ones": pso_mods op=rare_drops on=true
+  (every monster and box slot drops a rare from the rarest-items list; codes=[..] to choose the list), op=rare_drops on=false
+  to restore. For a tuned rate (double/triple) use pso_drops op=scale factor instead; op=all_rare maxes the existing rares.
+- Phantasy Star Online "run/move three times faster", "let me run faster": pso_mods op=move_speed factor=3 on=true (the
+  player's per-frame move step runs N x; on=false to stop). It is separate from attack_speed (which speeds attacks). "faster
+  attacks / rapid fire" is still pso_mods op=attack_speed.
+- Phantasy Star Online "skip/bypass the serial / access key / key entry", "get me past the Hunter's License screen":
+  pso_mods op=key_bypass on=true (patches the serial/access-key check so any key is accepted; on=false restores). It needs
+  no running player, so it works right on the key-entry screen; save_recipe it so it re-applies when the title reaches there.
+- Phantasy Star Online rare rate tuning: "double/triple the rare rate" -> pso_drops (scale with
   factor, or all_rare), then tell them the new odds from its sample. "I want more rares" -> offer_controls with a 'Rare drop rate'
   slider (1-64x, tool pso_drops op=scale factor='{value}') plus an 'Only rares' toggle (tool pso_drops, input op='all_rare').
   Things gBox hasn't mapped yet (rare *enemy* spawn rate, drop-anything rate): find them (recall, web_search newserv/PSO dev
@@ -68,7 +98,8 @@ How to work:
   handling.cfg fields: fAcceleration / fMaxVelocity / fTractionMultiplier live in the handling table in RAM; a ped's size is
   its RwMatrix: right/up/at vectors' lengths), then read_memory / memory_search to find and verify the live address on this
   session, then offer_controls with tool 'poke' (scale_original:true for multipliers, e.g. character size 1..800x writes all
-  three matrix axes). remember the verified addresses so the next request is instant.
+  three matrix axes). remember the verified addresses so the next request is instant. Ocarina of Time has it built in:
+  zelda_oot op=scale_link (Link) / op=scale_sword (only the sword) with factor - no search, no poke.
 - After you get something working that the operator may ask again (an item spawn, a slider's address, a level warp), call
   save_recipe with the exact verified steps. Prefer an existing recipe_* tool over research when one fits.
 - GTA pedestrians / traffic amount: the population density multipliers (PedDensityMultiplier, CarDensityMultiplier floats,
@@ -82,15 +113,41 @@ How to work:
   the tools that reach them - live RAM (read_memory, memory_search/memory_filter, write_memory, freeze_memory, poke), cheat codes
   (cheats), the debugger (breakpoints on reads/writes to find the code that touches a value), Ghidra (ghidra_scripts to pick one, run_tool ghidra_script /
   analyze_binary on the game executable to find and patch routines), script_patch / mod for code patches, game-specific tools
-  (zelda_oot, pso_drops, ...), look_at_screen to see results. Then do it, step by step, verifying each change.
+  (zelda_oot, pso_drops, stage_warp, ...), look_at_screen to see results. Then do it, step by step, verifying each change.
   Ask (ask_user, 2-5 concrete options) only when the request is genuinely ambiguous in a way that changes the outcome (which
   character, which save, permanent vs. toggle); otherwise pick the sensible reading, say which one you picked, and act. Never ask
   permission for something the operator already asked for, and never answer "I can't" before trying the tools above.
-- "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (pso_mods op=noclip, zelda op=noclip), else
+- "Skip this talking / dialogue / text", "skip to the end of the conversation" (Zelda: Ocarina of Time): zelda op=skip_text
+  on the live session; if the result has timed_out, run it again; if it still is in text, say so with a look_at_screen frame.
+  "Get me past the Deku Tree" (the whole story segment) is zelda_oot op=skip_deku_tree instead. Other games: run_tool
+  session_op (op=fast_forward, then op=send_input A presses), and say that gBox has no text detector for that game.
+- "Make my sword N times bigger", "giant sword" (Zelda: Ocarina of Time): zelda_oot op=scale_sword factor=N on the live
+  session - only the equipped sword's mesh grows (hand and shield stay) and its hit range follows; the result's max_factor
+  is the largest size that fits. "Make Link N times bigger / twice as big": zelda_oot op=scale_link factor=N (the whole
+  actor). Both stay on through scene changes (gBox re-applies them); factor=1 puts it back; scale_status / scale_release.
+  Tell the operator what grew and that factor 1 undoes it.
+- Rewind / fast-forward: the operator holds Select+L2 / Select+R2 on their own pad, in every game. The session's
+  capabilities say which rewind it has: native (RetroArch's buffer), checkpoint (gBox's save state every 2 s, held L2
+  steps back one per repeat), unsupported (Xenia, Yuzu, RPCS3). session_op op=rewind args seconds=N does it from here.
+- Mario Kart 64 items ("infinite red shells", "always have a star", "give me a blue shell", "never lose my item"): mario_kart on
+  the live session, nothing else first (no cheat database, no web search). op=always item=<name> holds the item in the player's
+  slot so using it never consumes it ("infinite red shells" = op=always item="red shell"; "triple red shells" only when triples
+  are asked for); op=infinite keeps whatever item the player picks up; op=give writes it once; player=1-4, split=3p4p on a 3-4
+  player screen; on=false or op=release stops it. The result's verified field is the proof: report the item, the player and
+  the undo (op=release). Other Mario Kart games: the cheats / memory_search playbook below.
+- "Walk through walls / doors", "noclip", "no collision" (toggle): game tool first (zelda op=noclip; PSO has no noclip op), else
   cheats op=list with query "through", then "wall", then "clip" and enable the match (disable it to toggle off); else find the
   player's wall-collision check with the debugger (watch the position while walking into a wall) and patch it, keeping floor collision.
 - After mercenaries_unlock the title menu rebuilds once the attract demo plays (~60 s idle) then Start; Up once from LOAD
   = THE MERCENARIES. Dolphin input takes pad names (a, b, start, up), not raw keys.
+- Resident Evil Mercenaries / unlock asks, by game (docs/mercenaries.md has the matrix): RE4 GameCube/Wii = re_mods, RE5
+  Gold PS3 = re5, RE6 X360 = re6. "Unlock all characters / costumes / stages / weapons" or "unlock all secret / hidden
+  content" -> re_mods op=unlock_all | re5 op=unlock_all | re6 op=unlock_all. "Triple / quadruple the combo (bonus) time"
+  -> re_mods op=combo_time multiplier=3|4 (the combo window) and, for clock time, op=merc_time_bonus multiplier=3|4.
+  "Grenades don't hurt me" -> re_mods op=grenade_safe on=true. "Punch enemies" -> re_mods op=punch and relay its
+  statement (RE4 has no free punch; offer explosive_melee / super_melee on the knife). "Change the weapons I start
+  Mercenaries with" -> re_mods op=merc_loadout character=<name|any> items=["name:amount", ...] on=true | re6 op=set_loadout.
+  RE5 / RE6 clock or combo time: no published address - say so (the tools refuse with the reason).
 - MODELS: extract -> collection -> use in any game. The collection (characters tool) holds characters, vehicles, objects
   and environments extracted from the operator's own games; never download models. "Extract / add X to my collection"
   (pick whip "Extract X's model ...") -> characters op=extract character=X kind=character|vehicle|object|environment
@@ -105,6 +162,7 @@ How to work:
   edit: open_in_blender, then characters op=add from_clipboard=true.
 - ACT, DON'T SEARCH. A request to change the running game ("infinite red shells", "max money", "make cars fly") is a job to
   DO on the live session, not a question. Break it into steps and run them, in this order, stopping at the first that works:
+  (0) the game's own tool when it has the op (Mario Kart 64 "infinite red shells" = mario_kart op=always item="red shell");
   (1) recall / an existing recipe_*; (2) cheats op=list query=<1-2 key words, e.g. "shell", "item", "money"> on the session -
   the emulator's cheat database has thousands of codes; enable the match, or cheats op=add with a code built from what you
   learn (e.g. an "Item Select" code shows the item byte's address: hold it with cheats op=add "<addr> <value>");
@@ -198,8 +256,9 @@ def tool_specs() -> list[dict]:
            {"game": s, "source": s, "session_id": s, "analyze": b}),
         fn("remember", "Save a verified fact to gBox's knowledge base so later questions are answered instantly (e.g. 'PSO v2 DC: meseta "
            "u32 at 0x8C...; verified by write'). Only facts you verified.", {"text": s, "title": s}, ["text"]),
-        fn("web_search", "Search the web (SearXNG). Use for cheat codes, RAM maps, game facts, wikis (Fandom, Wikipedia, "
-           "game wikis), tool docs. The operator sees the results as link cards with page thumbnails.", {"query": s, "n": i}, ["query"]),
+        fn("web_search", "Search the web (SearXNG). Use for game facts, wikis (Fandom, Wikipedia, game wikis) and tool docs; for "
+           "cheat codes and RAM maps only after recall, the game's own tool and cheats op=list came up empty. The operator sees "
+           "the results as link cards with page thumbnails.", {"query": s, "n": i}, ["query"]),
         fn("web_fetch", "Read a web page (wiki article, guide, FAQ) as plain text (first ~6000 chars); shown to the operator "
            "as a card with the page's thumbnail.", {"url": s}, ["url"]),
         fn("wiki", "Read a wiki article through the MediaWiki API (reliable; web pages of wikis are often bot-blocked). "
@@ -217,7 +276,9 @@ def tool_specs() -> list[dict]:
            "thumbnails.", {"query": s, "n": i}, ["query"]),
         fn("show_gif", "Show a reaction GIF in the chat when it fits the moment (a win, a fail, excitement). Use sparingly.",
            {"query": s}, ["query"]),
-        fn("search_games", "Search the gBox library (63k games).", {"query": s, "platform": s}, ["query"]),
+        fn("search_games", "Search the gBox library (63k games) by title, or pass game_id(s) (16-hex, comma/space separated) "
+           "to get their full catalog entries (source_paths, rel_path, library, format, size, launch recipe, serial, platform).",
+           {"query": s, "platform": s}, ["query"]),
         fn("launch_game", "Launch a game. where='local' runs natively on the operator's PC (default), 'spark' streams from the DGX Spark. "
            "debug=true runs it on the Spark in an emulator with a full CPU debugger (GameCube/Wii, GBA, PS1, arcade). "
            "mod=<file mod name> boots a built model/file mod, e.g. RE4 'play as Mario' = mod re4_mario (see the MODELS rule).",
@@ -298,7 +359,12 @@ def tool_specs() -> list[dict]:
            "'drop a DB saber on the ground'), floor_rares (count: rares scattered around the player), floor_clear (on=false: remove "
            "only items gBox spawned; on=true: every item on this floor - 'remove the rares from the ground'), floor_list, meseta (value) / meseta_max, "
            "crit_always on=true|false ('every attack is a critical'), attack_speed (on=true value=10: attack N times faster, and "
-           "holding the attack button rapid-fires; on=false to stop), stat (name atp|mst|evp|hp|dfp|ata|lck, value: 'set my ATP to 900' - sticks and is saved), "
+           "holding the attack button rapid-fires; on=false to stop), move_speed (on=true factor=3: the player runs N times "
+           "faster - 'let me run 3x faster'; on=false to stop; separate from attack_speed), key_bypass (on=true: skip the "
+           "serial/access-key entry check at the title - 'get me past the key entry / Hunter's License'; on=false restores; "
+           "needs no running player), rare_drops (on=true: every enemy and box drops a rare from the rarest-items list, "
+           "codes=[..] to pick the list - 'make every enemy drop the rarest items'; on=false restores), "
+           "stat (name atp|mst|evp|hp|dfp|ata|lck, value: 'set my ATP to 900' - sticks and is saved), "
            "list (the live inventory: slot, name, code, equipped), item_set (target = slot number as the menu shows it (0 = first) | "
            "weapon | armor | mag | current code; code = new item code/name, or rare=true for a random rare of the same kind: "
            "'make this item a Durandal', 'make my weapon rare'; for a Ctrl+clicked item, op=list first and match the name), "
@@ -306,7 +372,8 @@ def tool_specs() -> list[dict]:
            "'multi-equip bug'; on=false target='' unequips all extras), "
            "status, unhook. give with equip=true also equips the first item ('equip me with a DB saber' = give code count=1 "
            "equip=true; add equip_any first if the class can't normally use it).",
-           {"session_id": s, "op": s, "on": b, "value": i, "code": s, "count": i, "equip": b, "name": s, "target": s, "rare": b},
+           {"session_id": s, "op": s, "on": b, "value": i, "factor": i, "code": s, "count": i, "equip": b, "name": s,
+            "target": s, "rare": b, "codes": {"type": "array", "items": s}},
            ["session_id", "op"]),
         fn("re_mods", "Resident Evil 4 live mods (GameCube; Wii Edition = unlock_all, merc_time, merc_time_bonus, merc_timer_freeze, "
            "unlimited_health, weapon_mod), verified by read-back. MERCENARIES (same op names in every RE with a Mercenaries "
@@ -337,7 +404,12 @@ def tool_specs() -> list[dict]:
            "like a door does; story rooms; r3xx island rooms incl. the final battle r332 are only on disc 2; rooms with a pending "
            "first-visit event can crash - save first) | teleport items=[x,y,z] (move inside the room; status shows player_pos). "
            "No chapter select exists in the GC build. Weapons on non-Leon Merc characters use Leon's stats but keep their own "
-           "model; P.R.L. 412 does not exist in the GameCube version (say so).",
+           "model; P.R.L. 412 does not exist in the GameCube version (say so). GameCube also: combo_time multiplier=N "
+           "('triple / quadruple the combo bonus time' = 3 / 4: the Mercenaries combo window x N; RE4 gives no clock time "
+           "for melee, so pair it with merc_time_bonus for hourglasses) | grenade_safe on=true|false ('grenades don't hurt "
+           "me': your hand grenades' blast becomes player-owned) | punch (RE4 has no free punch: relay the statement and "
+           "offer explosive_melee / super_melee) | merc_loadout items accept 'name:amount' ('handgun ammo:200') | "
+           "merc_loadout_list | item_ids (the item id table) | addresses (this release's address table: source, live_checked).",
            {"session_id": s, "op": s, "item": s, "count": i, "target": s, "on": b, "seconds": i, "character": s,
             "items": {"type": "array", "items": s}, "fire_rate": s, "damage": {"type": "number"}, "reset": b,
             "multiplier": {"type": "number"}, "kind": s, "force": {"type": "number"}, "direction": s, "speed": {"type": "number"}},
@@ -370,6 +442,15 @@ def tool_specs() -> list[dict]:
            "campaign-only characters (Deborah, Simmons...) as playable Mercenaries characters, faster movement for a swapped character.",
            {"session_id": s, "op": s, "item": s, "amount": i, "slot": i, "items": {"type": "array", "items": {}}, "character": s,
             "replace": b, "on": b, "target": s, "costume": s}, ["op"]),
+        fn("re5", "Resident Evil 5 Gold Edition (PS3 in RPCS3; session_id = the running RE5 session, or empty for the "
+           "Windows node's RPCS3 with serial=BLUS30491|BLES00816). 'Unlock all secret / hidden content' / 'unlock "
+           "everything' = op=unlock_all: a save edit with the published Game Genie offsets (Apollo patch database) + the "
+           "save checksum: every Bonus Feature, File, cutscene, main-game figurine, chapter + Professional, BSAA emblem, "
+           "item/upgrade in Item Management (groups=[...] for a subset; 'points'/'money' only when asked). Original kept: "
+           "on=false or op=revert restores it. Takes effect when RE5 loads its save: tell the operator to restart RE5 "
+           "from gBox. Mercenaries characters/stages: not confirmed by the source (say so). op=status (checksum + what is "
+           "unlocked) | groups | addresses. merc_time / combo_time: refused - no published address for the PS3 build.",
+           {"session_id": s, "op": s, "on": b, "groups": {"type": "array", "items": s}, "serial": s}, ["op"]),
         fn("re_inventory", "ANY Resident Evil running live (RE4 GameCube, RE6 Xbox 360, classic REs whose slot layout gBox "
            "knows): the selected character's inventory. FIRST CHOICE for 'give me a rocket launcher', 'put a first aid spray in "
            "my inventory', 'remove the knife', 'change my shotgun to a magnum', 'set my handgun ammo to 99', 'what do I have'. "
@@ -414,8 +495,13 @@ def tool_specs() -> list[dict]:
            "hookshot', Ctrl+click an item + 'give me this'); equip item=<name> button=b|a|y|x|z|c-left|c-down|c-right "
            "('put the bow on Y', 'equip this'; swords/shields/tunics are just worn); all_items ('give me everything'); "
            "unrestrict ('let me use/equip anything': OoT any age, MM any form, other games the gear that opens every path); "
-           "noclip on=true|false (walk through walls/doors); hearts count=N; rupees count=N; max; remove item=<name>; list "
-           "(what Link has + what is on each button); games. Item names are fuzzy ('hook shot', 'bow and arrows', 'master "
+           "noclip on=true|false (walk through walls/doors); skip_text [count=max seconds, default 90] ('skip this talking', "
+           "'skip the dialogue/cutscene', 'skip to the end of the conversation': taps A until the whole conversation ends; "
+           "Ocarina of Time only - other games report that no text detector exists); "
+           "hearts count=N; rupees count=N; max; remove item=<name>; list "
+           "(what Link has + what is on each button); catalog ('show me an item equip screen', 'let me choose what to "
+           "equip': the chat shows a scrolling Equip card of the game's inventory, equipment and upgrades with Give / Equip / "
+           "Let me use buttons the operator clicks - answer with op=catalog, never list the items yourself); games. Item names are fuzzy ('hook shot', 'bow and arrows', 'master "
            "sword', 'bottle', 'fire arrows'). Results carry before/after bytes and verified (read-back). For Ocarina of Time "
            "story skips / warps use zelda_oot (skip_deku_tree, goto).",
            {"session_id": s, "op": s, "item": s, "count": i, "button": s, "on": b}, ["session_id", "op"]),
@@ -446,13 +532,63 @@ def tool_specs() -> list[dict]:
             "button": {"type": "string", "enum": ["l3", "r3"]}, "max_height": {"type": "number"},
             "count": {"type": "integer", "description": "ped_rain: how many peds, 1-100"}, "behaviour": {"type": "string", "description": "0 = rain .. 1 = splash, or rain | splash"},
             "height": {"type": "number"}, "radius": {"type": "number"}, "model": i, "explosion": s}, ["session_id", "op"]),
+        fn("gta_live", "Live GTA state on a running PS2 GTA III / Liberty City Stories / Vice City / Vice City Stories "
+           "session (the in-game controls of the Ariane map editor). op=player (position, health, vehicle, wanted), "
+           "pools (ped/vehicle/object pool usage), vehicles (cars in the pool: model, position), weather (value=sunny|"
+           "cloudy|rainy|foggy|...; release gives it back to the game), time (hours, minutes), wanted (level 0-6), "
+           "teleport (x, y, z; moves the car when in one), spawn (model = vehicle id, GTA III), resolve (elf_path = the "
+           "game's ELF from re_study: fills clock/weather/pools/wanted addresses from its symbol table), games. Writes "
+           "are read back and return the previous bytes; each address reports source and live_checked.",
+           {"session_id": s, "op": {"type": "string", "enum": ["player", "pools", "vehicles", "weather", "time", "wanted",
+                                                              "teleport", "spawn", "resolve", "games"]},
+            "game": s, "value": s, "hours": i, "minutes": i, "level": i, "x": {"type": "number"}, "y": {"type": "number"},
+            "z": {"type": "number"}, "model": i, "elf_path": s}, ["session_id", "op"]),
+        fn("ghidra_bridge", "The operator's Ghidra as functions (Dryxio/ghidra-bridge). op=open binary_path (ELF/EXE; "
+           "processor = Ghidra language id when not detected) or project_dir+project_name+program_name (an existing "
+           "Ghidra project), then on the same worker: decompile target=<0x address|name>, xrefs_to / xrefs_from target, "
+           "functions query, strings pattern (with the code that references each), containing address, run_script "
+           "script=<adapters/ghidra script> args, export export_dir; status; stop when done. export_dir alone queries an "
+           "existing ghidra-bridge export without Ghidra. Results are JSON.",
+           {"op": {"type": "string", "enum": ["status", "start", "open", "info", "functions", "decompile", "xrefs_to",
+                                              "xrefs_from", "containing", "strings", "run_script", "export", "close", "stop"]},
+            "binary_path": s, "project_dir": s, "project_name": s, "program_name": s, "processor": s, "target": s,
+            "address": s, "query": s, "pattern": s, "limit": i, "script": s, "args": {"type": "array", "items": s},
+            "export_dir": s, "worker_id": s}, ["op"]),
+        fn("re_agent", "ReAgent's function reconstruction loop over the open ghidra_bridge program. op=strategies; "
+           "op=pick query=<name filter> strategy=high-impact|easiest-first|dependency-order (which functions to do next); "
+           "op=reverse target=<0x address|name> (reverser model with Ghidra evidence requests -> independent checker -> "
+           "structural verifier -> bounded fix rounds; returns C/C++ + verdicts); op=check target code=<your C/C++> "
+           "(checker + verifier on a candidate you wrote); op=verify (verifier only, no model). A PASS is a hypothesis "
+           "until validated in game; record it with re_dossier.",
+           {"op": {"type": "string", "enum": ["strategies", "pick", "reverse", "check", "verify"]}, "target": s, "query": s,
+            "strategy": s, "code": s, "limit": i, "max_rounds": i, "endpoint": s, "export_dir": s, "worker_id": s}, ["op"]),
         fn("zelda_oot", "Zelda: Ocarina of Time on the live session. op=skip_deku_tree ('get me past the Deku Tree'), "
            "goto with place ('end of the shadow temple', 'final battle', 'gohma', 'forest temple', 'kakariko'... gives the gear "
            "that place needs and warps; adult places make Link adult), give with item (+c_button 1-3 to equip: 'equip the "
-           "hookshot'), kit (child|adult|endgame), full_inventory ('give me every item'), scale with factor ('make Link 2x bigger'), state. Verifies the warp landed "
+           "hookshot'), kit (child|adult|endgame), full_inventory ('give me every item'), scale_link with factor ('make Link 2x "
+           "bigger' = factor 2: the whole actor), scale_sword with factor ('make my sword three times bigger' = factor 3: only the "
+           "equipped sword's mesh and hit range; hand and shield stay; reach=false leaves the hit range), factor 1 restores, both "
+           "are kept across scene changes, scale_status, scale_release, state. Verifies the warp landed "
            "and auto-restores a save state if the game hangs.",
-           {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "cutscene": b},
+           {"session_id": s, "op": s, "place": s, "item": s, "c_button": i, "kit": s, "factor": {"type": "number"}, "reach": b,
+            "cutscene": b},
            ["session_id", "op"]),
+        fn("mario_kart", "Mario Kart 64 (N64) items on the live session, verified by read-back. op=always item=<name> holds that "
+           "item in the player's slot so using it never consumes it ('infinite red shells' = op=always item='red shell'; 'always "
+           "have a star'); op=infinite keeps whatever item the player picks up ('never lose my item', 'infinite items'); op=give "
+           "item=<name> writes it once; op=state shows what every player holds; op=release (or on=false) stops the hold; op=items "
+           "lists the names. Items: banana, banana bunch, green shell, triple green shells, red shell, triple red shells, blue "
+           "shell, lightning, fake item box, star, boo, mushroom, double mushrooms, triple mushrooms, super mushroom. player=1-4; "
+           "split=3p4p when 3-4 players share the screen (default 1p2p).",
+           {"session_id": s, "op": s, "item": s, "player": i, "split": s, "on": b}, ["session_id", "op"]),
+        fn("stage_warp", "Put the player on a named stage / level of the live game: 'put me on the final world', 'take me to "
+           "the last stage', 'stage 3'. op=games (supported games) | stages (the live game's stages, or pass game='super mario "
+           "world'/'tmnt') | warp stage=<name> ('final world', \"bowser's castle\", 'stage 5'; names are fuzzy). Super Mario World "
+           "(SNES) writes the level's translevel number to $7E13BF + submap to $7E13C3 (verified read-back), then the next level "
+           "reload (die, or exit and enter a level) lands there; Teenage Mutant Ninja Turtles (FBNeo arcade) sends the built-in "
+           "title-screen stage-select sequence (down x5, right x7, B, A, Start), then the operator picks the stage. Recipes are "
+           "cited per game; use op=stages to see them.",
+           {"session_id": s, "op": s, "stage": s, "game": s}, ["session_id", "op"]),
         fn("autoplay", "Take control: gBox plays the live game itself (scripted mission through the debugger). op=list | "
            "start (mission optional; assist=true holds the player's HP so it can't die) | stop (hand control back) | status.",
            {"session_id": s, "op": s, "mission": s, "assist": b}, ["session_id", "op"]),
@@ -467,12 +603,23 @@ def tool_specs() -> list[dict]:
            "eq|ne|lt|gt: value}, found with memory_search. op start|stop|status.",
            {"op": s, "host": s, "guest": s, "trigger": {"type": "object"}, "win": {"type": "object"}, "lose": {"type": "object"},
             "on_win": s, "on_lose": s}, ["op", "host", "guest"]),
+        fn("stranglehold_shot", "Stranglehold bullet-time interception: op=systems (list the minimum systems), locate (find the "
+           "profile functions in RAM), arm (infinite life), fire verdict=hit|miss (immediate override), or link with a guest "
+           "session_id and memory watch specs (trigger/win/lose) to let a minigame decide the result. session_id is the "
+           "running Stranglehold host.",
+           {"op": s, "session_id": s, "verdict": s, "guest_session_id": s, "trigger": {"type": "object"},
+            "win": {"type": "object"}, "lose": {"type": "object"}}, ["op"]),
         fn("bevy_scene", "Render models in the gBox Bevy viewer: collection entries (items=[{character: slug} or {environment: "
            "slug}]) or UAP asset packages ({package: 'pso_dc_forest01'}), each with optional translation [x,y,z], scale, "
            "rotation_y_deg; camera={eye, target}. screenshot=true returns a PNG (shown in the chat) - use it to look at an "
            "extracted model; false opens a live Bevy window on the operator's PC.",
            {"name": s, "items": {"type": "array", "items": {"type": "object"}}, "camera": {"type": "object"},
             "screenshot": {"type": "boolean"}}, ["items"]),
+        fn("mashup", "Cross-title mashup planner: turn a request like 'put Mario 64 in Ocarina of Time' into a resolved source "
+           "character + target game, a feasibility check (native writer vs overlay-only) and an ordered plan. Explicit source "
+           "(character name/slug) and target (game title/id) override the parsed request. auto_dispatch=true submits the "
+           "characters collect/use jobs; dry_run=true only returns the plan.",
+           {"request": s, "source": s, "target": s, "dry_run": {"type": "boolean"}, "auto_dispatch": {"type": "boolean"}}, []),
         fn("video", "Video knowledge (YouTube etc.). op=search (query, n) -> videos to suggest or play; ingest (url) -> transcript "
            "with timestamps + description + chapters + top comments saved to the gBox knowledge base (then plan from it); "
            "frame (url, at seconds) -> still image; knowledge (query) -> videos already ingested. Put a video's url in your "
@@ -532,6 +679,43 @@ def tool_specs() -> list[dict]:
            "the operator presses Ctrl+Shift+V in Blender (gBox add-on) to import it, edits it, then 'Send to gBox' in the "
            "add-on panel; then call characters op=add character=<new name> from_clipboard=true.",
            {"character": s, "package": s}, []),
+        # universal-modder (gbox/universal_modder.py, #825). worker = the PC to run on (default: the session's, else Windows)
+        fn("um_scan", "Fingerprint a PC game install (universal-modder): engine + version, .NET or native, anti-cheat, installed "
+           "mod loaders, mod and save folders, ranked modding routes + the engine playbook. op=scan with session_id (the live "
+           "game), game_id, path or name (installed Steam/Epic/Xbox game); op=list = installed games. Read-only.",
+           {"op": s, "session_id": s, "game_id": s, "path": s, "name": s, "playbook": b, "worker": s}, []),
+        fn("um_kb", "universal-modder field notes (how ~200 games were really modded: versions, route, gotchas) and engine "
+           "playbooks. op=search query [game engine route] | show path (a hit's path) | playbook playbook|engine | safety | engines.",
+           {"op": s, "query": s, "game": s, "engine": s, "route": s, "path": s, "playbook": s, "limit": i}, ["op"]),
+        fn("um_backup", "Snapshot save/config folders before changing them: op=create path [name note] | list [name] | diff name "
+           "| restore name [snapshot to clean] (dry run unless confirm=true; takes <name>-pre-restore first; never into a game "
+           "install) | delete name snapshot. Close the game before restoring.",
+           {"op": s, "path": s, "name": s, "note": s, "snapshot": s, "to": s, "clean": b, "confirm": b, "session_id": s,
+            "worker": s}, ["op"]),
+        fn("um_publish_check", "Lint a mod folder before sharing: FAIL on game files copied verbatim, leaked keys, .env; WARN on "
+           "decompiled code, big archives, user paths, no README. path, or mod + game_id; game_path / session_id adds the "
+           "game-file check.", {"path": s, "mod": s, "game_id": s, "game_path": s, "session_id": s, "worker": s}, []),
+        fn("um_mod", "gBox mod folder for new files (never the game install): op=stage game_id name files=[{dest, path|artifact}] "
+           "[install_into note overwrite] -> cache/mods/<game_id>/<name> + .gbox-mod.json + README; op=list [game_id]; "
+           "op=remove game_id name (to gBox's trash, undoable).",
+           {"op": s, "game_id": s, "name": s, "files": {"type": "array", "items": {"type": "object"}}, "install_into": s,
+            "note": s, "overwrite": b, "worker": s}, ["op"]),
+        fn("um_sprite", "2D sprite tools on an artifact (sha256), a worker path or the live frame (session_id, crop=[x,y,w,h]): "
+           "op=info | cutout | fit size=64x26 | pixelate size colors outline | palette ref | sheet inputs=[...] | slice frame=32x32 "
+           "| frames n kind | team_mask hue | seamless | tile_preview | preview. Outputs are PNG artifacts; mod + game_id [+ dest] "
+           "also stages them into that gBox mod.",
+           {"op": s, "artifact": s, "path": s, "session_id": s, "crop": {"type": "array", "items": i},
+            "inputs": {"type": "array", "items": s}, "size": s, "anchor": s, "colors": i, "outline": s, "ref": s, "frame": s,
+            "n": i, "kind": s, "hue": s, "scale": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, ["op"]),
+        fn("um_comfy", "Images from the local ComfyUI server (no API key): op=status | image prompt [checkpoint size steps seed n "
+           "sprite=true for a cut-out game sprite] | run workflow (API format) [set=['6.text=...']]. Outputs are artifacts.",
+           {"op": s, "prompt": s, "negative": s, "checkpoint": s, "size": s, "steps": i, "seed": i, "n": i, "sprite": b,
+            "workflow": {"type": "object"}, "set": {"type": "array", "items": s}, "name": s, "url": s, "worker": s}, ["op"]),
+        fn("um_render3d", "Render a 3D model to sprite frames with headless Blender: character (collection slug) | artifact (glb) "
+           "| path; preset side|aoe2|iso8|trueiso|topdown|turntable, canvas '128', length px, anims 'idle:4:bob,walk:8:walk'. "
+           "One sheet per animation as an artifact; mod + game_id stages them.",
+           {"character": s, "artifact": s, "path": s, "preset": s, "canvas": s, "length": {"type": "number"}, "anims": s,
+            "shadows": b, "engine": s, "headings": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, []),
         fn("rea_tools", "Discover REA tools for deconstruction, analysis and reconstruction. Search query first, then exact name "
            "to obtain its input schema and examples. Call run_tool with the rea_ name; keep analysis on its returned worker_id.",
            {"query": s, "name": s}, []),
@@ -799,6 +983,13 @@ class Agent:
         return r if r["images"] else {"error": "no gif found"}
 
     def search_games(self, query, platform=""):
+        ids = __import__("re").findall(r"\b[0-9a-f]{16}\b", (query or "").lower())
+        if ids:                                  # game_id lookup: the full catalog entry, not just the title row
+            out = []
+            for gid in dict.fromkeys(ids):
+                r = self.api.get(f"/api/catalog/{gid}")
+                out.append(r.json() if r.status_code == 200 else {"game_id": gid, "error": f"not in catalog (http {r.status_code})"})
+            return {"games": out}
         items = self.api.get("/api/catalog/best", params={"q": query, "limit": 12}).json()
         if platform:
             items = [g for g in items if g.get("platform") == platform] or items
@@ -889,9 +1080,11 @@ class Agent:
         j = self._job("pso_drops", {"session_id": session_id, "op": op, "factor": factor, "boxes": boxes, "code": code}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def pso_mods(self, session_id, op="status", on=True, value=999999, code="", count=1, equip=False, name="", target="", rare=False):
-        j = self._job("pso_mods", {"session_id": session_id, "op": op, "on": on, "value": value, "code": code, "count": count,
-                                   "equip": equip, "name": name, "target": target, "rare": rare},
+    def pso_mods(self, session_id, op="status", on=True, value=999999, factor=3, code="", count=1, equip=False, name="",
+                 target="", rare=False, codes=None):
+        j = self._job("pso_mods", {"session_id": session_id, "op": op, "on": on, "value": value, "factor": factor,
+                                   "code": code, "count": count, "equip": equip, "name": name, "target": target,
+                                   "rare": rare, "codes": codes or []},
                       worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
@@ -920,6 +1113,12 @@ class Agent:
             else self._job("re6", inp, node="windows", limit=1800)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def re5(self, op="status", session_id="", on=True, groups=None, serial=""):
+        inp = {"op": op, "session_id": session_id, "on": on, "groups": groups or [], "serial": serial or ""}
+        j = self._job("re5", inp, worker=session_id.rsplit("-", 1)[0]) if session_id \
+            else self._job("re5", inp, node="windows")
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
     def re4r(self, op="status", session_id="", **kw):
         inp = {"op": op, **{k: v for k, v in kw.items() if v not in (None, "", [])}}
         j = self._job("re4r", inp, node="windows", limit=3600)
@@ -928,7 +1127,10 @@ class Agent:
     def zelda(self, session_id, op="list", item="", count=0, button="", on=True):
         j = self._job("zelda", {"session_id": session_id, "op": op, "item": item, "count": count, "button": button, "on": on},
                       worker=session_id.rsplit("-", 1)[0])
-        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+        r = (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+        if isinstance(r, dict) and isinstance(r.get("catalog"), dict) and r["catalog"].get("items"):
+            return zelda_equip_card(r, session_id)
+        return r
 
     def gta_mods(self, session_id, op="status", on=True, value=None, button=None, max_height=None, count=None, behaviour=None,
                  height=None, radius=None, model=None, explosion=None):
@@ -937,14 +1139,40 @@ class Agent:
         j = self._job("gta_mods", {k: v for k, v in inp.items() if v is not None}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def gta_live(self, session_id, op="player", **kw):
+        inp = {"session_id": session_id, "op": op, **{k: v for k, v in kw.items() if v not in (None, "")}}
+        j = self._job("gta_live", inp, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def _ghidra_job(self, tool, inp, worker_id=None):
+        """Ghidra Bridge and re_agent keep the program open on one worker: pin every call to it."""
+        worker = worker_id or getattr(self, "ghidra_worker", None)
+        j = self._job(tool, {k: v for k, v in inp.items() if v not in (None, "", [])}, worker=worker, limit=3600)
+        if j.get("worker_id"):
+            self.ghidra_worker = j["worker_id"]
+        out = j.get("output") or {}
+        return {"state": j.get("state"), "error": j.get("error"), "worker_id": j.get("worker_id"), **out}
+
+    def ghidra_bridge(self, op="status", worker_id=None, **kw):
+        return self._ghidra_job("ghidra_bridge", {"op": op, **kw}, worker_id)
+
+    def re_agent(self, op="strategies", worker_id=None, **kw):
+        return self._ghidra_job("re_agent", {"op": op, **kw}, worker_id)
+
     def ac_mods(self, session_id, op="build", part="", slot="", parts=None, value=0, query="", goal="", force=False):
         j = self._job("ac_mods", {"session_id": session_id, "op": op, "part": part, "slot": slot, "parts": parts or [], "value": value,
                                   "query": query, "goal": goal, "force": force}, worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False):
+    def mario_kart(self, session_id, op="state", item="", player=1, split="1p2p", on=True):
+        j = self._job("mario_kart", {"session_id": session_id, "op": op, "item": item, "player": int(player or 1),
+                                     "split": split or "1p2p", "on": bool(on)}, worker=session_id.rsplit("-", 1)[0])
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def zelda_oot(self, session_id, op="state", place="", item="", c_button=0, kit="", factor=1.0, cutscene=False, reach=True):
         j = self._job("zelda_oot", {"session_id": session_id, "op": op, "place": place, "item": item, "c_button": c_button,
-                                    "kit": kit, "factor": factor, "cutscene": cutscene}, worker=session_id.rsplit("-", 1)[0])
+                                    "kit": kit, "factor": factor, "cutscene": cutscene, "reach": reach},
+                      worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def autoplay(self, session_id, op="status", mission="", assist=False):
@@ -961,6 +1189,43 @@ class Agent:
                                     "lose": lose or {}, "on_win": on_win, "on_lose": on_lose}, worker=host.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def stranglehold_shot(self, op, session_id="", verdict="hit", guest_session_id="", trigger=None, win=None, lose=None):
+        j = self._job("stranglehold_shot", {"op": op, "session_id": session_id, "verdict": verdict,
+                                            "guest_session_id": guest_session_id, "trigger": trigger or {},
+                                            "win": win or {}, "lose": lose or {}}, worker=session_id.rsplit("-", 1)[0] if session_id else None)
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    # --- universal-modder (gbox/universal_modder.py): typed worker jobs; files live on a worker, so route there
+    def _um(self, tool, args):
+        args = {k: v for k, v in args.items() if v is not None}
+        worker = args.pop("worker", "") or ((args.get("session_id") or "").rsplit("-", 1)[0] if args.get("session_id") else "")
+        j = self._job(tool, args, node=None if worker else "windows", worker=worker or None, limit=3600)
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
+
+    def um_scan(self, **args):
+        return self._um("um_scan", args)
+
+    def um_kb(self, **args):
+        return self._um("um_kb", args)
+
+    def um_backup(self, **args):
+        return self._um("um_backup", args)
+
+    def um_publish_check(self, **args):
+        return self._um("um_publish_check", args)
+
+    def um_mod(self, **args):
+        return self._um("um_mod", args)
+
+    def um_sprite(self, **args):
+        return self._um("um_sprite", args)
+
+    def um_comfy(self, **args):
+        return self._um("um_comfy", args)
+
+    def um_render3d(self, **args):
+        return self._um("um_render3d", args)
+
     def bevy_scene(self, items, name="scene", camera=None, screenshot=True):
         j = self._job("bevy_scene", {"name": name, "items": items, "camera": camera or {}, "screenshot": bool(screenshot)}, "windows", 3600)
         out = j.get("output") or {}
@@ -973,6 +1238,11 @@ class Agent:
         except Exception:
             pass
         return res
+
+    def mashup(self, request="", source="", target="", dry_run=False, auto_dispatch=False):
+        j = self._job("mashup", {"request": request, "source": source, "target": target, "dry_run": bool(dry_run),
+                                 "auto_dispatch": bool(auto_dispatch)}, limit=1300)
+        return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def scene_capture(self, session_id):
         j = self._job("scene_capture", {"session_id": session_id}, worker=session_id.split("-")[0], limit=900)
@@ -1182,6 +1452,25 @@ class Agent:
             messages.append({"role": "assistant", "content": answer})
             emit({"type": "assistant", "text": answer})
             return {"usage": {"in": 0, "out": 0}, "tools": {}}
+        continued = False
+        if len(messages) >= 3 and messages[-1].get("role") == "user" and messages[-2].get("role") == "tool" \
+                and str(messages[-2].get("content") or "").startswith("asked;") and messages[-3].get("role") == "assistant":
+            # continuation of a questionnaire: the operator's message IS their clicked answer. Rewrite the pending
+            # tool result so the ask_user call literally returns the answer, and reframe the user message so the
+            # model's "current request" reads unambiguously - weak local models otherwise repeat the question.
+            answer = str(messages[-1].get("content") or "").split("\n[context:", 1)[0].strip()
+            q = ""
+            for tc in messages[-3].get("tool_calls") or []:
+                if tc["function"]["name"] == "ask_user":
+                    try:
+                        q = str(json.loads(tc["function"].get("arguments") or "{}").get("question") or "").strip()
+                    except ValueError:
+                        pass
+                    break
+            messages[-2]["content"] = f"the operator answered: {answer}"
+            tail = " Go ahead with this." if answer.endswith((".", "!", "?")) else ". Go ahead with this."
+            messages[-1]["content"] = f"My answer{(' to the question \"' + q + '\"') if q else ''}: {answer}{tail}"
+            continued = True
         sid = context.get("session_id")
         if sid:                                                # the app can hand over a stale id (game relaunched): use the live one
             try:
@@ -1199,6 +1488,8 @@ class Agent:
                 pass
         self.context_session_id = context.get("session_id") or ""
         tools, usage, used = tool_specs(), {"in": 0, "out": 0}, {}
+        if continued:                                           # this turn answers a questionnaire: no re-asking mid-flow
+            tools = [t for t in tools if t["function"]["name"] != "ask_user"]
         self.recipes = {}
         try:                                                   # learned tools for this game (and any-game ones)
             for r in self.api.get("/api/recipes").json():
@@ -1266,6 +1557,7 @@ class Agent:
                              "as your answer; act on the operator's CURRENT request with tools ('answer' entries may be unverified, "
                              "'fact'/'wiki' are stronger). Use them to skip web searches they already answer:\n"
                              + "\n---\n".join(f"[{h['kind']}] {h['title']} ({h['source']}): {h['text'][:900]}" for h in hits)})
+        tool_names = {t["function"]["name"] for t in tools}     # tools the model may call this turn
         for _ in range(max_steps):
             for attempt in range(3):                           # retry transient runner OOMs and malformed tool calls
                 r = httpx.post(f"{self.llm_url}/chat/completions", timeout=600,
@@ -1309,13 +1601,26 @@ class Agent:
                 return {"usage": usage, "tools": used}
             for c in calls:
                 name = c["function"]["name"]
-                if name == "ask_user":                              # questionnaire: show clickable options, wait for the click
+                if name == "ask_user":
+                    if name not in tool_names:                  # withheld on answer turns: the operator already answered
+                        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                                         "content": "ask_user is not available in this turn: the operator already answered "
+                                                    "your question. Act on their answer now and reply."})
+                        continue
+                    # questionnaire: show clickable options, wait for the click
                     try:
                         a = json.loads(c["function"].get("arguments") or "{}")
                     except ValueError:
                         a = {}
-                    opts = [str(o) for o in a.get("options") or []][:8]
-                    emit({"type": "choices", "question": a.get("question", ""), "options": opts})
+                    q = str(a.get("question") or "").strip()
+                    opts = list(dict.fromkeys(str(o).strip() for o in a.get("options") or []
+                                              if o is not None and str(o).strip()))[:8]
+                    if not opts:                                    # nothing clickable: fall back to plain text, never an empty box
+                        emit({"type": "assistant", "text": q or "What would you like?"})
+                        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                                         "content": "asked; no clickable options were provided"})
+                        return {"usage": usage, "tools": used}
+                    emit({"type": "choices", "question": q, "options": opts})
                     messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": "asked; the operator's choice is the next message"})
                     return {"usage": usage, "tools": used}
                 try:
@@ -1372,12 +1677,29 @@ class Agent:
         return {"usage": usage, "tools": used}
 
 
+def zelda_equip_card(result: dict, session_id: str) -> dict:
+    """zelda op=catalog -> the Equip screen card (#212): the desktop client draws the whole table with Give / Equip /
+    Let me use buttons that dispatch the zelda ops themselves. The model only gets the item names (the table is big)."""
+    cat = result["catalog"]
+    card = {"kind": "equip", "session_id": session_id, "game": cat.get("game"), "catalog": cat, "state": result.get("state"),
+            "note": result.get("note"), "items": cat["items"]}
+    slim = {k: v for k, v in cat.items() if k != "items"}
+    slim["items"] = [i["name"] for i in cat["items"]]
+    return {**result, "catalog": slim, "_cards": card,
+            "shown": "an Equip screen card is in the chat: the operator clicks Give / Equip / Let me use there; "
+                     "do not list the items yourself"}
+
+
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod"}
+WORKER_TOOLS = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after
-MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay"}
+MODIFIES = {"re_inventory", "re5", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
+WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart"}
+
+
+MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "gta_live", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "write_memory", "freeze_memory", "pso_drops", "pso_inventory", "mod", "script_patch", "cheats", "autoplay", "stage_warp", "mario_kart"}
 
 
 def _modifies_game(name: str, args: dict) -> bool:
@@ -1387,8 +1709,12 @@ def _modifies_game(name: str, args: dict) -> bool:
     op = str(args.get("op") or "").lower()
     if name == "mod":
         return op == "apply"     # list/verify are reads; save/delete edit files, not the running game
+    if name == "gta_live":       # weather/time/wanted without a new value are reads
+        return op in ("teleport", "spawn") or op == "weather" and args.get("value") not in (None, "") or \
+            op == "time" and (args.get("hours") is not None or args.get("minutes") is not None) or \
+            op == "wanted" and args.get("level") is not None
     return op not in {"list", "get", "status", "verify", "inspect", "info", "preview", "roster",
-                      "coverage", "scan", "plan", "search", "describe", "query"}
+                      "coverage", "scan", "plan", "search", "describe", "query", "state", "items", "games"}
 
 
 class ChatHub:

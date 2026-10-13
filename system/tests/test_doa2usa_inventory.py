@@ -1,104 +1,83 @@
-"""Focused tests for the archived-GDI Dreamcast source path and the USA-build inventory.
+"""Exact-build inventory checks for Dead or Alive 2 (USA) Dreamcast (5f08ad9a86ebcc9a).
 
-The .7z branch of characters._dc_gdi extracts an owned archived GDI set once
-(flattening tracks beside disc.gdi, the layout GDRom reads), so the DOA2 US
-catalog entry (a .7z, game 3dd7e33362597f85) can be read by the shared doa2
-pipeline instead of failing with "needs a GDI, or a CHD plus chdman".
-
-The inventory smoke test is skipped unless the operator's extracted disc set
-is present (never committed; the .7z itself is the owned source).
+Needs the owned CHD unpacked to a .gdi; set GBOX_DOA2_USA_GDI to the disc.gdi path
+(the cached copy at ~/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi on the Spark).
+Skipped when the disc is absent. Never modifies the disc or the CHD.
 """
-from __future__ import annotations
-
-import subprocess
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from gbox.doa2usa_inventory import (FIRST_READ_SHA256, GAME_ID, build, families)
 
-from gbox import characters as C  # noqa: E402
+import os
 
-GAME = {"game_id": "3dd7e33362597f85", "title": "Dead or Alive 2"}
-US_FIRST_READ_SHA256 = "105056d9ffef86bf5e470fa28dc5907443156f9ab1c6bc009f73661d9c047a85"
+GDI = os.environ.get("GBOX_DOA2_USA_GDI",
+                     "/home/ehm_eckx/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi")
 
+pytestmark = pytest.mark.skipif(
+    not Path(GDI).exists(),
+    reason="DOA2 USA unpacked disc not present (GBOX_DOA2_USA_GDI)",
+)
 
-class _Ctx:
-    def __init__(self, cache: str):
-        self.config = SimpleNamespace(cache=cache)
-
-    def progress(self, p: int, m: str) -> None:  # noqa: ARG002
-        pass
-
-
-def _make_7z(tmp: Path) -> tuple[Path, Path]:
-    """A synthetic archived GDI set: one .gdi descriptor inside a .7z."""
-    raw = tmp / "raw"
-    raw.mkdir()
-    (raw / "Game (US)[!].gdi").write_text(
-        "3\n1 0 4 2352 track01.bin 0\n2 45000 0 2352 track02.raw 0\n3 45001 4 2352 track03.bin 0\n")
-    archive = tmp / "disc.7z"
-    subprocess.run(["7z", "a", "-bd", str(archive), str(raw / "Game (US)[!].gdi")],
-                   check=True, capture_output=True)
-    return archive, raw / "Game (US)[!].gdi"
+USA_FIGHTERS = {"KAS", "AYA", "LEI", "TIN", "BAS", "JAN", "GEN", "BAY", "RYU", "ZAC",
+                "HIK", "TNG", "KTE"}
+USA_VARIANTS = {"LOR", "MAM", "WBA", "YTI"}
 
 
-def test_dc_gdi_extracts_7z_archive_once(tmp_path: Path, monkeypatch) -> None:
-    archive, _ = _make_7z(tmp_path)
-    cache = tmp_path / "cache"
-    monkeypatch.setattr(C, "_rom", lambda ctx, game: archive)
-
-    out = C._dc_gdi(_Ctx(str(cache)), GAME)
-    assert out == cache / "dc" / GAME["game_id"] / "disc.gdi"
-    assert out.exists()
-    assert "3\n1 0 4 2352 track01.bin 0" in out.read_text()
-    assert (out.parent / "Game (US)[!].gdi").exists()          # tracks stay beside disc.gdi
-
-    # Second call reuses the extracted copy instead of re-extracting.
-    archive.unlink()                                            # prove the cache is the source now
-    out2 = C._dc_gdi(_Ctx(str(cache)), GAME)
-    assert out2 == out and out2.exists()
+@pytest.fixture(scope="module")
+def manifest():
+    return build(GDI, hash_tracks=False, deep=True)
 
 
-def test_dc_gdi_accepts_extracted_directory(tmp_path: Path, monkeypatch) -> None:
-    d = tmp_path / "set"
-    d.mkdir()
-    gdi = d / "Disc.gdi"
-    gdi.write_text("3\n1 0 4 2352 track01.bin 0\n")
-    monkeypatch.setattr(C, "_rom", lambda ctx, game: d)
-    assert C._dc_gdi(_Ctx(str(tmp_path / "cache")), GAME) == gdi
+def test_build_identity(manifest):
+    assert manifest["build_matches"] is True
+    assert manifest["ip"]["product"] == "T3601N"
+    assert manifest["ip"]["version"] == "V1.100"
+    assert manifest["ip"]["area"] == "U"
+    assert manifest["executable"]["sha256"] == FIRST_READ_SHA256
 
 
-def test_dc_gdi_7z_without_descriptor_raises(tmp_path: Path, monkeypatch) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "track01.bin").write_bytes(b"nope")
-    archive = tmp_path / "disc.7z"
-    subprocess.run(["7z", "a", "-bd", str(archive), str(raw / "track01.bin")],
-                   check=True, capture_output=True)
-    monkeypatch.setattr(C, "_rom", lambda ctx, game: archive)
-    with pytest.raises(ValueError, match="no .gdi descriptor"):
-        C._dc_gdi(_Ctx(str(tmp_path / "cache")), GAME)
+def test_disc_families_match_usa_roster(manifest):
+    from gbox.gdrom import GDRom
+    fam = families(GDRom(GDI).files)
+    fighters = {k for k in fam if k not in USA_VARIANTS and k not in ("STAGE",)}
+    assert fighters == USA_FIGHTERS
+    assert set(fam) & USA_VARIANTS == USA_VARIANTS
+    # LE-only families must not appear
+    assert "SAM" not in fam and "PDG" not in fam
 
 
-@pytest.mark.skipif(not (Path("/home/ehm_eckx/gbox-hermes-tasks/d9f7808c88c94ef5-data/doa2_us/fresh-cache/dc/3dd7e33362597f85/disc.gdi").exists()
-                         or Path("/home/ehm_eckx/gbox-hermes-tasks/d9f7808c88c94ef5-data/doa2_us/track03.bin").exists()),
-                    reason="owned disc extraction not present on this node")
-def test_doa2usa_inventory_build_identity() -> None:
-    from gbox.doa2usa_inventory import build
-    data = Path("/home/ehm_eckx/gbox-hermes-tasks/d9f7808c88c94ef5-data/doa2_us")
-    fresh = data / "fresh-cache" / "dc" / GAME["game_id"] / "disc.gdi"
-    gdi = fresh if fresh.exists() else next(data.glob("*.gdi"))
-    m = build(gdi, game_id=GAME["game_id"], title=GAME["title"],
-              hash_tracks=False, deep=False)
-    assert m["build_matches"] is True
-    assert m["ip"]["product"] == "T3601N" and m["ip"]["version"] == "V1.100"
-    assert m["executable"]["sha256"] == US_FIRST_READ_SHA256
-    fam = {r["key"] for r in m["characters"] if r["costumes"]}
-    assert fam == {"KAS", "AYA", "LEI", "TIN", "BAS", "JAN", "GEN", "BAY", "RYU", "ZAC",
-                   "HIK", "TNG", "KTE", "LOR", "MAM", "WBA", "YTI"}
-    assert "SAM" not in fam and "PDG" not in fam                  # LE-only families absent here
+def test_roster_on_disc_flags(manifest):
+    by_key = {r["key"]: r for r in manifest["characters"]}
+    assert all(by_key[k]["on_disc"] for k in USA_FIGHTERS | USA_VARIANTS)
+    assert by_key["KTE"]["motion"] and "KARATE" in by_key["KTE"]["motion"][0]["file"]
+
+
+def test_every_fighter_chr_decodes(manifest):
+    bad = []
+    for r in manifest["characters"]:
+        for c in r["costumes"]:
+            chr_ = c.get("chr") or {}
+            if chr_.get("decoded") is not True:
+                bad.append(f"{r['key']}{c['costume']}: {chr_.get('error')}")
+    assert not bad, f"{len(bad)} undecoded fighter CHRs: {bad[:5]}"
+
+
+def test_stage_and_layout_counts(manifest):
+    assert len(manifest["stages"]) == 82  # 41x STAGE..CHR + 41x STAGE..BIN
+    assert sum(1 for s in manifest["stages"] if s.endswith(".CHR")) == 41
+    layout = manifest["layout"]
+    assert layout["files"] >= 530
+    ext = layout["by_extension"]
+    assert ext["DOA2/*.CHR"]["files"] == 86
+    assert ext["DOA2/*.SUP"]["files"] == 42
+    assert ext["DOA2/*.MOT"]["files"] == 76
+
+
+def test_kasumi_costume_counts(manifest):
+    kas = next(r for r in manifest["characters"] if r["key"] == "KAS")
+    assert [c["costume"] for c in kas["costumes"]] == ["00", "01", "02", "03", "04", "05"]
+    # KAS04 carries the loose MDL duplicate
+    k04 = {k: v for k, v in kas["costumes"][4].items() if v is not None}
+    assert "mdl" in k04

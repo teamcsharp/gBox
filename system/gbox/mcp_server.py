@@ -15,7 +15,9 @@ import httpx
 import mcp_types as T
 from mcp.server.lowlevel import Server
 
-from . import hermes_tasks
+from . import hermes_merges, hermes_tasks
+
+READY_LIMIT = 25        # ready_to_verify entries list_requests returns (#1308)
 S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
 ADDR = {"type": ["string", "integer"], "description": "hex string (0x80001234) or integer"}
 PREFIX = "job_"                                   # registry tools; unprefixed names are the conveniences below
@@ -70,9 +72,15 @@ CONVENIENCE = {
                              obj({'request_id': S, 'title': S, 'files': {'type': 'array', 'items': S},
                                   'tests': {'type': 'array', 'items': S}}, ['request_id', 'title', 'files'])),
     "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
+    "get_game_work_queue": ("Read the persistent all-favorites character-replacement queue. Supply game_id for detailed exact-build checkpoints and evidence. A completed agent run is not game readiness.", obj({"game_id": S})),
+    "record_game_work": ("Checkpoint the assigned favorite game's inventory, analysis, reader, writer or native gameplay verification. Verified stages require stored artifact hashes and the same owned-source hash; runtime also requires an actual gameplay image. Partial/blocked checkpoints preserve the next step.",
+                         obj({"game_id": S, "request_id": S, "stage": {"type": "string", "enum": ["inventory", "analysis", "reader", "writer", "runtime"]},
+                              "status": {"type": "string", "enum": ["partial", "verified", "blocked"]}, "note": S,
+                              "source_sha256": S, "artifacts": {"type": "array", "items": S}, "next_step": S},
+                             ["game_id", "request_id", "stage", "status", "note"])),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
-    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists.",
+    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
                       obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
                     obj({"request_id": S}, ["request_id"])),
@@ -108,6 +116,7 @@ CONVENIENCE = {
     "launch_game": ("Launch a library game. node: idle | auto | windows | linux | <worker name>. idle chooses the other Windows PC; debug=true runs on the Spark "
                     "under a full-debugger emulator. Returns the launch job (its output has the session_id).",
                     obj({"game_id": S, "node": S, "debug": B}, ["game_id"])),
+    "get_session_observers": ("Read a session's passive gameplay observations, visible actors, changes, native model collection and repair request IDs. Hypotheses are not verified game mechanics.", obj({"session_id": S}, ["session_id"])),
     "list_sessions": ("Game sessions (session_id, title, adapter, state, last_frame_age). Live ones only unless include_ended.",
                       obj({"include_ended": B})),
     "read_memory": ("Read live emulator memory of a running session (hex dump). Native addresses work "
@@ -154,6 +163,14 @@ def build(base_url: str, token: str) -> Server:
         except Exception:
             return {}
 
+    def _on_main_requests(rows):
+        """Listed tickets whose published branch is fully on main (#1308); {} on any error."""
+        try:
+            listed = {r["id"] for r in rows}
+            return {rid: sha for rid, sha in hermes_merges.on_main_requests().items() if rid in listed}
+        except Exception:
+            return {}
+
     async def wait_job(job, timeout):
         async def poll():
             nonlocal job
@@ -177,6 +194,7 @@ def build(base_url: str, token: str) -> Server:
             return await get('/api/workers/idle', tool=tool)
         candidates = [w for w in await get('/api/workers') if w.get('online') and w.get('os') == 'windows'
                       and protected not in (w.get('id'), w.get('name')) and tool in w.get('tools', [])
+                      and w.get('background_testing', True)                       # unticked in the Tasks menu (#1383)
                       and ((assigned and assigned in (w.get('id'), w.get('name'))) or
                            (not assigned and w.get('idle_seconds') is not None and w['idle_seconds'] >= 60))
                       and w.get('active_jobs', 0) < 4]
@@ -263,13 +281,25 @@ def build(base_url: str, token: str) -> Server:
                 rows = [r for r in rows if not (r.get("title") or "").startswith("gBox request review (recurring")]
             offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
             capped = await _capped_requests(rows)
-            return {"total": len(rows), "offset": offset, "items": [
+            merged = _on_main_requests(rows)
+            out = {"total": len(rows), "offset": offset, "items": [
                 {"id": r["id"], "number": r.get("number"), "title": r.get("title"), "status": r.get("status"),
                  "source": r.get("source"), "automated": r.get("automated"), "parent_request_id": r.get("parent_request_id"),
                  "created": r.get("created"), "summary": (r.get("body") or "")[:350]}
                 | ({"hermes_capped": {"runs": capped[r["id"]]["runs"],
                                       "note": hermes_tasks.capped_note(capped[r["id"]])}} if r["id"] in capped else {})
+                | ({"hermes_on_main": {"sha": merged[r["id"]],
+                                       "note": hermes_merges.VERIFY_NOTE.format(sha=merged[r["id"]][:12])}}
+                   if r["id"] in merged else {})
                 for r in rows[offset:offset + limit]]}
+            if merged:
+                # Whole inbox, not just this page: the oldest merged tickets sit far below the newest chat.
+                out["ready_to_verify"] = [
+                    {"id": r["id"], "number": r.get("number"), "title": (r.get("title") or "")[:100],
+                     "status": r.get("status"), "sha": merged[r["id"]][:12]}
+                    | ({"hermes_capped": True} if r["id"] in capped else {})
+                    for r in rows if r["id"] in merged][:READY_LIMIT]
+            return out
         if name == "get_request":
             return await get(f"/api/requests/{a['request_id']}")
         if name == "reply_request":
@@ -315,6 +345,12 @@ def build(base_url: str, token: str) -> Server:
             page = await get("/api/catalog", favorites=True, limit=max(1, min(a.get("limit", 100), 1000)))
             return {"total": page["total"], "items": [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "playable")}
                                                      for g in page["items"]]}
+        if name == "get_game_work_queue":
+            from .hermes_work_queue import snapshot
+            return await asyncio.to_thread(snapshot, **a)
+        if name == "record_game_work":
+            from .hermes_work_queue import checkpoint
+            return await asyncio.to_thread(checkpoint, **a)
         if name == "game_roster":
             return await get(f"/api/games/{a['game_id']}/roster")
         if name == "start_job":
@@ -333,6 +369,8 @@ def build(base_url: str, token: str) -> Server:
             return await wait_job(job, JOB_WAIT_SECONDS)
         if name == "list_sessions":
             return await sessions(a.get("include_ended", False))
+        if name == "get_session_observers":
+            return await get(f"/api/sessions/{a['session_id']}/observers")
         if name == "read_memory":
             addr = a["address"] if isinstance(a["address"], int) else int(str(a["address"]), 0)
             h = await post(f"/api/sessions/{a['session_id']}/rpc", {"op": "read_memory",

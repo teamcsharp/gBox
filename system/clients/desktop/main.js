@@ -616,7 +616,8 @@ ipcMain.handle("viz:overlay", (_e, st) => {
   }
   vizOv.setBounds(bounds); vizOv.setOpacity(Math.max(0.1, Math.min(0.9, st.opacity ?? 0.42)));
   if (!vizOv.isVisible()) vizOv.showInactive();
-  if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat })})`).catch(() => {});
+  // a fresh conversation (#250) starts a new random transition visual; the level and beats follow who is talking
+  if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat, ...(st.restart ? { mode: st.mode || "random" } : {}) })})`).catch(() => {});
   return { on: true };
 });
 ipcMain.handle("embed:kill", async () => { const r = embedded ? await embedCmd({ op: "kill" }) : { ok: false }; embedded = null; return r; });
@@ -771,15 +772,35 @@ app.whenReady().then(() => {
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => ["media", "audioCapture"].includes(perm));
-  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
-    // Loopback captures the PC's playback audio, including native and streamed games; never the microphone.
-    if (!rec || request.frame !== win?.webContents.mainFrame) return callback({});
-    try {
-      const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
-      const source = sources.find(s => s.display_id === String(rec?.display.id));
-      callback(source ? { video: source, audio: "loopback" } : {});
-    } catch { callback({}); }
-  });
+  // <display-media-handler>
+  // Electron's display-media callback is one-time. The old handler answered again from its catch when the first
+  // answer threw, so the real refusal was replaced by "One-time callback was called more than once" (an unhandled
+  // rejection) and the recording aborted (#1118). Answer exactly once, log the first refusal, and offer loopback
+  // audio only when the request asked for audio.
+  function displayMediaHandler(getRec, getWin, capturer, log = (...a) => console.warn(...a)) {
+    return async (request, callback) => {
+      let answered = false;
+      const answer = streams => {
+        if (answered) return false;
+        answered = true;
+        try { callback(streams); return true; }
+        catch (error) { log("[recording] screen capture answer refused:", error?.message || String(error)); return false; }
+      };
+      // Loopback captures the PC's playback audio, including native and streamed games; never the microphone.
+      if (!getRec() || request.frame !== getWin()?.webContents.mainFrame) return answer({});
+      let source = null;
+      try {
+        const sources = await capturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
+        source = sources.find(s => s.display_id === String(getRec()?.display.id)) || null;
+      } catch (error) {
+        log("[recording] screen sources unavailable:", error?.message || String(error));
+      }
+      if (!source || !getRec()) return answer({});
+      return answer(request.audioRequested === false ? { video: source } : { video: source, audio: "loopback" });
+    };
+  }
+  // </display-media-handler>
+  session.defaultSession.setDisplayMediaRequestHandler(displayMediaHandler(() => rec, () => win, desktopCapturer));
   win = new BrowserWindow({
     width: 1500, height: 950, title: "gBox", backgroundColor: "#16161a", autoHideMenuBar: true,
     icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),

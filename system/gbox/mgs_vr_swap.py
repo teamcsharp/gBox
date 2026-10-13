@@ -16,12 +16,140 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import psxdisc
+from . import mgs_kmd, psxdisc
 
 GAME_IDS = {"f55555ee6513391b", "afd2fc507bb69843"}
 MOD_NAME = "mgs_vr_hucast_native"
 DISC_NAME = "Metal Gear Solid - VR Missions (USA)"
 PLAYER_KMD_SHA256 = "5dda0c64dfef4523675fee16af56d7d119b8c4ddab43c20f912f2de33f810254"
+# Snake's 16 KMD objects = motion bones (left = +X, up = +Y, front = +Z, like sm64_swap's frame).
+SNAKE_ROLES = {"hip": 0, "chest": 1, "neck": 5, "head": 6,
+               "r_upper": 2, "r_fore": 3, "r_hand": 4, "l_upper": 7, "l_fore": 8, "l_hand": 9,
+               "r_thigh": 10, "r_shin": 11, "r_foot": 12, "l_thigh": 13, "l_shin": 14, "l_foot": 15}
+FIT_TEXTURE_OBJECT = 0   # faces reuse Snake's own waist texture/uv so no new texture name is needed
+
+
+def snake_target(original: mgs_kmd.Kmd) -> dict:
+    """sm64_swap.retarget's target dict for Snake's bind pose (KMD joints carry no rotation)."""
+    import numpy as np
+    T = np.zeros((len(original.objects), 3))
+    for i, o in enumerate(original.objects):
+        T[i] = (T[o.parent] if o.parent >= 0 else 0) + np.array(o.pos, float)
+    world = np.array([[v[0] + T[i][0], v[1] + T[i][1], v[2] + T[i][2]]
+                      for i, o in enumerate(original.objects) for v in o.vertices], float)
+    head = np.array([v[:3] for v in original.objects[SNAKE_ROLES["head"]].vertices], float)
+    ground = float(world[:, 1].min())
+    return {"T": T, "ground": ground, "head_h": float(np.ptp(head[:, 1])) if len(head) else 200.0,
+            "height": float(world[:, 1].max() - ground), "roles": SNAKE_ROLES}
+
+
+def _object_mesh(pos, nrm, tris, cell: float):
+    """Vertex-cluster one object's triangles on a *cell* grid -> (verts, normals, tris)."""
+    import numpy as np
+    if not len(tris):
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3), int)
+    key = np.round(pos / cell).astype(np.int64) if cell > 0 else np.arange(len(pos))[:, None]
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    n = inv.max() + 1
+    vp = np.zeros((n, 3)); vn = np.zeros((n, 3)); cnt = np.zeros(n)
+    np.add.at(vp, inv, pos); np.add.at(vn, inv, nrm); np.add.at(cnt, inv, 1)
+    vp /= cnt[:, None]
+    t = inv[tris]
+    t = t[(t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])]
+    if len(t):
+        first = np.unique(np.sort(t, 1), axis=0, return_index=True)[1]
+        t = t[np.sort(first)]
+    used = np.unique(t)
+    remap = -np.ones(n, int); remap[used] = np.arange(len(used))
+    return vp[used], vn[used], remap[t]
+
+
+WELD_RADIUS = 48.0   # KMD units (Snake is ~1800 tall): seam vertices this close to the parent are welded
+
+
+def fit_kmd(original_bytes: bytes, glb: Path, roles: dict, budget: int | None = None,
+            weld_radius: float = WELD_RADIUS) -> tuple[bytes, dict]:
+    """Rigidly retarget a skinned library GLB onto Snake's 16 KMD objects.
+
+    Every vertex goes to the Snake joint sm64_swap.retarget assigns it; it is stored
+    in that object's local frame (world - joint).  No welds are emitted, so no
+    export flags are needed.  Objects are vertex-clustered until the KMD fits
+    *budget* bytes (the disc allocation of the original) and the u8 vertex /
+    7-bit normal indices.  With *weld_radius*, child vertices that lie that close
+    to a parent vertex are welded to it (mgs_kmd.weld_seams) so joints stay shut.
+    """
+    import numpy as np
+    from . import sm64_swap as S
+    original = mgs_kmd.loads(original_bytes)
+    budget = budget or len(original_bytes)
+    tgt = snake_target(original)
+    rig = S.load_rig(Path(glb), roles)
+    prims, rep = S.retarget(rig, tgt, None, jmap=SNAKE_ROLES)
+    count = len(original.objects)
+    per = {i: ([], [], []) for i in range(count)}
+    base = {i: 0 for i in range(count)}
+    for p in prims:
+        if p.get("prop"):
+            continue
+        J = p["J"][:, 0]
+        for tri in np.asarray(p["tris"]).reshape(-1, 3):
+            j = int(np.bincount(J[tri], minlength=count).argmax())
+            P, N, F = per[j]
+            P.extend((p["pos"][tri] - tgt["T"][j]).tolist())
+            N.extend(p["nrm"][tri].tolist())
+            F.append([base[j], base[j] + 1, base[j] + 2])
+            base[j] += 3
+    src = original.objects[FIT_TEXTURE_OBJECT]
+    tex, uv = src.textures[0], src.uvs[0]
+    extent = float(np.ptp(np.concatenate([np.asarray(per[i][0]) for i in per if per[i][0]]), 0).max())
+    for step in range(60):
+        cell = 0.0 if step == 0 else extent * 0.004 * (1.12 ** step)
+        objs = []
+        ok = True
+        for i, o in enumerate(original.objects):
+            P, N, F = (np.asarray(a, float) for a in per[i])
+            if not len(F):
+                objs.append(mgs_kmd.KmdObject(o.flags, o.pos, o.parent, o.unknown, bbox=o.bbox))
+                continue
+            vp, vn, t = _object_mesh(P, N, F.astype(int), cell)
+            if len(vp) > 255 or not len(t):
+                ok = ok and bool(len(t))
+                if len(vp) > 255:
+                    ok = False
+                    break
+            nq = np.round(vn / np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-9) * 3) / 3
+            nkeys, ninv = np.unique(nq, axis=0, return_inverse=True)
+            ninv = ninv.reshape(-1)
+            if len(nkeys) > 127:
+                ok = False
+                break
+            nunit = nkeys / np.maximum(np.linalg.norm(nkeys, axis=1, keepdims=True), 1e-9)
+            verts = [(int(round(x)), int(round(y)), int(round(z)), -1) for x, y, z in np.clip(vp, -32767, 32767)]
+            normals = [(int(round(x * 4096)), int(round(y * 4096)), int(round(z * 4096)), 0) for x, y, z in nunit]
+            faces = [(int(a), int(b), int(b), int(c)) for a, b, c in t]       # a triangle is a quad a,b,b,c
+            fn = [(int(ninv[a]), int(ninv[b]), int(ninv[b]), int(ninv[c])) for a, b, c in t]
+            ko = mgs_kmd.KmdObject(o.flags, o.pos, o.parent, o.unknown, verts, normals, faces, fn,
+                                   [uv] * len(faces), [tex] * len(faces))
+            ko.bbox = ko.computed_bbox()
+            objs.append(ko)
+        if not ok:
+            continue
+        model = mgs_kmd.Kmd(original.bones, original.bbox, objs)
+        welds = 0
+        if weld_radius:
+            # welded child vertices follow the parent bone, so joints stay shut when Snake's motion plays
+            model, welds = mgs_kmd.weld_seams(original, model, radius=weld_radius)
+        data = mgs_kmd.dumps(model, recompute_bbox=True)
+        if len(data) <= budget:
+            issues = mgs_kmd.check_compatible(original, model, raw=data)
+            if issues:
+                raise ValueError("fitted KMD breaks the game contract: " + "; ".join(issues[:5]))
+            rep.update({"kmd_bytes": len(data), "budget": budget, "cluster_cell": round(cell, 2),
+                        "triangles": sum(len(o.faces) for o in objs), "welds": welds,
+                        "per_object_triangles": [len(o.faces) for o in objs]})
+            return data, rep
+    raise ValueError(f"could not fit the model into the {budget}-byte KMD allocation")
 
 
 def _mint(cfg) -> Path:
@@ -97,9 +225,13 @@ def decode_original_player(cfg, out_glb: Path, progress=lambda _p, _m: None) -> 
     return out_glb
 
 
-def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
-          progress=lambda _p, _m: None) -> dict:
-    """Build a bootable modded BIN/CUE from an owned raw disc and a fitted KMD."""
+def build(base: Path, replacement_kmd: Path | None, out_bin: Path, mint: Path,
+          progress=lambda _p, _m: None, fit=None) -> dict:
+    """Build a bootable modded BIN/CUE from an owned raw disc and a fitted KMD.
+
+    *fit*, when given, is called with the disc's own player KMD bytes and returns
+    the replacement (see :func:`fit_kmd`); otherwise *replacement_kmd* is read.
+    """
     original = psxdisc.RawBin(base, writable=False)
     try:
         stage_dir = original.read("MGS/STAGE.DIR")
@@ -132,11 +264,23 @@ def build(base: Path, replacement_kmd: Path, out_bin: Path, mint: Path,
         own_kmd = model.read_bytes()
         if hashlib.sha256(own_kmd).hexdigest() != PLAYER_KMD_SHA256:
             raise ValueError("player KMD differs from the verified US VR Missions revision")
-        donor = replacement_kmd.read_bytes()
+        donor = fit(own_kmd) if fit else replacement_kmd.read_bytes()
+        if fit:
+            replacement_kmd = work / "replacement.kmd"
+            replacement_kmd.write_bytes(donor)
         if not donor or len(donor) > len(own_kmd):
             raise ValueError(f"replacement KMD exceeds its {len(own_kmd)}-byte disc budget")
         if donor == own_kmd:
             raise ValueError("replacement KMD is identical to the original player model")
+        # The game's own contract (gbox.mgs_kmd): same skeleton records, word-aligned
+        # SVECTOR arrays, in-range welds and weld-export flags.  The first HUcast KMD
+        # broke the alignment and flag rules and corrupted the whole frame (#848).
+        try:
+            issues = mgs_kmd.check_compatible(mgs_kmd.loads(own_kmd), mgs_kmd.loads(donor), raw=donor)
+        except ValueError as exc:
+            issues = [f"unreadable KMD: {exc}"]
+        if issues:
+            raise ValueError("replacement KMD would break the game: " + "; ".join(issues[:6]))
         # Structural validation: MetalMintSolid must be able to decode the donor as a PS1 KMD.
         # A malformed KMD passes the size check but will hang the game's loader (black screen / hung core).
         progress(33, "Validating replacement KMD structure")
@@ -210,41 +354,54 @@ def _publish(ctx, folder: Path, gid: str, mod_name: str = MOD_NAME) -> None:
         result.raise_for_status()
 
 
+def mod_name(slug: str) -> str:
+    """The fitted build gets its own name; the old hand-made HUcast KMD build stays rollback-only."""
+    return f"mgs_vr_{slug}_fit"
+
+
 def use(ctx, meta: dict, game: dict, inp) -> dict:
-    """characters op=use: rebuild HUcast on Windows, then make it a saved Play choice."""
-    from . import characters as chars, filemods
-    if meta["slug"] != "hucast":
-        raise ValueError("This MGS VR writer currently has a verified HUcast KMD only")
+    """characters op=use: retarget the library model onto Snake's KMD, rebuild the disc, offer it as Play."""
+    from . import characters as chars, filemods, oot_swap
+    slug = meta["slug"]
+    name = mod_name(slug)
     gid = game["game_id"]
-    folder = filemods.mod_dir(ctx.config, gid, MOD_NAME)
+    folder = filemods.mod_dir(ctx.config, gid, name)
     marker = folder / ".gbox-mod.json"
     report = None
     if inp.rebuild or not marker.is_file():
-        if chars.HOST_OS != "windows":
+        if chars.HOST_OS != "windows" and not os.environ.get("GBOX_METAL_MINT"):
             worker = next((w["id"] for w in chars._api(ctx, "GET", "/api/workers")
                            if w.get("os") == "windows" and w.get("online")), None)
             if not worker:
                 raise RuntimeError("No online Windows worker can build the MGS VR disc")
-            j = chars._job(ctx, "characters", {"op": "use", "character": "hucast", "game_id": gid,
+            j = chars._job(ctx, "characters", {"op": "use", "character": slug, "game_id": gid,
                                               "rebuild": True, "launch": False}, worker, 3600)
             if j.get("state") != "succeeded":
                 raise RuntimeError(f"Windows MGS VR build failed: {j.get('error') or j.get('state')}")
             report = (j.get("output") or {}).get("result")
         else:
-            donor = chars._local_or_fetch(ctx, meta, "targets/mgs_vr_snake_hucast.kmd")
+            glb = chars._local_or_fetch(ctx, meta, meta["model"])
+            roles = oot_swap.roles_of(meta, glb)
+            fit_report = {}
+
+            def fit(own: bytes) -> bytes:
+                data, rep = fit_kmd(own, glb, roles)
+                fit_report.update(rep)
+                return data
             source = base_bin(ctx.config, ctx.progress)
-            report = build(source, donor, folder / f"{DISC_NAME}.bin", _mint(ctx.config), ctx.progress)
-            marker.write_text(json.dumps({"name": MOD_NAME, "game_id": gid, "image": f"{DISC_NAME}.cue",
-                                          "built": time.time(), "character": "hucast",
+            report = build(source, None, folder / f"{DISC_NAME}.bin", _mint(ctx.config), ctx.progress, fit=fit)
+            report["fit"] = fit_report
+            marker.write_text(json.dumps({"name": name, "game_id": gid, "image": f"{DISC_NAME}.cue",
+                                          "built": time.time(), "character": slug,
                                           "files": ["MGS/STAGE.DIR: init/39213.kmd"], "report": report}))
-            _publish(ctx, folder, gid)
-        chars._api(ctx, "POST", f"/api/characters/hucast/targets", json={"game_id": gid, "slot": "player",
-                   "mod": MOD_NAME, "nodes": ["windows"],
-                   "notes": "Native PS1 player KMD built; visual gameplay replacement still needs verification."})
-        chars._api(ctx, "POST", "/api/mods", json={"title": "HUcast in Metal Gear Solid VR Missions (Sneaking Mode)",
-                   "calls": [{"tool": "@launch", "input": {"mod": MOD_NAME}}], "game_id": gid,
-                   "game_title": game["title"], "desc": "Experimental native PS1 player KMD. Gameplay appearance is unverified.",
+            _publish(ctx, folder, gid, name)
+        chars._api(ctx, "POST", f"/api/characters/{slug}/targets", json={"game_id": gid, "slot": "player",
+                   "mod": name, "nodes": ["windows"],
+                   "notes": "Native PS1 player KMD fitted onto Snake's 16 bones; gameplay verification pending."})
+        chars._api(ctx, "POST", "/api/mods", json={"title": f"{meta.get('name', slug)} in Metal Gear Solid VR Missions",
+                   "calls": [{"tool": "@launch", "input": {"mod": name}}], "game_id": gid,
+                   "game_title": game["title"], "desc": "Native PS1 player KMD retargeted onto Snake's skeleton.",
                    "verified": False, "requests": [848]})
-    launched = chars._launch(ctx, gid, MOD_NAME, "windows") if inp.launch else None
-    return {"status": "built" if report else "ready", "mod": MOD_NAME, "build": report,
-            "launch": launched, "message": "HUcast PS1 player model is selectable for VR Missions."}
+    launched = chars._launch(ctx, gid, name, "windows") if inp.launch else None
+    return {"status": "built" if report else "ready", "mod": name, "build": report,
+            "launch": launched, "message": f"{meta.get('name', slug)} PS1 player model is selectable for VR Missions."}
