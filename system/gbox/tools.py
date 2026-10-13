@@ -2210,35 +2210,60 @@ def game_link(inp: LinkIn, ctx: Ctx):
 class BevyIn(BaseModel):
     name: str = "scene"
     # [{"package": "pso_dc_forest01", "translation": [x,y,z], "scale": 1.0, "rotation_y_deg": 0}]
-    items: list[dict]
+    items: list[dict] = []
     camera: dict = {}                      # {"eye": [x,y,z], "target": [x,y,z]}
-    screenshot: bool = True                # True: render, capture a PNG, exit; False: open an interactive window
+    screenshot: bool = True                # render: True = capture a PNG and exit; False = open an interactive window
+    op: str = "render"                     # render | open | snapshot | set_camera | add | remove | close | list
+    index: int | None = None               # remove: which item (0-based)
 
 class BevyOut(BaseModel):
-    scene: str
+    scene: str = ""
     screenshot: str | None = None
     pid: int | None = None
+    items: list[dict] = []
+    live: list[dict] = []
+    scenes: list[dict] = []
+    renders: list[dict] = []
 
 
 VIEWER_SRC = Path(__file__).resolve().parent.parent / "projects" / "gbox_viewer"
 
+# Live Bevy windows on this worker: name -> {"proc": Popen, "scene": Path (scene.json), "spec": {...}}
+BEVY: dict[str, dict] = {}
 
-@tool("bevy_scene", "1.0", BevyIn, BevyOut, capabilities=["asset", "bevy"], timeout_s=3600,
-      side_effects=["writes glTF + scene files", "builds the gBox Bevy viewer on first use (cargo)"], artifacts=["bevy.png"])
-def bevy_scene(inp: BevyIn, ctx: Ctx):
-    """Put collection entries ({character: slug} / {environment: slug}) and gBox asset packages ({package}) into a Bevy
-    scene and render it with the gBox Bevy viewer (Rust/Bevy, built once with cargo). screenshot=true returns a PNG
-    artifact; false opens a window."""
+
+def _abs(p) -> str:                        # glTF paths in scene.json: absolute, forward slashes (Path.join on the
+    return str(Path(p).resolve()).replace("\\", "/")   # viewer side makes them pass through unchanged on every OS)
+
+
+def _bevy_viewer_exe(ctx) -> Path:
+    target = ctx.config.runtime / "bevy-target"        # local SSD; Bevy's ~500 crates compile once
+    return target / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
+
+
+def _bevy_build(ctx, target: Path, exe: Path):
+    if exe.exists() and VIEWER_SRC.joinpath("src", "main.rs").stat().st_mtime <= exe.stat().st_mtime:
+        return
+    ctx.progress(10, "building the Bevy viewer (first build takes several minutes)")
+    cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
+    r = subprocess.run([cargo, "build", "--release"], cwd=VIEWER_SRC, capture_output=True, text=True,
+                       env=dict(os.environ, CARGO_TARGET_DIR=str(target)), timeout=3000)
+    if r.returncode:
+        raise RuntimeError("cargo build failed:\n" + r.stderr[-3000:])
+
+
+def _bevy_resolve(ctx, items: list[dict]) -> list[tuple[Path, dict]]:
+    """Resolve {character|environment|package} entries to absolute glTF files + item options."""
     uroot = ctx.config.data_dir / "uap"
     share = Path("//10.89.1.246/ehm_eckx/gBox/system/gbox-data/uap")   # ponytail: packages extracted on the Spark
-    if not all((uroot / it["package"]).exists() for it in inp.items if "package" in it) and share.exists():
+    if not all((uroot / it["package"]).exists() for it in items if "package" in it) and share.exists():
         uroot = share
     # collection entries ({character: slug} / {environment: slug}) are read where the collection lives (the Spark's
     # cache, the same folder through the share on Windows)
     from . import characters as K
     croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else Path("//10.89.1.246/ehm_eckx/gbox-cache")
     files = []                                             # (absolute model file, item options)
-    for it in inp.items:
+    for it in items:
         opts = {k: v for k, v in it.items() if k not in ("package", "character", "environment")}
         if it.get("character") or it.get("environment"):
             sub = "environments" if it.get("environment") else "characters"
@@ -2253,32 +2278,147 @@ def bevy_scene(inp: BevyIn, ctx: Ctx):
         if not gl.exists():
             gl.write_text(json.dumps(uap.to_gltf(uap.load(pkg))))
         files.append((gl, opts))
-    aroot = Path(os.path.commonpath([str(f.parent) for f, _ in files])) if files else uroot
-    items = [{"gltf": os.path.relpath(f, aroot).replace("\\", "/"), **o} for f, o in files]
+    return files
+
+
+def _bevy_scene_spec(ctx, items: list[dict]) -> dict:
+    """Resolve items into the scene.json spec: absolute glTF paths + camera."""
+    files = _bevy_resolve(ctx, items)
+    aroot = Path(os.path.commonpath([str(f.parent) for f, _ in files])) if files else (ctx.config.data_dir / "uap")
+    spec = {"assets_root": _abs(aroot),
+            "items": [{"gltf": _abs(f), **o} for f, o in files],
+            "camera": {},
+            "_src": items}                    # the original portable items ({package}/{character}/...) for cross-node reuse
+    return spec
+
+
+def _bevy_scene_path(ctx, name: str) -> Path:
     sdir = ctx.config.data_dir / "bevy"
     sdir.mkdir(parents=True, exist_ok=True)
-    scene = sdir / f"{inp.name}.json"
-    scene.write_text(json.dumps({"assets_root": str(aroot).replace("\\", "/"), "items": items, "camera": inp.camera}, indent=1))
-    target = ctx.config.runtime / "bevy-target"             # local SSD; Bevy's ~500 crates compile once
-    exe = target / "release" / ("gbox_viewer.exe" if HOST_OS == "windows" else "gbox_viewer")
-    if not exe.exists() or VIEWER_SRC.joinpath("src", "main.rs").stat().st_mtime > exe.stat().st_mtime:
-        ctx.progress(10, "building the Bevy viewer (first build takes several minutes)")
-        cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
-        r = subprocess.run([cargo, "build", "--release"], cwd=VIEWER_SRC, capture_output=True, text=True,
-                           env=dict(os.environ, CARGO_TARGET_DIR=str(target)), timeout=3000)
-        if r.returncode:
-            raise RuntimeError("cargo build failed:\n" + r.stderr[-3000:])
-    if not inp.screenshot:
-        p = subprocess.Popen([str(exe), str(scene)], cwd=sdir)
-        return {"scene": str(scene), "pid": p.pid}
-    png = sdir / f"{inp.name}.png"
-    png.unlink(missing_ok=True)
-    ctx.progress(70, "rendering")
-    subprocess.run([str(exe), str(scene), "--screenshot", str(png)], cwd=sdir, capture_output=True, timeout=300)
-    if not png.exists():
-        raise RuntimeError("the viewer did not produce a screenshot")
-    ctx.artifact("bevy.png", png.read_bytes(), "image/png", scene=inp.name)
-    return {"scene": str(scene), "screenshot": str(png)}
+    return sdir / f"{name}.json"
+
+
+def _bevy_write(spec: dict, scene: Path):
+    scene.write_text(json.dumps(spec, indent=1))
+
+
+def _bevy_wait_png(png: Path, timeout_s: float = 60.0) -> Path | None:
+    """The viewer's screenshot once it is fully written (the same non-zero size on two polls 0.5 s apart)."""
+    t0, last = time.time(), -1
+    while time.time() - t0 < timeout_s:
+        size = png.stat().st_size if png.exists() else 0
+        if size > 0 and size == last:
+            return png
+        last = size
+        time.sleep(0.5)
+    return png if (png.exists() and png.stat().st_size > 0) else None
+
+
+@tool("bevy_scene", "1.1", BevyIn, BevyOut, capabilities=["asset", "bevy"], timeout_s=3600,
+      side_effects=["writes glTF + scene files", "builds the gBox Bevy viewer on first use (cargo)",
+                    "op=open/snapshot/set_camera/add/remove/close drive a live viewer window"],
+      artifacts=["bevy.png"])
+def bevy_scene(inp: BevyIn, ctx: Ctx):
+    """Render gBox Bevy scenes and drive a live viewer reactively.
+
+    One-shot (op=render, the default): put collection entries ({character: slug} / {environment: slug}) and gBox asset
+    packages ({package: 'pso_dc_forest01'}) into a Bevy scene and render it with the gBox Bevy viewer (Rust/Bevy,
+    built once with cargo). screenshot=true returns a PNG artifact; false opens a window and returns its pid.
+
+    Reactive ops (the viewer's window stays open and reacts to file commands):
+      op=open          start the viewer on a scene (items + camera), keep the window, return pid
+      op=snapshot      capture the live window to {name}.png and return it as an artifact
+      op=set_camera    move the live camera ({camera: {eye, target}})
+      op=add           add more items to the live scene (items=[...])
+      op=remove        drop item {index} from the live scene
+      op=close         close the live window
+      op=list          live sessions + saved scenes and renders on this node
+    """
+    sdir = ctx.config.data_dir / "bevy"
+    sdir.mkdir(parents=True, exist_ok=True)
+    if inp.op == "list":
+        live = [{"name": n, "pid": s["proc"].pid, "items": len(s["spec"]["items"]), "camera": s["spec"]["camera"]}
+                for n, s in BEVY.items() if s["proc"].poll() is None]
+        scenes = [{"name": f.stem, "mtime": f.stat().st_mtime,
+                   "items": len(json.loads(f.read_text()).get("items", []))}
+                  for f in sorted(sdir.glob("*.json"))]
+        renders = [{"name": f.stem, "mtime": f.stat().st_mtime} for f in sorted(sdir.glob("*.png"))]
+        return {"live": live, "scenes": scenes, "renders": renders}
+
+    if inp.op in ("open", "render"):
+        scene = _bevy_scene_path(ctx, inp.name)
+        if inp.items:
+            spec = _bevy_scene_spec(ctx, inp.items)
+            if inp.camera:
+                spec["camera"] = inp.camera
+            if not inp.screenshot and inp.op == "render":      # backward-compatible window mode
+                inp.op = "open"
+            _bevy_write(spec, scene)
+        elif scene.exists():                                   # re-render / reopen a saved scene
+            try:
+                spec = json.loads(scene.read_text())
+            except Exception as e:
+                raise ValueError(f"scene {inp.name} is not readable: {e}")
+        else:
+            raise ValueError("bevy_scene op=render/open needs items, or an already saved scene name")
+        if inp.op == "render":
+            png = sdir / f"{inp.name}.png"
+            png.unlink(missing_ok=True)
+            target = ctx.config.runtime / "bevy-target"
+            _bevy_build(ctx, target, _bevy_viewer_exe(ctx))
+            ctx.progress(70, "rendering")
+            subprocess.run([str(_bevy_viewer_exe(ctx)), str(scene), "--screenshot", str(png)],
+                           cwd=sdir, capture_output=True, timeout=300)
+            if not png.exists():
+                raise RuntimeError("the viewer did not produce a screenshot")
+            ctx.artifact("bevy.png", png.read_bytes(), "image/png", scene=inp.name)
+            return {"scene": str(scene), "screenshot": str(png), "items": spec["items"]}
+        # op=open: live window
+        _bevy_build(ctx, ctx.config.runtime / "bevy-target", _bevy_viewer_exe(ctx))
+        p = subprocess.Popen([str(_bevy_viewer_exe(ctx)), str(scene), "--live"], cwd=sdir)
+        BEVY[inp.name] = {"proc": p, "scene": scene, "spec": spec}
+        return {"scene": str(scene), "pid": p.pid, "items": spec["items"]}
+
+    sess = BEVY.get(inp.name)
+    if inp.op in ("snapshot", "set_camera", "add", "remove") and (not sess or sess["proc"].poll() is not None):
+        raise ValueError(f"no live viewer named {inp.name} (bevy_scene op=open first, or op=list)")
+    if inp.op == "close":
+        if sess:
+            (sess["scene"].parent / f"{inp.name}.quit").write_text("")
+            try:
+                sess["proc"].wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                sess["proc"].terminate()
+            BEVY.pop(inp.name, None)
+        return {"scene": str(_bevy_scene_path(ctx, inp.name))}
+    assert sess is not None                                     # guarded above for snapshot/set_camera/add/remove
+    if inp.op == "snapshot":
+        png = sdir / f"{inp.name}.png"
+        png.unlink(missing_ok=True)
+        (sess["scene"].parent / f"{inp.name}.shot").write_text(_abs(png))
+        got = _bevy_wait_png(png)
+        if got is None:
+            raise RuntimeError("the viewer did not produce a screenshot")
+        ctx.artifact("bevy.png", got.read_bytes(), "image/png", scene=inp.name)
+        return {"scene": str(sess["scene"]), "screenshot": str(got), "pid": sess["proc"].pid}
+    if inp.op == "set_camera":
+        if inp.camera:
+            sess["spec"]["camera"] = inp.camera
+            _bevy_write(sess["spec"], sess["scene"])
+        return {"scene": str(sess["scene"]), "pid": sess["proc"].pid, "camera": sess["spec"]["camera"],
+                "items": sess["spec"]["items"]}
+    if inp.op == "add":
+        for f, o in _bevy_resolve(ctx, inp.items):
+            sess["spec"]["items"].append({"gltf": _abs(f), **o})
+        _bevy_write(sess["spec"], sess["scene"])
+        return {"scene": str(sess["scene"]), "pid": sess["proc"].pid, "items": sess["spec"]["items"]}
+    if inp.op == "remove":
+        i = inp.index if inp.index is not None else len(sess["spec"]["items"]) - 1
+        if 0 <= i < len(sess["spec"]["items"]):
+            sess["spec"]["items"].pop(i)
+            _bevy_write(sess["spec"], sess["scene"])
+        return {"scene": str(sess["scene"]), "pid": sess["proc"].pid, "items": sess["spec"]["items"]}
+    raise ValueError(f"bevy_scene: op={inp.op} needs items (open/render/add) or a live session (snapshot/set_camera/remove)")
 
 
 class VideoIn(BaseModel):
