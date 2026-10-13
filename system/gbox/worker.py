@@ -253,6 +253,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     if outbox.protected_sessions(_builtin._running_file(config)):
         raise RuntimeError('Worker activation held: a delivered native launch still has an owned PID record; no emulator was stopped')
     info = describe(config, name)
+    from . import cache_tiers                       # two-tier cache where configured (no-op when `serve` did it)
+    cache_tiers.install(config)
     def _push():                                    # mods built on this machine join the central collection on the Spark
         try:
             from . import filemods
@@ -270,7 +272,12 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
     def current_info():
-        return info.model_copy(update={'pending_results': outbox.pending_count()})
+        try:                                        # this PC's own builds for the Builds view (cached, stat-only)
+            from . import filemods
+            local = filemods.local_builds(config)
+        except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
+            local = []
+        return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying

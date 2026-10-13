@@ -60,6 +60,11 @@ class Adapter:
     # False = the save state does not work in place (checkpoint_reason says why), None = no save state file to copy.
     checkpoint_state: str | bool | None = None
 
+    def prepare_audio(self):
+        """Called at the top of a launch: Windows emulators choose their output device (and wake it) while the launch
+        stages files and checks BIOS (gbox/game_audio.py). Nothing to do elsewhere."""
+        return None
+
     def get_capabilities(self) -> dict[str, str]:
         return {op: ("supported" if op in self.supported else "unsupported") for op in OPS}
 
@@ -453,6 +458,8 @@ def win_send_keys(pid: int, events: list[dict]) -> dict:
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
+        if u.GetForegroundWindow() != root:                      # the operator switched apps mid-batch: never type there
+            return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
         seq.append(name)
         u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP))
@@ -828,6 +835,31 @@ def win_resume_threads(tids: list[int]) -> int:
     return n
 
 
+def _audio_prefetch(ad):
+    """Start (once) the output-device choice + warm-up for a Windows launch (game_audio.Prefetch)."""
+    if HOST_OS != "windows" or getattr(ad, "config", None) is None:
+        return None
+    pre = ad.__dict__.get("_audio_pre")
+    if pre is None:
+        from . import game_audio
+        pre = ad._audio_pre = game_audio.Prefetch(ad.config)
+    return pre
+
+
+def _audio_selection(ad, wait_s: float = 1.0) -> dict:
+    """The device choice for this launch: the prefetched one when ready within wait_s, else 'unknown' (the
+    emulator's own default device). Never blocks a launch for long."""
+    from . import game_audio
+    pre = _audio_prefetch(ad)
+    return pre.result(wait_s) if pre else dict(game_audio.NOT_READY, error="not windows")
+
+
+def _audio_release(ad):
+    pre = ad.__dict__.get("_audio_pre")
+    if pre is not None:
+        pre.release()
+
+
 def _examine_ok(proc, wait_s: float = 0.0) -> bool:
     """RenderDoc is inside the emulator: injected at launch, or (Vulkan layer) loaded once the game made its Vulkan
     device; wait_s gives the layer that long to show up."""
@@ -927,6 +959,8 @@ class RetroArchAdapter(CommandAdapter):
         self.checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S if (platform or "") in FLYCAST_PLATFORMS else 0.0
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
+        # sound (gbox/game_audio.py): the driver of the current attempt and the device it opens ("" = Windows' default)
+        self.audio_driver, self.audio_device = ("null" if HOST_OS == "linux" else "xaudio"), ""
         if HOST_OS == "windows":
             # local native play: the RetroArch window IS the display; real pads/keyboard go straight in, nothing to stream.
             # send_input (autoplay) types the bound keys into the docked window; get_frame captures that window.
@@ -991,7 +1025,11 @@ class RetroArchAdapter(CommandAdapter):
             driver = retroarch_driver(self.cfg.executable or provision.retroarch_exe(self.config))
             # Native local play: SDL autoconfig + process-scoped SpaceMouse exclusions.
             opts.update({"video_fullscreen": "false", "video_windowed_fullscreen": "true", "video_vsync": "true",
-                         "vrr_runloop_enable": "false", "audio_sync": "true", "audio_driver": "xaudio",
+                         "vrr_runloop_enable": "false", "audio_sync": "true",
+                         # a named, active output (never a stale default); the next driver when this one stalls
+                         "audio_driver": getattr(self, "audio_driver", "xaudio") or "xaudio",
+                         "audio_device": getattr(self, "audio_device", "") or "",
+                         "audio_wasapi_exclusive_mode": "false",   # shared: other apps + gBox's volume slider keep working
                          "input_driver": "dinput", "input_joypad_driver": driver, "input_autodetect_enable": "true",
                          # NOT video_window_opacity 0 to hide the window while loading: a GL context made on a layered window keeps
                          # presenting nothing after the window is made opaque (black game, 2026-10-08). keep_offscreen hides it.
@@ -1020,13 +1058,14 @@ class RetroArchAdapter(CommandAdapter):
 
     def _argv(self, rom: str) -> list[str]:
         core = self.cfg.core
+        exe = self.cfg.executable or (provision.retroarch_exe(self.config) if self.config else "retroarch")
         if self.config is not None:
             self._p(10, f"Resolving core {core or self.platform} (downloads on first use)")
-            core = str(provision.ensure_platform(self.config, self.platform, self.cfg.core)[0])
-            self._p(25, f"Core ready: {Path(core).name}")
+            rc = self.runtime_check = provision.runtime_check(self.config, self.platform, self.cfg.core, exe)
+            core = str(rc["core"])
+            self._p(25, f"Core ready: {Path(core).name}" + (" (checked on an earlier launch)" if rc["cached"] else ""))
         elif not core:
             raise ToolUnavailable("retroarch adapter needs 'core' configured")
-        exe = self.cfg.executable or (provision.retroarch_exe(self.config) if self.config else "retroarch")
         cfg = self._write_cfg() if self.config is not None else None
         return [exe, *(["--config", str(cfg)] if cfg else []), "-L", core, "--verbose", *self.cfg.args, rom]
 
@@ -1177,9 +1216,35 @@ class RetroArchAdapter(CommandAdapter):
             out.write_bytes(data[3904:3904 + 131072] if len(data) >= 3904 + 131072 else data[-131072:])
         return str(out)
 
+    def prepare_audio(self):
+        if not getattr(self, "capture_backend", None):
+            _audio_prefetch(self)
+
+    def _audio_plan(self) -> dict:
+        """Drivers to try in order, the device, and the reasoning. Linux / capture sessions: no sound, nothing to try."""
+        from . import game_audio
+        from .config import GameAudioConfig
+        ga = getattr(self.config, "game_audio", None) or GameAudioConfig()
+        if HOST_OS != "windows" or getattr(self, "capture_backend", None) or self.config is None:
+            return {"ga": ga, "chain": [self.audio_driver], "sel": None}
+        sel = _audio_selection(self, 1.0)
+        dev = (sel.get("chosen") or {}).get("id")
+        first = game_audio.first_driver(self.config.runtime, dev, ga.remember_driver_h)
+        chain = game_audio.driver_chain(ga.retroarch_drivers, first)
+        self.audio_device = sel.get("retroarch_device") or ""
+        self.audio_driver = chain[0]
+        return {"ga": ga, "chain": chain, "sel": sel, "remembered": first}
+
     def launch_game(self, rom: str) -> dict:
+        try:
+            return self._launch_game(rom)
+        finally:
+            _audio_release(self)                       # the warm-up stream ends once the emulator has its own
+
+    def _launch_game(self, rom: str) -> dict:
         if self.config is not None:
             rom = self._from_lst_zip(self._from_lst(self._from_gme(self._from_old_chd(self._from_7z(rom)))))
+        plan = self._audio_plan()                          # before _argv: the session cfg names driver + device
         argv = self._argv(rom)
         from .scene_support import video_driver
         self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
@@ -1211,14 +1276,65 @@ class RetroArchAdapter(CommandAdapter):
         work = (self.config.runtime / "work") if self.config else None       # cores drop scratch files in cwd
         if work:
             work.mkdir(parents=True, exist_ok=True)
-        self.proc = _popen(self, argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=work)
-        self._p(78, "Emulator process started" + (" on the GPU (VirtualGL)" if argv[0] == VGLRUN else "")
-                + (" · Examine 3D ready" if _examine_ok(self.proc) else ""))
-        for i in range(150):                                   # wait for the command interface to answer
-            if i % 5 == 0:
-                tail = [ln for ln in self.log_tail(4000).splitlines() if ln.strip()]
+        from . import game_audio
+        ga, chain, attempts, st, watch = plan["ga"], plan["chain"], [], None, None
+        # the base boot wait: launch_game boot_timeout_s (#318, the "content not running in time" remedy) or
+        # [game_audio] boot_wait_s; content loaded with audio still opening extends past it (extended_wait_s)
+        boot_s = float(getattr(self, "boot_timeout_s", None) or ga.boot_wait_s)
+        for n, driver in enumerate(chain):
+            if n:                                              # the previous driver stalled: same session, next driver
+                self.audio_driver = driver
+                self._write_cfg()
+            self.proc = _popen(self, argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=work)
+            if n == 0:
+                self._p(78, "Emulator process started" + (" on the GPU (VirtualGL)" if argv[0] == VGLRUN else "")
+                        + (" · Examine 3D ready" if _examine_ok(self.proc) else ""))
+            else:
+                self._p(80, f"Audio device slow ({attempts[-1]['reason']}): restarted with the {driver} audio driver")
+            watch = game_audio.BootWatch(time.monotonic(), boot_s, max(ga.extended_wait_s, boot_s), ga.init_grace_s,
+                                         ga.stall_s, can_fallback=n + 1 < len(chain))
+            t0 = time.monotonic()
+            verdict, st = self._wait_boot(watch)
+            attempts.append({"driver": driver, "outcome": verdict, "s": round(time.monotonic() - t0, 2),
+                             "audio_init_s": watch.audio_init_s(time.monotonic()), "reason": watch.reason})
+            if verdict == "ready":
+                break
+            _kill_tree(self.proc)                              # stuck in its audio init: nothing to save yet
+            try:                                               # keep the stalled attempt's log as evidence
+                shutil.copyfile(self.log_path, self.log_path.with_name(f"{self.log_path.stem}-{driver}.log"))
+            except OSError:
+                pass
+        if len(attempts) > 1 and self.config is not None:
+            game_audio.remember(self.config.runtime, ((plan["sel"] or {}).get("chosen") or {}).get("id"),
+                                self.audio_driver, attempts[0]["driver"])
+        warning = next((a["reason"] for a in attempts if a["outcome"] == "fallback"), None) or \
+            (game_audio.AUDIO_WARNING if watch and watch.warning else None)
+        audio = game_audio.session_detail(plan["sel"] or {}, self.audio_driver, attempts=attempts,
+                                          remembered=plan.get("remembered"),
+                                          warning=f"{game_audio.AUDIO_WARNING}: {warning}" if warning else None)
+        out = {"pid": self.proc.pid, "display": self.display and self.display.name, "port": self.addr[1],
+               "local_window": HOST_OS == "windows", "worker_name": __import__("platform").node(),
+               "core": argv[argv.index("-L") + 1], "status": st, "log": str(self.log_path),
+               "renderer": self.renderer(), "examine": _examine_ok(self.proc, 5.0), "audio": audio}
+        if audio.get("warning"):
+            out["warnings"] = [audio["warning"]]
+        return out
+
+    def _wait_boot(self, watch) -> tuple[str, dict | None]:
+        """Poll until the content runs ('ready'), the audio driver stalls ('fallback'), or the watch gives up (raises).
+        The deadline is the watch's: content loaded with audio still opening waits longer instead of failing."""
+        i = 0
+        while True:
+            try:
+                log = self.log_path.read_text(errors="replace")
+            except OSError:
+                log = ""
+            watch.observe(log, time.monotonic())
+            if i % 5 == 0:                                     # also how an operator's cancel reaches this loop
+                tail = [ln for ln in log[-4000:].splitlines() if ln.strip()]
                 try:
-                    self._p(80 + 18 * i / 150, tail[-1][:160] if tail else "Waiting for content to start")
+                    self._p(80 + min(18.0, 18 * (time.monotonic() - watch.t0) / max(watch.boot_wait_s, 1)),
+                            tail[-1][:160] if tail else "Waiting for content to start")
                 except Exception:                              # cancelled: don't leave an emulator running
                     self.stop_game()
                     raise
@@ -1226,19 +1342,21 @@ class RetroArchAdapter(CommandAdapter):
                 if self.display:
                     self.display.close()
                 raise RuntimeError(f"retroarch exited {self.proc.returncode}: {self.log_tail()}")
+            st, running = None, False
             try:
                 st = self.query_runtime(timeout=0.3)
-                if st.get("state") in ("PLAYING", "PAUSED"):
-                    return {"pid": self.proc.pid, "display": self.display and self.display.name, "port": self.addr[1],
-                            "local_window": HOST_OS == "windows", "worker_name": __import__("platform").node(),
-                            "core": argv[argv.index("-L") + 1], "status": st, "log": str(self.log_path),
-                            "renderer": self.renderer(), "examine": _examine_ok(self.proc, 5.0)}
+                running = st.get("state") in ("PLAYING", "PAUSED")
             except RuntimeError:
                 pass
+            verdict = watch.decide(time.monotonic(), running)
+            if verdict in ("ready", "fallback"):
+                return verdict, st
+            if verdict == "fail":
+                tail = self.log_tail()
+                self.stop_game()
+                raise RuntimeError(f"retroarch started but {watch.reason}: {tail}")
             time.sleep(0.2)
-        tail = self.log_tail()
-        self.stop_game()
-        raise RuntimeError(f"retroarch started but content not running after 30s: {tail}")
+            i += 1
 
     def _p(self, pct, msg):
         cb = getattr(self, "progress", None)
@@ -1924,9 +2042,15 @@ D-Pad/Right = `Pad E`
                 # a raw memory card file keeps its serial between boots; the GCI-folder card's changes, and games that
                 # bind saves to the card (RE4) then call every save "corrupted" on the next boot
                 "Dolphin.Core.SlotA": "1", "Dolphin.Core.MemcardAPath": str(user / "GC" / "MemoryCardA.USA.raw")}
+        # sound (gbox/game_audio.py): Cubeb = WASAPI shared, which follows the default device as it comes and goes;
+        # no active output at all = "No Audio Output" (Dolphin's XAudio2 / OpenAL would wait on a missing device)
+        from . import game_audio
+        self.audio_sel = _audio_selection(self, 1.0)
+        opts["Dolphin.DSP.Backend"] = game_audio.dolphin_backend(self.audio_sel)
         if getattr(self, "capture_backend", None):                  # agent-owned capture session (#971): Vulkan via -C,
             opts["Dolphin.Core.GFXBackend"] = "Vulkan"              # Dolphin's command-line layer is never saved
             opts["Dolphin.DSP.Backend"] = "No Audio Output"
+        self.audio_backend = opts["Dolphin.DSP.Backend"]
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
@@ -1936,7 +2060,17 @@ D-Pad/Right = `Pad E`
         self._gecko_write(self._exe().parent / "User")
         return {"index": index, "enabled": on, "desc": self.cheats[index]["desc"], "restart_needed": True}
 
+    def prepare_audio(self):
+        if not getattr(self, "capture_backend", None):
+            _audio_prefetch(self)
+
     def launch_game(self, rom: str) -> dict:
+        try:
+            return self._launch_game(rom)
+        finally:
+            _audio_release(self)
+
+    def _launch_game(self, rom: str) -> dict:
         self._p(10, "Starting Dolphin")
         argv = self._argv(rom)
         logs = self.config.runtime / "logs"
@@ -1965,9 +2099,11 @@ D-Pad/Right = `Pad E`
                 raise RuntimeError(f"Dolphin exited {self.proc.returncode}: {self.log_tail()}")
             self.dbg = None
             self._p(95, f"running without memory access (no memory mods): {e}")
+        from . import game_audio
         return {"pid": self.proc.pid, "local_window": True, "debug_port": self.port, "debugger": bool(self.dbg),
                 "worker_name": __import__("platform").node(), "emulator": "dolphin (Windows)", "log": str(self.log_path),
-                "examine": _examine_ok(self.proc, 10.0)}
+                "examine": _examine_ok(self.proc, 10.0),
+                "audio": game_audio.session_detail(getattr(self, "audio_sel", None) or {}, getattr(self, "audio_backend", None))}
 
     def stop_game(self) -> dict:
         if self.paused_tids:
@@ -2311,6 +2447,10 @@ class RPCS3Adapter(Adapter):
     def __init__(self, config: Config):
         self.config, self.proc, self.stream, self.base, self.paused = config, None, None, None, False
 
+    def prepare_audio(self):
+        if not getattr(self, "capture_backend", None):
+            _audio_prefetch(self)
+
     def launch_game(self, rom: str) -> dict:
         prog = getattr(self, "progress", None)
         provision.ensure_rpcs3(self.config, prog)
@@ -2323,7 +2463,11 @@ class RPCS3Adapter(Adapter):
             from . import graphics
             cc = home / "config" / "custom_configs" / f"config_{self.serial}.yml"
             cc.parent.mkdir(parents=True, exist_ok=True)
-            cc.write_text(graphics.rpcs3_yaml(graphics.get(self.config, getattr(self, "game_id", None))), encoding="utf-8")
+            # sound (gbox/game_audio.py): Cubeb = WASAPI shared, follows device changes; Null with no active output
+            from . import game_audio
+            self.audio_sel = _audio_selection(self, 1.0)
+            cc.write_text(graphics.rpcs3_yaml(graphics.get(self.config, getattr(self, "game_id", None)))
+                          + game_audio.rpcs3_audio_yaml(self.audio_sel), encoding="utf-8")
         # F2 = RPCS3's own "save state and continue" (works in place). Its restart-from-state shortcut crashes in --no-gui
         # mode, so it is moved off F4; gBox owns F4 and relaunches RPCS3 straight into the newest state (load_state).
         gui = home / "GuiConfigs" / "CurrentSettings.ini"
@@ -2352,8 +2496,13 @@ class RPCS3Adapter(Adapter):
         else:
             self.proc = subprocess.Popen([*argv, rom], cwd=home, startupinfo=hidden_start())
         keep_offscreen(self.proc.pid, **({"limit_s": 1800.0, "give_up_s": float("inf")} if cap else {}))
+        _audio_release(self)
+        from . import game_audio
+        sel = getattr(self, "audio_sel", None)
+        backend = game_audio.rpcs3_audio_yaml(sel).split("Renderer: ")[1].strip() if sel else "RPCS3 global setting"
         return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node(),
-                "examine": _examine_ok(self.proc, 15.0) if getattr(self, "examine", False) else False}
+                "examine": _examine_ok(self.proc, 15.0) if getattr(self, "examine", False) else False,
+                "audio": game_audio.session_detail(sel or {}, backend)}
 
     def stop_game(self) -> dict:
         if self.stream:

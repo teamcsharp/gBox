@@ -92,6 +92,20 @@ class VoiceConfig(BaseModel):
     down_cooldown_s: float = 20.0         # after a Director failure its requests go elsewhere for this long
 
 
+class GameAudioConfig(BaseModel):
+    """[game_audio] where emulators send their sound on a Windows node, and what a slow sound device may cost a launch
+    (gbox/game_audio.py). A sleeping or switching output (wireless headset) can hold an emulator's audio init for many
+    seconds; RetroArch's main loop, and with it the launch, waits on it."""
+    device: str = ""                  # output device name; "" = the default playback device when active, else the first active one
+    retroarch_drivers: list[str] = ["xaudio", "wasapi", "null"]   # tried in order; the next one when audio init stalls
+    init_grace_s: float = 3.0         # audio init this long without returning -> relaunch with the next driver
+    stall_s: float = 6.0              # audio opened slowly, then the core's loop still not answering for this long -> next driver
+    boot_wait_s: float = 30.0         # content running within this long (no audio trouble seen)
+    extended_wait_s: float = 120.0    # content loaded and audio still opening: wait up to this long instead of failing
+    warm_device: bool = True          # open a silent stream on the chosen device while the launch prepares (wakes it)
+    remember_driver_h: float = 24.0   # a driver that took over from a stalled one starts first on that device for this long
+
+
 class RecordingConfig(BaseModel):
     """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
     operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
@@ -117,6 +131,14 @@ class Config(BaseModel):
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)
     cache_limit_gb: float = 20.0
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
+    # Two-tier cache (gbox/cache_tiers.py, docs/cache-tiers.md): cache_dirs is the fast hot tier, cold_cache_dirs a big
+    # slow disk behind it. Least recently used per-game units move to the cold tier only while the node is idle and
+    # leave a symlink, so <cache>/... paths keep working; access moves them back. Unset for an OS = one tier.
+    cold_cache_dirs: dict[str, str] = {}      # os -> cold tier root (must exist: a missing mount is never created)
+    hot_cache_limit_gb: dict[str, float] = {} # os -> size the idle demoter keeps the hot tier under (default: cache_limit)
+    cache_tier_idle_minutes: float = 30.0     # no session / job / launch on this node for this long before demoting
+    cache_tier_warm_fraction: float = 0.5     # after the migration, recently used cold units are promoted up to this share
+    cache_tier_promote_wait_s: float = 60.0   # a launch waits for its unit's promotion only if it fits in this; else later
     runtime_dirs: dict[str, str] = {}        # os -> local disk for emulators/cores (never run binaries off a network share)
     stage_min_mb: int = 32            # stage library files larger than this (disc images) onto the local cache before launch
     stage_wait_s: float = 45.0        # a launch waits for a cache copy only if it will finish within this; else the game
@@ -150,6 +172,7 @@ class Config(BaseModel):
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
+    game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -161,6 +184,16 @@ class Config(BaseModel):
     @property
     def cache_limit(self) -> float:
         return self.cache_limits_gb.get(HOST_OS, self.cache_limit_gb)
+
+    @property
+    def cold_cache(self) -> Path | None:
+        """The cold tier behind self.cache on this OS, or None (single-tier cache)."""
+        d = self.cold_cache_dirs.get(HOST_OS)
+        return Path(os.path.expandvars(d)) if d else None
+
+    @property
+    def hot_cache_limit(self) -> float:
+        return self.hot_cache_limit_gb.get(HOST_OS, self.cache_limit)
 
     @property
     def runtime(self) -> Path:
@@ -235,6 +268,12 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # tts_family = "kokoro_tts"       # tts_model / stt_model = explicit GGUF paths when discovery finds none
 # tts_voice = "af_heart"
 # stt_family = "qwen3_asr"
+# [game_audio]                    # emulator sound on a Windows node (gbox/game_audio.py)
+# device = ""                     # output device name; "" = default playback device if active, else the first active one
+# retroarch_drivers = ["xaudio", "wasapi", "null"]   # next driver when audio init stalls past init_grace_s
+# init_grace_s = 3.0
+# extended_wait_s = 120.0         # content loaded, audio still opening: the launch waits this long instead of failing
+
 # [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
 # enabled = true                  # records only while the pad was used in the last idle_s seconds
 # seconds = 120                   # how far back a clip can reach

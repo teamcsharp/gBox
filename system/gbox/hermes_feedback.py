@@ -291,7 +291,7 @@ def adjust_routes() -> dict:
     cron = config.get('cron') or {}
     routes = hermes_quota.routes(config, data.get('routes') or [])
     primary = {'provider': cron.get('model_provider'), 'model': cron.get('model')}
-    if primary not in routes and all(primary.values()):
+    if primary not in routes and all(primary.values()) and primary['provider'].casefold() not in hermes_quota.excluded_providers():
         routes.insert(0, primary)
     eligible = [r for r in routes if r['provider'] + '/' + r['model'] not in data['cooldowns']]
     # Rotation is done only between agent runs. Never mutate an in-flight route.

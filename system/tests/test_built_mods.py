@@ -269,7 +269,9 @@ class SlowDisk:
         def slow(p=".", *a, **k):
             s = os.fspath(p) if isinstance(p, (str, os.PathLike)) else ""
             if isinstance(s, str) and s.startswith(self.root):
-                if threading.current_thread().name.startswith("built-mods"):
+                if threading.current_thread().name == "asset-index":
+                    pass                                   # the asset sidebar's own background index, not a request
+                elif threading.current_thread().name.startswith("built-mods"):
                     self.bg += 1
                     time.sleep(self.bg_delay)
                 else:

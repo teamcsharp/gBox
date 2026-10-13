@@ -4,6 +4,7 @@ every file and the main executable: what the fingerprinter (gbox.assimilate) and
   .iso/.gcm (GameCube/Wii)  gcdisc FST           .gcz            gcz + formats.gcfst
   .iso (PS1/PS2), .bin      formats.iso9660      .chd (PS1 v4)   psxdisc.PSXDisc
   .gdi / .cdi (Dreamcast)   gdrom.GDRom          .z64/.v64/.n64  n64_rom (no filesystem: magic scan of the ROM)
+  .nds (Nintendo DS)         formats.nitro NitroFS (LZ77 members listed decompressed)
   .zip                      its members          folder (PC/Steam, extracted disc)  the files
 
 listing() never writes and reads at most `head` bytes of at most `max_files` files (the rest are listed by name and
@@ -100,6 +101,17 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         L = Listing(str(p), "n64_rom", [], n64_rom.read(p), p.name)
         _n64_scan(L)
         return L
+    elif suf in (".nds", ".srl"):
+        from .nitro import NitroROM, decompress
+        rom = NitroROM(p.read_bytes())
+        files = [{"path": n, "size": len(rom.raw(n))} for n in rom.paths()]
+
+        def read(name, n):                                # raw heads (the LZ77 tag is evidence); deep samples
+            raw = rom.raw(name)                           # decompressed so inner magics are seen
+            return raw[:n] if n is not None and n <= head else decompress(raw)[: (exe_limit if n is None else n)]
+        L = Listing(str(p), "nitrofs", files, notes=[f"{rom.gamecode} {rom.title}"])
+        L.executable_name = "arm9.bin"
+        L.executable = rom.data[rom.arm9_off:rom.arm9_off + min(rom.arm9_size, exe_limit)]
     elif suf == ".gdi" or suf == ".cdi":
         from ..gdrom import GDRom
         g = GDRom(p)
