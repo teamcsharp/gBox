@@ -3356,10 +3356,15 @@ async function syncNativePads() {
     if (typeof padStatus === "function") padStatus();
     if (typeof cur !== "undefined" && cur === "Controllers") show("Controllers");`).catch(() => {});
 }
+// This PC's XInput reading (any window focus): the view forwards it as Player 1 of a streamed game (#1532) and lights
+// the controller glyph. gboxNativePad applies each change at once, also while the view is hidden behind the mini window.
 gbox.onPadState?.(pads => {
-  const wv = document.querySelector("#wv");
-  if (wv) wv.executeJavaScript(`window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: ${JSON.stringify(pads)} };`).catch(() => {});
+  const wv = document.querySelector("#wv"), state = JSON.stringify(pads);
+  if (wv) wv.executeJavaScript(`window.gboxNativePad ? window.gboxNativePad(${state}) : (window.GBOX_NATIVE_PAD_STATE = { at: Date.now(), pads: ${state} });`).catch(() => {});
 });
+// Mini mode hides this window and its view; the view keeps forwarding the pad to the session the mini window shows.
+const miniPadTarget = sid => document.querySelector("#wv")?.executeJavaScript(`window.gboxPadTarget?.(${JSON.stringify(sid || null)})`).catch(() => {});
+gbox.onMiniClosed?.(() => miniPadTarget(null));
 setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gboxMsg) { wv._gboxMsg = true;
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));
@@ -5402,6 +5407,7 @@ $("#tb-mini").onclick = async () => {
     if (s && s.detail && s.detail.local_window) return alert("This game runs natively in its own RetroArch window — resize that window directly.");
     title = s ? s.title : "";
   }
+  miniPadTarget(sid);
   gbox.miniOpen(sid, title);
 };
 // ---------------- Tools: everything dispatchable by an LLM (typed tools, agent roles, Ghidra scripts) ----------------
