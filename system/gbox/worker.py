@@ -62,7 +62,9 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
-    ctx.server, ctx.headers = server, h
+    # x-gbox-parent-job: a tool calling the control plane back (e.g. characters op=use -> @launch) is traced to this
+    # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
+    ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
     res = {"job_id": job["id"], "ok": True}
     if job.get("agent_use") and HOST_OS == "windows":
         from .audio_volume import keep_pc_at_two_percent
@@ -203,7 +205,7 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                     stream.close()
                     stream = None
                 if stream is not None:
-                    if stream.proc.poll() is not None:
+                    if stream.proc is not None and stream.proc.poll() is not None:   # None: its supervisor is restarting it
                         stream.close()
                         stream = None
                     elif stream.wait(seen, 1) and stream.latest:
@@ -270,7 +272,12 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
     def current_info():
-        return info.model_copy(update={'pending_results': outbox.pending_count()})
+        try:                                        # this PC's own builds for the Builds view (cached, stat-only)
+            from . import filemods
+            local = filemods.local_builds(config)
+        except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
+            local = []
+        return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying

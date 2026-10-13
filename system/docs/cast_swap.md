@@ -56,13 +56,16 @@ crew, each donor looking like its own game's character (no outline shell, correc
 |---|---|---|
 | PSO Ver.2 (`gbox.pso_player` / `pso_enemy`) | **pairs**: `pso_enemy.build_cast` -> `build_swap` with a donor per enemy body; each pack rebuilt once, one `patch_gdi` | every enemy slot (Booma family + the 16 other packs); a failing body (pack room, unmappable skeleton) fails alone; the player class is skipped (not drawn yet) |
 | DOA2 (`gbox.doa2_swap`) | **pairs**: `use_roster` (every selectable fighter in one disc) | full cast (14 fighters); the roster needs every fighter, so `slots=` subsets fail with plan_roster's reason |
+| SoulCalibur DC (`gbox.soulcalibur_swap`) | **pairs**: `build_cast` (every slot's costumes rebuilt in their own HUMAN.DAT slots, one GD-ROM) | full cast (19 fighters, 45 costumes); `characters op=use slot=roster` adds the random costume hook (docs/soulcalibur_dc.md); unverified in game |
 | Def Jam Vendetta PS2 (`gbox.defjam_writer`) | **pairs**: `match` (one data.bin) | full cast (44 names, every costume) |
 | SmackDown! 2 (`gbox.yukes_sd`) | **pairs**: `match` | full cast (66 wrestlers) |
 | No Mercy (`gbox.aki_wrestling`) | **pairs**: `match` (one ROM) | full cast (64 default wrestlers); WCW World Tour / Revenge rosters come off their ROMs, not listed yet |
 | Vice City PC (`gbox.gta_vc_swap`) | **pairs**: `build_cast` (every ped its own donor, one gta3.img rebuild) | full cast on a classic RenderWare install; the owned install is the UE4 Definitive Edition, so every slot fails with that reason |
 | Enter the Matrix PS2 (`gbox.etm_swap`) | **pairs**: `build_cast` (every slot's costume / variant .dcn files rewritten in one WAD1.DFU, in place) | 37 slots (Niobe, Ghost, Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police ...); the catalog's windows_native entry is the PS2 disc; unverified in PCSX2 (docs/matrix_pipeline.md) |
+| Metal Gear Solid 2 Substance PS2 (`gbox.mgs2_swap`) | **pairs**: `build_cast` (every slot's kms models in every stage that carries them, one STAGE.DAT / STAGE2.DAT image, in place) | 18 slots (Snake, Pliskin, Raiden x3, the soldier variants, Marines, Olga, Ninja, Ocelot, Solidus, Otacon); the catalog's windows_native entry is the PS2 DVD; unverified in PCSX2 (docs/mgs2.md) |
 | Ocarina of Time N64 (`gbox.oot_swap`) | **pairs**: `oot_swap.build_cast` (every slot's object rebuilt on the previous slots' output, one ROM: DMA + gObjectTable + CRC; object growth shared out per room) | 85 slots (Link, NPCs, sages, enemies, bosses: `docs/oot_cast.md`); Epona, Navi, Like Like, En_Hy townsfolk skipped with the reason |
 | Twin Snakes GC (`gbox.twin_snakes_swap`) | **pairs**: `build_cast` (every slot's model in every gameplay stage of one stage.dat, rebuilt in place) | Snake, every Genome soldier model (+ low-detail twins), bosses, Meryl / Otacon / Johnny (`docs/twin_snakes.md`); cut-scene stages stay stock; unverified in Dolphin |
+| Soul Calibur II GC (`gbox.soulcalibur2_swap`) | **pairs**: `build_cast` (every slot's costume packages, Extra-mode copies included, rewritten in place in human.olk; one disc image) | all 24 fighters (Link included), 73 costumes; `slot=random` alternates two donor pools over each fighter's costumes and patches the body load to draw a costume at random (`docs/soulcalibur2_gc.md`); unverified in Dolphin |
 | JGR (`gbox.jgr_swap`) | **chain**: each cast member's `jgr.build_swap(..., data=)` on the previous step's PLAYER.AFS, one `patch_gdi` | full cast (16) |
 | Crazy Taxi GC (`gbox.crazy_taxi_swap`) | **chain**: each slot's `swap_bank` on the previous step's polDC0.all, one disc image | full cast (4 drivers, 19 pedestrian and 31 passenger groups) |
 | Metal Gear Solid VR Missions PS1 (`gbox.mgs_vr_swap`) | **pairs**: `mgs_vr_swap.build_cast` (every slot fitted into one staged STAGE.DIR: each mission stage's copy of a model and its texture archive, native rewrite, one BIN) | 7 slots: player (Snake), enemy:soldier (38582 + 55267 in 88 stages), enemy:ninja and four stage-specific figures; a node without the disc image hands the build to a Windows worker (`characters op=use slot=cast`); unverified in game (docs/mgs_vr_decomp.md) |
@@ -72,6 +75,12 @@ crew, each donor looking like its own game's character (no outline shell, correc
 staged once (`{path: bytes}`, never the original image), each slot's writer step reads the staged bytes (or a disc
 through `StagedDisc`) and returns its new bytes, a failing step leaves the staged files untouched and is reported, and
 the writer writes the image once at the end. A writer joins by getting an entry in `BUILDERS` that builds its steps.
+
+**Fixed names (`mod_name=`, the Sonic showcase).** `mod_name=showcase_sonic_<title>` builds into that folder instead of
+`cast_<game>_<source>_<digest>`; the marker's `cast_plan` (`plan_digest`: which donor on which slot) then decides a
+rebuild, so an unchanged plan is reused and a changed one rebuilt. `showcase=true` adds the `showcase` record to the
+marker and skips the Play-as character targets. A writer that names its own build (DOA2 roster, one-slot writers) gets
+a hard-linked copy under the fixed name (`link_tree`). See docs/sonic_showcase.md.
 
 ## Tests
 

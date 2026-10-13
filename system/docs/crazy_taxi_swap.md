@@ -102,6 +102,66 @@ Use an agent-owned test session, never the operator's.
 5. Post both frames and the build job ID on #608. Repeat with `slot=driver:gena` (mod `ct_hucast_gena`, pick Gena)
    to check a driver with hidden ponytails.
 
+## Drivers, v2: the donor's look (`gbox/crazy_taxi_look.py`)
+
+The v1 writer kept every blob at its stock size and the driver's stock textures, so the Sonic Adventure cast
+(`cast_crazy_taxi_usa_sonic_adventure_us_82d27070_fix`) drew "Sonic" as a few blocks in Axel's colours. Driver slots
+(`driver:<x>`, `drivers`, and every driver slot of a cast) now go through `crazy_taxi_swap.swap_files`, which calls
+`crazy_taxi_look.write_driver` and rewrites **both** `ct/polDC0.all` and `ct/texDC0.all`. Pedestrians and fares keep
+v1, because their textures are shared.
+
+What main.dol does (GCTE51 disassembly):
+
+* **The archives can grow.** The archive loader at 0x800066e0 mallocs the file's length, reads the file and registers
+  every entry by name at `align32(0x10 + count * 0x44 + 0x1f)` plus the running sum of the sizes. Shapes and
+  textures are then looked up by name. Both files may change size and move past the last file on the disc
+  (`romexport.gc_put_file` rewrites the FST entry). `sizes.dat` only budgets the per-level banks.
+* **Textures are bound per material.** A `.shp` has `header[0x10]` texture entries of 0x2c bytes at 0x11c. The fix-up at
+  0x8000b6bc looks each name up and **loops forever if one is missing**, so the validator checks every name.
+  Material records (0x24 bytes, `header[0x14..0x1c]` of them in three draw passes) are
+  `(list offset, size, texture index, 3 words, draw type, 1 word, RGBA material colour)`. A record whose first word is
+  0x38 is the VAT state record. The colour word matters: Gena's jeans parts carry 0x617FB2FF (blue) and Axel's hair
+  record 0x004901FF (green), so the writer sets it to white.
+* **A .tex** is `w, h, flags, GX format, wrap s, wrap t, mip` with data at 0x60. GXInitTexObj (0x8000d790) reads
+  these on first use, so a texture can be resized. The bank holds CMPR and RGBA8.
+* **Vertex formats:** POS is s16 × scale / 256 + the header centre, and the header scale/radius are honoured (checked
+  in-game). NRM is s16 / 16384. TEX0 is **s16 / 128** (stock UVs span 0..128). CLR0 is RGB8. Display lists use one u16
+  per attribute, so POS, NRM and TEX0 are deduplicated separately and the writer emits strips.
+* **Part frames** were read off an in-game probe: every part was drawn as an RGB axis gizmo over the stock mesh.
+  z is the character's right in every part. koshi points down from the waist and mune points up from it (y back).
+  atama has x toward the face and y up. Limbs have x along the bone and y forward. kakato has x down and y toward the
+  toes.
+
+The writer (`write_driver`):
+
+1. Every donor triangle goes to a part: the nearest role joint above its owner, plus two adjustments. On SA1 rigs the
+   shoe hangs two joints below the role "foot" (`ankle_joint` follows the toe), so the shoe goes to kakato and the
+   rest of the foot role to the shin. Hand materials more than 3.25 forearms from the wrist are dropped as held props
+   (Amy's hammer).
+2. Each part is mapped into its frame. `g` is the driver's leg length divided by the donor's. Thighs, shins and arms
+   keep their joints, stretched to the driver's bone lengths with the cross-section at g. The shoe keeps its shape.
+   The head is at g, capped at 2× the stock crown height above the neck. The torso runs from the hip sockets to the
+   neck, split at the driver's waist.
+3. One atlas per driver goes into a texture only that driver uses (`ATLAS`: TY_plyrA_face1, TY_plyrB_fb1,
+   TY_plyrC_face1, TY_plyrD_fb1), resized to 256x256 CMPR. Flat colours get 8x8 cells (exact in CMPR and on the TEX0
+   grid). Textures are repeated over the UV tiles they use, with a 4-texel gutter. Every part's texture entries are
+   renamed to the atlas. TY_plyrA_hada1 (also used by Gena and pplWA) and TY_plyrD_koshi1/momo1 (also used by psgAL)
+   are never touched.
+4. Main parts, `sl_` twins and hand poses carry the part's geometry, and accessory sub-parts draw nothing. Each blob is
+   checked by `check_part` (the growable form of `check_written`): records, groups and VAT kept, lists whole and
+   32-byte aligned, every attribute index in range, every texture name loadable.
+
+**The limit is memory, not the format.** The first build wrote unwelded triangle lists, which added 723 KB. The attract
+demo's malloc for `recAdvAC.bin` then returned NULL (Dolphin: "Read ... DMABuffer = 00000000", then an invalid write
+at 0x800d2350). A gizmo probe that added 412 KB still ran. With deduplicated arrays and strips, the four SA1 drivers
+(about 1000 triangles each, every donor triangle) add 34 KB to polDC0.all and 106 KB to texDC0.all, mostly the four
+atlases.
+
+Checked in an agent-owned Dolphin 2609a with build `cast_crazy_taxi_usa_sonic_adventure_us_82d27070_v2` (Sonic,
+Knuckles, Amy and Gamma). Driver select and cab frames for all four are in
+`D:\gBox\research\crazy_taxi\evidence\v2`. Tests: `tests/test_crazy_taxi_look.py` (9 synthetic; 1 needs the owned ISO
+via `GBOX_CT_ISO` and a donor via `GBOX_CT_DONOR`).
+
 ## Crazy Taxi 2 (Dreamcast) inventory, #1482
 
 Catalog `45e9455ca5487e7d`, QuickSwap2 `Crazy Taxi 2.cdi` (IP.BIN MK-51136 V1.000 2001-05-24). `gbox/crazy_taxi2.py`
