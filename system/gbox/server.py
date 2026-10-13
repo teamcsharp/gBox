@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, StrictBool
 from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import padstate
 from . import fit_events
+from . import operator_guard
 from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
@@ -117,6 +118,15 @@ def create_app(config: Config) -> FastAPI:
         if not hmac.compare_digest(got.encode(), token.encode()):
             raise HTTPException(401, "bad token")
         return request.headers.get("x-gbox-actor", "operator")
+
+    def request_origin(request: Request) -> dict:
+        """Where an HTTP request came from (stored on jobs): the web UI / desktop app / curl / a Python client."""
+        h = request.headers
+        out = {"client": h.get("x-gbox-client", ""), "user_agent": h.get("user-agent", "")[:160],
+               "referer": h.get("referer", "")[:200], "via": "http",
+               "remote": request.client.host if request.client else "",
+               "parent_job": h.get("x-gbox-parent-job", "")[:32]}   # a worker tool calling back (worker._run_job)
+        return {k: v for k, v in out.items() if v}
 
     from . import asset_library
     asset_library.routes(app, store, config, auth)
@@ -711,11 +721,29 @@ def create_app(config: Config) -> FastAPI:
     # Mods that change game files (models, sprites, discs) need the emulator restarted with the new image; this keeps the
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
     def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None, should_stop=None,
-                 on_cancel_deferred=None, agent_use: bool = False) -> dict:
+                 on_cancel_deferred=None, queue_wait=None, origin=None, agent_use: bool = False) -> dict:
         j = submit(JobRequest(tool=tool, input=inp, require_worker=worker, agent_use=agent_use), actor)
+        if origin:                                     # e.g. the launch a swap made: traceable to its parent job
+            with store.lock:
+                rec = store.get("job", j.id)
+                if rec is not None:
+                    store.put("job", j.id, rec | {"origin": origin})
         t0 = time.time()
         deferred_launch = False
         while (jj := store.get("job", j.id))["state"] in ("queued", "running") and time.time() - t0 < wait:
+            if queue_wait and jj["state"] == "queued" and time.time() - t0 >= queue_wait:
+                # The worker never picked it up (busy or overloaded): nothing has been touched yet, so drop the child
+                # and fail fast instead of leaving the parent "running" with no output for many minutes.
+                with store.lock:
+                    cj = store.get("job", j.id)
+                    if cj["state"] == JobState.QUEUED:
+                        cj.update(state=JobState.FAILED, finished=time.time(), cancel=True,
+                                  error=f"not picked up by its worker within {queue_wait:.0f} s")
+                        store.put("job", j.id, cj)
+                        name = (store.get("worker", worker or "") or {}).get("name") or worker or "the worker"
+                        raise HTTPException(409, f"{name} did not start {tool} within {queue_wait:.0f} s (it is busy). "
+                                                 "Nothing was changed; your current game keeps running.")
+                continue
             if should_stop and should_stop():
                 # the parent was cancelled: drop a queued child, ask a running one to stop, and stop waiting (#1297)
                 with store.lock:
@@ -763,9 +791,12 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, f"no online gBox worker '{to}'")
         return hit
 
+    SWAP_LAUNCH_QUEUE_S = 180.0      # the target worker must start the replacement launch within this (or nothing changes)
+
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
-                     should_stop=None) -> dict:
+                     should_stop=None, parent_job: str = "") -> dict:
         say = progress or (lambda pct, msg: None)
+        origin = {"via": "session_swap", "parent_job": parent_job} if parent_job else {"via": "session_swap"}
         stop = should_stop or (lambda: False)
         cancel_deferred = False
 
@@ -819,10 +850,13 @@ def create_app(config: Config) -> FastAPI:
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod}, actor, worker=tw["id"], wait=900,
-                           should_stop=stop, on_cancel_deferred=defer_cancel)
+                           should_stop=stop, on_cancel_deferred=defer_cancel, queue_wait=SWAP_LAUNCH_QUEUE_S,
+                           origin=origin)
         except HTTPException as e:
             if str(e.detail).startswith('cancelled by the operator before the replacement started'):
                 raise                            # the child never claimed a native launch; no recovery is needed
+            if ' did not start launch_game within ' in str(e.detail):
+                raise                            # never picked up: the old game was not touched
             if str(e.detail).startswith('Cancellation remains deferred:'):
                 raise                            # no verified child outcome on which to base native recovery
             # a modded launch closes the same console's game on that PC first: if the new one didn't start, bring the old back
@@ -917,12 +951,19 @@ def create_app(config: Config) -> FastAPI:
     # server process (restart) and nothing will ever finish or cancel it unless we retire it (#1297)
     _server_job_threads: set[str] = set()
 
-    def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True) -> Job:
+    def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, origin=None) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
         sess = store.get("session", sid) or _404()
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
+        if _automated(actor, origin) and sess.get('state') == 'running':
+            from .background_testing import agent_owned
+            if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
+                # A swap restarts the emulator (a black screen mid-game): background agents never do that to the
+                # operator's live game. The in-app chat agent acts on the operator's own words and is exempt.
+                raise HTTPException(409, "That game is the operator's live session; automated tasks can't restart or "
+                                         "swap it. Use an agent-owned test session (launch_game node=idle).")
         with store.lock:
             for existing in store.all('job'):
                 inp = existing.get('input') or {}
@@ -935,7 +976,10 @@ def create_app(config: Config) -> FastAPI:
             if keep_state and sess.get('state') != 'running':
                 raise HTTPException(409, 'This session has ended. Open the running game before replacing its models.')
             job = Job(tool="session_swap", input={"session_id": sid, "game_id": sess.get("game_id"), "mod": mod, "to": to, 'keep_state': keep_state},
-                      state=JobState.RUNNING, started=time.time())
+                      state=JobState.RUNNING, started=time.time(), actor=actor,
+                      agent_use=operator_guard.is_agent(actor),
+                      origin={"via": "swap_job", **({"parent_job": origin["parent_job"]}
+                                                    if isinstance(origin, dict) and origin.get("parent_job") else {})})
             store.put("job", job.id, job.model_dump())
             _server_job_threads.add(job.id)
 
@@ -952,7 +996,8 @@ def create_app(config: Config) -> FastAPI:
         def go():
             try:
                 out, state, err = session_swap(sid, mod, to, actor, keep_state, prog,
-                                               lambda: bool((store.get("job", job.id) or {}).get("cancel"))), JobState.SUCCEEDED, None
+                                               lambda: bool((store.get("job", job.id) or {}).get("cancel")),
+                                               parent_job=job.id), JobState.SUCCEEDED, None
             except HTTPException as e:
                 out, state, err = None, JobState.FAILED, str(e.detail)
             except Exception as e:                             # noqa: BLE001
@@ -1343,11 +1388,32 @@ def create_app(config: Config) -> FastAPI:
         mod: str = ""                       # "" = the original game
         to: str = ""                        # "" = the same machine | a worker name | windows | linux
         keep_state: bool = True
+        intent: str = ""                    # required with keep_state=false: hard_reset | reset_model (an operator click)
+
+    SWAP_DISCARD_INTENTS = ("hard_reset", "reset_model")
 
     @app.post("/api/sessions/{sid}/swap")
-    def session_swap_api(sid: str, s: SwapIn, actor=Depends(auth)):
-        """Turn a file/model mod on or off in a running game: same PC, same moment (job; output.session_id = new session)."""
-        return swap_job(sid, s.mod, s.to, actor, s.keep_state)
+    def session_swap_api(sid: str, s: SwapIn, actor=Depends(auth), origin=Depends(request_origin)):
+        """Turn a file/model mod on or off in a running game: same PC, same moment (job; output.session_id = new session).
+        keep_state=false throws the current moment away (the game restarts from boot), so it needs an explicit intent
+        from an operator action; a bare {mod:"", keep_state:false} is refused (docs/stream-stability.md)."""
+        if not s.keep_state and s.intent not in SWAP_DISCARD_INTENTS:
+            raise HTTPException(422, "keep_state=false restarts the game without its current moment; it needs intent "
+                                     "'hard_reset' or 'reset_model' from an explicit operator action")
+        job = swap_job(sid, s.mod, s.to, actor, s.keep_state, origin=origin)
+        jid = getattr(job, "id", None)
+        if jid:
+            with store.lock:
+                rec = store.get("job", jid)
+                if rec is not None:
+                    asks = (rec.get("requests") or [])[-9:] + [{"actor": actor, "intent": s.intent, "ts": time.time(), **origin}]
+                    first = rec.get("origin") or {}
+                    if "intent" not in first:            # the request that created the job; later ones are in requests
+                        first = first | {"intent": s.intent, **origin}
+                    store.put("job", jid, rec | {"origin": first, "requests": asks})
+            store.audit(actor, "session.swap.request", jid, {"session_id": sid, "mod": s.mod, "to": s.to,
+                        "keep_state": s.keep_state, "intent": s.intent, "origin": origin})
+        return job
 
     class MoveIn(BaseModel):
         to: str = "windows"                 # a worker name (this PC) | windows | linux (the Spark)
@@ -1956,8 +2022,26 @@ def create_app(config: Config) -> FastAPI:
                 store.audit(actor, 'characters.auto_collect_failed', j['id'], {'error': str(exc)})
 
     # --- jobs ---
+    def _automated(actor: str, origin) -> bool:
+        """A request background automation made: an agent actor (not the in-app chat agent, which speaks for the
+        operator), or a worker tool running inside such an agent's job (x-gbox-parent-job). Operator clicks are not."""
+        if actor == "gbox-agent":
+            return False
+        if operator_guard.is_agent(actor):
+            return True
+        parent = store.get("job", (origin or {}).get("parent_job") or "") if isinstance(origin, dict) else None
+        if parent:
+            return bool(parent.get("agent_use")) and parent.get("actor") != "gbox-agent"
+        return False
+
+    def _operator_busy(wid: str, keep: str = "") -> list[dict]:
+        """The operator's running sessions on one worker (not agent-owned test sessions)."""
+        return operator_guard.operator_sessions(store.all("session"), lambda sid: store.get("slabel", sid),
+                                                lambda jid: store.get("job", jid), [wid], keep=keep)
+
     @app.post("/api/jobs")
-    def submit(req: JobRequest, actor=Depends(auth)):
+    def submit(req: JobRequest, actor=Depends(auth), origin=Depends(request_origin)):
+        origin = origin if isinstance(origin, dict) else {"via": "internal"}   # in-server callers pass no request
         if req.tool == "@launch":
             i = req.input or {}
             gid = i.get("game_id") or _404()
@@ -1966,11 +2050,16 @@ def create_app(config: Config) -> FastAPI:
             if not sid and i.get("swap", True) and node not in ("idle", "other"):
                 # the game is already running: put the mod into THAT session (same PC, same moment) instead of starting
                 # a second copy on whichever machine happened to build the mod
+                ws = {w["id"]: w for w in workers() if w["online"]}
                 run = [s for s in store.all("session") if s.get("state") == "running" and s.get("game_id") == gid
-                       and _wid(s["session_id"].split("-")[0]) in online]
+                       and _wid(s["session_id"].split("-")[0]) in online
+                       # a named PC/OS: only a game running there is swapped, never one on another machine
+                       and (node in ("", "auto") or node in (_wid(s["session_id"].split("-")[0]),
+                            ws.get(_wid(s["session_id"].split("-")[0]), {}).get("name"),
+                            ws.get(_wid(s["session_id"].split("-")[0]), {}).get("os")))]
                 sid = max(run, key=lambda s: s.get("started") or 0)["session_id"] if run else ""
             if sid and (store.get("session", sid) or {}).get("state") == "running":
-                return swap_job(sid, mod, "", actor)
+                return swap_job(sid, mod, "", actor, origin=origin)       # keeps the moment; automation refused there
             if node in ("", "auto", "linux", "windows"):
                 # nothing running: the PC the operator plays on (newest session among online Windows workers) has the
                 # real GPU and zero input lag; the node a mod was built on (often the Spark) is only a fallback
@@ -1981,7 +2070,7 @@ def create_app(config: Config) -> FastAPI:
                     node = win[_wid(recent[0]["session_id"].split("-")[0])]["name"]
                 elif win:
                     node = "windows"
-            return launch(gid, node=node or "windows", mod=mod, actor=actor)
+            return launch(gid, node=node or "windows", mod=mod, actor=actor, origin=origin)
         t = REGISTRY.get(req.tool)
         if not t:
             raise HTTPException(404, f"unknown tool {req.tool}")
@@ -1999,7 +2088,9 @@ def create_app(config: Config) -> FastAPI:
             if scene_relay.wants_relay(session, inp):       # RenderDoc can't enter this session: capture its moment in a
                 return relay_job(inp, actor)                 # separate capture session; the game keeps running (#971)
         job = Job(tool=t.name, input=inp, require_os=req.require_os, require_worker=req.require_worker,
-                  parent_request_id=req.parent_request_id, agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes"))
+                  parent_request_id=req.parent_request_id,
+                  agent_use=req.agent_use or actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin),
+                  actor=actor, origin=origin)
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
@@ -2018,6 +2109,22 @@ def create_app(config: Config) -> FastAPI:
             if named:
                 job.require_worker = named
             job.require_worker = _wid(job.require_worker)
+        if t.name == "launch_game" and job.agent_use and actor != "gbox-agent" and job.state == JobState.QUEUED:
+            # One emulator per PC: an automated launch where the operator is playing would save and close their game
+            # (a black screen mid-match). The in-app chat agent (gbox-agent) acts on the operator's own words and is
+            # exempt; MCP/Hermes/background launches go to another PC or are refused (docs/stream-stability.md).
+            keep = inp.get("keep_session") or ""
+            online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or [])]
+            if job.require_worker:
+                cands = [w for w in online if w["id"] == job.require_worker] or [
+                    {"id": job.require_worker, "name": (store.get("worker", job.require_worker) or {}).get("name")}]
+            else:
+                cands = [w for w in online if not job.require_os or w.get("os") == job.require_os]
+            free, why = operator_guard.launch_block(cands, lambda wid: _operator_busy(wid, keep))
+            if why:
+                job.state, job.error = JobState.REJECTED, why
+            elif not job.require_worker and free and len(free) < len(cands):
+                job.require_worker = free[0]["id"]          # the operator's PC must not claim it
         missing = [p for p in t.permissions if p not in config.granted_permissions]
         w = store.get("worker", job.require_worker) if job.require_worker else None
         if w and job.agent_use and w.get("os") == "windows" and t.name in ("launch_game", "autoplay") \
@@ -2516,9 +2623,14 @@ def create_app(config: Config) -> FastAPI:
         return store.catalog_get(gid)
 
     @app.post("/api/games/{gid}/launch")
-    def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", actor=Depends(auth)):
+    def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", swap: bool = False,
+               actor=Depends(auth), origin=Depends(request_origin)):
         """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
-        debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists."""
+        debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists.
+        With a mod and the game already running, the mod is swapped into that session (same PC, moment kept) only
+        when the caller names that session's PC (worker id, name or OS) as the node or asks for it (swap=true);
+        node=auto alone never turns a Play into a swap of a game running elsewhere (docs/stream-stability.md)."""
+        origin = origin if isinstance(origin, dict) else {"via": "internal"}
         e = store.catalog_get(gid) or _404()
         if node in ("idle", "other"):
             if debug:
@@ -2530,19 +2642,22 @@ def create_app(config: Config) -> FastAPI:
                 inp = pending.get('input') or {}
                 wid = _wid((inp.get('session_id') or '').split('-')[0])
                 worker = available.get(wid) or {}
+            def here(wid):                                  # the caller asked for this session's PC (or swap=true)
+                w = available.get(wid) or {}
+                return node in (wid, w.get('name'), w.get('os')) or (swap and node == 'auto')
+            for pending in store.all('job'):
+                inp = pending.get('input') or {}
+                wid = _wid((inp.get('session_id') or '').split('-')[0])
                 if (pending.get('tool') == 'session_swap' and pending.get('state') in ('queued', 'running')
-                    and inp.get('game_id') == gid and (node == 'auto' or node in (wid, worker.get('name'), worker.get('os')))):
-                    return swap_job(inp['session_id'], mod, inp.get('to', ''), actor)
+                        and inp.get('game_id') == gid and here(wid)):
+                    return swap_job(inp['session_id'], mod, inp.get('to', ''), actor, origin=origin)
             running = [s for s in store.all('session') if s.get('game_id') == gid and s.get('state') == 'running'
-                       and _wid(s['session_id'].split('-')[0]) in available]
-            running = [s for s in running if node == 'auto' or node in (
-                available[_wid(s['session_id'].split('-')[0])]['name'],
-                available[_wid(s['session_id'].split('-')[0])]['os'], _wid(s['session_id'].split('-')[0]))]
+                       and _wid(s['session_id'].split('-')[0]) in available and here(_wid(s['session_id'].split('-')[0]))]
             if running:
                 current = max(running, key=lambda s: s.get('started') or 0)
-                return swap_job(current['session_id'], mod, '', actor)
+                return swap_job(current['session_id'], mod, '', actor, origin=origin)   # keep_state=True
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {})},
-                         agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes"))
+                         agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin))
         if debug:
             node = "linux"
         if node in ("linux", "windows"):
@@ -2558,7 +2673,7 @@ def create_app(config: Config) -> FastAPI:
             from . import systems                          # the platform rule wins over a core stored at scan time
             has_core = e.get("core") and (e.get("platform") == "arcade" or systems.core_for(e.get("platform", ""))[0])
             req.require_os = "linux" if has_core else "windows"
-        return submit(req, actor)
+        return submit(req, actor, origin)
 
     @app.get("/api/profiles/{gid}")
     def profile(gid: str, actor=Depends(auth)):
@@ -2611,6 +2726,10 @@ def create_app(config: Config) -> FastAPI:
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
+            if s_.get("state") == "running":         # Hermes / observers keep heavy work off the operator's game
+                from .background_testing import agent_owned
+                row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
+                                                 store.get("job", s_["session_id"].split("-", 1)[-1]))
             out.append(row)
         return out
 
@@ -2717,7 +2836,9 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/sessions/{sid}/stream")
     async def ingest_stream(sid: str, request: Request, actor=Depends(auth)):
         """Worker uploads a session's frames as one stream: [4-byte length][JPEG]...; parsed on the event loop."""
+        from .live_stream import note_frame
         lv, buf, n = _live(sid), bytearray(), 0
+        lv["sid"], lv["uploads"] = sid, lv.get("uploads", 0) + 1
         async for chunk in request.stream():
             buf += chunk
             while len(buf) >= 4:
@@ -2727,10 +2848,39 @@ def create_app(config: Config) -> FastAPI:
                 frame, buf = bytes(buf[4:4 + size]), buf[4 + size:]
                 if size:
                     with lv["cond"]:
-                        lv["frame"], lv["seq"], lv["ts"] = frame, lv["seq"] + 1, time.time()
+                        now = time.time()
+                        note_frame(lv, now)               # a gap of 2 s+ is logged with timestamps (stream-stability)
+                        lv["frame"], lv["seq"], lv["ts"] = frame, lv["seq"] + 1, now
                         lv["cond"].notify_all()
                     n += 1
         return {"frames": n}
+
+    class StreamEvent(BaseModel):
+        kind: str
+        at: str = ""
+        stream: str = ""
+        silent_s: float | None = None
+        gap_s: float | None = None
+        restart: int | None = None
+        returncode: int | None = None
+
+    @app.post("/api/sessions/{sid}/stream/event")
+    def stream_event(sid: str, ev: StreamEvent, actor=Depends(auth)):
+        """The worker's encoder supervisor reports a stall, exit or restart (gbox/adapters.py MjpegStream)."""
+        from .live_stream import note_event
+        lv = _live(sid)
+        lv["sid"] = sid
+        with lv["cond"]:
+            return note_event(lv, ev.model_dump(exclude_none=True))
+
+    @app.get("/api/sessions/{sid}/stream/health")
+    def stream_health(sid: str, actor=Depends(auth)):
+        """Source frame age, recent stalls and encoder events: the client watchdog's stall signal and the log the
+        operator's "it went black at ..." report is matched against."""
+        from .live_stream import health
+        s = store.get("session", sid)
+        lv = live.get(sid) or {}
+        return health(lv, s.get("state") if s else None) | {"session_id": sid}
 
     @app.get("/api/sessions/{sid}/frame.jpg")
     def get_frame(sid: str, actor=Depends(auth)):

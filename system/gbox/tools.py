@@ -832,30 +832,85 @@ def _rpc_answerer(sid: str, client):
             pass
     return answer
 
+class _EmulatorLiveness:
+    """Whether the session's emulator process still runs, polled at most every `every` seconds (poll() per frame at
+    60 fps would be wasted work). Adapters without a process handle count as alive."""
+
+    def __init__(self, ad, every: float = 0.5, clock=time.monotonic):
+        self.ad, self.every, self.clock = ad, every, clock
+        self.at, self.alive = -1e9, True
+
+    def __call__(self) -> bool:
+        now = self.clock()
+        if now - self.at >= self.every:
+            self.at = now
+            proc = getattr(self.ad, "__dict__", {}).get("proc")
+            try:
+                self.alive = proc is None or proc.poll() is None
+            except Exception:                            # noqa: BLE001 - unknown means keep streaming
+                self.alive = True
+        return self.alive
+
+
+def _stream_event_reporter(sid: str, server: str, headers: dict):
+    """Encoder stalls/restarts go to the control plane (GET /api/sessions/{sid}/stream/health) from one background
+    thread with a bounded queue: reporting can never block or slow the frame path."""
+    import queue
+    q = queue.Queue(maxsize=50)
+
+    def run():
+        with httpx.Client(base_url=server, headers=headers, timeout=5) as c:
+            while sid in SESSIONS or not q.empty():
+                try:
+                    ev = q.get(timeout=5)
+                except queue.Empty:
+                    continue
+                try:
+                    c.post(f"/api/sessions/{sid}/stream/event", json=ev)
+                except httpx.HTTPError:
+                    pass
+    threading.Thread(target=run, daemon=True, name=f"stream-events-{sid}").start()
+
+    def report(ev: dict):
+        try:
+            q.put_nowait(ev)
+        except queue.Full:
+            pass
+    return report
+
+
 def _pump(sid: str, ad, server: str, headers: dict):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
     input   - long-polled from the control plane and applied immediately,
     status  - every 3 s; marks the session ended when the emulator exits."""
     stream = ad.stream_session() if "stream_session" in ad.supported else None
+    if stream is not None and hasattr(stream, "events"):
+        stream.label = sid
+        stream.on_event = _stream_event_reporter(sid, server, headers)
 
     def frames():
         if stream is None:                               # local native window: nothing to stream
             return
         # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
         def body():
-            last = -1
+            last, live = -1, _EmulatorLiveness(ad)
             while sid in SESSIONS:
                 if stream.wait(last, 1.0):
                     last, data = stream.seq, stream.latest
-                    yield len(data).to_bytes(4, "big") + data
+                    # An exited emulator leaves its virtual display empty (black). Those grabs are never sent: the
+                    # operator keeps the last real game frame until the session ends or the game comes back.
+                    yield (len(data).to_bytes(4, "big") + data) if live() else b"\0\0\0\0"
                 else:
                     yield b"\0\0\0\0"                     # keepalive (zero-length frame)
         while sid in SESSIONS:
             try:
                 with httpx.Client(base_url=server, headers=headers, timeout=httpx.Timeout(10, read=None, write=None)) as c:
                     c.post(f"/api/sessions/{sid}/stream", content=body(), headers={"content-type": "application/octet-stream"})
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                if sid in SESSIONS:
+                    print(f"gBox stream: upload of {sid} interrupted at {adapters._wall()} "
+                          f"({type(e).__name__}); reconnecting", flush=True)
                 time.sleep(1)
 
     answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10))

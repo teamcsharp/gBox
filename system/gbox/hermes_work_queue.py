@@ -241,11 +241,61 @@ def choose(options, data):
         v[1].get('created', 0), v[0])) if lane else None
 
 
-def _prompt(item):
+EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
+
+
+def _operator_playing():
+    """Operator games running on the Spark (Hermes' own machine): the gBox API rows marked not agent-owned on a
+    Linux worker. Unknown (API down) counts as none: the rest of tick() fails loudly on its own API calls."""
+    from . import operator_guard
+    try:
+        sessions = _api('/api/sessions?include_ended=false')
+        workers = _api('/api/workers')
+        return operator_guard.spark_operator_sessions(sessions, workers)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def launches_emulator(item) -> bool:
+    """Queue items whose agents start an emulator on this machine: the favorite runtime stage (replacement tested
+    in a running game) and inbox repairs that need gameplay acceptance."""
+    if item.get('lane') == 'favorite':
+        return next_stage(item) in EMULATOR_STAGES
+    return bool(item.get('repair'))
+
+
+def throttle_sandboxes(playing, throttle=None):
+    """While the operator plays here: running agent sandboxes drop to nice 19 and the idle I/O class."""
+    if not playing:
+        return None
+    from . import operator_guard
+    try:
+        return (throttle or operator_guard.throttle_agent_sandboxes)()
+    except Exception as e:  # noqa: BLE001
+        return {'error': f'{type(e).__name__}: {e}'[:200]}
+
+
+def operator_gate(options, playing, throttled=None):
+    """While the operator plays on the Spark (docs/stream-stability.md): defer emulator-launching items and allow
+    one dispatch per tick. Returns (options, capacity cap or None, report)."""
+    if not playing:
+        return options, None, None
+    kept = [v for v in options if not launches_emulator(v[1])]
+    report = {'games': sorted({s.get('title') or s.get('game_id') or s.get('session_id') for s in playing}),
+              'deferred': [v[0] for v in options if v not in kept], 'sandboxes': throttled}
+    return kept, 1, report
+
+
+def _prompt(item, playing=None):
     rid = item['request_id']
     header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
+    if playing:
+        header += ('The operator is playing ' + ', '.join(playing) + ' on this machine right now. Do not start an '
+                   'emulator here (no local Dolphin, RetroArch, PCSX2 or other game runs, no large parallel builds); '
+                   'do source, reader and static-analysis work. Runtime tests go through gBox launch_game node=idle '
+                   'on another PC, never on this one. ')
     if item['lane'] == 'inbox':
         if item.get('launch_failure'):
             # gbox/launch_failures.py: a game failed to load; the control plane verifies and closes it after the merge
@@ -340,6 +390,10 @@ def _ensure_request(data, item, requests):
 def tick(*, now=None):
     now = time.time() if now is None else now
     with delivery.locked('work-queue'):
+        # First, whatever the dispatcher decides below: agent sandboxes already running must not starve the
+        # operator's game on this machine (docs/stream-stability.md).
+        playing = _operator_playing()
+        throttled = throttle_sandboxes(playing)
         controller = mode._job() or {}
         if not controller.get('enabled') or not controller.get('no_agent'):
             return {'status': 'disabled_or_legacy_controller'}
@@ -374,6 +428,10 @@ def tick(*, now=None):
                          if c.get('busy') and c.get('id') in chat_ids)
         native = _native_jobs()
         options = candidates(data, requests, native, owned, _on_main(), now=now)
+        options, cap, gate = operator_gate(options, playing, throttled)
+        if cap is not None:
+            limit = min(limit, cap)
+        titles = (gate or {}).get('games') or []
         dispatched = []
         for _ in range(max(0, limit - len(reserved))):
             # Give both backlogs capacity; spare slots go to whichever has work.
@@ -390,7 +448,7 @@ def tick(*, now=None):
                 options = [v for v in options if v[1].get('game_id') != item['game_id']]
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
-            prompt = _prompt(item)
+            prompt = _prompt(item, titles)
             existing = [j for j in jobs if j.get('name') == name]
             if len(existing) > 1:
                 raise RuntimeError('Ambiguous queue job identity')
@@ -421,7 +479,8 @@ def tick(*, now=None):
                                'game_id': item.get('game_id'), 'lane': item['lane']})
         return {'status': 'dispatched' if dispatched else 'waiting', 'dispatched': dispatched,
                 'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
-                'favorites': data['favorites_count'], 'eligible_tasks': len(options)}
+                'favorites': data['favorites_count'], 'eligible_tasks': len(options),
+                **({'operator_playing': gate} if gate else {})}
 
 
 def snapshot(game_id=''):
