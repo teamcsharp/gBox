@@ -378,7 +378,7 @@ def rgba5551(v: int) -> tuple[int, int, int]:
 
 
 def to5551(rgb) -> int:
-    r, g, b = (int(round(c * 31 / 255)) for c in rgb[:3])
+    r, g, b = (int(round(int(c) * 31 / 255)) for c in rgb[:3])
     return (r << 11) | (g << 6) | (b << 1) | 1
 
 
