@@ -71,8 +71,12 @@ def _refresh_list(root):
     key = str(root)
     try:
         entries = {m["slug"]: m for m in _list_all_uncached(root) if m.get("slug")}
+        try:
+            rmt = Path(root).stat().st_mtime
+        except OSError:
+            rmt = None
         with _LIST_LOCK:
-            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False}
+            _LIST_CACHE[key] = {"at": __import__("time").time(), "entries": entries, "refreshing": False, "root_mtime": rmt}
     except Exception:
         with _LIST_LOCK:
             if key in _LIST_CACHE:
@@ -86,8 +90,15 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
     import copy
     import time as _t
     key = str(root)
+    try:
+        rmt = Path(root).stat().st_mtime                  # a new entry folder (another process collected) changes this
+    except OSError:
+        rmt = 0
     with _LIST_LOCK:
         c = _LIST_CACHE.get(key)
+        if c is not None and c.get("root_mtime") not in (None, rmt) and c.get("entries"):
+            c["root_mtime"] = rmt                         # re-read now: callers right after a collect must see it
+            c = None
         stale = c is not None and _t.time() - c["at"] > LIST_TTL_S and not c.get("refreshing")
         if stale:
             c["refreshing"] = True
@@ -104,6 +115,11 @@ def list_all(root: Path, game_id: str = "") -> list[dict]:
         for m in out:
             m["ready"] = [t for t in m.get("targets", {}).get(game_id, []) if t.get("mod") and not t.get("needs_rebuild")]
     return out
+
+
+def refresh_list(root: Path) -> None:
+    """Force a synchronous re-read (after a collect in another process, or ?fresh=1)."""
+    _refresh_list(root)
 
 
 def warm_list(root: Path) -> None:

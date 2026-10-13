@@ -445,7 +445,7 @@ def test_characters_tool_routes_cast_swap_without_a_character(monkeypatch):
 def test_run_plans_through_the_api_and_names_sources_when_none_given(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path / "absent")
     monkeypatch.setattr(C, "_game", lambda ctx, q: PSO if "phantasy" in (q.game or "") else pytest.fail(q))
-    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: CHARS if p == "/api/characters" else pytest.fail(p))
+    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: CHARS if p.split("?")[0] == "/api/characters" else pytest.fail(p))
     ctx = _ctx(tmp_path)
     r = CS.run(ctx, C.CharIn(op="cast_swap", target_game="PSO"))
     assert r["status"] == "needs_source" and r["sources"][0]["key"] == "wrestlers"
