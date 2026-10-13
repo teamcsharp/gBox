@@ -6,10 +6,13 @@
 <script type="module">
 // Voice overlay: the desktop app floats this click-through window over the game while you talk to gBox or it talks back.
 import { createViz, readVizPref } from "./viz.js";
-const q = new URLSearchParams(location.search);
-const viz = await createViz(document.getElementById("cv"), { mode: q.get("mode") || readVizPref() || "random", quality: "auto" });
+const q = new URLSearchParams(location.search), want = q.get("mode");
+const pref = () => want && want !== "random" ? want : readVizPref();      // the picker's choice; "random" = a different visual each time
+const viz = await createViz(document.getElementById("cv"), { mode: pref(), quality: "auto" });
 addEventListener("resize", () => viz.resize());
+// a new conversation (#250) asks for a fresh visual: a randomized transition into another mode (or the fixed one the picker chose)
+window.gboxVoiceMode = m => viz.setMode(m && m !== "random" ? m : pref(), { transition: Math.random() < 0.5 ? "crossfade" : "dissolve" });
 // the app pushes who's talking + loudness so the visual pulses with the conversation
-window.gboxVoice = s => viz.push({ stationActivity: 0.3 + (s.level || 0) * 0.7, ...(s.beat ? { beat: 1 } : {}) });
+window.gboxVoice = s => { if (s.mode) window.gboxVoiceMode(s.mode); viz.push({ stationActivity: 0.3 + (s.level || 0) * 0.7, ...(s.beat ? { beat: 1 } : {}) }); };
 addEventListener("message", e => { if (e.source === parent && e.data?.gboxVoice) window.gboxVoice(e.data.gboxVoice); });
 </script></body></html>

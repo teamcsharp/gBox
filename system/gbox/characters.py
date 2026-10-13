@@ -550,7 +550,7 @@ class CharIn(BaseModel):
     session_id: str = ""                   # use / extract: the game this session runs (and the node it runs on)
     game_id: str = ""                      # use / extract: or a catalog game id / title
     game: str = ""
-    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only) | roster (DOA2: every fighter, see pairs)
+    slot: str = "player"                   # player | enemies (RE4: Mercenaries Village Ganados, built mods only; PSO Ver.2: every mapped enemy) | roster (DOA2: every fighter, see pairs) | GTA Vice City PC: player (Tommy) | ped:<dff name> | peds:all (every ped on Tommy's skeleton) | all
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="JGR only: known native character ID (0-15) for slot=player. This caller-supplied ID does not prove the current actor or draw group; omit it when unknown, or use explicit slot=id:N.")
     rebuild: bool = False                  # use: build again even if a mod exists
@@ -1075,13 +1075,20 @@ def _pe_run(ctx, game, e, work):
 
 
 def _pso_roster():
+    from . import pso_enemy
     from .pso_player import CLASSES
     return [{"key": "ABCDEFGHI"[i], "slug": "hucast" if c == "HUcast" else f"pso_{c.lower()}", "name": c, "kind": "character",
-             "aliases": [f"PSO {c}", f"Phantasy Star Online {c}"]} for i, c in enumerate(CLASSES)]
+             "aliases": [f"PSO {c}", f"Phantasy Star Online {c}"]} for i, c in enumerate(CLASSES)] + pso_enemy.roster_entries()
 
 
 def _pso_run(ctx, game, e, work):
-    from . import pso_player
+    from . import pso_enemy, pso_player
+    if e.get("kind") == "enemy":                               # an enemy body (slot enemy:<name>) off its pack
+        key = e["key"].split(":", 1)[1]
+        glb = pso_enemy.export(str(_dc_gdi(ctx, game)), str(work), key)
+        return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.pso_enemy",
+                "source_files": [f"{e['file']}:{e['entry']}"], "roles": pso_enemy.export_roles(key),
+                "notes": "an enemy body on its own node tree; the game's motions (.njm in the same pack) aren't exported"}
     glb = pso_player.export(str(_dc_gdi(ctx, game)), str(work), e["key"])
     k = e["key"]
     return {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.pso_player (head 0, colour 0)",
@@ -1312,6 +1319,12 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.gta3_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("gta_lcs", lambda t, p: "liberty city stories" in t and p == "ps2", lambda: _lcs().roster(),
      lambda ctx, game, e, work: _lcs().extract_run(ctx, game, e, work)),
+    # GTA Vice City, classic RenderWare PC port (models/gta3.img): Tommy + peds. The owned windows_native entries
+    # (5eacc9f11d9a5956, 1fd42f50b10252e6) are HyperSpin launchers; gta_vc_models.locate_install tells the classic
+    # port from the UE4 Definitive Edition (no gta3.img) and from the PS2 .chd the first entry points at.
+    ("gta_vc_pc", lambda t, p: "vice city" in t and "stories" not in t and p == "windows_native",
+     lambda: __import__("gbox.gta_vc_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta_vc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1424,9 +1437,12 @@ def collect(ctx, inp):
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     good = sum(r['verified'] for r in results)
     mapped = sum(r['retargetable'] for r in chars)
+    from . import char_coverage
     return {'status': 'complete' if entries and good == len(entries) and mapped == len(chars) else 'partial',
             'game_id': game['game_id'], 'extractor': name, 'collected': good, 'total': len(entries),
-            'retargetable': mapped, 'characters': len(chars), 'entries': results}
+            'retargetable': mapped, 'characters': len(chars), 'entries': results,
+            # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
+            'slots': char_coverage.cast_slots(game)}
 
 
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
@@ -1957,7 +1973,8 @@ def characters_tool(inp: CharIn, ctx):
     """gBox's collection: characters, vehicles, objects (and environments) extracted from the operator's own games,
     reusable through supported game writers. op=list [kind] | get character=<name> | environments |
     collect game_id: extract the native reader's character roster, reuse verified files, report individual failures
-    and mapped rig readiness; unsupported games return unsupported without capture or an LLM call. |
+    and mapped rig readiness, and list the writer's slots (PSO Ver.2: enemy:booma, enemy:gobooma, enemy:gigobooma,
+    enemy:boomas, the other BM_ENE packs); unsupported games return unsupported without capture or an LLM call. |
     live_use character=<name> session_id [x,y|slot]: bounded in-engine OoT NTSC 1.2 single-object NPC swap,
     preserving the session and pause state. Changes all loaded actors sharing that model until object reload.
     Link, compound objects and other games return unsupported_live_swap; never relaunch or substitute an overlay. |
@@ -2069,6 +2086,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import gta3_swap
     if gid in gta3_swap.GAME_IDS and inp.slot == "player":         # GTA III (PS2): Claude -> gta3_<slug> (disc image)
         return {"result": out | gta3_swap.use(ctx, meta, game, inp)}
+    from . import gta_vc_swap
+    if gid in gta_vc_swap.GAME_IDS and (inp.slot in ("player", "peds:all", "all") or inp.slot.startswith("ped:")):
+        # GTA Vice City (classic PC port): Tommy / one ped / every ped -> gtavc_<slug>[_<slot>] (rebuilt gta3.img);
+        # a Definitive Edition install gets the overlay fallback + gap report from inside use()
+        return {"result": out | gta_vc_swap.use(ctx, meta, game, inp)}
     from . import re6_tool
     if gid in re6_tool.GAME_IDS and (inp.slot in ("player", "enemies") or inp.slot.startswith("enemy:")):
         # RE6 (X360, Xenia): player = Leon's every costume -> re6_<slug>; enemies / enemy:<family> -> zombies, J'avo
@@ -2083,7 +2105,9 @@ def characters_tool(inp: CharIn, ctx):
     if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
         return {"result": out | jgr.use(ctx, meta, game, inp)}
     from . import pso_player
-    if gid in pso_player.GAME_IDS and inp.slot == "player":   # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>
+    if gid in pso_player.GAME_IDS and (inp.slot == "player" or pso_player.is_enemy_slot(inp.slot)):
+        # PSO Ver.2 (DC): the operator's class (HUcast) -> pso_<slug>; enemy:<name> | enemies -> pso_<slug>_as_<name>
+        # (gbox.pso_enemy: the character on the enemy's node tree and motions)
         return {"result": out | pso_player.use(ctx, meta, game, inp)}
     from . import crazy_taxi
     if gid in crazy_taxi.GAME_IDS and inp.slot == "player":    # Crazy Taxi GC: Axel the driver -> ct_<slug>
