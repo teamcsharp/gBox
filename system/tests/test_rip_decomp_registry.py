@@ -1,4 +1,4 @@
-"""#443 / #90: ninja_ripper, decomp_me, ida and n64recomp are registry tools (so MCP lists them as gbox_<name>), the
+"""#443 / #90: ninja_ripper, decomp_me, ida and n64recomp are registry tools (so MCP lists them as job_<name>), the
 in-app agent offers them with matching methods, and their permissions are ones the deployed gBox grants."""
 import inspect
 
