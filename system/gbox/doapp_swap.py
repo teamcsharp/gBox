@@ -19,11 +19,15 @@ collection model; the reverse of gbox.doapp_chars (docs/doapp_pipeline.md "Write
    texture area and palette row (player 2's copy is offset by the game: tpage |= 0x10, CLUT |= 0x200).
 4. Packing: every mesh section is written in the expander's source form (gbox.doapp_swap.pack_mesh, the inverse of
    0x8006c718 chunk kind by chunk kind); expand_mesh is a byte-exact port used for sizes, and the build expands its own
-   output with the game's 0x8006c718 on the interpreter and requires identical bytes. Budgets: the loader copies
-   exactly the table's size (0x80050420), so a model fits min(file_room, original size); the expanded sections fit the
-   player's 0x18000-byte work buffer (player 2's model file is loaded right after player 1's buffer); per-slot vertex
-   counts stay within what the game's own models use (scratchpad + spill buffer). Over budget -> Blender decimate when
-   the node has Blender, then per-bone vertex clustering, then a smaller texture page.
+   output with the game's 0x8006c718 on the interpreter and requires identical bytes (on all 44 costume models the
+   packer re-creates Tecmo's own packed bytes exactly). Budgets: the loader copies exactly the table's size
+   (0x80050420), so a model fits min(file_room, original size); the expanded sections fit the player's 0x18000-byte
+   work buffer (player 2's character data is loaded right after player 1's buffer); per-slot vertex counts stay within
+   what the game's own models use (126 scratchpad + spill vertices). Over budget -> Blender decimate when the node has
+   Blender, then the built-in quadric edge-collapse (decimate) to falling vertex targets, then a smaller page.
+6. Checks: the built file is read back through doapp_motion.Rig (the fight loader walk, fight init and skeleton build)
+   and doapp_chars.assemble (verify_read_back); the fight init only reads the mesh headers, group lists and sections
+   0 / 11, the renderer everything else.
 5. ROM: the model files are written over their table spans in the data ROMs (doapp-1.217 / doapp-2.218, zero padded
    to the table size); the rebuilt set is a new folder <mod>/doapp.zip (+ a copy of coh1002m.zip) - the owned zips are
    only read. Nothing checks the data ROMs: the TPS BIOS verifies only the SCEI licence of the (untouched) program ROMs
@@ -65,6 +69,7 @@ HEIGHTS = (256, 192, 128, 96, 64)  # texture page heights tried (texels)
 LEVELS = (1.0, 0.85, 0.7, 0.55, 0.4, 0.3, 0.2)       # decimation targets, fractions of SLOT_VERTEX_CAP
 QUAD_NORMAL_DOT = 0.9              # two triangles pair into a GT4 when their lighting normals on the edge agree this well
 FOOT_BONES = (3, 9)
+SEAM_LIMIT = 600                   # longest seam edge accepted at the bind pose (the reader's 400 is for native models)
 
 # game bone per collection role (doapp_chars.BODY); the body slot's part -> bone table (overlay 0x80103ed0)
 ROLE_BONE = {"hip": 2, "chest": 0, "head": 1, "l_upper": 8, "l_fore": 4, "l_hand": 5, "r_upper": 14, "r_fore": 10,
@@ -784,8 +789,10 @@ def decimate(tri: dict, caps: dict[int, int], weld: float = 0.05) -> dict:
             for x in F[i]:
                 vf[x].discard(i)
         vf[v] = set()
-        live[v] = False
-        count[vslot[v]] -= 1
+        for x in {x for i in both for x in F[i]} | {v}:  # v, and anything the removed faces left without a face
+            if live[x] and not vf[x]:
+                live[x] = False
+                count[vslot[x]] -= 1
         Q[u] += Q[v]
         ver[u] += 1
         collapses += 1
@@ -1131,8 +1138,9 @@ def verify_read_back(program_ram: bytes, banked: bytes, fighter: dict, costume: 
                      glb: Path | None = None, clips: dict | None = None) -> dict:
     """The rebuilt bankedroms through the reader: the game's fight loader walk, fight init and skeleton build with the
     new model (doapp_motion.Rig), then doapp_chars.assemble (every vertex on a bone, every primitive textured from the
-    model's own TIM, seams, ground, height). ok = textured, seams <= 400 units, soles within 60 of the ground, height
-    within 25 % of the original fighter's. glb: also write the read-back model (+ clips {name: motion}) there."""
+    model's own TIM, seams, ground, height). ok = textured, seam edges <= SEAM_LIMIT units at the bind pose (a donor's
+    retargeted triangles are larger than the game's own), soles within 60 of the ground, height within 25 % of the
+    original fighter's. glb: also write the read-back model (+ clips {name: motion}) there."""
     from . import doapp_chars as R
     from . import doapp_motion as DM
     rig = DM.Rig(program_ram, banked, fighter, costume)
@@ -1141,7 +1149,7 @@ def verify_read_back(program_ram: bytes, banked: bytes, fighter: dict, costume: 
     r = a["report"]
     out = {k: r[k] for k in ("triangles", "seam_triangles", "seam_max_edge", "ground", "height", "untextured_prims",
                              "inexact_texture", "joints", "textures")}
-    out["ok"] = (r["untextured_prims"] == 0 and r["seam_max_edge"] <= R.SEAM_LIMIT and abs(r["ground"]) <= R.GROUND
+    out["ok"] = (r["untextured_prims"] == 0 and r["seam_max_edge"] <= SEAM_LIMIT and abs(r["ground"]) <= R.GROUND
                  and (height is None or abs(r["height"] - height) <= 0.25 * height))
     if glb is not None:
         frames = {n: rig.clip(m) for n, m in (clips or {}).items()}
@@ -1273,8 +1281,8 @@ def build(program_ram: bytes, banked: bytes, model_path: Path, roles: dict, jobs
 
 
 def _decimated(prims: list[dict], tgt: dict, work: Path, name: str, blender: str | None) -> list[dict]:
-    """With Blender on this node: edge-collapse the retargeted model to a triangle count the slot caps allow before
-    clustering (gbox.re4gc_enemies.decimate); without it the vertex clustering in fit() does the reduction."""
+    """With Blender on this node: edge-collapse the retargeted model near a triangle count the slot caps allow
+    (gbox.re4gc_enemies.decimate, UV-aware); fit()'s own quadric decimation then lands on the exact vertex caps."""
     tris = sum(len(p["tris"]) for p in prims)
     want = 2 * sum(SLOT_VERTEX_CAP[s] for s in (0, 2, 4))
     if not blender or tris <= want:
