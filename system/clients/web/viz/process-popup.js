@@ -92,17 +92,22 @@
   function stageNumbers(stage, d) {                                         // the stage's numbers, short
     d = d || {};
     if (d.error || d.reason) return String(d.error || d.reason).slice(0, 60);
-    if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "");
-    if (stage === "retarget") return [d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
+    // the donor as loaded -> the fitted height (the writers' scale stage: donor_height / fitted_height, own units)
+    const tall = d.donor_height != null && d.fitted_height != null ? ` · ${n2(d.donor_height)} → ${n2(d.fitted_height)} tall` : "";
+    if (stage === "scale" && d.scale != null) return `×${n2(d.scale)}` + (d.head_scale != null ? ` · head ×${n2(d.head_scale)}` : "") + tall;
+    if (stage === "retarget") return [d.mode || "", d.roles != null ? `${d.roles} roles` : "", d.vertices != null ? `${n2(d.vertices)} verts` : "",
       d.segments != null ? `${d.segments} parts` : ""].filter(Boolean).join(" · ");
     if (stage === "proportion") return d.applied ? ["height", "head", "torso_width"].filter(k => d[k] != null && d[k] !== 1)
       .map(k => `${k.replace("_", " ")} ×${n2(d[k])}`).concat((d.roles_adjusted || []).length ? [`${d.roles_adjusted.length} parts`] : [])
       .join(" · ") || "profile" : (d.profile === "none" ? "no profile" : String(d.profile || ""));
-    if (stage === "weights") return d.vertices_reduced != null ? `${n2(d.vertices_reduced)} verts → ${d.max_influences} bones` : (d.max_influences != null ? `max ${d.max_influences}` : "");
+    const limbs = d.limbs != null ? d.limbs : d.nodes != null ? d.nodes : d.bones;   // per-limb vertex counts
+    if (stage === "weights") return d.vertices_reduced != null ? `${n2(d.vertices_reduced)} verts → ${d.max_influences} bones`
+      : limbs != null ? `${limbs} limbs · ${n2(d.vertices || 0)} verts` : (d.max_influences != null ? `max ${d.max_influences}` : "");
     if (stage === "decimate") return d.from != null && (d.triangles != null || d.to != null) ? `${n2(d.from)} → ${n2(d.triangles != null ? d.triangles : d.to)} tris` : "";
-    if (stage === "encode") return d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
-      : d.triangles != null ? `${n2(d.triangles)} tris` : "";
-    if (stage === "write") return d.mod || d.image || "";
+    const moved = d.relocates || (Array.isArray(d.relocated) ? d.relocated.length : d.relocated) ? " · moved" : "";
+    if (stage === "encode") return (d.bytes != null ? `${n2(d.bytes / 1024)} KB` : d.chr_bytes != null ? `${n2((d.chr_bytes + (d.bin_bytes || 0)) / 1024)} KB`
+      : d.triangles != null ? `${n2(d.triangles)} tris` : "") + (d.grew ? ` · +${n2(d.grew / 1024)} KB` : "") + moved;
+    if (stage === "write") return (d.mod || d.image || "") + (d.vrom ? ` · ${d.vrom}` : "");
     return "";
   }
   function fittingHTML(job) {

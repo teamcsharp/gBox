@@ -83,3 +83,66 @@ def test_pso_build_cast_reports_every_enemy_slot(tmp_path, monkeypatch):
     # Kane is 1.3x taller than Briggs as loaded; both are fitted to the same Rappy
     assert last(evs, "enemy:lappy_two", "scale")["data"]["donor_height"] > \
         last(evs, "enemy:lappy_base", "scale")["data"]["donor_height"]
+
+
+# ---------------------------------------------------------------- DOA2 roster (doa2_swap.build_roster)
+
+def test_doa2_weighted_fit_reports_the_donor_its_limbs_and_the_two_influence_reduction(tmp_path):
+    from gbox import doa2_swap
+    from gbox.doa2_weighted_retarget import retarget
+    from tests.test_doa2_weighted_retarget import rig, target
+    r, t = rig(), target()
+    r["source"] = str(tmp_path / "amy" / "amy.glb")
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        FE.model("fighter:KAS", "Amy -> Kasumi")
+        prims, fit = retarget(r, t, None, t["jmap"])
+        fit["max_influences"] = 3                       # as if the donor had three: the SUP reduction runs
+        prims, fit["influence_reduction"] = doa2_swap.limit_influences(prims, 2)
+        doa2_swap.weights_stage(prims, fit, t["jmap"])
+    evs = events(lines)
+    assert order(evs, "fighter:KAS") == ["scale", "retarget", "proportion", "weights"]
+    assert_snapshots(evs, "fighter:KAS")
+    sc = last(evs, "fighter:KAS", "scale")["data"]
+    assert sc["donor_height"] == 2.1 and sc["fitted_height"] > 0 and sc["donor_joints"] == 10
+    w = last(evs, "fighter:KAS", "weights")["data"]
+    assert w["max_influences_before"] == 3 and w["vertices_reduced"] == 0 and w["vertices"] == 15
+    assert w["per_limb"]["hip (bone 0)"] == 6 and sum(w["per_limb"].values()) == 15
+
+
+def test_doa2_roster_plans_every_fighter_and_writes_each_one(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    from gbox import doa2_swap as S
+    from tests.test_doa2_roster import FakeDisc
+    monkeypatch.setattr("gbox.gdrom.GDRom", lambda gdi: FakeDisc())
+    monkeypatch.setattr("gbox.doa2_rig.collect_axes", lambda disc: {})
+
+    def edits(disc, audit, gdi, character_dir, out_dir, family, costume="all", *, allow_downscale=False,
+              progress=None):
+        FE.model(f"fighter:{family}")
+        FE.stage("encode", data={"chr_bytes": 4096})
+        files = {f"DOA2/{family}00.CHR": b"c" * 10, f"DOA2/{family}00.BIN": b"b" * 5}
+        return files, [{"fighter": family, "costume": "00"}], []
+    monkeypatch.setattr(S, "fighter_edits", edits)
+
+    def write_mod(gdi, out_dir, name, slug, changes, reports, progress):
+        Path(out_dir, ".gbox-mod.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+        return {"mod": name, "image": str(Path(out_dir) / "doa2.gdi")}
+    monkeypatch.setattr(S, "write_mod", write_mod)
+    donors = {}
+    for slug in ("sonic", "sa2_tails"):
+        (tmp_path / slug).mkdir()
+        donors[slug] = tmp_path / slug
+    plan = S.plan_roster([("Kasumi", "sonic"), ("", "sa2_tails")], seed="t")
+    (tmp_path / "mod").mkdir()
+    lines, sink = collect()
+    with FE.job(sink, tmp_path / "snaps"):
+        S.build_roster("disc.gdi", donors, tmp_path / "mod", plan)
+    evs = events(lines)
+    assert [x["model"] for x in evs[0]["plan"]] == [f"fighter:{f}" for f in S.ROSTER]
+    assert evs[0]["plan"][0]["label"] == "sonic -> Kasumi"
+    for family in S.ROSTER:
+        wr = last(evs, f"fighter:{family}", "write")
+        assert wr["state"] == "done" and wr["data"]["files"] == 2 and wr["data"]["bytes"] == 15
+        assert wr["data"]["image"] == "doa2.gdi" and wr["data"]["costumes"] == 1

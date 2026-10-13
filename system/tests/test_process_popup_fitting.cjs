@@ -116,3 +116,15 @@ test('desktop and web load the extended popup script (no second copy)', () => {
   assert.equal(web.split('/viz/process-popup.js').length - 1, 1);
   assert.equal(desk.split('../web/viz/process-popup.js').length - 1, 1);
 });
+
+test('the cast writers numbers: donor height, rigid ride, per-limb counts, growth and the new VROM range', () => {
+  const N = popup.stageNumbers;
+  assert.equal(N('scale', { scale: 100, donor_height: 7.9, fitted_height: 790 }), '×100 · 7.9 → 790 tall');
+  assert.equal(N('retarget', { mode: 'rigid ride', vertices: 168 }), 'rigid ride · 168 verts');
+  assert.equal(N('weights', { limbs: 14, vertices: 168, per_limb: { 'head (limb 14)': 12 } }), '14 limbs · 168 verts');
+  assert.equal(N('weights', { nodes: 9, vertices: 1200 }), '9 limbs · 1,200 verts');
+  assert.equal(N('encode', { bytes: 4768, grew: 1104, relocates: true }), '4.66 KB · +1.08 KB · moved');
+  assert.equal(N('encode', { bytes: 2048, relocated: false }), '2 KB');
+  assert.equal(N('write', { mod: 'cast_oot', relocated: ['object_sa'], vrom: '0x120000-0x12b600 (was 0xf8a30)' }),
+    'cast_oot · 0x120000-0x12b600 (was 0xf8a30)');
+});
