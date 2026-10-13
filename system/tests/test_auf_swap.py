@@ -231,6 +231,10 @@ def test_cmpr_endpoints_fit_the_block_not_its_extreme_texels():
     back = np.frombuffer(N.decode_gx(N.GX_CMPR, 32, 32, G.encode_cmpr(img)), np.uint8).reshape(32, 32, 4)
     err = np.abs(back[..., :3].astype(int) - img[..., :3])
     assert err.max() <= 28 and err.mean() < 4.5
+    # saturated corners: the principal-axis line leaves the RGB cube; endpoints are clamped before quantising
+    sat = (rng.integers(0, 2, (32, 32, 4)) * 255).astype(np.uint8)
+    sat[..., 3] = 255
+    assert len(G.encode_cmpr(sat)) == N.gx_image_size(N.GX_CMPR, 32, 32)
 
 
 # ----------------------------------------------------------------------------------------------- a synthetic level

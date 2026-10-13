@@ -507,7 +507,7 @@ def _from565(c: np.ndarray) -> np.ndarray:
 def _cmpr_fit(blk: np.ndarray, hi: np.ndarray, lo: np.ndarray):
     """Quantise endpoints (c0 > c1: four-colour mode) and pick each texel's nearest of the four colours.
     -> (c0, c1, indices, squared error per block)."""
-    c0, c1 = _rgb565(hi), _rgb565(lo)
+    c0, c1 = _rgb565(np.clip(hi, 0, 255)), _rgb565(np.clip(lo, 0, 255))
     swap = c0 < c1
     c0, c1 = np.where(swap, c1, c0), np.where(swap, c0, c1)
     p0, p1 = _from565(c0), _from565(c1)
