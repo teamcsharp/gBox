@@ -102,3 +102,26 @@ test('a pending look shows as Looking... and an older server without goals still
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(!element.innerHTML.includes('obs-goals') && element.innerHTML.includes('Done, look now'));
 });
+
+test('inbox #1551: a swap test the operator cannot set up says so, and asks carry a "Can\'t?" fallback', async () => {
+  const cannot = { agent: 'models', name: 'Model collector',
+    text: 'The character swap test for 007 Agent Under Fire cannot run yet: none of its own characters are in your library <i>' };
+  const ask = { agent: 'gameplay', name: 'Gameplay observer', text: 'Stand still facing a character for a few seconds',
+    if_unavailable: 'If no characters are reachable where you are, just keep playing' };
+  const withFallback = { ...goals, ask, cannot_help: cannot,
+    agents: goals.agents.map(a => a.agent === 'gameplay' ? { ...a, if_unavailable: ask.if_unavailable } : a) };
+  let { context, element } = panel({ service_online: true, enabled: true, gameplay_state: 'watching',
+    models: { state: 'unsupported' }, history: [], goals: withFallback });
+  context.sessionObserverWatch('w-1');
+  await new Promise(resolve => setImmediate(resolve));
+  const html = element.innerHTML;
+  for (const text of ['data-cannot-help', 'Not something you can set up:', 'cannot run yet', "Can't?",
+                      'If no characters are reachable where you are', "If you can't:"])
+    assert.ok(html.includes(text), text);
+  assert.ok(html.indexOf('data-cannot-help') < html.indexOf('You can help the Gameplay observer'), 'the blocker comes first');
+  assert.ok(html.includes('&lt;i&gt;') && !html.includes('library <i>'), 'server text is escaped');
+  ({ context, element } = panel({ service_online: true, enabled: true, gameplay_state: 'watching', models: {}, history: [], goals }));
+  context.sessionObserverWatch('w-1');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!element.innerHTML.includes('data-cannot-help') && !element.innerHTML.includes("Can't?"));
+});

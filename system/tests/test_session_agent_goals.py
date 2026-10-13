@@ -56,7 +56,7 @@ def test_each_work_queue_stage_has_its_own_goal_seeking_and_help(stage):
     assert hermes['goal'] == STAGE_GOALS[stage]['goal'].format(title=AUF)
     assert hermes['seeking'].startswith(STAGE_GOALS[stage]['seeking'])
     assert hermes['stages_verified'] == list(STAGE_GOALS)[:list(STAGE_GOALS).index(stage)]
-    wants_characters = stage in ('reader', 'writer', 'runtime')
+    wants_characters = stage == 'reader'   # writer/runtime have no collected characters here (see the #1551 tests)
     assert ('characters clearly visible' in a['gameplay']['seeking']) is wants_characters
     assert ('Done, look now' in a['gameplay']['you_can_help']) is wants_characters
     assert a['models']['you_can_help'].startswith('Nothing in-game; Hermes is working on it')
@@ -106,7 +106,9 @@ def test_character_request_says_what_it_is_putting_in_and_what_blocks_it():
     assert f'for inbox #7: put Bond into {AUF} in place of the guard and see it on screen' in hermes['seeking']
     assert f'no collection characters available for the {AUF} writer yet' in hermes['blocked_by']
     assert hermes['doing'] == 'Running now: characters collect.'
-    assert 'characters clearly visible' in agents(result)['gameplay']['seeking']
+    # Inbox #1551: without collected characters the operator cannot set up the pick test, so nobody asks for it.
+    assert 'characters clearly visible' not in agents(result)['gameplay']['seeking']
+    assert result['cannot_help']['agent'] == 'models' and 'cannot run yet' in result['cannot_help']['text']
 
 
 GAMEPLAY = {
@@ -231,3 +233,67 @@ def test_game_requests_reads_only_unfinished_requests_for_the_game(tmp_path):
     store.put('request', 'c', {'id': 'c', 'number': 3, 'title': 'C', 'status': 'done', 'context': {'game_id': 'g'}})
     store.put('request', 'd', {'id': 'd', 'number': 4, 'title': 'D', 'status': 'open'})
     assert [r['id'] for r in store.game_requests('g')] == ['b', 'a']
+
+
+# Inbox #1551 (operator playing the game while the agents watch): "If it's trying to test the characters being
+# picked, I can't do that because the characters aren't available. Have it say what their goal is and what they're
+# seeking to obtain so that maybe I can help them obtain those goals."
+
+COLLECTED = {'state': 'succeeded', 'result': {'status': 'complete', 'collected': 3, 'total': 3},
+             'capabilities': {'operations': {'characters': {'in_collection': ['bond', 'griffin', 'zoe']}}}}
+PICK = {'id': 'r7', 'number': 7, 'title': 'Pick Bond onto the guard', 'status': 'open',
+        'context': {'game_id': 'auf', 'character': 'Bond', 'target': 'the guard'}}
+
+
+@pytest.mark.parametrize('models', [{'state': 'unsupported'}, {'state': 'running'}, {'state': 'queued', 'job_id': 'j1'},
+                                    {'state': 'failed', 'error': 'bad archive'}, {}])
+@pytest.mark.parametrize('setup', ['writer', 'runtime', 'pick'])
+def test_swap_test_without_collected_characters_does_not_ask_the_operator_to_stage_it(models, setup):
+    kw = {'requests': [PICK]} if setup == 'pick' else {'queue': queue(setup)}
+    result = agent_goals(view(gameplay_state='analyzing', models=models), now=0, **kw)
+    a = agents(result)
+    assert 'characters clearly visible' not in a['gameplay']['seeking']
+    assert 'Stand still facing a character' not in a['gameplay']['you_can_help'] and not a['gameplay']['needs_you']
+    assert (result['ask'] or {}).get('agent') != 'gameplay'
+    assert not (result['ask'] or {}).get('text', '').startswith('Stand still')
+    cannot = result['cannot_help']
+    assert cannot['agent'] == 'models' and AUF in cannot['text']
+    assert 'none of its own characters are in your library' in cannot['text']
+    assert 'You cannot set this up in-game' in cannot['text']
+    if setup in ('writer', 'runtime'):
+        assert not a['hermes']['needs_you'] and 'no collection characters' in a['hermes']['blocked_by']
+
+
+def test_swap_unavailable_names_the_collection_state_that_blocks_it():
+    reason = lambda m: agent_goals(view(models=m), queue=queue('runtime'), now=0)['cannot_help']['text']
+    assert 'no native model reader for this build yet' in reason({'state': 'unsupported'})
+    assert 'still reading the game files' in reason({'state': 'running'})
+    assert 'still queued' in reason({'state': 'queued'})
+    assert 'the last collection failed' in reason({'state': 'failed'})
+
+
+@pytest.mark.parametrize('setup', ['writer', 'runtime', 'pick'])
+def test_swap_test_with_collected_characters_asks_for_them_and_says_what_if_you_cannot(setup):
+    kw = {'requests': [PICK]} if setup == 'pick' else {'queue': queue(setup)}
+    result = agent_goals(view(models=COLLECTED), now=0, **kw)
+    a = agents(result)
+    assert result['cannot_help'] is None
+    assert 'characters clearly visible' in a['gameplay']['seeking'] and a['gameplay']['needs_you']
+    assert result['ask']['agent'] == 'gameplay' and result['ask']['text'].startswith('Stand still facing a character')
+    assert result['ask']['if_unavailable'].startswith('If no characters are reachable where you are')
+    assert 'nothing waits on you' in a['gameplay']['if_unavailable']
+
+
+def test_reader_stage_ask_carries_a_fallback_and_window_asks_do_not():
+    reader = agent_goals(view(), queue=queue('reader'), now=0)
+    assert reader['cannot_help'] is None and reader['ask']['if_unavailable'].startswith('If no characters are reachable')
+    assert agents(reader)['hermes']['if_unavailable'].startswith('If no characters are reachable')
+    covered = agent_goals(view(gameplay_state='covered'), queue=queue('reader'), now=0)
+    assert covered['ask'] == {'agent': 'gameplay', 'name': 'Gameplay observer', 'text': 'Bring the game window to the front.'}
+    assert agents(covered)['gameplay']['if_unavailable'] == ''
+
+
+def test_every_agent_has_an_if_unavailable_field():
+    for result in (agent_goals(view(), now=0), agent_goals(view(models=COLLECTED), queue=queue('runtime'), now=0)):
+        assert all(isinstance(a.get('if_unavailable'), str) for a in result['agents'])
+        assert 'cannot_help' in result

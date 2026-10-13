@@ -2250,9 +2250,11 @@ function observerGoalsHtml(r) {
     `#${esc(q.number ?? q.id)} ${esc(q.title)}${q.goal ? ` (${esc(q.goal)})` : ''}`).join('; ')}</p>` : '';
   const stage = a => a.stage ? ` <span class="mut">stage: ${esc(a.stage)}${(a.stages_verified || []).length ? ` · verified: ${a.stages_verified.map(esc).join(', ')}` : ''}</span>` : '';
   const last = r.last_look?.answered ? `<small class="mut">Last look on request: ${new Date(r.last_look.answered * 1000).toLocaleTimeString()}</small>` : '';
-  return `<div class="obs-goals">${g.ask ? `<p class="obs-ask"><b>You can help the ${esc(g.ask.name)}:</b> ${esc(g.ask.text)}</p>` : ''}
+  const ask = g.ask ? `<p class="obs-ask"><b>You can help the ${esc(g.ask.name)}:</b> ${esc(g.ask.text)}${g.ask.if_unavailable ? `<br><small><b>Can't?</b> ${esc(g.ask.if_unavailable)}</small>` : ''}</p>` : '';
+  const cannot = g.cannot_help ? `<p class="obs-ask obs-blocked" data-cannot-help><b>Not something you can set up:</b> ${esc(g.cannot_help.text)}</p>` : '';
+  return `<div class="obs-goals">${cannot}${ask}
     ${agents.map(a => `<div class="obs-agent" data-agent="${esc(a.agent)}"><p><b>${esc(a.name)}</b> <span class="mut">${esc(a.state || '')}</span>${stage(a)}</p>
-      ${line('Goal:', a.goal)}${line('Now:', a.doing)}${line('Looking for:', a.seeking)}${line('You can help:', a.you_can_help)}${line('Blocked by:', a.blocked_by, 'obs-blocked')}${reqs(a)}</div>`).join('')}${last}</div>`;
+      ${line('Goal:', a.goal)}${line('Now:', a.doing)}${line('Looking for:', a.seeking)}${line('You can help:', a.you_can_help)}${line("If you can't:", a.if_unavailable)}${line('Blocked by:', a.blocked_by, 'obs-blocked')}${reqs(a)}</div>`).join('')}${last}</div>`;
 }
 function sessionObserverWatch(sid) {
   clearTimeout(observerWatch.timer);
