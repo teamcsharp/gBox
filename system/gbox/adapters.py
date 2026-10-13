@@ -1820,6 +1820,10 @@ D-Pad/Right = `Pad E`
                 "Dolphin.Interface.ConfirmStop": "False", "Dolphin.Interface.ShowToolbar": "False", "Dolphin.Interface.ShowStatusbar": "False",
                 "Dolphin.Analytics.PermissionAsked": "True", "Dolphin.Analytics.Enabled": "False",
                 "Dolphin.Input.BackgroundInput": "True", "Dolphin.Core.SIDevice0": "6",
+                # BackgroundInput covers the pad only (Dolphin PR #8609 split hotkeys out): docked under gBox the render
+                # window is never Qt's active window, so the default HotkeysRequireFocus=True drops the Shift+F1 /
+                # Shift+F8 save hotkeys and state_transfer finds no state file (#1641)
+                "Dolphin.General.HotkeysRequireFocus": "False",
                 "Dolphin.AutoUpdate.UpdateTrack": "",
                 # play speed: the debugging UI makes the JIT check breakpoints on every block (the GDB stub's memory
                 # reads/writes don't need it); async ubershaders = no shader-compile stutter on the RTX
@@ -1912,10 +1916,34 @@ D-Pad/Right = `Pad E`
         keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l"}
         return win_send_keys(self.proc.pid, [{**e, "key": keymap.get(e["key"], e["key"])} for e in events])
 
+    SAVE_WAIT_S = 15.0                                             # Dolphin compresses + writes the state on a thread
+
+    def _slot_files(self, slot: int) -> list[Path]:
+        d = self.state_dir()
+        gid = getattr(self, "gecko_id", None)
+        pattern = f"{gid}.s{slot:02d}" if gid else f"*.s{slot:02d}"
+        return [f for f in d.glob(pattern) if f.is_file()] if d.is_dir() else []
+
     def save_state(self, slot: int | None = None) -> dict:
-        win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F1", "down": True},
-                                      {"key": "F1", "down": False}, {"key": "Shift_R", "down": False}])
-        return {"slot": 1}
+        """Shift+F1 (Dolphin's slot 1), then prove the file landed: a hotkey Dolphin ignores must not look like a save."""
+        t0 = time.time()
+        sent = win_send_keys(self.proc.pid, [{"key": "Shift_R", "down": True}, {"key": "F1", "down": True},
+                                             {"key": "F1", "down": False}, {"key": "Shift_R", "down": False}])
+        sent = sent if isinstance(sent, dict) else {}
+        if sent.get("stopped") or not sent.get("sent"):
+            raise RuntimeError(f"Dolphin's save-state hotkey (Shift+F1) was not delivered: {sent.get('stopped') or 'no keys sent'}")
+        last = None
+        while time.time() - t0 < self.SAVE_WAIT_S:
+            fresh = [f for f in self._slot_files(1) if f.stat().st_mtime >= t0 - 1 and f.stat().st_size > 0]
+            if fresh:
+                f = max(fresh, key=lambda x: x.stat().st_mtime)
+                size = f.stat().st_size
+                if last == (f, size):                              # unchanged across one poll: the write finished
+                    return {"slot": 1, "path": str(f), "verified": True, "bytes": size}
+                last = (f, size)
+            time.sleep(0.4)
+        raise RuntimeError(f"Dolphin didn't write save slot 1 within {self.SAVE_WAIT_S:.0f} s of Shift+F1 "
+                           f"(state folder {self.state_dir()}); its hotkeys may be ignored while the window lacks focus")
 
     def load_state(self, slot: int | None = None) -> dict:
         win_send_keys(self.proc.pid, [{"key": "F1", "down": True}, {"key": "F1", "down": False}])
