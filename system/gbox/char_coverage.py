@@ -14,7 +14,8 @@ import re
 import time
 
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
-# read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
+# read from characters_tool's loaded code. WRITER_GAME_IDS narrows modules whose
+# GAME_IDS also includes games that only support extraction.
 WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
     ("soulcalibur_swap", ["fighter:<name>[:<costume>]", "roster"],
@@ -29,8 +30,8 @@ WRITERS = [
      "port only; the owned install is the UE4 Definitive Edition, which use() detects and reports as a gap)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
-    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
-                                                "(gbox.aki_wcw); Revenge has no writer yet"),
+    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy USA, "
+                                                "World Tour USA and Revenge USA (gbox.aki_wcw)"),
     ("yukes_sd", ["<wrestler>"], "any wrestler, every costume (several per disc: op=match); SmackDown! 2 (PS1)"),
     ("defjam_writer", ["<wrestler>", "player"],
      "Def Jam Vendetta PS2: any of the 58 wrestler containers (player = the four story heroes, every costume); "
@@ -167,7 +168,7 @@ def writer_for(game: dict) -> dict | None:
     gid, t, plat = game.get("game_id", ""), (game.get("title") or "").lower(), game.get("platform") or ""
     for name, slots, what in WRITERS:
         m = _mod(name)
-        if m is not None and gid in (getattr(m, "GAME_IDS", None) or {}):
+        if m is not None and gid in (getattr(m, "WRITER_GAME_IDS", getattr(m, "GAME_IDS", None)) or {}):
             return {"writer": f"gbox.{name}", "routed": routes_to(r, name), "slots": slots, "replaces": what}
     if gid in C.RE4GC or gid in C.RE4WII:
         return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": "build_re4" in r["globals"],

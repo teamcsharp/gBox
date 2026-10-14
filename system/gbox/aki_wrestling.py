@@ -49,6 +49,10 @@ NO_MERCY = {"23a346e48b6368a6": "WWF No Mercy (USA)", "2e8850a2a6c53375": "WWF N
 REVENGE = {"bca7ec4ecf71d164": "WCW-nWo Revenge (USA)", "061264c636cc284d": "WCW-nWo Revenge (Europe)"}
 WORLD_TOUR = {"59bf059d2eadd372": "WCW vs. nWo: World Tour (USA)"}
 GAME_IDS = {**NO_MERCY, **REVENGE, **WORLD_TOUR}
+# Extraction covers more releases than the native writers. Keep availability tied to
+# the same accepted catalog IDs as use(), rather than advertising every readable ROM.
+WRITER_GAME_IDS = {"23a346e48b6368a6": NO_MERCY["23a346e48b6368a6"], **WORLD_TOUR,
+                   "bca7ec4ecf71d164": REVENGE["bca7ec4ecf71d164"]}
 
 # ROM profiles (z64 offsets), by product code + revision. Only NW4E rev 1 has the writer; the others read.
 PROFILES = {
