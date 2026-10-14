@@ -1,0 +1,106 @@
+"""PSO session capabilities and boot defaults. Never apply Dreamcast addresses to GameCube."""
+import threading
+
+from .psoitems import CLASSES
+
+DEFAULTS = {"equip_any": True}
+_locks = {}
+_locks_guard = threading.Lock()
+
+
+def session_lock(sid):
+    # Serialize native dispatcher calls as well as UI/stat edits for a single emulator.
+    with _locks_guard:
+        return _locks.setdefault(sid, threading.RLock())
+
+
+def serialized(fn):
+    from functools import wraps
+    @wraps(fn)
+    def run(inp, ctx):
+        with session_lock(inp.session_id):
+            return fn(inp, ctx)
+    return run
+
+
+def is_pso(game):
+    return game.get("platform") in ("dreamcast", "gamecube") and "phantasy star online" in game.get("title", "").lower()
+
+
+def capabilities(game, read):
+    from .pso_mods_tool import SIGNATURE, PATCHES, CHAR_PTR
+    dc = game.get("platform") == "dreamcast"
+    supported = dc and is_pso(game) and read(SIGNATURE[0], len(SIGNATURE[1])) == SIGNATURE[1]
+    if supported:
+        # The class-name string alone is insufficient to authorize executable writes on a different revision.
+        supported = all(read(a, len(orig)) in (orig, patched) for addr, orig, patched in PATCHES.values()
+                        for a in (addr if isinstance(addr, tuple) else (addr,)))
+    character_class = None
+    if supported:
+        import struct
+        try:
+            ptr = struct.unpack("<I", read(CHAR_PTR, 4))[0]
+            if 0x8C000000 <= ptr <= 0x8D000000 - 0x428 and read(ptr + 0x424, 4) == bytes.fromhex("64b005a2"):
+                index = read(ptr + 0x3A1, 1)[0]
+                if index < 9:
+                    character_class = list(CLASSES)[index]
+        except (ValueError, IndexError, struct.error):
+            pass
+    reason = "" if supported else ("Live patches need verification for this GameCube executable revision." if not dc
+                                   else "Live controls require the US Dreamcast Ver. 2 executable.")
+    return {"version": "dcv2" if dc else "gc", "supported": supported, "reason": reason, "character_class": character_class,
+            "classes": list(CLASSES)[:9] if dc else list(CLASSES),
+            "features": {k: supported for k in ("floor_spawn", "floor_rares", "equip_any", "multi_equip", "stat")},
+            "pending": {"areas": "Teleporter progression flags still need a revision-specific verified patch.",
+                        "skins": "Imported skin banks and the Start + L/R native loader are not implemented yet.",
+                        "npcs": "Shop/gang NPC model bindings and guarded movement are not implemented yet."},
+            "multi_equip_note": "Stacks equipment effects; PSO still draws one active weapon. This is not dual-wield animation."}
+
+
+def preferences(ctx):
+    import httpx
+    r = httpx.get(f"{ctx.server}/api/pso/preferences", headers=ctx.headers, timeout=5)
+    r.raise_for_status()
+    return DEFAULTS | r.json()
+
+
+def on_launch(sid, ad, game, ctx):
+    """One lightweight boot watcher. Rechecks original/patch bytes after reset/state load; no save-state/JIT round trip.
+
+    This starts before the title's equip routine is first compiled. Never force a JIT flush or load/save an operator's
+    state in the background. Other revisions return an explicit unsupported capability rather than receiving writes.
+    """
+    if not is_pso(game):
+        return None
+    state = {"state": "waiting", "equip_any": None}
+    def watch():
+        from .tools import SESSIONS
+        from .pso_mods_tool import PSO
+        import time
+        last_fetch, prefs = 0, None
+        while sid in SESSIONS:
+            try:
+                if time.monotonic() - last_fetch >= 15:
+                    prefs = preferences(ctx)
+                    last_fetch = time.monotonic()
+                cap = capabilities(game, ad.read_memory)
+                if not cap["supported"]:
+                    state.update(state="unsupported", reason=cap["reason"])
+                elif prefs is not None:
+                    with session_lock(sid):
+                        m = PSO(ad.read_memory, ad.write_memory)
+                        want = bool(prefs["equip_any"])
+                        before = m.patch_state("equip_any")
+                        if before in ("on", "off"):
+                            if (before == "on") != want:
+                                m.patch("equip_any", want)
+                            state.update(state="applied", equip_any=want, reason="")
+                        else:
+                            state.update(state="unsupported", reason="Equip code bytes do not match this revision.")
+            except Exception as e:
+                state.update(state="waiting", reason=str(e)[:180])
+            time.sleep(2)
+        with _locks_guard:
+            _locks.pop(sid, None)
+    threading.Thread(target=watch, name="pso-defaults-" + sid, daemon=True).start()
+    return state

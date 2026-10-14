@@ -278,6 +278,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-move.js"></script>
 <script src="/viz/session-build.js"></script>
 <script src="/viz/cast-swap.js"></script>
+<script src="/viz/pso-controls.js"></script>
 <script src="/viz/build-actions.js"></script>
 <script src="/viz/build-report-image.js"></script>
 <script src="/viz/decimation-review.js"></script>
@@ -1643,6 +1644,7 @@ async function sessionsView(sid, mode) {
       ${s.game_id ? `<div id="wb" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading your controls…</p></div>` : ""}
       <div id="dock-main" class="dock" data-zone="main"></div></div>
       <div class="sidecol">${smartSearchHTML()}<div id="dock-top" class="dock" data-zone="top">
+        ${GBoxPSO.isPSO(s.title) ? '<details open data-dock="pso" class="sect"><summary draggable="true">PSO controls</summary><div id="pso-controls"></div></details>' : ''}
         <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press</span></summary>
           <div id="padglyph" title="Your controller live · click a button to press it"></div>
           <button id="padstat" class="act" style="width:100%;text-align:left;white-space:normal;font-size:11px;margin-top:4px" aria-expanded="false" aria-controls="padpicker" onclick="togglePadPicker()"></button>
@@ -2038,6 +2040,12 @@ sessionsView.after = (sid, mode) => {
   });
   window.sessionPresentation.poll();
   watchSessionPause(sid);
+  const psoHost = $("#pso-controls");
+  if (psoHost) GBoxPSO.mount(psoHost, { api, job: async (tool, input) => {
+    const j = await runJob({ tool, input, require_worker: sid.split("-")[0] });
+    if (j.state !== "succeeded") throw new Error(j.error || j.state);
+    return j.output?.result || {};
+  } }, { sid });
   if ($("#ss")) smartSearchInit(sid).catch(() => {});
   if (mode !== "inspect") {                                   // mods/controls first; a failing graphics panel must not take them down
     const shown = (what, e) => $("#dock-side")?.insertAdjacentHTML("beforeend", `<p class="bad" style="font-size:12px">${what} failed: ${esc(e?.message || e)}</p>`);

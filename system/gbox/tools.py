@@ -660,6 +660,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         detail["recording"] = {"state": "unsupported", "reason": "Examine 3D capture session"}
     else:
         try:
+            from . import pso_controls
+            if pso_controls.is_pso(gd):
+                detail["pso_controls"] = pso_controls.on_launch(sid, ad, gd, ctx)
+        except Exception as e:                                 # never block a game launch
+            detail["pso_controls"] = {"state": "unsupported", "reason": str(e)}
+        try:
             detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}

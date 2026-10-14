@@ -1207,6 +1207,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/decimation-review.js"></script>
 <script src="../web/viz/launch-bar.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
+<script src="../web/viz/pso-controls.js"></script>
 <script src="../web/viz/build-actions.js"></script>
 <script src="../web/viz/game-menu.js"></script>
 <script src="../web/viz/build-shot.js"></script>
@@ -4620,51 +4621,24 @@ async function padSettings() {
 $("#tb-pad").onclick = () => padSettings();
 
 // ---------------- PSO item sidebar: the whole item list from the disc, wiki pictures, click to equip / give ----------------
-const IT = { all: null, cat: "Weapons", q: "", inv: [] };
 async function itemsShow() {
-  let p = $("#items");
+  const sid = EMB.sid || (await chatContext().catch(() => ({}))).session_id;
+  if (!sid) return toast("Open Phantasy Star Online first.");
+  let p = document.getElementById("pso-items");
   if (!p) {
-    document.body.insertAdjacentHTML("beforeend", `<div id="items"><div class="ah"><b>🎒 Items</b><input id="it-q" placeholder="search items…">
-      <button class="act" id="it-restore" title="Put the game's own drop tables back">↺ normal drops</button><button class="act" id="it-close">✕</button></div>
-      <div class="itabs">${["Inventory", "Weapons", "Armor", "Mags", "Tools"].map(c => `<button data-c="${c}">${c}</button>`).join("")}</div>
-      <div id="it-list"></div><div id="it-msg" class="mut">click an item: the next enemy you defeat or box you break drops it</div></div>`);
-    p = $("#items"); floating(p, p.querySelector(".ah"), "items");
-    $("#it-close").onclick = () => { p.classList.remove("on"); EMB.last = ""; };
-    $("#it-restore").onclick = async () => { try { await gameJob("pso_drops", { op: "restore" }); $("#it-msg").textContent = "✓ Normal drops restored"; }
-                                             catch (err) { $("#it-msg").textContent = "⚠ " + err.message; } };
-    $("#it-q").oninput = e => { IT.q = e.target.value.toLowerCase(); itemsRender(); };
-    p.querySelector(".itabs").onclick = e => { const c = e.target.dataset?.c; if (c) { IT.cat = c; itemsRender(); if (c === "Inventory") itemsInv(); } };
-    $("#it-list").onclick = async e => {
-      const el = e.target.closest("[data-code]"); if (!el) return;
-      // the game builds its live items from its own state, so items arrive the way the game hands them out: as drops
-      const code = el.dataset.code;
-      $("#it-msg").textContent = `Setting every drop to ${el.dataset.name}…`;
-      try { await gameJob("pso_drops", { op: "item", code });
-        $("#it-msg").textContent = `✓ The next enemy you defeat or box you break drops ${el.dataset.name}. Pick it up, then equip it. (↺ normal drops when done)`;
-      } catch (err) { $("#it-msg").textContent = "⚠ " + err.message; }
-    };
+    p = document.createElement("div"); p.id = "pso-items";
+    p.style.cssText = "position:fixed;top:100px;right:36px;width:420px;max-width:90vw;max-height:78vh;overflow:auto;z-index:1500;background:var(--bg,#17171d);color:var(--fg,#eee);border:1px solid var(--line,#444);border-radius:8px;padding:10px;box-shadow:0 12px 30px #0008";
+    p.innerHTML = '<div class="ah" style="display:flex;justify-content:space-between"><b>PSO controls</b><button class="act" data-close aria-label="Close PSO controls">×</button></div><div data-pso-host></div>';
+    document.body.appendChild(p); floating(p, p.querySelector(".ah"), "pso-controls");
+    p.querySelector("[data-close]").onclick = () => { p.hidden = true; EMB.last = ""; };
   }
-  p.classList.add("on"); EMB.last = "";
-  const ver = /episode/i.test(EMB.title || "") ? "gc" : "dcv2";                 // GameCube Ep I & II vs Dreamcast v2
-  if (!IT.all || IT.ver !== ver) { const r = await gbox.api(`/api/pso/items?version=${ver}`); IT.all = r.ok ? r.data : []; IT.ver = ver;
-    if (!r.ok) $("#it-msg").textContent = "⚠ " + r.error; }
-  itemsRender(); itemsInv();
+  p.hidden = false; EMB.last = "";
+  const host = p.querySelector("[data-pso-host]");
+  GBoxPSO.mount(host, {
+    api: async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "PSO request failed"); return r.data; },
+    job: (tool, input) => gameJob(tool, input)
+  }, { sid });
 }
-async function itemsInv() {
-  try { const r = await gameJob("pso_inventory", { op: "list" }); IT.inv = r.items || []; if (IT.cat === "Inventory") itemsRender(); }
-  catch (e) { $("#it-msg").textContent = "⚠ " + e.message; }
-}
-function itemsRender() {
-  document.querySelectorAll("#items .itabs button").forEach(b => b.classList.toggle("on", b.dataset.c === IT.cat));
-  const tok = encodeURIComponent(S.tok || ""), thumb = n => `${S.apiUrl}/api/pso/item_thumb?name=${encodeURIComponent(n)}&token=${tok}`;
-  const eq = new Set(IT.inv.filter(i => i.equipped).map(i => i.code)), have = new Set(IT.inv.map(i => i.code));
-  const rows = IT.cat === "Inventory" ? IT.inv.map(i => ({ code: i.code, name: i.name, kind: `slot ${i.slot}${i.count ? " · ×" + i.count : ""}` }))
-    : (IT.all || []).filter(i => i.cat === IT.cat);
-  $("#it-list").innerHTML = rows.filter(i => !IT.q || i.name.toLowerCase().includes(IT.q)).map(i => `<div class="itc ${eq.has(i.code) ? "eq" : have.has(i.code) ? "have" : ""}"
-      data-code="${i.code}" data-name="${esc(i.name)}" title="${esc(i.name)} · ${i.code}"><img loading="lazy" alt="" src="${thumb(i.name)}" onerror="this.replaceWith(Object.assign(document.createElement('i'),{textContent:'${i.code.startsWith("00") ? "⚔" : i.code.startsWith("01") ? "🛡" : i.code.startsWith("02") ? "✨" : "🧪"}'}))">
-      <b>${esc(i.name)}</b><span>${esc(i.kind || "")}${eq.has(i.code) ? " · equipped" : ""}</span></div>`).join("") || '<p class="mut">nothing here</p>';
-}
-
 // ---------------- Resident Evil inventory helper: the selected character's slots, live; click a slot to change / remove it,
 // give any item (this game's list or "any RE": the same name maps to each game's own item), Mercenaries loadouts ----------------
 const RI = { cur: null, cats: {}, inv: null, t: null, busy: false, tab: "inv", sel: null, scope: "game", q: "", lo: [], key: "" };

@@ -216,23 +216,8 @@ def create_app(config: Config) -> FastAPI:
     re6_api.routes(app, store, config, auth)
 
     # --- Phantasy Star Online item catalog (from the disc) + item thumbnails (PSO wiki) for the item sidebar ---
-    # ponytail: one known disc image per version on the Spark; look them up in the catalog when more versions appear
-    PSO_DISCS = {"dcv2": "/home/ehm_eckx/gbox-cache/dc/psov2.gdi", "gc": "/home/ehm_eckx/gbox-cache/gc/psogc.iso"}
-
-    @app.get("/api/pso/items")
-    def pso_items(version: str = "dcv2", actor=Depends(auth)):
-        from . import psoitems
-        f = config.data_dir / "pso" / f"items-{version}.json"
-        if not f.exists():
-            if version not in PSO_DISCS or not Path(PSO_DISCS[version]).exists():
-                raise HTTPException(404, f"no PSO {version} disc on this node to read the item list from")
-            from .gcdisc import GCDisc
-            from .gdrom import GDRom
-            f.parent.mkdir(parents=True, exist_ok=True)
-            items = (psoitems.catalog_dc_v2(GDRom(PSO_DISCS[version]).read) if version == "dcv2"
-                     else psoitems.catalog_gc(GCDisc(PSO_DISCS[version]).read))
-            f.write_text(json.dumps(items))
-        return json.loads(f.read_text())
+    from . import pso_api
+    pso_api.routes(app, config, auth)
 
     @app.get("/api/pso/item_thumb")
     def pso_item_thumb(name: str, actor=Depends(auth)):
