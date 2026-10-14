@@ -2,9 +2,10 @@
 
 `characters op=use` routes FF7 here. Two models are replaced, both rigid on Cloud's own skeletons so every field and
 battle animation keeps playing:
-  * field: FIELD/CLOUD.BCX (read by ff7_models.read_field_model; 22 bones, 15 mesh parts). The new parts are Gouraud
-    triangles (16 B: 3 vertex indices + 3 x RGB + the vertex's lighting-normal index into FIELD.BIN's 240-entry normal
-    table). Budget: FIELD.BIN's file table loads exactly 7072 bytes (LBA 126841): the LZS-compressed file must not grow;
+  * field: FIELD/CLOUD.BCX (22 bones, 15 mesh parts). Native textured triangles retain donor-map interiors in Cloud's
+    own FIELD.TDB face allocation; Gouraud triangles keep flat colours and FIELD.BIN's 240-entry lighting normals.
+    Cloud-only expression table entries keep static donor maps across KAWAI updates. Budget: FIELD.BIN's file table
+    loads exactly 7072 bytes (LBA 126841): the LZS-compressed file must not grow;
     per-part u8 vertex/polygon counts; GPU packet bytes (28 per G3) <= Cloud's.
     The 10 special-scene BSX files that carry their own copy of Cloud's mesh (e.g. CLSIN2_1, LAS4_4) are left as they are.
   * battle: ENEMY6/CLOUD.LZS (read_battle_model; 24 bones). Section 0 keeps textured donor faces as native textured
@@ -12,8 +13,8 @@ battle animation keeps playing:
     animations, settings and untextured weapons are copied unchanged.
     Compressed size <= the original file (66694 bytes).
 Pipeline: Cloud posed in his standing frame -> target skeleton (joint per body role, ground, head height) ->
-gbox.sm64_swap.load_rig + retarget -> Blender decimate until it fits -> native polygons (field textures baked into
-per-corner colours; battle textures retained) -> LZS -> sectors of a raw copy of the disc rewritten in place
+gbox.sm64_swap.load_rig + retarget -> Blender decimate until it fits (protect field texture patches) -> native polygons
+and fixed texture banks -> LZS -> sectors of a raw copy of the disc rewritten in place
 (gbox.psxdisc.RawBin, EDC/ECC) -> versioned immutable file mod. Discs 1-3 share the layout.
 
   python -m gbox.ff7_swap build <disc.chd|.bin> <character dir (meta.json)> <out dir> [--no-battle]
@@ -38,7 +39,7 @@ GAME_IDS = {"6703ee6f461a2ea5": "Final Fantasy VII (USA) (Disc 1)", "52d73a58e6b
 C = np.diag([1.0, -1.0, -1.0])                     # PSX (y down) <-> y up
 FIELD_NORMALS_AT = 0x3F520                         # FIELD.BIN (gunzipped): 240 x (s16 x, y, z, 0), 4096 = 1
 NORMALS = 240
-CACHE_VERSION = 2  # Safe quad culling and native battle textures; never reuse legacy ff7_<slug> builds.
+CACHE_VERSION = 4  # Native field textures and battle brightness; preserve earlier builds.
 FIELD_FIT_HEIGHT = 1.0                             # x Cloud's height (whole figure), then at most HEIGHT_MAX
 HEIGHT_MAX = 1.12
 FIELD_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11, 12, 13), "legA": (15, 16, 17),
@@ -263,7 +264,10 @@ def bone_geometry(tgt: dict, prims: list[dict], bones_ok: set[int], atlas: Battl
                 ids.append(vi)
                 cols.append(_corner_colour(p, i))
             if len(set(ids)) == 3:
-                if atlas is not None and p['tex'] is not None:
+                if atlas is not None and getattr(atlas,'field',False) and p['tex'] is not None:
+                    page,uv=atlas.uv(p,(t[0],t[2],t[1]))
+                    g.setdefault('field_tex_tris',[]).append(((ids[0],ids[2],ids[1]),uv,page))
+                elif atlas is not None and p['tex'] is not None:
                     uv = atlas.uv(p, (t[0], t[2], t[1]))
                     g['tex_tris'].append(((ids[0], ids[2], ids[1]), uv, atlas.clut))
                     g['texture_page'] = atlas.page
@@ -395,14 +399,25 @@ def write_field(fm: dict, geo: dict[int, dict], normals: np.ndarray, nsign: floa
     for p in fm["parts"]:
         g = geo.get(p["bone"]) or {"verts": [(0, 0, 0)], "nrm": [np.array([0, 0, 1.0])], "tris": [((0, 0, 0), ((0, 0, 0),) * 3)],
                                    "quads": []}
-        nv, nt, nq = len(g["verts"]), len(g["tris"]), len(g["quads"])
-        if nv > 255 or nt > 255 or nq > 255:
+        textured=g.get('field_tex_tris',[])
+        nv, nt, nq, ntt = len(g["verts"]), len(g["tris"]), len(g["quads"]),len(textured)
+        if nv > 255 or nt > 255 or nq > 255 or ntt>255:
             raise ValueError(f"bone {p['bone']}: {nv} vertices / {nt} triangles / {nq} quads (max 255 each per part)")
         nidx = [int(np.argmax(normals @ (nsign * n))) for n in g["nrm"]]
         blk = bytearray(4)
         for v in g["verts"]:
             blk += struct.pack("<hhhh", *v, 0)
         opoly = len(blk)
+        uvpool=[];uvid={}
+        for ids,uv,page in textured:
+            blk+=bytes([*ids,0])
+            for vi in ids:blk+=bytes([255,255,255,nidx[vi]])
+            indices=[]
+            for pair in uv:
+                if pair not in uvid:uvid[pair]=len(uvpool);uvpool.append(pair)
+                indices.append(uvid[pair])
+            if len(uvpool)>255:raise ValueError('FF7 field part has more than 255 texture coordinates')
+            blk+=bytes([*indices,0])
         for (a, b, c), cols in g["tris"]:
             blk += bytes([a, b, c, 0])
             for vi, col in zip((a, b, c), cols):
@@ -411,13 +426,19 @@ def write_field(fm: dict, geo: dict[int, dict], normals: np.ndarray, nsign: floa
             blk += bytes(ids)
             for vi, col in zip(ids, cols):
                 blk += bytes([col[0], col[1], col[2], nidx[vi]])
-        oend = len(blk)
+        ofl=len(blk)
+        if textured:blk+=struct.pack('<2I',0x78141c00,0x78141c01)
+        otc=len(blk)
+        for uv in uvpool:blk+=bytes(uv)
+        octl=len(blk)
+        blk+=bytes(page for ids,uv,page in textured)
+        while len(blk)%4:blk+=b'\0'
         ovx = 8 + len(blocks)
         blocks += blk
-        buf = 28 * nt + 36 * nq
+        buf = 28 * nt + 36 * nq + 40 * ntt
         total_buf += buf
-        table.append(struct.pack("<12B2B5H2I", p["raw"][0], p["bone"], nv, 0, 0, 0, 0, 0, 0, 0, nt, nq, 0, 0,
-                                 opoly, oend, oend, oend, buf, ovx | 0x80000000, 0))
+        table.append(struct.pack("<12B2B5H2I", p["raw"][0], p["bone"], nv, len(uvpool), 0, ntt, 0, 0, 0, 0, nt, nq, 2 if textured else 0, ntt,
+                                 opoly, otc, ofl, octl, buf, ovx | 0x80000000, 0))
     out = bytearray(8) + blocks
     shift = len(out) - a0
     out += u[a0:a1]                                          # animation data (+ anything between it and the header)
@@ -433,7 +454,8 @@ def write_field(fm: dict, geo: dict[int, dict], normals: np.ndarray, nsign: floa
     struct.pack_into("<II", out, 0, len(out), new_h)
     old_buf = sum(p["buffer"] for p in fm["parts"])
     return bytes(out), {"bytes": len(out), "budget_bytes": len(u), "gpu_buffer": total_buf, "budget_gpu_buffer": old_buf,
-                        "triangles": sum(len(g["tris"]) + 2 * len(g["quads"]) for g in geo.values()),
+                        "triangles": sum(len(g["tris"]) + 2 * len(g["quads"])+len(g.get('field_tex_tris',[])) for g in geo.values()),
+                        "textured_triangles":sum(len(g.get('field_tex_tris',[])) for g in geo.values()),
                         "quads": sum(len(g["quads"]) for g in geo.values()),
                         "verts": sum(len(g["verts"]) for g in geo.values())}
 
@@ -467,7 +489,10 @@ def write_battle(bm: dict, geo: dict[int, dict], tim: bytes | None = None) -> tu
             mesh += struct.pack("<hhhh", *v, 0)
         mesh += struct.pack('<HH', len(g.get('tex_tris', [])), g.get('texture_page', 0))
         for ids, uv, clut in g.get('tex_tris', []):
-            mesh += struct.pack('<4H', *(8*j for j in ids), 0)
+            # The fourth WORD is a polygon attribute, not padding: the native
+            # renderer uses its low byte as texture brightness (model flag 0x80).
+            # Match stock Cloud's neutral 0x80; zero blacks out the texture.
+            mesh += struct.pack('<4H', *(8*j for j in ids), 0x80)
             mesh += struct.pack('<BBH4B', *uv[0], clut, *uv[1], *uv[2])
         mesh += struct.pack('<HH', 0, 0)                     # no textured quads
         mesh += struct.pack("<HH", len(g["tris"]), 0)
@@ -508,27 +533,34 @@ def write_battle(bm: dict, geo: dict[int, dict], tim: bytes | None = None) -> tu
 # ---------------------------------------------------------------- build
 
 def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blender, make, start_tris: int, progress,
-              scale=None, props=()) -> tuple[bytes, dict, Path]:
+              scale=None, props=(), protect_textures=False) -> tuple[bytes, dict, Path]:
     """retarget once, then decimate (Blender) until make(read_rigged prims) returns (bytes, report, ok)."""
     from .sm64_swap import read_rigged, write_rigged
     from .re4gc_enemies import decimate
     prims, rep = fit(tgt, model, roles, scale, props)
     work.mkdir(parents=True, exist_ok=True)
     rigged = write_rigged(prims, tgt, work / f"{name}.gltf", name)
+    fixed=[p for p in prims if protect_textures and p['tex'] is not None]
+    reduced=[p for p in prims if not (protect_textures and p['tex'] is not None)]
+    fixed_tris=sum(len(p['tris']) for p in fixed)
+    reduce_path=write_rigged(reduced,tgt,work/f'{name}_body.gltf',name) if fixed and reduced else rigged
+    fixed_read=[dict(p,jid=p['J'][:,0]) for p in fixed]
     src_tris = sum(len(p["tris"]) for p in prims)
     target = min(src_tris, start_tris)
     last = None
     for _ in range(10):
-        src = rigged
+        src = reduce_path
         if target < src_tris:
+            if target<=fixed_tris or not reduced:
+                raise ValueError(f'{name}: protected texture surfaces exceed the native model budget ({last})')
             if not blender:
                 raise ValueError(f"{name}: needs decimating ({last}) and there's no Blender on this node")
             progress(None, f"{name}: decimating {src_tris} -> {target} triangles")
-            src = decimate(rigged, work / f"{name}_d{target}.glb", float(target), blender)
-        data, r, ok, k = make(read_rigged(src))
+            src = decimate(reduce_path, work / f"{name}_d{target}.glb", float(target-fixed_tris), blender)
+        data, r, ok, k = make(read_rigged(src)+fixed_read if fixed and reduced else read_rigged(src))
         last = r
         if ok:
-            return data, rep | r | {"source_triangles": src_tris}, rigged
+            return data, rep | r | {"source_triangles": src_tris,"protected_texture_triangles":fixed_tris}, rigged
         target = int(min(target, r.get("triangles", target)) * min(k, 0.97))
     raise ValueError(f"{name} doesn't fit: {last}")
 
@@ -560,9 +592,14 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
     progress(10, f"Fitting {name} onto Cloud's field skeleton")
     ftgt = field_target(fm)
     mesh_bones = {p["bone"] for p in fm["parts"]}
+    field_atlas=None
 
     def make_field(rp):
-        geo = bone_geometry(ftgt, rp, mesh_bones)
+        nonlocal field_atlas
+        if field_atlas is None and any(p['tex'] is not None for p in rp):
+            from .ff7_field_textures import FieldAtlas
+            field_atlas=FieldAtlas(src.read('FIELD/FIELD.TDB'),src.read('FIELD/FIELD.BIN'),rp)
+        geo = bone_geometry(ftgt, rp, mesh_bones,field_atlas)
         try:
             raw, r = write_field(fm, geo, normals, nsign)
         except ValueError as e:
@@ -575,11 +612,19 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
         ok = len(comp) <= bcx_size and r["bytes"] <= r["budget_bytes"] and r["gpu_buffer"] <= r["budget_gpu_buffer"]
         k = min(bcx_size / len(comp), r["budget_bytes"] / r["bytes"], r["budget_gpu_buffer"] / max(r["gpu_buffer"], 1))
         return comp, r, ok, k
-    bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props)
-    F.read_field_model(bcx)                                  # parses back
+    bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props,protect_textures=True)
+    encoded_field=F.read_field_model(bcx)
+    if field_atlas:
+        from .ff7_field_textures import face_tim
+        encoded_field['tim']=face_tim(field_atlas.tdb,field_atlas.field)
+    native_preview=work/'ff7_field_native.gltf'
+    F.field_to_gltf(encoded_field,native_preview)
     res["field"] = frep
-    res["rigged_field"] = str(frig)
+    res["rigged_field"] = str(native_preview)
     writes = [("FIELD/CLOUD.BCX", bcx)]
+    if field_atlas:
+        frep['textures']=field_atlas.report
+        writes.extend([('FIELD/FIELD.TDB',field_atlas.tdb),('FIELD/FIELD.BIN',field_atlas.field)])
     if battle:
         progress(45, f"Fitting {name} onto Cloud's battle skeleton")
         blba, bsize = src.files["ENEMY6/CLOUD.LZS"]
@@ -656,7 +701,8 @@ def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Pat
     cue = Path(b["cue"]).name
     mj = {"name": name, "game_id": gid, "image": cue, "built": time.time(), "character": meta["slug"],
           "writer_version": CACHE_VERSION,
-          "files": ["FIELD/CLOUD.BCX (field model)", "ENEMY6/CLOUD.LZS (battle model)"], "source": meta["model"],
+          "files": ["FIELD/CLOUD.BCX (field model)", "ENEMY6/CLOUD.LZS (battle model)"]+
+                   (["FIELD/FIELD.TDB (Cloud face banks)","FIELD/FIELD.BIN (Cloud expression mapping)"] if b['field'].get('textures') else []), "source": meta["model"],
           "field": b["field"], "battle": b.get("battle")}
     (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
     shutil.rmtree(work, ignore_errors=True)

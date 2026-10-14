@@ -482,6 +482,9 @@ def read_field_model(bcx: bytes, compressed: bool = True) -> dict:
                               "tc": list(u[o + 4 + 4 * n:o + 4 + 4 * n + n]) if tex else None})
                 o += size
         part["polys"] = polys
+        part['texcoords']=[tuple(u[ovx+part['otc']+2*k:ovx+part['otc']+2*k+2]) for k in range(part['ntc'])]
+        part['texture_settings']=list(struct.unpack_from('<'+str(part['flags'])+'I',u,ovx+part['ofl'])) if part['flags'] else []
+        part['texture_flags']=list(u[ovx+part['octl']:ovx+part['octl']+part['controls']])
         parts.append(part)
     anims = [field_anim(u, osk + oa + 16 * k) for k in range(nanim)]
     return {"raw": u, "header": h, "skeleton": osk, "parts_off": op, "anims_off": oa, "scale": scale, "bones": bones,
@@ -528,23 +531,40 @@ def field_pose(bones: list[dict], frame: dict | None) -> list[np.ndarray]:
 
 
 def field_to_battle_dict(fm: dict) -> dict:
-    """The field model in read_battle_model()'s shape (bones with meshes, colour polygons only), for to_gltf."""
+    """Field parts in the battle reader's shape; retain native face UVs when a TIM is supplied."""
     bones = [{"parent": b["parent"], "length": 0, "mesh": None} for b in fm["bones"]]
     for p in fm["parts"]:
         m = {"verts": p["verts"], "tt": [], "tq": [], "ct": [], "cq": [], "tt_page": 0, "tq_page": 0}
+        textured=0
         for pl in p["polys"]:
-            (m["cq"] if len(pl["idx"]) == 4 else m["ct"]).append((pl["idx"], pl["cols"]))
+            if pl['tc'] is not None and fm.get('tim'):
+                flags=p['texture_flags'][textured];textured+=1
+                descriptor=p['texture_settings'][flags&15]
+                if descriptor&63 not in (0,1):raise ValueError('Field preview needs a non-face texture allocation')
+                kind='tq' if len(pl['idx'])==4 else 'tt'
+                m[kind].append((pl['idx'],[p['texcoords'][i] for i in pl['tc']],(descriptor>>16)&65535))
+                m[kind+'_page']=(descriptor>>8)&31
+            else:(m["cq"] if len(pl["idx"]) == 4 else m["ct"]).append((pl["idx"], pl["cols"]))
         bones[p["bone"]]["mesh"] = m
-    return {"raw": fm["raw"], "bones": bones, "anims": [], "tim": None, "weapons": []}
+    return {"raw": fm["raw"], "bones": bones, "anims": [], "tim": fm.get('tim'), "weapons": []}
 
 
 def field_to_gltf(fm: dict, path: Path, anim: int = 0, frame: int = 0, scale: float = 1.0) -> dict:
     """Rigid glTF of a field model, bind pose = frame `frame` of animation `anim` (no glTF animation)."""
     W = field_pose(fm["bones"], fm["anims"][anim][frame] if fm["anims"] else None)
     return to_gltf(field_to_battle_dict(fm), path, anim=None, names={i: f"j{i:02d}" for i in range(len(fm["bones"]))},
-                   scale=scale, animate=False, world=W)
+                   scale=scale, animate=False, world=W,fill_transparent=not bool(fm.get('tim')))
 
 
 def field_from_disc(path: str | Path, name: str = "CLOUD") -> dict:
     from gbox.psxdisc import PSXDisc
-    return read_field_model(PSXDisc(str(path)).read(f"FIELD/{name}.BCX"))
+    disc=PSXDisc(str(path))
+    try:
+        model=read_field_model(disc.read(f"FIELD/{name}.BCX"))
+        if name.upper()=='CLOUD':
+            from .ff7_field_textures import face_tim
+            model['tim']=face_tim(disc.read('FIELD/FIELD.TDB'),disc.read('FIELD/FIELD.BIN'))
+        return model
+    finally:
+        close=getattr(disc,'close',None)
+        if close:close()
