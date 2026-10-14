@@ -19,6 +19,11 @@ from .agent_contracts import (native_swap_outcome, native_swap_result, require_c
                               required_operation_outcome, resolve_read_session, validate_cheat_call)
 
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
+For bounded decompilation evidence reviews, use run_tool ollama_assist op=status to discover opted-in PCs.
+When one is ready, dispatch op=analyze with a small function/evidence prompt, require_worker=that PC and agent_use=true.
+Do not enable assistance, download models or change another project's services on your own. Helpers yield to Gaming
+mode/operator input and return token-counted hypothesis artifacts. Review them before using them in builds; use Spark
+or the main reasoning route for large or uncertain tasks. Do not repeatedly queue work when no helper is ready.
 Keep producing native inspection builds as reviewed changes become buildable. Use run_tool inspection_builds op=plan
 for the game's current request revisions/feedback; read reports/images, implement the change, then op=publish a
 cast_swap recipe with launch:false, change_id, relevant gbox/*.py dependencies, requests_ack and feedback_ack.

@@ -321,6 +321,9 @@ def _prompt(item, playing=None):
                'requests_ack and feedback_ack. Never acknowledge unread feedback or produce unchanged failures. '
                'The local build queue handles debounce, memory/disk headroom and safe worker admission; '
                'compile success is not gameplay verification. ')
+    header += ('Use ollama_assist op=status to find opted-in idle helpers; delegate small decompilation evidence '
+               'reviews with op=analyze, require_worker and agent_use=true only when ready. Never opt a PC in '
+               'or download a model yourself. Treat helper artifacts as hypotheses and verify them. ')
     if playing:
         header += ('The operator is playing ' + ', '.join(playing) + ' on this machine right now. Do not start an '
                    'emulator here (no local Dolphin, RetroArch, PCSX2 or other game runs, no large parallel builds); '

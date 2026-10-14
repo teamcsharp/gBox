@@ -1187,6 +1187,7 @@ window.taskVizCreate = canvas => {
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+      <div id="ollama-assist" class="card" style="margin-top:20px"></div>
       <div id="showcase" style="margin-top:22px;border:1px solid var(--line,#333);border-radius:8px;padding:10px 12px"></div>
       <div class="card" id="tiers"><h2>Game cache drives</h2><span class="mut">Loading...</span></div>
     </div></section>
@@ -2431,6 +2432,33 @@ $("#ssave").onclick = async () => {
   vovEnable(!!f.get("voiceOverlay"));
   S = await gbox.saveSettings(s); $("#ssaved").textContent = "saved"; playLoaded = false; refresh();
 };
+
+// Per-PC, opt-in local analysis. No model is installed or loaded by this panel.
+async function oaLoad() {
+  const el = $("#ollama-assist");
+  try {
+    const r = await gbox.api('/api/ollama-assist');
+    if (!r.ok) throw new Error(r.error || 'Backend update pending');
+    el.innerHTML = '<h2>Idle Ollama assistance</h2><p class="mut">Opt each PC in to review small decompilation tasks while idle. Gaming mode and resource limits take priority. Results require verification.</p>' + r.data.workers.map(w => {
+      const p=w.policy, models=w.inventory.models || [];
+      return `<form data-oa="${esc(w.id)}" style="border-top:1px solid #444;padding:10px 0"><b>${esc(w.name)}</b>
+        <p><label><input name="enabled" type="checkbox" ${p.enabled?'checked':''}> Allow idle Ollama support</label></p>
+        <label>Installed model <select name="model"><option value="">Choose model</option>${[...new Set([p.model,...models.map(m=>m.name)])].filter(Boolean).map(m=>`<option ${m===p.model?'selected':''}>${esc(m)}</option>`).join('')}</select></label>
+        <div style="display:grid;grid-template-columns:1fr 90px;gap:6px;margin:8px 0">${[['context_tokens','Context tokens',2048,32768],['max_output_tokens','Output tokens',128,4096],['model_budget_gib','Model weights budget (GiB)',2,64],['reserve_gib','Keep RAM free (GiB)',4,64]].map(([k,label,min,max])=>`<label for="oa-${esc(w.id)}-${k}">${label}</label><input id="oa-${esc(w.id)}-${k}" name="${k}" type="number" min="${min}" max="${max}" value="${p[k]}">`).join('')}</div>
+        <p class="mut" data-oa-reason>${esc(w.reason || 'Ready for idle analysis jobs')}${!w.inventory.available?' · Ollama unavailable; no automatic installation.':''}</p><button type="submit">Save this PC</button><span data-msg></span></form>`;
+    }).join('') + '<p class="mut">Admission reservations are estimates, not hard memory caps. No downloads or shared service changes happen automatically.</p><button data-oa-refresh>Refresh status</button>';
+  } catch(e) { el.textContent='Idle Ollama assistance: '+e.message; }
+}
+$('#ollama-assist').addEventListener('click', e=>{if(e.target.closest('[data-oa-refresh]'))oaLoad();});
+$('#ollama-assist').addEventListener('submit',async e=>{
+  const f=e.target.closest('[data-oa]'); if(!f)return; e.preventDefault();
+  const data={enabled:f.elements.enabled.checked,model:f.elements.model.value};
+  for(const k of ['context_tokens','max_output_tokens','model_budget_gib','reserve_gib'])data[k]=Number(f.elements[k].value);
+  const msg=f.querySelector('[data-msg]');
+  try {const r=await gbox.api('/api/ollama-assist/'+encodeURIComponent(f.dataset.oa),data);if(!r.ok)throw new Error(r.error || 'Save failed');msg.textContent=' Saved';f.querySelector('[data-oa-reason]').textContent='Preference saved. Refresh status to see current readiness.';}
+  catch(err){msg.textContent=' '+err.message;}
+});
+document.querySelector('aside button[data-s="settings"]').addEventListener('click',oaLoad);
 
 // ---------------- Settings > Sonic showcase (gbox/sonic_showcase.py: GET /api/showcase, POST = PUT /api/showcase) ----------------
 // The Spark builds showcase_sonic_<title> test versions of the favorites / recently played titles with the Sonic Adventure

@@ -2252,6 +2252,12 @@ def create_app(config: Config) -> FastAPI:
                             store.put("job",j["id"],j | {"admission_wait":waiting})
                         continue
                     from . import background_testing
+                    from . import ollama_assist
+                    if ollama_assist.is_job(j):
+                        reason = ollama_assist.reason(store, w)
+                        if reason:
+                            store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': reason}})
+                            continue
                     if background_testing.requires_admission(j):
                         if (j.get('origin') or {}).get('inspection_run'):
                             from .inspection_builds import claim_reason
@@ -3865,6 +3871,9 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(404, f"no chore named {body.run}") from None
         store.audit(actor, "grunt.control", body.run, body.model_dump())
         return grunt.status()
+
+    from . import ollama_assist
+    ollama_assist.install(app, store, auth)
 
     @app.get("/api/hermes/local")
     def hermes_local_state(actor=Depends(auth)):

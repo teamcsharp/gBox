@@ -52,6 +52,8 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
     features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
+    from .ollama_assist import inventory
+    info.ollama = inventory()
     if wid:
         info.id = wid
     return info
