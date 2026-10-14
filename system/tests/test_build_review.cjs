@@ -11,7 +11,7 @@ test('review before deletion retains screenshots and saves exactly one report ac
    window.build={game_id:'fixture',name:'test-build',game_title:'Fixture game',label:'Character replacement test',
     where:[{where:'spark',label:'Spark collection'},{where:'pc',node:'i9-NUC',online:true,label:'i9-NUC (local copy)'},{where:'pc',node:'JAYBUILTFINALE',online:true,label:'JAYBUILTFINALE (local copy)'}]};
    window.calls=[];window.failCleanup=true;window.until=async fn=>{for(let n=0;n<150;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('UI timeout');};
-   window.api=async(p,body,method)=>{calls.push({p,body,method});if(p.endsWith('/report'))return {id:'report-1',number:47};if(p.endsWith('/review-cleanup')){if(failCleanup)throw Error('temporary cleanup failure');return {state:'queued'};}throw Error('Unexpected '+p);};
+   window.api=async(p,body,method)=>{if(p.startsWith('/api/build-feedback?'))return {items:[]};calls.push({p,body,method});if(p.endsWith('/report'))return {id:'report-1',number:47};if(p.endsWith('/review-cleanup')){if(failCleanup)throw Error('temporary cleanup failure');return {state:'queued'};}throw Error('Unexpected '+p);};
    window.done=GBoxBuildActions.open('delete',build,{here:'JAYBUILTFINALE',api});void 0;`);
   await evaluate(`document.querySelector('[value=pcs]').click();for(const node of document.querySelectorAll('[data-ba-pc]'))node.click();document.querySelector('[data-ba=review]').click();void 0;`);
   assert.equal(await evaluate(`document.querySelectorAll('.ba-modal').length`),1);
@@ -54,5 +54,30 @@ test('capture for a review hides the report popup until the frame arrives',async
   assert.equal(await evaluate('done'),null);
   await evaluate(`pending.no(Error('late failure'));new Promise(r=>setTimeout(r,20));`);
   assert.equal(await evaluate(`document.querySelectorAll('.ba-modal').length`),0,'late capture never restores a cancelled popup');
+ });
+});
+
+
+test('an old backend cannot silently discard review images or create a cleanup report',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/build-actions.js'),'utf8'));
+  await evaluate(`window.calls=[];window.ready=false;window.until=async fn=>{for(let n=0;n<100;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('UI timeout');};
+   window.api=async(p,body)=>{if(p.startsWith('/api/build-feedback?')){if(!ready)throw Error('404');return {items:[]};}calls.push(p);return {id:'saved',number:9};};
+   window.done=GBoxBuildActions.open('report',{game_id:'game',name:'build'},{api,reviewCleanup:{scope:'all'}});document.querySelector('[data-ba-note]').value='Keep these defect notes';document.querySelector('[data-ba=go]').click();void 0;`);
+  await evaluate(`until(()=>!document.querySelector('[data-ba=go]').disabled);`);
+  assert.equal(await evaluate('calls.length'),0,'no report or cleanup is posted to the old backend');
+  assert.match(await evaluate(`document.querySelector('[data-ba-status]').textContent`),/waiting for server activation/);
+  assert.equal(await evaluate(`document.querySelector('[data-ba-note]').value`),'Keep these defect notes');
+  await evaluate(`ready=true;document.querySelector('[data-ba=go]').click();done;`);
+  assert.deepEqual(await evaluate('calls'),['/api/builds/game/build/report','/api/builds/game/build/review-cleanup']);
+  await evaluate(`ready=false;calls=[];window.done=GBoxBuildActions.open('report',{game_id:'game',name:'build'},{api});document.querySelector('[data-ba-note]').value='Screenshot-only report';void 0;`);
+  const doc=await send('DOM.getDocument');
+  const input=await send('DOM.querySelector',{nodeId:doc.result.root.nodeId,selector:'[data-ba-files]'});
+  await send('DOM.setFileInputFiles',{nodeId:input.result.nodeId,files:[path.resolve(__dirname,'../docs/evidence/ff7-mario-1819/battle-after.png')]});
+  await evaluate(`until(()=>document.querySelectorAll('[data-ba-role]').length===1);document.querySelector('[data-ba=go]').click();until(()=>!document.querySelector('[data-ba=go]').disabled);`);
+  assert.equal(await evaluate('calls.length'),0,'ordinary image reports are also held until the backend supports images');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-ba-role]').length`),1,'the image stays attached');
+  await evaluate(`ready=true;document.querySelector('[data-ba=go]').click();done;`);
+  assert.deepEqual(await evaluate('calls'),['/api/builds/game/build/report']);
  });
 });

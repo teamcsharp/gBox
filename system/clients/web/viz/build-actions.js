@@ -216,6 +216,10 @@
             status("Filing the report…");
             if (env.reviewCleanup && !c.body.note) throw Error('Describe what is wrong before removing the build.');
             if (images.length) c.body.images = images;
+            if (!savedReport && (images.length || env.reviewCleanup)) {
+              try { await env.api(`/api/build-feedback?game_id=${encodeURIComponent(b.game_id)}`); }
+              catch { throw Error('The build-review update is waiting for server activation. Your note and images are kept here; retry after the update is ready.'); }
+            }
             r = savedReport || await env.api(c.path, c.body, "POST");
             if (env.reviewCleanup) {
               savedReport=r;
