@@ -19,11 +19,16 @@
 
   function html(e, { url = u => u, now, busy = "", error = "" } = {}) {
     if (!e) return "";
-    const r = e.reason || {}, m = e.moment;
+    // A rolling deployment can still serve the legacy backend's generic-code-1
+    // "crash" reason. That value alone never establishes an unexpected exit.
+    const reason = e.reason || {};
+    const r = reason.kind === 'crash' && /^The emulator quit unexpectedly \(exit code 1\)\.$/.test(reason.text || '')
+      ? {kind:'ended',crash:false,text:'The emulator closed.'} : reason;
+    const m = e.moment;
     const bad = r.crash ? " lp-bad" : "";
     return `<div class="lp-back" data-lp-sid="${ESC(e.session_id)}"><div class="lp-box${bad}" role="dialog" aria-modal="true" aria-labelledby="lp-h">
       <div class="lp-h" id="lp-h">${r.crash ? "⚠ " : ""}${ESC(e.title)} ended</div>
-      <div class="lp-why${bad}">${ESC(r.text || "The game ended.")}${e.report?.id ? ` <a href="#" data-lp="report" data-id="${ESC(e.report.id)}">Report #${ESC(e.report.number ?? "")}${e.report.status ? " · " + ESC(String(e.report.status).replace("_", " ")) : ""}</a>` : ""}</div>
+      <div class="lp-why${bad}">${ESC(r.text || "The game ended.")}${e.report?.id ? ` <a href="#" data-lp="report" data-id="${ESC(e.report.id)}">${r.crash ? "Report" : "Related report"} #${ESC(e.report.number ?? "")}${e.report.status ? " · " + ESC(String(e.report.status).replace("_", " ")) : ""}</a>` : ""}</div>
       <div class="lp-sub mut">${e.mod ? `Build ${ESC(e.mod)} · ` : "Original game · "}on ${ESC(e.node)}${e.node_online ? "" : " (offline right now)"}${e.ended ? " · ended " + ESC(ago(e.ended, now)) : ""}</div>
       ${m ? `<div class="lp-moment">${m.frame_url ? `<img alt="Your last moment" src="${ESC(url(m.frame_url))}">` : `<div class="lp-noimg">no picture of the moment</div>`}
         <div><b>Your last moment</b><div class="mut">saved ${ESC(ago(m.ts, now) || "before the end")}</div></div></div>` : ""}
@@ -39,7 +44,7 @@
     .lp-box{background:var(--card,#1f1f25);color:var(--fg,#e8e8ee);border:1px solid var(--line,#2c2c34);border-radius:10px;padding:16px 18px;width:min(520px,100%);box-shadow:0 10px 40px #000a;font-size:14px;
       max-height:100%;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere;box-sizing:border-box}
     .lp-box.lp-bad{border-color:var(--bad,#ff6b6b)}.lp-h{font-size:17px;font-weight:600;margin-bottom:4px}.lp-why{margin:4px 0}.lp-why.lp-bad{color:var(--bad,#ff6b6b)}
-    .lp-sub{font-size:12px;margin-bottom:10px}.lp-moment{display:flex;gap:10px;align-items:center;margin:8px 0 12px}
+    .lp-why a{color:var(--acc,#7c96ff)}.lp-sub{font-size:12px;margin-bottom:10px}.lp-moment{display:flex;gap:10px;align-items:center;margin:8px 0 12px}
     .lp-moment img,.lp-noimg{width:160px;height:120px;object-fit:cover;border-radius:6px;background:#000}.lp-noimg{display:flex;align-items:center;justify-content:center;font-size:11px;color:#888}
     .lp-btns{display:flex;flex-direction:column;gap:6px}.lp-btns .act{text-align:left}.lp-mute{display:flex;gap:6px;align-items:center;font-size:12px;margin-top:10px}
     .lp-busy{margin-top:8px;color:var(--acc,#7c96ff)}.lp-err{margin-top:8px;color:var(--bad,#ff6b6b);font-weight:600}`;
@@ -69,7 +74,7 @@
       if (st.busy || (env.visible && !env.visible())) return st.entry;
       let r; try { r = await env.api("/api/last_played"); } catch { return st.entry; }
       const e = r?.entry || null;
-      if ((e?.session_id || null) !== (st.entry?.session_id || null)) { st.entry = e; st.error = ""; draw(); }
+      if (JSON.stringify(e) !== JSON.stringify(st.entry)) { st.entry = e; st.error = ""; draw(); }
       return st.entry;
     }
     async function dismiss(mute) {

@@ -222,3 +222,46 @@ def test_the_app_quit_moment_endpoint_keeps_a_checkpoint(app):
     enclosed(route.endpoint, '_run_job').cell_contents = lambda tool, inp, *a, **k: {'result': {'artifact': 'b' * 64}}
     r = app.client.post('/api/sessions/w-a/moment?wait=3').json()
     assert r == {'saved': True, 'artifact': 'b' * 64} and app.store.get('session', 'w-a')['checkpoint'] == 'b' * 64
+
+
+def test_stop_intent_wins_when_process_watcher_reports_before_the_stop_receipt(app):
+    st = app.store
+    sid = 'w-stop-race'
+    st.put('worker', 'w', st.get('worker', 'w') | {'tools': ['session_op']})
+    session(st, sid, state='running', ended=None)
+    stop = app.client.post('/api/jobs', json={'tool': 'session_op', 'input': {'session_id': sid, 'op': 'stop_game'}})
+    assert stop.status_code == 200 and stop.json()['state'] == 'queued', stop.text
+    app.client.post(f'/api/sessions/{sid}/ended', json={'returncode': 1}).raise_for_status()
+    ended_at = st.get('session', sid)['ended']
+    assert get(app)['reason']['kind'] == 'stopped'
+    tools._session_accept(st, tools.SessionOut(session_id=sid, ended=True, result={
+        'returncode': 1, 'via': 'stop', 'timings': {'kill_s': .1}, 'moment': {'artifact': 'a'*64}}), 'operator')
+    # A late raw exit must preserve close intent, the saved moment and original end time.
+    app.client.post(f'/api/sessions/{sid}/ended', json={'returncode': 1}).raise_for_status()
+    e = get(app)
+    assert not e['reason']['crash'] and e['reason']['kind'] == 'stopped'
+    assert e['moment']['artifact'] == 'a'*64 and e['ended'] == ended_at
+    assert not st.all('request')
+
+
+def test_a_manual_close_with_generic_code_does_not_file_a_crash(app):
+    sid = 'w-manual-close'
+    session(app.store, sid, state='running', started=time.time()-12, ended=None)
+    app.client.post(f'/api/sessions/{sid}/ended', json={'returncode': 1}).raise_for_status()
+    assert get(app)['reason'] == {'kind': 'ended', 'crash': False, 'text': 'The emulator closed.'}
+    assert not app.store.all('request')
+
+
+def test_failed_stop_does_not_hide_a_later_real_crash(app, monkeypatch):
+    import threading
+    sid = 'w-crash-after-stop-failed'
+    session(app.store, sid, state='running', ended=None)
+    app.store.put('job', 'failed-stop', {'id':'failed-stop', 'tool':'session_op', 'state':'failed',
+                  'input':{'session_id':sid, 'op':'stop_game'}})
+    ended = next(r.endpoint for r in app.app.routes if getattr(r, 'path', '') == '/api/sessions/{sid}/ended')
+    ledger = enclosed(ended, 'launch_ledger').cell_contents
+    called = threading.Event()
+    monkeypatch.setattr(ledger, 'observe_session_end', lambda *a, **kw: called.set())
+    app.client.post(f'/api/sessions/{sid}/ended', json={'returncode': 3221225477}).raise_for_status()
+    assert get(app)['reason']['crash']
+    assert called.wait(1)

@@ -75,8 +75,11 @@ def end_reason(s: dict, worker_online: bool = True) -> dict:
     if "timings" in ex or via in ("stop", "operator"):
         return {"kind": "stopped", "crash": False, "text": "You stopped it."}
     rc = ex.get("returncode")
-    if rc not in (None, 0):
+    from .session_exit import crash_code
+    if crash_code(ex):
         return {"kind": "crash", "crash": True, "text": f"The emulator quit unexpectedly (exit code {rc})."}
+    if rc not in (None, 0):
+        return {"kind": "ended", "crash": False, "text": "The emulator closed."}
     return {"kind": "closed", "crash": False, "text": "The emulator window was closed."}
 
 
