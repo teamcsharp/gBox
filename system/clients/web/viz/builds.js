@@ -315,6 +315,17 @@
       + (other.length ? `<h4 class="bv-recent">Investigating</h4>${other.map(id => `<div class="bv-job" data-bv-jid="${ESC(id)}">${investigateHTML(st.inv.get(id))}</div>`).join("")}` : "");
   }
 
+  function retentionHTML(st, node) {
+    if (!node || node === 'auto') return '';
+    if (!st.retention) return '<p class="mut">Local build limits are unavailable until this PC reconnects to the updated service.</p>';
+    const p = st.retention, value = (st.game && p.games?.[st.game]) || p.default || 3;
+    const title = st.game ? (st.data?.items?.find(b => b.game_id === st.game)?.game_title || st.game) : 'Default for all games';
+    return `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0;padding:12px;border:1px solid #383b48;border-radius:8px">
+      <label>Keep on ${ESC(node)} · ${ESC(title)} <input type="range" data-bv-keep min="1" max="10" step="1" value="${value}" aria-label="Builds to keep on this PC"></label>
+      <strong><output data-bv-keep-value>${value}</output> builds</strong>
+      <button class="act" type="button" data-bv="retention-save">Apply limit and clean up</button>
+      <small class="mut">Keeps newest local builds. Running builds and saves are protected. Spark copies stay available.</small></div>`;
+  }
   function toolbarHTML(st, f) {
     const opt = (v, l, sel) => `<option value="${ESC(v)}"${v === sel ? " selected" : ""}>${ESC(l)}</option>`;
     return `<div class="bv-bar"><h2 style="margin:0">Builds</h2>
@@ -323,6 +334,7 @@
       <select data-bv-f="kind">${opt("", "All kinds", st.kind)}${f.kinds.map(k => opt(k.kind, `${k.label} (${k.count})`, st.kind)).join("")}</select>
       <label class="bv-favf" title="Only the builds you starred (★)"><input type="checkbox" data-bv-f="fav"${st.fav ? " checked" : ""}> ★ Favorites${f.favorites ? ` (${f.favorites})` : ""}</label>
       <button class="act" type="button" data-bv="refresh" title="Re-read the build folders">Refresh</button><span class="mut" data-bv-sum></span></div>
+      <div data-bv-retention></div>
       <section class="bv-section"><h3>Custom builds <span class="mut" data-bv-count></span></h3>
         <div class="bv-head mut"><span></span><span></span><span>Name</span><span>Game</span><span>Kind</span><span>Built</span><span>Size</span><span>Lives on</span><span></span></div>
         <div data-bv-list></div><div data-bv-more></div></section>
@@ -617,10 +629,32 @@
     const find = key => fullItems().find(b => b.key === key);
     const jobs = () => new Map([...(st.sched?.jobs || []), ...(st.sched?.recent || [])].map(j => [j.id, j]));
     const findJob = id => jobs().get(id);
+    st.retention = null;
+    function drawRetention() {
+      const el = part('[data-bv-retention]');
+      if (el) el.innerHTML = retentionHTML(st, env.here);
+    }
+    async function loadRetention() {
+      if (!env.here || env.here === 'auto') return;
+      try { st.retention = await env.api('/api/build-retention?node=' + encodeURIComponent(env.here)); }
+      catch { st.retention = null; }
+      drawRetention();
+    }
+    async function saveRetention() {
+      const input = part('[data-bv-keep]');
+      if (!input || !st.retention) return;
+      const game = st.game, limit = Number(input.value);
+      try {
+        const result = await env.api('/api/build-retention', { node: env.here, game_id: game, limit }, 'POST');
+        st.retention = result; drawRetention();
+        toast(result.queued ? `Keeping the newest ${limit} builds. Older local copies will be removed when this PC is ready.` : result.reason);
+      } catch (e) { toast('Build limit could not be saved: ' + e.message); }
+    }
 
     function shell() {
       host.innerHTML = `<style>${CSS}${BA()?.WHAT_CSS || ""}.bv-act{padding-left:6px;padding-right:6px}.bv-del:hover{background:#7a2b2b;color:#fff}.bv-main .ba-what{margin:2px 0}</style>` + toolbarHTML(st, facets(fullItems()));
       built = true;
+      drawRetention();
     }
     function drawList() {
       if (!built) shell();
@@ -817,6 +851,7 @@
       }
       if (st.local?.menu && !t.closest?.("[data-bl-menu]")) { st.local.menu = null; drawList(); if (!act) return; }
       if (act === "more") { st.page++; drawList(); return; }
+      if (act === "retention-save") return saveRetention();
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} st.listSig = ""; await loadList(true); await loadSched(); return; }
       if (act === "launchopt") { const bb = find(a.dataset.key); return launch(bb, (bb?.launch_options || []).find(o => o.id === a.dataset.opt)); }
       const bk = b || (a?.dataset?.key ? find(a.dataset.key) : null);   // the options row sits under its build's row
@@ -863,8 +898,13 @@
       if (inp && st.renaming === inp.dataset.bvRename) rename(inp.dataset.bvRename, inp.value);
     }
     function onInput(e) {
+      if (e.target?.hasAttribute?.('data-bv-keep')) {
+        const output = part('[data-bv-keep-value]'); if (output) output.textContent = e.target.value;
+        return;
+      }
       const f = e.target?.dataset?.bvF; if (!f) return;
       st[f] = e.target.type === "checkbox" ? !!e.target.checked : e.target.value; st.page = 1; drawList();
+      if (f === 'game') drawRetention();
     }
     // right-click a build: its options (launch options, Rename…, favorite) under the row
     function onContext(e) {
@@ -898,7 +938,7 @@
     async function start() {
       shell(); drawList(); drawSched();
       localAt = Date.now();
-      await Promise.all([loadList(), loadSched(), st.local?.refresh()]);
+      await Promise.all([loadList(), loadSched(), st.local?.refresh(), loadRetention()]);
       drawList();
       timer = setInterval(tick, env.tick || TICK);
       return ctl;
@@ -918,7 +958,7 @@
 
   const api = { filterBuilds, facets, rowHTML, optionsHTML, detailsHTML, filesHTML, charactersHTML, codesHTML, turntableHTML, jobHTML,
     scheduledHTML, editorHTML, readEdits, editableFields, investigateHTML, flowOf, flowTextHTML, launchCall, optLabel, defaultOption,
-    createTurntables, createFlows, mount, fmtSize, fmtAge, fmtEta, KINDS, TICK, SPIN };
+    createTurntables, createFlows, mount, retentionHTML, fmtSize, fmtAge, fmtEta, KINDS, TICK, SPIN };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxBuilds = api;
 })(typeof window !== "undefined" ? window : globalThis);

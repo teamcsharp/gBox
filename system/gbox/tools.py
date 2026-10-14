@@ -2973,6 +2973,7 @@ class FileModIn(BaseModel):
     name: str = ""
     # build: {"PS3_GAME/USRDIR/...": {"patch": [{"offset": "0x10", "hex": "ff"}]} | {"from": "<local file>"} | {"artifact": "<sha256>"}}
     changes: dict = {}
+    retention_node: str = ''
 
 class FileModOut(BaseModel):
     result: dict
