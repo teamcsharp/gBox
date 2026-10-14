@@ -195,6 +195,13 @@ How to work:
   first>] [slots=all|main|enemies|bosses|npcs|bots|campaign|<comma list>] (AUF: slots=campaign,bots) (plan_only=true shows
   the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
+  A character replacement means every appearance of that character by default: gameplay, in-engine cutscenes,
+  alternate costumes/LODs, and prerecorded cinematics. Inventory their separate model/texture/movie assets.
+  Enable supported cutscene writer paths; never accept gameplay-only output as a complete replacement.
+  Prerecorded video is separate work: swapping a 3D model does not replace its filmed appearance. If any scene
+  still shows the original, keep the task open and record the exact scene, asset, and missing writer in the build
+  report for follow-up. Verify the donor in actual gameplay AND representative cutscenes; a successful build or
+  nonblack frame alone proves neither. Preserve the source and make a new named build rather than overwrite one.
   Report the status as returned; "extracted" only with checked.ok. Unknown model
   format: Ghidra (analyze_binary / ghidra_script) on the game's executable to find the loader. View an entry: bevy_scene;
   edit: open_in_blender, then characters op=add from_clipboard=true.

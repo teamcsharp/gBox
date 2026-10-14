@@ -425,7 +425,7 @@ def test_build_stage_dat_replaces_paints_and_hides(donor):
     new, rep = W.build_stage_dat(sdat, {"snake_def": donor, "out_cold": donor})
     assert len(new) == len(sdat)
     by = {r["stage"]: r for r in rep["stages"]}
-    assert set(by) == {"r_sna", "area01a"}                 # the cut-scene stage stays stock
+    assert set(by) == {"r_sna", "area01a", "demo01a"}       # cutscenes are part of a replacement by default
     assert by["r_sna"]["hidden"] == ["26523a"] and by["area01a"]["hidden"] == ["1fb776"]
     assert rep["slots"]["snake_def"]["status"] == "built" and rep["slots"]["out_cold"]["status"] == "built"
     sd = S.StageDat.from_bytes(new)
@@ -438,7 +438,32 @@ def test_build_stage_dat_replaces_paints_and_hides(donor):
     assert W.part_textures(st.find(0x4632AF, S.MODEL).data) == {0x777777}       # other items untouched
     old = S.StageDat.from_bytes(sdat)
     o, s = old.span(2)
-    assert new[o:o + s] == sdat[o:o + s]
+    assert new[o:o + s] != sdat[o:o + s]
+    demo = sd.stage("demo01a")
+    assert K.stats(K.parse(demo.find(0x26E012, S.MODEL).data))["triangles"] > 100
+    demo_tex = T.TextureSet(demo.find(0x26E012, S.TEXTURES).data)
+    assert demo_tex.rgba(demo_tex.by_hash(LAYER[1]))[..., 1].mean() > 150
+    assert "demo01a" in rep["slots"]["out_cold"]["stages_written"]
+
+
+def test_explicit_gameplay_only_mode_preserves_cinematic_bytes(donor):
+    sdat = _disc()
+    new, rep = W.build_stage_dat(sdat, {"out_cold": donor}, cutscenes=False)
+    off, size = S.StageDat.from_bytes(sdat).span(2)
+    assert new[off:off + size] == sdat[off:off + size]
+    assert [r["stage"] for r in rep["stages"]] == ["area01a"]
+
+
+def test_cutscene_with_only_the_low_detail_twin_is_also_replaced(donor):
+    body = stage_blob([(S.MODEL, 0xF7A622, model_bytes()), (S.TEXTURES, 0x413AA8, body_set())])
+    twin = stage_blob([(S.MODEL, 0x55AB65, model_bytes(0x55AB65, 0x413AA8)), (S.TEXTURES, 0x413AA8, body_set())])
+    sdat = stage_dat([("area01a", body), ("demo_twn", twin)], 0x4000)
+    new, rep = W.build_stage_dat(sdat, {"snake_def": donor})
+    assert set(rep["slots"]["snake_def"]["stages_written"]) == {"area01a", "demo_twn"}
+    demo = S.StageDat.from_bytes(new).stage("demo_twn")
+    assert K.stats(K.parse(demo.find(0x55AB65, S.MODEL).data))["triangles"] > 100
+    ts = T.TextureSet(demo.find(0x413AA8, S.TEXTURES).data)
+    assert ts.rgba(ts.by_hash(LAYER[1]))[..., 1].mean() > 150
 
 
 def test_build_shrinks_the_budget_until_every_stage_fits(donor):
@@ -474,6 +499,9 @@ def test_build_mod_writes_a_disc_image_copy(donor, tmp_path):
     assert len(out) == len(img) and out[0x8000:0x8000 + len(sdat)] != sdat
     rec = __import__("json").loads((Path(b["dir"]) / ".gbox-mod.json").read_text())
     assert rec["writer"] == "gbox.twin_snakes_swap" and rec["cast"] == [["snake_def", "donor"]]
+    assert rec["replacement_scope"]["in_engine_cutscenes"] == "written_unverified"
+    assert rec["replacement_scope"]["complete"] is False
+    assert rec["replacement_scope"]["prerecorded_movies"] == "unchanged"
     items = W._live_file(cfg, "79965f951e479d2b", "tts_player_test")      # the live write ships with the mod
     assert {i["kind"] for i in items} == {"model", "texels", "hide"}
 

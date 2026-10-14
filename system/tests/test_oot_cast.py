@@ -504,10 +504,17 @@ def test_cast_swap_builds_oot_through_build_cast(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "get", lambda root, slug: next(m for m in SA2 if m["slug"] == slug))
     monkeypatch.setattr(C, "_api", lambda *a, **k: {})
     p = CS.plan(OOT, SA2, "SA2", slots="player,kokiri_boy,kokiri_girl,saria")
+    legacy = filemods.mod_dir(SimpleNamespace(cache=tmp_path / "cache"), OOT["game_id"], p["mod"])
+    legacy.mkdir(parents=True)
+    old_marker = json.dumps({"name": p["mod"], "cast": [], "retarget_profiles": "",
+                             "cast_plan": CS.plan_digest(p["assignments"])})
+    (legacy / ".gbox-mod.json").write_text(old_marker)
     ctx = SimpleNamespace(config=SimpleNamespace(cache=tmp_path / "cache"), progress=lambda *a: None, job_id="j")
-    r = CS.build(ctx, OOT, p, SA2, tmp_path, SimpleNamespace(rebuild=False, strict_cutscenes=True))
+    r = CS.build(ctx, OOT, p, SA2, tmp_path, SimpleNamespace(rebuild=False))
     assert [s for s, _ in seen["pairs"]] == ["player", "kokiri_boy", "kokiri_girl", "saria"] and seen["strict"]
     assert r["status"] == "partial" and r["mod"] == p["mod"]
+    assert r["mod"].endswith("_cs1"), "never reuse the previous gameplay-only build name"
+    assert (legacy / ".gbox-mod.json").read_text() == old_marker, "the legacy build stays intact"
     girl = next(x for x in r["report"] if x["slot"] == "kokiri_girl")
     assert girl["status"] == "failed" and girl["reason"] == "doesn't fit"
 

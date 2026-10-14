@@ -898,6 +898,13 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     """One mod for the whole plan through the writer's multi-slot path; per-slot rows {slot, donor, status, reason}."""
     from . import characters as C, filemods
     gid, name = game["game_id"], p["mod"]
+    if p.get("writer") in ("gbox.twin_snakes_swap", "gbox.oot_swap"):
+        # Do not overwrite or silently reuse a gameplay-only build made under the old policy.
+        suffix = "_cs0" if p["writer"] == "gbox.oot_swap" and not getattr(inp, "strict_cutscenes", True) else "_cs1"
+        if not name.endswith(suffix):
+            base = name if len(name) <= 90 else name[:79] + "_" + hashlib.sha256(name.encode()).hexdigest()[:10]
+            name = base + suffix
+            p["mod"] = name
     metas = {m["slug"]: m for m in chars}
     for r in p["assignments"]:                            # re-read: the gate may have re-extracted the donor
         try:
@@ -1117,7 +1124,7 @@ def _mgs2(ctx, game, pairs, name, inp):
 def _oot(ctx, game, pairs, name, inp):
     from . import oot_swap
     return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
-                               strict_cutscenes=bool(getattr(inp, "strict_cutscenes", False)))
+                               strict_cutscenes=bool(getattr(inp, "strict_cutscenes", True)))
 
 
 def _jgr(ctx, game, pairs, name, inp):
