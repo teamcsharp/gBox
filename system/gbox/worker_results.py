@@ -51,7 +51,24 @@ def _verified_ack(ack, record):
             and isinstance(ack.get('receipt'), str) and bool(ack['receipt']))
 
 
-def _pid_alive(pid):
+def _windows_pid_reused(kernel, handle, recorded_at):
+    """A process born after ownership was recorded cannot be that emulator."""
+    import math
+    if type(recorded_at) not in (int, float) or not math.isfinite(recorded_at) or recorded_at <= 0:
+        return False  # legacy/unknown identity remains protected
+    import ctypes
+    from ctypes import wintypes
+    created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                  ctypes.byref(kernel_time), ctypes.byref(user_time)):
+        return False  # query failure must never release a potentially live game
+    born = ((created.dwHighDateTime << 32) | created.dwLowDateTime) / 10_000_000 - 11_644_473_600
+    return born > recorded_at + 1  # tolerate timestamp rounding
+
+
+def _pid_alive(pid, *, recorded_at=None):
     if type(pid) is not int or pid <= 0:
         raise RuntimeError('Invalid owned emulator PID; activation was stopped')
     if os.name == 'nt':
@@ -67,7 +84,9 @@ def _pid_alive(pid):
         try:
             code = wintypes.DWORD()
             kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-            return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259
+            if kernel.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259:
+                return False
+            return not _windows_pid_reused(kernel, handle, recorded_at)
         finally:
             kernel.CloseHandle.argtypes = [wintypes.HANDLE]
             kernel.CloseHandle(handle)
@@ -296,7 +315,7 @@ class ResultOutbox:
                 acknowledged.append(jid)
         return acknowledged
 
-    def protected_sessions(self, running_file: Path, *, is_alive=_pid_alive):
+    def protected_sessions(self, running_file: Path, *, is_alive=None):
         """An acknowledged native launch must not fall into startup orphan killing.
 
         A retained PID record cannot prove a process is dead or safely reattach its
@@ -311,6 +330,8 @@ class ResultOutbox:
         for sid, record in running.items():
             if not isinstance(sid, str) or not isinstance(record, dict):
                 raise RuntimeError('Invalid native ownership manifest; activation was stopped')
-            if is_alive(record.get('pid')):
+            alive = (is_alive(record.get('pid')) if is_alive is not None
+                     else _pid_alive(record.get('pid'), recorded_at=record.get('ts')))
+            if alive:
                 protected.append(sid)
         return sorted(protected)
