@@ -2,9 +2,10 @@
 (() => {
   const bound = new WeakMap();
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-  function source(url) {
-    const parsed = new URL(url, location.href);
-    if (parsed.origin !== location.origin) throw Error('Blender media must come from the gBox asset library.');
+  function source(url, base) {
+    const home = typeof base === 'function' ? base() : base || location.href;
+    const parsed = new URL(url, home);
+    if (parsed.origin !== new URL(home).origin) throw Error('Blender media must come from the gBox asset library.');
     return parsed.pathname; // the worker supplies its own auth; never enqueue a browser token
   }
   function bind(el, asset) { if (el) bound.set(el, asset); }
@@ -12,7 +13,8 @@
     for (let el = target; el; el = el.parentElement) {
       if (bound.has(el)) return { ...bound.get(el), image: target.closest?.('img') };
       if (el.dataset?.assetUrl) return { url: el.dataset.assetUrl, name: el.dataset.assetName,
-        format: el.dataset.assetFormat, image: target.closest?.('img') };
+        format: el.dataset.assetFormat, image: target.closest?.('img'),
+        ...(el.dataset.assetCharacter ? {input:{character:el.dataset.assetCharacter}} : {}) };
     }
     const image = target.closest?.('img');
     return image ? { image, url: image.currentSrc || image.src, name: image.alt || 'Image', format: 'image' } : null;
@@ -54,10 +56,10 @@
           else if (mode === 'asset') { await io.asset(asset); status.textContent = 'Copied to the gBox asset clipboard.'; }
           else {
             let input;
-            if (mode === 'model') input = asset.input || { asset_url: source(asset.url) };
-            else if (mode === 'movie_plane') input = { asset_url: source(asset.mp4 || asset.url), paste_as: mode };
+            if (mode === 'model') input = asset.input || { asset_url: source(asset.url, io.sourceBase) };
+            else if (mode === 'movie_plane') input = { asset_url: source(asset.mp4 || asset.url, io.sourceBase), paste_as: mode };
             else if (asset.image) input = { image_b64: (await png(asset.image)).split(',')[1], paste_as: mode };
-            else input = { asset_url: source(asset.url), paste_as: mode };
+            else input = { asset_url: source(asset.url, io.sourceBase), paste_as: mode };
             const result = await io.blender(input);
             status.textContent = `Copied ${mode.replaceAll('_', ' ')}${result.host ? ' on ' + result.host : ''}. In Blender, hover a 3D viewport and press Ctrl+V.`
               + (mode === 'movie_plane' ? ' Play the timeline to animate. MP4 has an opaque background; its file stays on this PC.' : '');

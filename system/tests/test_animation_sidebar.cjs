@@ -66,7 +66,7 @@ test('animation list scrolls independently beside a visible preview, and clip se
 test('asset menus keep authenticated URLs out of queued jobs and leave game reports alone',async()=>{
  await assetPage(async evaluate=>{
   await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/asset-context.js'),'utf8'));
-  await evaluate(`document.body.innerHTML='<div id="asset" data-asset-url="/api/assets/m/file?token=private" data-asset-format="GLB" data-asset-name="Model"><canvas></canvas></div><img class="screen" src="data:image/png;base64,iVBORw0KGgo=">';window.inputs=[];window.legacy=0;GBoxAssetContext.mount(document,{blender:async i=>{inputs.push(i);return {};}});document.addEventListener('contextmenu',()=>legacy++);document.querySelector('canvas').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));document.querySelector('[data-copy=model]').click();new Promise(r=>setTimeout(r,10));`);
+  await evaluate(`document.body.innerHTML='<div id="asset" data-asset-url="/api/assets/m/file?token=private" data-asset-format="GLB" data-asset-name="Model"><canvas></canvas></div><img class="screen" src="data:image/png;base64,iVBORw0KGgo=">';window.inputs=[];window.legacy=0;window.copyIO={blender:async i=>{inputs.push(i);return {};}};GBoxAssetContext.mount(document,copyIO);document.addEventListener('contextmenu',()=>legacy++);document.querySelector('canvas').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));document.querySelector('[data-copy=model]').click();new Promise(r=>setTimeout(r,10));`);
   assert.deepEqual(await evaluate('inputs'),[{asset_url:'/api/assets/m/file'}]);
   assert.equal(await evaluate('legacy'),0,'generic report menu does not also open');
   await evaluate(`document.querySelector('img').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));`);
@@ -74,6 +74,10 @@ test('asset menus keep authenticated URLs out of queued jobs and leave game repo
   await evaluate(`document.querySelector('#asset').dataset.assetUrl='https://evil.example/api/assets/m/file';document.querySelector('canvas').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));document.querySelector('[data-copy=model]').click();new Promise(r=>setTimeout(r,10));`);
   assert.equal(await evaluate('inputs.length'),1);
   assert.match(await evaluate(`document.querySelector('.gbox-asset-menu [role=status]').textContent`),/must come from/);
+  await evaluate(`copyIO.sourceBase=()=> 'http://configured-gbox.test:8765';document.querySelector('#asset').dataset.assetUrl='http://configured-gbox.test:8765/api/assets/m/file?token=private';document.querySelector('canvas').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));document.querySelector('[data-copy=model]').click();new Promise(r=>setTimeout(r,10));`);
+  assert.deepEqual(await evaluate('inputs[1]'),{asset_url:'/api/assets/m/file'},'desktop file origin allows only its configured server and strips the token');
+  await evaluate(`document.querySelector('#asset').dataset.assetCharacter='sonic';document.querySelector('canvas').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));document.querySelector('[data-copy=model]').click();new Promise(r=>setTimeout(r,10));`);
+  assert.deepEqual(await evaluate('inputs[2]'),{character:'sonic'},'character cards copy the round-trip model, not their thumbnail');
   await evaluate(`window.dialog=document.createElement('dialog');dialog.innerHTML='<img src="data:image/png;base64,iVBORw0KGgo=">';document.body.append(dialog);dialog.showModal();dialog.querySelector('img').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));`);
   assert.equal(await evaluate(`!!dialog.querySelector('.gbox-asset-menu')`),true,'the menu stays in a modal dialog top layer');
  });

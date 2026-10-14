@@ -161,3 +161,11 @@ test('unidentified or offline local workers never send a clipboard job to anothe
   const nowhere = webFixture({ workers: [{ id: 'l', name: 'spark', online: true, os: 'linux' }] });
   await assert.rejects(nowhere.ctx.blenderCopy({ character: 'mario' }, 'sid'), /no gBox worker on this PC/);
 });
+
+test('image copies do not repeat the PNG payload in the desktop popup bridge',async()=>{
+ const f=webFixture({job:{state:'succeeded',output:{result:R}}});
+ await f.ctx.blenderCopy({image_b64:'large-image-payload',paste_as:'image_empty'});
+ const message=JSON.parse(f.logs[0].slice(5));
+ assert.deepEqual(message.input,{paste_as:'image_empty'});
+ assert.equal(message.result.host,'JAYBUILTFINALE');
+});

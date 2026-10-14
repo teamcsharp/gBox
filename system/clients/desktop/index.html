@@ -809,6 +809,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const live = new Set();
 window.assetView = async (box, glbUrl) => {
+  window.GBoxAssetContext?.bind(box, {url:glbUrl,name:"Model preview",format:"GLB"});
   const cv = box.querySelector("canvas"), r = new T.WebGLRenderer({ canvas: cv, antialias: true, alpha: true });
   r.outputColorSpace = T.SRGBColorSpace; r.setPixelRatio(Math.min(devicePixelRatio, 2));
   const scene = new T.Scene(), cam = new T.PerspectiveCamera(40, 1, 0.01, 5000);
@@ -6773,7 +6774,7 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
 <script src="../web/viz/asset-context.js"></script>
 <script>
 window.GBOX_ASSET_MENU = GBoxAssetContext.mount(document, {
-  place:(el,x,y)=>fitMenu(el,x,y), image:data=>gbox.clipImage(data), blender:input=>pwBlenderCopy(input),
+  place:(el,x,y)=>fitMenu(el,x,y), sourceBase:()=>S.apiUrl, image:data=>gbox.clipImage(data), blender:input=>pwBlenderCopy(input),
   asset:a=>{const hit=String(a.url||'').match(/^\/api\/assets\/([^/]+)\/file/);if(!hit)throw Error('This asset has no gBox clipboard source.');return gbox.api('/api/assets/'+hit[1]+'/copy',{});}
 });
 </script>
