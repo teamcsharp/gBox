@@ -3179,7 +3179,7 @@ async function modsGalleryOpen() {
   const api = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: GBoxLivePoll, here: S.workerName || "windows",
     url: u => /^(https?|data|blob):/.test(u) ? u : `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
-    openCharacter: o => GBoxCharacterPopup.open(o, {api, url:u=>`${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`, loadViewer:()=>import(new URL("/viz/character-model.js",S.apiUrl).href), blender:slug=>pwBlenderCopy({character:slug}), retarget:retargetOpen}),
+    openCharacter: o => GBoxCharacterPopup.open(o, {api, url:u=>`${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`, loadViewer:()=>import(new URL("/viz/character-model.js",S.apiUrl).href), blender:slug=>pwBlenderCopy({character:slug}), retarget:retargetOpen}),openMapping:retargetOpen,
     visible: () => $("#mods").classList.contains("on"), openImages: (list, i, at) => texPopOpen(list, i, at),
     toast: t => toast(t, 8000), play: modsGalleryPlay, openRequest: modsGalleryRequest, ...deskFolders() });
   return MODSG.ctl;

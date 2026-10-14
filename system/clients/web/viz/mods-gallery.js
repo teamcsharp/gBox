@@ -30,7 +30,7 @@
 
   // kind: "" every build | "showcase" the Sonic showcase test builds (gbox/sonic_showcase.py) | "other" everything else;
   // favorites (★) first, then newest; fav: only the favorites
-  function filterMods(items, { game = "", writer = "", q = "", kind = "", fav = false, sort = "newest", played = "" } = {}) {
+  function filterMods(items, { game = "", writer = "", q = "", kind = "", fav = false, sort = "newest", played = "", localKeys = new Set() } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
     const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
@@ -39,6 +39,7 @@
         && (!played || (played === "unplayed" ? m.play_count === 0 : m.play_count > 0)))
       .sort((a, b) => {
         const newest = (b.built || 0) - (a.built || 0) || String(a.key).localeCompare(String(b.key));
+        if(sort==='local')return (+!localKeys.has(a.key)-+!localKeys.has(b.key))||newest;
         if (sort === "favorites") return (+!!b.favorite - +!!a.favorite) || newest;
         if (sort === "oldest") return (a.built || 0) - (b.built || 0) || newest;
         if (sort === "unplayed") return (+!!a.play_count - +!!b.play_count) || newest;
@@ -100,7 +101,7 @@
   function changesHTML(m) {
     const rows = m.changes || [];
     if (!rows.length) return '<div class="mg-ch mut">No donor / slot record in this build\'s marker.</div>';
-    return `<ul class="mg-ch">${rows.map(r => `<li${r.reason ? ` title="${ESC(r.reason)}"` : ""}><b>${String(r.donor || "").split(",").map(s => s.trim()).filter(Boolean).map(slug => `<button type="button" class="mg-character" data-mg="character" data-slug="${ESC(slug)}" data-slot="${ESC(r.slot || "player")}" title="View ${ESC(slug)} in 3D, export to Blender, examine or retarget">${ESC(slug)}</button>`).join(", ") || "?"}</b> → ${ESC(r.slot || "?")}`
+    return `<ul class="mg-ch">${rows.map(r => `<li${r.reason ? ` title="${ESC(r.reason)}"` : ""}><b>${String(r.donor || "").split(",").map(s => s.trim()).filter(Boolean).map(slug => `<button type="button" class="mg-character" data-mg="character" data-slug="${ESC(slug)}" data-slot="${ESC(r.slot || "player")}" title="View ${ESC(slug)} in 3D, export to Blender, examine or retarget">${ESC(slug)}</button>`).join(", ") || "?"}</b> <button type="button" class="mg-character" data-mg="mapping" data-slug="${ESC(String(r.donor||'').split(',')[0].trim())}" data-slot="${ESC(r.slot||'player')}" title="Inspect this character mapping, proportions and recorded reduction">→ ${ESC(r.slot || "?")}</button>`
       + (r.status ? ` <span class="mg-st mg-${ESC(r.status)}">${ESC(r.status)}</span>` : "")
       + (r.reason ? ` <span class="mut">${ESC(r.reason)}</span>` : "") + "</li>").join("")}</ul>`;
   }
@@ -151,7 +152,7 @@
   }
 
   // dl / dlMenu: the download icon (top-right of the picture) and its open menu (viz/build-local.js), "" without a PC view
-  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "", choice = null, dl = "", dlMenu = "" } = {}) {
+  function cardHTML(m, { url = u => u, idx = 0, now, renaming = false, menu = false, note = "", choice = null, dl = "", dlMenu = "", localState = null } = {}) {
     const imgs = imagesOf(m, url), i = imgs.length ? ((idx % imgs.length) + imgs.length) % imgs.length : 0, cur = imgs[i];
     const lfr = m.launch_report && m.launch_report.number ? m.launch_report : null;
     const tickets = (m.tickets || []).filter(t => (!lfr || String(t.number) !== String(lfr.number))
@@ -160,9 +161,9 @@
       <div class="mg-pic">${cur ? `<img class="mg-img" loading="lazy" decoding="async" alt="${ESC(cur.name)}" data-i="${i}" src="${ESC(cur.src)}">
         ${imgs.length > 1 ? `<button class="mg-nav" data-mg="prev" type="button" title="Previous picture">‹</button><button class="mg-nav" data-mg="next" type="button" title="Next picture">›</button>` : ""}
         <span class="mg-count">${cur.kind === "shot" ? "in-game · " : cur.kind === "donor" ? "donor · " : ""}${i + 1} / ${imgs.length}</span>`
-        : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}${dl ? `<div class="mg-dl">${dl}</div>` : ""}</div>
+        : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}${dl ? `<div class="mg-dl">${dl}</div>` : ""}${localState?.state==='busy'?`<div class="mg-download-progress" role="progressbar" aria-label="Build download" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${localState.pct}" title="Downloading ${localState.pct}%"><i style="height:${localState.pct}%"></i></div>`:''}</div>
       <div class="mg-body">
-        <button type="button" class="mg-broken-toggle" data-mg="broken" aria-label="${m.broken ? "View broken build investigation" : "Mark build broken"}" aria-pressed="${!!m.broken}" title="${m.broken ? "View investigation" : "Mark broken, investigate, then delete"}">&#9888;</button>
+        ${localState?.state==='here'?`<button type="button" class="mg-broken-toggle" data-mg="broken" aria-label="${m.broken ? "View broken build investigation" : "Mark build broken"}" aria-pressed="${!!m.broken}" title="${m.broken ? "View investigation" : "Mark broken, investigate, then delete"}">&#9888;</button>`:''}
         ${m.broken ? `<div class="mg-broken-status" role="status">Broken · ${ESC(({queued:"queued for review",preserving:"preserving evidence",preserved:"removed from PC · under review",blocked:"cleanup needs attention"})[m.broken.state] || m.broken.state)}${m.broken.number ? ` · #${ESC(m.broken.number)}` : ""}${m.broken.error ? `<div>${ESC(m.broken.error)}</div>` : ""}</div>` : ""}
         <div class="mg-h"><span class="mg-tt">${starHTML(m)}${titleHTML(m, renaming)}</span>
           <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
@@ -196,7 +197,7 @@
     const opt = (v, l, sel) => `<option value="${ESC(v)}"${v === sel ? " selected" : ""}>${ESC(l)}</option>`;
     return `<div class="mg-bar"><h2 style="margin:0">Mods</h2>
       <details class="mg-sort"><summary title="Filter and sort mods" aria-label="Filter and sort mods"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2V12z"/></svg></summary><div class="mg-sort-menu">
-        <label>Sort by <select data-mg-f="sort">${[["newest","Newest builds first"],["oldest","Oldest builds first"],["favorites","Favorites first"],["unplayed","Unplayed first"],["plays","Most played"],["recent","Recently played"],["name","Name A–Z"]].map(([k,l])=>opt(k,l,st.sort || "newest")).join("")}</select></label>
+        <label>Sort by <select data-mg-f="sort">${[["newest","Newest builds first"],["local","On selected PC first"],["oldest","Oldest builds first"],["favorites","Favorites first"],["unplayed","Unplayed first"],["plays","Most played"],["recent","Recently played"],["name","Name A–Z"]].map(([k,l])=>opt(k,l,st.sort || "newest")).join("")}</select></label>
         <label>Show <select data-mg-f="played">${opt("","All play counts",st.played || "")}${opt("unplayed","Unplayed only",st.played || "")}${opt("played","Played only",st.played || "")}</select></label></div></details>
       <input type="search" data-mg-f="q" placeholder="Search mod, game, donor, slot, #request" value="${ESC(st.q)}">
       <select data-mg-f="game">${opt("", "All games", st.game)}${f.games.map(g => opt(g.game_id, `${g.title} (${g.count})`, st.game)).join("")}</select>
@@ -213,6 +214,7 @@
     .mg-character{font:inherit;font-weight:600;color:var(--acc,#a2b5ff);background:none;border:0;border-bottom:1px dotted currentColor;padding:0;cursor:pointer}.mg-character:hover{color:#fff}.mg-plays{font-size:12px;color:#bfc7db}.mg-unplayed{color:#d4c9ff;border-color:#8472b8}
     .mg-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}.mg-bar input[type=search]{flex:1;min-width:180px}
     .mg-broken-toggle{position:absolute;top:6px;left:6px;z-index:3;border:1px solid #cf796c;border-radius:6px;background:#241a1a;color:#ffbdab;font-size:18px;cursor:pointer;padding:3px 7px}
+    .mg-download-progress{position:absolute;top:0;bottom:0;right:0;width:9px;background:#263043;z-index:2;pointer-events:none}.mg-download-progress i{position:absolute;bottom:0;left:0;right:0;background:#7ba6ff;box-shadow:0 0 8px #80adff;transition:height .3s}
     .mg-broken{border-color:#b85d50!important}.mg-broken-status{background:#612c27;color:#fff1e9;padding:6px 8px;border-radius:4px;font-weight:600}
     .mg-broken button:disabled{opacity:.45;cursor:not-allowed}
     .mg-broken::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:2;opacity:.12;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='170' height='170'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.9'/%3E%3C/svg%3E"),repeating-linear-gradient(0deg,transparent 0 2px,#000 2px 4px);animation:mg-static 1.2s steps(3,end) infinite}
@@ -261,21 +263,31 @@
     const url = env.url || (u => u);
     let timer = null, built = false;
     // the download icon: this PC's copy of each build (GET /api/builds/local), downloads / exports running from here
-    const local = BL() ? BL().create(env, { redraw: () => { if (!st.renaming) draw(); }, note: (b, t) => note(b.key, t), toast: t => toast(t) }) : null;
+    const locals=new Map();let local=null,stopped=false;
+    function selectLocal(){
+      const target=st.node||env.here||'';
+      if(!BL()||!target||target==='auto'){local=null;return null;}
+      if(!locals.has(target)){
+        const instance=BL().create({...env,here:target},{redraw:()=>{if(!stopped&&local===instance&&!st.renaming)draw();},note:(b,t)=>{if(local===instance)note(b.key,t);},toast});
+        locals.set(target,instance);
+      }
+      return local=locals.get(target);
+    }
+    selectLocal();
 
     function shell() {
       const f = facets(st.data?.items || []);
       host.innerHTML = `<style>${CSS}${BA()?.WHAT_CSS || ""}</style>` + toolbarHTML(st, f, st.nodes);
       built = true;
     }
-    function shown() { return filterMods(st.data?.items || [], st); }
+    function shown() { return filterMods(st.data?.items || [], {...st,localKeys:new Set((st.data?.items||[]).filter(m=>local?.state(m).state==='here').map(m=>m.key))}); }
     function draw() {
       if (!built) shell();
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
       if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0, renaming: st.renaming === m.key, menu: st.menu === m.key,
                                                                 note: st.notes.get(m.key) || "", choice: st.choice.get(m.key),
-                                                                dl: local ? local.iconHTML(m) : "", dlMenu: local ? local.menuHTML(m) : "" })).join("")
+                                                                dl: local ? local.iconHTML(m) : "", dlMenu: local ? local.menuHTML(m) : "",localState:local?.state(m) })).join("")
         || `<p class="mut">${st.data ? (st.data.items.length ? (st.fav && !st.data.items.some(m => m.favorite) ? "No favorites yet: ☆ on a card stars it." : "No built mod matches these filters.") : st.data.indexing ? "Indexing the built mods…" : "No built mods in the cache yet.") : "Loading built mods…"}</p>`;
       if (st.renaming) { const inp = grid?.querySelector?.("[data-mg-rename]"); try { inp?.focus?.(); inp?.select?.(); } catch {} }
       if (sum) sum.textContent = summaryText(list.length, st.data);
@@ -391,7 +403,7 @@
 
     // ⚑ Report / 🗑 Delete: the shared dialogs (viz/build-actions.js); env.buildActions replaces them in tests
     const dialogs = () => env.buildActions || BA();
-    const dialogEnv = () => ({ document: env.document || root.document, api: env.api, here: env.here && env.here !== "auto" ? env.here : "" });
+    const dialogEnv = () => ({ document: env.document || root.document, api: env.api, here: st.node || (env.here && env.here !== "auto" ? env.here : "") });
     async function report(m) {
       const r = await dialogs().open("report", m, dialogEnv());
       if (!r) return null;
@@ -402,6 +414,7 @@
       return r;
     }
     async function markBroken(m, card) {
+      if(local?.state(m).state!=='here'){toast('Download this build to the selected PC before marking its copy broken.');return;}
       if (m.broken?.number) {
         const ticket = {number:m.broken.number, id:m.broken.request_id};
         return openRequest(ticket.number, {...m,tickets:[...(m.tickets || []),ticket]}, card);
@@ -451,6 +464,10 @@
         const b = t.closest("[data-slug]");
         return env.openCharacter?.({slug:b.dataset.slug, name:b.dataset.slug, gid:m.game_id, slot:b.dataset.slot});
       }
+      if(act==='mapping'){
+        const button=t.closest('[data-slug]');
+        return env.openMapping?.({slug:button.dataset.slug,gid:m.game_id,title:m.title,slot:button.dataset.slot,build_name:m.name});
+      }
       if (act === "unlock-ticket") return openRequest(m.unlocks.number, {...m,tickets:[...(m.tickets || []),{number:m.unlocks.number,id:m.unlocks.request_id}]}, card);
       if (act === "broken") return markBroken(m, card);
       if (m.broken && ["play", "moment", "shot"].includes(act)) { toast("This build is broken and queued for investigation"); return; }
@@ -497,9 +514,16 @@
         toast("⚠ " + (err?.message || err));
       } finally { if (btn) btn.disabled = act === "shot" && !m.card_id; }
     }
-    function onInput(e) {
+    async function onInput(e) {
       const f = e.target?.dataset?.mgF; if (!f) return;
-      st[f] = e.target.type === "checkbox" ? !!e.target.checked : e.target.value; if (f !== "node") { st.page = 1; draw(); }
+      const value=e.target.type === "checkbox" ? !!e.target.checked : e.target.value;
+      if(st[f]===value)return;
+      st[f]=value;st.page=1;
+      if(f==='node'){
+        st.sort='local';const control=host.querySelector('[data-mg-f="sort"]');if(control)control.value=st.sort;
+        const current=selectLocal();draw();await current?.refresh(0);if(!stopped&&local===current)draw();return;
+      }
+      draw();
     }
     // the rename field: Enter saves, Esc cancels; the title (a button) renames on Enter; Esc closes the options menu
     function onKey(e) {
@@ -551,6 +575,7 @@
       return load(busy() ? TICK - 500 : 30000);
     }
     function stop() {
+      stopped=true;
       clearInterval(timer);
       for (const [ev, fn] of [["click", onClick], ["input", onInput], ["change", onInput], ["keydown", onKey], ["focusout", onFocusOut], ["contextmenu", onContext]])
         host.removeEventListener?.(ev, fn);
