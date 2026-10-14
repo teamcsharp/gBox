@@ -10,14 +10,29 @@ from .ninja import prs_decompress
 
 SLOT, SLOTS = 28, 30
 CAT_NAMES = {0: "Weapons", 1: "Armor", 2: "Mags", 3: "Tools"}
+CATALOG_SCHEMA = 2
+CLASSES = {"HUmar": 0x49, "HUnewearl": 0xA1, "HUcast": 0x51, "RAmar": 0x4A,
+           "RAcast": 0x52, "RAcaseal": 0x92, "FOmarl": 0x8C, "FOnewm": 0x64,
+           "FOnewearl": 0xA4, "HUcaseal": 0x91, "RAmarl": 0x8A, "FOmar": 0x4C}
 
 
-def _stride(rp, n, o):
-    for st in range(4, 0x40, 4):
-        ids = [rp(o + st * k) for k in range(min(n, 6))]
-        if all(b == a + 1 for a, b in zip(ids, ids[1:])):
-            return st
-    return 0x18
+def rare_pool(items: list[dict], character_class: str, highest: bool = True) -> list[dict]:
+    """Native base-star rarity and class flags, never capitalization. Requirements remain visible in the catalog.
+
+    PSO weapons have grind/stat requirements, not an item level. 'Highest' means the highest star tier available
+    for this class, with each weapon at its own PMT maximum grind when spawned.
+    """
+    if character_class not in CLASSES:
+        raise ValueError("select a PSO character class")
+    mask = CLASSES[character_class]
+    pool = [i for i in items if i.get("cat") == "Weapons" and i.get("stars", 0) >= 9
+            and i.get("usability_flags", 0) & mask == mask]
+    if not pool:
+        raise ValueError("no class-compatible rare weapons in this disc's item database")
+    if highest:
+        stars = max(i["stars"] for i in pool)
+        pool = [i for i in pool if i["stars"] == stars]
+    return pool
 
 
 def catalog(pmt: bytes, text: bytes, endian: str = "<", root_skip: int = 1) -> list[dict]:
@@ -33,28 +48,74 @@ def catalog(pmt: bytes, text: bytes, endian: str = "<", root_skip: int = 1) -> l
     names = ref - 4 * rp(rp(weapons + 12))                         # weapon class 1, entry 0 = Saber
     name = lambda i: (lambda o: t[o:t.find(b"\0", o)].decode("latin-1"))(rt(names + 4 * i)) if 0 <= names + 4 * i < len(t) - 3 else "?"
     out = []
+    # Binary layouts independently decoded from the owned PMT. Schema references and field offsets:
+    # docs/pso-controls.md (newserv ItemParameterTable, pinned revision).
+    dc = root_skip == 1
+    base_size = 4 if dc else 8
+    star_start = rp(root + (0x30 if dc else 0x2C))
+    star_base = 0x4E if dc else 0x94
+    reloc, reloc_n = rp(len(p) - 32), rp(len(p) - 28)
+    if reloc_n > len(p) // 2 or reloc + 2 * reloc_n > len(p):
+        raise ValueError("invalid PSO REL relocations")
+    roots = [root, reloc, len(p) - 32]
+    field = 0
+    for i in range(reloc_n):
+        field += struct.unpack_from(f"{endian}H", p, reloc + 2 * i)[0] * 4
+        if field > len(p) - 4:
+            raise ValueError("invalid PSO REL pointer")
+        roots.append(rp(field))
+    def end_of(start):
+        return min(v for v in roots + [root] if start < v <= len(p))
+    star_end = end_of(star_start)
+    u16 = lambda o: struct.unpack_from(f"{endian}H", p, o)[0]
 
-    def add(code, cat, kind, n, o):
-        st = _stride(rp, n, o) if n > 1 else 0x18
+    def add(code, cat, kind, n, o, st):
+        if not 0 <= n <= 256 or not 0 <= o <= len(p) - st * n:
+            raise ValueError("invalid PSO item table bounds")
         for k in range(n):
-            out.append({"code": bytes(code(k)).hex(), "name": name(rp(o + st * k)), "cat": cat, "kind": kind})
+            at = o + st * k
+            iid = rp(at)
+            if iid == 0xFFFFFFFF:
+                continue
+            si = star_start + iid - star_base
+            stars = p[si] if star_start <= si < star_end else 0
+            if cat == "Mags":
+                stars = 12 if k >= 0x28 else 0
+            elif cat == "Tools":
+                stars = 12 if rp(at + base_size + 8) & 0x80 else 0
+            row = {"code": bytes(code(k)).hex(), "name": name(iid), "cat": cat, "kind": kind,
+                   "stars": stars, "rare": stars >= 9, "schema": CATALOG_SCHEMA}
+            if cat == "Weapons":
+                row |= {"usability_flags": u16(at + base_size), "atp_min": u16(at + base_size + 2),
+                        "atp_max": u16(at + base_size + 4), "atp_required": u16(at + base_size + 6),
+                        "mst_required": u16(at + base_size + 8), "ata_required": u16(at + base_size + 10),
+                        "max_grind": p[at + (0x10 if dc else 0x16)]}
+            elif kind in ("Frame", "Barrier"):
+                row |= {"usability_flags": u16(at + base_size + 6), "level_required": p[at + base_size + 8] + 1}
+            elif kind == "Mag":
+                row["usability_flags"] = u16(at + base_size + 12)
+            if "usability_flags" in row:
+                row["classes"] = [c for c, mask in CLASSES.items() if row["usability_flags"] & mask == mask
+                                  and (not dc or c in list(CLASSES)[:9])]
+            out.append(row)
 
-    for c in range(1, 0x40):                                        # weapon classes (0 = none)
+    for c in range(1, min(256, (end_of(weapons) - weapons) // 8)):    # all weapon classes, including late rares
         n, o = rp(weapons + 8 * c), rp(weapons + 8 * c + 4)
-        if not n or n > 300 or o >= len(p):
-            break
-        add(lambda k, c=c: (0, c, k), "Weapons", f"class {c:02X}", n, o)
+        if not n:
+            continue
+        add(lambda k, c=c: (0, c, k), "Weapons", f"class {c:02X}", n, o, 0x18 if dc else 0x28)
     for sub, kind in ((1, "Frame"), (2, "Barrier")):
-        add(lambda k, s=sub: (1, s, k), "Armor", kind, rp(armors + 8 * (sub - 1)), rp(armors + 8 * (sub - 1) + 4))
-    add(lambda k: (1, 3, k), "Armor", "Unit", rp(units), rp(units + 4))
-    add(lambda k: (2, k, 0), "Mags", "Mag", rp(mags), rp(mags + 4))
-    for c in range(0, 0x20):
+        add(lambda k, s=sub: (1, s, k), "Armor", kind, rp(armors + 8 * (sub - 1)) + dc,
+            rp(armors + 8 * (sub - 1) + 4), 0x18 if dc else 0x1C)
+    add(lambda k: (1, 3, k), "Armor", "Unit", rp(units) + dc, rp(units + 4), 0x0C if dc else 0x10)
+    add(lambda k: (2, k, 0), "Mags", "Mag", rp(mags) + dc, rp(mags + 4), 0x14 if dc else 0x18)
+    for c in range(0, min(256, (end_of(tools) - tools) // 8)):
         n, o = rp(tools + 8 * c), rp(tools + 8 * c + 4)
         if not n or n > 300 or o >= len(p) or o == rp(weapons + 4):   # the tool table runs into the weapon table
             break
         if c == 2:                                                  # technique disks: 03 02 level tech
             continue
-        add(lambda k, c=c: (3, c, k), "Tools", f"class {c:02X}", n, o)
+        add(lambda k, c=c: (3, c, k), "Tools", f"class {c:02X}", n, o, 0x10 if dc else 0x14)
     return [i for i in out if i["name"] not in ("", "?", "????")]
 
 

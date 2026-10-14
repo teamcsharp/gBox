@@ -31,10 +31,11 @@ How it works
 import struct
 import time
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import Permission as P
 from .registry import Unsupported, tool
+from .pso_controls import serialized
 
 PLAYER_TBL = 0x8C42D92C
 CHAR_PTR = 0x8C4EC4E0
@@ -641,7 +642,7 @@ class PSO:
             self.call(calls)
         return ids
 
-    def floor_spawn(self, codes: list, radius: float = 18.0, item_id0: int | None = None) -> list:
+    def floor_spawn(self, codes: list, radius: float = 18.0, item_id0: int | None = None, grinds: dict | None = None) -> list:
         """Drop real floor items in a ring around player 0 via 0x8C1631C8 (the 6x5F drop path)."""
         import math
         p = self.check()
@@ -657,9 +658,12 @@ class PSO:
             for i, code in enumerate(chunk):
                 j = b + i
                 ang = 2 * math.pi * j / max(1, len(codes))
-                r = radius if len(codes) > 1 else 10.0
+                r = radius
+                data = bytearray(self.item_data(code, item_id0 + j))
+                if code.startswith("00") and grinds:
+                    data[3] = max(0, min(255, int(grinds.get(code, 0))))
                 rec = struct.pack("<BBHffHH", floor, 1, 0, x + r * math.sin(ang), z + r * math.cos(ang), room, j) + \
-                    self.item_data(code, item_id0 + j)
+                    bytes(data)
                 a = BUF + 36 * i
                 self.write(a, rec)
                 calls.append((F_FLOOR_CREATE, a, 0))
@@ -763,6 +767,10 @@ class ModsIn(BaseModel):
     rare: bool = False          # item_set: replace with a random rare of the same kind instead of `code`
     count: int = 1              # give / floor_spawn / floor_rares: how many
     codes: list[str] = []       # floor_rares: explicit codes (default: a rare set)
+    character_class: str = ""   # floor_rares: required for class-compatible random rares
+    highest: bool = True        # floor_rares: highest base-star rarity tier in that class
+    max_grind: bool = False     # ground weapons: their own PMT maximum, never an invented item level
+    radius: float = Field(default=18.0, ge=5, le=100, allow_inf_nan=False)
 
 class ModsOut(BaseModel):
     result: dict
@@ -776,6 +784,16 @@ def _catalog(ctx) -> dict:
                                                         headers=ctx.headers, timeout=60).json()}
     except Exception:
         return {}
+
+
+def _catalog_rows(ctx) -> list[dict]:
+    import httpx
+    r = httpx.get(f"{ctx.server}/api/pso/items", params={"version": "dcv2"}, headers=ctx.headers, timeout=60)
+    r.raise_for_status()
+    rows = r.json()
+    if not isinstance(rows, list) or not rows or any(i.get("schema") != 2 for i in rows):
+        raise Unsupported("the PSO item database needs the updated disc metadata before spawning class-compatible rares")
+    return rows
 
 
 def _itemrt_sigs(ctx) -> list:
@@ -809,7 +827,8 @@ RARES = ["000105", "000106", "000107", "000205", "000206", "000207", "000305", "
          "000605", "000705", "000805", "000905", "001000", "001100", "000d00"]
 
 
-@tool("pso_mods", "1.0", ModsIn, ModsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=120)
+@tool("pso_mods", "1.1", ModsIn, ModsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=120)
+@serialized
 def pso_mods(inp: ModsIn, ctx):
     """Phantasy Star Online Ver. 2 (Dreamcast US) live mods: op=meseta_max (999999 meseta) | meseta value=N |
     crit_always on=true/false (every player hit is a critical, x1.5) | equip_any on=true/false (no class/level/stat
@@ -824,10 +843,13 @@ def pso_mods(inp: ModsIn, ctx):
     on=true/false codes=[..] (every enemy and box drops a rare from the list; defaults to the rarest 2OEF items) | status."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if inp.op == "capabilities":
+        from .pso_controls import capabilities
+        return {"result": capabilities(g, ad.read_memory)}
     if g.get("platform") != "dreamcast":
         raise Unsupported("pso_mods supports Phantasy Star Online Ver. 2 on Dreamcast (US)")
     m = PSO(ad.read_memory, ad.write_memory)
-    m.check(require_player=inp.op not in NO_PLAYER_OPS)
+    m.check(require_player=inp.op not in NO_PLAYER_OPS | {"status"})
     code = (inp.code or "").strip().lower().replace("0x", "")
     if code and any(ch not in "0123456789abcdef" for ch in code) and inp.op != "item_set":
         hit = [c for c, n in _catalog(ctx).items() if n.lower() == code]
@@ -904,10 +926,33 @@ def pso_mods(inp: ModsIn, ctx):
     elif inp.op == "stat":
         res = m.set_stat(inp.name, inp.value)
     elif inp.op in ("floor_spawn", "floor_rares"):
-        codes = [code] * max(1, min(20, inp.count)) if inp.op == "floor_spawn" else \
-            (inp.codes or RARES)[:max(1, min(20, inp.count if inp.count > 1 else 10))]
-        objs = m.floor_spawn(codes)
-        res = {"spawned": sum(1 for o in objs if o), "codes": codes, "objects": [hex(o) for o in objs]}
+        import random
+        from .psoitems import rare_pool
+        rows = _catalog_rows(ctx)
+        by_code = {i["code"]: i for i in rows}
+        count = max(1, min(20, inp.count))
+        if inp.op == "floor_rares" and inp.character_class:
+            from .psoitems import CLASSES
+            if inp.character_class not in list(CLASSES)[:9]:
+                raise ValueError("choose a class that exists in Dreamcast Ver. 2")
+            pool = rare_pool(rows, inp.character_class, inp.highest)
+            codes = [i["code"] for i in random.choices(pool, k=count)]
+        elif inp.op == "floor_rares":
+            pool = inp.codes or RARES
+            codes = random.choices(pool, k=count)
+        else:
+            codes = (inp.codes[:20] if inp.codes else [code] * count)
+        if not codes or any(c not in by_code for c in codes):
+            raise ValueError("choose item codes from this Dreamcast disc's item database")
+        grinds = {c: by_code[c].get("max_grind", 0) for c in codes} if inp.max_grind else {}
+        item_id0 = m.next_ids(len(codes))
+        objs = m.floor_spawn(codes, radius=inp.radius, grinds=grinds, item_id0=item_id0)
+        actual = dict(m.floor_items())
+        confirmed = sum(actual.get(item_id0 + i) == c for i, c in enumerate(codes))
+        res = {"spawned": confirmed, "verified": confirmed == len(codes), "codes": codes, "objects": [hex(o) for o in objs],
+               "radius": inp.radius, "max_grinds": grinds, "class": inp.character_class or None,
+               "floor_codes_after": list(actual.values()),
+               "note": "Class-compatible does not bypass ATP/MST/ATA requirements; Equip any handles those separately."}
     elif inp.op == "floor_clear":
         gone = m.floor_clear(only_gbox=not inp.on)
         res = {"removed": len(gone), "ids": [hex(i) for i in gone], "left_on_floor": len(m.floor_items()),
