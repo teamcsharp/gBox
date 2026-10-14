@@ -200,21 +200,21 @@ test('a 2D sprite clip plays its preview loop and offers its MP4', () => {
   assert.equal(C.mount(fakePanel().panel, [], {}), null);
 });
 
-test('the web model view mounts clips under the model and the desktop 3D cards play embedded clips', () => {
+test('the web model view mounts clips beside the model and the desktop 3D cards play embedded clips', () => {
   assert.match(web, /<script src="\/viz\/clip-player\.js"><\/script>/);
   assert.match(desktop, /<script src="\.\.\/web\/viz\/clip-player\.js"><\/script>/);
   assert.match(web, /createCharacterViewer\(preview, modelUrl, \{ model: model\.model, fileUrl \}\)/);
-  assert.match(web, /<div id="model-clips" hidden><\/div>/);
+  assert.match(web, /<aside id="model-clips" aria-label="Animation clips" hidden><\/aside>/);
   assert.match(desktop, /GBoxClips\.player\(T, g\.scene, st => ui\?\.render\(st\)\)/);
   assert.match(desktop, /v\.player\?\.update\(dt\)/);
   // the web glue, run on fakes
-  const start = web.indexOf('// ---------------- model clips (#1384)'), end = web.indexOf('// ---------------- loading screen', start);
+  const start = web.indexOf('// ---------------- model clips:'), end = web.indexOf('// ---------------- loading screen', start);
   assert.ok(start > 0 && end > start);
   const C = load(), mounted = [], players = [];
   const clips = { ...C, mount: (el, rows, hooks) => { mounted.push({ el, rows, hooks }); return { render() {} }; },
     player: (T, root, cb) => { players.push({ T, root }); return { kind: 'player' }; } };
   const panel = { id: 'model-clips' }, preview = { isConnected: true, innerHTML: '' };
-  const ctx = vm.createContext({ window: { GBoxClips: clips }, GBoxClips: clips, $: s => (s === '#model-clips' ? panel : null), esc: String });
+  const ctx = vm.createContext({ window: { GBoxClips: clips }, GBoxClips: clips, GBoxAssetContext:{bind(){}}, $: s => (s === '#model-clips' ? panel : null), esc: String });
   vm.runInContext(web.slice(start, end), ctx);
   const fileUrl = rel => '/f/' + rel;
   ctx.modelClips({ kind: 'sprites', animations: [{ clip: 'walk', name: 'Walk', preview: 'clips/walk/preview.apng' }] }, null, fileUrl, preview);

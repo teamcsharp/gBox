@@ -57,7 +57,7 @@
     const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1000 ? (n / 1000).toFixed(1) + ' KB' : n + ' B';
     const date = ts => ts ? new Date(ts * 1000).toLocaleString() : '';
     function row(a) {
-      return `<div class="as-row" data-id="${esc(a.id)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count || a.file_count ? textureTree(a) : ''}</div></div>`;
+      return `<div class="as-row" data-id="${esc(a.id)}" data-asset-url="${esc(a.file_url)}" data-asset-name="${esc(a.name)}" data-asset-format="${esc(a.format)}"><button class="as-thumb" data-action="view" aria-label="Preview ${esc(a.name)}"><img loading="lazy" src="${esc(url(a.preview_url))}" alt="${esc(a.name)} thumbnail"></button><div><div class="as-name">${esc(a.name)}</div><div class="as-sub">${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</div><div class="as-sub" title="${esc(date(a.added))}">${$('.as-sort').value === 'copied' && a.copied ? 'Copied ' + esc(date(a.copied)) : 'Added ' + esc(date(a.added))}</div><div class="as-actions"><button data-action="copy">Copy</button><button data-action="download">Download</button></div>${a.texture_count || a.file_count ? textureTree(a) : ''}</div></div>`;
     }
     // Model companions stay collapsed; fetch their rows only when expanded.
     function textureTree(a) {
@@ -159,6 +159,7 @@
     }
     function preview(a) {
       const dialog = document.createElement('dialog'); dialog.className = 'asset-dialog';
+      window.GBoxAssetContext?.bind(dialog, {url:a.file_url,name:a.name,format:a.format});
       dialog.innerHTML = `<div class="as-dialog-bar"><b>${esc(a.name)}</b><button aria-label="Close asset preview">×</button></div><img src="${esc(url(a.preview_url))}" alt="${esc(a.name)} preview"><p>${esc(a.game)} · ${esc(a.kind)} · ${esc(a.format)} · ${bytes(a.size)}</p><p>Added ${esc(date(a.added))}${a.copied ? '<br>Last copied ' + esc(date(a.copied)) : ''}</p><button data-copy>Copy asset</button> <button data-download>Download</button>`;
       document.body.append(dialog); dialog.querySelector('.as-dialog-bar button').onclick = () => dialog.close();
       dialog.onclose = () => dialog.remove(); dialog.onclick = e => { if (e.target === dialog) dialog.close(); };

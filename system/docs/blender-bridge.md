@@ -11,6 +11,38 @@ in Blender on the build host.
 
 ## Operator workflow
 
+The game's **Models** page keeps **Animations** beside the preview. The clip list
+scrolls and filters independently, including in the embedded desktop page.
+
+Right-click an image, a model preview, or an Assets library entry:
+
+- **Copy image to clipboard** copies the displayed image/frame as PNG to the system
+  clipboard. The desktop app supports this directly; a standalone browser needs a
+  secure connection and clipboard permission.
+- **Copy model to Blender** prepares the model for Blender's native **Ctrl+V**.
+- For sprites/images, choose **Image plane** (textured mesh with transparency) or
+  **Image empty** (reference image). Both pack the still image into the clipboard
+  file and use the displayed sprite frame, rather than the whole sprite sheet.
+- Select a sprite animation, then right-click its preview and choose **MP4 image
+  plane** when that clip has an MP4 export. In Blender, paste in a 3D viewport and
+  play the timeline. MP4 has an opaque background; it does not preserve sprite
+  alpha. Movie media stays at a content-addressed path under the local worker's
+  `data_dir/blender-media` because Blender cannot pack movie files. Keep that file
+  with the saved project (and copy it when moving the project to another PC).
+
+Blender paste runs only on the desktop's identified local worker. An offline or
+unidentified local PC produces an error instead of copying to another attached
+computer. No add-on is needed for these native Ctrl+V actions. Other asset types
+retain the gBox asset clipboard action.
+
+The worker's `blender_copy` tool additionally accepts `asset_url` (an authenticated
+gBox asset file API path without a host or token), `image_b64` (current PNG frame),
+and `paste_as`: `model`, `image_plane`, `image_empty`, or `movie_plane`. Still images
+are limited to 16 megapixels; movie/media inputs to 64 MB. Library glTF copies
+bundle companion buffers and textures before import. The three media modes are
+verified by loading isolated native copybuffer files in Blender 4.0; this does
+not exercise the separate Live Link add-on.
+
 1. **Copy a character to Blender.** Any of:
    - In gBox, right-click a character (the pick whip / collection) > *Copy to Blender*: `POST
      /api/characters/{slug}/blender/copy` puts the round-trip GLB on the gBox clipboard; in Blender press
