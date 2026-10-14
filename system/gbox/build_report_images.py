@@ -52,3 +52,24 @@ def evidence_images(evidence: dict) -> tuple[str, list[dict]]:
             raise ValueError('Invalid reference image')
         attachments.append({'name': f'character-reference-{i}.png', 'type': 'image/png', 'b64': decode(ref.get('b64'))})
     return marked, attachments
+
+
+def review_images(images):
+    """Screenshots and desired-appearance references attached while retiring a build."""
+    if not isinstance(images,list) or len(images)>4:
+        raise ValueError('Attach up to four screenshots or reference images')
+    screenshot=None;attachments=[]
+    for i,row in enumerate(images,1):
+        if not isinstance(row,dict) or row.get('role','screenshot') not in ('screenshot','reference'):
+            raise ValueError('Label each image as a screenshot or reference')
+        value=row.get('b64')
+        if not isinstance(value,str) or not value or len(value)>((MAX_BYTES+2)//3)*4:
+            raise ValueError('Each image must be at most 4 MB')
+        try:raw=base64.b64decode(value,validate=True)
+        except (ValueError,binascii.Error) as exc:raise ValueError('Invalid image encoding') from exc
+        png=as_png(raw,max_bytes=MAX_BYTES,max_pixels=MAX_PIXELS)
+        if len(png)>MAX_BYTES:raise ValueError('Converted image exceeds 4 MB')
+        b64=base64.b64encode(png).decode('ascii');role=row.get('role','screenshot')
+        attachments.append({'name':f'operator-{role}-{i}.png','type':'image/png','b64':b64})
+        if role=='screenshot' and screenshot is None:screenshot=b64
+    return screenshot,attachments

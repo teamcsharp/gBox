@@ -13,7 +13,7 @@ def test_registered_replacement_requires_each_appearance_and_records_new_build(t
     marker=d/'.gbox-mod.json';marker.write_text(json.dumps({'name':'new-build','game_id':'game'}))
     response={'result':{'mod':'new-build','status':'built','gameplay_verified':True}}
     monkeypatch.setattr(C,'characters_tool',lambda *a:response)
-    inp=C.CharIn(op=op,character='donor',game_id='game',target_game='game')
+    inp=C.CharIn(op=op,character='donor',game_id='game',target_game='game',feedback_ack={'prior-report':2})
     out=C.characters_recorded(inp,SimpleNamespace(config=cfg))
     scope=out['result']['replacement_scope']
     assert scope['requested']=='all_character_appearances'
@@ -21,6 +21,7 @@ def test_registered_replacement_requires_each_appearance_and_records_new_build(t
     assert not scope['complete'],'gameplay verification is not cutscene verification'
     if op!='live_use':
         assert json.loads(marker.read_text())['replacement_scope']==scope
+        assert json.loads(marker.read_text())['feedback_reviewed']=={'prior-report':2}
 
 
 def test_writer_cinematic_limitations_are_preserved(tmp_path,monkeypatch):

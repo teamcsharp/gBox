@@ -1018,6 +1018,8 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             existing = store.get(REPORT_KIND, key) or {}
             if existing.get('id'): issue['existing_report_id'] = existing['id']
             report = file_report(issue, details + instructions, actor)
+            from . import build_feedback
+            build_feedback.record(store, report, game_id, name, note, 'broken', meta)
             record.update(request_id=report['id'], number=report.get('number'))
             store.put(REPORT_KIND, key, {'key': key, 'id': report['id'], 'number': report.get('number'), 'reason': 'broken'})
             store.put(BQ.KIND, key, record)
@@ -1336,6 +1338,18 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             extra = f"\nReported session: {sid}\nBuild being played: {actual}\nPC: {detail.get('worker_name') or 'unknown'}"
             issue["detail"] += extra
             details += extra
+        if body.get("images"):
+            from .build_report_images import review_images
+            try:
+                screenshot, attachments = review_images(body["images"])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if screenshot: issue["image_b64"] = screenshot
+            issue["attachments"] = attachments + issue["attachments"]
+            issue["context"]["operator_build_review"] = True
+            extra = "\nOperator-uploaded screenshots and reference images are evidence for this exact build. References show desired appearance, not verified output."
+            issue["detail"] += extra
+            details += extra
         if "evidence" in body:
             from .build_report_images import evidence_images
             try:
@@ -1352,6 +1366,8 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             details += extra
             issue["context"]["annotated_build_report"] = True
         report = file_report(issue, details, actor)
+        from . import build_feedback
+        build_feedback.record(store, report, game_id, name, note, reason, meta)
         store.put(REPORT_KIND, key, {"key": key, "number": report.get("number"), "id": report.get("id"), "reason": reason,
                                      "by": actor, "ts": time.time()})
         store.audit(actor, "build.report", key, {"request": report.get("id"), "reason": reason})
@@ -1359,5 +1375,50 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         return {"key": key, "number": report.get("number"), "id": report.get("id"), "title": report.get("title"),
                 "dispatch": (report.get("context") or {}).get("resolution_dispatch")
                 or ("agent" if (report.get("context") or {}).get("resolution_chat_id") else "")}
+
+    @app.post('/api/builds/{game_id}/{name}/review-cleanup')
+    def review_cleanup(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        from . import build_feedback
+        key, item = known(game_id, name)
+        rid = str(body.get('report_id') or '')
+        feedback = store.get(build_feedback.KIND, rid)
+        if not feedback or feedback.get('build') != key:
+            raise HTTPException(409, 'Save a report with its images for this exact build before cleanup')
+        scope = body.get('scope')
+        if scope not in ('all', 'node', 'pcs'):
+            raise HTTPException(422, 'Choose all copies, this PC, or selected attached computers')
+        inventory = local_index(workers()).get(key, [])
+        nodes = [h['node'] for h in inventory] if scope == 'all' else [body.get('node')] if scope == 'node' else body.get('nodes')
+        if not isinstance(nodes, list) or len(nodes)>64 or any(not isinstance(n,str) or not n for n in nodes) or (scope != 'all' and not nodes):
+            raise HTTPException(422, 'Choose the computers whose copies should be removed')
+        nodes = list(dict.fromkeys(nodes))
+        for node in nodes:
+            if not any(h['node']==node for h in inventory):
+                raise HTTPException(409, f'{node} no longer reports this build; refresh before cleanup')
+        with store.lock:
+            cleanup = [j for j in store.all('job') if j.get('tool') == 'file_mod'
+                and (j.get('input') or {}).get('op') == 'delete_build'
+                and j['input'].get('game_id') == game_id and j['input'].get('name') == name
+                and j.get('state') in ('queued','claimed','running')]
+            if any(j['state'] != 'queued' for j in cleanup):
+                raise HTTPException(409, 'Deletion is already running; the report is saved, but preservation must wait')
+            existing = store.get(BQ.KIND, key)
+            if existing and existing.get('state') != 'deleted':
+                if not existing.get('review_cleanup') or existing.get('request_id') != rid or existing.get('cleanup_scope') != scope or existing.get('nodes') != nodes:
+                    raise HTTPException(409, f'This build already has preservation/investigation #{existing.get("number")}. The new report is saved; finish that investigation before changing cleanup targets.')
+                if existing.get('state') == 'blocked':
+                    existing['cleanup_jobs'] = {n:j for n,j in existing.get('cleanup_jobs',{}).items()
+                        if j == 'absent' or (store.get('job',j) or {}).get('state') not in ('failed','rejected','cancelled')}
+                    existing.update(state='queued'); existing.pop('error',None)
+                    store.put(BQ.KIND,key,existing)
+                return existing | {'scope':'review','report_id':rid}
+            row = {'key':key,'game_id':game_id,'name':name,'nodes':nodes,'node':nodes[0] if nodes else '',
+                'review_cleanup':True,'delete_collection':scope=='all','cleanup_scope':scope,'state':'queued',
+                'request_id':rid,'number':feedback.get('number'),'archives':[],'cleanup_jobs':{},'by':actor,'ts':time.time()}
+            store.put(BQ.KIND,key,row)
+            for job in cleanup:
+                store.put('job',job['id'],job | {'state':'cancelled','error':'Operator review requires preservation before removal'})
+        changed()
+        return row | {'scope':'review','report_id':rid}
 
     return builds_list, builds_rename, builds_details, builds_scheduled

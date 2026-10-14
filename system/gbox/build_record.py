@@ -25,7 +25,7 @@ from pathlib import Path
 
 MARKER = ".gbox-mod.json"
 KINDS = ("cast", "character", "file", "cheats", "romhack", "compile", "showcase", "test")
-FIELDS = ("kind", "job_id", "built_on", "build_call", "file_changes", "slots", "codes", "compile", "verified_in_game", "replacement_scope")
+FIELDS = ("kind", "job_id", "built_on", "build_call", "file_changes", "slots", "codes", "compile", "verified_in_game", "replacement_scope", "feedback_reviewed")
 MAX_VALUE = 2000                      # a recorded call keeps short values only (no file bytes, no huge lists)
 MAX_ROWS = 400
 
@@ -100,7 +100,7 @@ def stamp(meta: dict, **fields) -> dict:
             continue
         if k == "kind" and v not in KINDS:
             raise ValueError(f"kind {v!r}: one of {', '.join(KINDS)}")
-        out[k] = _small(v) if k in ("build_call", "codes", "compile", "slots", "file_changes", "replacement_scope") else v
+        out[k] = _small(v) if k in ("build_call", "codes", "compile", "slots", "file_changes", "replacement_scope", "feedback_reviewed") else v
     return out
 
 

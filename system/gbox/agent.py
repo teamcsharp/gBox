@@ -195,6 +195,16 @@ How to work:
   first>] [slots=all|main|enemies|bosses|npcs|bots|campaign|<comma list>] (AUF: slots=campaign,bots) (plan_only=true shows
   the slot -> donor plan first); one mod, a per-slot built/failed report; never a loop of op=use. use says "missing" (no writer for that game) or the operator wants it now ->
   characters op=overlay character=B session_id [x y]: B drawn over the player in the desktop app; say it's an overlay.
+  The operator's default is a whole-cast build with multiple donor characters in ONE game build. Use cast_swap
+  and a complete slot-to-donor plan unless they explicitly name a single target or request a diagnostic. Replacing
+  one player in many separate ROMs does not satisfy a whole-cast request. Inventory player, story NPC, enemy,
+  boss and cinematic variants, report unsupported slots, and never silently reduce a whole-cast request to player.
+  Before building, call build_feedback game_id=<id> (MCP: get_build_feedback), inspect operator notes AND images
+  with build_feedback request_id/sha256 (MCP: read_request_artifact), and address
+  relevant defects in the writer/plan. Submit characters jobs with feedback_ack {report_id: revision} only after
+  reviewing those exact revisions. Acknowledgement records review; it does not prove repair. A newer report revision
+  requires another review. Feedback and evidence survive build deletion. Explain how each prior defect was handled
+  and verify it in the new build instead of repeating it unchanged.
   A character replacement means every appearance of that character by default: gameplay, in-engine cutscenes,
   alternate costumes/LODs, and prerecorded cinematics. Inventory their separate model/texture/movie assets.
   Enable supported cutscene writer paths; never accept gameplay-only output as a complete replacement.
@@ -768,6 +778,8 @@ def tool_specs() -> list[dict]:
            ".utoc/.ucas are listed only. engine='4.27' overrides the detected engine.",
            {"op": s, "appid": s, "title": s, "engine": s, "paths": {"type": "array", "items": s},
             "extensions": {"type": "array", "items": s}, "max_files": i, "max_packages": i}, ["op", "appid"]),
+        fn("build_feedback", "Read retained operator build reports, revisions, image references and recorded repair findings for a game before building. Supply request_id and sha256 to inspect one of its images through the configured vision model; unavailable vision is not verification.",
+           {"game_id":s,"request_id":s,"sha256":s,"question":s}, ["game_id"]),
         fn("characters", "collect (game): extract the supported native character roster without vision calls; returns verified models, mapped rig readiness and individual failures. gBox's collection: characters, vehicles, objects and environments extracted from the operator's games, "
            "reusable in any game. use/live_use/overlay/place require a nonempty character copied from the operator's exact slug/name. "
            "Overlay/missing/pending results do not complete a native swap; keep the request pending until native verification. "
@@ -791,7 +803,7 @@ def tool_specs() -> list[dict]:
            "game_id (default: the chat's game); extract needs a running session only when the thing has to be cut from the frame.",
            {"op": s, "character": s, "kind": s, "session_id": s, "game": s, "x": {"type": "number"}, "y": {"type": "number"},
             "slot": s, "from_clipboard": b, "a": s, "b": s, "one_way": b, "near": s, "size": {"type": "number"},
-            "target_game": s, "source": s, "mapping": s, "seed": s, "slots": s, "plan_only": b, "launch": b}, ["op"]),
+            "target_game": s, "source": s, "mapping": s, "seed": s, "slots": s, "plan_only": b, "launch": b, "feedback_ack": {"type":"object","additionalProperties":{"type":"integer"}}}, ["op"]),
         fn("scene_capture", "Capture the frame on screen of a live session (Windows PC emulators started with Examine 3D) as a "
            "real 3D scene: glTF with one node per draw call + textures, HUD separate. For extracting a model into the "
            "collection use characters op=extract (it does this and cuts the object out); this is for looking at the raw scene.",
@@ -1616,9 +1628,26 @@ class Agent:
         ss = self.api.get("/api/registry", timeout=120).json()["ghidra"]["scripts"]
         return [{k: x[k] for k in ("name", "category", "description")} for x in ss if q in (x["name"] + x["category"] + x["description"]).lower()][:25]
 
+    def build_feedback(self, game_id, request_id="", sha256="", question="Compare the reported defect with the intended appearance. Describe only visible evidence."):
+        response = self.api.get("/api/build-feedback", params={"game_id":game_id})
+        response.raise_for_status(); data = response.json()
+        if not sha256: return data
+        row = next((r for r in data["items"] if r["request_id"] == request_id), None)
+        image = next((a for a in (row or {}).get("attachments",[]) if a.get("sha256") == sha256), None)
+        if not image: raise ValueError("Image does not belong to this game's retained report")
+        if not self.vision: return {"status":"vision_unavailable","request_id":request_id,"sha256":sha256,
+                                   "message":"The image has not been visually reviewed; use an image-capable reviewer."}
+        png = self.api.get(f"/api/artifacts/{sha256}"); png.raise_for_status()
+        result = httpx.post(f"{self.llm_url}/chat/completions", timeout=300, json={"model":self.vision,
+            "messages":[{"role":"user","content":[{"type":"text","text":f"Operator report: {row['note']}\nImage: {image.get('name')} (references show intent, not verified gameplay). {question}"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,"+base64.b64encode(png.content).decode()}}]}]})
+        result.raise_for_status()
+        return {"request_id":request_id,"revision":row["revision"],"sha256":sha256,
+                "description":result.json()["choices"][0]["message"]["content"]}
+
     def characters(self, op="list", character="", session_id="", game="", slot="player", kind="", x=None, y=None,
                    from_clipboard=False, a="", b="", one_way=False, near="", size=0.0, target_game="", source="",
-                   mapping="auto", seed="", slots="all", plan_only=False, launch=None):
+                   mapping="auto", seed="", slots="all", plan_only=False, launch=None, feedback_ack=None):
         require_character(op, character)
         if session_id and (bad := self._live_session(session_id)):
             return bad  # preserve the requested live target; never silently relaunch a different session
@@ -1634,6 +1663,8 @@ class Agent:
                     "slots": slots or "all", "plan_only": bool(plan_only)}
             if launch is not None:
                 inp["launch"] = bool(launch)
+        if feedback_ack is not None:
+            inp["feedback_ack"] = dict(feedback_ack)
         # extract / add / blender write the collection: they run where it lives (the Spark)
         j = self._job("characters", inp, limit=14400 if op in ("collect", "cast_swap") else 3600,
                       node=None if op == "use" and session_id else "linux")

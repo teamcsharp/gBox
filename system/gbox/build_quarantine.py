@@ -150,7 +150,7 @@ def purge(store, cfg, record):
     archives = [store.get(EVIDENCE, q) for q in record.get('archives', [])]
     if not archives or any(not a or not a.get('sealed') for a in archives): return False
     # Keep a subsequently repaired/rebuilt collection copy whose bytes differ.
-    for copy in {record['name'], *(a['copy'] for a in archives)}:
+    for copy in ({record['name'], *(a['copy'] for a in archives)} if record.get('delete_collection', True) else set()):
         folder = filemods.mod_dir(cfg, record['game_id'], copy)
         if folder.exists() and any(manifest(folder) == a['files'] for a in archives):
             safe_tree(Path(cfg.cache) / 'mods', folder)
@@ -167,7 +167,7 @@ def purge(store, cfg, record):
     record.update(state='deleted', deleted=time.time())
     store.put(KIND, record['key'], record)
     request.setdefault('messages', []).append({'author': 'system', 'ts': time.time(), 'attachments': [],
-        'text': 'Broken ROM payloads and temporary evidence deleted after recorded analysis and resolution. Findings and repair history retained.'})
+        'text': ('Broken ROM payloads and temporary evidence deleted after recorded analysis and resolution. Findings and repair history retained.' if record.get('delete_collection', True) else 'Selected PC copies and temporary investigation archives removed after recorded analysis and resolution. Spark collection, reports and images retained.')})
     store.put('request', record['request_id'], request)
     return True
 
@@ -224,8 +224,52 @@ def routes(app, store, cfg, auth, submit, workers, changed):
         if not all(values.values()): raise HTTPException(422, 'Record both findings and resolution before deleting evidence')
         with store.lock:
             r['analysis'] = values | {'by': actor, 'ts': time.time()}; store.put(KIND, key, r)
+        from . import build_feedback
+        with store.lock:
+            feedback = store.get(build_feedback.KIND, r.get('request_id'))
+            if feedback and feedback.get('analysis') != values:
+                feedback.update(analysis=values, updated=time.time(), revision=int(feedback.get('revision',1))+1)
+                store.put(build_feedback.KIND, feedback['id'], feedback)
         store.audit(actor, 'build.broken.analysis', key, values)
         return r
+
+    def review_tick(r, ws):
+        gid, name = r['game_id'], r['name']
+        if not r.get('archives'):
+            for copy in filemods.copies_of(cfg, gid, name):
+                saved = preserve(store, cfg, gid, name, copy)
+                r['archives'].append(saved['id'])
+        jobs = r.setdefault('cleanup_jobs', {})
+        for node in r['nodes']:
+            w = ws.get(node)
+            job = store.get('job', jobs[node]) if node in jobs else None
+            if job and job.get('state') == 'succeeded':
+                r['archives'] = list(dict.fromkeys(r['archives'] + (job.get('output') or {}).get('result', {}).get('archives', [])))
+                continue
+            if job:
+                if job.get('state') in ('failed', 'rejected', 'cancelled'):
+                    r.update(state='blocked', error=f'{node}: '+str(job.get('error') or job['state']))
+                continue
+            if not w or not w.get('online') or 'local_builds' not in w:
+                r['error'] = f'Waiting for {node} to reconnect before preserving and removing its copy'
+                continue
+            local = [b for b in w['local_builds'] if b.get('game_id') == gid and (b.get('staged_of') or b['name'].split('~')[0]) == name]
+            if not local:
+                # A copy absent from a fresh inventory is already removed; track that receipt.
+                jobs[node] = 'absent'
+                continue
+            if not w.get('active_jobs'):
+                j = submit({'tool':'file_mod','input':{'op':'quarantine_build','game_id':gid,'name':name},
+                    'require_worker':w['id'],'low_priority':True}, r.get('by') or 'operator')
+                jobs[node] = j.id if hasattr(j,'id') else j['id']
+        finished = all(jobs.get(n)=='absent' or (store.get('job',jobs.get(n,'')) or {}).get('state')=='succeeded' for n in r['nodes'])
+        r['state'] = 'preserved' if finished and r.get('archives') else r.get('state') if r.get('state')=='blocked' else 'preserving'
+        if r['state']=='preserved':r.pop('error',None)
+        store.put(KIND,r['key'],r)
+        if purge(store,cfg,r):
+            index=getattr(app.state,'built_mods',None)
+            if index and not filemods.mod_dir(cfg,gid,name).exists():index.forget(gid,name)
+        changed()
 
     def tick():
         ws = {w['name']: w for w in workers()}
@@ -238,6 +282,12 @@ def routes(app, store, cfg, auth, submit, workers, changed):
             # Do not delete any running copy, on any machine.
             if any(s.get('state') == 'running' and s.get('game_id') == gid and
                    str(s.get('mod') or (s.get('detail') or {}).get('mod') or '').split('~')[0] == name for s in sessions): continue
+            if r.get('review_cleanup'):
+                try: review_tick(r, ws)
+                except Exception as exc:
+                    r.update(state='blocked', error=f'Preservation deferred; build kept: {exc}')
+                    store.put(KIND,r['key'],r)
+                continue
             job = store.get('job', r.get('cleanup_job')) if r.get('cleanup_job') else None
             if job and job.get('state') == 'succeeded':
                 r['archives'] = list(dict.fromkeys(r.get('archives', []) + (job.get('output') or {}).get('result', {}).get('archives', [])))

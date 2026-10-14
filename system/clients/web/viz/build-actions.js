@@ -61,9 +61,9 @@
       <fieldset class="ba-pcs" data-ba-pcs disabled><legend>Choose copies to delete</legend>${pcs.length ? pcs.map(w => `<label class="ba-opt"><input type="checkbox" data-ba-pc value="${ESC(w.node)}"> ${ESC(w.node)}${w.online === false ? " (offline; cannot delete now)" : ""}</label>`).join("") : '<span class="ba-note">No attached computer reports a copy.</span>'}</fieldset>`}
       ${onlyHere ? `<p class="ba-note">Only this PC's copy is removed: the Spark collection and other PCs keep theirs, and ⬇ downloads it again.</p>` : ""}
       <p class="ba-note">The base game and other builds are never touched. A build a running game uses can't be deleted: stop the game first. Deleting can't be undone (the marker is kept in the recently deleted list).</p>
-      <div class="ba-btns"><button class="act ba-danger" type="button" data-ba="go">🗑 Delete</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
+      <div class="ba-btns"><button class="act" type="button" data-ba="review">Report issues before deleting…</button><button class="act ba-danger" type="button" data-ba="go">🗑 Delete</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
-  function reportDialogHTML(b) {
+  function reportDialogHTML(b, env = {}) {
     const w = b.what;
     return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Report a build"><h3>⚑ Report a problem with “${ESC(nameOf(b))}”</h3>
       <p class="ba-note">${ESC(b.game_title || b.title || b.game_id)} · <code>${ESC(b.name)}</code>${b.writer ? ` · ${ESC(b.writer)}` : ""}</p>
@@ -72,8 +72,12 @@
       <div class="ba-reasons">${REASONS.map(([k, l], i) => `<label class="ba-opt"><input type="radio" name="ba-reason" value="${k}"${i === 0 ? " checked" : ""}> ${ESC(l)}</label>`).join("")}</div>
       <label class="ba-opt" for="ba-report-note">Note for the ticket</label>
       <textarea id="ba-report-note" class="ba-text" data-ba-note rows="4" maxlength="4000" placeholder="Describe what needs attention. For example: Decimation removed too much detail from Leon. Please re-evaluate the model and preserve his facial and clothing detail." data-nomic></textarea>
+      <label class="ba-opt">Screenshots and reference images (up to 4)<input data-ba-files type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
+      <p class="ba-note">Choose, paste or drop images. Label desired-appearance images as references. Your notes and pictures remain after the ROM files are removed.</p>
+      <button class="act" type="button" data-ba="capture">Capture running build</button><div class="ba-images" data-ba-images></div>
+      ${env.reviewCleanup ? `<p class="ba-note ba-retire">After the report is saved, remove ${ESC(env.reviewCleanup.scope === "all" ? "all copies" : env.reviewCleanup.scope === "node" ? env.reviewCleanup.node : (env.reviewCleanup.nodes || []).join(", "))}. Copies in use wait until you stop playing. Exact build evidence is preserved for analysis; ROM archives are purged after findings and resolution are recorded. ${env.reviewCleanup.scope === "all" ? "" : "Spark collection stays."}</p>` : ""}
       <p class="ba-note">Sent with the build's game, writer, slots and donors, what it changes, its recipe, its last launch, its newest in-game frame and its fit previews. It goes to the investigation queue.</p>
-      <div class="ba-btns"><button class="act pri" type="button" data-ba="go">Submit ticket</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
+      <div class="ba-btns"><button class="act pri" type="button" data-ba="go">${env.reviewCleanup ? "Submit report and remove copies" : "Submit ticket"}</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
   const deleteCall = (b, scope, here, nodes = []) => ({ path: path(b) + "/delete",
     body: scope === "pcs" ? { scope, nodes: [...new Set(nodes)] } : { scope, node: scope === "node" ? here : "" } });
@@ -87,6 +91,8 @@
   const reportCall = (b, reason, note) => ({ path: path(b) + "/report", body: { reason, note: String(note || "").trim(),
     ...(b.session_id ? { session_id: b.session_id } : {}) } });
   function deleteResultText(b, r) {
+    if (r.scope === "review") return `Report #${r.number} saved; copy removal queued after evidence preservation. Running games are left in place.`;
+    if (r.scope === "review_report_only") return `Report #${r.number} saved; cleanup was not queued and copies are kept.`;
     const n = nameOf(b), jobs = (r.jobs || []).map(j => j.node), skipped = (r.skipped || []).map(s => `${s.node}: ${s.reason}`);
     return `${r.scope === "pcs" ? `Requested deletion of ${n} from ${(r.nodes || []).join(", ")} (Spark collection kept)` : `Deleted ${n}${r.scope === "node" ? ` from ${r.node}` : ""}`}` + ((r.spark?.removed || []).length ? " (Spark collection removed)" : "")
       + (jobs.length ? `; deleting the copy on ${jobs.join(", ")}` : "") + (skipped.length ? `; not deleted: ${skipped.join("; ")}` : "");
@@ -97,6 +103,7 @@
     .ba-box h3{margin:0 0 10px;font-size:15px;overflow-wrap:anywhere}.ba-facts{border-collapse:collapse;margin:0 0 10px;width:100%}.ba-facts th{text-align:left;color:#9aa;font-weight:500;padding:2px 10px 2px 0;vertical-align:top;white-space:nowrap}.ba-facts td{padding:2px 0;overflow-wrap:anywhere}
     .ba-opt{display:flex;gap:6px;align-items:center;margin:4px 0}.ba-dis{opacity:.55}.ba-note{color:#9aa;font-size:12px;margin:8px 0}.ba-text{width:100%;box-sizing:border-box;font:inherit;margin-top:6px}
     .ba-pcs{margin:6px 0 8px 20px;border:1px solid #444;border-radius:6px;padding:6px 10px}.ba-pcs:disabled{opacity:.5}.ba-pcs legend{font-size:12px;color:#9aa}
+    .ba-images{display:flex;gap:8px;flex-wrap:wrap}.ba-images figure{margin:8px 0;max-width:150px}.ba-images img{max-width:145px;max-height:100px}.ba-images select{max-width:145px}.ba-retire{border-left:2px solid #cc9b56;padding-left:8px}
     .ba-btns{display:flex;gap:8px;align-items:center;margin-top:10px}.ba-danger{background:#7a2b2b;color:#fff;border-color:#7a2b2b}.ba-status{font-size:12px;color:#9aa}`;
   const WHAT_CSS = `.ba-what{border-left:3px solid var(--acc,#7c96ff);background:#ffffff08;padding:4px 8px;border-radius:0 6px 6px 0;font-size:12.5px}
     .ba-what .ba-h{font-weight:600;font-size:12px;margin-bottom:2px}.ba-lines{margin:2px 0;padding-left:16px}.ba-where{font-size:12px;margin-top:2px}
@@ -112,7 +119,7 @@
     const doc = env.document || root.document;
     const wrap = doc.createElement("div");
     wrap.className = "ba-modal";
-    wrap.innerHTML = `<style>${CSS}${WHAT_CSS}</style>` + (kind === "broken" ? brokenDialogHTML(b, env) : kind === "delete" ? deleteDialogHTML(b, env) : reportDialogHTML(b));
+    wrap.innerHTML = `<style>${CSS}${WHAT_CSS}</style>` + (kind === "broken" ? brokenDialogHTML(b, env) : kind === "delete" ? deleteDialogHTML(b, env) : reportDialogHTML(b, env));
     doc.body.appendChild(wrap);
     if (kind === "delete" && !env.onlyHere) wrap.addEventListener("change", () => {
       const pcs = wrap.querySelector('[data-ba-pcs]');
@@ -121,13 +128,73 @@
     if (kind !== "delete") wrap.querySelector("[data-ba-note]")?.focus?.();
     const status = text => { const s = wrap.querySelector("[data-ba-status]"); if (s) s.textContent = text; };
     return new Promise(resolve => {
-      let busy = false;
-      const done = v => { try { wrap.remove(); } catch {} resolve(v); };
-      wrap.addEventListener("keydown", e => { if (e.key === "Escape") { e.stopPropagation?.(); if (!busy) done(null); } });
+      let busy = false, reading = false, closed = false, savedReport = null, images = [];
+      const showImages = () => {
+        const box = wrap.querySelector('[data-ba-images]');
+        if (box) box.innerHTML = images.map((image,i) => `<figure><img alt="Attached image ${i+1}" src="data:image/png;base64,${image.b64}"><figcaption>${ESC(image.name)}</figcaption><select data-ba-role="${i}" aria-label="Image ${i+1} purpose"><option value="screenshot"${image.role === "screenshot" ? " selected" : ""}>Issue screenshot</option><option value="reference"${image.role === "reference" ? " selected" : ""}>Desired appearance</option></select><button type="button" data-ba="remove-image" data-image="${i}">Remove</button></figure>`).join('');
+      };
+      const readFiles = async files => {
+        if (busy || reading || savedReport) return;
+        reading = true;
+        const go = wrap.querySelector('[data-ba="go"]'); if (go) go.disabled = true;
+        try {
+          for (const file of files) {
+            if (images.length >= 4) throw Error('Attach up to four images.');
+            if (!['image/png','image/jpeg','image/webp'].includes(file.type) || file.size > 4*1024*1024) throw Error('Use PNG, JPEG or WebP images up to 4 MB.');
+            const url = root.URL.createObjectURL(file), image = new root.Image();
+            try {
+              image.src = url; await image.decode();
+              const canvas = doc.createElement('canvas'), ratio = Math.min(1,1600/Math.max(image.width,image.height));
+              canvas.width = Math.max(1,Math.round(image.width*ratio)); canvas.height = Math.max(1,Math.round(image.height*ratio));
+              canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);
+              const b64 = canvas.toDataURL('image/png').split(',')[1];
+              if (b64.length > Math.ceil(4*1024*1024/3)*4) throw Error('Converted image is too large; use a smaller picture.');
+              images.push({name:file.name || 'screenshot.png',role:'screenshot',b64});
+            } finally { root.URL.revokeObjectURL(url); }
+          }
+          showImages(); status('Images attached.');
+        } catch (err) { showImages(); status(err.message); }
+        finally { reading = false; if (go) go.disabled = false; }
+      };
+      wrap.querySelector('[data-ba-files]')?.addEventListener?.('change', e => readFiles([...e.target.files]));
+      wrap.addEventListener('paste', e => { if (e.clipboardData?.files?.length) { e.preventDefault(); readFiles([...e.clipboardData.files]); } });
+      wrap.addEventListener('dragover', e => e.preventDefault());
+      wrap.addEventListener('drop', e => { e.preventDefault(); readFiles([...(e.dataTransfer?.files || [])]); });
+      wrap.addEventListener('change', e => { if (e.target?.dataset?.baRole !== undefined && !savedReport) images[+e.target.dataset.baRole].role=e.target.value; });
+      const done = v => { closed = true; try { wrap.remove(); } catch {} resolve(v); };
+      wrap.addEventListener("keydown", e => { if (e.key === "Escape") { e.stopPropagation?.(); if (!busy) done(savedReport ? {...savedReport,scope:"review_report_only"} : null); } });
       wrap.addEventListener("click", async e => {
         const a = e.target?.closest?.("[data-ba]")?.dataset?.ba;
-        if ((a === "cancel" || e.target === wrap) && !busy) return done(null);
-        if (a !== "go" || busy) return;
+        if ((a === "cancel" || e.target === wrap) && !busy && !reading) return done(savedReport ? {...savedReport,scope:"review_report_only"} : null);
+        if (a === "remove-image" && !busy && !reading && !savedReport) { images.splice(+e.target.dataset.image,1); showImages(); return; }
+        if (a === "review" && !busy) {
+          const scope = env.onlyHere ? "node" : wrap.querySelector('input[name="ba-scope"]:checked')?.value || "all";
+          const nodes = scope === "pcs" ? [...wrap.querySelectorAll('[data-ba-pc]:checked')].map(el => el.value) : [];
+          if (scope === "pcs" && !nodes.length) { status('Choose at least one attached computer.'); return; }
+          busy=true; wrap.remove();
+          return done(await open("report",b,{...env,reviewCleanup:deleteCall(b,scope,env.here || "",nodes).body}));
+        }
+        if (a === "capture" && !busy && !reading && !savedReport) {
+          busy=true;
+          const escapeCapture = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } };
+          doc.addEventListener?.('keydown',escapeCapture,true);
+          try {
+            if (images.length >= 4) throw Error('Remove an image before capturing another.');
+            const sessions = await env.api('/api/sessions?include_ended=false');
+            const matches = sessions.filter(s => s.state === 'running' && s.game_id === b.game_id &&
+              ((s.mod || s.detail?.mod || '').split('~')[0] === b.name || s.detail?.collection_mod === b.name) &&
+              (!env.here || s.detail?.worker_name === env.here));
+            if (matches.length !== 1) throw Error('Open this build on this PC, or upload a screenshot from your test.');
+            wrap.style.setProperty('visibility','hidden','important');
+            await new Promise(yes => root.requestAnimationFrame(() => root.requestAnimationFrame(yes)));
+            const frame = await env.api(`/api/sessions/${encodeURIComponent(matches[0].session_id)}/report-frame`,{},'POST');
+            if (closed) return;
+            images.push({name:'captured-game.png',role:'screenshot',b64:frame.image_b64}); showImages(); status('Game screenshot attached.');
+          } catch (err) { status(err.message); }
+          finally { doc.removeEventListener?.('keydown',escapeCapture,true); if (!closed) wrap.style.removeProperty('visibility'); busy=false; }
+          return;
+        }
+        if (a !== "go" || busy || reading) return;
         const btn = wrap.querySelector('[data-ba="go"]');
         busy = true; if (btn) btn.disabled = true;
         try {
@@ -147,12 +214,21 @@
             const reason = wrap.querySelector('input[name="ba-reason"]:checked')?.value || "other";
             const c = reportCall(b, reason, wrap.querySelector("[data-ba-note]")?.value);
             status("Filing the report…");
-            r = await env.api(c.path, c.body, "POST");
+            if (env.reviewCleanup && !c.body.note) throw Error('Describe what is wrong before removing the build.');
+            if (images.length) c.body.images = images;
+            r = savedReport || await env.api(c.path, c.body, "POST");
+            if (env.reviewCleanup) {
+              savedReport=r;
+              for (const el of wrap.querySelectorAll('[data-ba-note],[data-ba-files],[data-ba-role],[data-ba="capture"],[data-ba="remove-image"]')) el.disabled=true;
+              status(`Report #${r.number} saved. Queueing evidence preservation and removal…`);
+              const cleanup=await env.api(path(b)+"/review-cleanup",{...env.reviewCleanup,report_id:r.id},"POST");
+              r={...cleanup,id:r.id,number:r.number,scope:"review"};
+            }
           }
           done(r);
         } catch (err) {
           busy = false; if (btn) btn.disabled = false;
-          status("⚠ " + String(err?.message || err).slice(0, 300));
+          status((savedReport ? `Report #${savedReport.number} is saved. Retry to queue cleanup: ` : "⚠ ") + String(err?.message || err).slice(0, 300));
         }
       });
     });
