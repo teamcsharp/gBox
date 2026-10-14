@@ -41,7 +41,7 @@ test('operations UI renders real components, progress, deferral, offline and pau
       assert.equal(await evaluate(`document.querySelectorAll('.flow .now').length`),3);
       if(process.env.GBOX_BACKGROUND_EVIDENCE){
         const output=path.resolve(process.env.GBOX_BACKGROUND_EVIDENCE);fs.mkdirSync(output,{recursive:true});
-        await evaluate(`let label=document.createElement('div');label.textContent='UI screenshot / synthetic worker status / no gameplay evidence';label.style='position:fixed;bottom:0;left:0;right:0;z-index:999;background:#244974;color:white;padding:8px;font:13px system-ui';document.body.append(label);`);
+        await evaluate(`let label=document.createElement('div');label.textContent='UI screenshot / synthetic worker status / no gameplay evidence';label.style='background:#244974;color:white;padding:8px;font:13px system-ui';document.body.append(label);`);
         await new Promise(r=>setTimeout(r,2500));
         const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
         fs.writeFileSync(path.join(output,'background-operations.png'),Buffer.from(shot.result.data,'base64'));
