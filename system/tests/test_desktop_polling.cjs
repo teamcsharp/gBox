@@ -18,6 +18,7 @@ const status = between('function statusRight(explicit', 'statusRight(false).catc
 const shared = between('const LIVE_SESSIONS', 'document.querySelectorAll("aside button[data-s]").forEach');
 const GBoxLivePoll = require('../clients/desktop/live-poll.js');
 const GBoxInboxGroups = require('../clients/desktop/inbox-groups.js');
+const GBoxRequestTokens = require('../clients/desktop/request-tokens.js');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
   let resolve, reject;
@@ -38,7 +39,8 @@ function setup(visible = false) {
   node('#d-svc').classes.add('ok');
   const filters = ['all', 'pending', 'completed'].map(mode => ({ dataset: { requestFilter: mode },
     style: {}, setAttribute() {} }));
-  const context = vm.createContext({ console, Date, Set, Map, Promise, GBoxLivePoll, GBoxInboxGroups,
+  const context = vm.createContext({ console, Date, Set, Map, Promise, GBoxLivePoll, GBoxInboxGroups, GBoxRequestTokens,
+    requestTokenCounter: { enter() {}, update() {}, leave() {} },
     $: node, esc: value => String(value ?? ''),
     document: { activeElement: null, querySelectorAll: () => filters },
     gbox: { api(url) {
@@ -91,6 +93,22 @@ test('automatic ticks share pending work without queuing extra fetches', async (
   assert.equal(x.count('/api/requests'), 1);
   assert.equal(x.node('#tb-count').textContent, 1);
   assert.equal(x.tokens(), 0); assert.equal(x.count('/api/mods'), 0);
+});
+
+test('project tokens include every status and update while a reply draft protects the list', async () => {
+  const x = setup(true), measured = [];
+  x.context.requestTokenCounter = { enter() {}, update(snapshot) { measured.push(snapshot.total); } };
+  x.context.document.activeElement = { host: x.node('#reqlist'), closest: selector => selector.includes('input') ? {} : null };
+  const rows = [request('done'), { ...request('in_progress'), id: 'request-2' }];
+  rows[0].metrics = { tokens_in: 3_000_000_000, tokens_out: 100, files_changed: [] };
+  rows[1].metrics = { tokens_in: 400, tokens_out: 20, files_changed: [] };
+  for (const [index, filter] of ['pending', 'completed'].entries()) {
+    x.context.requestFilter = filter;
+    const pass = x.run('refreshInbox()'); await tick();
+    x.request('/api/requests', index).resolve({ ok: true, data: rows }); await pass;
+  }
+  assert.deepEqual(measured, [3_000_000_520n, 3_000_000_520n]);
+  assert.equal(x.renders(), 0); assert.equal(x.count('/api/mods'), 0);
 });
 
 test('many explicit refreshes retain one latest pass after a mutation', async () => {

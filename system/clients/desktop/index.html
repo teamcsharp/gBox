@@ -1134,8 +1134,10 @@ window.taskVizCreate = canvas => {
       <pre id="con"></pre>
     </div></section>
     <section id="requests"><div class="pane" style="max-width:1100px">
-      <div class="bar"><h2 style="margin:0">Requests</h2><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button><span class="mut" id="reqsum"></span>
+      <div class="rt-heading"><div><h2>Requests</h2><div class="rt-heading-actions"><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button></div></div><div id="reqtokens"></div></div>
+      <div class="bar"><span class="mut" id="reqsum"></span>
         <button class="act" id="reqbenchmarks" title="Compare verified results by service and model">Solver results</button><button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
+      <details id="reqtoken-analysis" class="rt-analysis"><summary>Token usage analysis</summary></details>
       <p class="mut">Every request you make (here, by screenshot, by eyedropper, or in chat) is logged with its thread,
         status, time to complete, files changed, tokens in/out and tools used.</p>
       <div id="reqlist"></div></div></section>
@@ -1192,6 +1194,7 @@ window.taskVizCreate = canvas => {
 </div>
 <script src="floating.js"></script>
 <script src="inbox-view.js"></script>
+<script src="request-tokens.js"></script>
 <script src="inbox-groups.js"></script>
 <script src="live-poll.js"></script>
 <script src="dock.js"></script>
@@ -2957,6 +2960,7 @@ $("#reqexport").onclick = async () => {                  // the whole request hi
 };
 let requestFilter = localStorage.getItem("gbox_request_filter") || "all";
 let inboxSolverRequests = [];
+const requestTokenCounter = GBoxRequestTokens.mount($("#reqtokens"), { analysis: $("#reqtoken-analysis"), section: $("#requests") });
 $("#reqbenchmarks").onclick = () => GBoxRequestSolvers.show(inboxSolverRequests);
 document.addEventListener('click', e => {
   const button = e.target.closest('[data-solver-benchmark]'); if (!button) return;
@@ -3006,6 +3010,8 @@ const inboxPoll = singleFlightPoll(async () => {
   const host = $("#reqlist"); if (!host) return;
   // Mod cards are used only in this view; hidden polls still update badges/counts.
   if (!$("#requests").classList.contains("on")) return;
+  const tokenSnapshot = GBoxRequestTokens.analyze(all);
+  requestTokenCounter.enter(); requestTokenCounter.update(tokenSnapshot);
   if (document.activeElement?.closest("#report, #issue-modal, #reqform") || (host.contains(document.activeElement) && document.activeElement.closest("input,textarea,select,[contenteditable]"))) return;
   const tok = await gbox.token();
   const [mr, rg] = await pollTogether([gbox.api("/api/mods"), REG.tools ? null : gbox.api("/api/registry")]);
@@ -3016,9 +3022,8 @@ const inboxPoll = singleFlightPoll(async () => {
   const modsFor = n => MODS.list.filter(m => (m.requests || []).includes(n));
   const art = d => `${S.apiUrl}/api/artifacts/${d}?token=${encodeURIComponent(tok)}`;
   const t = { open: 0, in_progress: 0, done: 0, blocked: 0 }; roots.forEach(x => t[x.status]++);
-  const tot = all.reduce((a, x) => ({ in: a.in + (x.metrics.tokens_in || 0), out: a.out + (x.metrics.tokens_out || 0) }), { in: 0, out: 0 });
   const ownRoots = roots.filter(x => !GBoxInboxGroups.groupKey(x)).length;
-  $("#reqsum").textContent = `${ownRoots} your requests · ${all.length - ownRoots} automated · ${t.open} open · ${t.in_progress} in progress · ${t.done} done · tokens ${fmtTok(tot.in)} in / ${fmtTok(tot.out)} out`;
+  $("#reqsum").textContent = `${ownRoots} your requests · ${all.length - ownRoots} automated · ${t.open} open · ${t.in_progress} in progress · ${t.done} done`;
   const renderRequest = x => {
     const m = x.metrics, tools = Object.entries(m.tools || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join(", ");
     const ms = modsFor(x.number);
@@ -3030,7 +3035,8 @@ const inboxPoll = singleFlightPoll(async () => {
         ${mm.thumb ? `<img loading="lazy" src="${art(mm.thumb)}">` : `<div class="nf">${esc(mm.game_title || "game")}</div>`}<figcaption>${mm.video ? "video · " : ""}${mm.state_slot == null ? "play mod" : "load moment"}</figcaption></figure>`).join("")}</div>` : ""}
       <div class="h"><b>#${x.number}</b><span class="chip ${x.status}">${x.status.replace("_", " ")}</span>${GBoxRequestSolvers.badge(x)}<span class="chip">${x.source}${x.kind !== "text" ? " · " + x.kind : ""}</span><b>${esc(x.title)}</b></div>
       <div class="m">${new Date(x.created * 1000).toLocaleString()} · took ${fmtDur(m.duration_s ?? (x.status === "done" ? null : (Date.now() / 1000 - (x.started || x.created))))}
-        · files ${m.files_changed.length} · tokens ${fmtTok(m.tokens_in)} in / ${fmtTok(m.tokens_out)} out${tools ? " · tools: " + esc(tools) : ""}</div>
+        · files ${m.files_changed.length}${tools ? " · tools: " + esc(tools) : ""}</div>
+      ${GBoxRequestTokens.taskHTML(x.id, tokenSnapshot)}
       ${GBoxReportStory.disclosureHtml(x.id)}
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
