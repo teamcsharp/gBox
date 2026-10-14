@@ -12,11 +12,23 @@
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const REASONS = [["no_change", "Doesn't show the expected change"], ["broken", "Character looks broken or garbled"],
-                   ["crash", "Game crashes or freezes"], ["other", "Other"]];
+                   ["detail_loss", "Character lost too much detail"], ["crash", "Game crashes or freezes"], ["other", "Other"]];
   const fmtSize = n => n == null ? "size not known yet" : !n ? "0 B" : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + " GB"
     : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B";
   const nameOf = b => b.mod_title || b.label || b.name;
   const path = b => `/api/builds/${encodeURIComponent(b.game_id)}/${encodeURIComponent(b.name)}`;
+  // Workbench cards identify a collection build; a session may run a pinned
+  // local copy of it. Keep both identities and never link another mod's session.
+  function sessionBuild(card, gameId, session) {
+    const launch = (card.calls || []).find(c => c.tool === "@launch")?.input;
+    if (!launch?.mod) return null;
+    const gid = launch.game_id || card.game_id || gameId, name = launch.mod;
+    const actual = session?.mod || session?.detail?.mod || "";
+    const linked = session?.game_id === gid && (actual === name || actual.split("~")[0] === name || session?.detail?.collection_mod === name);
+    return { game_id: gid, name, label: card.title || name,
+      game_title: session?.game_id === gid ? session.title || session.game_title || gid : gid,
+      ...(linked ? { session_id: session.session_id, runtime_mod: actual, node: session.detail?.worker_name || "" } : {}) };
+  }
 
   // ---------------------------------------------------------------- What this changes
   function whatHTML(w, { compact = false, cls = "ba-what" } = {}) {
@@ -47,17 +59,20 @@
       <div class="ba-btns"><button class="act ba-danger" type="button" data-ba="go">🗑 Delete</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
   function reportDialogHTML(b) {
-    const w = b.what || {};
+    const w = b.what;
     return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Report a build"><h3>⚑ Report a problem with “${ESC(nameOf(b))}”</h3>
       <p class="ba-note">${ESC(b.game_title || b.title || b.game_id)} · <code>${ESC(b.name)}</code>${b.writer ? ` · ${ESC(b.writer)}` : ""}</p>
       ${whatHTML(w, { compact: true })}
+      ${b.session_id ? `<p class="ba-note">Linked to the game session${b.node ? ` on ${ESC(b.node)}` : ""}. Build being played: <code>${ESC(b.runtime_mod || b.name)}</code>.</p>` : ""}
       <div class="ba-reasons">${REASONS.map(([k, l], i) => `<label class="ba-opt"><input type="radio" name="ba-reason" value="${k}"${i === 0 ? " checked" : ""}> ${ESC(l)}</label>`).join("")}</div>
-      <textarea class="ba-text" data-ba-note rows="3" placeholder="What did you expect to see, and what happened? (e.g. I expected HUcast, but the character is broken apart)" data-nomic></textarea>
+      <label class="ba-opt" for="ba-report-note">Note for the ticket</label>
+      <textarea id="ba-report-note" class="ba-text" data-ba-note rows="4" maxlength="4000" placeholder="Describe what needs attention. For example: Decimation removed too much detail from Leon. Please re-evaluate the model and preserve his facial and clothing detail." data-nomic></textarea>
       <p class="ba-note">Sent with the build's game, writer, slots and donors, what it changes, its recipe, its last launch, its newest in-game frame and its fit previews. It goes to the investigation queue.</p>
-      <div class="ba-btns"><button class="act pri" type="button" data-ba="go">⚑ File report</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
+      <div class="ba-btns"><button class="act pri" type="button" data-ba="go">Submit ticket</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
   const deleteCall = (b, scope, here) => ({ path: path(b) + "/delete", body: { scope, node: scope === "node" ? here : "" } });
-  const reportCall = (b, reason, note) => ({ path: path(b) + "/report", body: { reason, note: String(note || "").trim() } });
+  const reportCall = (b, reason, note) => ({ path: path(b) + "/report", body: { reason, note: String(note || "").trim(),
+    ...(b.session_id ? { session_id: b.session_id } : {}) } });
   function deleteResultText(b, r) {
     const n = nameOf(b), jobs = (r.jobs || []).map(j => j.node), skipped = (r.skipped || []).map(s => `${s.node}: ${s.reason}`);
     return `Deleted ${n}${r.scope === "node" ? ` from ${r.node}` : ""}` + ((r.spark?.removed || []).length ? " (Spark collection removed)" : "")
@@ -85,11 +100,12 @@
     wrap.className = "ba-modal";
     wrap.innerHTML = `<style>${CSS}${WHAT_CSS}</style>` + (kind === "delete" ? deleteDialogHTML(b, env) : reportDialogHTML(b));
     doc.body.appendChild(wrap);
+    if (kind === "report") wrap.querySelector("[data-ba-note]")?.focus?.();
     const status = text => { const s = wrap.querySelector("[data-ba-status]"); if (s) s.textContent = text; };
     return new Promise(resolve => {
       let busy = false;
       const done = v => { try { wrap.remove(); } catch {} resolve(v); };
-      wrap.addEventListener("keydown", e => { if (e.key === "Escape" && !busy) done(null); });
+      wrap.addEventListener("keydown", e => { if (e.key === "Escape") { e.stopPropagation?.(); if (!busy) done(null); } });
       wrap.addEventListener("click", async e => {
         const a = e.target?.closest?.("[data-ba]")?.dataset?.ba;
         if ((a === "cancel" || e.target === wrap) && !busy) return done(null);
@@ -119,7 +135,7 @@
   }
 
   const api = { whatHTML, reportedHTML, deleteDialogHTML, reportDialogHTML, deleteCall, reportCall, deleteResultText, open, fmtSize,
-                REASONS, CSS, WHAT_CSS };
+                sessionBuild, REASONS, CSS, WHAT_CSS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxBuildActions = api;
 })(typeof window !== "undefined" ? window : globalThis);

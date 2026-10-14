@@ -134,7 +134,7 @@ def test_delete_everywhere_removes_the_collection_copy_and_queues_every_pc(tmp_p
         assert [j["node"] for j in out["jobs"]] == ["i9-NUC"], "the PC with a (staged) copy gets a delete job"
         job = store.get("job", out["jobs"][0]["job_id"])
         assert job["tool"] == "file_mod" and job["input"] == {"game_id": GID, "op": "delete_build", "name": "cast_g1_wrestlers",
-                                                              "changes": {}} and job["require_worker"] == "w1"
+                                                                  "changes": {}, "retention_node": ""} and job["require_worker"] == "w1"
         assert {"build_name", "build_favorite", "mod card auto1"} <= set(out["cleared"])
         names = [x["name"] for x in get(c, h, "/api/builds")["items"]]
         assert "cast_g1_wrestlers" not in names or by_name(get(c, h, "/api/builds")["items"])["cast_g1_wrestlers"]["local_only"]
@@ -244,3 +244,34 @@ def test_report_files_through_the_issue_flow_with_the_build_facts_and_pictures(t
         assert c.post(f"/api/builds/{GID}/g1_patch/report", headers=h, json={"reason": "meh"}).status_code == 422
         assert c.post(f"/api/builds/{GID}/nope/report", headers=h, json={}).status_code == 404
     assert [a for a in store.audit_log(0, 500) if a["action"] == "build.report"]
+
+
+def test_session_mod_report_keeps_note_and_exact_copy_without_saving_or_switching(tmp_path, monkeypatch):
+    from gbox import hermes_task_mode
+    monkeypatch.setenv("GBOX_HERMES_DISPATCH_STATE", str(tmp_path / "dispatch"))
+    monkeypatch.setenv("GBOX_HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(hermes_task_mode, "_job", lambda: {"no_agent": True, "enabled": True})
+    cfg, app, store, h = fixture(tmp_path)
+    sid = "offline-playing"
+    store.put("session", sid, {"session_id": sid, "game_id": GID, "title": "Game One", "state": "running",
+                              "mod": "g1_patch~abc123", "detail": {"worker_name": "MYPC"}})
+    note = "Decimation destroyed Leon's facial and clothing detail. Re-evaluate the model."
+    with TestClient(app) as c:
+        assert app.state.built_mods.wait(10)
+        body = {"reason": "detail_loss", "note": note, "session_id": sid}
+        r = c.post(f"/api/builds/{GID}/g1_patch/report", headers=h, json=body)
+        assert r.status_code == 200, r.text
+        report = store.get("request", r.json()["id"])
+        assert note in report["body"]
+        assert report["context"]["session_id"] == sid
+        assert report["context"]["runtime_mod"] == "g1_patch~abc123"
+        assert report["context"]["build"] == f"{GID}/g1_patch"
+        assert report["context"]["worker_name"] == "MYPC"
+        assert "Build being played: g1_patch~abc123" in report["body"]
+        assert not any(j.get("tool") in ("launch_game", "session_swap") or
+                       j.get("input", {}).get("op") in ("save_state", "stop_game", "pause") for j in store.all("job"))
+        wrong = c.post(f"/api/builds/{GID}/cast_g1_wrestlers/report", headers=h, json=body)
+        assert wrong.status_code == 409
+        missing = c.post(f"/api/builds/{GID}/g1_patch/report", headers=h, json=body | {"session_id": "missing"})
+        assert missing.status_code == 404
+        assert len([r for r in store.all("request") if r.get("context", {}).get("build_report")]) == 1
