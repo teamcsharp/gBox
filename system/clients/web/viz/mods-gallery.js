@@ -160,6 +160,7 @@
         <div class="mg-sub"><span class="mg-chip" data-mg-game="${ESC(m.game_id)}">${ESC(m.title || m.game_id)}</span>
           <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}${m.showcase ? '<span class="mg-chip mg-sonic" data-mg-kind="showcase" title="A Sonic showcase test build (Settings &gt; Sonic showcase)">Sonic showcase</span>' : ""}</div>
         ${BA()?.whatHTML(m.what) || ""}
+        ${m.unlocks ? `<div class="mg-unlock-status"><span class="mg-chip">${ESC(m.unlocks.label)}</span>${m.unlocks.number ? `<button class="act" type="button" data-mg="unlock-ticket">#${ESC(m.unlocks.number)}</button>` : ""}</div>` : ""}
         ${changesHTML(m)}
         <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
@@ -429,6 +430,7 @@
       if (chipK) { st.kind = chipK.dataset.mgKind; st.page = 1; built = false; draw(); return; }
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
+      if (act === "unlock-ticket") return openRequest(m.unlocks.number, {...m,tickets:[...(m.tickets || []),{number:m.unlocks.number,id:m.unlocks.request_id}]}, card);
       if (act === "broken") return markBroken(m, card);
       if (m.broken && ["play", "moment", "shot"].includes(act)) { toast("This build is broken and queued for investigation"); return; }
       if (act === "rename") { e.preventDefault?.(); startRename(m); return; }

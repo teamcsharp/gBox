@@ -134,7 +134,7 @@
       <button class="bv-tri" type="button" data-bv="toggle" aria-expanded="${open}" title="${open ? "Hide" : "Show"} details">${open ? "▾" : "▸"}</button>
       ${b.image ? `<img class="bv-thumb" loading="lazy" decoding="async" alt="" src="${ESC(url(b.image))}">` : `<div class="bv-thumb bv-nothumb">${ESC((b.game_title || b.game_id || "?").slice(0, 2))}</div>`}
       <div class="bv-main"><div class="bv-nm">${star}${name}</div>${BA()?.whatHTML(b.what, { compact: true }) || ""}<div class="bv-sub mut" title="${ESC(sub)}">${ESC(sub)}</div>${msg ? `<div class="bv-msg">${ESC(msg)}</div>` : ""}</div>
-      <div class="bv-game" title="${ESC(b.game_id)}">${ESC(b.game_title || b.game_id)}</div>
+      <div class="bv-game" title="${ESC(b.game_id)}">${ESC(b.game_title || b.game_id)}${b.unlocks ? `<div class="bv-chip" title="${ESC((b.unlocks.categories || []).join(', '))}">${ESC(b.unlocks.label)}${b.unlocks.number ? ` #${ESC(b.unlocks.number)}` : ""}</div>` : ""}</div>
       <div class="bv-kinds">${(b.kinds || [b.kind]).map((k, i) => chip(KINDS[k] || k, i ? "" : "bv-k1")).join("")}${b.verified ? chip("verified", "bv-ok") : ""}${BA()?.reportedHTML(b.reported, "bv-chip ba-rep") || ""}</div>
       <div class="bv-date" title="${ESC(fmtDate(b.built))}">${ESC(fmtAge(b.built, now))}</div>
       <div class="bv-size">${b.local_only ? '<span class="mut" title="only on a PC: sized when it reaches the Spark">–</span>' : ESC(fmtSize(sizeOf(b)))}</div>
