@@ -699,6 +699,7 @@ function watchSessionLayout() {
 addEventListener("resize", fitSessionLayout);
 async function show(t, ...args) {
   const revision = ++viewRevision;
+  if (cur === "Builds") BUILDSV.ctl?.stop(); // save its position before replacing the page
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
   GAME_MODELS.selection++;
   if (GAME_MODELS.viewer) { GAME_MODELS.viewer.dispose(); GAME_MODELS.viewer = null; }
