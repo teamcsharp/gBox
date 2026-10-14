@@ -212,6 +212,8 @@ def pick_node(node: str, workers: list[dict], live_sessions: list[dict], *, need
         busy = running_jobs.get(w.get("id"), 0) or w.get("active_jobs") or 0
         if busy:
             return f"{name} is busy with {busy} job(s) (evidence captures run at low priority)"
+        if w.get('admission', {}).get('allowed') is False:
+            return f"{name}: {w['admission'].get('reason') or 'background admission deferred'}"
         if w.get("os") == "windows":
             idle = w.get("idle_seconds")
             if idle is None and not explicit:
