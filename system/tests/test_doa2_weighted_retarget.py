@@ -210,5 +210,52 @@ class WeightedTests(unittest.TestCase):
         self.assertEqual(loaded['material_name'], 'mat0')
 
 
+    def test_donor_without_normals_gets_its_winding_normals(self):
+        """A donor glTF with no NORMAL attribute (the SM64DS library) gets the normals of its own winding, flagged, not
+        a constant +Y placeholder (#1765)."""
+        source = rig()
+        joints = []
+        for parent, position in zip(PARENTS, POSITIONS):
+            world = np.eye(4); world[:3, 3] = position
+            joints.append({'parent': parent, 'world': world})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'no_normals.gltf'
+            write_gltf(path, joints, source['prims'], joint_names=NAMES)
+            gl = json.loads(path.read_text())
+            for mesh in gl['meshes']:
+                for primitive in mesh['primitives']:
+                    primitive['attributes'].pop('NORMAL', None)
+            path.write_text(json.dumps(gl))
+            loaded = load_rig(path, {name: name for name in NAMES})['prims'][0]
+            write_gltf(path, joints, source['prims'], joint_names=NAMES)
+            with_normals = load_rig(path, {name: name for name in NAMES})['prims'][0]
+        self.assertTrue(loaded['normals_from_winding'])
+        self.assertFalse(with_normals['normals_from_winding'])
+        P, T = loaded['pos'], loaded['tris']
+        face = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+        real = np.linalg.norm(face, axis=1) > 1e-9               # the fixture's last triangle is degenerate
+        corner = loaded['nrm'][T[real]]
+        self.assertTrue(((corner * face[real][:, None, :]).sum(-1) > 0).all())
+
+    def test_orient_keeps_the_winding_of_parts_whose_normals_come_from_it(self):
+        """sm64_swap._orient flips a material whose normals mostly point into its joint's part. With placeholder normals
+        that test turned Peach's face inside out: the face sits below the head joint's centroid (hair and crown lift
+        it), so +Y 'pointed inward'. Winding-derived normals are left alone."""
+        from gbox.sm64_swap import _orient
+        from gbox.doa2_weighted_retarget import winding_normals
+
+        def part(pos, tris, placeholder):
+            pos, tris = np.array(pos, float), np.array(tris)
+            J = np.zeros((len(pos), 4), int); J[:, 0] = 2
+            nrm = np.tile([0., 1, 0], (len(pos), 1)) if placeholder else winding_normals(pos, tris)
+            return {'pos': pos, 'tris': tris, 'nrm': nrm, 'J': J, 'normals_from_winding': not placeholder}
+        hair = [[-.2, 2.6, 0], [.2, 2.6, 0], [0, 2.8, -.1], [0, 2.7, .2]]
+        face = [[-.1, 1.8, .2], [.1, 1.8, .2], [0, 2.0, .2]]               # counter-clockwise from +Z: faces forward
+        for placeholder, want_flip in ((True, True), (False, False)):
+            prims = [part(hair, [[0, 1, 2], [0, 3, 1]], placeholder), part(face, [[0, 1, 2]], placeholder)]
+            _orient(prims)
+            self.assertEqual(prims[1]['tris'].tolist() != [[0, 1, 2]], want_flip)
+
+
 if __name__ == '__main__':
     unittest.main()

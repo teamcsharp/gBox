@@ -19,6 +19,25 @@ def _normal(v):
     return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-12)
 
 
+def winding_normals(pos: np.ndarray, tris: np.ndarray) -> np.ndarray:
+    """Per-vertex unit normals of a mesh that carries none: the area-weighted normals of its counter-clockwise (glTF)
+    triangles, summed over vertices at the same position, so they agree with the winding by construction."""
+    pos = np.asarray(pos, float)
+    tris = np.asarray(tris, int).reshape(-1, 3)
+    out = np.zeros_like(pos)
+    if not len(tris):
+        return np.tile([0., 1, 0], (len(pos), 1))
+    face = np.cross(pos[tris[:, 1]] - pos[tris[:, 0]], pos[tris[:, 2]] - pos[tris[:, 0]])
+    _, weld = np.unique(np.round(pos, 6), axis=0, return_inverse=True)
+    weld = weld.reshape(-1)
+    acc = np.zeros((weld.max() + 1, 3))
+    for c in range(3):
+        np.add.at(acc, weld[tris[:, c]], face)
+    out = acc[weld]
+    out[np.linalg.norm(out, axis=1) < 1e-12] = (0., 1, 0)
+    return _normal(out)
+
+
 class _LogicalVertices:
     """Use rounded lookup buckets without welding distinct fitted skin vertices."""
     def __init__(self):
@@ -155,6 +174,12 @@ def load_rig(path: Path, roles: dict, props=()):
                 joints[:, 0], weights[:, 0] = to_main(node_id), 1
             n = _normal(n)
             tris = acc(primitive['indices']).reshape(-1, 3).astype(int) if 'indices' in primitive else np.arange(len(p) // 3 * 3).reshape(-1, 3)
+            # a donor without normals (the SM64DS library) gets its own winding's normals, never a constant +Y: S._orient
+            # would otherwise judge each material's facing by a placeholder and turn whole parts inside out (#1765:
+            # Peach's single-sided face, which sits below the head joint's centroid, was flipped and culled in game)
+            from_winding = 'NORMAL' not in attributes
+            if from_winding:
+                n = winding_normals(p, tris)
             texture, color, wrap = None, (255, 255, 255, 255), (10497, 10497)
             material_id = primitive.get('material')
             gl_material = gl['materials'][material_id] if material_id is not None else {}
@@ -174,7 +199,7 @@ def load_rig(path: Path, roles: dict, props=()):
                     wrap = (settings.get('wrapS', 10497), settings.get('wrapT', 10497))
             primitives.append({'pos': p, 'nrm': n, 'uv': uv, 'tris': tris, 'J': joints, 'W': weights,
                                'owner': joints[:, 0], 'tex': texture, 'color': color, 'wrap': wrap,
-                               'double_sided': double_sided(gl_material),
+                               'double_sided': double_sided(gl_material), 'normals_from_winding': from_winding,
                                'material_name': gl_material.get('name'),
                                'prop': prop_node is not None, 'source_mesh_node': node_id,
                                'source_primitive': primitive_id, **({'prop_node': prop_node} if prop_node else {})})

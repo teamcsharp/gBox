@@ -793,6 +793,25 @@ def test_owned_disc_round_trip_identity():
     assert W.replace_entries(human, {}) == human
 
 
+PEACH = Path(os.environ.get("GBOX_CHARACTERS", "D:/gBox/cache/characters_mirror")) / "sm64ds_peach"
+
+
+@pytest.mark.skipif(_owned_human() is None or not (PEACH / "meta.json").is_file(),
+                    reason="owned SoulCalibur HUMAN.DAT or the sm64ds_peach library entry not on this node")
+def test_owned_peach_face_faces_out_through_the_writer():
+    """#1765: SM64DS Peach (a library GLB without normals) lost her face in game. Her single-sided face (DS
+    POLYGON_ATTR 0x81) was turned inside out by the retarget's orientation check and culled. Fitted onto Ivy 2P and
+    written, every face triangle must face forward in the game's winding, so the engine render draws it from the front."""
+    entry = D.olnk(_owned_human())[W.group_of("IVY") * D.GROUP + 1]
+    stock = D.costume_parts(entry)["model"]
+    prims, _fit = W.fit_donor(stock, PEACH, "fighter:IVY")
+    face = [p for p in prims if p.get("material_name") == "mat07_face"]
+    assert len(face) == 1 and not face[0].get("double_sided")
+    P, T = face[0]["pos"], np.asarray(face[0]["tris"]).reshape(-1, 3)
+    n = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+    assert (n[:, 2] > 0).mean() > 0.95                        # the library frame faces +Z
+
+
 @pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")
 def test_owned_disc_yuv_strips_avoid_the_alpha_regions():
     """Stock pages mix formats: the ARGB4444 hair regions read as pure green in YUV. With the UVs the TA reads, the
