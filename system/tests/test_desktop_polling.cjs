@@ -17,6 +17,7 @@ const audit = between('function auditPoll(explicit', 'function auGroup(rows)');
 const status = between('function statusRight(explicit', 'statusRight(false).catch');
 const shared = between('const LIVE_SESSIONS', 'document.querySelectorAll("aside button[data-s]").forEach');
 const GBoxLivePoll = require('../clients/desktop/live-poll.js');
+const GBoxInboxGroups = require('../clients/desktop/inbox-groups.js');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
   let resolve, reject;
@@ -37,7 +38,7 @@ function setup(visible = false) {
   node('#d-svc').classes.add('ok');
   const filters = ['all', 'pending', 'completed'].map(mode => ({ dataset: { requestFilter: mode },
     style: {}, setAttribute() {} }));
-  const context = vm.createContext({ console, Date, Set, Map, Promise, GBoxLivePoll,
+  const context = vm.createContext({ console, Date, Set, Map, Promise, GBoxLivePoll, GBoxInboxGroups,
     $: node, esc: value => String(value ?? ''),
     document: { activeElement: null, querySelectorAll: () => filters },
     gbox: { api(url) {
