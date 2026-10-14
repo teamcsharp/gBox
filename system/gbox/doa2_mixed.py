@@ -136,6 +136,17 @@ def render_pools(executable: bytes, plan: dict[str, list[tuple[str, str]]]) -> t
     return pools, where
 
 
+def substitutes(slug: str, donors, pool: set[str]) -> list[str]:
+    """The planned donor, then the stand-ins tried when it fails this costume (any error: native limits, a bad
+    donor file, a writer bug on one model): its own franchise first, donors not yet in the fighter's pool before
+    reused ones, so the half/half mix holds; the other franchise only as a last resort."""
+    own = franchise(slug)
+    same = [s for s in donors if franchise(s) == own and s != slug]
+    other = [s for s in donors if franchise(s) != own]
+    return ([slug] + [s for s in same if s not in pool] + [s for s in same if s in pool]
+            + [s for s in other if s not in pool] + [s for s in other if s in pool])
+
+
 def _prepare(gdi, disc, audit, donors, family, costume, slug, progress):
     """One costume; a donor whose textures overflow the native pages is retried with explicit downscaling."""
     from . import doa2_rig
@@ -173,33 +184,29 @@ def build(gdi, donors: dict[str, Path], out_dir, plan: dict[str, list[tuple[str,
 
         def update(p, m, i=i, family=family, costume=costume):
             progress(70 * (i + p / 100) / len(jobs), f"{family}{costume}: {m}")
-        # a donor that can't fit this costume's native limits (spare seam-model slots, pages) is replaced by the next
-        # donor of the same franchise, preferring one not already in the fighter's pool; the half/half mix holds
-        pool_now = {s for _c, s in plan[family]}
-        same = [s for s in donors if franchise(s) == franchise(slug) and s != slug]
-        tried, last_error = [], None
-        for cand in [slug] + [s for s in same if s not in pool_now] + [s for s in same if s in pool_now]:
+        tried, last_error, edits = [], None, None
+        for cand in substitutes(slug, donors, {s for _c, s in plan[family]}):
             try:
                 edits, report, downscaled = _prepare(gdi, disc, audit, donors, family, costume, cand, update)
+                # costumes can share a native accessory file (JAN01 / JAN02 -> JAN_A01.ACS); the writer disables it
+                # the same way for each, so identical bytes are fine and anything else is a real conflict
+                overlap = {k for k in set(edits) & set(changes) - {"1ST_READ.BIN"} if edits[k] != changes[k]}
+                if overlap:
+                    raise ValueError(f"conflicts with an earlier costume on {sorted(overlap)[:3]}")
                 break
-            except ValueError as e:                       # encode limits; a missing rig fails every donor alike
-                if isinstance(e, S.RigUnavailable):
-                    raise
-                tried.append({"donor": cand, "error": str(e)[:200]})
-                last_error = e
-        else:
-            raise ValueError(f"{family}{costume}: no {franchise(slug)} donor fits ({tried})") from last_error
+            except S.RigUnavailable:                      # the costume's own rig: every donor fails alike
+                raise
+            except Exception as e:                        # noqa: BLE001 - one donor failing must not end the build
+                tried.append({"donor": cand, "error": f"{type(e).__name__}: {str(e)[:200]}"})
+                last_error, edits = e, None
+        if edits is None:
+            raise ValueError(f"{family}{costume}: no donor fits ({tried})") from last_error
         if cand != slug:
             substitutions.append({"costume": f"{family}{costume}", "planned": slug, "used": cand, "tried": tried})
             plan[family] = [(c, cand if c == costume else s) for c, s in plan[family]]
             slug = cand
         if "1ST_READ.BIN" in edits:
             patches.append(edits.pop("1ST_READ.BIN"))
-        # costumes can share a native accessory file (JAN01 / JAN02 -> JAN_A01.ACS); the writer disables it the
-        # same way for each, so identical bytes are fine and anything else is a real conflict
-        overlap = {k for k in set(edits) & set(changes) if edits[k] != changes[k]}
-        if overlap:
-            raise ValueError(f"{family}{costume} conflicts with an earlier costume on {sorted(overlap)[:3]}")
         changes.update(edits)
         report.update(donor=slug, franchise=franchise(slug), downscaled=downscaled)
         reports.append(report)
@@ -213,6 +220,8 @@ def build(gdi, donors: dict[str, Path], out_dir, plan: dict[str, list[tuple[str,
     if not verification["ok"]:
         raise AssertionError(f"verification failed: {verification['problems'][:5]}")
     summary = check_plan(plan)
+    from .cast_swap import mario_side
+    mario_source, mario_title = mario_side(s for s in summary["donors"] if franchise(s) == "SM64DS")
     roster = [{"fighter": f, "name": names.get(f, f), "character": plan[f][0][1], "franchise": franchise(plan[f][0][1]),
                "render_slot": where[f][plan[f][0][0]][0],
                "pool": [{"costume": c, "render_costume": where[f][c][1], "character": s, "franchise": franchise(s)}
@@ -225,9 +234,9 @@ def build(gdi, donors: dict[str, Path], out_dir, plan: dict[str, list[tuple[str,
               "character": ",".join(summary["donors"]), "files": list(changes), "report": report,
               "writer_sha256": S.writer_fingerprint(), "profile_digest": S.profiles_digest(reports),
               "gameplay_verified": False, "roster": roster,
-              "title": "Dead or Alive 2 - Limited Edition (Japan): Sonic Adventure 2 vs Super Mario 64 DS, random "
+              "title": f"Dead or Alive 2 - Limited Edition (Japan): Sonic Adventure 2 vs {mario_title}, random "
                        "donor on every selection",
-              "cast_source": "Sonic Adventure 2 (USA) + Super Mario 64 DS (USA)", "cast_mapping": "mixed_random",
+              "cast_source": f"Sonic Adventure 2 (USA) + {mario_source}", "cast_mapping": "mixed_random",
               "random_select": {"patch": "gbox.doa2_random_select", "hook": f"{RS.HOOK:#010x}",
                                 "pool_word": f"{RS.POOL_WORD:#010x}", "routine_sha256": select["routine_sha256"],
                                 "pools": {str(k): v for k, v in pools.items()}},

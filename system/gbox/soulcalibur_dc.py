@@ -29,9 +29,12 @@ itself is the upper 16 bits). The first ``stores`` position rows are written to 
 row's slot (the engine reads the slot once, then advances); the remaining ``adds`` rows add at their own slot. Normal
 rows have no count: rows before the first one with the add flag store consecutively from the first row's slot, every
 row after it adds at its own slot (see ``engine_skin``). Strips follow: sections of ``u8 material, u8 flags, u8 0, u8 count``
-headers with ``count`` x ``(u16 position, u16 normal | 0x8000 on the last, u16 u, u16 v)`` (u / v are the upper half of
-a float), a u32 0 closing each section and an empty section closing the list. ``material & 3`` is the texture page
-(bank entry 1 + page).
+headers with ``count`` x ``(u16 position, u16 normal | 0x8000 on the last, u16 v, u16 u)`` (each the upper half of a
+float; the vertex emitter 0x8c03cc68 hands the pair to the TA as one u32, so the SECOND u16 is U), a u32 0 closing each
+section and an empty section closing the list. The material byte is the texture (0x8c03cf60 builds the TCW as
+``base + (material & 3) * 0x4000 + (material & 0x30) << 23``): ``material & 3`` is the page (bank entry 1 + page) and
+``(material >> 4) & 3`` its PVR pixel format (3 YUV422, 2 ARGB4444, 0 ARGB1555), so one page holds regions of several
+formats (hair and fringe are ARGB4444, decals ARGB1555); bit 0x40 draws the strip in the translucent list.
 """
 from __future__ import annotations
 
@@ -45,7 +48,9 @@ import numpy as np
 GAME_IDS = {"c747331797369f74": "SoulCalibur (USA) CHD", "e4ad4831b09591b6": "Soulcalibur (USA) 7z GDI",
             "32bdc48bc550f79b": "Soul Calibur v1.000 GDI"}
 EXECUTABLE_SHA256 = "646fd82c5a8c65f2ae91f4a049984f8509387b0b2da5f6f511d1ac876781fa7f"
-READER_VERSION = 2                               # 2: engine-exact skinning (premultiplied rows, consecutive stores)
+READER_VERSION = 3                               # 2: engine-exact skinning (premultiplied rows, consecutive stores)
+#                                                  3: strip UVs as the TA reads them (second u16 = U), per-material
+#                                                     pixel formats (ARGB4444 hair, ARGB1555 decals) with alpha
 HUMAN = "HUMAN.DAT"
 GROUP = 10                                       # HUMAN.DAT entries per character id
 COSTUMES, MOTION, WEAPONS = range(0, 4), 4, range(5, 10)
@@ -259,6 +264,44 @@ def page_rgb(data: bytes) -> np.ndarray:
     return np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
 
 
+YUV422, ARGB4444, ARGB1555, RGB565 = 3, 2, 0, 1   # PVR pixel formats (TCW bits 27..29)
+TRANSLUCENT = 0x40                               # material bit: the strip goes to the translucent list (0x8c03cf60)
+
+
+def material_format(material: int) -> int:
+    """The PVR pixel format a strip's material samples its page in: 0x8c03cf60 adds ``(material & 0x30) << 23`` to
+    the TCW, so 0x3x is YUV422, 0x2x ARGB4444, 0x0x ARGB1555 (0x1x, RGB565, is not used by any stock costume)."""
+    return (int(material) >> 4) & 3
+
+
+def page_rgba(data: bytes, fmt: int = YUV422) -> np.ndarray:
+    """A 256x256 twiddled page read in one PVR pixel format -> RGBA uint8 (alpha 255 for YUV422 / RGB565). A page
+    can hold regions of several formats; each strip reads it in its material's format (material_format)."""
+    if fmt == YUV422:
+        rgb = page_rgb(data)
+        return np.concatenate([rgb, np.full(rgb.shape[:2] + (1,), 255, np.uint8)], -1)
+    if len(data) != PAGE * PAGE * 2:
+        raise ValueError(f"page is {len(data)} bytes, expected {PAGE * PAGE * 2}")
+    w = np.frombuffer(data, "<u2")[_tw()].reshape(PAGE, PAGE).astype(np.int32)
+
+    def c4(x):
+        return (x * 17).astype(np.uint8)
+
+    def c5(x):
+        return ((x << 3) | (x >> 2)).astype(np.uint8)
+
+    def c6(x):
+        return ((x << 2) | (x >> 4)).astype(np.uint8)
+    if fmt == ARGB4444:
+        return np.stack([c4((w >> 8) & 15), c4((w >> 4) & 15), c4(w & 15), c4((w >> 12) & 15)], -1)
+    if fmt == ARGB1555:
+        return np.stack([c5((w >> 10) & 31), c5((w >> 5) & 31), c5(w & 31),
+                         np.where(w & 0x8000, 255, 0).astype(np.uint8)], -1)
+    if fmt == RGB565:
+        return np.stack([c5((w >> 11) & 31), c6((w >> 5) & 63), c5(w & 31), np.full(w.shape, 255, np.uint8)], -1)
+    raise ValueError(f"unknown pixel format {fmt}")
+
+
 def page_encode(rgb: np.ndarray) -> bytes:
     """RGB (256x256x3) -> twiddled YUV422 page (the inverse of page_rgb; chroma averaged over each texel pair)."""
     a = np.asarray(rgb, np.float32)[..., :3]
@@ -330,7 +373,7 @@ def parse_model(m: bytes) -> dict:
             o += 8 * n
             if not rec[-1, 1] & 0x8000 or (rec[:-1, 1] & 0x8000).any():
                 raise ValueError(f"strip end flag misplaced before 0x{o:x}")
-            uv = np.frombuffer((rec[:, 2:] << 16).astype("<u4").tobytes(), "<f4").reshape(n, 2).astype(np.float64)
+            uv = strip_uv(rec[:, 2:])
             strips.append({"material": h[0], "flags": h[1], "pad": h[2], "pos": rec[:, 0] & 0x7FFF,
                            "nrm": rec[:, 1] & 0x7FFF, "uv": uv, "raw_uv": rec[:, 2:], "head": bytes(h),
                            "raw": rec.astype(np.uint16)})
@@ -340,6 +383,23 @@ def parse_model(m: bytes) -> dict:
     return {"header": m[:0x18], "header_raw": m[:0x20], "strips_offset": strips_at, "strips_end": o, "bones": bones,
             "sections": sections, "tail": m[o:], "size": len(m),
             "counts": struct.unpack_from("<HH", m, 0x14)}
+
+
+def strip_uv(raw: np.ndarray) -> np.ndarray:
+    """A strip's (n, 2) raw u16 pairs (as stored: first, second) -> (n, 2) texture (u, v), u along the page's
+    columns and v down its rows. The vertex emitter (0x8c03cc68) loads the pair as ONE little-endian u32 and stores it
+    as the TA vertex's U float (so U is the second u16, in the float's upper half) and the same word << 16 as V (the
+    first u16): the first u16 is V, the second is U."""
+    raw = np.asarray(raw, np.int64).reshape(-1, 2)
+    f = np.frombuffer((raw << 16).astype("<u4").tobytes(), "<f4").reshape(-1, 2).astype(np.float64)
+    return f[:, ::-1].copy()
+
+
+def uv_words(uv: np.ndarray) -> np.ndarray:
+    """(n, 2) texture (u, v) -> the (n, 2) u16 pairs a strip stores (first = V, second = U; see strip_uv), each the
+    upper half of the float32 rounded to nearest."""
+    b = np.asarray(uv, np.float32).reshape(-1, 2).view(np.uint32).astype(np.uint64)
+    return ((b + 0x8000) >> 16).astype(np.uint16)[:, ::-1].copy()
 
 
 def _w(bits: int) -> float:
@@ -604,12 +664,26 @@ def mesh_arrays(model: dict, sk: dict, frame: np.ndarray = FRAME) -> dict:
     return out
 
 
+def format_textures(model: dict, raw_pages: list[bytes], images: list[np.ndarray]) -> dict:
+    """The non-YUV textures a model's materials read: every (page, pixel format) pair its strips use besides YUV422
+    is decoded (page_rgba) and appended to `images`. Returns {(page, format): image index}."""
+    out: dict[tuple[int, int], int] = {}
+    for sec in model["sections"]:
+        for s in sec:
+            key = (s["material"] & 3, material_format(s["material"]))
+            if key[1] != YUV422 and key not in out and key[0] < len(raw_pages):
+                out[key] = len(images)
+                images.append(page_rgba(raw_pages[key[0]], key[1]))
+    return out
+
+
 def write_glb(path: Path, parts: list[dict], bones: list[dict], world: list[np.ndarray], pages: list[np.ndarray],
               name: str, extras: dict | None = None, frame: np.ndarray = FRAME,
               bone_names: list[str] | None = None, parents: list[int] | None = None) -> Path:
     """Skinned GLB: joint nodes from the rest pose, one primitive per (part, material), pages as PNG textures.
-    parts: [{"arrays": mesh_arrays(...), "pages": [page index -> texture index]}]; parents overrides the hierarchy
-    (world matrices are kept, so a re-parented joint keeps its place)."""
+    parts: [{"arrays": mesh_arrays(...), "pages": [page index -> texture index], "textures": {(page index, pixel
+    format): texture index}}] ("textures" for the non-YUV materials; pages are RGB or RGBA); parents overrides the
+    hierarchy (world matrices are kept, so a re-parented joint keeps its place)."""
     parents = list(parents) if parents is not None else [b["parent"] for b in bones]
     bin_, views, accs = bytearray(), [], []
 
@@ -643,7 +717,7 @@ def write_glb(path: Path, parts: list[dict], bones: list[dict], world: list[np.n
     roots = [i for i, p in enumerate(parents) if p < 0]
     images, textures, materials, prims = [], [], [], []
     for k, rgb in enumerate(pages):
-        rgba = np.concatenate([rgb, np.full(rgb.shape[:2] + (1,), 255, np.uint8)], -1)
+        rgba = rgb if rgb.shape[-1] == 4 else np.concatenate([rgb, np.full(rgb.shape[:2] + (1,), 255, np.uint8)], -1)
         images.append({"bufferView": view(_png(rgba)), "mimeType": "image/png", "name": f"{name}_page{k}"})
         textures.append({"source": k, "sampler": 0})
     mat_index: dict[tuple, int] = {}
@@ -651,12 +725,19 @@ def write_glb(path: Path, parts: list[dict], bones: list[dict], world: list[np.n
         for mat, d in sorted(part["arrays"].items()):
             if not len(d["tris"]):
                 continue
-            tex = part["pages"][mat & 3] if (mat & 3) < len(part["pages"]) else None
+            fmt = material_format(mat)
+            tex = (part.get("textures") or {}).get((mat & 3, fmt))
+            if tex is None and fmt == YUV422:
+                tex = part["pages"][mat & 3] if (mat & 3) < len(part["pages"]) else None
             key = (tex, mat & 0xFC)
             if key not in mat_index:
                 m = {"name": f"{name}_m{len(materials)}_{mat:02x}", "doubleSided": bool(mat & 0x40) or not (mat & 0x10),
                      "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.9,
                                               **({"baseColorTexture": {"index": tex}} if tex is not None else {})}}
+                if fmt != YUV422 and mat & TRANSLUCENT:      # ARGB4444 hair / ARGB1555 decals: blended by alpha
+                    m["alphaMode"] = "BLEND"
+                elif fmt != YUV422:                          # the opaque list ignores texture alpha (TSP 0x20080000)
+                    m["alphaMode"] = "OPAQUE"
                 mat_index[key] = len(materials)
                 materials.append(m)
             prims.append({"attributes": {"POSITION": acc(d["pos"], "VEC3", minmax=True), "NORMAL": acc(d["nrm"], "VEC3"),
@@ -796,7 +877,8 @@ def export(human: bytes, group: int, costume: int, out: Path, name: str, weapon:
                 inf = sk["influences"][i]
                 inf[head] = inf.pop(neck)
         rl = dict(rl, neck=neck, head=head)
-    parts = [{"arrays": mesh_arrays(body, sk), "pages": list(range(len(pages)))}]
+    parts = [{"arrays": mesh_arrays(body, sk), "pages": list(range(len(pages))),
+              "textures": format_textures(body, cp["pages"], pages)}]
     weapon_info = None
     wlist = weapons_of(entries, group)
     if weapon is None and wlist:
@@ -832,7 +914,8 @@ def export(human: bytes, group: int, costume: int, out: Path, name: str, weapon:
         wsk["influences"] = [{base + j: w for j, w in d.items()} for d in wsk["influences"]]
         first = len(pages)
         pages += [page_rgb(p) for p in wp["pages"]]
-        parts.append({"arrays": mesh_arrays(wm, wsk), "pages": list(range(first, len(pages)))})
+        parts.append({"arrays": mesh_arrays(wm, wsk), "pages": list(range(first, len(pages))),
+                      "textures": format_textures(wm, wp["pages"], pages)})
         weapon_info = {"entry": group * GROUP + weapon, "slot": weapon, "bones": len(wm["bones"]),
                        "attached_to": sorted({names[h] for h in holder if h is not None}),
                        "placement": "first weapon root at the right hand's rest frame, other roots at the left hand "

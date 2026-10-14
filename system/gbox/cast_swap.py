@@ -114,6 +114,19 @@ def group_best(chars: list[dict], group: str = "mario", ready_only: bool = True)
     return {character_key(m): m["slug"] for m in keep}
 
 
+DS_SOURCE = "Super Mario 64 DS (USA)"
+
+
+def mario_side(slugs) -> tuple[str, str]:
+    """(cast_source label, title words) for a build's Mario-side donors: the 'mario' group's label once any of them
+    is an HD (*_hd) or Super Mario 64 (sm64_*) model, so special_builds.source_spec maps the marker back to
+    source=mario; plain Super Mario 64 DS otherwise (the SM64 DS builds keep their wording)."""
+    upgraded = any(s.endswith("_hd") or (s.startswith("sm64_") and not s.startswith("sm64ds_")) for s in slugs)
+    if upgraded:
+        return GROUPS["mario"]["label"], "Super Mario HD (best model per character)"
+    return DS_SOURCE, "Super Mario 64 DS"
+
+
 def library_metas(root: Path) -> list[dict]:
     """Every entry's meta.json in a library folder (the builders' CLI, no API)."""
     out = []

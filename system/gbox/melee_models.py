@@ -539,6 +539,31 @@ def _al4(n):
     return (n + 3) & -4
 
 
+def four_influences(J, W) -> tuple[np.ndarray, np.ndarray]:
+    """Any number of influence columns -> exactly 4 (JOINTS_0 / WEIGHTS_0 are VEC4): the 4 heaviest per vertex,
+    renormalised; fewer columns are padded with joint 0 at weight 0. A 5+ column prim written as VEC4 shears the
+    buffer (each vertex reads its neighbour's influences) - the DOA2 HD donors crashed the game that way."""
+    J, W = np.asarray(J).reshape(len(J), -1), np.asarray(W, float).reshape(len(W), -1)
+    if J.shape != W.shape:
+        raise ValueError(f"joint columns {J.shape} != weight columns {W.shape}")
+    n, k = J.shape
+    if k < 4:
+        J = np.concatenate([J, np.zeros((n, 4 - k), J.dtype)], axis=1)
+        W = np.concatenate([W, np.zeros((n, 4 - k))], axis=1)
+    elif k > 4:
+        top = np.argsort(-W, axis=1, kind="stable")[:, :4]
+        J, W = np.take_along_axis(J, top, 1), np.take_along_axis(W, top, 1)
+    total = W.sum(1, keepdims=True)
+    W = np.where(total > 1e-12, W / np.maximum(total, 1e-12), W)
+    J = np.where(W > 0, J, 0) if k > 4 else J
+    return J.astype(np.uint16), W.astype(np.float32)
+
+
+def _vec4_skin(J, W, add):
+    j4, w4 = four_influences(J, W)
+    return add(j4, 5123, "VEC4", 34962), add(w4, 5126, "VEC4", 34962)
+
+
 def write_gltf(path: Path, joints: list[dict], prims: list[dict], scale: float = 1.0, name: str = "melee",
                joint_names: list[str] | None = None, extras: dict | None = None) -> Path:
     """joints: [{parent, world (4x4)}] in rest pose; prims: [{pos, nrm, uv, tris, J (n,4), W (n,4), tex RGBA|None,
@@ -582,11 +607,10 @@ def write_gltf(path: Path, joints: list[dict], prims: list[dict], scale: float =
         attrs = {"POSITION": add((p["pos"] * scale).astype(np.float32), 5126, "VEC3", 34962, True),
                  "NORMAL": add(p["nrm"].astype(np.float32), 5126, "VEC3", 34962),
                  "TEXCOORD_0": add(p["uv"].astype(np.float32), 5126, "VEC2", 34962),
-                 "JOINTS_0": add(p["J"].astype(np.uint16), 5123, "VEC4", 34962),
-                 "WEIGHTS_0": add(p["W"].astype(np.float32), 5126, "VEC4", 34962)}
+                 **dict(zip(("JOINTS_0", "WEIGHTS_0"), _vec4_skin(p["J"], p["W"], add)))}
         ind = add(p["tris"].reshape(-1).astype(np.uint32), 5125, "SCALAR", 34963)
         col = p.get("color", (255, 255, 255, 255))
-        md = {"name": p.get("name", f"mat{len(materials)}"), "doubleSided": True,
+        md = {"name": p.get("name", f"mat{len(materials)}"), "doubleSided": bool(p.get("double_sided", True)),
               "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.9}}
         if p.get("tex") is not None:
             pixels = np.asarray(p["tex"], dtype=np.uint8)

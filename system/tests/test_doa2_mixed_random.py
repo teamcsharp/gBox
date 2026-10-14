@@ -136,6 +136,51 @@ def test_plan_errors():
     assert not single["ok"] and "KAS can only be SA2" in single["problems"][0]
 
 
+def test_substitutes_keep_the_franchise_first():
+    donors = ["sonic", "sa2_tails", "sa2_rouge", "mario_hd", "peach_hd", "sm64ds_wario"]
+    assert M.substitutes("mario_hd", donors, {"peach_hd"}) == [
+        "mario_hd", "sm64ds_wario", "peach_hd", "sonic", "sa2_tails", "sa2_rouge"]
+
+
+def test_build_substitutes_a_donor_when_a_costume_fails(monkeypatch, tmp_path):
+    """DOA2 HD: one donor failing one costume (any error, not only an encode limit) is replaced; the build goes on."""
+    import gbox.gdrom as G
+    from gbox import doa2_rig
+    calls = []
+
+    class Disc:
+        def __init__(self, _gdi):
+            pass
+
+        def read(self, _name):
+            return b"exe"
+
+    def prepare(_gdi, _disc, _audit, _donors, family, costume, slug, _progress):
+        calls.append((family, costume, slug))
+        if slug == "mario_hd":
+            raise IndexError("index 9 is out of bounds")              # e.g. a writer bug on one model
+        return {f"DOA2/{family}{costume}.CHR": slug.encode()}, {}, False
+
+    monkeypatch.setattr(G, "GDRom", Disc)
+    monkeypatch.setattr(M.RS, "check_executable", lambda exe: None)
+    monkeypatch.setattr(doa2_rig, "collect_axes", lambda disc: {})
+    monkeypatch.setattr(M, "_prepare", prepare)
+    monkeypatch.setattr(M, "render_pools", lambda exe, plan: ({0: [0, 1]}, {f: {c: (0, i) for i, (c, _s) in
+                                                                                enumerate(p)} for f, p in plan.items()}))
+    monkeypatch.setattr(M.RS, "patch", lambda exe, pools, pinned: b"patched")
+    monkeypatch.setattr(M.RS, "read_back", lambda exe: {"routine_sha256": "x"})
+    monkeypatch.setattr(G, "patch_gdi", lambda gdi, out, name, changes, progress, **k: str(Path(out) / "disc.gdi"))
+    monkeypatch.setattr(M, "verify", lambda *a: {"ok": True, "costumes": 2, "select_patch": True, "problems": []})
+    monkeypatch.setattr(M.S, "writer_fingerprint", lambda: "w")
+    monkeypatch.setattr(M.S, "profiles_digest", lambda reports: "p")
+    donors = {s: tmp_path for s in ("mario_hd", "peach_hd", "sonic")}
+    out = M.build("in.gdi", donors, tmp_path / "out", {"KTE": [("00", "mario_hd"), ("01", "sonic")]}, name="t")
+    assert calls[:2] == [("KTE", "00", "mario_hd"), ("KTE", "00", "peach_hd")]
+    assert out["substitutions"][0]["used"] == "peach_hd"
+    assert "IndexError" in out["substitutions"][0]["tried"][0]["error"]
+    assert out["roster"][0]["character"] == "peach_hd"
+
+
 # ---------------------------------------------------------------- the owned executable
 
 def _owned_exe() -> bytes | None:

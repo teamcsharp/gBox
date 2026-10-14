@@ -363,14 +363,17 @@ def _profiled(rig, tgt, out, rep, scale, T, jmap):
 
 def _orient(prims: list[dict]) -> int:
     """Some extractions have inward normals / reversed winding (FF7): SM64 lights by vertex normal, so a part lit from
-    inside looks black. Per material: if most normals point into their joint's part, flip normals and winding."""
+    inside looks black. Per material: if most normals point into their joint's part, flip normals and winding.
+    Prims whose normals were derived from their own winding (`normals_from_winding`, a donor without normals) are
+    left alone: the winding is the only facing the source gives, and the centroid test alone turns concave or
+    low-lying single-sided parts inside out (Peach's face)."""
     allp = np.concatenate([p["pos"][p["tris"]].reshape(-1, 3) for p in prims])
     allj = np.concatenate([p["J"][:, 0][p["tris"]].reshape(-1) for p in prims])
     cen = {j: allp[allj == j].mean(0) for j in set(allj.tolist())}
     flipped = 0
     for p in prims:
         T = p["tris"]
-        if not len(T):
+        if not len(T) or p.get("normals_from_winding"):
             continue
         c = p["pos"][T].mean(1) - np.array([cen[j] for j in p["J"][:, 0][T[:, 0]]])
         if ((c * p["nrm"][T].mean(1)).sum(1) > 0).mean() < 0.35:

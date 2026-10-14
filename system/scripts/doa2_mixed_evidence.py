@@ -3,8 +3,10 @@ patch (docs/pr-evidence.md: offline renders, each under 1 MB).
 
 Per fighter, two rows:
   top     the stock DOA2 costume, then each pool donor as the character collection holds it
-  bottom  the same stock costume, then each pool costume read back from the BUILT image and assembled through the
+  middle  the same stock costume, then each pool costume read back from the BUILT image and assembled through the
           game's own costume path (doa2_seams.assemble_core: CHR models on the costume's rig, SUP seams baked)
+  bottom  the same built costumes from behind (both sides drawn: the writer's meshes use the native cull-small
+          mode 1, which keeps both sides of a face)
 The select-patch picture shows the patched call path, the hook's disassembly, the pool table and the costumes an
 interpreted run of hook + the game's rand() picked over many confirmations.
 
@@ -44,6 +46,7 @@ def assemble_render(disc, stock, archive: str, out: Path, size: int = 300, repor
                            disc.read(f"DOA2/{archive}.BIN"), np.asarray(profile["world"]),
                            parts, S.native_coefficients(stock.read("1ST_READ.BIN")))
     gltf = S.write_core(out.with_suffix(".gltf"), core, profile, archive)
+    C.render_preview(gltf, out.with_name(out.stem + "_back.png"), size=size, yaw=150.0)
     return C.render_preview(gltf, out, size=size)
 
 
@@ -66,26 +69,30 @@ def fighter_sheet(entry: dict, stock, mod, library: Path, work: Path, out: Path,
     first = entry["pool"][0]["costume"]
     stock_png = assemble_render(stock, stock, f"{fam}{first}", work / f"{fam}{first}_stock.png")
     top, bottom = [(stock_png, f"{entry['name']} stock {first}")], [(stock_png, f"{entry['name']} stock {first}")]
+    back = [(stock_png.with_name(stock_png.stem + "_back.png"), "stock, back")]
     rows = []
     for item in entry["pool"]:
         c, slug = item["costume"], item["character"]
         meta = C.get(library, slug)
         prev = library / slug / (meta.get("preview") or "preview.png")
         built = assemble_render(mod, stock, f"{fam}{c}", work / f"{fam}{c}_built.png", report=reports[(fam, c)])
-        tag = "SM64DS" if item["franchise"] == "SM64DS" else "SA2"
+        tag = ("HD" if slug.endswith("_hd") else "SM64DS" if slug.startswith("sm64ds_") else "SM64")             if item["franchise"] == "SM64DS" else "SA2"
         top.append((prev, f"{tag}: {meta.get('name', slug)}"))
         bottom.append((built, f"{fam}{c} (#{item['render_costume']}) built"))
+        back.append((built.with_name(built.stem + "_back.png"), f"{fam}{c} back"))
         rows.append({"costume": c, "donor": slug, "franchise": item["franchise"], "render": built.name})
     names = ", ".join(f"{i['costume']}={i['character']}" for i in entry["pool"])
     cap_top = (f"{entry['name']} ({fam}, render slot {entry['render_slot']}): its costume pool. Top: the donors as "
-               f"collected (SA2 = Sonic Adventure 2, SM64DS = Super Mario 64 DS).")
+               f"collected (SA2 = Sonic Adventure 2, SM64DS = Super Mario 64 DS, HD = Render96 HD model).")
     cap_bot = (f"Bottom: each costume read back from the built disc and assembled through DOA2's own costume path "
                f"(CHR on the costume rig, SUP seams baked). A selection draws one at random: {names}.")
     a = Image.open(io.BytesIO(E.compose(top, cap_top, height=230)))
     b = Image.open(io.BytesIO(E.compose(bottom, cap_bot, height=230)))
-    sheet = Image.new("RGB", (max(a.width, b.width), a.height + b.height), E.BAR)
+    c = Image.open(io.BytesIO(E.compose(back, "The same built costumes from behind.", height=230)))
+    sheet = Image.new("RGB", (max(a.width, b.width, c.width), a.height + b.height + c.height), E.BAR)
     sheet.paste(a, (0, 0))
     sheet.paste(b, (0, a.height))
+    sheet.paste(c, (0, a.height + b.height))
     data = _png(sheet)
     out.write_bytes(data)
     return {"fighter": fam, "file": out.name, "bytes": len(data), "costumes": rows}

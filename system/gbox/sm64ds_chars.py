@@ -440,7 +440,8 @@ class Model:
         key = prefix + mat["name"]
         tex = mat["texture"]
         if tex is None or tex >= len(bmd["textures"]):
-            self.materials.setdefault(key, {"png": None, "source": {"material": mat["name"]}})
+            self.materials.setdefault(key, {"png": None, "source": {"material": mat["name"],
+                                                                    "polygon_attr": f"{mat['polygon_attr']:#010x}"}})
             return key, 0, 0, (1.0, 1.0)
         tex, pal, note = pick_texture(bmd, mat, self.texture_names.get(key))
         t = bmd["textures"][tex]
@@ -522,6 +523,18 @@ def _quat(m: np.ndarray) -> list[float]:
     return [float(v / n) for v in q]
 
 
+POLY_BACK = 0x40          # POLYGON_ATTR bit 6: the DS draws the back surface (bit 7 is the front one)
+
+
+def double_sided(source: dict) -> bool:
+    """A material's DS POLYGON_ATTR (as preserved in its glTF source extras) asks for back faces too: Peach's body,
+    skirt and arms are open shells the DS draws from both sides; a writer that culls them loses her back half."""
+    try:
+        return bool(int(str(source.get("polygon_attr", "0")), 0) & POLY_BACK)
+    except ValueError:
+        return False
+
+
 def to_manifest(model: Model, name: str, source: dict, out: Path):
     """Model -> uap.Manifest (one skin, one joint per vertex at weight 1) with textures written under out/textures."""
     from . import uap
@@ -544,7 +557,7 @@ def to_manifest(model: Model, name: str, source: dict, out: Path):
             fn = f"textures/{key}.png"
             (out / fn).write_bytes(m["png"])
             tex = fn
-        mats.append(uap.Material(name=key, texture=tex, source=m["source"]))
+        mats.append(uap.Material(name=key, texture=tex, source=m["source"], double_sided=double_sided(m["source"])))
     meshes, nodes = [], []
     for i, p in enumerate(model.prims):
         n = len(p["pos"])

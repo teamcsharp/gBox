@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 from pathlib import Path
 
@@ -148,12 +149,6 @@ def atlas(prims: list[dict], pages: int) -> dict:
     return {"images": out, "slots": slots, "grid": max(grids), "textures": n}
 
 
-def _bf16(x: np.ndarray) -> np.ndarray:
-    """float -> the upper 16 bits of its float32 (round to nearest)."""
-    b = np.asarray(x, np.float32).view(np.uint32).astype(np.uint64)
-    return ((b + 0x8000) >> 16).astype(np.uint16)
-
-
 def map_uv(uv: np.ndarray, slot: tuple) -> np.ndarray:
     """Donor UVs (one triangle's corners) -> page UVs inside the slot (wrapped into [0,1], half a texel inset)."""
     _page, x, y, w, h = slot
@@ -222,7 +217,12 @@ def stripify(tris: list[tuple[int, int, int]]) -> list[list[int]]:
 # ---------------------------------------------------------------- encode one costume model
 
 class BudgetError(ValueError):
-    """The donor does not fit the stock model's room (rows + strips, vertex counts or compressed size)."""
+    """The donor does not fit the stock model's room (rows + strips, vertex counts or compressed size). need / room
+    (when known) are the measured amount and the stock room in the same unit, so the LOD ladder can aim at the room."""
+
+    def __init__(self, message: str, need: int | None = None, room: int | None = None):
+        super().__init__(message)
+        self.need, self.room = need, room
 
 
 def _stock_gloss(model: dict) -> int:
@@ -258,16 +258,35 @@ def _weight_words(inf: dict[int, float], store_bone: int, slot: int) -> dict[int
     return out
 
 
+def with_back_faces(prims: list[dict]) -> list[dict]:
+    """Every double-sided prim (the donor game draws its back faces: SM64DS POLYGON_ATTR 0x40, glTF doubleSided) is
+    followed by its back copy: the same positions, reversed winding, flipped normals, `_side` 1. The engine culls by
+    winding, so a single-sided open shell (Peach's dress and body) is invisible from behind without it."""
+    out = []
+    for p in prims:
+        out.append(p)
+        if not p.get("double_sided") or p.get("_side"):
+            continue
+        tris = np.asarray(p["tris"], int).reshape(-1, 3)
+        back = {**p, "tris": tris[:, [0, 2, 1]].copy(), "_side": 1,
+                "nrm": None if p.get("nrm") is None else -np.asarray(p["nrm"], float)}
+        if "_uv" in p:
+            back["_uv"] = [np.asarray(uv)[[0, 2, 1]] for uv in p["_uv"]]
+        out.append(back)
+    return out
+
+
 def corner_normals(prims: list[dict], *, agree: float = 0.5) -> list[np.ndarray]:
     """Per-corner unit normals for the donor (library frame, outward): the smooth geometric normal of the fitted
     surface (area-weighted face normals of every prim, the counter-clockwise glTF winding taken as outward, welded by
     position so seams stay smooth), replaced by the donor's own normal where that one agrees with it (keeps authored
     creases). Some library donors carry normals unrelated to their faces (the SM64DS ones agree with their own
     triangles about half the time), which lit them in dark, blotchy patches in game."""
-    def key(v):
-        return tuple(np.round(v, 4))
+    def key(v, side=0):
+        return tuple(np.round(v, 4)) + (side,)        # a back face (with_back_faces) smooths with its own side only
     acc: dict = {}
     for p in prims:
+        side = int(p.get("_side", 0))
         pos = np.asarray(p["pos"], float)
         t = np.asarray(p["tris"], int).reshape(-1, 3)
         if not len(t):
@@ -275,12 +294,13 @@ def corner_normals(prims: list[dict], *, agree: float = 0.5) -> list[np.ndarray]
         f = np.cross(pos[t[:, 1]] - pos[t[:, 0]], pos[t[:, 2]] - pos[t[:, 0]])     # length = 2 x area
         for c in range(3):
             for v, n in zip(t[:, c], f):
-                k = key(pos[v])
+                k = key(pos[v], side)
                 acc[k] = acc.get(k, 0.0) + n
     out = []
     for p in prims:
         pos = np.asarray(p["pos"], float).reshape(-1, 3)
-        g = np.array([acc.get(key(v), np.zeros(3)) for v in pos], float).reshape(-1, 3)
+        side = int(p.get("_side", 0))
+        g = np.array([acc.get(key(v, side), np.zeros(3)) for v in pos], float).reshape(-1, 3)
         gl = np.linalg.norm(g, axis=1, keepdims=True)
         g = np.where(gl > 1e-12, g / np.maximum(gl, 1e-12), 0.0)
         d = np.asarray(p["nrm"], float).reshape(-1, 3) if p.get("nrm") is not None else np.zeros_like(pos)
@@ -297,6 +317,7 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
     """Retargeted donor prims (library frame, J = native bone, W) -> a new model with the stock bone records.
 
     page_map: the costume's page indices the donor may use (atlas page i -> material page page_map[i])."""
+    prims = with_back_faces(prims)
     model = D.parse_model(stock)
     bones = model["bones"]
     nb = len(bones)
@@ -324,7 +345,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
                 inf = {int(J[v, order[0]]): 1.0}
             tot = sum(inf.values()) or 1.0
             inf = {j: w / tot for j, w in inf.items()}
-            key = (tuple(np.round(pos[v], 5)), tuple(sorted((j, round(w, 3)) for j, w in inf.items())))
+            key = (tuple(np.round(pos[v], 5)), tuple(sorted((j, round(w, 3)) for j, w in inf.items())),
+                   int(p.get("_side", 0)))                # a back face has its own slot: its normal points the other way
             s = pos_key.get(key)
             if s is None:
                 s = pos_key[key] = len(P)
@@ -336,7 +358,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         corners.append(slots)
     npos = len(P)
     if npos > min(stock_pos, D.SLOT_MASK + 1):
-        raise BudgetError(f"donor has {npos} distinct vertices; the stock model has room for {stock_pos}")
+        raise BudgetError(f"donor has {npos} distinct vertices; the stock model has room for {stock_pos}",
+                          npos, min(stock_pos, D.SLOT_MASK + 1))
     for inf in infl:
         for j in inf:
             if not 0 <= j < nb:
@@ -370,7 +393,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         nslot[s] = nkey[key]
     nnrm = len(nkey)
     if nnrm > min(stock_nrm, D.SLOT_MASK + 1):
-        raise BudgetError(f"donor has {nnrm} distinct normals; the stock model has room for {stock_nrm}")
+        raise BudgetError(f"donor has {nnrm} distinct normals; the stock model has room for {stock_nrm}",
+                          nnrm, min(stock_nrm, D.SLOT_MASK + 1))
 
     def row(vec, wbits):
         return struct.pack("<3fI", *np.asarray(vec, np.float32), wbits)
@@ -415,7 +439,7 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         for tri in by_page[page]:
             ids = []
             for _src, s, uv in tri:
-                key = (s, _bf16(np.array(uv))[0], _bf16(np.array(uv))[1])
+                key = (s, *(int(w) for w in D.uv_words(np.array(uv))[0]))   # the strip's (V, U) words
                 if key not in corner_id:
                     corner_id[key] = len(verts)
                     verts.append(key)
@@ -437,7 +461,8 @@ def encode_model(stock: bytes, prims: list[dict], page_map: list[int], *, max_in
         rows_b = sum(len(b["raw"]) for b in bones_out)
         strips_b = sum(4 + 8 * len(s["raw"]) for sec in sections for s in sec) + 4 * len(sections) + 4
         raise BudgetError(f"donor needs {rows_b + strips_b} bytes of rows + strips; the stock model has "
-                          f"{stock_end - 0x20 - 32 * nb} before its tail ({error})") from error
+                          f"{stock_end - 0x20 - 32 * nb} before its tail ({error})", rows_b + strips_b,
+                          stock_end - 0x20 - 32 * nb) from error
     check = D.parse_model(out)
     if check["counts"] != (npos, nnrm):
         raise AssertionError(f"slot counts {check['counts']} != {(npos, nnrm)}")
@@ -490,7 +515,21 @@ def _decimated(prims: list[dict], tgt: dict, budget: int, work: Path) -> list[di
     rig_t = {"T": tgt["T"], "parent": tgt["parent"], "joints": tgt["joints"]}
     src = S.write_rigged(prims, rig_t, work / "fitted.gltf", "donor")
     out = decimate(src, work / f"lod{budget}.glb", float(budget))
-    return read_rigged(out, tgt["jmap"])
+    return carry_double_sided(prims, read_rigged(out, tgt["jmap"]))
+
+
+def _base_material(name) -> str:
+    return re.sub(r"\.\d{3}$", "", str(name or ""))      # Blender suffixes a clashing material name with .001
+
+
+def carry_double_sided(fitted: list[dict], lod: list[dict]) -> list[dict]:
+    """The double-sided flag through the Blender LOD, by material name: the fitted intermediate names each prim's
+    material (retarget's m<k> / prop names) and Blender keeps those names, while glTF doubleSided alone cannot be
+    trusted on the way back (exporters differ on what they write for it)."""
+    sided = {_base_material(p.get("name")): bool(p.get("double_sided")) for p in fitted if p.get("name")}
+    for p in lod:
+        p["double_sided"] = sided.get(_base_material(p.get("material_name")), False)
+    return lod
 
 
 def build_costume(entry: bytes, prims: list[dict], *, progress=lambda p, m: None) -> tuple[bytes, dict]:
@@ -508,7 +547,7 @@ def build_costume(entry: bytes, prims: list[dict], *, progress=lambda p, m: None
     packed = D.lz_compress(enc["model"])
     room = len(cp["bank"][0])
     if len(packed) > room:
-        raise BudgetError(f"compressed model is {len(packed)} bytes; the stock entry has {room}")
+        raise BudgetError(f"compressed model is {len(packed)} bytes; the stock entry has {room}", len(packed), room)
     pages = list(cp["pages"])
     for i, img in enumerate(at["images"]):
         pages[usable[i]] = D.page_encode(img)
@@ -524,12 +563,36 @@ def build_costume(entry: bytes, prims: list[dict], *, progress=lambda p, m: None
     return new_entry, report
 
 
+LOD_ATTEMPTS = 8
+LOD_MARGIN = 0.9                         # aim this far under the measured room (decimation lands near, not on, a budget)
+LOD_STEP = 0.8                           # a budget without a measured room shrinks by this
+LOD_MAX_RATIO = 0.95                     # a near miss still drops at least 5%
+
+
+def lod_budget(triangles: int, error: BudgetError, step: float = LOD_STEP) -> int:
+    """The next decimation budget after `triangles` did not fit: scaled by the room the error measured (vertices,
+    normals, row bytes and compressed bytes all grow about linearly with the triangle count), with a margin, and at
+    least 5% below (LOD_STEP when nothing was measured). A 24,000-triangle HD donor on a 1,584-vertex costume goes
+    straight to ~2,800 triangles instead of creeping down by 0.8 per attempt and running out of attempts at 4,000."""
+    need, room = getattr(error, "need", None), getattr(error, "room", None)
+    ratio = step
+    if need and room and need > 0:
+        ratio = min(LOD_MAX_RATIO, LOD_MARGIN * room / need)
+    return max(200, int(triangles * ratio))
+
+
+def _tri_count(prims: list[dict]) -> int:
+    return int(sum(len(np.asarray(p["tris"]).reshape(-1, 3)) for p in prims))
+
+
 def fit_and_build(entry: bytes, character_dir: Path, slot_key: str, work: Path, *, progress=lambda p, m: None):
-    """fit_donor + build_costume, with bounded Blender LOD attempts when the donor does not fit."""
+    """fit_donor + build_costume, with bounded Blender LOD attempts when the donor does not fit: every attempt aims
+    at the room the previous one measured (lod_budget), so high-detail donors (the HD Mario models, 5k-42k
+    triangles) reach the costume's budget in a few attempts."""
     from . import fit_events as FE
     stock = D.costume_parts(entry)["model"]
     prims, fit = fit_donor(stock, character_dir, slot_key)
-    source = sum(len(np.asarray(p["tris"]).reshape(-1, 3)) for p in prims)
+    source = _tri_count(prims)
     attempts = []
     FE.stage("encode", "running", {"triangles": source})
     try:
@@ -539,15 +602,20 @@ def fit_and_build(entry: bytes, character_dir: Path, slot_key: str, work: Path, 
         attempts.append({"triangles": source, "result": str(error)})
         tgt = target(D.parse_model(stock))
         new = None
-        for k in range(1, 9):
-            budget = max(200, int(source * 0.8 ** k))
+        tris, last = source, error
+        for _k in range(LOD_ATTEMPTS):
+            budget = lod_budget(tris, last)
+            if attempts and attempts[-1].get("budget") == budget:
+                break                                     # the floor: nothing smaller to try
             try:
                 lod = _decimated(prims, tgt, budget, Path(work))
+                tris = _tri_count(lod) or budget
                 new, report = build_costume(entry, lod, progress=progress)
             except BudgetError as again:
-                attempts.append({"budget": budget, "result": str(again)})
+                attempts.append({"budget": budget, "triangles": tris, "result": str(again)})
+                tris, last = min(tris, budget), again
                 continue
-            attempts.append({"budget": budget, "result": "fits"})
+            attempts.append({"budget": budget, "triangles": tris, "result": "fits"})
             FE.stage("decimate", data={"from": source, "to": report["triangles"], "attempts": len(attempts)})
             break
         if new is None:
@@ -557,8 +625,6 @@ def fit_and_build(entry: bytes, character_dir: Path, slot_key: str, work: Path, 
     report.update(fit=fit, source_triangles=source, lod_attempts=attempts)
     return new, report
 
-
-# ---------------------------------------------------------------- HUMAN.DAT
 
 def replace_entries(human: bytes, changes: dict[int, bytes]) -> bytes:
     """New entries written into their own olnk slots (sizes must not grow; offsets never move)."""
@@ -885,12 +951,14 @@ def marker(name: str, game_id: str, image: Path, plan: list[dict], result: dict,
         v["character"] = v["pool"][0]["character"]
         v["franchise"] = v["pool"][0]["franchise"]
     chars = sorted({r["character"] for r in plan})
+    from .cast_swap import mario_side
     return {"name": name, "game_id": game_id, "image": Path(image).name, "character": ",".join(chars),
             "files": [D.HUMAN, "1ST_READ.BIN"] if result.get("random_select") else [D.HUMAN],
             "report": {"costumes": result["reports"], "failures": result["failures"], "gameplay_verified": False},
             "writer_sha256": writer_fingerprint(), "profile_digest": "", "gameplay_verified": False,
             "roster": list(roster.values()), "title": title,
-            "cast_source": "Sonic Adventure 2 (USA) + Super Mario 64 DS (USA)", "cast_mapping": "mixed_random",
+            "cast_source": "Sonic Adventure 2 (USA) + " + mario_side(c for c in chars if franchise(c) == "SM64DS")[0],
+            "cast_mapping": "mixed_random",
             "random_select": ({"patch": "gbox.soulcalibur_swap.patch_random_costume", "hook": f"0x{LOADER_SITE:08x}",
                                "caves": [f"0x{CAVE_A:08x}", f"0x{CAVE_B:08x}"],
                                "rule": "costume 0 or 1 -> bit 0 of TCNT0 ^ TCNT0>>8 ^ TCNT0>>16 at each fighter load; "
@@ -1037,8 +1105,8 @@ def main(argv=None) -> int:
     b.add_argument("--no-random", action="store_true")
     b.add_argument("--mario-group", action="store_true",
                    help="Mario-side donors from cast_swap's 'mario' group: the best model per character (HD > SM64 > DS)")
-    b.add_argument("--title", default="SoulCalibur (USA): Sonic Adventure 2 vs Super Mario 64 DS, random costume on "
-                                      "every fighter load")
+    b.add_argument("--title", default=None, help="default: SoulCalibur (USA): Sonic Adventure 2 vs <the Mario side>, "
+                                                   "random costume on every fighter load")
     a = ap.parse_args(argv)
     from .gdrom import GDRom
     human = GDRom(a.gdi).read(D.HUMAN)
@@ -1046,7 +1114,11 @@ def main(argv=None) -> int:
     plan = plan_costumes(human, assignments)
     res = build_roster(a.gdi, a.donors, a.out, a.name, plan, random_select=not a.no_random,
                        progress=lambda p, m: print(f"{p:5.1f}% {m}", flush=True))
-    _write_marker(Path(a.out), a.name, a.game_id, plan, res, a.title)
+    from .cast_swap import mario_side
+    title = a.title or ("SoulCalibur (USA): Sonic Adventure 2 vs "
+                        f"{mario_side(r['character'] for r in plan if franchise(r['character']) == 'SM64DS')[1]}, "
+                        "random costume on every fighter load")
+    _write_marker(Path(a.out), a.name, a.game_id, plan, res, title)
     print(json.dumps({"image": str(res["image"]), "built": len(res["reports"]), "failed": res["failures"],
                       "ok": res["verification"]["ok"]}, default=str))
     return 0 if res["verification"]["ok"] and not res["failures"] else 1

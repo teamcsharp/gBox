@@ -146,6 +146,79 @@ def test_parse_skin_and_roles():
         D.roles({"bones": m["bones"][:10]})
 
 
+# ---------------------------------------------------------------- texture coordinates and formats, as the TA reads them
+
+def _ta_uv(raw_pair) -> tuple[float, float]:
+    """The vertex emitter at 0x8c03cc68: ``mov.l @r5+,r2`` loads the strip's two u16 as one little-endian u32,
+    ``mov.l r2,@(16,r4)`` stores it as the TA vertex's U float, ``shll16 r2`` / ``mov.l r2,@(20,r4)`` as V."""
+    word = int(raw_pair[0]) | int(raw_pair[1]) << 16
+    u = float(np.uint32(word).view(np.float32))
+    v = float(np.uint32((word << 16) & 0xFFFFFFFF).view(np.float32))
+    return u, v
+
+
+def test_strip_uv_is_what_the_ta_reads():
+    m = D.parse_model(synthetic_model())
+    s0 = m["sections"][0][0]                                  # stores (0x3f00, 0x3e80): V = 0.5, U = 0.25
+    assert tuple(s0["uv"][0]) == (0.25, 0.5)
+    for sec in m["sections"]:
+        for s in sec:
+            for raw, uv in zip(s["raw_uv"], s["uv"]):
+                u, v = _ta_uv(raw)
+                assert uv[1] == v and abs(uv[0] - u) <= abs(u) * 2 ** -7     # U's low half is V's bits
+    uv = np.array([[0.1, 0.9], [0.75, 0.003], [1.0, 0.0], [0.5, 0.25]])
+    words = D.uv_words(uv)
+    assert tuple(words[3]) == (0x3E80, 0x3F00)                # first V, then U
+    assert np.allclose(D.strip_uv(words), uv, rtol=2 ** -8, atol=0)
+    assert np.allclose([_ta_uv(w) for w in words], uv, rtol=2 ** -7, atol=0)
+
+
+def test_written_strips_sample_the_donor_texel_the_game_reads():
+    """A donor texture with four coloured quadrants, one corner in each: through the atlas, the YUV422 page encoder
+    and the strip words, the texel the game samples at every corner (TA U / V, the page in hardware twiddle order)
+    is the donor's texel at that corner. v3 wrote the words the other way round, and the game sampled the page
+    transposed (#1765: Mario's blocky patches)."""
+    stock = synthetic_model()
+    prims = _donor_prims(stock)
+    tex = np.zeros((8, 8, 3), np.uint8)
+    tex[:4, :4], tex[:4, 4:], tex[4:, :4], tex[4:, 4:] = (230, 40, 40), (40, 200, 40), (40, 40, 230), (230, 230, 230)
+    prims[0]["tex"] = tex
+    prims[0]["uv"] = np.array([[0.05, 0.05], [0.95, 0.05], [0.05, 0.95], [0.95, 0.95]])
+    at = W.atlas(prims, 1)
+    for p in prims:
+        p["_page"] = 1
+        p["_uv"] = [W.map_uv(p["uv"][t], at["slots"][p["_texkey"]]) for t in p["tris"]]
+    m = D.parse_model(W.encode_model(stock, prims, [1])["model"])
+    page = D.page_rgb(D.page_encode(at["images"][0]))
+    lib = D.skin(m)["positions"] @ D.FRAME.T
+    seen = set()
+    for sec in m["sections"]:
+        for s in sec:
+            for p, raw in zip(s["pos"], s["raw_uv"]):
+                u, v = _ta_uv(raw)
+                got = page[int(v * 256) % 256, int(u * 256) % 256].astype(int)
+                k = int(np.abs(prims[0]["pos"] - lib[p]).sum(1).argmin())
+                du, dv = prims[0]["uv"][k]
+                want = tex[int(dv * 8), int(du * 8)].astype(int)
+                assert np.abs(got - want).max() < 30, (k, got, want)
+                seen.add(k)
+    assert seen == {0, 1, 2, 3}
+
+
+def test_page_formats_follow_the_material_byte():
+    assert [D.material_format(x) for x in (0x31, 0x22, 0x63, 0x00, 0x40, 0x70)] == [3, 2, 2, 0, 0, 3]
+    words = np.zeros((256, 256), np.uint16)
+    words[9, 5], words[9, 6], words[200, 17] = 0x8F40, 0xFC00, 0x7C1F
+    raw = np.empty(256 * 256, np.uint16)
+    raw[D._tw()] = words.reshape(-1)
+    page = raw.astype("<u2").tobytes()
+    a4 = D.page_rgba(page, D.ARGB4444)
+    assert tuple(a4[9, 5]) == (255, 68, 0, 136) and tuple(a4[0, 0]) == (0, 0, 0, 0)
+    a1 = D.page_rgba(page, D.ARGB1555)
+    assert tuple(a1[9, 6]) == (255, 0, 0, 255) and tuple(a1[200, 17]) == (255, 0, 255, 0)
+    assert D.page_rgba(page, D.YUV422).shape == (256, 256, 4) and (D.page_rgba(page, D.YUV422)[..., 3] == 255).all()
+
+
 def test_strip_triangles_alternate():
     assert D.strip_triangles(5) == [(0, 1, 2), (2, 1, 3), (2, 3, 4)]
 
@@ -211,6 +284,59 @@ def test_encode_model_round_trip_and_tail():
     nrm = [s for sec in m1["sections"] for s in sec][0]["nrm"]
     assert (sk["normals"][nrm] @ out_game < 0).all()        # stored inward, like the stock rows
     assert enc["bones_used"] == [1, 11]
+
+
+def test_double_sided_prims_get_a_back_copy():
+    """#1765: SM64DS materials with POLYGON_ATTR 0x40 are drawn from both sides on the DS; the game culls by winding,
+    so the writer emits each such triangle twice, the copy reversed with its own (flipped) normal slots."""
+    stock = synthetic_model()
+    built = {}
+    for sided in (False, True):
+        prims = _donor_prims(stock)
+        at = W.atlas(prims, 1)
+        for p in prims:
+            p["double_sided"] = sided
+            p["_page"] = 1
+            p["_uv"] = [W.map_uv(p["uv"][t], at["slots"][p["_texkey"]]) for t in p["tris"]]
+        built[sided] = enc = W.encode_model(stock, prims, [1])
+        m1 = D.parse_model(enc["model"])
+        sk = D.skin(m1)
+        strips = [s for sec in m1["sections"] for s in sec]
+        tris = [(s["pos"][a], s["pos"][b], s["pos"][c], s["nrm"][a]) for s in strips
+                for a, b, c in D.strip_triangles(len(s["pos"]))]
+        out_game = D.FRAME @ np.array([0, 0, 1.0])
+        faces = [np.cross(sk["positions"][b] - sk["positions"][a], sk["positions"][c] - sk["positions"][a]) @ out_game
+                 for a, b, c, _n in tris]
+        if not sided:
+            assert len(tris) == 2 and all(f > 0 for f in faces)
+            continue
+        assert len(tris) == 4
+        assert sum(f > 0 for f in faces) == 2 and sum(f < 0 for f in faces) == 2     # one front, one back each
+        for (a, b, c, n), f in zip(tris, faces):                                    # back normals point back
+            assert (sk["normals"][n] @ out_game < 0) == (f > 0)                    # (stored inward, like stock)
+    assert built[True]["positions"] == 2 * built[False]["positions"]               # a back slot per front slot
+
+
+def test_back_faces_reverse_winding_uvs_and_normals():
+    prim = {"pos": np.eye(3), "nrm": np.tile([0, 0, 1.0], (3, 1)), "tris": np.array([[0, 1, 2]]),
+            "double_sided": True, "_uv": [np.array([[0, 0], [1, 0], [0, 1.0]])]}
+    single = dict(prim, double_sided=False)
+    out = W.with_back_faces([prim, single])
+    assert len(out) == 3 and out[0] is prim and out[2] is single
+    back = out[1]
+    assert back["_side"] == 1 and back["tris"].tolist() == [[0, 2, 1]]
+    assert np.allclose(back["nrm"], -prim["nrm"]) and np.allclose(back["_uv"][0], [[0, 0], [0, 1], [1, 0]])
+    front_n, back_n, _ = W.corner_normals(out)
+    assert np.allclose(front_n @ np.cross(np.eye(3)[1] - np.eye(3)[0], np.eye(3)[2] - np.eye(3)[0]) > 0, True)
+    assert np.allclose(back_n, -front_n)                       # each side smooths with its own faces only
+
+
+def test_double_sided_flag_survives_the_lod_by_material_name():
+    fitted = [{"name": "m0", "double_sided": True}, {"name": "m1", "double_sided": False},
+              {"name": "m2", "double_sided": True}]
+    lod = [{"material_name": "m0", "double_sided": True}, {"material_name": "m1", "double_sided": True},
+           {"material_name": "m2.001"}, {"material_name": None}]
+    assert [p["double_sided"] for p in W.carry_double_sided(fitted, lod)] == [True, False, True, False]
 
 
 # ---------------------------------------------------------------- the engine's skinning maths (0x8c03cea0)
@@ -372,6 +498,62 @@ def test_encode_budget_errors():
     with pytest.raises(W.BudgetError):
         W.encode_model(stock, [many], [1])
 
+
+
+def test_budget_errors_measure_need_and_room():
+    stock = synthetic_model()
+    many = _donor_prims(stock)[0]
+    k = 40
+    many = {**many, "pos": np.random.default_rng(1).random((k, 3)), "nrm": np.tile([0, 0, 1.0], (k, 1)),
+            "uv": np.zeros((k, 2)), "tris": np.array([[i, i + 1, i + 2] for i in range(k - 2)]),
+            "J": np.tile([1, 0, 0, 0], (k, 1)), "W": np.tile([1.0, 0, 0, 0], (k, 1)), "_page": 1}
+    many["_uv"] = [np.zeros((3, 2))] * (k - 2)
+    with pytest.raises(W.BudgetError) as info:
+        W.encode_model(stock, [many], [1])
+    assert info.value.need and info.value.room and info.value.need > info.value.room
+
+
+def test_lod_budget_aims_at_the_measured_room():
+    # 24k triangles, 12,302 vertices against a 1,584-vertex costume: one step to ~2,800, not 0.8 per attempt
+    assert W.lod_budget(23992, W.BudgetError("x", 12302, 1584)) == int(23992 * 0.9 * 1584 / 12302)
+    assert W.lod_budget(2758, W.BudgetError("x", 1651, 1584)) == int(2758 * 0.9 * 1584 / 1651)
+    assert W.lod_budget(1000, W.BudgetError("x", 1001, 1000)) == 899          # a near miss: the margin
+    assert W.lod_budget(1000, W.BudgetError("x", 1000, 1100)) == 950          # never less than 5% down
+    assert W.lod_budget(1000, W.BudgetError("no measurement")) == 800        # unmeasured: the fixed step
+    assert W.lod_budget(150, W.BudgetError("x", 300, 100)) == 200            # the floor
+
+
+def test_fit_and_build_reaches_a_high_detail_donors_budget(monkeypatch, tmp_path):
+    """An HD donor (24k triangles) on a costume with room for ~1.6k vertices: the ladder aims at the measured room
+    and fits within a few decimations (the fixed 0.8^k ladder stopped at 4,025 triangles and left the costume stock)."""
+    room = 1584
+
+    def tris(n):
+        return [{"tris": np.zeros((n, 3), int)}]
+
+    def build(entry, prims, progress=None):
+        n = sum(len(p["tris"]) for p in prims)
+        verts = n // 2 + 300                              # about what the HD Peach decimations measured
+        if verts > room:
+            raise W.BudgetError("too many", verts, room)
+        return b"new", {"triangles": n, "positions": verts, "compressed": 1, "compressed_room": 2}
+
+    calls = []
+
+    def decimated(prims, tgt, budget, work):
+        calls.append(budget)
+        return tris(budget)
+
+    monkeypatch.setattr(W.D, "costume_parts", lambda entry: {"model": b"m"})
+    monkeypatch.setattr(W.D, "parse_model", lambda m: {})
+    monkeypatch.setattr(W, "fit_donor", lambda stock, d, slot: (tris(23992), {}))
+    monkeypatch.setattr(W, "target", lambda model: {})
+    monkeypatch.setattr(W, "build_costume", build)
+    monkeypatch.setattr(W, "_decimated", decimated)
+    new, rep = W.fit_and_build(b"entry", tmp_path, "fighter:IVY", tmp_path)
+    assert new == b"new" and len(calls) <= 3
+    assert rep["lod_attempts"][-1]["result"] == "fits" and rep["triangles"] // 2 + 300 <= room
+    assert rep["triangles"] > 2000                         # most of the room is used
 
 def test_stripify_keeps_every_oriented_triangle():
     rng = np.random.default_rng(3)
@@ -609,6 +791,49 @@ def test_owned_disc_round_trip_identity():
             n += 1
     assert n == 45
     assert W.replace_entries(human, {}) == human
+
+
+PEACH = Path(os.environ.get("GBOX_CHARACTERS", "D:/gBox/cache/characters_mirror")) / "sm64ds_peach"
+
+
+@pytest.mark.skipif(_owned_human() is None or not (PEACH / "meta.json").is_file(),
+                    reason="owned SoulCalibur HUMAN.DAT or the sm64ds_peach library entry not on this node")
+def test_owned_peach_face_faces_out_through_the_writer():
+    """#1765: SM64DS Peach (a library GLB without normals) lost her face in game. Her single-sided face (DS
+    POLYGON_ATTR 0x81) was turned inside out by the retarget's orientation check and culled. Fitted onto Ivy 2P and
+    written, every face triangle must face forward in the game's winding, so the engine render draws it from the front."""
+    entry = D.olnk(_owned_human())[W.group_of("IVY") * D.GROUP + 1]
+    stock = D.costume_parts(entry)["model"]
+    prims, _fit = W.fit_donor(stock, PEACH, "fighter:IVY")
+    face = [p for p in prims if p.get("material_name") == "mat07_face"]
+    assert len(face) == 1 and not face[0].get("double_sided")
+    P, T = face[0]["pos"], np.asarray(face[0]["tris"]).reshape(-1, 3)
+    n = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+    assert (n[:, 2] > 0).mean() > 0.95                        # the library frame faces +Z
+
+
+@pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")
+def test_owned_disc_yuv_strips_avoid_the_alpha_regions():
+    """Stock pages mix formats: the ARGB4444 hair regions read as pure green in YUV. With the UVs the TA reads, the
+    YUV strips of all 45 costumes almost never land in those regions; read the other way round (the v3 reader) they
+    land there five times as often (the green feet and hair of the old offline renders)."""
+    entries = D.olnk(_owned_human())
+    hits = np.zeros((2, 2))
+    for g, _key, _name, _a in D.FIGHTERS:
+        for c in D.costumes_of(entries, g):
+            cp = D.costume_parts(entries[g * D.GROUP + c])
+            pages = [D.page_rgb(p) for p in cp["pages"]]
+            for sec in D.parse_model(cp["model"])["sections"]:
+                for s in sec:
+                    if D.material_format(s["material"]) != D.YUV422:
+                        continue
+                    for k, uv in enumerate((s["uv"], s["uv"][:, ::-1])):
+                        for a, b, cc in D.strip_triangles(len(uv)):
+                            x, y = (np.floor(uv[[a, b, cc]].mean(0) * 256).astype(int) % 256)
+                            r, gr, bl = pages[s["material"] & 3][y, x].astype(int)
+                            hits[k] += (gr > 100 and r < 40 and bl < 40, 1)
+    ta, swapped = hits[:, 0] / hits[:, 1]
+    assert ta < 0.004 and swapped > 3 * ta, (ta, swapped)
 
 
 @pytest.mark.skipif(_owned_human() is None, reason="owned SoulCalibur HUMAN.DAT not on this node")

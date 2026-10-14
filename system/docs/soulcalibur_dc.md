@@ -66,9 +66,12 @@ in the strings.
   - `[4]` face-shape data, 3104 bytes.
   - `[6]` LZ data.
 - **Weapon** = table of the LZ model followed by one or two pages.
-- **Pages**: raw 256x256 **YUV422, twiddled**, 131,072 bytes, no header. Y is the high byte of each word. The low
-  byte is U on the even texel and V on the odd one. Page 0 of a fighter with a face (model flag `0x200`/`0x300` at
-  +0x12) is the expression sheet. Pure-green texels mark the strands of hair or fringe.
+- **Pages**: raw 256x256 twiddled pages, 131,072 bytes, no header. Most texels are **YUV422**: Y is the high byte
+  of each word, and the low byte is U on the even texel and V on the odd one. A page can also hold regions in other
+  pixel formats, because each strip picks the format with its material byte (see Strips): hair and fringe are
+  **ARGB4444**, and some decals and cloth emblems are **ARGB1555**. Read as YUV, those regions look pure green;
+  that green is not a colour key. Page 0 of a fighter with a face (model flag `0x200`/`0x300` at +0x12) is the
+  expression sheet.
 - **Model** (after LZ):
   - Header (0x20 bytes):
     - +0x00: two dates (`HHMM MMDD`)
@@ -100,11 +103,21 @@ in the strings.
     - Header `+0x14` / `+0x16` are the position / normal slot counts. `0x8c03c998` projects that many positions.
     - Stock layout: each bone's stores are one consecutive slot run, adds carry bit 15, and every add lands on a slot
       stored earlier in the frame. `pack_model(parse_model(m)) == m` holds for every costume.
-  - Strips: sections of `u8 material, u8 flags, 0, u8 count` headers, each followed by `count x (u16 position,
-    u16 normal | 0x8000 on the last, u16 u, u16 v)`. UVs are the upper half of a float. Triangle k is
-    `(k, k+1, k+2)` when k is even and `(k+1, k, k+2)` when k is odd, and faces out in the game's space. `u32 0`
-    closes a section, and an empty section closes the list. `material & 3` is the page (`0x3x` opaque; `0x2x`,
-    `0x4x`, `0x6x` other modes).
+  - Strips: sections of `u8 material, u8 flags, u8 group, u8 count` headers, each followed by `count x (u16 position,
+    u16 normal | 0x8000 on the last, u16 v, u16 u)`. Triangle k is `(k, k+1, k+2)` when k is even and
+    `(k+1, k, k+2)` when k is odd, and faces out in the game's space. `u32 0` closes a section, and an empty section
+    closes the list.
+    - **Texture coordinates** (`0x8c03cc68`, the vertex emitter): `mov.l @r5+,r2` loads the two u16 as one
+      little-endian u32 and stores it as the TA vertex's U float (`mov.l r2,@(16,r4)`); `shll16 r2` then stores
+      the same word shifted as V (`@(20,r4)`). So the **second** u16 is the upper half of U, and the **first** is
+      V. `strip_uv` and `uv_words` read and write them in that order.
+    - **Material** (`0x8c03cf60` builds the polygon header): TCW = `base + (material & 3) * 0x4000 +
+      (material & 0x30) << 23`. So `material & 3` is the page, and `(material >> 4) & 3` is the PVR pixel format:
+      `0x3x` YUV422, `0x2x` ARGB4444, `0x0x` ARGB1555 (`material_format`, `page_rgba`). Bit `0x40` sends the strip
+      to the translucent list, with TSP `0x94100000` (src alpha, inverse src alpha). The opaque list's TSP
+      `0x20080000` ignores texture alpha.
+    - `flags` > 0 scales U and offsets V from a per-model table (`param + 0x25c`, UV animation). The `group` byte
+      is a visibility bit: the strip is drawn when bit `group` of the caller's mask is set (`0xffffffff` for the body).
   - Ivy's chain blade stores `0x7fbfffff` placeholders as some of its normals.
 - **Space**: fighters face +Z, but the space is left-handed. Read in a right-handed frame, texture text comes out
   mirrored. The library frame is reached by mirroring X (`FRAME`), so the game's -X side is the fighter's left.
@@ -168,7 +181,9 @@ fighters' 52 weapon models parse and skin (`soulcalibur_dc.coverage`). Mitsurugi
 
 Limits:
 
-- Hair and fringe strips use green-key pages. How the game masks them was not found, so they render opaque green.
+- Hair and fringe strips (`0x2x` / `0x6x`) read their page region as ARGB4444, and decals (`0x0x` / `0x4x`) read
+  theirs as ARGB1555. The GLB gives those materials their own decoded texture with alpha, blended when the strip is
+  translucent (reader version 3; before that they came out pure green).
 - The motion pack (entry 4) is not decoded.
 - The weapon's in-game placement comes from motion data.
 
@@ -199,7 +214,8 @@ Limits:
   - The model is laid out by `soulcalibur_dc.pack_model`, the same packer that rebuilds every stock model byte for
     byte.
   - The triangles are stripified with the game's winding, after the library-to-game mirror.
-  - Texture page indices go in the material byte.
+  - Texture page indices go in the material byte (`0x3x`, YUV422). The UV words go in the order the TA reads them:
+    V first, then U (`uv_words`).
   - The tail after the strips stays at its stock offset, so the records' extra offsets still hold.
   - The vertex count must stay within the stock position and normal counts. The rows and strips must fit before the
     tail.
@@ -280,12 +296,63 @@ library normals disagree with their own faces.
 Mario, Eggman and Shadow are smoothly lit. The frames are in `D:\gBox\research\soulcalibur\evidence\v2\`, listed in
 `evidence.json`.
 
+**v3 textures were scrambled in game (#1765)**: Mario showed blocky red/blue/white patches, Cervantes as Knuckles
+was a pale smear, and some costumes had black spots. The cause was the order of the strip UV words. The vertex
+emitter at `0x8c03cc68` loads a corner's two UV u16 as one u32 and stores it as the TA's U float, then shifts it left
+by 16 and stores it as V, so the second u16 is U. v3 wrote U first, so the game sampled every rebuilt page
+transposed. Where the transposed sample hit an empty atlas cell, the result was black. The reader had the same error,
+so its offline renders looked right. Its stock renders were wrong too: green feet and hair on Kilik, a green chest
+and blue boots on Maxi.
+
+The diagnostic disc `sc_diag_uv` replaced every rebuilt page with a UV gradient (R = u, G = v, B = page). Its
+in-game frames (`D:\gBox\research\soulcalibur\evidence\diag_ingame\`) show each costume's own UV ramps, and
+they match an offline render only with the axes swapped. The random-costume hook is not involved: the model and its
+pages come from the same costume entry.
+
+**v4 (`sc_sonic_vs_mario_random_v4`)** is v3 rebuilt with the corrected word order. Apart from the swapped UV
+words, 39 of its 45 models are byte-identical to v3. The other six (the Peach costumes, plus Koopa and Sonic) also
+carry this branch's double-sided and LOD changes. The offline renders are in
+`D:\gBox\research\soulcalibur\evidence\v4_offline\` (`evidence.json`). They include the stock costumes and v3,
+both rendered the way the game reads them.
+
+**v4 Peach had no face.** The SM64DS library GLBs carry no normals. The retarget loader (`load_rig`) filled
+them with a constant +Y, and `sm64_swap._orient` flips a material whose normals point toward its joint's centroid.
+Peach's single-sided face (DS POLYGON_ATTR `0x81`) sits below her head joint's centroid, because the hair and crown
+lift it, so the check turned the face inside out and the game culled it. The same check also flipped her neck and
+both ponytails, and one Koopa Troopa part. Every one of those triangles agrees with its own DS normal, so the source
+winding is right. A donor without normals now gets its winding's normals, flagged `normals_from_winding`, and
+`_orient` leaves those parts alone. No other donor in the pool changes.
+
+**v5 (`sc_sonic_vs_mario_random_v5`)** has 45 of 45 costumes built and verified. Compared with v4, the Peach (Seung
+Mina, Sophitia, Ivy) and Koopa Troopa costumes change geometry. The other SM64DS costumes change only their normal
+rows (lighting), because their donor normals are now geometric instead of +Y. Renders: `D:\gBox\research\soulcalibur\evidence\v5_offline\`.
+The library Peach is the ending-cutscene model and is built to be seen from the front: with the DS's own culling,
+the back of her head is open apart from the back-hair strip, so it is open in game too. Drawing her single-sided hair
+from both sides would close it, at the cost of budget.
+
 Known limits:
 
 - The SM64DS Peach library entry (`sm64ds_peach`) is stretched before any fitting: one primitive spans 17 units
   with 5.5-unit edges. Ivy's and Seung Mina's Peach costumes show long spikes until that donor is fixed upstream.
 - VS BATTLE and TEAM BATTLE wait for "PRESS 2P START". `evidence_capture` only drives the player-1 pad, so the
   in-game frames are Arcade fights, player 1 against the CPU. Both fighters still load through the patched loader.
+
+### The HD build: `sc_sonic_vs_mario_hd_random` (#1748)
+
+`python -m gbox.soulcalibur_swap build disc.gdi D:\gBox\cache\characters_mirror <out> sc_sonic_vs_mario_hd_random
+--mario-group` on this branch's writer (TA UV order, winding normals, double-sided materials, the LOD ladder aimed
+at the measured room). The Mario side is the `mario` group: Mario, Luigi, Wario, Peach, Yoshi and Bowser are the
+Render96 HD models (8k to 42k triangles, reduced to 1.7k to 2.9k by the LOD ladder in two or three attempts); Koopa
+Troopa, Metal Wario and Ukiki stay SM64 DS. 45 / 45 costumes built and verified, random costume hook installed.
+Installed at `D:\gBox\cache\mods\c747331797369f74\sc_sonic_vs_mario_hd_random\`, marker written last,
+`verified_in_game` false. Its title and `cast_source` name the `mario` group (`cast_swap.mario_side`).
+
+Offline renders of every rebuilt costume (`scripts/sc_engine_render.py BUILT.gdi OUT "" --built-only`), front and
+back: `D:\gBox\research\mario_donors\hd_builds\sc\` with `evidence.json`. Peach HD's head is closed from behind
+(her hair is a closed mesh, so the SM64DS Peach's open back of the head does not apply and no double-sided hair is
+needed). 41 of 45 look right. The two Metal Wario costumes (SIE1, INF1) are an untextured navy body, as in v5. The two
+Koopa Troopa costumes (VOL1, CER1) have long black spikes from the hands past the head, as in v5: the SM64 DS donor
+itself is wrong (sm64ds.md, Koopa Troopa).
 
 Still unchecked:
 
