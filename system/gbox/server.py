@@ -345,6 +345,19 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
         return normalize(store.read_artifact(o["sha256"]) or b"")
 
+    @app.post("/api/sessions/{sid}/report-frame")
+    async def report_frame(sid: str, actor=Depends(auth)):
+        """Capture a still for annotation without changing the mod thumbnail or game state."""
+        import base64
+        from .build_report_images import annotation_frame
+        session = store.get("session", sid)
+        if not session:
+            raise HTTPException(404, "The game session was not found")
+        if session.get("state") != "running":
+            raise HTTPException(409, "The game session is no longer running")
+        png = await asyncio.to_thread(lambda: annotation_frame(_session_png(sid)))
+        return {"image_b64": base64.b64encode(png).decode("ascii"), "session_id": sid}
+
     def _mod_picture(m: dict) -> dict:
         """Discard missing or tiny artifacts left by the old JSON-body capture path."""
         if m.get("thumb"):

@@ -1322,6 +1322,21 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             extra = f"\nReported session: {sid}\nBuild being played: {actual}\nPC: {detail.get('worker_name') or 'unknown'}"
             issue["detail"] += extra
             details += extra
+        if "evidence" in body:
+            from .build_report_images import evidence_images
+            try:
+                marked, attachments = evidence_images(body["evidence"])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            issue["image_b64"] = marked
+            issue["attachments"] = attachments + issue["attachments"]
+            extra = ("\nOperator visual evidence: annotated-game-frame.png contains numbered boxes/arrows. "
+                     "original-game-frame.png is the same captured moment without markings. "
+                     "character-reference images show the intended appearance supplied by the operator; "
+                     "they are comparison references, not proof of in-game output. Compare both against the note.")
+            issue["detail"] += extra
+            details += extra
+            issue["context"]["annotated_build_report"] = True
         report = file_report(issue, details, actor)
         store.put(REPORT_KIND, key, {"key": key, "number": report.get("number"), "id": report.get("id"), "reason": reason,
                                      "by": actor, "ts": time.time()})
