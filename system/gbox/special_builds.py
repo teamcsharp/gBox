@@ -52,6 +52,10 @@ def _clean(op: str, inp: dict) -> dict:
     keep = {"op": op}
     for k in KEEP[op]:
         v = inp.get(k)
+        if k == "strict_cutscenes":
+            if v is False:  # true is now the default; retain an explicit diagnostic opt-out
+                keep[k] = False
+            continue
         if v in (None, "", [], {}, False) and k not in ("game_id", "target_game"):
             continue
         keep[k] = v
@@ -98,6 +102,8 @@ def record(config, game_id: str, mod: str, recipe: dict, extra: dict | None = No
         return False
     before = dict(meta)
     if extra:
+        if isinstance(meta.get("replacement_scope"), dict) and isinstance(extra.get("replacement_scope"), dict):
+            extra = extra | {"replacement_scope": meta["replacement_scope"] | extra["replacement_scope"]}
         try:
             meta = build_record.stamp(meta, **{k: v for k, v in extra.items() if k not in meta or k != "kind"})
         except ValueError:
@@ -132,6 +138,8 @@ def record_call(ctx, inp, out) -> dict | None:
         extra = None if reused else build_record.from_ctx(ctx) | {
             "build_call": build_record.call_of("characters", d),
             "kind": "cast" if d.get("op") == "cast_swap" else "character"}
+        if not reused and isinstance(res.get("replacement_scope"), dict):
+            extra["replacement_scope"] = res["replacement_scope"]
         return recipe if record(ctx.config, gid, res["mod"], recipe, extra) else None
     except Exception:                                            # noqa: BLE001 - bookkeeping never fails a build
         return None

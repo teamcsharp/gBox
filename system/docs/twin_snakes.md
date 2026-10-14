@@ -155,8 +155,8 @@ Per slot and model:
    layer) are kept; one part per bone mesh, faces stripified (`auf_gcm.stripify`, split so a strip uses <= 10 bones),
    single-bone envelopes, deduplicated arrays, bounding sphere recomputed; the extra meshes (gear, hair) draw nothing.
    Budget: the stock model's byte size; `auf_swap.decimate` (quadric collapse) until it fits.
-4. **Stages**: every gameplay stage holding the model (cut-scene stages `demo*`, `r_demo*`, `r_dmo*`, `r_dmT*`,
-   `r_brif`, `r_open` are left stock) gets the model, its twin, the texture set with the donor atlas written over
+4. **Stages**: every gameplay and in-engine cutscene stage holding the model or its low-detail twin (`demo*`,
+   `r_demo*`, `r_dmo*`, `r_dmT*`, `r_brif`, `r_open` included by default) gets the model, its twin, and the donor atlas over
    the body colour image in its own format and size (the bump image flattened to one palette entry, the specular
    mask to its darkest one; 2 x 2 shared stand-ins never touched), and hides (part counts 0) the other models that
    draw with a changed image or belong to the replaced character's texture set (bandana tails, eyes, slings).
@@ -164,7 +164,9 @@ Per slot and model:
    by 0.85 and the build retries (6 tries).
 6. **Disc**: stage.dat rewritten in place (same size, same offset) in a copy of the image (`filemods.build_image`),
    read back; marker `.gbox-mod.json` with `writer`, `disc`, `cast`, per-stage report. Mod name
-   `tts_<slot>_<plan digest>`.
+   `tts_<slot>_<plan digest>_cs1` (separate from legacy gameplay-only builds).
+   Prerecorded movies are unchanged: they need a separate video replacement path. In-engine cinematic stages are
+   written, not visually certified; verify gameplay and representative cutscenes before claiming full replacement.
 
 Offline evidence (2026-10-13, owned disc 1, donors made with gBox's own SA2 reader from the operator's SA2 disc):
 

@@ -81,7 +81,7 @@ WRITERS = [
      "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
      "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "
      "Johnny: re-encoded .kms on the MGS2 21-bone skeleton (native animations), donor atlas over the model's colour "
-     "texture, every gameplay stage of stage.dat rebuilt in place in a disc-image copy; pick whip / live_use writes "
+     "texture, gameplay and in-engine cutscene stages of stage.dat rebuilt in place (prerecorded movies unchanged) in a disc-image copy; pick whip / live_use writes "
      "the body into the running game after the session swap; unverified in Dolphin"),
     ("soulcalibur2_swap", ["fighter:<key>[:<costume>]", "player", "all", "cast", "random"],
      "Soul Calibur II GC: any of the 24 fighters (Link included), every costume or one (Extra-mode copies too): a new "

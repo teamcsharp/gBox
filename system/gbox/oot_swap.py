@@ -1047,7 +1047,7 @@ def _fit_into(rom: OW.Rom, objects: list[int], allow: int, reclaim: int, attempt
 
 
 def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progress=lambda p, m: None,
-               root: Path | None = None, rom_data: bytes | None = None, strict_cutscenes: bool = False) -> dict:
+               root: Path | None = None, rom_data: bytes | None = None, strict_cutscenes: bool = True) -> dict:
     """The whole-cast build: [(cast slot, collection entry)] -> ONE patched ROM (one gBox file mod `name`).
     Each slot's object is rebuilt in turn on the previous slots' output: retargeted onto the slot's own skeleton
     (humanoid roles; Link's roles on Dark Link; the rigid ride for the rest), the old model's lists / vertices /
@@ -1166,7 +1166,9 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
     soft = sorted({(r["scene"], r["layer"]) for r in over if r["cutscene"]})
     detail = {"version": rom.version, "rom_bytes": len(out), "growth": plan,
               "grew": {NAMES["objects"].get(hex(o), hex(o)): n for o, n in grown.items()}, "over_budget_rooms": hard,
-              "cutscenes_over_budget": [f"{s} (cutscene layer {lay})" for s, lay in soft]}
+              "cutscenes_over_budget": [f"{s} (cutscene layer {lay})" for s, lay in soft],
+              "replacement_scope": {"requested": "all_character_appearances", "cutscene_memory_budgeted": strict_cutscenes,
+                                    "in_engine_cutscenes": "unverified", "complete": False}}
     if hard:
         detail["warning"] = (f"{len(hard)} rooms end up over the object space; the first: {hard[0]['scene']} room "
                              f"{hard[0]['room']} (layer {hard[0]['layer']}) by {hard[0]['over'] // 1024 + 1} KB")

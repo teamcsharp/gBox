@@ -686,7 +686,7 @@ class CharIn(BaseModel):
     active_id: int | None = Field(default=None, ge=0, le=15, strict=True,
                                  description="Jet Grind Radio only: native character ID (0-15) of the character being played, for slot=player. Omitted, slot=player means Beat (native ID 0), the character a new game starts with; the result says so. Use slot=character:<name> or id:N to target anyone else.")
     rebuild: bool = False                  # use: build again even if a mod exists
-    strict_cutscenes: bool = False         # cast_swap, Ocarina of Time: also fit cutscene layers' object space (smaller models)
+    strict_cutscenes: bool = Field(default=True, description="Ocarina of Time cast builds: include cutscene layers in object-memory budgets. Character replacements include cutscenes by default; false is an explicit gameplay-only diagnostic.")
     launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
     target: str = ""                       # use / live_use: what the pick whip identified there ("soldier", "Snake")
@@ -2816,5 +2816,14 @@ def characters_recorded(inp: CharIn, ctx):
         out["result"]["attachments"] = rep
         if rep["dropped"] and isinstance(out["result"].get("message"), str):
             out["result"]["message"] += f" Attachments dropped for the budget: {', '.join(rep['dropped'])}."
+    result = out.get("result") if isinstance(out, dict) else None
+    if inp.op in ("use", "live_use", "match", "cast_swap") and inp.kind == "character" and isinstance(result, dict) and result.get("mod"):
+        scope = result.get("replacement_scope")
+        if not isinstance(scope, dict):
+            scope = result["replacement_scope"] = {}
+        scope.setdefault("requested", "all_character_appearances")
+        scope.setdefault("required", ["gameplay", "in_engine_cutscenes", "prerecorded_cinematics"])
+        scope.setdefault("complete", False)
+        scope.setdefault("verification", "pending: verify gameplay and cutscenes; identify remaining original appearances")
     special_builds.record_call(ctx, inp, out)
     return out

@@ -13,8 +13,8 @@ How a slot is replaced (formats: docs/twin_snakes.md, gbox.ts_stage / ts_kms / t
   4. the model is re-encoded on the same skeleton (gbox.ts_kms.encode: header, bones and mesh records kept, one part
      per bone mesh, single-bone envelopes) within the stock model's byte size, decimating (quadric edge collapse) until
      it fits; gear meshes past the bones draw nothing;
-  5. in every gameplay stage that holds the model (cut-scene stages `demo*`, `r_demo*`, `r_dmo*` are left alone by
-     default), the model, its twin and the texture set are replaced; other models that draw with the overwritten
+  5. in every stage that holds the model, including in-engine cutscenes (`demo*`, `r_demo*`, `r_dmo*`),
+     the model, its twin and the texture set are replaced; other models that draw with the overwritten
      images (Snake's bandana tails) are hidden; the stage is recompressed (zlib 9) and must fit its sector span;
   6. stage.dat is rewritten in place (same size) in a copy of the disc image (gbox.filemods.build_image).
 
@@ -350,7 +350,7 @@ def part_textures(data: bytes) -> set[int]:
 
 # --------------------------------------------------------------------------------------------- stages
 
-def gameplay_stages(sd: S.StageDat, hashes: set[int], cutscenes: bool = False) -> list[int]:
+def gameplay_stages(sd: S.StageDat, hashes: set[int], cutscenes: bool = True) -> list[int]:
     out = set()
     for h in hashes:
         out.update(sd.stages_with(h, S.MODEL))
@@ -400,8 +400,8 @@ def _first_model(sd: S.StageDat, stages: list[int], h: int) -> K.Kms | None:
     return None
 
 
-def build_stage_dat(stage_dat: bytes, plan: dict[str, Donor], progress=None, cutscenes: bool = False) -> tuple[bytes, dict]:
-    """stage.dat bytes + {cast key: Donor} -> (new stage.dat, report). Every gameplay stage holding a planned model
+def build_stage_dat(stage_dat: bytes, plan: dict[str, Donor], progress=None, cutscenes: bool = True) -> tuple[bytes, dict]:
+    """stage.dat bytes + {cast key: Donor} -> (new stage.dat, report). Every gameplay or in-engine cutscene stage holding a planned model
     is rebuilt in its own sector span; the whole build shrinks the donors' byte budgets and retries when a stage
     would not fit."""
     from . import fit_events as FE
@@ -410,9 +410,9 @@ def build_stage_dat(stage_dat: bytes, plan: dict[str, Donor], progress=None, cut
     slots: dict[str, dict] = {}
     for key, donor in plan.items():
         hs = {TS.model_hash(key)} | {TS.model_hash(t) for t in TWINS.get(key, [])}
-        stages = gameplay_stages(sd, {TS.model_hash(key)}, cutscenes)
+        stages = gameplay_stages(sd, hs, cutscenes)
         if not stages:
-            slots[key] = {"status": "failed", "reason": f"{key} is not in a gameplay stage on this disc"}
+            slots[key] = {"status": "failed", "reason": f"{key} has no model stage on this disc"}
             continue
         slots[key] = {"donor": donor, "stages": stages, "hashes": hs}
     scale, last_err = 1.0, None
@@ -431,7 +431,7 @@ def build_stage_dat(stage_dat: bytes, plan: dict[str, Donor], progress=None, cut
                     if m is None:
                         continue
                     layer = main_colour(m)
-                    st0 = sd.stage(s["stages"][0])
+                    st0 = next(sd.stage(si) for si in s["stages"] if sd.stage(si).find(h, S.MODEL) is not None)
                     sets = {f.hash: T.TextureSet(f.data) for f in st0.files()
                             if f.type == S.TEXTURES and f.hash == m.tex_set}
                     size = colour_size(sets, layer) if layer else None
@@ -493,7 +493,7 @@ def build_stage_dat(stage_dat: bytes, plan: dict[str, Donor], progress=None, cut
 
 
 def build_mod(cfg, game: dict, image: Path, name: str, plan: dict[str, Donor], progress=None,
-              cutscenes: bool = False) -> dict:
+              cutscenes: bool = True) -> dict:
     """A disc-image mod (cache/mods/<game>/<name>): stage.dat rebuilt (same size, in place), the rest copied."""
     import types
     from . import filemods
@@ -532,6 +532,9 @@ def build_mod(cfg, game: dict, image: Path, name: str, plan: dict[str, Donor], p
             "report": {"stages": [{k: v for k, v in r.items()} for r in report["stages"]],
                        "budget_scale": report["budget_scale"],
                        "slots": {k: {x: y for x, y in v.items() if x != "fit"} for k, v in report["slots"].items()}},
+            "replacement_scope": {"requested": "all_character_appearances", "in_engine_cutscenes": "written_unverified" if cutscenes else "excluded",
+                                  "cutscene_stages": [x["stage"] for x in report["stages"] if CUTSCENE.match(x["stage"])],
+                                  "prerecorded_movies": "unchanged", "complete": False},
             "verified_in_game": False}
     marker.write_text(json.dumps(rec, default=str))
     (work / "stage.dat").unlink(missing_ok=True)
@@ -543,7 +546,7 @@ def mod_name(slot: str, plan: dict[str, Donor | str]) -> str:
     tag = re.sub(r"[^a-z0-9]+", "_", s.split(":", 1)[-1]).strip("_") or "player"
     digest = hashlib.sha256(json.dumps(sorted([k, d if isinstance(d, str) else d.slug] for k, d in plan.items()))
                             .encode()).hexdigest()[:8]
-    return f"tts_{tag}_{digest}"
+    return f"tts_{tag}_{digest}_cs1"
 
 
 def _donor_of(ctx, meta: dict) -> Donor:
@@ -676,14 +679,16 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                                       "skeleton and animations kept; gameplay verification required"})
     res = {"mod": name, "slot": s, "build": built, "status": "built_unverified" if built else "ready",
            "replaces": [TS.cast_entry(k)["name"] for k in plan], "gameplay_verified": False,
-           "replacement_kind": "native_disc"}
+           "replacement_kind": "native_disc", "replacement_scope": {"requested": "all_character_appearances",
+               "in_engine_cutscenes": "written_unverified", "prerecorded_movies": "unchanged", "complete": False}}
     if inp.launch:
         sess = C._session(ctx, inp.session_id) if inp.session_id else None
         node = sess["session_id"].split("-")[0] if sess else "idle"
         res["launch"] = C._launch(ctx, game["game_id"], name, node)
         res["message"] = (f"Twin Snakes is running with {meta['name']} as {', '.join(res['replaces'])} (mod {name}). "
                           "The session swap kept your moment; the new body appears from the next area load "
-                          "(go through a door, or pick Continue).")
+                          "(go through a door, or pick Continue). In-engine cutscene stages are included; prerecorded movies remain unchanged. "
+                          "Full replacement still needs gameplay and cinematic verification.")
     return res
 
 
