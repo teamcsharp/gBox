@@ -557,9 +557,14 @@ def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blende
                 raise ValueError(f"{name}: needs decimating ({last}) and there's no Blender on this node")
             progress(None, f"{name}: decimating {src_tris} -> {target} triangles")
             src = decimate(reduce_path, work / f"{name}_d{target}.glb", float(target-fixed_tris), blender)
-        data, r, ok, k = make(read_rigged(src)+fixed_read if fixed and reduced else read_rigged(src))
+        geometry=read_rigged(src)+fixed_read if fixed and reduced else read_rigged(src)
+        data, r, ok, k = make(geometry)
         last = r
         if ok:
+            from . import fit_events as FE
+            FE.comparison(prims, geometry, reason="Original triangle count kept" if sum(len(p['tris']) for p in geometry)==src_tris
+                          else "Writer allocation / configured triangle budget",
+                          limits={"configured_triangle_budget": start_tris, "encoded": r})
             return data, rep | r | {"source_triangles": src_tris,"protected_texture_triangles":fixed_tris}, rigged
         target = int(min(target, r.get("triangles", target)) * min(k, 0.97))
     raise ValueError(f"{name} doesn't fit: {last}")

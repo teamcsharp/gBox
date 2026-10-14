@@ -182,6 +182,13 @@ def fold(state: dict | None, event: dict, now: float | None = None) -> dict:
             m[k] = v[:300]
             m[k + "_stage"] = str(stage or m.get("current") or "")[:24]
             m[k + "_ts"] = ts
+            if stage:
+                m["stages"][str(stage)[:24]][k] = v[:300]
+    comparison = event.get("comparison")
+    if isinstance(comparison, dict):
+        pair = {k: comparison.get(k) for k in ("before", "after")}
+        if all(isinstance(v, str) and v.startswith("/api/") and len(v) <= 300 for v in pair.values()):
+            m["comparison"] = pair | {"data": _small(comparison.get("data") or {}), "ts": ts}
     m["updated"] = ts
     st["current"] = key
     st["updated"] = ts
@@ -372,6 +379,33 @@ def triangles(prims) -> int:
                    else len(np.asarray(p["pos"]).reshape(-1, 3)) // 3 for p in prims))
 
 
+def comparison(before, after, *, reason: str, limits: dict | None = None):
+    """Exact geometry on both sides of a reduction, separate from the sampled live illustration.
+
+    Existing upload limits may reject an oversized pair; it remains unavailable instead of becoming a partial
+    mesh. A submitted review can retain the pair as artifacts after temporary fitting files expire.
+    """
+    sk = _sink.get()
+    if sk is None:
+        return
+    if sk["current"] is None:
+        auto_model(None)
+    cur = sk["current"]
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", cur["key"])[:60]
+    number = sk["n"]; sk["n"] += 1
+    pair = {}
+    try:
+        for side, prims in (("before", before), ("after", after)):
+            path = Path(sk["dir"]) / f"{stem}-{side}-{number}.glb"
+            pair[side] = str(snapshot_glb(prims, path, max_tris=None))
+    except Exception:
+        return
+    pair["data"] = {"source_triangles": triangles(before), "result_triangles": triangles(after),
+                    "reason": str(reason)[:160], "limits": limits or {},
+                    "geometry_only": True, "sampled": False}
+    _send({"model": cur["key"], "comparison": pair}, f"{cur.get('label') or cur['key']}: mesh comparison")
+
+
 def height(prims) -> float:
     """Vertical extent (+Y up) of the prims, in their own units."""
     ys = [np.asarray(p["pos"], float).reshape(-1, 3)[:, 1] for p in prims if len(np.asarray(p["pos"]).reshape(-1))]
@@ -527,7 +561,7 @@ def per_limb(prims, names: dict | list | None = None, owner=None) -> dict:
 
 # ---------------------------------------------------------------- a small mesh snapshot
 
-def snapshot_glb(prims, path: str | Path, max_tris: int = SNAPSHOT_TRIS) -> Path:
+def snapshot_glb(prims, path: str | Path, max_tris: int | None = SNAPSHOT_TRIS) -> Path:
     """Positions + triangles of fitted prims as a minimal GLB (no textures), at most max_tris triangles (an even
     sample), coloured per prim so the parts read apart."""
     P_all, F_all, C_all, base = [], [], [], 0
@@ -549,7 +583,7 @@ def snapshot_glb(prims, path: str | Path, max_tris: int = SNAPSHOT_TRIS) -> Path
     if not P_all:
         raise ValueError("no geometry to snapshot")
     P, F, C = np.concatenate(P_all), np.concatenate(F_all), np.concatenate(C_all)
-    if len(F) > max_tris:
+    if max_tris is not None and len(F) > max_tris:
         F = F[np.linspace(0, len(F) - 1, max_tris).astype(np.int64)]
     used = np.unique(F)
     remap = np.full(len(P), -1, np.int64)

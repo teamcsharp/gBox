@@ -253,3 +253,52 @@ def test_a_cancelled_progress_still_stops_the_writer(tmp_path):
     with FE.job(sink, tmp_path):
         with pytest.raises(Cancelled):
             FE.model("x")
+
+
+def test_exact_comparison_retains_every_face_beyond_the_live_preview_limit(tmp_path):
+    count = FE.SNAPSHOT_TRIS + 1001
+    pos = np.array([[i + x, y, 0] for i in range(count) for x, y in ((0, 0), (.5, 0), (0, 1))])
+    before = [{"pos": pos, "tris": np.arange(count * 3).reshape(-1, 3)}]
+    after = [{"pos": pos, "tris": before[0]["tris"][::2]}]
+    lines, sink = collect()
+    with FE.job(sink, tmp_path):
+        FE.model("fighter:KAS", "Amy")
+        FE.comparison(before, after, reason="Original exceeds native allocation", limits={"budget_bytes": 8192})
+    pair = events(lines)[-1]["comparison"]
+    assert read_glb(pair["before"])["accessors"][2]["count"] == count * 3
+    assert read_glb(pair["after"])["accessors"][2]["count"] == len(after[0]["tris"]) * 3
+    assert pair["data"]["sampled"] is False and pair["data"]["geometry_only"] is True
+    assert pair["data"]["limits"]["budget_bytes"] == 8192
+
+
+def test_fold_keeps_stage_sources_and_requires_both_uploaded_comparison_meshes():
+    state = FE.fold(None, {"model": "m", "stage": "retarget", "snapshot": "/api/jobs/j/fitting/files/before.glb"})
+    state = FE.fold(state, {"model": "m", "stage": "decimate", "snapshot": "/api/jobs/j/fitting/files/after.glb"})
+    assert state["models"]["m"]["stages"]["retarget"]["snapshot"].endswith("before.glb")
+    pair = {"before": "/api/jobs/j/fitting/files/before.glb", "after": "C:/private/after.glb", "data": {"sampled": False}}
+    state = FE.fold(state, {"model": "m", "comparison": pair})
+    assert "comparison" not in state["models"]["m"]
+    pair["after"] = "/api/jobs/j/fitting/files/after.glb"
+    state = FE.fold(state, {"model": "m", "comparison": pair})
+    assert state["models"]["m"]["comparison"]["after"] == pair["after"]
+
+
+def test_worker_uploads_both_comparison_files_and_never_sends_local_paths(monkeypatch, tmp_path, cfg):
+    import httpx
+    from gbox.registry import Ctx
+    before, after = tmp_path / "before.glb", tmp_path / "after.glb"
+    before.write_bytes(b"before"); after.write_bytes(b"after")
+    uploaded=[]
+    def post(url, content, **kwargs):
+        uploaded.append((url, content))
+        return type("Response", (), {"status_code":200,"json":lambda self:{"url":"/api/jobs/j/fitting/files/"+url.rsplit('/',1)[-1]}})()
+    monkeypatch.setattr(httpx,"post",post)
+    ctx=Ctx(cfg,job_id="j");ctx.server="http://fixture"
+    message=ctx._fit_files("Comparison"+FE.encode({"model":"m","comparison":{"before":str(before),"after":str(after),"data":{"sampled":False}}}))
+    event=FE.split(message)[1]
+    assert len(uploaded)==2
+    assert event["comparison"]["before"]=="/api/jobs/j/fitting/files/before.glb"
+    assert str(tmp_path) not in message
+    after.unlink()
+    event=FE.split(ctx._fit_files("Comparison"+FE.encode({"model":"m","comparison":{"before":str(before),"after":str(after)}})))[1]
+    assert "after" not in event["comparison"]

@@ -1203,6 +1203,8 @@ window.taskVizCreate = canvas => {
 <script src="hermes-providers.js"></script>
 <script src="../web/viz/toast-stack.js"></script>
 <script src="../web/viz/process-popup.js"></script>
+<script src="../web/viz/build-report-image.js"></script>
+<script src="../web/viz/decimation-review.js"></script>
 <script src="../web/viz/launch-bar.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
 <script src="../web/viz/build-actions.js"></script>
@@ -6522,8 +6524,15 @@ async function processPopupSync(jobs) {
     assetUrl: p => `${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
     fit: el => GBoxToastStack.fit(el, toastBounds()),       // inside the window, below the bars, above the status strip
     retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
+    review: (job,key) => meshReductionReview(job.id,key),
   });
   PROCESS_POPUP.sync(jobs);
+}
+async function meshReductionReview(jobId,key) {
+  await SBX_READY;
+  const api=async(path,body,method)=>{const response=await gbox.api(path,body,method);if(!response.ok)throw Error(response.error||'Request failed');return response.data;};
+  return GBoxDecimationReview.open(jobId,key,{api,assetUrl:p=>`${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
+    loadViewer:()=>import(`${SBX.api}/viz/character-model.js`)});
 }
 function auditPoll(explicit = true) { return pollAudit(explicit); }
 const pollAudit = singleFlightPoll(async () => {
