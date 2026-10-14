@@ -122,6 +122,8 @@ def routes(app, store, auth, submit, workers):
         for r in candidates['remove']:
             name = r.get('staged_of') or r['name'].split('~')[0]
             key = (r['game_id'], name)
+            broken = store.get('build_broken', f'{r["game_id"]}/{name}')
+            if broken and broken.get('state') != 'deleted': continue
             if key in pending: continue
             j = submit({'tool': 'file_mod', 'input': {'game_id': r['game_id'], 'op': 'delete_build', 'name': name,
                        'retention_node': node}, 'require_worker': w['id'], 'low_priority': True}, actor)

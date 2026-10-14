@@ -325,7 +325,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 stop.wait(poll_s * 5)
                 continue
             job = r.json()
-            if job.get('tool') == 'file_mod' and job.get('input', {}).get('op') == 'delete_build':
+            if job.get('tool') == 'file_mod' and job.get('input', {}).get('op') in ('delete_build', 'quarantine_build'):
                 # Cleanup runs between jobs, never during a build/download/launch.
                 while active and not stop.is_set():
                     stop.wait(0.1)

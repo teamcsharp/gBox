@@ -146,12 +146,14 @@
     const lfr = m.launch_report && m.launch_report.number ? m.launch_report : null;
     const tickets = (m.tickets || []).filter(t => (!lfr || String(t.number) !== String(lfr.number))
       && (!m.reported || String(t.number) !== String(m.reported.number)));
-    return `<article class="mg-card${m.favorite ? " mg-fav" : ""}" data-key="${ESC(m.key)}">${menu ? menuHTML(m) : ""}${dlMenu ? `<div class="mg-dlm">${dlMenu}</div>` : ""}
+    return `<article class="mg-card${m.favorite ? " mg-fav" : ""}${m.broken ? " mg-broken" : ""}" data-key="${ESC(m.key)}">${menu ? menuHTML(m) : ""}${dlMenu ? `<div class="mg-dlm">${dlMenu}</div>` : ""}
       <div class="mg-pic">${cur ? `<img class="mg-img" loading="lazy" decoding="async" alt="${ESC(cur.name)}" data-i="${i}" src="${ESC(cur.src)}">
         ${imgs.length > 1 ? `<button class="mg-nav" data-mg="prev" type="button" title="Previous picture">‹</button><button class="mg-nav" data-mg="next" type="button" title="Next picture">›</button>` : ""}
         <span class="mg-count">${cur.kind === "shot" ? "in-game · " : cur.kind === "donor" ? "donor · " : ""}${i + 1} / ${imgs.length}</span>`
         : `<div class="mg-none">No pictures yet: Screenshot after launch adds one</div>`}${dl ? `<div class="mg-dl">${dl}</div>` : ""}</div>
       <div class="mg-body">
+        <button type="button" class="mg-broken-toggle" data-mg="broken" aria-label="${m.broken ? "View broken build investigation" : "Mark build broken"}" aria-pressed="${!!m.broken}" title="${m.broken ? "View investigation" : "Mark broken, investigate, then delete"}">&#9888;</button>
+        ${m.broken ? `<div class="mg-broken-status" role="status">Broken · ${ESC(({queued:"queued for review",preserving:"preserving evidence",preserved:"removed from PC · under review",blocked:"cleanup needs attention"})[m.broken.state] || m.broken.state)}${m.broken.number ? ` · #${ESC(m.broken.number)}` : ""}${m.broken.error ? `<div>${ESC(m.broken.error)}</div>` : ""}</div>` : ""}
         <div class="mg-h"><span class="mg-tt">${starHTML(m)}${titleHTML(m, renaming)}</span>
           <span class="mg-hr"><span class="mg-badge ${m.verified ? "mg-ok" : "mg-unv"}">${m.verified ? "verified" : "unverified"}</span><button class="mg-ico" type="button" data-mg="menu" aria-haspopup="menu" aria-expanded="${!!menu}" title="Options (or right-click the card)" aria-label="Options">⋯</button></span></div>
         ${m.display_name && m.original_title && m.original_title !== m.display_name ? `<div class="mg-was mut">was “${ESC(m.original_title)}”</div>` : ""}
@@ -163,9 +165,9 @@
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
         ${reportsHTML(lfr, m.reported)}
         ${tickets.length ? `<div class="mg-tk">${tickets.map(t => `<button class="act mg-req" type="button" data-mg="request" data-n="${t.number}" title="${ESC(t.title || "Open request #" + t.number)}">Open request #${t.number}${t.status ? " · " + ESC(t.status.replace("_", " ")) : ""}</button>`).join("")}</div>` : ""}
-        <div class="mg-btns"><button class="act pri" type="button" data-mg="play">Play</button>
-          ${m.state_slot != null && m.card_id ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
-          <button class="act" type="button" data-mg="shot" title="This build running now: capture a frame of it. Another build of the game running: you choose. Nothing running: launch it, then capture. The frame joins this mod's pictures (its thumbnail when it has none)"${m.card_id ? "" : " disabled"}>Screenshot after launch</button>
+        <div class="mg-btns"><button class="act pri" type="button" data-mg="play"${m.broken ? " disabled" : ""}>Play</button>
+          ${m.state_slot != null && m.card_id && !m.broken ? `<button class="act" type="button" data-mg="moment" title="Launch and load the saved moment (slot ${ESC(m.state_slot)})">Play from saved moment</button>` : ""}
+          <button class="act" type="button" data-mg="shot" title="This build running now: capture a frame of it. Another build of the game running: you choose. Nothing running: launch it, then capture. The frame joins this mod's pictures (its thumbnail when it has none)"${m.card_id && !m.broken ? "" : " disabled"}>Screenshot after launch</button>
           <span class="mg-msg mut">${ESC(note)}</span>
           <span class="mg-acts"><button class="act" type="button" data-mg="report" title="Report a problem with this build: it doesn't show the expected change, looks broken, crashes…">⚑ Report</button><button class="act mg-del" type="button" data-mg="delete" title="Delete this build (asks first: everywhere or only this PC)" aria-label="Delete">🗑</button></span></div>${choice && BS ? BS.choiceHTML(choice, "data-mg") : ""}</div></article>`;
   }
@@ -192,6 +194,12 @@
   }
 
   const CSS = `.mg-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}.mg-bar input[type=search]{flex:1;min-width:180px}
+    .mg-broken-toggle{position:absolute;top:6px;left:6px;z-index:3;border:1px solid #cf796c;border-radius:6px;background:#241a1a;color:#ffbdab;font-size:18px;cursor:pointer;padding:3px 7px}
+    .mg-broken{border-color:#b85d50!important}.mg-broken-status{background:#612c27;color:#fff1e9;padding:6px 8px;border-radius:4px;font-weight:600}
+    .mg-broken button:disabled{opacity:.45;cursor:not-allowed}
+    .mg-broken::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:2;opacity:.12;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='170' height='170'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.9'/%3E%3C/svg%3E"),repeating-linear-gradient(0deg,transparent 0 2px,#000 2px 4px);animation:mg-static 1.2s steps(3,end) infinite}
+    @keyframes mg-static{0%{background-position:0 0}50%{background-position:45px -30px}100%{background-position:-20px 50px}}
+    @media(prefers-reduced-motion:reduce){.mg-broken::after{animation:none}}
     .mg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
     .mg-card{border:1px solid var(--line,#333);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;background:var(--panel,transparent)}
     .mg-pic{position:relative;height:190px;background:#111;display:flex;align-items:center;justify-content:center}
@@ -375,6 +383,18 @@
       toast(`${m.mod_title || m.name}: report filed as request #${r.number}`);
       return r;
     }
+    async function markBroken(m, card) {
+      if (m.broken?.number) {
+        const ticket = {number:m.broken.number, id:m.broken.request_id};
+        return openRequest(ticket.number, {...m,tickets:[...(m.tickets || []),ticket]}, card);
+      }
+      const r = await dialogs().open("broken", m, dialogEnv());
+      if (!r) return null;
+      m.broken = r; m.reported = { number: r.number, id: r.request_id };
+      read.invalidate(); st.sig = ""; draw();
+      toast(`Broken build queued for investigation #${r.number}; files removed after verified preservation`);
+      return r;
+    }
     async function remove(m) {
       let b = m;
       try {                                                  // where it lives (the Spark, this PC, other PCs) for the dialog
@@ -409,6 +429,8 @@
       if (chipK) { st.kind = chipK.dataset.mgKind; st.page = 1; built = false; draw(); return; }
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
+      if (act === "broken") return markBroken(m, card);
+      if (m.broken && ["play", "moment", "shot"].includes(act)) { toast("This build is broken and queued for investigation"); return; }
       if (act === "rename") { e.preventDefault?.(); startRename(m); return; }
       if (act === "fav") { e.preventDefault?.(); await favorite(m); return; }
       if (act === "menu") { st.menu = st.menu === m.key ? null : m.key; draw(); return; }

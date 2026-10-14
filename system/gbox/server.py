@@ -2436,9 +2436,24 @@ def create_app(config: Config) -> FastAPI:
         return operator_guard.operator_sessions(store.all("session"), lambda sid: store.get("slabel", sid),
                                                 lambda jid: store.get("job", jid), [wid], keep=keep)
 
+    def reject_broken_launch(gid, mod, actor, agent_use=False):
+        if not mod or agent_use or operator_guard.is_agent(actor): return
+        name = mod.split('~')[0]
+        flag = store.get('build_broken', f'{gid}/{name}')
+        if not flag or flag.get('state') == 'deleted': return
+        index = getattr(app.state, 'built_mods', None)
+        rec = next((r for r in index.records() if r['game_id'] == gid and r['name'] == name), None) if index else None
+        built = ((rec or {}).get('meta') or {}).get('built')
+        if built and flag.get('built') and built != flag['built']: return
+        raise HTTPException(409, f'This build is marked broken; investigation #{flag.get("number") or "pending"}. Choose another build.')
+
     @app.post("/api/jobs")
     def submit(req: JobRequest, actor=Depends(auth), origin=Depends(request_origin)):
         origin = origin if isinstance(origin, dict) else {"via": "internal"}   # in-server callers pass no request
+        if req.tool in ('@launch', 'launch_game'):
+            i = req.input or {}
+            game = i.get('game') if isinstance(i.get('game'), dict) else {}
+            reject_broken_launch(i.get('game_id') or game.get('game_id'), i.get('mod'), actor, req.agent_use)
         if req.tool == "@launch":
             i = req.input or {}
             gid = i.get("game_id") or _404()
@@ -3049,6 +3064,7 @@ def create_app(config: Config) -> FastAPI:
         With a mod and the game already running, the mod is swapped into that session (same PC, moment kept) only
         when the caller names that session's PC (worker id, name or OS) as the node or asks for it (swap=true);
         node=auto alone never turns a Play into a swap of a game running elsewhere (docs/stream-stability.md)."""
+        reject_broken_launch(gid, mod, actor)
         origin = origin if isinstance(origin, dict) else {"via": "internal"}
         e = store.catalog_get(gid) or _404()
         if node in ("idle", "other"):
@@ -4530,7 +4546,15 @@ def create_app(config: Config) -> FastAPI:
     def _build_report(issue: dict, details: str, actor: str) -> dict:
         """A ⚑ build report (gbox.builds): filed like any issue report, then sent to the investigation queue the launch
         failure reports use (_lf_investigate: the top of the Hermes work queue, or dispatched now in task mode)."""
-        filed = req_issue(IssueIn(**issue), actor)
+        existing_id = issue.pop('existing_report_id', None)
+        filed = store.get('request', existing_id) if existing_id else None
+        if filed:
+            filed['status'] = 'open'
+            filed.setdefault('messages', []).append({'author': actor, 'text': issue.get('detail') or details,
+                                                     'ts': time.time(), 'attachments': []})
+            store.put('request', existing_id, filed)
+        else:
+            filed = req_issue(IssueIn(**issue), actor)
         rid = filed["id"]
         report = store.get("request", rid) or filed
         try:

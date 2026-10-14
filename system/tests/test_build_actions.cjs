@@ -140,6 +140,23 @@ const CARD = { key: 'auf/auf_dm1_bondcombat_uwbthug', name: 'auf_dm1_bondcombat_
                mod_title: 'auf_dm1_bondcombat_uwbthug', writer: 'auf', built: 1000, size: 10, own_size: 10, verified: false, changes: [],
                images: [], donor_previews: [], shots: [], card_id: 'c1', state_slot: null, tickets: [], last_launch: null, what: NONE };
 
+test('Broken-build dialog explains temporary preservation and submits the note and PC', async () => {
+  const calls = [], doc = fakeDoc({note:'Character destroyed, no crash'});
+  const done = BA.open('broken', BUILD, {document:doc, here:'MYPC', api:async (...args)=>{calls.push(args);return {number:7};}});
+  assert.match(doc.made[0].innerHTML, /broken files are deleted from Spark too/);
+  await press(doc.made[0], 'go');
+  assert.deepEqual(await done, {number:7});
+  assert.deepEqual(calls[0], ['/api/builds/auf/auf_dm1_bondcombat_uwbthug/broken', {node:'MYPC',note:'Character destroyed, no crash'}, 'POST']);
+});
+
+test('Broken mod card has accessible top-left action, static overlay and disabled Play', () => {
+  const html = MG.cardHTML({...CARD,broken:{state:'preserved',number:7}});
+  assert.match(html, /mg-broken-toggle/);
+  assert.match(html, /aria-pressed="true"/);
+  assert.match(html, /removed from PC/);
+  assert.match(html, /data-mg="play" disabled/);
+});
+
 test('Mods card: What this changes under the title, ⚑ Report and 🗑 bottom right, both in the options, Reported #N', () => {
   const html = MG.cardHTML(CARD, {});
   assert.ok(html.indexOf('class="ba-what ba-no_changes"') > html.indexOf('mg-title') && html.indexOf('ba-what') < html.indexOf('mg-btns'));
