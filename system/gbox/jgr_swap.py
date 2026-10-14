@@ -32,6 +32,17 @@ PLAYER_DEFAULT_ID = 0          # Beat: the new-game player (USA disc; native deb
 SLOT_PREFIX = "character:"
 
 
+def replacement_scope() -> dict:
+    """Distinguish the implemented PLAYER path from the operator's whole-world request."""
+    return {'complete_world_replacement': False,
+            'implemented': ['PLAYER.AFS textured body groups for 16 character slots'],
+            'missing': ['ENEMY.AFS police and enforcement actors', 'ENEMY.AFS rival gang members',
+                        'Professor K model/resource binding', 'character-select and title presentation models',
+                        'cinematic/demo archive model instances'],
+            'message': 'A PLAYER.AFS cast build does not replace police, all gang members, Professor K or every scene. '
+                       'Keep those contexts unverified until their separate resources are mapped, written and inspected.'}
+
+
 def _label(index: int) -> tuple[str, str]:
     """(slot name, display name) of archive `index` on the USA disc: the native debug label when it has one."""
     name = jgr.ARCHIVE_NAMES[index]
@@ -116,5 +127,5 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     out = jgr.use(ctx, meta, game, shim)
     note = (f"slot=player was taken as {target['name']} (native ID {target['native_id']}), the character a new game "
             "starts with; pass active_id or slot=character:<name> when playing someone else.") if target["assumed"] else ""
-    return out | {"slot": getattr(inp, "slot", None) or "player", "replaced": target,
+    return out | {"slot": getattr(inp, "slot", None) or "player", "replaced": target,"replacement_scope":replacement_scope(),
                   **({"player_assumed": note} if note else {})}

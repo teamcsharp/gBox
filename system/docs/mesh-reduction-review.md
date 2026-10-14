@@ -27,3 +27,7 @@ The source job, donor, target slot, original-mesh preference and measurements re
 Opening, orbiting, annotating and reporting do not send emulator input, save a running game, launch a build,
 or overwrite a source model. New pairs are recorded by supported writers; a report cannot reconstruct a pair
 that an older build never saved.
+
+**Editable Blender workspace** exports a `.blend` with the original rigged donor, an untouched source reference,
+and the available fitted before/after pair. Reduction starts disabled. See [manual mesh workspaces](manual-mesh-workspaces.md)
+for painted masks, returning edits as variants, the supported no-auto-reduction policy, shoe boundaries and ground controls.

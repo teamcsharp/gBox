@@ -144,6 +144,11 @@ def normalize(profile: dict | None) -> dict:
             out["lattice"] = cage
     if profile.get("plant_feet") is True:
         out["plant_feet"] = True
+    if profile.get("preserve_geometry") is True:
+        out["preserve_geometry"] = True
+    if isinstance(profile.get("shoe_tops"), dict):
+        tops = {s: _num(profile['shoe_tops'][s], .15, 0, .5) for s in ('l', 'r') if s in profile['shoe_tops']}
+        if tops: out['shoe_tops'] = tops
     return out
 
 
@@ -152,7 +157,7 @@ def is_identity(profile: dict | None) -> bool:
     if not profile:
         return True
     p = normalize(profile)
-    return (not p["adjust"] and not p["joints"] and not p.get("lattice") and not p.get("plant_feet") and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
+    return (not p["adjust"] and not p["joints"] and not p.get("lattice") and not p.get("plant_feet") and not p.get('shoe_tops') and not p.get('preserve_geometry') and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
                                                                                      "torso_width", "arm_length",
                                                                                      "leg_length")))
 
@@ -439,7 +444,12 @@ def move_joints(rig: dict, profile: dict | None) -> tuple[dict, dict]:
         rig = shape_donor(rig, prof["lattice"])
     ri = rig.get("roles") or {}
     moves = {r: np.asarray(d, float) for r, d in (prof or {}).get("joints", {}).items() if r in ri}
-    if not moves:
+    tops = (prof or {}).get('shoe_tops') or {}
+    for side in tops:
+        foot, shin = side+'_foot', side+'_shin'
+        if foot not in ri or shin not in ri or ri[foot] == ri[shin]:
+            raise ValueError(f'Specify distinct {side} shin and foot bones before applying shoe boundaries')
+    if not moves and not tops:
         return rig, {"moved": []}
     from .formats.rig import role_of_joint
     B, Hd = donor_frame(rig)
@@ -452,12 +462,24 @@ def move_joints(rig: dict, profile: dict | None) -> tuple[dict, dict]:
     new = {r: new_j[j] for r, j in ri.items()}
     chains = [c for c in LIMB_CHAINS if any(r in moves for r in c) and c[0] in ri and c[1] in ri]
     prims, changed = [], 0
+    body = [np.asarray(p['pos']) @ B[1] for p in rig['prims'] if len(p['pos']) and not p.get('prop')]
+    floor = min((float(y.min()) for y in body), default=0)
+    body_height = max((float(y.max()) for y in body), default=1) - floor
     for p in rig["prims"]:
         owner = np.asarray(p["owner"], int)
         before = jrole[owner]
         after = before.copy()
         for c in chains:
             after = resegment(p["pos"], after, old, new, tuple(r for r in c if r in ri))
+        if tops and not p.get('prop'):
+            # Explicit shoe tops separate shoes from a shin even when source ownership was wrong.
+            y = np.asarray(p['pos']) @ B[1]
+            for side, fraction in tops.items():
+                foot, shin = side+'_foot', side+'_shin'
+                leg = np.isin(after, [side+'_thigh', shin, foot])
+                below = y <= floor + fraction * body_height
+                after[leg & below] = foot
+                after[leg & ~below & (after == foot)] = shin
         diff = np.nonzero(after != before)[0]
         if not len(diff):
             prims.append(p)
@@ -476,7 +498,7 @@ def move_joints(rig: dict, profile: dict | None) -> tuple[dict, dict]:
             q["J"] = J
         prims.append(q)
     return ({**rig, "joints": new_j, "prims": prims},
-            {"moved": sorted(moves), "vertices_reassigned": int(changed), "donor_height": round(Hd, 4)})
+            {"moved": sorted(moves), "shoe_tops": tops, "vertices_reassigned": int(changed), "donor_height": round(Hd, 4)})
 
 
 def goals(donor_pos: dict, target_pos: dict, donor_ground: float | None = None,

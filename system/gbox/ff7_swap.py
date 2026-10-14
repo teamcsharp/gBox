@@ -546,7 +546,8 @@ def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blende
     reduce_path=write_rigged(reduced,tgt,work/f'{name}_body.gltf',name) if fixed and reduced else rigged
     fixed_read=[dict(p,jid=p['J'][:,0]) for p in fixed]
     src_tris = sum(len(p["tris"]) for p in prims)
-    target = min(src_tris, start_tris)
+    preserve = bool(((scale or {}).get('profile') or {}).get('preserve_geometry'))
+    target = src_tris if preserve else min(src_tris, start_tris)
     last = None
     for _ in range(10):
         src = reduce_path
@@ -566,6 +567,11 @@ def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blende
                           else "Writer allocation / configured triangle budget",
                           limits={"configured_triangle_budget": start_tris, "encoded": r})
             return data, rep | r | {"source_triangles": src_tris,"protected_texture_triangles":fixed_tris}, rigged
+        if preserve:
+            from . import fit_events as FE
+            FE.comparison(prims, geometry, reason='Edited mesh retained; native allocation rejected it; automatic reduction disabled',
+                          limits={'allocation_failure':r,'automatic_reduction':False})
+            raise ValueError(f'{name}: automatic geometry reduction disabled; native allocation rejected the original: {r}')
         target = int(min(target, r.get("triangles", target)) * min(k, 0.97))
     raise ValueError(f"{name} doesn't fit: {last}")
 

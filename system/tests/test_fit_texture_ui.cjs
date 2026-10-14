@@ -78,6 +78,12 @@ test('real 3D reference and donor remain visible while cage controls deform the 
   await evaluate(`editor.controller.setValue('head',.85);editor.controller.save();`);
   assert.equal((await evaluate('saved.at(-1)')).profile.head,.85);
   assert.ok((await evaluate('saved.at(-1)')).profile.lattice);
+  await evaluate(`document.querySelector('[data-rt-shoes]').click();waitFor(()=>!document.querySelector('[data-rt-shoe="l"]').disabled);`);
+  await evaluate(`const shoe=document.querySelector('[data-rt-shoe="l"]');shoe.value=.23;shoe.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-rt-preserve]').click();document.querySelector('[data-rt-plant]').click();editor.controller.save();`);
+  const manual=(await evaluate('saved.at(-1)')).profile;
+  assert.equal(manual.shoe_tops.l,.23);assert.equal(manual.shoe_tops.r,.15);
+  assert.equal(manual.preserve_geometry,true);assert.equal(manual.plant_feet,true);
+  assert.ok(await evaluate(`editor.views.target.group.children.filter(o=>o.isMesh).every(o=>[...o.geometry.attributes.position.array].every(Number.isFinite))`),'shoe controls keep the actual fitted mesh finite');
   if(process.env.GBOX_FIT_CANDIDATE){
    const profile=await evaluate('JSON.stringify(editor.controller.state.profile)');
    await evaluate(`editor.previewTexture({candidate:'candidate'});`);

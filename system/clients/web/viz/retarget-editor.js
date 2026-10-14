@@ -116,6 +116,12 @@
             <label>Cage depth <select data-rt-cage-slice><option value="0">Back</option><option value="1" selected>Middle</option><option value="2">Front</option></select></label>
             <button class="act" data-rt-go="shape-reset">Reset cage</button><label><input type="checkbox" data-rt-plant> Plant mesh feet at reference ground</label>
             <div class="mut" data-rt-fit-measures></div></div>
+          <div class="rt-sec rt-shoe-controls"><b>Shoes and ground</b><p class="mut">Set ankle pivots in Goals. Separate each shoe from the leg with these source-height planes. Ground lift sets the target sole plane; Plant feet aligns the fitted soles in this pose.</p>
+            <label><input type="checkbox" data-rt-shoes> Specify shoe boundaries</label>
+            <label>Left shoe top (% of source body height)<input type="range" min="0" max="0.5" step="0.005" value="0.15" data-rt-shoe="l"><output data-shoe-value="l">15%</output></label>
+            <label>Right shoe top (% of source body height)<input type="range" min="0" max="0.5" step="0.005" value="0.15" data-rt-shoe="r"><output data-shoe-value="r">15%</output></label>
+            <p class="mut">This assigns same-side leg vertices below the plane to the foot; foot vertices above it return to the shin. Preview walking and crouching before approving. This does not change game collision or implement foot IK.</p></div>
+          <div class="rt-sec"><b>Geometry approval</b><label><input type="checkbox" data-rt-preserve> No automatic geometry reduction</label><p class="mut">JGR/shared Ninja, SC2, DOA2 and FF7 try the edited mesh intact and stop with the allocation error if it cannot fit. Other writers may still reduce geometry.</p><button class="act" data-rt-go="workspace">Editable Blender workspace</button><p data-rt-workspace-status></p></div>
           <div class="rt-sec"><b>Proportions</b><div data-rt-part-slot="globals"></div></div>
           <div class="rt-sec" data-rt-part-slot="part"></div>
           <div class="rt-sec" data-rt-textures></div>
@@ -309,6 +315,7 @@
     #rtedit .rt-stage canvas{position:absolute;inset:0;width:100%;height:100%}#rtedit .rt-stage canvas.ov{cursor:crosshair}
     #rtedit .rt-side{width:330px;overflow:auto;border-left:1px solid var(--line,#2c3340);padding:6px 8px}
     #rtedit .rt-sec{margin-bottom:10px}#rtedit .rt-sl{display:grid;grid-template-columns:92px 1fr 52px;gap:4px;align-items:center;font-size:11px}
+    #rtedit .rt-shoe-controls label{display:block;margin:8px 0}#rtedit .rt-shoe-controls input[type=range]{display:block;width:100%}
     #rtedit .rt-sl input{width:100%;accent-color:var(--acc,#4f8cff)}#rtedit .rt-sl output{text-align:right;font-variant-numeric:tabular-nums}
     #rtedit .rt-role{display:grid;grid-template-columns:10px 96px 1fr 44px 52px;gap:4px;align-items:center;padding:1px 2px;border-radius:4px}
     #rtedit .rt-role i{width:9px;height:9px;border-radius:50%}#rtedit .rt-role select{min-width:0;font-size:11px}
@@ -383,7 +390,7 @@
     // ---- scene data (filled once the models load) ----
     const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     let THREE = null, Loader = null, donor = null, target = null, R = null, donorRest = {}, donorPos = {}, fit = null, lfit = null,
-      cageBounds = null, shapeKey = null, cageSlice=1, pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
+      cageBounds = null, shapeKey = null, shoeKey = null, cageSlice=1, pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
     let previewMeshes = [], posedMeshes = [], drag = null;
     let textureCandidate=null,textureRequest=0;
     function disposeCandidateScene(scene) {
@@ -459,6 +466,9 @@
       jointsKey = JSON.stringify(H.normalize(c.state.profile).joints);
       shapeKey = JSON.stringify(c.state.profile.lattice||{});
       for(const pm of previewMeshes)pm.shaped=pm.src.prop?pm.rest:H.deformCage(pm.rest,c.state.profile,cageBounds,Hd);
+      shoeKey=JSON.stringify(c.state.profile.shoe_tops||{});
+      let shoeFloor=Infinity,shoeTop=-Infinity;
+      for(const pm of previewMeshes)if(!pm.src.prop)for(let i=1;i<pm.shaped.length;i+=3){shoeFloor=Math.min(shoeFloor,pm.shaped[i]);shoeTop=Math.max(shoeTop,pm.shaped[i]);}
       if (!donor || !donorRest.hip || !donorRest.head) { fit = lfit = null; return; }
       donorPos = H.movedPositions(donorRest, c.state.profile, Hd);
       fit = H.baseFit(donorPos, dGround, tPos, tGround);
@@ -472,7 +482,8 @@
           const p = fit.apply([pm.shaped[3 * i], pm.shaped[3 * i + 1], pm.shaped[3 * i + 2]]);
           pm.base[3 * i] = p[0]; pm.base[3 * i + 1] = p[1]; pm.base[3 * i + 2] = p[2];
         }
-        const now = H.resegment(pm.rest, own, donorRest, donorPos);
+        let now = H.resegment(pm.rest, own, donorRest, donorPos);
+        if(!pm.src.prop)now=H.shoeRoles(pm.shaped,now,c.state.profile,shoeFloor,shoeTop-shoeFloor);
         for (let i = 0; i < n; i++) for (let j = 0; j < k; j++) {
           let r = pm.roles0[i * k + j];
           if (now[i] !== own[i] && (r === own[i] || r === now[i])) r = now[i];   // the swept influences follow
@@ -549,7 +560,10 @@
       const st = c.state, goals = st.mode === "goals";
       captions();
       const plant=q("[data-rt-plant]");if(plant)plant.checked=!!st.profile.plant_feet;
-      if (donor && (JSON.stringify(H.normalize(st.profile).joints) !== jointsKey || JSON.stringify(st.profile.lattice||{}) !== shapeKey)) rejoint();
+      q('[data-rt-preserve]').checked=!!st.profile.preserve_geometry;
+      q('[data-rt-shoes]').checked=!!st.profile.shoe_tops;
+      for(const side of ['l','r']){const input=q('[data-rt-shoe="'+side+'"]');input.disabled=!st.profile.shoe_tops;input.value=st.profile.shoe_tops?.[side]??.15;q('[data-shoe-value="'+side+'"]').textContent=(100*+input.value).toFixed(1)+'%';}
+      if (donor && (JSON.stringify(H.normalize(st.profile).joints) !== jointsKey || JSON.stringify(st.profile.lattice||{}) !== shapeKey || JSON.stringify(st.profile.shoe_tops||{})!==shoeKey)) rejoint();
       if (donorScene) donorScene.visible = !goals;
       if (refHolder) refHolder.visible = !goals;
       for (const pm of posedMeshes) pm.mesh.visible = goals;
@@ -583,6 +597,9 @@
           else { const [x, y] = dv.map.toScreen(p); ctx.fillStyle = st.armed ? "#ffb46b" : "#8b93a3"; ctx.fillRect(x - 2, y - 2, 4, 4); }
         });
         dv.points = pts; dv.circles = null;
+        if(st.profile.shoe_tops){for(const [side,fraction] of Object.entries(st.profile.shoe_tops)){
+          const yy=dv.map.toScreen([0,dGround+fraction*Hd,0])[1];ctx.strokeStyle=side==='l'?'#f7c45e':'#65e6ff';ctx.setLineDash([5,4]);ctx.beginPath();ctx.moveTo(0,yy);ctx.lineTo(dv.w,yy);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=ctx.strokeStyle;ctx.fillText((side==='l'?'Left':'Right')+' shoe top',8,yy-4);
+        }}
         if(st.mode === "shape" && cageBounds){
           const cs=[];for(let y=0;y<3;y++)for(let x=0;x<3;x++){const i=x+3*y+9*cageSlice,base=H.latticePoint(i,cageBounds),d=st.profile.lattice?.offsets?.[i]||[0,0,0];cs.push({id:i,at:base.map((v,a)=>v+d[a]*Hd),r:Hd*.025});}
           for(const g of cs)circle(ctx,dv.map,g.at,g.r,"#ffce66","#ffce6644",String(g.id));dv.cage=cs;
@@ -719,6 +736,7 @@
 
     // ---- DOM events on the side panel ----
     el.addEventListener("input", e => {
+      if(e.target.matches('[data-rt-shoe]')){const side=e.target.dataset.rtShoe;c.state.profile=H.normalize({...c.state.profile,shoe_tops:{...c.state.profile.shoe_tops,[side]:+e.target.value}});c.state.dirty=true;schedule();return;}
       const s = e.target.closest("[data-rt-set]"); if (!s) return;
       c.setValue(s.dataset.rtSet, s.value);
       const out = s.parentElement.querySelector("output"), v = +s.value, path = s.dataset.rtSet;
@@ -729,6 +747,10 @@
       if (b) { c.setRoleBone(b.dataset.rtBone, b.value); refit(); schedule(); return; }
       if(e.target.matches('[data-rt-cage-slice]')){cageSlice=+e.target.value;schedule();return;}
       if(e.target.matches('[data-rt-plant]')){c.state.profile=H.normalize({...c.state.profile,plant_feet:e.target.checked});c.state.dirty=true;schedule();return;}
+      if(e.target.matches('[data-rt-preserve]')){c.state.profile=H.normalize({...c.state.profile,preserve_geometry:e.target.checked});c.state.dirty=true;schedule();return;}
+      if(e.target.matches('[data-rt-shoes]')){
+        if(e.target.checked&&['l','r'].some(s=>!c.state.roles[s+'_foot']||!c.state.roles[s+'_shin']||c.state.roles[s+'_foot']===c.state.roles[s+'_shin'])){e.target.checked=false;ui.status('Assign distinct left/right shin and foot bones in What is what before setting shoe boundaries.');return;}
+        const p={...c.state.profile};if(e.target.checked)p.shoe_tops={l:.15,r:.15};else delete p.shoe_tops;c.state.profile=H.normalize(p);c.state.dirty=true;schedule();return;}
       if (e.target.matches("[data-rt-tpose]")) { c.setTpose(e.target.checked); return; }
       if (e.target.matches('[data-rt="slot"]')) c.setSlot(e.target.value).then(() => { refit(); schedule(); }).catch(err => ui.status("✗ " + err.message));
     });
@@ -740,6 +762,10 @@
       const go = e.target.closest("[data-rt-go]"); if (!go) return;
       const what = go.dataset.rtGo;
       try {
+        if(what==='workspace'){
+          if(!window.GBoxDecimationReview?.workspace)throw Error('Blender workspace control is unavailable; reload gBox.');
+          go.disabled=true;try{await window.GBoxDecimationReview.workspace({character:c.state.slug},{api:io.api,assetUrl:io.url},q('[data-rt-workspace-status]'));}finally{go.disabled=false;}return;
+        }
         if (what === "close") { if (c.state.dirty && io.confirm && !io.confirm("Close without saving the retarget changes?")) return; dispose(); return; }
         if(what === "shape-reset"){const profile={...c.state.profile};delete profile.lattice;c.state.profile=H.normalize(profile);c.state.dirty=true;schedule();return;}
         if (what === "guess") { c.guess(); refit(); schedule(); return; }

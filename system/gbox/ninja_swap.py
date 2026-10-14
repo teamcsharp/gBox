@@ -61,6 +61,8 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
     rigged = S.write_rigged(prims, tgt, work / "rigged.gltf", name)
     src_tris = sum(len(p["tris"]) for p in prims)
     rep["source_triangles"] = src_tris
+    preserve = bool(((scale or {}).get('profile') or {}).get('preserve_geometry'))
+    if preserve: budgets = [src_tris]
     last = None
     from . import fit_events as FE
     if FE.active():                                        # every vertex rides one node (the game's own tree)
@@ -94,6 +96,10 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
         try:
             data = encode(geo)
         except ValueError as e:
+            if preserve:
+                FE.comparison(prims, rp, reason='Edited mesh retained; native allocation rejected it; automatic reduction disabled',
+                              limits={'allocation_failure':str(e),'automatic_reduction':False})
+                raise ValueError('Automatic geometry reduction disabled: '+str(e)) from e
             last = e
             FE.stage("encode", "running", {"budget": budget, "result": str(e)[:120]})
             continue

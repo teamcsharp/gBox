@@ -62,6 +62,11 @@
     }
     if(Object.keys(cage).length)out.lattice={offsets:cage};
     if(p.plant_feet === true)out.plant_feet=true;
+    if(p.preserve_geometry === true)out.preserve_geometry=true;
+    if(p.shoe_tops && typeof p.shoe_tops==='object'){
+      const tops={};for(const side of ['l','r'])if(side in p.shoe_tops)tops[side]=num(p.shoe_tops[side],.15,0,.5);
+      if(Object.keys(tops).length)out.shoe_tops=tops;
+    }
     return out;
   }
   function latticePoint(i,b) { return [0,1,2].map(a=>b.min[a]+(b.max[a]-b.min[a])*([i%3,Math.floor(i/3)%3,Math.floor(i/9)][a]/2)); }
@@ -75,8 +80,16 @@
   }
   function isIdentity(p) {
     const n = normalize(p);
-    return !n.lattice && !n.plant_feet && !Object.keys(n.adjust).length && !Object.keys(n.joints).length
+    return !n.lattice && !n.plant_feet && !n.shoe_tops && !n.preserve_geometry && !Object.keys(n.adjust).length && !Object.keys(n.joints).length
       && ["height", "ground", "head", "torso_width", "arm_length", "leg_length"].every(k => n[k] === DEFAULT[k]);
+  }
+  function shoeRoles(flat,roles,profile,floor,height){
+    const tops=normalize(profile).shoe_tops||{};
+    return roles.map((role,i)=>{
+      const side=role?.[0];if(!(side in tops)||!['thigh','shin','foot'].includes(role?.slice(2)))return role;
+      if(flat[i*3+1]<=floor+tops[side]*height)return side+'_foot';
+      return role===side+'_foot'?side+'_shin':role;
+    });
   }
   // ---- joint moves: where a role's pivot sits on the donor (fractions of the donor height, editor frame) ----------------
   function jointOf(p, role) { return ((p && p.joints) || {})[role] ? p.joints[role].slice() : [0, 0, 0]; }
@@ -477,7 +490,7 @@
     applyVertex, applyPositions, guessRoles, assign, issues, roleOverrides, applyOverrides, boneRoles, handles, drag, hit,
     view, frame, baseFit, standardSkeleton, euler, facing, rotate, JOINT_RANGE, LIMB_CHAINS, GOALS, JOINT_LABELS, jointOf,
     setJoint, moveJoint, resetJoint, movedPositions, rotBetween, boundaryNormal, resegment, tPose, posedJoint, goalCircles,
-    dragJoint, limbFit, compose, latticePoint, deformCage };
+    dragJoint, limbFit, compose, latticePoint, deformCage, shoeRoles };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxRetargetHandles = api;
 })(typeof window !== "undefined" ? window : globalThis);

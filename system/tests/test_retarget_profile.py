@@ -50,6 +50,35 @@ def test_mesh_foot_placement_uses_weighted_foot_vertices_and_keeps_ground_offset
     assert report['feet']['applied'] and np.allclose(np.diff(out['pos'],axis=0),np.diff(points,axis=0))
 
 
+@pytest.mark.parametrize('lying',[False,True])
+def test_explicit_shoe_planes_split_overassigned_feet_and_recover_shoe_vertices(lying):
+    rig=donor_rig(weighted=True)
+    p=rig['prims'][0]
+    # Height remains two units; an overassigned foot extends up the leg, while a shoe point was called shin.
+    p['pos'][:3]=[[.1,.1,0],[.1,.6,0],[.1,.2,0]]
+    p['owner'][:3]=[JMAP['l_foot'],JMAP['l_foot'],JMAP['l_shin']]
+    p['J'][:3,0]=p['owner'][:3]
+    if lying:
+        rotation=np.array([[-1.,0,0],[0,0,-1],[0,-1,0]])
+        rig['joints']=rig['joints']@rotation.T
+        p['pos']=p['pos']@rotation.T;p['nrm']=p['nrm']@rotation.T
+    old=p['owner'].copy()
+    result,report=RP.move_joints(rig,{'shoe_tops':{'l':.15}})
+    assert result['prims'][0]['owner'][:3].tolist()==[JMAP['l_foot'],JMAP['l_shin'],JMAP['l_foot']]
+    assert result['prims'][0]['J'][:3,0].tolist()==result['prims'][0]['owner'][:3].tolist()
+    assert report['vertices_reassigned']==2
+    np.testing.assert_array_equal(p['owner'],old)
+    np.testing.assert_allclose(result['joints'],rig['joints'])
+    assert RP.digest({'shoe_tops':{'l':.15}})!=RP.digest({'shoe_tops':{'l':.2}})
+    assert RP.profile_of({'profile':{'preserve_geometry':True}})['preserve_geometry']
+
+
+def test_shoe_planes_require_distinct_shin_and_foot_roles():
+    rig=donor_rig();del rig['roles']['l_foot']
+    with pytest.raises(ValueError,match='distinct l shin and foot'):
+        RP.move_joints(rig,{'shoe_tops':{'l':.15}})
+
+
 def test_normalize_clamps_numbers_and_drops_default_adjustments():
     p = RP.normalize({"height": 99, "ground": -3, "head": "1.5", "torso_width": float("nan"),
                       "adjust": {"l_fore": {"length": 0.01, "offset": [5, 0, 0]}, "r_fore": {}},
