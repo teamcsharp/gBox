@@ -1294,10 +1294,13 @@ class RetroArchAdapter(CommandAdapter):
             _audio_release(self)                       # the warm-up stream ends once the emulator has its own
 
     def _launch_game(self, rom: str) -> dict:
+        started = time.monotonic()
         if self.config is not None:
             rom = self._from_lst_zip(self._from_lst(self._from_gme(self._from_old_chd(self._from_7z(rom)))))
+        prepared = time.monotonic()
         plan = self._audio_plan()                          # before _argv: the session cfg names driver + device
         argv = self._argv(rom)
+        configured = time.monotonic()
         from .scene_support import video_driver
         self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
         self.core_path = argv[argv.index("-L") + 1] if "-L" in argv else None
@@ -1333,6 +1336,7 @@ class RetroArchAdapter(CommandAdapter):
         # the base boot wait: launch_game boot_timeout_s (#318, the "content not running in time" remedy) or
         # [game_audio] boot_wait_s; content loaded with audio still opening extends past it (extended_wait_s)
         boot_s = float(getattr(self, "boot_timeout_s", None) or ga.boot_wait_s)
+        boot_started = time.monotonic()
         for n, driver in enumerate(chain):
             if n:                                              # the previous driver stalled: same session, next driver
                 self.audio_driver = driver
@@ -1356,6 +1360,7 @@ class RetroArchAdapter(CommandAdapter):
                 shutil.copyfile(self.log_path, self.log_path.with_name(f"{self.log_path.stem}-{driver}.log"))
             except OSError:
                 pass
+        boot_finished = time.monotonic()
         if len(attempts) > 1 and self.config is not None:
             game_audio.remember(self.config.runtime, ((plan["sel"] or {}).get("chosen") or {}).get("id"),
                                 self.audio_driver, attempts[0]["driver"])
@@ -1370,6 +1375,11 @@ class RetroArchAdapter(CommandAdapter):
                "renderer": self.renderer(), "examine": _examine_ok(self.proc, 5.0), "audio": audio}
         if audio.get("warning"):
             out["warnings"] = [audio["warning"]]
+        out["startup_timings"] = {"prepare_s": round(prepared - started, 3),
+                                 "configure_s": round(configured - prepared, 3),
+                                 "cheats_and_environment_s": round(boot_started - configured, 3),
+                                 "boot_s": round(boot_finished - boot_started, 3),
+                                 "report_s": round(time.monotonic() - boot_finished, 3)}
         return out
 
     def _wait_boot(self, watch) -> tuple[str, dict | None]:
@@ -2207,7 +2217,9 @@ D-Pad/Right = `Pad E`
 
     def _launch_game(self, rom: str) -> dict:
         self._p(10, "Starting Dolphin")
+        started = time.monotonic()
         argv = self._argv(rom)
+        configured = time.monotonic()
         logs = self.config.runtime / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         self.log_path = logs / f"dolphin-win-{self.port}.log"
@@ -2219,6 +2231,7 @@ D-Pad/Right = `Pad E`
         self.proc = _popen(self, argv, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=str(Path(argv[0]).parent),
                            startupinfo=si)
         self._p(70, "Dolphin started; releasing the boot hold")
+        spawned = time.monotonic()
         try:
             gdb = self._debugger()                                 # with a GDB port set, Dolphin waits for a client to boot
             try:
@@ -2234,11 +2247,15 @@ D-Pad/Right = `Pad E`
                 raise RuntimeError(f"Dolphin exited {self.proc.returncode}: {self.log_tail()}")
             self.dbg = None
             self._p(95, f"running without memory access (no memory mods): {e}")
+        released = time.monotonic()
         from . import game_audio
-        return {"pid": self.proc.pid, "local_window": True, "debug_port": self.port, "debugger": bool(self.dbg),
+        out = {"pid": self.proc.pid, "local_window": True, "debug_port": self.port, "debugger": bool(self.dbg),
                 "worker_name": __import__("platform").node(), "emulator": "dolphin (Windows)", "log": str(self.log_path),
                 "examine": _examine_ok(self.proc, 10.0),
                 "audio": game_audio.session_detail(getattr(self, "audio_sel", None) or {}, getattr(self, "audio_backend", None))}
+        out["startup_timings"] = {"configure_s": round(configured - started, 3), "spawn_s": round(spawned - configured, 3),
+                                 "boot_hold_s": round(released - spawned, 3), "report_s": round(time.monotonic() - released, 3)}
+        return out
 
     def stop_game(self) -> dict:
         if self.paused_tids:
