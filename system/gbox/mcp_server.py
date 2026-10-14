@@ -82,6 +82,8 @@ CONVENIENCE = {
                    obj({"include_finished": B})),
     "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
                       obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
+    "get_build_feedback": ("Read durable operator reports and image references for a game, including repair findings and exact revisions that later characters builds must acknowledge. Use read_request_artifact with request_id/sha256 to inspect images.",
+                           obj({"game_id":S}, ["game_id"])),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
                     obj({"request_id": S}, ["request_id"])),
     "read_request_artifact": ("Read an image or text attachment belonging to an inbox request. Images are returned as image content.",
@@ -300,6 +302,8 @@ def build(base_url: str, token: str) -> Server:
                     | ({"hermes_capped": True} if r["id"] in capped else {})
                     for r in rows if r["id"] in merged][:READY_LIMIT]
             return out
+        if name == "get_build_feedback":
+            return await get("/api/build-feedback", game_id=a["game_id"])
         if name == "get_request":
             return await get(f"/api/requests/{a['request_id']}")
         if name == "reply_request":

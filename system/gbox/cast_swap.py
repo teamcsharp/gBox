@@ -734,6 +734,12 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
     for s in chosen:
         if s.get("status") == "not_working":
             s["skip"] = s.get("reason") or "the game doesn't draw this writer's output yet (status not_working); left as it is"
+    if strategy(w["writer"])[0] == "single" and str(slots or "all").strip().lower() == "all":
+        return {"status":"unsupported_cast", "game_id":game["game_id"], "title":game.get("title"),
+                "writer":w["writer"], "slots":all_slots, "assignments":[], "mod":None,
+                "requested_scope":"whole_cast", "message":f"{w['writer']} only supports individual replacements. "
+                "A whole-cast request cannot be reduced to one player or a set of separate single-character ROMs. "
+                "Inventory the missing cast/cinematic slots and implement a combined writer. Explicit slots=player is a diagnostic only."}
     if strategy(w["writer"])[0] == "single":               # one slot per mod: the player (or the first slot) only
         first = next((s for s in chosen if not s.get("skip") and s["kind"] == "player"),
                      next((s for s in chosen if not s.get("skip")), None))

@@ -138,6 +138,8 @@ def record_call(ctx, inp, out) -> dict | None:
         extra = None if reused else build_record.from_ctx(ctx) | {
             "build_call": build_record.call_of("characters", d),
             "kind": "cast" if d.get("op") == "cast_swap" else "character"}
+        if not reused and d.get("feedback_ack"):
+            extra["feedback_reviewed"] = d["feedback_ack"]
         if not reused and isinstance(res.get("replacement_scope"), dict):
             extra["replacement_scope"] = res["replacement_scope"]
         return recipe if record(ctx.config, gid, res["mod"], recipe, extra) else None

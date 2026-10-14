@@ -2238,6 +2238,14 @@ def create_app(config: Config) -> FastAPI:
             for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                    try:
+                        build_feedback.check(store, j)
+                    except HTTPException as exc:
+                        detail = exc.detail if isinstance(exc.detail,dict) else {"message":str(exc.detail)}
+                        waiting = {"worker":w["name"], "reason":detail.get("message"), "code":detail.get("code")}
+                        if j.get("admission_wait") != waiting:
+                            store.put("job",j["id"],j | {"admission_wait":waiting})
+                        continue
                     from . import background_testing
                     if background_testing.requires_admission(j):
                         reason = background_testing.guarded_reason(store, w)
@@ -2513,8 +2521,12 @@ def create_app(config: Config) -> FastAPI:
         if built and flag.get('built') and built != flag['built']: return
         raise HTTPException(409, f'This build is marked broken; investigation #{flag.get("number") or "pending"}. Choose another build.')
 
+    from . import build_feedback
+    build_feedback.routes(app, store, auth)
+
     @app.post("/api/jobs")
     def submit(req: JobRequest, actor=Depends(auth), origin=Depends(request_origin)):
+        build_feedback.check(store, req)
         origin = origin if isinstance(origin, dict) else {"via": "internal"}   # in-server callers pass no request
         if req.tool in ('@launch', 'launch_game'):
             i = req.input or {}
