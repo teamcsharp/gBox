@@ -425,23 +425,43 @@ def _pid_window(pid: int):
     return found[0] if found else None
 
 
+def _win_input_in_front(user32, root, hidden_ok: bool) -> bool:
+    foreground = user32.GetForegroundWindow()
+    if not foreground:
+        return False
+    if root and foreground == root:
+        return True
+    if not hidden_ok:
+        return False
+    # GPU capture leaves Dolphin's HWND off-screen instead of parenting it into
+    # Electron. Its global emulator hotkeys still belong to the foreground gBox.
+    import ctypes
+    from ctypes import wintypes
+    from .tools import _exe_name
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(wintypes.HWND(foreground), ctypes.byref(pid))
+    return _exe_name(pid.value) == 'gbox.exe'
+
+
 def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
     """hidden_ok: the keys are emulator hotkeys that need no focus (Dolphin's gBox F13-F15 chords): sent even while the
     game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved)."""
     import ctypes
     from ctypes import wintypes
     u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    if hidden_ok and any(e.get('key') not in {'F13', 'F14', 'F15', 'Control_L', 'Control_R', 'Shift_R'} for e in events):
+        raise ValueError('Background emulator input accepts only gBox Dolphin hotkeys')
     h = _pid_window(pid)
     if not h and not hidden_ok:
         raise RuntimeError("the game window isn't open")
-    if h:
-        root = u.GetAncestor(h, 2)                               # GA_ROOT: gBox when docked, else the emulator itself
-        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
-            if u.GetForegroundWindow() == root:
-                break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("gBox isn't the active window: autoplay waits rather than typing into another app")
+    root = u.GetAncestor(h, 2) if h else None
+    for _ in range(100):                                         # wait (up to 10 s) for the operator to bring gBox back
+        if _win_input_in_front(u, root, hidden_ok):
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
+    if h and not hidden_ok:                                     # global Dolphin hotkeys need no native-window focus
         me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(h, None)
         u.AttachThreadInput(me, them, True)
         u.SetFocus(h)
@@ -453,7 +473,12 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
 
     class INP(ctypes.Structure):
         _fields_ = [("type", wintypes.DWORD), ("ki", KI), ("pad", ctypes.c_ubyte * 8)]
-    seq, pressed = [], set()
+    seq, pressed, held = [], set(), {}
+    def release_injected():
+        for sc, ext in held.values():
+            release = INP(type=1, ki=KI(0, sc, 0x0008 | 0x0002 | (0x0001 if ext else 0), 0, 0))
+            u.SendInput(1, ctypes.byref(release), ctypes.sizeof(INP))
+        held.clear()
     for ev in events:
         keys = PAD_KEYS.get(int(ev.get("player", 1)), PAD_KEYS[1])
         name = keys.get(ev["key"], ev["key"])
@@ -465,11 +490,18 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
-        if u.GetForegroundWindow() != root:                      # the operator switched apps mid-batch: never type there
+        if not _win_input_in_front(u, root, hidden_ok):          # the operator switched apps mid-batch: never type there
+            release_injected()                                # don't leave Ctrl/Shift held in the next application
             return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
+        if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP)) != 1:
+            release_injected()
+            raise RuntimeError('Windows rejected emulator input; the hotkey was not completed')
         seq.append(name)
-        u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP))
+        if down:
+            held[name] = (sc, ext)
+        else:
+            held.pop(name, None)
     return {"sent": len(seq)}
 
 
@@ -2070,7 +2102,10 @@ D-Pad/Right = `Pad E`
                *({"key": m, "down": False} for m in reversed(mods))]
         if self.ff_on:                                     # the lane key alone = no speed limit: press it again
             seq.append({"key": self.lane, "down": True})
-        return win_send_keys(self.proc.pid, seq, hidden_ok=True)
+        result = win_send_keys(self.proc.pid, seq, hidden_ok=True)
+        if result.get('stopped') or result.get('sent') != len(seq):
+            raise RuntimeError('Dolphin hotkey was interrupted before completion; the game was kept running')
+        return result
 
     def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
         """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""
