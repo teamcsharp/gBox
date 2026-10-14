@@ -49,6 +49,16 @@ const fetching = (done, total = 1272, pct = 20 + Math.floor(8 * done / total)) =
   progress: { pct, msg: `Fetching mod doa2_roster_59d8ed0e from the collection: ${done}/${total} MB`, ts: 5 },
   progress_log: ['Launching Dead or Alive 2', `Fetching mod doa2_roster_59d8ed0e from the collection: ${done}/${total} MB`] });
 
+test('another PC agent launch cannot replace the operator launch progress', () => {
+  const model = LB.createModel();
+  model.remote([launch({ state: 'queued' }), launch({ id: 'agent', agent_use: true, created: 200,
+    input: { game: { game_id: '007', title: 'Agent Under Fire' } },
+    progress: { pct: 72, msg: 'Dolphin started; releasing the boot hold' } })]);
+  assert.equal(model.view().job.id, 'L1');
+  assert.doesNotMatch(model.view().title, /Agent Under Fire/);
+  assert.equal(model.live.size, 1);
+});
+
 // ---------- colour ----------
 test('the fill colour runs red at 0%, green at 33%, blue at 66%, white at 100%', () => {
   assert.deepEqual(LB.colorAt(0), [229, 38, 38]);

@@ -59,7 +59,7 @@
       if (!e.ctrlKey && !e.altKey) v.focus({ preventScroll: true });
     });
     v.addEventListener("contextmenu", e => {
-      e.preventDefault();
+      e.preventDefault(); e.stopPropagation();
       if (typeof env.pipMenu === "function") env.pipMenu(e.clientX, e.clientY);
       else console.log("GBOX:" + JSON.stringify({ ev: "gamecontext", x: e.clientX, y: e.clientY }));
     });
