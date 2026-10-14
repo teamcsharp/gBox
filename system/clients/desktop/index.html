@@ -3830,6 +3830,11 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
     else if (m.ev === "gameoverlaystatus") gbox.overlay("surface-status", m.status);
     else if (m.ev === "blendercopied") blenderCopiedMsg(m);
+    else if (m.ev === "copyassetimage") {
+      const reply = error => wv.executeJavaScript(`window.gboxImageCopies?.[${JSON.stringify(m.id)}]?.(${JSON.stringify(error || "")})`).catch(()=>{});
+      if (typeof m.data !== 'string' || m.data.length > 24*1024*1024 || !m.data.startsWith('data:image/png;base64,')) reply('Invalid or oversized clipboard image.');
+      else gbox.clipImage(m.data).then(()=>reply(''),err=>reply(err.message));
+    }
     else if (m.ev === "buildnote") buildNoteMsg(m);                                                                // a finished build
     else if (m.ev === "buildrenamed" || m.ev === "buildfavorite") buildRenamedMsg(m);                              // the Sessions header
     else if (m.ev === "openrequest") modsGalleryRequest({ id: m.id });                                            // tray: Open request
@@ -3887,7 +3892,7 @@ function pwCrop() {                                            // the frozen fra
 }
 async function pwBlenderCopy(input) {                          // blender_copy on this PC's worker: Blender's own clipboard (Ctrl+V)
   const ws = await pwApi("/api/workers");
-  const me = ws.find(w => w.online && w.name === S.workerName) || ws.find(w => w.online && w.os === "windows");
+  const me = ws.find(w => w.online && w.name === S.workerName);
   if (!me) throw new Error("no gBox worker on this PC (Blender's clipboard is local to this machine)");
   const r = await PW.runTool({ api: pwApi }, "blender_copy", input, { extra: { require_worker: me.id } });
   if (!r.ok) throw new Error(r.job.error || r.job.state);
@@ -4349,7 +4354,8 @@ async function blenderCopiedMsg(m) {                          // GBOX:{ev:"blend
   const r = m.result || {};
   let tok = S.tok || "";
   if (!tok && String(r.source || "").startsWith("/api/")) { try { tok = S.tok = await gbox.token(); } catch {} }
-  blenderPastePopup(r, blenderPasteGlb(r.source, S.apiUrl, tok));
+  blenderPastePopup(r, r.paste_as && r.paste_as !== "model" ? "" : blenderPasteGlb(r.source, S.apiUrl, tok));
+  if (r.paste_as && r.paste_as !== "model") $("#blpop .av").innerHTML = `<span class="mut">${esc(r.paste_as.replaceAll("_"," "))} ready for Ctrl+V${r.paste_as === "movie_plane" ? " · Play the Blender timeline to animate; MP4 has an opaque background." : ""}</span>`;
 }
 document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#blpop")?.classList.contains("on")) blenderPasteClose(); });
 // ---------------- texture pop-up (#186): click any texture or picture in gBox to inspect it in a movable window ----------------
@@ -6764,6 +6770,13 @@ $("#ch-pages").onclick = async () => { try { const c = await chatEvents(); const
 <script src="issue-report.js"></script>
 <script src="../web/viz/asset-sidebar.js"></script>
 <script src="../web/viz/clip-player.js"></script>
+<script src="../web/viz/asset-context.js"></script>
+<script>
+window.GBOX_ASSET_MENU = GBoxAssetContext.mount(document, {
+  place:(el,x,y)=>fitMenu(el,x,y), image:data=>gbox.clipImage(data), blender:input=>pwBlenderCopy(input),
+  asset:a=>{const hit=String(a.url||'').match(/^\/api\/assets\/([^/]+)\/file/);if(!hit)throw Error('This asset has no gBox clipboard source.');return gbox.api('/api/assets/'+hit[1]+'/copy',{});}
+});
+</script>
 <script>
 (async () => {
   const settings = await gbox.settings(), token = await gbox.token(), host = document.querySelector('.app');

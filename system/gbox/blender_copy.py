@@ -17,6 +17,9 @@ Sources: character=<collection slug> | environment=<slug> | artifact=<sha of a .
          path=<local .glb/.gltf>. nodes=[names]: only those objects (an Examine 3D selection: one node per draw call).
 """
 import glob
+import base64
+import hashlib
+import io
 import json
 import os
 import platform
@@ -25,6 +28,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel
 
@@ -38,9 +43,53 @@ import sys, json, bpy
 a = sys.argv[sys.argv.index("--") + 1:]
 src, out, keep = a[0], a[1], set(json.loads(a[2]))
 tags = json.loads(a[3]) if len(a) > 3 else {}
+mode = a[4] if len(a) > 4 else "model"
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)
-bpy.ops.import_scene.gltf(filepath=src)
+if mode == "model":
+    bpy.ops.import_scene.gltf(filepath=src)
+else:
+    im = bpy.data.images.load(src, check_existing=False)
+    if mode == "movie_plane" and im.source != "MOVIE":
+        raise ValueError("MP4 image plane requires a movie")
+    width, height = im.size
+    if not width or not height:
+        raise ValueError("Blender could not decode the image")
+    if mode == "image_empty":
+        obj = bpy.data.objects.new("gBox image empty", None)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.empty_display_type = "IMAGE"
+        obj.data = im
+        obj.empty_display_size = 2
+        obj.empty_image_depth = "DEFAULT"
+    else:
+        bpy.ops.mesh.primitive_plane_add(size=2)
+        obj = bpy.context.object
+        obj.name = "gBox MP4 image plane" if mode == "movie_plane" else "gBox image plane"
+        obj.scale.x = width / height
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        mat = bpy.data.materials.new(obj.name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes; nodes.clear()
+        tex = nodes.new("ShaderNodeTexImage"); tex.image = im; tex.interpolation = "Closest"
+        emission = nodes.new("ShaderNodeEmission")
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        mix = nodes.new("ShaderNodeMixShader")
+        output = nodes.new("ShaderNodeOutputMaterial")
+        links = mat.node_tree.links
+        links.new(tex.outputs["Color"], emission.inputs["Color"])
+        links.new(tex.outputs["Alpha"], mix.inputs[0])
+        links.new(transparent.outputs[0], mix.inputs[1]); links.new(emission.outputs[0], mix.inputs[2])
+        links.new(mix.outputs[0], output.inputs["Surface"])
+        if hasattr(mat, "surface_render_method"): mat.surface_render_method = "DITHERED"
+        elif hasattr(mat, "blend_method"): mat.blend_method = "BLEND"
+        obj.data.materials.append(mat)
+        if mode == "movie_plane":
+            tex.image_user.frame_duration = im.frame_duration
+            tex.image_user.frame_start = 1
+            tex.image_user.use_auto_refresh = True
+            tex.image_user.use_cyclic = True
+    obj["gbox_paste_as"] = mode
 objs = list(bpy.data.objects)
 for o in objs:                                        # gBox round trip: role names on bones, the character on the armature
     if o.type == "ARMATURE" and tags.get("armature"):
@@ -232,9 +281,9 @@ def gbox_tags(src: Path) -> dict:
     return {"armature": arm, "bones": bones, "objects": objs}
 
 
-def to_blender(src: Path, nodes: list[str] | None = None) -> dict:
+def to_blender(src: Path, nodes: list[str] | None = None, paste_as: str = "model") -> dict:
     exe = find_blender()
-    tags = gbox_tags(src)
+    tags = gbox_tags(src) if paste_as == "model" else {}
     running = running_blenders()
     probe = probe_tempdir(exe)
     dirs = candidate_dirs(running, probe)
@@ -242,7 +291,7 @@ def to_blender(src: Path, nodes: list[str] | None = None) -> dict:
         script, staged = Path(td) / "gbox_copybuffer.py", Path(td) / COPYBUFFER
         script.write_text(SCRIPT)
         r = subprocess.run([exe, "-b", "--factory-startup", "--python", str(script), "--", str(src), str(staged),
-                            json.dumps(nodes or []), json.dumps(tags)], capture_output=True, text=True, timeout=300, creationflags=_NOWINDOW)
+                            json.dumps(nodes or []), json.dumps(tags), paste_as], capture_output=True, text=True, timeout=300, creationflags=_NOWINDOW)
         line = next((l for l in r.stdout.splitlines() if l.startswith("GBOX_RESULT ")), None)
         if not line:
             raise RuntimeError("Blender couldn't import the asset: " + (r.stdout + r.stderr)[-600:])
@@ -261,7 +310,7 @@ def to_blender(src: Path, nodes: list[str] | None = None) -> dict:
                   "gbox": {"character": (tags.get("armature") or {}).get("gbox_slug", ""), "roles": len(tags.get("bones") or {}),
                            "props": sorted(k for k, v in (tags.get("objects") or {}).items() if v.get("gbox_prop"))},
                   "blender_version": version, "blender_tempdir": probe.get("base", ""), "blender_pref_tempdir": probe.get("pref", ""),
-                  "running": [x["exe"] for x in running], "host": host,
+                  "running": [x["exe"] for x in running], "host": host, "paste_as": paste_as,
                   "next": f"In Blender on {host}, hover the 3D viewport and press Ctrl+V: the asset pastes with its textures."}
 
 
@@ -270,7 +319,8 @@ def _fetch(ctx, url: str, suffix: str) -> Path:
     r = httpx.get(f"{ctx.server}{url}", headers=ctx.headers, timeout=300)
     r.raise_for_status()
     ct = r.headers.get("content-type", "")
-    suffix = ".gltf" if (r.content[:1] == b"{" or "json" in ct) else ".glb"
+    if suffix in (".glb", ".gltf"):
+        suffix = ".gltf" if (r.content[:1] == b"{" or "json" in ct) else ".glb"
     f = Path(tempfile.mkdtemp(prefix="gbox-bl-")) / ("asset" + suffix)
     f.write_bytes(r.content)
     return f
@@ -284,10 +334,49 @@ class CopyIn(BaseModel):
     nodes: list[str] = []       # only these objects (Examine 3D draw-call node names)
     mod: str = ""               # a built swap mod (e.g. sm64_cloud, re4_aya): copies the character fitted to that game
     game_id: str = ""           # with mod
+    asset_url: str = ""         # same-control-plane asset file (never an arbitrary URL)
+    image_b64: str = ""         # current sprite frame / image, PNG encoded by the client
+    paste_as: Literal["model", "image_plane", "image_empty", "movie_plane"] = "model"
 
 
 class CopyOut(BaseModel):
     result: dict
+
+
+def asset_source(url: str) -> str:
+    """Only authenticated file endpoints. Never forward the worker token to a supplied host or query."""
+    import re
+    parsed = urlsplit(url)
+    path = unquote(parsed.path)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or "\\" in path or any(p in (".", "..") for p in path.split("/")):
+        raise ValueError("asset_url must be a gBox asset API path without credentials or query parameters")
+    if not re.fullmatch(r"/api/(?:assets/[^/]+/file|artifacts/[0-9a-f]{64}|characters/[^/]+/(?:model|preview|file/.+)|environments/[^/]+/file/.+)", path):
+        raise ValueError("asset_url is not a supported asset file endpoint")
+    return parsed.path
+
+
+def prepare_image(src: Path, paste_as: str, media_dir: Path) -> Path:
+    """Pack still PNGs into copybuffer; keep movies at a stable content-addressed path (Blender cannot pack them)."""
+    from PIL import Image
+    data = src.read_bytes()
+    if len(data) > 64 * 1024 * 1024:
+        raise ValueError("clipboard media exceeds 64 MB")
+    if paste_as == "movie_plane":
+        if len(data) < 12 or data[4:8] != b"ftyp":
+            raise ValueError("MP4 image plane requires an MP4 file; select an animation with an MP4 export")
+        suffix = ".mp4"
+    else:
+        with Image.open(io.BytesIO(data)) as im:
+            if im.width * im.height > 16000000:
+                raise ValueError("image exceeds 16 megapixels")
+            im.seek(0)
+            out = io.BytesIO(); im.convert("RGBA").save(out, format="PNG"); data = out.getvalue()
+        suffix = ".png"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    dest = media_dir.resolve() / (hashlib.sha256(data).hexdigest() + suffix)
+    if not dest.exists():
+        dest.write_bytes(data)
+    return dest
 
 
 @tool("blender_copy", "1.0", CopyIn, CopyOut, capabilities=["assets"], permissions=[P.EXECUTE], timeout_s=400)
@@ -297,7 +386,25 @@ def blender_copy(inp: CopyIn, ctx):
     slug>, environment=<slug>, artifact=<scene_capture glb sha> or path=<.glb>; nodes=[...] keeps only those draw calls
     (an Examine 3D selection). The result lists the files written (copybuffers) and the source (an API path the client can
     show as a preview)."""
-    if inp.mod:                                        # which collection character this mod was built from
+    if inp.image_b64:
+        if inp.paste_as not in ("image_plane", "image_empty"):
+            raise ValueError("image_b64 requires image_plane or image_empty")
+        if len(inp.image_b64) > 24 * 1024 * 1024:
+            raise ValueError("clipboard image is too large")
+        data = base64.b64decode(inp.image_b64, validate=True)
+        src = Path(tempfile.mkdtemp(prefix="gbox-bl-")) / "image.png"
+        src.write_bytes(data); source = ""
+    elif inp.asset_url:
+        source = asset_source(inp.asset_url)
+        if inp.paste_as == "model" and source.startswith("/api/assets/"):
+            # The library bundles a .gltf's companion buffers/images into the artifact.
+            import httpx
+            reply = httpx.post(f"{ctx.server}{source[:-5]}/copy", headers=ctx.headers, json={}, timeout=300)
+            reply.raise_for_status()
+            digest = reply.json().get("sha256", "")
+            source = asset_source("/api/artifacts/" + digest)
+        src = _fetch(ctx, source, ".mp4" if inp.paste_as == "movie_plane" else ".image" if inp.paste_as != "model" else ".glb")
+    elif inp.mod:                                        # which collection character this mod was built from
         import httpx
         chars = httpx.get(f"{ctx.server}/api/characters", headers=ctx.headers, timeout=60).json()
         hit = next((c for c in chars for gid, ts in (c.get("targets") or {}).items()
@@ -328,4 +435,12 @@ def blender_copy(inp: CopyIn, ctx):
         src = _fetch(ctx, source, ".glb")
     else:
         raise ValueError("give character, environment, artifact or path")
+    if inp.paste_as != "model":
+        downloaded = src
+        try:
+            src = prepare_image(src, inp.paste_as, Path(ctx.config.data_dir) / "blender-media")
+        finally:
+            if (inp.image_b64 or inp.asset_url) and downloaded.parent.name.startswith("gbox-bl-"):
+                shutil.rmtree(downloaded.parent)
+        return {"result": to_blender(src, inp.nodes, inp.paste_as) | {"source": source, "media_path": str(src)}}
     return {"result": to_blender(src, inp.nodes) | {"source": source}}

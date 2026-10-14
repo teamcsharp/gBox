@@ -100,6 +100,7 @@
   }
 
   const CSS = `.gbclips{margin-top:10px;border:1px solid var(--line,#333);border-radius:8px;padding:8px;font-size:12px}
+.gbclips [hidden]{display:none!important}
 .gbclips .gbc-h{display:flex;gap:8px;align-items:baseline}.gbclips .gbc-h b{flex:1}
 .gbclips .gbc-q{width:100%;margin:6px 0;box-sizing:border-box}
 .gbclips .gbc-list{max-height:180px;overflow:auto;display:grid;gap:2px}

@@ -147,9 +147,13 @@ test('blenderCopy runs on this PC, returns the result, tells the shell, and word
   assert.equal(f.ctx.blenderCopyNote({ triangles: 1, packed: 0, copybuffer: 'C:/t/copybuffer.blend' }), "on Blender's clipboard: 1 triangles, 0 textures · hover a 3D viewport there and press Ctrl+V (1 file written)");
 });
 
-test('outside the shell nothing is logged; a copy that wrote no file, a failed job and a missing worker are readable errors', async () => {
+test('unidentified or offline local workers never send a clipboard job to another PC; failures are readable', async () => {
   const f = webFixture({ worker: '', job: { state: 'succeeded', output: { result: R } } });
-  await f.ctx.blenderCopy({ character: 'mario' }, 'sid'); assert.deepEqual(f.logs, []);
+  await assert.rejects(f.ctx.blenderCopy({ character: 'mario' }, 'sid'), /no gBox worker on this PC/);
+  assert.deepEqual(f.logs, []); assert.deepEqual(f.jobs, []);
+  const offline = webFixture({workers:[{id:'remote',name:'i9-NUC',online:true,os:'windows'}]});
+  await assert.rejects(offline.ctx.blenderCopy({character:'mario'}), /no gBox worker on this PC/);
+  assert.deepEqual(offline.jobs, []);
   const none = webFixture({ job: { state: 'succeeded', output: { result: { triangles: 1 } } } });
   await assert.rejects(none.ctx.blenderCopy({ character: 'mario' }, 'sid'), /ran on JAYBUILTFINALE but no clipboard file was written/);
   const failed = webFixture({ job: { state: 'failed', error: 'no Blender found on this machine' } });
