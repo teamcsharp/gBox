@@ -435,12 +435,13 @@ def _triangles(path: Path):
 
 
 def render_preview(path: Path, out: Path, size: int = 384, yaw: float = -30.0, persp: tuple | None = None,
-                   cull: bool = False) -> Path:
+                   cull: bool | str = False) -> Path:
     """Headless preview (no GPU): flat-shaded, textured per triangle (corner + centre samples), painter's order,
     3/4 front view of a character facing +Z. persp=(P00, P11): perspective from the origin looking down -Z instead
-    (a captured scene seen through the game's own camera). cull=True drops the triangles facing away from the camera
-    (glTF counter-clockwise fronts), the way a game that culls back faces draws them: single-sided parts seen from
-    behind show as holes instead of their inner side."""
+    (a captured scene seen through the game's own camera). cull=True (or "ccw") drops the triangles facing away from
+    the camera with glTF's counter-clockwise fronts, cull="cw" with clockwise fronts (a model exported in a game's own
+    winding, e.g. Soul Calibur II's GX lists), the way a game that culls back faces draws them: single-sided parts
+    seen from behind show as holes instead of their inner side."""
     from PIL import Image, ImageDraw
     tris = _triangles(path)
     if not tris:
@@ -476,7 +477,7 @@ def render_preview(path: Path, out: Path, size: int = 384, yaw: float = -30.0, p
         ln = np.linalg.norm(n)
         if ln < 1e-12:
             continue
-        if cull and (n[2] if not persp else -float(n @ q.mean(0))) <= 0:
+        if cull and (1 if cull != "cw" else -1) * (n[2] if not persp else -float(n @ q.mean(0))) <= 0:
             continue
         if img is not None:
             h, w = img.shape[:2]

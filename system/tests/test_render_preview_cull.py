@@ -20,6 +20,10 @@ def test_cull_hides_a_single_sided_quad_from_behind(tmp_path):
     C.render_preview(glb, front, size=96, yaw=0.0, cull=True)
     C.render_preview(glb, back, size=96, yaw=180.0, cull=True)
     assert _coverage(front) > 0.3 and _coverage(back) == 0.0
+    # clockwise fronts (a game's own winding): the same quad is a back face from the front
+    C.render_preview(glb, front, size=96, yaw=0.0, cull="cw")
+    C.render_preview(glb, back, size=96, yaw=180.0, cull="cw")
+    assert _coverage(front) == 0.0 and _coverage(back) > 0.3
     # without culling (the default) both sides are painted, as before
     C.render_preview(glb, back, size=96, yaw=180.0)
     assert _coverage(back) > 0.3
