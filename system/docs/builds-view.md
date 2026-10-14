@@ -104,8 +104,10 @@ slot names, the recipe's slot, or the name: "Multiplayer > map dm1 > play as Bon
 
 The 🗑 button sits at the bottom right of a Mods card, next to ▶ Launch / ▾ on a Builds row, and in every options menu
 (Mods ⋯ or a right-click, Builds ▾ or a right-click, Special builds ⋯). It opens a dialog (`viz/build-actions.js`)
-showing the name, folder, game, size and where the build lives, with two choices: **Delete everywhere** (the Spark
-collection plus every PC's copy; the default) or **Only this PC**.
+showing the name, folder, game, size and where the build lives, with three choices: **Delete everywhere** (the Spark
+collection plus every PC's copy; the default), **Only this PC**, or **Attached computers (keep Spark collection)**.
+The attached-computer choice lists each PC reporting a local or staged copy (for example i9-NUC and
+JAYBUILTFINALE). Check one or more PCs explicitly; no PC is preselected.
 
 `DELETE /api/builds/{game_id}/{name}?scope=all|node&node=<PC>`, or `POST .../delete {scope, node}` for clients whose
 api() only posts:
@@ -116,6 +118,12 @@ api() only posts:
   It then queues `file_mod op=delete_build` on every online PC whose heartbeat lists a copy. Offline PCs are listed as
   skipped, with a reason.
 * `scope=node` deletes only that PC's copy (the Spark's copy when the node is the Spark).
+* `POST .../delete {scope: "pcs", nodes: ["i9-NUC", "JAYBUILTFINALE"]}` queues deletion only on selected
+  attached PCs. Spark files, display names, favorites and build cards remain. Every target is validated and checked
+  for running games before any job is queued. Unknown PCs, Spark/Linux targets, empty selections and stale copy
+  inventories are rejected. Offline PCs are reported as skipped; they are not silently scheduled or counted as deleted.
+  The selected names are retained in the response, audit and deletion log. Broken-build investigation protection
+  still applies, so evidence cannot be removed before its investigation finishes.
 * The request is refused (409) while a running game uses the build or one of its staged copies. The worker checks
   again before deleting (`filemods.delete_build`).
 * The base copy (`modbase/`) and other builds are never touched. A build that only shares a name prefix, such as

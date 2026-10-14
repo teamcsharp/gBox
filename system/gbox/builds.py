@@ -749,7 +749,7 @@ def edit(store, jid: str, edits: dict, submit, actor: str) -> dict:
 DELETED_KIND = "build_deleted"       # store kind: the "recently deleted" log (marker facts of each deleted build)
 REPORT_KIND = BM.REPORT_KIND
 DELETED_KEEP = 200
-SCOPES = ("all", "node")
+SCOPES = ("all", "node", "pcs")
 
 
 def users_of(sessions: list[dict], gid: str, name: str, node_wid: str = "") -> list[dict]:
@@ -1125,12 +1125,12 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         return out
 
     # ---------------------------------------------------------------------------------------------- delete (#1656)
-    def delete_build(game_id: str, name: str, scope: str, node: str, actor: str) -> dict:
+    def delete_build(game_id: str, name: str, scope: str, node: str, actor: str, nodes=None) -> dict:
         broken = store.get(BQ.KIND, f'{game_id}/{name}')
         if broken and broken.get('state') != 'deleted':
             raise HTTPException(409, 'Broken build cleanup is managed by its investigation; evidence is deleted after findings and resolution are recorded')
         if scope not in SCOPES:
-            raise HTTPException(422, "scope: all (the Spark collection and every PC's copy) or node (one PC's copy)")
+            raise HTTPException(422, "scope: all (every copy), node (one PC), or pcs (selected attached computers, keeping Spark)")
         key, item = known(game_id, name)
         ws = workers()
         here = local_index(ws).get(key, [])
@@ -1139,8 +1139,21 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         target = by_name.get(node) if scope == "node" else None
         if scope == "node" and not target:
             raise HTTPException(422, f"node: the PC whose copy to delete ({node or 'none given'} is not a known PC)")
-        spark_side = scope == "all" or (target or {}).get("os") == "linux"
-        busy = users_of(sessions, game_id, name, "" if scope == "all" else str((target or {}).get("id") or ""))
+        selected = []
+        if scope == "pcs":
+            if not isinstance(nodes, list) or not nodes or len(nodes) > 64 or any(not isinstance(n, str) or not n for n in nodes):
+                raise HTTPException(422, "nodes: choose at least one attached computer (up to 64)")
+            selected = list(dict.fromkeys(nodes))
+            for n in selected:
+                w = by_name.get(n)
+                if not w or w.get("os") == "linux":
+                    raise HTTPException(422, f"nodes: {n} is not an attached PC; Spark collection cannot be selected")
+                if not any(h["node"] == n for h in here):
+                    raise HTTPException(409, f"{n} no longer reports a copy of this build; refresh the list")
+        spark_side = scope == "all" or (scope == "node" and (target or {}).get("os") == "linux")
+        # Check every selected PC before removing anything or submitting the first job.
+        busy = ([s for n in selected for s in users_of(sessions, game_id, name, str(by_name[n].get("id") or ""))]
+                if scope == "pcs" else users_of(sessions, game_id, name, "" if scope == "all" else str((target or {}).get("id") or "")))
         if busy:
             raise HTTPException(409, f"{(item or {}).get('mod_title') or name} is in use by a running game "
                                      f"({', '.join(s['session_id'] for s in busy)}): stop that game first, then delete it")
@@ -1149,7 +1162,7 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         jobs, skipped = [], []
         for h in here:
             w = by_name.get(h["node"]) or {}
-            if w.get("os") == "linux" or (scope == "node" and h["node"] != node):
+            if w.get("os") == "linux" or (scope == "node" and h["node"] != node) or (scope == "pcs" and h["node"] not in selected):
                 continue
             if not h.get("online"):
                 skipped.append({"node": h["node"], "reason": "offline: delete it there when the PC is back (Builds ▸ Delete)"})
@@ -1180,6 +1193,7 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
                 index.forget(game_id, name)
         did = uuid.uuid4().hex[:16]
         entry = {"id": did, "key": key, "game_id": game_id, "name": name, "scope": scope, "node": node if scope == "node" else "",
+                 **({"nodes": selected} if scope == "pcs" else {}),
                  "label": (item or {}).get("mod_title") or name, "game_title": (item or {}).get("title") or "",
                  "writer": (item or {}).get("writer") or "", "size": (item or {}).get("size"), "own_size": (item or {}).get("own_size"),
                  "built": (item or {}).get("built"),
@@ -1189,10 +1203,10 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         old = sorted(store.all(DELETED_KIND), key=lambda d: d.get("ts") or 0)
         for d in old[:-DELETED_KEEP]:
             store.delete(DELETED_KIND, d["id"])
-        store.audit(actor, "build.delete", key, {"scope": scope, "node": node, "spark_removed": spark["removed"],
+        store.audit(actor, "build.delete", key, {"scope": scope, "node": node, **({"nodes": selected} if scope == "pcs" else {}), "spark_removed": spark["removed"],
                                                   "jobs": [j["job_id"] for j in jobs], "skipped": skipped})
         changed()
-        return {k: entry[k] for k in ("id", "key", "scope", "node", "label", "spark", "jobs", "skipped", "cleared")}
+        return {k: entry[k] for k in ("id", "key", "scope", "node", "label", "spark", "jobs", "skipped", "cleared")} | ({"nodes": selected} if scope == "pcs" else {})
 
     @app.delete("/api/builds/{game_id}/{name}")
     def builds_delete(game_id: str, name: str, scope: str = "all", node: str = "", actor=Depends(auth)):
@@ -1204,8 +1218,8 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
 
     @app.post("/api/builds/{game_id}/{name}/delete")
     def builds_delete_post(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
-        """DELETE for clients whose api() only posts (the desktop app's IPC before it took a method): {scope, node}."""
-        return delete_build(game_id, name, str(body.get("scope") or "all"), str(body.get("node") or ""), actor)
+        """Deletion confirmation: {scope: all|node, node?}, or {scope: pcs, nodes: [PC names]} to keep Spark."""
+        return delete_build(game_id, name, str(body.get("scope") or "all"), str(body.get("node") or ""), actor, body.get("nodes"))
 
     # ---------------------------------------------------------------------------------------------- on this PC (#1639)
     def pc_of(node: str, ws: list[dict]) -> dict:
