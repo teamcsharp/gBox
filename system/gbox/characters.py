@@ -1758,7 +1758,8 @@ READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", 
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
                    "stranglehold": ("gbox.stranglehold_models", "stranglehold_reader"),
                    "pso_gc": ("gbox.pso_gc", "pso_gc_reader"),
-                   "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader")}
+                   "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader"),
+                   "defjam_vendetta": ("gbox.defjam_vendetta", "djv_gc_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:

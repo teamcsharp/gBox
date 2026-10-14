@@ -147,3 +147,31 @@ fighter was meant; all 58 are collectable by name.
 The vision parser already flattens object / mapping / scalar list fields (PR #132). A bare `true` / `false` list
 field now carries no item instead of failing "invalid actors"; `tests/test_session_observer_vision.py` replays a
 ring / crowd / HUD shaped reply. Acceptance stays the next operator Def Jam session recording observations.
+
+## GameCube reader v2: skeleton, weights, roles
+
+`gbox/defjam_vendetta.py` (GDTE69 rev 0, catalog `8b37766f557e1f5f`) v1 wrote static GLBs with `"roles": {}`, so
+cast_swap refused all its entries ("no body roles"). v2 (`READER_VERSION = 2`, meta `djv_gc_reader: 2`, registered in
+`characters.READER_VERSIONS`) reads each part's `.act` skeleton and `.skn` weights (formats in the module docstring)
+and writes one skinned GLB per costume. The 42-node BODY tree and T-pose match PS2 (pelvis 10.56, head end 20.71
+units), so the PS2 roles and `body_NN` joint names apply unchanged. The face and hand nodes join the tree under
+head 7 and wrists 13 / 19, which gives 73 joints. The accessory (m5) reuses the face's nodes and the "al" part (m4)
+reuses BODY's. Vertices are in model space at raw / 2^(.skn fraction bits). The pair weight bytes are (bone a, bone b),
+and every used vertex's weights sum to 256 with at most 2 bones. The GLB is in metres at the PS2 scale (1 / 11.7).
+The reader fails loudly when a stored vertex copy differs from the `.gpl` or when a used vertex has no weight.
+
+Offline, on the owned disc's files, all 58 costumes extract with 18/18 roles and a rest-pose skinning error of
+1.4e-5 units. Added to a scratch library with `characters.add`, all 58 pass `cast_swap.gate` and are replacement
+`ready` (humanoid, T bind, 1.81 to 1.94 m tall). Evidence (offline renders, not game frames) is in
+`D:\gBox\research\defjam_gc\evidence\`.
+
+### Refresh after deploy
+
+Once main is on the Spark's share, existing v1 entries are stale (`reader_status`: v1 < v2). `collect` re-extracts
+stale entries itself, and the cast_swap gate re-extracts a stale donor on demand.
+
+1. `characters op=collect game_id=8b37766f557e1f5f rebuild=true`. Expect `status: complete`, with `retargetable`
+   equal to `characters` (57 or 58, depending on the stored roster) and `reader_version: 2`.
+2. `python scripts/djv_gc_check.py` on the Spark (the default library root, or pass it). It prints one line per entry
+   that is stale, has fewer than 18 roles, fails `cast_swap.retarget_check` or is not replacement-ready, then
+   `N/N Def Jam Vendetta GC entries retargetable (complete)`. It exits 1 unless every entry passes.
