@@ -206,7 +206,7 @@
       <select data-mg-f="kind" title="Sonic showcase: the background test builds with the Sonic Adventure cast">${opt("", "All builds", st.kind || "")}${opt("showcase", `Sonic showcase (${f.showcase || 0})`, st.kind || "")}${opt("other", "Other builds", st.kind || "")}</select>
       <label class="mut">Play on <select data-mg-f="node">${opt("", "This PC", st.node)}${nodes.map(n => opt(n.name, `${n.name} (${n.os})`, st.node)).join("")}</select></label>
       <button class="act" type="button" data-mg="refresh" title="Rescan the build folders">Refresh</button><span class="mut" data-mg-sum></span></div>
-      <div class="mg-grid" data-mg-grid></div><div data-mg-more></div>`;
+      <div data-mg-live-controls></div><div class="mg-grid" data-mg-grid></div><div data-mg-more></div>`;
   }
 
   const CSS = `.mg-sort{position:relative}.mg-sort summary{list-style:none;cursor:pointer;padding:6px;border:1px solid var(--line,#444);border-radius:5px;display:flex}.mg-sort summary::-webkit-details-marker{display:none}
@@ -261,7 +261,7 @@
       : { get: () => env.api("/api/mods/built").then(data => ({ ok: true, data }), e => ({ ok: false, error: e.message })), invalidate() {} };
     const wait = env.wait || sleep, toast = env.toast || (() => {});
     const url = env.url || (u => u);
-    let timer = null, built = false;
+    let timer = null, built = false, liveControls = null;
     // the download icon: this PC's copy of each build (GET /api/builds/local), downloads / exports running from here
     const locals=new Map();let local=null,stopped=false;
     function selectLocal(){
@@ -276,13 +276,17 @@
     selectLocal();
 
     function shell() {
+      liveControls?.dispose();
       const f = facets(st.data?.items || []);
       host.innerHTML = `<style>${CSS}${BA()?.WHAT_CSS || ""}</style>` + toolbarHTML(st, f, st.nodes);
+      const liveHost=host.querySelector('[data-mg-live-controls]');
+      if(liveHost && root.GBoxLiveControls) liveControls=root.GBoxLiveControls.mount(liveHost,{api:env.api,pso:root.GBoxPSO,wait:env.wait},{game:st.game});
       built = true;
     }
     function shown() { return filterMods(st.data?.items || [], {...st,localKeys:new Set((st.data?.items||[]).filter(m=>local?.state(m).state==='here').map(m=>m.key))}); }
     function draw() {
       if (!built) shell();
+      liveControls?.setGame(st.game);
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const grid = host.querySelector("[data-mg-grid]"), sum = host.querySelector("[data-mg-sum]"), moreEl = host.querySelector("[data-mg-more]");
       if (grid) grid.innerHTML = page.map(m => cardHTML(m, { url, idx: st.idx.get(m.key) || 0, renaming: st.renaming === m.key, menu: st.menu === m.key,
@@ -575,6 +579,7 @@
       return load(busy() ? TICK - 500 : 30000);
     }
     function stop() {
+      liveControls?.dispose();
       stopped=true;
       clearInterval(timer);
       for (const [ev, fn] of [["click", onClick], ["input", onInput], ["change", onInput], ["keydown", onKey], ["focusout", onFocusOut], ["contextmenu", onContext]])

@@ -4929,6 +4929,10 @@ def create_app(config: Config) -> FastAPI:
             return None
         return item.get("job_id") if item.get("dispatch_state") in ("queued", "finished") else None
 
+    from . import live_controls_api
+    live_controls_api.routes(app, store, auth, submit, JobRequest,
+        create_request=lambda body: req_create(RequestIn(**body), 'operator'), investigate=_lf_investigate)
+
     from . import custom_build_unlocks
     app.state.reconcile_build_unlocks = custom_build_unlocks.routes(
         app, store, config, auth,
