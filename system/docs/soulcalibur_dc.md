@@ -296,6 +296,25 @@ library normals disagree with their own faces.
 Mario, Eggman and Shadow are smoothly lit. The frames are in `D:\gBox\research\soulcalibur\evidence\v2\`, listed in
 `evidence.json`.
 
+**v3 textures were scrambled in game (#1765)**: Mario showed blocky red/blue/white patches, Cervantes as Knuckles
+was a pale smear, and some costumes had black spots. The cause was the order of the strip UV words. The vertex
+emitter at `0x8c03cc68` loads a corner's two UV u16 as one u32 and stores it as the TA's U float, then shifts it left
+by 16 and stores it as V, so the second u16 is U. v3 wrote U first, so the game sampled every rebuilt page
+transposed. Where the transposed sample hit an empty atlas cell, the result was black. The reader had the same error,
+so its offline renders looked right. Its stock renders were wrong too: green feet and hair on Kilik, a green chest
+and blue boots on Maxi.
+
+The diagnostic disc `sc_diag_uv` replaced every rebuilt page with a UV gradient (R = u, G = v, B = page). Its
+in-game frames (`D:\gBox\research\soulcalibur\evidence\diag_ingame\`) show each costume's own UV ramps, and
+they match an offline render only with the axes swapped. The random-costume hook is not involved: the model and its
+pages come from the same costume entry.
+
+**v4 (`sc_sonic_vs_mario_random_v4`)** is v3 rebuilt with the corrected word order. Apart from the swapped UV
+words, 39 of its 45 models are byte-identical to v3. The other six (the Peach costumes, plus Koopa and Sonic) also
+carry this branch's double-sided and LOD changes. The offline renders are in
+`D:\gBox\research\soulcalibur\evidence\v4_offline\` (`evidence.json`). They include the stock costumes and v3,
+both rendered the way the game reads them.
+
 Known limits:
 
 - The SM64DS Peach library entry (`sm64ds_peach`) is stretched before any fitting: one primitive spans 17 units
