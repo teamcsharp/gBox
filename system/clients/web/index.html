@@ -2335,6 +2335,7 @@ async function wbInit() {
       <div class="row"><button data-apply title="${modOffable(m) ? "Click to switch this mod on or off in the running game (same PC, same moment)" : "One-shot: applies once"}">${modOffable(m) ? "Turn on" : "Activate"}</button><button data-shot title="Use what the game shows right now as this mod's picture">📷</button>${
         m.calls.some(c => c.tool === "@launch") ? `<button data-blmod title="Copy this mod's model to Blender's clipboard (Ctrl+V in a Blender 3D viewport)">⧉</button><button data-export title="Save the modded game file (bootable, with this mod built in)">💾</button>` : ""}${
         m.calls.some(c => ["@launch", "cheats", "re_mods", "characters"].includes(c.tool)) ? `<button data-romx title="Export ROM hack: a bootable copy of YOUR game file with this mod baked in (flash cart / modded console / emulator) + a shareable patch (BPS/IPS, no game data) + cheat files. Stays on your gBox.">Export ROM hack</button>` : ""}${m.state_slot != null ? `<button data-moment="${m.state_slot}">Load moment</button>` : ""}
+        ${modDisc(m) ? '<button type="button" data-report-mod title="Write a note and create a ticket about this ROM build">Report problem</button>' : ""}
         ${m.video ? `<a class="b" target="_blank" href="/api/artifacts/${m.video}?${tq()}">Play video</a>` : ""}<i></i></div>
       <details><summary>How it works</summary>${m.desc ? `<p>${esc(m.desc)}</p>` : ""}${m.calls.map(c => `<div class="call"><b>${esc(c.tool)}</b>
         <div>${esc((tdesc[c.tool] || "").split("\n")[0].slice(0, 220))}</div><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}</details></div>`;
@@ -2352,9 +2353,9 @@ async function wbInit() {
   sessionObserverWatch(sid);
   charsInit();
   modWatch(gid, sid, mods);
-  const curMod = ((await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid) || {}).mod || "";
+  const curSession = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
   mods.forEach((m, i) => { const c = el.closest(".play")?.querySelector(`.wbm[data-m="${i}"]`) || el.querySelector(`.wbm[data-m="${i}"]`);
-    const on = modDisc(m) ? modDisc(m) === curMod : modKeepGet(gid).includes(m.id);
+    const on = modDisc(m) ? !!GBoxBuildActions.sessionBuild(m, gid, curSession)?.session_id : modKeepGet(gid).includes(m.id);
     if (on && c) { c.classList.add("on"); const b = c.querySelector("button[data-apply]"); if (b && modOffable(m)) b.textContent = "Turn off";
       if (modDisc(m)) c.querySelector(".row i").textContent = "on in this game"; } });
   const runCtl = async (l, c, v) => { const st = l.querySelector("i"); st.textContent = "⏳";
@@ -2390,6 +2391,16 @@ async function wbInit() {
                if (modSticky(m)) modKeep(gid, m.id, true);
                if (!m.thumb && !m.calls.some(c => c.tool === "@launch")) setTimeout(() => modShot(m, sid, card, false), 1500); } }
       catch (err) { st.textContent = "failed: " + err.message.slice(0, 90); st.title = err.message; }
+      finally { btn.disabled = false; }
+    } else if (e.target.closest("button[data-report-mod]")) {
+      const btn = e.target.closest("button[data-report-mod]"); btn.disabled = true;
+      try {
+        const session = (await api("/api/sessions")).find(s => s.session_id === sid);
+        const build = GBoxBuildActions.sessionBuild(m, gid, session);
+        if (!build) throw new Error("This card has no ROM build to report");
+        const result = await GBoxBuildActions.open("report", build, { api });
+        if (result) { st.textContent = `Ticket #${result.number} submitted`; toast(`Ticket #${result.number} submitted with your note`); }
+      } catch (err) { st.textContent = "Report failed: " + err.message; }
       finally { btn.disabled = false; }
     } else if (e.target.closest("button[data-blmod]")) {
       const L = m.calls.find(c => c.tool === "@launch").input;

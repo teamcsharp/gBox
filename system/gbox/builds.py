@@ -817,7 +817,7 @@ def delete_spark(config, gid: str, name: str) -> dict:
 # ------------------------------------------------------------------------------------------------- report (#1656)
 
 REASONS = {"no_change": "doesn't show the expected change", "broken": "character looks broken or garbled",
-           "crash": "game crashes or freezes", "other": "other"}
+           "detail_loss": "character lost too much detail", "crash": "game crashes or freezes", "other": "other"}
 REPORT_PICTURES = 4
 REPORT_PICTURE_MAX = 4 << 20
 
@@ -1225,6 +1225,24 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         issue, details = report_of(item or {"key": key, "name": name, "game_id": game_id}, meta, reason, note,
                                    lambda sha: store.read_artifact(sha),
                                    lambda pic: BM.image_path(config, game_id, name, pic).read_bytes())
+        sid = str(body.get("session_id") or "")
+        if sid:
+            session = store.get("session", sid)
+            if not session:
+                raise HTTPException(404, "The reported game session was not found")
+            detail = session.get("detail") or {}
+            actual = session.get("mod") or detail.get("mod") or ""
+            if session.get("game_id") != game_id or not (actual == name or actual.split(BM.STAGED_SEP)[0] == name
+                                                         or detail.get("collection_mod") == name):
+                raise HTTPException(409, "This session is playing a different game or build")
+            issue["session_id"] = sid
+            issue["context"].update(runtime_mod=actual, worker_name=detail.get("worker_name") or "", view="session mod report")
+            # Let the issue flow capture this session now, rather than using an
+            # older gallery picture as the ticket's main screenshot. No save or pause.
+            issue["image_b64"] = None
+            extra = f"\nReported session: {sid}\nBuild being played: {actual}\nPC: {detail.get('worker_name') or 'unknown'}"
+            issue["detail"] += extra
+            details += extra
         report = file_report(issue, details, actor)
         store.put(REPORT_KIND, key, {"key": key, "number": report.get("number"), "id": report.get("id"), "reason": reason,
                                      "by": actor, "ts": time.time()})

@@ -55,16 +55,36 @@ test('the delete dialog: name, folder, game, size, where it lives; everywhere by
                'Deleted auf_dm1_bondcombat_uwbthug (Spark collection removed); deleting the copy on MYPC; not deleted: LAB: offline');
 });
 
-test('the report dialog: the four quick reasons, a free-text field (no dictation wrapper), what gets sent', () => {
+test('the report dialog: quick reasons including detail loss, a labelled note field, what gets sent', () => {
   const html = BA.reportDialogHTML({ ...BUILD, what: RECORDED });
   assert.match(html, /⚑ Report a problem with “auf_dm1_bondcombat_uwbthug”/);
   for (const [k, l] of [['no_change', "Doesn't show the expected change"], ['broken', 'Character looks broken or garbled'],
                         ['crash', 'Game crashes or freezes'], ['other', 'Other']])
     assert.ok(html.includes(`value="${k}"`) && html.includes(l.replace("'", '&#39;')), k);
   assert.match(html, /name="ba-reason" value="no_change" checked/);
-  assert.match(html, /<textarea class="ba-text" data-ba-note[^>]*data-nomic><\/textarea>/);
+  assert.match(html, /<textarea id="ba-report-note" class="ba-text" data-ba-note[^>]*maxlength="4000"[^>]*data-nomic><\/textarea>/);
+  assert.match(html, /value="detail_loss"/);
+  assert.match(html, /Note for the ticket/);
   assert.match(html, /newest in-game frame and its fit previews\. It goes to the investigation queue/);
   assert.deepEqual(BA.reportCall(BUILD, 'broken', '  unrecognizable  '), { path: '/api/builds/auf/auf_dm1_bondcombat_uwbthug/report', body: { reason: 'broken', note: 'unrecognizable' } });
+});
+
+test('workbench reports link only the selected build and preserve the exact running copy', () => {
+  const card = { title: 'Play as Leon', calls: [{ tool: '@launch', input: { mod: 'sa2_re6_leon' } }] };
+  const session = { session_id: 'worker-session', game_id: 'sa2', title: 'Sonic Adventure 2', mod: 'sa2_re6_leon~abc123', detail: { worker_name: 'JAYBUILTFINALE' } };
+  const b = BA.sessionBuild(card, 'sa2', session);
+  assert.equal(b.name, 'sa2_re6_leon'); assert.equal(b.runtime_mod, session.mod);
+  assert.equal(b.session_id, session.session_id);
+  assert.match(BA.reportDialogHTML(b), /Linked to the game session on JAYBUILTFINALE/);
+  assert.deepEqual(BA.reportCall(b, 'detail_loss', '  Decimation removed Leon’s detail.  '), {
+    path: '/api/builds/sa2/sa2_re6_leon/report', body: { reason: 'detail_loss', note: 'Decimation removed Leon’s detail.', session_id: 'worker-session' }
+  });
+  for (const other of [{ ...session, game_id: 'other' }, { ...session, mod: 'metal_sonic' }, undefined])
+    assert.equal(BA.sessionBuild(card, 'sa2', other).session_id, undefined);
+  assert.equal(BA.sessionBuild({ calls: [] }, 'sa2', session), null);
+  const shell = fs.readFileSync(path.join(__dirname, '../clients/web/index.html'), 'utf8');
+  assert.match(shell, /data-report-mod[^>]*>Report problem<\/button>/);
+  assert.match(shell, /GBoxBuildActions\.sessionBuild\(m, gid, session\)/);
 });
 
 // a document just big enough for open(): one modal element whose controls answer what the dialog reads
