@@ -90,7 +90,8 @@ else:
             tex.image_user.use_auto_refresh = True
             tex.image_user.use_cyclic = True
     obj["gbox_paste_as"] = mode
-objs = list(bpy.data.objects)
+shapes={bone.custom_shape for obj in bpy.data.objects if obj.type=='ARMATURE' for bone in obj.pose.bones if bone.custom_shape}
+objs = [obj for obj in bpy.data.objects if obj not in shapes]
 for o in objs:                                        # gBox round trip: role names on bones, the character on the armature
     if o.type == "ARMATURE" and tags.get("armature"):
         for k, v in tags["armature"].items():
