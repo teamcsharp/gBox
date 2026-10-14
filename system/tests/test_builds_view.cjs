@@ -195,6 +195,44 @@ function fakeEnv(extra = {}) {
 const host = () => { const h = fakeEl('div'); h.addEventListener = (t, fn) => { h.listeners[t] = fn; }; return h; };
 
 // ------------------------------------------------------------------ pure rendering
+test('all six build columns sort their displayed values in both directions', () => {
+  const low = { ...CAST, key: 'low', label: 'Build 2', game_title: 'Game 2', kinds: ['cast'], built: 9, size: 10000, own_size: 9, where: [{ label: 'Alpha PC' }] };
+  const high = { ...CAST, key: 'high', label: 'Build 10', game_title: 'Game 10', kinds: ['character'], built: 100, size: 100, own_size: 100, where: [{ label: 'Zulu PC' }], favorite: true };
+  for (const sort of ['name', 'game', 'kind', 'built', 'size', 'where']) {
+    assert.deepEqual(BV.filterBuilds([high, low], { sort, direction: 'asc' }).map(b => b.key), ['low', 'high'], sort);
+    assert.deepEqual(BV.filterBuilds([low, high], { sort, direction: 'desc' }).map(b => b.key), ['high', 'low'], sort);
+  }
+  const missing = { ...low, key: 'missing', built: 0, size: null };
+  for (const sort of ['built', 'size']) for (const direction of ['asc', 'desc']) {
+    assert.equal(BV.filterBuilds([missing, high, low], { sort, direction }).at(-1).key, 'missing');
+  }
+  assert.equal(BV.filterBuilds([{ ...high, local_only: true }, low], { sort: 'size' }).at(-1).key, 'high');
+  assert.deepEqual(BV.filterBuilds([low, high], { fav: true, sort: 'name' }).map(b => b.key), ['high']);
+});
+
+test('column clicks toggle direction, reset pagination and retain sorting through filters and refresh', async () => {
+  const items = Array.from({ length: 65 }, (_, i) => ({ ...CAST, key: 'g1/build' + i, name: 'build' + i, label: 'Build ' + i, built: i + 1 }));
+  const env = fakeEnv({ routes: { 'GET /api/builds': () => ({ items }) } }), h = host();
+  const ctl = BV.mount(h, env); await ctl.ready;
+  const click = sort => ctl.onClick({ target: target({ bv: 'sort', dataset: { sort } }) });
+  const first = () => h.querySelector('[data-bv-list]').innerHTML.match(/data-bv-key="([^"]+)"/)[1];
+  try {
+    await ctl.onClick({ target: target({ bv: 'more' }) });
+    assert.equal(ctl.st.page, 2);
+    await click('name');
+    assert.equal(first(), 'g1/build0'); assert.equal(ctl.st.page, 1);
+    assert.match(h.querySelector('[data-bv-head]').innerHTML, /Name, sorted ascending/);
+    await click('name'); assert.equal(first(), 'g1/build64');
+    assert.match(h.querySelector('[data-bv-head]').innerHTML, /Name, sorted descending/);
+    await click('built'); assert.equal(ctl.st.direction, 'desc');
+    await click('built'); assert.equal(first(), 'g1/build0');
+    ctl.st.q = 'Build 6'; ctl.drawList(); assert.equal(first(), 'g1/build6');
+    await ctl.loadList(true); assert.equal(first(), 'g1/build6');
+    assert.equal(ctl.st.sort, 'built'); assert.equal(ctl.st.direction, 'asc');
+    await click('size'); assert.equal(ctl.st.direction, 'desc');
+  } finally { ctl.stop(); }
+});
+
 test('filters and facets: words over name / game / donor / kind / #ticket, game and kind filters, newest first', () => {
   const all = [PATCH, CAST, HACK];
   assert.deepEqual(BV.filterBuilds(all).map(b => b.name), ['cast_g1', 'g2_hack', 'g1_patch']);
