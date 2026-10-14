@@ -233,6 +233,49 @@ test('column clicks toggle direction, reset pagination and retain sorting throug
   } finally { ctl.stop(); }
 });
 
+test('launch and return restores filters, sorting, expanded rows, options, pagination and scroll without stale launch messages', async () => {
+  const values = new Map(), storage = { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v) };
+  const scrollElement = { scrollTop: 0 };
+  let finishLaunch;
+  const first = BV.mount(host(), fakeEnv({ storage, scrollElement, launch: () => new Promise(r => { finishLaunch = r; }) }));
+  await first.ready;
+  first.onInput({ target: { dataset: { bvF: 'game' }, value: 'g1' } });
+  first.onInput({ target: { dataset: { bvF: 'q' }, value: 'cast' } });
+  await first.onClick({ target: target({ bv: 'sort', dataset: { sort: 'size' } }) });
+  await first.onClick({ target: target({ bv: 'more' }) });
+  await first.toggle(CAST);
+  await first.onClick({ target: target({ bv: 'opts', key: CAST.key }) });
+  scrollElement.scrollTop = 735;
+  const pending = first.launch(CAST, CAST.launch_options[0]);
+  first.stop(); scrollElement.scrollTop = 0;
+  const h = host(), second = BV.mount(h, fakeEnv({ storage, scrollElement }));
+  await second.ready;
+  try {
+    assert.equal(second.st.game, 'g1'); assert.equal(second.st.q, 'cast');
+    assert.equal(second.st.sort, 'size'); assert.equal(second.st.direction, 'desc');
+    assert.equal(second.st.page, 2); assert.ok(second.st.open.has(CAST.key));
+    assert.ok(second.st.details.get(CAST.key)?.data, 'expanded details are loaded again');
+    assert.equal(second.st.opts, CAST.key); assert.equal(second.st.lastLaunch, CAST.key);
+    assert.equal(scrollElement.scrollTop, 735);
+    assert.match(h.querySelector('[data-bv-list]').innerHTML, /Last launched/);
+    assert.equal(second.st.msg.size, 0);
+    second.onInput({ target: { dataset: { bvF: 'q' }, value: 'updated' } });
+    finishLaunch(); await pending;
+    assert.equal(JSON.parse([...values.values()][0]).q, 'updated', 'late launch response cannot overwrite the returned view');
+  } finally { second.stop(); }
+  const directed = BV.mount(host(), fakeEnv({ storage, scrollElement, q: '', game: 'g2' }));
+  await directed.ready;
+  try { assert.equal(directed.st.game, 'g2'); assert.equal(directed.st.q, ''); assert.equal(directed.st.page, 1); assert.equal(scrollElement.scrollTop, 0); }
+  finally { directed.stop(); }
+});
+
+test('unavailable storage and deleted remembered builds do not prevent returning to Builds', async () => {
+  const storage = { getItem: () => JSON.stringify({ open: ['missing'], lastLaunch: 'missing', opts: 'missing' }), setItem() { throw new Error('blocked'); } };
+  const ctl = BV.mount(host(), fakeEnv({ storage })); await ctl.ready;
+  try { assert.equal(ctl.st.data.items.length, 3); assert.equal(ctl.st.details.size, 0); }
+  finally { ctl.stop(); }
+});
+
 test('filters and facets: words over name / game / donor / kind / #ticket, game and kind filters, newest first', () => {
   const all = [PATCH, CAST, HACK];
   assert.deepEqual(BV.filterBuilds(all).map(b => b.name), ['cast_g1', 'g2_hack', 'g1_patch']);

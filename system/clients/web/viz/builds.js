@@ -130,10 +130,10 @@
     const star = `<button class="bv-ico bv-star${b.favorite ? " on" : ""}" type="button" data-bv="fav" aria-pressed="${!!b.favorite}" title="${b.favorite ? "Remove from favorites" : "Add to favorites: listed first, at the top of the game's Special builds, never evicted"}" aria-label="Favorite">${b.favorite ? "★" : "☆"}</button>`;
     const sub = [b.display_name && b.original_title !== b.display_name ? `was “${b.original_title}”` : "", b.summary || ""].filter(Boolean).join(" · ");
     const msg = st.msg?.get?.(b.key);
-    return `<div class="bv-row${open ? " open" : ""}${b.local_only ? " bv-local" : ""}${b.favorite ? " bv-fav" : ""}" data-bv-key="${ESC(b.key)}">
+    return `<div class="bv-row${open ? " open" : ""}${b.local_only ? " bv-local" : ""}${b.favorite ? " bv-fav" : ""}${st.lastLaunch === b.key ? " bv-last-launch" : ""}" data-bv-key="${ESC(b.key)}">
       <button class="bv-tri" type="button" data-bv="toggle" aria-expanded="${open}" title="${open ? "Hide" : "Show"} details">${open ? "▾" : "▸"}</button>
       ${b.image ? `<img class="bv-thumb" loading="lazy" decoding="async" alt="" src="${ESC(url(b.image))}">` : `<div class="bv-thumb bv-nothumb">${ESC((b.game_title || b.game_id || "?").slice(0, 2))}</div>`}
-      <div class="bv-main"><div class="bv-nm">${star}${name}</div>${BA()?.whatHTML(b.what, { compact: true }) || ""}<div class="bv-sub mut" title="${ESC(sub)}">${ESC(sub)}</div>${msg ? `<div class="bv-msg">${ESC(msg)}</div>` : ""}</div>
+      <div class="bv-main"><div class="bv-nm">${star}${name}</div>${st.lastLaunch === b.key ? '<span class="bv-last-label">Last launched</span>' : ''}${BA()?.whatHTML(b.what, { compact: true }) || ""}<div class="bv-sub mut" title="${ESC(sub)}">${ESC(sub)}</div>${msg ? `<div class="bv-msg">${ESC(msg)}</div>` : ""}</div>
       <div class="bv-game" title="${ESC(b.game_id)}">${ESC(b.game_title || b.game_id)}${b.unlocks ? `<div class="bv-chip" title="${ESC((b.unlocks.categories || []).join(', '))}">${ESC(b.unlocks.label)}${b.unlocks.number ? ` #${ESC(b.unlocks.number)}` : ""}</div>` : ""}</div>
       <div class="bv-kinds">${(b.kinds || [b.kind]).map((k, i) => chip(KINDS[k] || k, i ? "" : "bv-k1")).join("")}${b.verified ? chip("verified", "bv-ok") : ""}${BA()?.reportedHTML(b.reported, "bv-chip ba-rep") || ""}</div>
       <div class="bv-date" title="${ESC(fmtDate(b.built))}">${ESC(fmtAge(b.built, now))}</div>
@@ -373,6 +373,7 @@
     .bv-section{margin:0 0 18px}.bv-section h3{margin:6px 0;font-size:15px}
     .bv-head,.bv-row{display:grid;grid-template-columns:22px 56px minmax(160px,2.4fr) minmax(90px,1.1fr) minmax(90px,1fr) 80px 72px minmax(90px,1fr) auto;gap:8px;align-items:center}
     .bv-head{font-size:11px;padding:0 6px}.bv-row{padding:6px;border-bottom:1px solid var(--line,#2a2c33)}.bv-row:hover{background:#ffffff08}.bv-row.open{background:#ffffff0c}
+    .bv-row.bv-last-launch{background:#8190ff16;outline:1px solid var(--acc,#8190ff);outline-offset:-1px}.bv-last-label{color:var(--acc,#8190ff);font-size:11px}
     .bv-sort{display:flex;align-items:center;gap:5px;background:none;border:0;padding:6px 0;color:inherit;font:inherit;text-align:left;cursor:pointer}
     .bv-sort span{opacity:.5}.bv-sort:hover,.bv-sort.on{color:var(--accent,#aab3ff)}.bv-sort.on span{opacity:1}.bv-sort:focus-visible{outline:2px solid var(--accent,#aab3ff);outline-offset:2px}
     @media (min-width:901px){.bv-builds{display:grid;grid-template-columns:22px 56px minmax(160px,2.4fr) minmax(90px,1.1fr) minmax(90px,1fr) 80px 72px minmax(90px,1fr) auto;column-gap:8px}
@@ -645,11 +646,37 @@
   // env = { api(path, body?, method?) -> data (throws), url(path) -> loadable URL, here (this PC's worker name),
   //   visible() -> bool, launch?(gid, x) (the shell's launch + loader), confirm?(text) -> bool, toast?(text),
   //   loadThree?() -> {THREE, GLTFLoader}, IntersectionObserver?, document?, raf?, caf?, now? }
+  const viewMemory = new Map();
   function mount(host, env) {
+    const viewKey = 'gbox.builds.view.v1:' + (env.here || 'auto');
+    let storage = env.storage, saved = root.document ? viewMemory.get(viewKey) || {} : {};
+    try { if (storage === undefined) storage = root.localStorage; saved = JSON.parse(storage?.getItem(viewKey) || 'null') || saved; } catch {}
+    const directed = ['q', 'game', 'kind', 'fav'].some(k => env[k] != null);
     const st = { q: env.q || "", game: env.game || "", kind: env.kind || "", fav: !!env.fav, sort: "", direction: "asc", data: null, sched: null, open: new Set(), details: new Map(),
                  renaming: null, opts: null, msg: new Map(), jobOpen: new Set(), inv: new Map(), editing: null, jmsg: new Map(),
                  listSig: "", schedSig: "", page: 1, shot: new Map() };   // shot: row key -> the 📷 choice it offers
     const PAGE = 60;
+    for (const k of ['q', 'game', 'kind']) st[k] = String(env[k] ?? (typeof saved[k] === 'string' ? saved[k] : ''));
+    st.fav = !!(env.fav ?? saved.fav);
+    st.sort = Object.hasOwn(SORTS, saved.sort) ? saved.sort : '';
+    st.direction = saved.direction === 'desc' ? 'desc' : 'asc';
+    st.page = directed ? 1 : Math.max(1, Math.min(1000, Math.floor(Number(saved.page) || 1)));
+    st.open = new Set(Array.isArray(saved.open) ? saved.open.filter(k => typeof k === 'string') : []);
+    st.opts = typeof saved.opts === 'string' ? saved.opts : null;
+    st.lastLaunch = typeof saved.lastLaunch === 'string' ? saved.lastLaunch : null;
+    const doc = env.document || root.document;
+    const scroll = env.scrollElement || doc?.scrollingElement;
+    let position = directed ? 0 : Math.max(0, Number(saved.scroll) || 0), restoring = true, stopped = false;
+    function remember(capture = false) {
+      if (stopped) return;
+      if (capture && !restoring && host.isConnected !== false && (!env.visible || env.visible())) position = scroll?.scrollTop || 0;
+      const value = { q: st.q, game: st.game, kind: st.kind, fav: st.fav, sort: st.sort, direction: st.direction,
+        page: st.page, open: [...st.open], opts: st.opts, lastLaunch: st.lastLaunch, scroll: position };
+      if (root.document) viewMemory.set(viewKey, value);
+      try { storage?.setItem(viewKey, JSON.stringify(value)); } catch {}
+    }
+    const onScroll = () => remember(true);
+    doc?.addEventListener?.('scroll', onScroll, true);
     const three = threeLoader(env);
     const tts = createTurntables({ ...env, three }), flows = createFlows({ ...env, three });
     const toast = env.toast || (() => {}), wait = env.wait || sleep;
@@ -690,6 +717,7 @@
       drawRetention();
     }
     function drawList() {
+      if (stopped) return;
       if (!built) shell();
       const list = shown(), page = list.slice(0, st.page * PAGE), more = list.length - page.length;
       const el = part("[data-bv-list]");
@@ -703,8 +731,10 @@
       const s = part("[data-bv-sum]");
       if (s && st.data) s.textContent = st.data.indexing ? "indexing…" : st.data.sizing ? `sizing ${st.data.sizing} folder${st.data.sizing === 1 ? "" : "s"}…` : "";
       if (st.renaming) { const inp = el?.querySelector?.("[data-bv-rename]"); inp?.focus?.(); inp?.select?.(); }
+      remember();
     }
     function drawSched() {
+      if (stopped) return;
       if (!built) shell();
       const el = part("[data-bv-sched]");
       if (el) { el.innerHTML = scheduledHTML(st.sched, st, env); flows.adopt(el, jobs()); }
@@ -756,8 +786,9 @@
     }
     async function launch(b, o) {
       if (!b || !o) return;
+      st.lastLaunch = b.key; remember(true);
       const c = launchCall(b, o, env.here);
-      st.opts = null; st.msg.set(b.key, `Launching (${optLabel(o, env.here)})…`); drawList();
+      st.msg.set(b.key, `Launching (${optLabel(o, env.here)})…`); drawList();
       try {
         if (env.launch) await env.launch(b.game_id, c.x);
         else await env.api(c.path, {});
@@ -981,11 +1012,19 @@
       shell(); drawList(); drawSched();
       localAt = Date.now();
       await Promise.all([loadList(), loadSched(), st.local?.refresh(), loadRetention()]);
+      if (stopped) return ctl;
+      await Promise.all([...st.open].map(key => find(key)).filter(Boolean).map(openDetails));
+      if (stopped) return ctl;
       drawList();
+      if (scroll) scroll.scrollTop = position;
+      restoring = false;
       timer = setInterval(tick, env.tick || TICK);
       return ctl;
     }
     function stop() {
+      if (stopped) return;
+      remember(true); stopped = true;
+      doc?.removeEventListener?.('scroll', onScroll, true);
       clearInterval(timer);
       for (const [ev, fn] of [["click", onClick], ["contextmenu", onContext], ["dblclick", onDblClick], ["keydown", onKey], ["focusout", onFocusOut], ["input", onInput], ["change", onInput]])
         host.removeEventListener?.(ev, fn);
