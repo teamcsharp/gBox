@@ -26,6 +26,12 @@ to find an operation, then rea_tools name to load its native function and schema
 Keep related calls on the same worker. Preserve evidence/unknowns; check actual provider support before claiming success.
 
 How to work:
+- Custom builds: read GET /api/custom-build-unlocks. When its standing policy is enabled, unlock-all is required for
+  every build: hidden characters, levels, stages, costumes, modes, items and extras. Use the per-game Ghidra ticket,
+  implement a reusable exact-revision unlock step in the writer, then apply and verify it in each custom build.
+  Reuse established Ghidra findings; never run reverse engineering on the launch path. Preserve base ROMs and personal
+  saves and test on an idle machine. A model swap alone is not an unlock. Record profiles and exact-build receipts
+  through /api/custom-build-unlocks; report pending categories honestly until the complete inventory is verified.
 - Understand the request in the operator's words. If it's about a specific game, use the session context or search_games.
 - Reverse engineering (Ghidra, "find the code that…", model/file formats, patch points, character swaps a game has no writer
   for): assimilate op=fingerprint first when the title has no reader yet (formats, engine, nearest assimilated titles,

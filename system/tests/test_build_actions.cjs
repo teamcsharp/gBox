@@ -157,6 +157,13 @@ test('Broken mod card has accessible top-left action, static overlay and disable
   assert.match(html, /data-mg="play" disabled/);
 });
 
+test('Unlock coverage is separate from game-running verification and links its ticket', () => {
+  const html = MG.cardHTML({...CARD,verified:true,unlocks:{label:'Unlock-all pending',status:'pending',number:21,request_id:'r21'}});
+  assert.match(html, /Unlock-all pending/);
+  assert.match(html, /data-mg="unlock-ticket">#21/);
+  assert.doesNotMatch(html, /All unlocks verified/);
+});
+
 test('Mods card: What this changes under the title, ⚑ Report and 🗑 bottom right, both in the options, Reported #N', () => {
   const html = MG.cardHTML(CARD, {});
   assert.ok(html.indexOf('class="ba-what ba-no_changes"') > html.indexOf('mg-title') && html.indexOf('ba-what') < html.indexOf('mg-btns'));

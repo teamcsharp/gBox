@@ -989,6 +989,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
         reports = {}
     catalogs: dict = {}
     items = []
+    from .custom_build_unlocks import badge
     for rec in records:
         gid = rec["game_id"]
         items.append(entry(rec, cards.get((gid, rec["name"])), launches.get((gid, rec["name"])),
@@ -996,6 +997,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                            frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", ""),
                            launch_report=reports.get((gid, rec["name"])),
                            favorite=f"{gid}/{rec['name']}" in favs, reported=reported.get(f"{gid}/{rec['name']}")))
+        items[-1]['unlocks'] = badge(store, rec)
     for item in items:
         flag = broken.get(item['key'])
         if flag and flag.get('state') != 'deleted' and (not flag.get('built') or item.get('built') == flag['built']):

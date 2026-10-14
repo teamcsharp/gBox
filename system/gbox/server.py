@@ -4829,6 +4829,12 @@ def create_app(config: Config) -> FastAPI:
             return None
         return item.get("job_id") if item.get("dispatch_state") in ("queued", "finished") else None
 
+    from . import custom_build_unlocks
+    app.state.reconcile_build_unlocks = custom_build_unlocks.routes(
+        app, store, config, auth,
+        create_request=lambda body: req_create(RequestIn(**body), 'operator'),
+        investigate=_lf_investigate, workers=workers)
+
     def _lf_verify(rec, node):
         from . import evidence_capture as EC
         inp = EC.EvidenceIn.model_validate({
@@ -5210,6 +5216,11 @@ def create_app(config: Config) -> FastAPI:
         if s.solved_by and s.status != "done":
             raise HTTPException(422, "Solver credit is recorded only for a completed, verified request")
         r, now = _req(rid), time.time()
+        if s.status == 'done' and (gid := (r.get('context') or {}).get('custom_build_unlocks')):
+            pending = app.state.custom_build_unlocks_pending(gid)
+            if pending:
+                raise HTTPException(409, {'message': 'Unlock-all requires verified receipts for every current custom build',
+                                          'pending_builds': pending})
         if s.status == "in_progress" and not r["started"]:
             r["started"] = now
         if s.status == "done":

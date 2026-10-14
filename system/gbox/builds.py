@@ -198,7 +198,8 @@ def build_row(item: dict, meta: dict, card: dict | None, pcs: list[dict], here: 
             "card_id": item.get("card_id") or "", "state_slot": item.get("state_slot"),
             "launch_options": SB.launch_options(item, pcs), "has_recipe": bool(recipe), "recipe_recorded": recorded,
             "job_id": meta.get("job_id") or "", "favorite": bool(item.get("favorite")),
-            "what": item.get("what") or BM.what_of(item | {"meta": meta}), "reported": item.get("reported"), "broken": item.get('broken')}
+            "what": item.get("what") or BM.what_of(item | {"meta": meta}), "reported": item.get("reported"), "broken": item.get('broken'),
+            "unlocks": item.get('unlocks')}
 
 
 def local_only_row(key: str, here: list[dict], names: dict, titles: dict, favs: set | frozenset = frozenset()) -> dict:
@@ -937,6 +938,11 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         ws = workers()
         rows = listing(items, records, cards(), ws, BM.display_names(store),
                        {it["game_id"]: it.get("title") or "" for it in items}, BM.favorites(store))
+        from .custom_build_unlocks import badge
+        for row in rows:
+            if row.get('local_only'):
+                row['unlocks'] = badge(store, {'game_id': row['game_id'], 'name': row['name'],
+                                              'meta': {'built': row.get('built'), 'local_only': True}})
         picked = select(rows, q, game_id, kind, favorite)
         return {"items": picked, "total": len(picked), "all": len(rows), **facets(rows),
                 "kinds_all": [{"kind": k, "label": v} for k, v in KINDS.items()],
